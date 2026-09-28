@@ -23,6 +23,7 @@ from repowise.core.savings import recorder
 from repowise.core.savings.transcript import (
     ESTIMATOR,
     HOST_OUTPUT_CAP_TOKENS,
+    _Candidate,
     sync_transcript_savings,
 )
 from repowise.core.sessions import transcript_dir_for
@@ -45,6 +46,7 @@ def _pair(
     tool: str = "Bash",
     block_id: str = "toolu_01",
     ts: float = NOW,
+    model: str | None = None,
 ) -> list[dict]:
     return [
         {
@@ -53,6 +55,7 @@ def _pair(
             "timestamp": _iso(ts),
             "message": {
                 "role": "assistant",
+                **({"model": model} if model else {}),
                 "content": [
                     {
                         "type": "tool_use",
@@ -593,3 +596,283 @@ def test_every_marker_in_one_result_is_counted(repo: Path, projects: Path) -> No
     _write(projects, repo, _pair(output, cwd=str(repo)))
 
     assert _sync(repo, projects).recorded == 2
+
+
+# -- what it was worth ------------------------------------------------------
+#
+# 93% of this ledger's tokens carried no rate at all, because the backfill
+# dropped a model the transcript was stating plainly. Recovering it is not
+# repricing: "never repriced" forbids valuing a past saving at *today's*
+# model, and each event here is priced from the model that was in the chair
+# when it happened, read out of the same file that proves the saving.
+
+
+def test_an_event_is_priced_from_the_model_that_was_in_the_chair(
+    repo: Path, projects: Path
+) -> None:
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("aaaabbbbcccc", 500), cwd=str(repo), model="claude-opus-5"),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+    assert event["input_rate_usd_per_million"] == 5.0
+    assert event["output_rate_usd_per_million"] == 25.0
+    # Provenance names the method, so this population stays separable from a
+    # live event priced off the session-model cache.
+    assert event["pricing_source"] == "transcript_model:claude_code"
+    assert event["pricing_version"]
+
+
+def test_a_model_the_rate_table_does_not_know_leaves_the_event_unpriced(
+    repo: Path, projects: Path
+) -> None:
+    """A guessed rate is worse than the silence it replaced. The lenient
+    lookup would have answered $3/$15 here and stamped it as measured."""
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("ddddeeeeffff", 500), cwd=str(repo), model="totally-made-up-xyz"),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] is None
+    assert event["input_rate_usd_per_million"] is None
+    assert event["pricing_source"] is None
+    # The saving itself is unaffected: unpriced, never unrecorded.
+    assert event["baseline_input_tokens"] > event["delivered_input_tokens"]
+
+
+def test_a_model_stated_only_on_a_line_carrying_no_tool_call_still_reaches_the_event(
+    repo: Path, projects: Path
+) -> None:
+    """The gate's widening, pinned by the case that motivated it.
+
+    Codex states its model on a ``turn_context`` line with no tool call on it,
+    so the tool-call prefilter consumed it and *every* Codex event was written
+    unpriced -- measured at 0 of 1,219 candidates against 25 of 27 for Claude
+    Code, which happens to state its model on the same line as the tool call.
+    Codex is 93% of this machine's ledger, so the gate was the whole fix.
+
+    Written in the Claude Code shape because that is what this module's
+    fixtures speak; what it pins is the gate, which is harness-agnostic.
+    Remove ``'"model"' in raw_line`` from ``_gate`` and this fails.
+    """
+    entries = _pair(_distilled("111122223333", 500), cwd=str(repo))
+    standalone = {
+        "type": "assistant",
+        "cwd": str(repo),
+        "timestamp": _iso(NOW - 10),
+        "message": {"role": "assistant", "model": "claude-opus-5", "content": []},
+    }
+    _write(projects, repo, [standalone, *entries])
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+
+
+def test_a_models_reach_stops_at_the_transcript_it_was_stated_in(
+    repo: Path, projects: Path
+) -> None:
+    """Carrying the model forward must not carry it across sessions. A second
+    transcript that names no model is unpriced, not priced at the first's."""
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("444455556666", 500), cwd=str(repo), model="claude-opus-5"),
+        name="s1",
+    )
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("777788889999", 500), cwd=str(repo), block_id="toolu_02"),
+        name="s2",
+    )
+
+    _sync(repo, projects)
+
+    events = _events(repo)
+    assert len(events) == 2
+    assert sorted(row["model"] or "" for row in events) == ["", "claude-opus-5"]
+
+
+# -- the baseline is a ceiling, not a guess ---------------------------------
+
+
+def test_no_event_can_deliver_more_than_its_own_baseline(
+    repo: Path, projects: Path
+) -> None:
+    """The invariant a measured pair cannot violate, and nothing asserted it.
+
+    ``baseline`` is what the output cost before distillation and ``delivered``
+    is what the model read back, so ``delivered <= baseline`` holds by
+    construction -- unless the cap applied to the baseline is not the cap the
+    host actually applied. On this machine 305 stored events carry a baseline
+    of exactly 7,500 tokens and 125 of them deliver more than that, which is
+    proof by contradiction that the cap did not apply to them.
+
+    Written against a delivered size larger than the Claude Code cap, which
+    is exactly the shape that was being mis-accounted.
+    """
+    big = "x" * (HOST_OUTPUT_CAP_TOKENS * 4 * 3)
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("abcdef012345", 500, kept=big), cwd=str(repo)),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["delivered_input_tokens"] <= event["baseline_input_tokens"], (
+        f"delivered {event['delivered_input_tokens']} exceeds baseline "
+        f"{event['baseline_input_tokens']}: the cap charged to this event is "
+        "not the cap its host applied"
+    )
+
+
+def _accounting_for(harness: str, *, delivered: int, omitted: int) -> tuple[int, int]:
+    """``_accounting`` for one synthetic marker, at the unit level.
+
+    Direct rather than through ``_sync`` because the fixtures here speak only
+    the Claude Code transcript shape, and what is under test is precisely the
+    behaviour that must differ *between* harnesses.
+    """
+    from repowise.core.distill.markers import parse_markers
+    from repowise.core.savings.transcript import _accounting
+
+    text = render_marker("abcdef012345", 100, omitted)
+    (marker,) = parse_markers(text)
+    candidate = _Candidate(
+        marker=marker,
+        harness=harness,
+        occurred_at=datetime.fromtimestamp(NOW, UTC),
+        delivered_tokens=delivered,
+        session_id=None,
+    )
+    return _accounting(candidate)
+
+
+def test_claude_codes_cap_is_still_charged_to_claude_code(repo: Path) -> None:
+    """The confinement. Its 30,000 characters were measured exactly right:
+    across 117,148 shell results the largest it ever delivered is 30,000
+    characters to the byte, and none exceeds it."""
+    baseline, _ = _accounting_for("claude_code", delivered=100, omitted=5_000_000)
+
+    # The literal, not the constant: comparing the module's own value to
+    # itself passes whatever the value is, including a wrong one.
+    assert baseline == 7_500
+    assert HOST_OUTPUT_CAP_TOKENS == 7_500
+
+
+def test_claude_codes_cap_is_not_charged_to_codex(repo: Path) -> None:
+    """Codex delivers results two orders of magnitude larger and truncates
+    nowhere near 7,500 tokens. Charging it Claude Code's limit clipped 23% of
+    this ledger's events and made 125 of them deliver more than they cost."""
+    # Over Claude Code's 7,500 and under Codex's own, so nothing clips and
+    # the marker's arithmetic survives whole.
+    baseline, _ = _accounting_for("codex", delivered=100, omitted=9_000)
+
+    assert baseline > HOST_OUTPUT_CAP_TOKENS
+    assert baseline == 9_000 + 100 - estimate_tokens(
+        render_marker("abcdef012345", 100, 9_000)
+    )
+
+
+def test_codex_is_capped_at_its_own_measured_plateau(repo: Path) -> None:
+    """Pins the central claim of the per-agent cap, which nothing else did.
+
+    The sibling test above deliberately stays *under* Codex's cap, so it
+    passes whether Codex is capped at 10,000 or not capped at all. This one
+    clips: set the Codex entry to ``None`` and it fails.
+    """
+    baseline, _ = _accounting_for("codex", delivered=100, omitted=5_000_000)
+
+    # 2,552,250 characters: the largest result Codex was observed to deliver.
+    assert baseline == 638_062
+
+
+def test_a_harness_nobody_measured_is_not_charged_someone_elses_cap(repo: Path) -> None:
+    """Asserting a truncation we have not observed is how this bug happened,
+    so an unlisted harness gets no cap rather than the nearest one."""
+    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=9_000_000)
+
+    # Larger than any cap in the table, so this pins "no cap" rather than
+    # "some other cap": giving the unlisted harness Codex's fails.
+    assert baseline > 8_000_000
+
+
+def test_a_cap_never_clips_below_what_the_host_actually_delivered(repo: Path) -> None:
+    """The invariant, made true by construction rather than by luck.
+
+    A host cannot have truncated below what it demonstrably handed the model.
+    Pinned on the *capped* harness, which is the only one where clipping can
+    happen at all.
+    """
+    delivered = HOST_OUTPUT_CAP_TOKENS * 3
+    baseline, reported = _accounting_for("claude_code", delivered=delivered, omitted=10)
+
+    assert reported == delivered
+    assert baseline >= delivered
+
+
+def _assistant(cwd: str, model: str, *, sidechain: bool = False, ts: float = NOW) -> dict:
+    """An assistant line that states a model and runs no tool."""
+    entry = {
+        "type": "assistant",
+        "cwd": cwd,
+        "timestamp": _iso(ts),
+        "message": {"role": "assistant", "model": model, "content": []},
+    }
+    if sidechain:
+        entry["isSidechain"] = True
+    return entry
+
+
+def test_a_sub_agents_model_is_not_charged_to_the_main_thread(
+    repo: Path, projects: Path
+) -> None:
+    """Claude Code interleaves Task sub-agent lines into the same transcript,
+    and a sub-agent can run a different model. Carrying one forward prices the
+    main thread's next command at the sub-agent's rate -- 5x out when a Haiku
+    sub-agent lands between an Opus tool call and its result."""
+    entries = [
+        _assistant(str(repo), "claude-opus-5", ts=NOW - 20),
+        _assistant(str(repo), "claude-haiku-4-5", sidechain=True, ts=NOW - 10),
+        *_pair(_distilled("aabbccddeeff", 500), cwd=str(repo)),
+    ]
+    _write(projects, repo, entries)
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+    assert event["input_rate_usd_per_million"] == 5.0
+
+
+def test_a_sentinel_label_does_not_overwrite_a_known_model(
+    repo: Path, projects: Path
+) -> None:
+    """Claude Code writes ``<synthetic>`` for an API error or an interrupted
+    message. It resolves to no rate, which is right -- but if it is allowed to
+    overwrite the carried model it leaves every later marker in the file
+    unpriced, which is a silent loss rather than a refusal."""
+    entries = [
+        _assistant(str(repo), "claude-opus-5", ts=NOW - 20),
+        _assistant(str(repo), "<synthetic>", ts=NOW - 10),
+        *_pair(_distilled("ffeeddccbbaa", 500), cwd=str(repo)),
+    ]
+    _write(projects, repo, entries)
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"

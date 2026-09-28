@@ -56,6 +56,9 @@ class DecisionSummary:
     status: str  # active | deprecated | superseded | proposed
     rationale: str  # first ~100 chars of decision.rationale
     decision: str = ""  # what was chosen (first ~120 chars)
+    #: Pre-rendered mark for a line a person did not sign, else "". Empty in
+    #: the ordinary case, so the common line costs no extra tokens.
+    signed_by: str = ""
 
 
 @dataclass(frozen=True)

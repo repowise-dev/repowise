@@ -12,7 +12,10 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from repowise.core.ingestion.git_commit_index import load_commit_index
-from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
+from repowise.core.ingestion.git_indexer.commit_rows import (
+    build_commit_file_rows,
+    build_commit_rows,
+)
 
 
 def _iso_from_ts(ts: int) -> str:
@@ -346,3 +349,46 @@ def test_build_commit_rows_committed_at_parsed() -> None:
         ]
     )
     assert rows0[0]["committed_at"] is None
+
+
+def test_build_commit_file_rows_keeps_the_detail_the_aggregates_drop():
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/b.py", 0, 5)]}]
+    )
+
+    assert [r["file_path"] for r in rows] == ["pkg/a.py", "pkg/b.py"]
+    assert rows[0] == {
+        "sha": "a" * 40,
+        "file_path": "pkg/a.py",
+        "lines_added": 10,
+        "lines_deleted": 2,
+    }
+    # 0/0-style rows are real: a binary file is touched, size unknown.
+    assert rows[1]["lines_added"] == 0
+
+
+def test_build_commit_file_rows_folds_a_repeated_path():
+    """numstat can emit a path twice; (sha, path) is the natural key."""
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/a.py", 3, 3)]}]
+    )
+
+    assert len(rows) == 1
+
+
+def test_build_commit_file_rows_skips_records_without_a_sha():
+    rows = build_commit_file_rows([{"changes": [("x.py", 1, 1)]}, {"sha": "", "changes": []}])
+
+    assert rows == []
+
+
+def test_build_commit_file_rows_covers_exactly_the_commits_it_was_given():
+    commits = [
+        {"sha": "a" * 40, "changes": [("a.py", 1, 1)]},
+        {"sha": "b" * 40, "changes": [("b.py", 2, 0)]},
+    ]
+
+    file_rows = build_commit_file_rows(commits)
+    commit_rows = build_commit_rows(commits)
+
+    assert {r["sha"] for r in file_rows} == {r["sha"] for r in commit_rows}

@@ -45,6 +45,15 @@ def test_every_source_has_a_confidence_rank() -> None:
         assert source in provenance.SOURCE_RANK, source
 
 
+def test_accepter_kinds_match_the_lifecycle_registry() -> None:
+    assert _FIXTURE["accepter_kinds"] == list(lifecycle.ACCEPTER_KINDS)
+
+
+def test_unrecorded_accepter_kind_is_not_one_of_them() -> None:
+    """The pre-provenance value is not a kind, so no surface may label it one."""
+    assert lifecycle.UNRECORDED_ACCEPTER_KIND not in _FIXTURE["accepter_kinds"]
+
+
 def test_statuses_match_the_one_ladder() -> None:
     assert _FIXTURE["statuses"] == list(lifecycle.DECISION_STATUS_ORDER)
 

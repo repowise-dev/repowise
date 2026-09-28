@@ -418,6 +418,87 @@ class TestWorkspaceResolution:
         assert result == "packages/core/index.cts"
 
 
+class TestNestedSubPackage:
+    """A workspace package with a sub-package nested inside its own tree,
+    not declared as a separate workspace member (solid's ``packages/solid/web``,
+    ``store``, etc.). Its own ``package.json`` and entry point win over the
+    outer package's ``src``/``lib``/``dist`` guesses (issue #2301)."""
+
+    def test_nested_subpackage_with_its_own_src_entry(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(json.dumps({"name": "solid-js/web"}))
+        ctx = _ctx(
+            tmp_path,
+            [
+                "packages/solid/src/index.ts",
+                "packages/solid/web/src/index.ts",
+            ],
+        )
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/web/src/index.ts"
+
+    def test_nested_subpackage_main_field_wins_over_index_probe(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "store"
+        sub.mkdir()
+        (sub / "package.json").write_text(
+            json.dumps({"name": "solid-js/store", "main": "dist/store.js"})
+        )
+        ctx = _ctx(tmp_path, ["packages/solid/store/dist/store.js"])
+        result = resolve_via_workspaces("solid-js/store", ctx)
+        assert result == "packages/solid/store/dist/store.js"
+
+    def test_nested_subpackage_exports_field_is_honoured(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(
+            json.dumps({"name": "solid-js/web", "exports": {".": "./src/entry.ts"}})
+        )
+        ctx = _ctx(tmp_path, ["packages/solid/web/src/entry.ts"])
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/web/src/entry.ts"
+
+    def test_a_subpath_that_already_resolves_is_not_retargeted(self, tmp_path: Path) -> None:
+        # A nested package.json under `web` must never override a subpath
+        # that the existing probes already resolve under the outer package.
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(json.dumps({"name": "solid-js/web"}))
+        ctx = _ctx(
+            tmp_path,
+            [
+                "packages/solid/src/web.ts",
+                "packages/solid/web/src/index.ts",
+            ],
+        )
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/src/web.ts"
+
+    def test_no_manifest_at_the_subpath_still_resolves_to_none(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        ctx = _ctx(tmp_path, ["packages/solid/src/index.ts"])
+        assert resolve_via_workspaces("solid-js/nonexistent", ctx) is None
+
+
 def _setup_workspace(
     tmp_path: Path,
     pkg_name: str,

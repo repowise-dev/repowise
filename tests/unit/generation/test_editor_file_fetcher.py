@@ -138,7 +138,9 @@ async def _add_git_meta(
     return gm
 
 
-async def _add_decision(session, repo_id, title, status="active", rationale="Some reason"):
+async def _add_decision(
+    session, repo_id, title, status="active", rationale="Some reason", **accept
+):
     """Add a record, accepting it when the caller wants one that governs.
 
     The generated block serves accepted decisions, so a fixture that only sets
@@ -163,7 +165,8 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
     if status == "active":
         from repowise.core.persistence.crud.authority import accept_decision
 
-        await accept_decision(session, dr, accepter="tester")
+        accept.setdefault("accepter", "tester")
+        await accept_decision(session, dr, **accept)
     return dr
 
 
@@ -390,6 +393,57 @@ async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [d.title for d in data.decisions] == []
+
+
+async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path):
+    """The ordinary case, and the one that must stay free.
+
+    These files are read into every session, so the signature costs tokens
+    only where it changes what the line means.
+    """
+    await _add_decision(session, repo.id, "Use JWT", accepter="Raghav", kind="person")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.signed_by for d in data.decisions] == [""]
+
+
+async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_path):
+    """Otherwise an agent reads its own acceptance back as a standing rule."""
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    mark = data.decisions[0].signed_by
+    assert "claude_code" in mark and "not a person" in mark
+
+
+async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path):
+    """The template carries it, not only the summary."""
+    from repowise.core.generation.editor_files import AgentsMdGenerator, ClaudeMdGenerator
+
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    for gen in (ClaudeMdGenerator(), AgentsMdGenerator()):
+        assert "not a person" in gen.render_full(tmp_path, data), type(gen).__name__
 
 
 async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, tmp_path):

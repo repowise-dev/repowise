@@ -74,17 +74,18 @@ per-line blame index built for every file.
 
 ## The markers, and what each is allowed to do
 
-Repowise ships **49 registered detectors (52 marker ids)**, but only **26 are
+Repowise ships **51 registered detectors (54 marker ids)**, but only **25 are
 permitted to move the headline number**. That restriction is deliberate: the
 defect score carries published accuracy claims, so only markers that earned
 their weight against a bug corpus may affect it.
 
 | Tier | Markers | What it may do |
 |---|---:|---|
-| **Defect-scoring** | **26** | Calibrated weights; moves the 1-10 score |
+| **Defect-scoring** | **25** | Calibrated weights; moves the 1-10 score |
 | **Performance** | **20** | Own pillar, own cap; never touches the defect score |
 | **Maintainability-only (SQL)** | **3** | Maintainability only |
 | **Governance** | **3** | Surfaces as a finding; never deducts |
+| **Advisory** | **3** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
 
 Nothing is inert, but "doesn't move the number" means three different things:
 
@@ -133,7 +134,7 @@ capped per category, so no single category can dominate:
 
 | Category | Cap |
 |---|---|
-| Organizational | −3.5 |
+| Organizational | −3.5, less on cleaner code (below) |
 | Structural complexity | −2.5 |
 | Test coverage | −2.0 |
 | Test coverage gradient | −2.0 |
@@ -155,6 +156,11 @@ history deduction climbs, and the headline barely moves. Each file therefore
 stores its deduction as two numbers, `structure_deduction` and
 `history_deduction`, which sum to the total. Nothing is hidden: the split is on
 every metric row, and the Counts control below reads it back.
+
+Git history on its own measures activity, so its cap follows the code: history
+can cost a file at most 1.0, plus one point for each point the other categories
+deduct, up to 3.5. A file with no code-shape finding never reads below 9.0 from
+history alone.
 
 Three repo-level KPIs: **Hotspot Health** (NLOC-weighted average over files the
 git layer classifies as hotspots), **Average Health** (NLOC-weighted over all
@@ -440,6 +446,12 @@ editor, or a list already filtered to one marker -- gets it without asking.
 |---|---|---|
 | `assertion_free_test` | Python · TypeScript / JavaScript | A test case that runs the code under test and checks nothing |
 | `mock_saturated_test` | Python · TypeScript / JavaScript | Mock-setup statements per assertion in a test function |
+| `hidden_coupling` | every language with git history | Files that change together with no import between them |
+
+`hidden_coupling` is here for the other reason: it was measured and carried no
+signal. Alone it ranks defect-prone files near chance (AUC about 0.55), and a
+pre-registered test on 12 repositories no earlier health study used found the
+score without it non-inferior at predicting defects, so it stopped deducting.
 
 A marker earns weight by clearing the house precision bar (roughly 70%
 hand-labelled) on a real corpus. `mock_saturated_test` has not, and precision is
@@ -532,6 +544,27 @@ round-trip, it does not claim the work is avoidable. Database and network
 findings are usually batchable; filesystem ones often are not, since deleting N
 files genuinely needs N unlinks. The finding still tells you where the time
 goes.
+
+A few more things keep the plans honest:
+
+- **Proven means the transformation, not the runtime.** Parallelizing awaits
+  against a database or network client is advisory with a
+  `bounded_concurrency` prerequisite, however clean the dataflow. A loop that
+  already walks its input in chunks (`range(0, n, CHUNK)`, `batched(...)`) is
+  reported as `loop_already_chunked` rather than told to batch.
+- **One line, one problem.** When `io_in_loop` and `serial_await_in_loop` fire
+  on the same call, each names the other in `siblings`, and batching is queued
+  right before the parallelize variant.
+- **Plans carry steps and validation.** Each performance plan lists its edits
+  (`mechanical` only when the strategy is proven) and the tests that validate
+  it: coverage, then call graph, then import graph, then a test named for the
+  file (`via: "name-match"`).
+
+**Over-fetch.** `unbounded_read_reduced_in_memory` (Python, advisory) flags a
+query with no limit or aggregate whose rows are then deduplicated per key in
+code, in the same function or one same-file helper. It is the one shape here
+that is not a loop around I/O: the query runs once and returns too much, and
+the fix is to select one row per key in the database.
 
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
@@ -645,5 +678,7 @@ unchanged files stay put; no nightly full re-index.
   the full marker roster, and the complete weight tables.
 - [`docs/BENCHMARKS.md`](../BENCHMARKS.md): every published number with its
   sample size and test.
+- [DOC_DRIFT.md](DOC_DRIFT.md): the other thing this layer checks, your own
+  documentation against the tree.
 - [REFACTORING.md](REFACTORING.md) · [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) ·
   [BUG_HISTORY.md](BUG_HISTORY.md)

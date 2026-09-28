@@ -158,6 +158,35 @@ _JS_TS = AssertDialect(
 )
 
 
+# DUnit's ``TTestCase`` oracle family (``TestFramework.pas``), called bare
+# (inherited protected methods, no receiver) inside a test method. DUnitX's
+# ``Assert.*`` needs no row: the narrow tier already takes any callee chain
+# carrying an ``assert``-prefixed identifier, and ``Assert`` (the receiver) is
+# one -- same reason the Go row above only needs ``require``.
+_PASCAL = AssertDialect(
+    assert_names=frozenset(
+        {
+            "check",
+            "checkequals",
+            "checknotequals",
+            "checksame",
+            "checknotsame",
+            "checkis",
+            "checknull",
+            "checknotnull",
+            "checktrue",
+            "checkfalse",
+            "checkequalsmem",
+            "checkexception",
+            "fail",
+            "failequals",
+            "failnotequals",
+            "failnotsame",
+        }
+    ),
+)
+
+
 # Keyed by ``LanguageTag`` (``ingestion/models.py``), as ``LANGUAGE_MAPS`` and
 # ``MOCK_DIALECTS`` are.
 ASSERT_DIALECTS: dict[str, AssertDialect] = {
@@ -165,6 +194,7 @@ ASSERT_DIALECTS: dict[str, AssertDialect] = {
     "java": _JAVA,
     "javascript": _JS_TS,
     "jsx": _JS_TS,
+    "pascal": _PASCAL,
     "python": _PY,
     "typescript": _JS_TS,
     "tsx": _JS_TS,

@@ -13,36 +13,36 @@ Popular models:
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from openai import RateLimitError as _OpenAIRateLimitError
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
     is_temperature_rejection,
-    normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
     remember_temperature_rejection,
     temperature_kwargs,
+)
+from repowise.core.providers.llm.openai_compat import (
+    completion_to_response,
+    fetch_model_list,
+    stream_openai_chat,
+    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -129,20 +129,8 @@ def _openrouter_model_options(
             *_openrouter_supported_reasoning_modes(fallback_model, base_url=base_url),
         ),
     )
-    try:
-        import httpx
-
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=5.0,
-        )
-        response.raise_for_status()
-        data = response.json().get("data", [])
-    except Exception:
-        return (fallback,)
-
-    if not isinstance(data, list):
+    data = fetch_model_list(api_key, base_url)
+    if data is None:
         return (fallback,)
 
     base_key = base_url.rstrip("/")
@@ -303,16 +291,9 @@ class OpenRouterProvider(BaseProvider):
         # page shows $0. The tracker is attached externally by the orchestrator,
         # so it may be absent (guard with getattr); record() swallows its own
         # persistence errors, so generation is unaffected.
-        tracker = getattr(self, "_cost_tracker", None)
-        if tracker is not None:
-            with contextlib.suppress(Exception):
-                await tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=tracker.operation,
-                    file_path=None,
-                )
+        await record_generation_cost(
+            getattr(self, "_cost_tracker", None), model=self._model, result=result
+        )
         return result
 
     @retry(
@@ -340,52 +321,10 @@ class OpenRouterProvider(BaseProvider):
             **temperature_kwargs(self._model, temperature),
         }
         kwargs.update(_openrouter_reasoning_kwargs(reasoning))
-        try:
-            try:
-                response = await self._client.chat.completions.create(**kwargs)
-            except _OpenAIAPIStatusError as exc:
-                # OpenRouter fronts every vendor, so the set of models that
-                # reject `temperature` is not knowable ahead of time. Drop the
-                # parameter and retry once; the model is remembered so the rest
-                # of the run skips it.
-                if "temperature" not in kwargs or not is_temperature_rejection(exc):
-                    raise
-                remember_temperature_rejection(self._model)
-                log.debug("openrouter.temperature.unsupported", model=self._model)
-                kwargs.pop("temperature")
-                response = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openrouter",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        with translate_openai_errors("openrouter"):
+            response = await self._create_completion(kwargs)
 
-        usage = response.usage
-        choice = response.choices[0]
-        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
-        result = GeneratedResponse(
-            content=choice.message.content or "",
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=0,
-            stop_reason=stop_reason,
-            provider_stop_reason=provider_stop_reason,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-                "total_tokens": usage.total_tokens if usage else 0,
-            },
-        )
+        result = completion_to_response(response)
         log.debug(
             "openrouter.generate.done",
             input_tokens=result.input_tokens,
@@ -394,6 +333,23 @@ class OpenRouterProvider(BaseProvider):
         )
 
         return result
+
+    async def _create_completion(self, kwargs: dict[str, Any]) -> Any:
+        """Create a completion, retrying once without a rejected ``temperature``.
+
+        OpenRouter fronts every vendor, so the set of models that reject
+        ``temperature`` is not knowable ahead of time. Drop the parameter and
+        retry once; the model is remembered so the rest of the run skips it.
+        """
+        try:
+            return await self._client.chat.completions.create(**kwargs)
+        except _OpenAIAPIStatusError as exc:
+            if "temperature" not in kwargs or not is_temperature_rejection(exc):
+                raise
+            remember_temperature_rejection(self._model)
+            log.debug("openrouter.temperature.unsupported", model=self._model)
+            kwargs.pop("temperature")
+            return await self._client.chat.completions.create(**kwargs)
 
     # --- ChatProvider protocol implementation ---
 
@@ -407,8 +363,6 @@ class OpenRouterProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -420,97 +374,5 @@ class OpenRouterProvider(BaseProvider):
         if tools:
             kwargs["tools"] = tools
 
-        try:
-            stream = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openrouter",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
-
-        # Track in-progress tool calls (OpenAI-compatible streaming)
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
-        try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    if chunk.usage:
-                        yield ChatStreamEvent(
-                            type="usage",
-                            input_tokens=chunk.usage.prompt_tokens or 0,
-                            output_tokens=chunk.usage.completion_tokens or 0,
-                        )
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                # Text content
-                if delta and delta.content:
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                # Tool call fragments
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                acc["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                acc["arguments"] += tc_delta.function.arguments
-
-                if finish:
-                    # Emit accumulated tool calls
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(
-                                id=acc["id"],
-                                name=acc["name"],
-                                arguments=args,
-                            ),
-                        )
-                    tool_calls_acc.clear()
-
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openrouter",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        async for event in stream_openai_chat(self._client, "openrouter", kwargs):
+            yield event

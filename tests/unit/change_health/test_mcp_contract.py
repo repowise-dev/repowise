@@ -60,7 +60,7 @@ async def test_the_default_response_stays_small_and_omits_score_mechanics(tool, 
     assert len(json.dumps(result, default=str)) < 8000
     for field in ("drivers", "risk_authority", "features", "score_measures", "score_unit"):
         assert field not in result
-    assert result["change_shape"]["diagnostics_via"] == ("get_change_risk(include=['diagnostics'])")
+    assert "get_change_risk(include=['diagnostics'])" in result["diff_shape"]
 
 
 async def test_diagnostics_are_a_projection_not_a_removal(tool, make_repo):
@@ -68,7 +68,7 @@ async def test_diagnostics_are_a_projection_not_a_removal(tool, make_repo):
 
     expanded = await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"])
 
-    for field in ("drivers", "risk_authority", "features", "score_measures"):
+    for field in ("drivers", "risk_authority", "features", "score_measures", "score"):
         assert field in expanded
 
 
@@ -78,8 +78,19 @@ async def test_legacy_ranked_fields_stay_at_the_top_level(tool, make_repo):
 
     result = await module.get_change_risk("HEAD", baseline=0)
 
-    for field in ("ref", "score", "risk_percentile", "review_priority", "classification"):
+    for field in ("ref", "risk_percentile", "review_priority", "classification"):
         assert field in result
+
+
+async def test_the_raw_score_is_not_on_the_wire_by_default(tool, make_repo):
+    """It ranks 0.99 against lines added, so the percentile already says it."""
+    module = tool(seeded(make_repo))
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert "score" not in result
+    assert "fallback_band" not in result
+    assert "change_shape" not in result
 
 
 async def test_the_top_findings_cap_is_recoverable(tool, make_repo):

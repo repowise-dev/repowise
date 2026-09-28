@@ -704,7 +704,9 @@ async def _resolve_health(
         {
             "biomarker_type": f.biomarker_type,
             "severity": f.severity,
-            "function_name": f.function_name,
+            # Absent rather than null on a file-level biomarker, same as the
+            # identical field on get_risk's cards.
+            **({"function_name": f.function_name} if f.function_name else {}),
             "impact": round(f.health_impact, 2),
             "suggestion": suggestion_for(f.biomarker_type),
         }

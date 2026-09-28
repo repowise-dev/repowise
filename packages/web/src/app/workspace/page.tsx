@@ -20,7 +20,7 @@ import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { SyncButton } from "./sync-buttons";
+import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
 
 export const metadata: Metadata = { title: "Workspace" };
 
@@ -176,7 +176,9 @@ export default async function WorkspaceDashboardPage() {
           repos={repos.slice().sort(byAttention).map(toRow)}
           LinkComponent={Link}
           actionsFor={(repo) =>
-            repo.status === "missing_dir" ? null : (
+            repo.status === "missing_dir" ? (
+              <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
+            ) : (
               <SyncButton
                 alias={repo.id}
                 label={repo.status === "indexed" ? "Sync" : "Index now"}

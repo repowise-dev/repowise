@@ -17,13 +17,19 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.grading import TARGET_SCORE
-from repowise.core.analysis.test_reachability import ReachedBy, tests_reaching_by_tier
+from repowise.core.analysis.test_reachability import (
+    ReachedBy,
+    load_test_files,
+    rank_tests,
+    tests_matching_by_name,
+    tests_reaching_by_tier,
+)
 
 from .models import RefactoringSuggestion
 
 RecommendationView = Literal["canonical", "file_spread"]
 ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
-ValidationVia = Literal["coverage", "call-graph", "import-graph", "mixed"]
+ValidationVia = Literal["coverage", "call-graph", "import-graph", "name-match", "mixed"]
 
 DEFAULT_TEST_LIMIT = 12
 # Public because the opportunity rank charges the same work and the same
@@ -375,7 +381,7 @@ def _validation_target(
         identities_complete = (
             reached is None or reached.all_tests is not None or total == len(labels)
         )
-    ordered = sorted(labels)
+    ordered = rank_tests(file_path, labels)
     return (
         ValidationTarget(
             file_path=file_path,
@@ -400,13 +406,13 @@ def build_validation_plan(
     """Resolve target evidence in strict measured/call/import precedence."""
     cap = max(0, test_limit)
     target_rows: list[ValidationTarget] = []
-    union: set[str] = set()
+    ranked: dict[str, None] = {}
     identities_complete = True
     for file_path, lines in sorted(_line_ranges(suggestion).items()):
         target, labels, target_complete = _validation_target(
             file_path, lines, measured, inferred, cap
         )
-        union.update(labels)
+        ranked.update(dict.fromkeys(rank_tests(file_path, labels)))
         identities_complete = identities_complete and target_complete
         target_rows.append(target)
 
@@ -419,7 +425,7 @@ def build_validation_plan(
     aggregate_via: ValidationVia | None = (
         None if not vias else next(iter(vias)) if len(vias) == 1 else "mixed"
     )
-    ordered_tests = sorted(union)
+    ordered_tests = list(ranked)
     aggregate_total = (
         len(ordered_tests)
         if identities_complete
@@ -503,12 +509,13 @@ def _priority_components(
     cost = EFFORT_COST.get(suggestion.effort_bucket, 3.0)
     provenance = str((suggestion.evidence or {}).get("provenance") or "")
     weak_graph = 1.0 if provenance in _WEAK_PROVENANCE else 0.0
-    validation_risk = {
-        "measured": 0.0,
-        "mixed": 0.5,
-        "inferred": 0.75,
-        "unknown": 1.5,
-    }[validation.basis]
+    # A test named for the file, with no edge proving it runs it, is weaker
+    # evidence than a graph walk; price it between inferred and unknown.
+    validation_risk = (
+        1.0
+        if validation.via == "name-match"
+        else {"measured": 0.0, "mixed": 0.5, "inferred": 0.75, "unknown": 1.5}[validation.basis]
+    )
     risk = surface_confidence_risk(surface, suggestion.confidence) + weak_graph + validation_risk
     # Benefit multiplies rather than offsets: leverage (the host file's
     # deficit and dependents) scales a real gain, and scales nothing when
@@ -652,6 +659,11 @@ async def hydrate_recommendations(
         if unanswered
         else {}
     )
+    unreached = sorted(unanswered - inferred.keys())
+    if unreached:
+        inferred.update(
+            tests_matching_by_name(unreached, await load_test_files(session, repository_id))
+        )
     validations = {
         index: build_validation_plan(suggestion, measured, inferred, test_limit=test_limit)
         for index, suggestion in enumerate(suggestions)

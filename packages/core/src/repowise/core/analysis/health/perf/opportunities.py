@@ -53,11 +53,13 @@ from .opportunity_rank import (
     dominant_marker,
     exposure,
     leverage,
+    loop_magnitude,
     rank_factors,
     rank_sort_key,
     weakest_provenance,
     why_ranked,
 )
+from .siblings import link_siblings
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,8 @@ class PerformanceOpportunity:
     rank_factors: dict[str, int]
     why_ranked: tuple[dict[str, Any], ...]
     fix: PerformanceFix | None
+    # Other causes observed on the same lines; see :mod:`.siblings`.
+    siblings: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +129,7 @@ class PerformanceOpportunity:
             "rank_factors": dict(self.rank_factors),
             "why_ranked": [dict(entry) for entry in self.why_ranked],
             "fix": self.fix.as_dict() if self.fix else None,
+            "siblings": [dict(entry) for entry in self.siblings],
         }
 
 
@@ -160,6 +165,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         cross_function=key_is_cross_function(key),
     )
     acted = actionability(assessment, evidence_confidence)
+    magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
         marker=marker,
         boundary=boundary,
@@ -167,6 +173,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         reachable=reachable,
         site_count=len(sites),
         provenance=provenance,
+        magnitude=magnitude,
     )
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
@@ -195,6 +202,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             "amplification": amplification(marker),
             "leverage": leverage(len(sites)),
             "change_risk": change_risk(len(files)),
+            "loop_magnitude": magnitude,
         },
         actionability_state=acted.state,
         actionability_reason=acted.reason,
@@ -210,6 +218,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
                 "entry_reachability": reachable,
                 "affected_call_sites": len(sites),
                 "provenance": provenance,
+                "loop_magnitude": magnitude,
             },
         ),
         fix=acted.fix,
@@ -219,13 +228,15 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
 def build_performance_opportunities(
     findings: list[Any], *, evidence_limit: int = 8
 ) -> list[PerformanceOpportunity]:
-    """Group and rank performance rows in one deterministic pass."""
+    """Group, link, and rank performance rows in one deterministic pass."""
     cap = max(0, evidence_limit)
-    opportunities = [
-        _assemble(key, members, cap) for key, members in group_observations(findings).items()
-    ]
-    opportunities.sort(key=rank_sort_key)
-    return opportunities
+    opportunities: list[PerformanceOpportunity] = []
+    sites: dict[str, set[Any]] = {}
+    for key, members in group_observations(findings).items():
+        opportunity = _assemble(key, members, cap)
+        opportunities.append(opportunity)
+        sites[opportunity.opportunity_id] = {facts.site for facts in members}
+    return link_siblings(opportunities, sites, rank_sort_key)
 
 
 __all__ = [

@@ -3,19 +3,21 @@ import { AskAboutThis } from "../chat/ask-about-this";
 import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
+import { CommitFilesTable } from "./commit-files-table";
+import { CommitHealthTable } from "./commit-health-table";
 import { PageLede } from "../shared/page-lede";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
-import type { CommitDetail } from "@repowise-dev/types/git";
+import type { CommitDetail, CommitHealth } from "@repowise-dev/types/git";
+
+/** Above this many files, the list starts collapsed. */
+const LONG_FILE_LIST = 10;
 
 export interface CommitDetailCardProps {
   commit: CommitDetail;
-  /**
-   * Raw score at this repo's moderate/high boundary — `CommitStats.high_cut`.
-   * Optional: without it the card states the score on its own rather than
-   * inventing a comparison.
-   */
-  reviewCut?: number | null | undefined;
+  /** Rank of this change's fix density against recent commits, when a live
+   *  scorer supplied one. Drives only the reconciliation sentence. */
+  fixPercentile?: number | null | undefined;
   className?: string;
 }
 
@@ -26,8 +28,14 @@ export interface CommitDetailCardProps {
  * The supporting raw score remains visible with its per-commit unit and
  * diff-shape interpretation, never as a probability.
  */
-export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailCardProps) {
+export function CommitDetailCard({
+  commit,
+  fixPercentile,
+  className,
+}: CommitDetailCardProps) {
   const c = commit;
+  const files = c.files ?? [];
+  const health = c.health ?? null;
 
   return (
     <div className={className}>
@@ -89,31 +97,117 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
           unit="percentile in this repo"
           badge={<PriorityBadge priority={c.review_priority} />}
         >
-          <p>{riskSentence(c, reviewCut)}</p>
-          {c.change_risk_score != null && (
-            <p>
-              Supporting diff-size score: {c.change_risk_score.toFixed(1)} out of 10,
-              calibrated per commit and not a probability.
-            </p>
+          <p>{riskSentence(c)}</p>
+          {reconcile(c, fixPercentile ?? null) && (
+            <p>{reconcile(c, fixPercentile ?? null)}</p>
           )}
         </PageLede>
       </div>
 
-      {/* No stat ribbon above this, deliberately. The model's feature set is
-          lines added, lines deleted, files, directories, subsystems, scatter
-          and author experience — which is every figure a ribbon here could
-          carry. A row of them above this table restates the table, and does it
-          without the one thing the table adds: what each measurement did to
-          the score. `CommitsLede` skipped its ribbon for the same reason. */}
-      <OverviewSection
-        className="mt-7"
-        title="What changed, and what it cost"
-        description="The measurements that explain the score, and the exact signed points each one moved it by. Red raised it, green lowered it, both against the model's baseline commit. File, directory and subsystem counts are left out: they enter the score, but their fitted signs are collinearity with diff size rather than a finding."
-      >
-        <RiskDriverBreakdown drivers={c.drivers} />
-      </OverviewSection>
+      {health && (
+        <OverviewSection
+          className="mt-7"
+          title="What this commit did to code health"
+          description={healthSentence(health)}
+          hint={healthHint(health)}
+          collapsible
+        >
+          <CommitHealthTable findings={health.findings} />
+        </OverviewSection>
+      )}
+
+      {files.length > 0 && (
+        <OverviewSection
+          className="mt-7"
+          title="Where this change lands"
+          description="The files this commit touched, and how much bug-fix history each one carries. Unlike the percentile above, this does not grow with the size of the diff."
+          hint={`${files.length} file${files.length === 1 ? "" : "s"}`}
+          collapsible
+          // A long file list is the thing that buries everything below it, and
+          // it is the one block a reader can already get from the host.
+          defaultOpen={files.length <= LONG_FILE_LIST}
+        >
+          <CommitFilesTable files={files} />
+        </OverviewSection>
+      )}
+
+      {/* Collapsed, deliberately. The drivers explain a diff-size statistic
+          that ranks 0.99 against lines added, so they are transparency about
+          the model rather than the finding a reviewer opened this for. */}
+      <details className="group mt-7">
+        <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+          How the diff-shape rank was computed
+        </summary>
+        <p className="mt-2 max-w-[62ch] text-xs text-[var(--color-text-tertiary)]">
+          The measurements behind the rank, and the signed points each moved it
+          by against the model&apos;s baseline commit. File, directory and
+          subsystem counts are left out: they enter the score, but their fitted
+          signs are collinearity with diff size rather than a finding.
+        </p>
+        <RiskDriverBreakdown className="mt-3" drivers={c.drivers} />
+      </details>
     </div>
   );
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/** The counts, phrased so "2 new, 1 made worse" only appears when it adds
+ *  something the total does not already say. */
+function madePhrase(h: CommitHealth): string | null {
+  const made = h.introduced_count + h.worsened_count;
+  if (made === 0) return null;
+  const split =
+    h.introduced_count > 0 && h.worsened_count > 0
+      ? ` (${h.introduced_count} new, ${h.worsened_count} made worse)`
+      : "";
+  return `Introduced or worsened ${plural(made, "finding")}${split}.`;
+}
+
+/** What a collapsed health section still says: the count that matters most. */
+function healthHint(h: CommitHealth): string {
+  const made = h.introduced_count + h.worsened_count;
+  if (made > 0) return `${made} introduced or worsened`;
+  return h.resolved_count > 0 ? `${h.resolved_count} resolved` : "clean";
+}
+
+/**
+ * Summarises the comparison, including what it could not see.
+ *
+ * Counts before the list: the list is capped and the counts are not.
+ */
+function healthSentence(h: CommitHealth): string {
+  const made = h.introduced_count + h.worsened_count;
+  const parts = [
+    madePhrase(h),
+    h.resolved_count > 0 ? `Resolved ${plural(h.resolved_count, "existing finding")}.` : null,
+    h.findings.length < made ? `Showing the ${h.findings.length} most severe.` : null,
+    h.files_skipped > 0
+      ? `${h.files_skipped} of ${h.files_analyzed + h.files_skipped} changed files could not be analysed.`
+      : null,
+  ].filter((p): p is string => p !== null);
+
+  // Said out loud: silence would read as "not analysed".
+  if (parts.length === 0) return "Compared clean: nothing introduced, worsened or resolved.";
+  return parts.join(" ");
+}
+
+/**
+ * Says so when the two rankings disagree.
+ *
+ * Diff shape and fix history answer different questions and routinely part
+ * company; the sheet used to show one of them and leave the reader to assume
+ * it was the whole answer.
+ */
+function reconcile(c: CommitDetail, fixPercentile: number | null): string | null {
+  if (fixPercentile == null) return null;
+  const gap = fixPercentile - c.risk_percentile;
+  if (Math.abs(gap) < 25) return null;
+  return gap > 0
+    ? `Ordinary in size, but it lands in files with a heavy fix record — ${Math.round(fixPercentile)}th percentile for prior fixes. That is the signal worth reading here.`
+    : `Large for this repo, but it lands in files that have rarely broken — ${Math.round(fixPercentile)}th percentile for prior fixes.`;
 }
 
 /**
@@ -123,7 +217,7 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
  * the exact percentile; this sentence explains its tercile without inventing a
  * defect probability from the supporting model score.
  */
-function riskSentence(c: CommitDetail, reviewCut: number | null | undefined): string {
+function riskSentence(c: CommitDetail): string {
   const tercile: Record<string, string> = {
     high: "sits in the top third of this repo's own diff-shape distribution, the review-priority band worth reviewing",
     moderate:
@@ -132,28 +226,14 @@ function riskSentence(c: CommitDetail, reviewCut: number | null | undefined): st
   };
   let out = `This commit ${tercile[c.review_priority] ?? tercile.moderate}`;
 
-  // `high_cut` is the moderate/high boundary and nothing else, so it only
-  // describes where *this* commit's band begins when the commit is in the top
-  // one. Appending it to a moderate commit would name the middle third's floor
-  // as a number that is actually its ceiling.
-  if (reviewCut != null && c.review_priority === "high") {
-    out += `, which here starts at ${reviewCut.toFixed(1)} out of 10`;
-  }
   out += ".";
 
-  if (c.change_risk_score != null) {
-    // `drivers` arrive strongest-first, and only score-raising ones explain
-    // why the score landed where it did.
-    const raising = c.drivers.filter((d) => d.value !== null && d.contribution > 0);
-    if (raising.length === 0) {
-      out += " The raw score stays low across every driver.";
-    } else {
-      // The same wording as the table below, not the server's baseline-relative
-      // labels. Two vocabularies for one set of drivers, a paragraph apart,
-      // reads as two different lists.
-      const reasons = raising.slice(0, 2).map(describeDriver).join(" and ");
-      out += ` What pushed the raw score up was mainly ${reasons}. That score is measured against the model's baseline commit rather than against this repo, so read it as the shape of the change rather than a verdict on it.`;
-    }
+  // `drivers` arrive strongest-first, and only rank-raising ones explain where
+  // the change landed. The same wording as the collapsed table below: two
+  // vocabularies for one set of drivers reads as two different lists.
+  const raising = c.drivers.filter((d) => d.value !== null && d.contribution > 0);
+  if (raising.length > 0) {
+    out += ` Mostly ${raising.slice(0, 2).map(describeDriver).join(" and ")}.`;
   }
 
   if (!c.agent_name && isNewContributor(c.author_commit_count)) {

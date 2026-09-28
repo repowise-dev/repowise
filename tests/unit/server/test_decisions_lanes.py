@@ -227,6 +227,7 @@ async def test_the_governing_lane_pages_over_its_own_rows(
                 action="superseded",
                 currency="superseded",
                 accepter="tester",
+                kind="person",
                 evidence=["seed"],
             )
             await session.flush()

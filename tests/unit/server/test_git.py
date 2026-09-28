@@ -262,6 +262,84 @@ async def test_get_commits_sorted_by_risk(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_high_band_filters_the_repository_not_the_page(
+    client: AsyncClient, app
+) -> None:
+    """A risk-sorted page is entirely top-tercile, so a page-scoped filter is a no-op."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "high"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["total"] == 1
+    assert [c["short_sha"] for c in payload["items"]] == ["bbbbbbbb"]
+    assert all(c["review_priority"] == "high" for c in payload["items"])
+
+
+@pytest.mark.asyncio
+async def test_the_fixes_filter_counts_the_whole_repository(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "ffffffff44",
+                    "author_name": "Ann",
+                    "author_email": "ann@example.com",
+                    "committed_at": datetime.fromtimestamp(4000, tz=UTC),
+                    "subject": "fix: a real one",
+                    "lines_added": 3,
+                    "lines_deleted": 1,
+                    "files_changed": 1,
+                    "dirs_changed": 1,
+                    "subsystems_changed": 1,
+                    "entropy": 0.1,
+                    "is_fix": True,
+                    "author_experience": 3,
+                    "change_risk_score": 1.0,
+                    "change_risk_level": "low",
+                }
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "fixes"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["total"] == 1
+    assert [c["short_sha"] for c in payload["items"]] == ["ffffffff"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_kind_is_rejected_rather_than_ignored(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "spicy"})
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_feed_defaults_to_recency(client: AsyncClient, app) -> None:
+    """Risk order shows only the top tercile, so it is no longer the default."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits")
+
+    assert [c["short_sha"] for c in resp.json()["items"]] == [
+        "aaaaaaaa",
+        "cccccccc",
+        "bbbbbbbb",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_commits_sorted_by_date(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
@@ -288,6 +366,128 @@ async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
     # fitted signs are collinearity with diff size, so they explain nothing.
     feats = {d["feature"] for d in data["drivers"]}
     assert feats == {"la", "ld", "entropy", "exp"}
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_names_the_files_without_a_checkout(
+    client: AsyncClient, app
+) -> None:
+    """Stored at index time, so hosted answers this too."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_git_metadata(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_commit_files_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "file_path": "src/main.py",
+                    "lines_added": 30,
+                    "lines_deleted": 4,
+                },
+                {
+                    "sha": "bbbbbbbb22",
+                    "file_path": "gone.py",
+                    "lines_added": 1,
+                    "lines_deleted": 1,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    # Biggest churn first.
+    assert [f["path"] for f in files] == ["src/main.py", "gone.py"]
+    assert files[0]["lines_added"] == 30
+    # Joined from the per-file git rollup.
+    assert files[0]["prior_fixes"] == 4
+    # An untracked path reports unknown, which is not zero.
+    assert files[1]["prior_fixes"] is None
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_is_empty_of_files_on_an_older_index(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    assert resp.json()["files"] == []
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_reports_what_the_commit_did_to_health(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "status": "partial",
+                    "introduced_count": 2,
+                    "worsened_count": 1,
+                    "resolved_count": 4,
+                    "files_analyzed": 3,
+                    "files_skipped": 1,
+                    "findings_stored": 1,
+                }
+            ],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "change_finding_id": "f0",
+                    "position": 0,
+                    "change_kind": "worsened",
+                    "dimension": "defect",
+                    "biomarker_type": "complex_method",
+                    "severity": "critical",
+                    "severity_before": "high",
+                    "file_path": "src/main.py",
+                    "symbol": "run",
+                    "line_start": 12,
+                    "line_end": 60,
+                    "attribution_basis": "added_lines",
+                    "reason": "run has cyclomatic complexity 26",
+                }
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    health = resp.json()["health"]
+    assert health["status"] == "partial"
+    assert (health["introduced_count"], health["worsened_count"]) == (2, 1)
+    assert health["resolved_count"] == 4
+    # One finding stored against three counted: the cap, reported honestly.
+    (finding,) = health["findings"]
+    assert finding["severity_before"] == "high"
+    assert finding["path"] == "src/main.py"
+    assert finding["attribution_basis"] == "added_lines"
+
+
+@pytest.mark.asyncio
+async def test_an_unscanned_commit_has_no_health_block(client: AsyncClient, app) -> None:
+    """Absent, not empty — "not analysed" is not "changed nothing"."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    assert resp.json()["health"] is None
 
 
 @pytest.mark.asyncio

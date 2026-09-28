@@ -153,6 +153,45 @@ class TestStructuralLabel:
         assert builder.label_co_change_structure(partners) == 1
         assert "dependency_kind" not in partners["a.py"][0]
 
+    def test_a_chain_through_a_barrel_explains_the_pair(self, builder: GraphBuilder) -> None:
+        """``a -> pkg/__init__.py -> b``: a imports the package whose barrel
+        re-exports b, which is a dependency whichever side is asked."""
+        builder._graph.add_node("pkg/__init__.py", language="python")
+        builder._graph.add_edge("a.py", "pkg/__init__.py", edge_type="imports")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        partners = {
+            "a.py": [{"file_path": "b.py", "frequency": 9}],
+            "b.py": [{"file_path": "a.py", "frequency": 9}],
+        }
+        assert builder.label_co_change_structure(partners) == 0
+        for record in (partners["a.py"][0], partners["b.py"][0]):
+            assert record["structural"] == "corroborated"
+            assert record["dependency_kind"] == "barrel"
+
+    def test_a_shared_neighbour_explains_nothing(self, builder: GraphBuilder) -> None:
+        """Two files one barrel re-exports, two consumers of one barrel, and a
+        chain through an ordinary module are not dependencies of each other."""
+        for path in ("pkg/__init__.py", "lib/__init__.py", "c.py", "d.py", "hub.py"):
+            builder._graph.add_node(path)
+        builder._graph.add_edge("pkg/__init__.py", "a.py", edge_type="imports")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        builder._graph.add_edge("c.py", "lib/__init__.py", edge_type="imports")
+        builder._graph.add_edge("d.py", "lib/__init__.py", edge_type="imports")
+        builder._graph.add_edge("c.py", "hub.py", edge_type="imports")
+        builder._graph.add_edge("hub.py", "a.py", edge_type="imports")
+        partners = {
+            "a.py": [{"file_path": "b.py", "frequency": 9}],
+            "c.py": [{"file_path": "d.py", "frequency": 9}, {"file_path": "a.py", "frequency": 9}],
+        }
+        assert builder.label_co_change_structure(partners) == 3
+
+    def test_a_co_change_edge_through_a_barrel_is_not_a_chain(self, builder: GraphBuilder) -> None:
+        builder._graph.add_node("pkg/__init__.py", language="python")
+        builder._graph.add_edge("a.py", "pkg/__init__.py", edge_type="co_changes")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        partners = {"a.py": [{"file_path": "b.py", "frequency": 9}]}
+        assert builder.label_co_change_structure(partners) == 1
+
 
 class TestLabelPersistence:
     """``label_co_change_structure`` writes through the JSON column.

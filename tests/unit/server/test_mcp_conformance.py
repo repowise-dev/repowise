@@ -225,3 +225,26 @@ def test_conformance_directive_ignores_an_unstamped_report(tmp_path: Path):
     finally:
         _state._registry = prev_registry
         _state._cross_repo_enricher = prev_enricher
+
+
+@pytest.mark.asyncio
+async def test_the_payload_builder_is_the_tool_answer_without_meta(workspace_state):
+    from repowise.server.mcp_server.tool_conformance import conformance_payload
+
+    report = _state._cross_repo_enricher.get_conformance()
+    for repo in (None, "frontend"):
+        tool = await get_conformance(repo=repo)
+        assert {k: v for k, v in tool.items() if k != "_meta"} == conformance_payload(report, repo)
+
+
+@pytest.mark.asyncio
+async def test_the_architecture_payload_is_the_tool_answer_without_meta(workspace_state):
+    from repowise.server.mcp_server.tool_architecture import architecture_payload, get_architecture
+
+    enricher = CrossRepoEnricher.from_data(system_graph={**_graph().to_dict(), "generated_at": "t"})
+    _state._cross_repo_enricher = enricher
+    tool = await get_architecture()
+    assert {k: v for k, v in tool.items() if k != "_meta"} == architecture_payload(
+        enricher.get_architecture_metrics()
+    )
+    assert tool["node_count"] == 2

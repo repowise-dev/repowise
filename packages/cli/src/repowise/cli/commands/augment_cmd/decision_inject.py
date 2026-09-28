@@ -507,7 +507,7 @@ def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
 def _is_repo_wide(decision: dict) -> bool:
     """Whether *decision* governs the repository rather than particular files.
 
-    Mirrors ``crud.authority._is_repo_wide``, which this path cannot import:
+    Mirrors ``decisions.lifecycle.is_repo_wide``:
     an agreement that names files has been given a real scope by something and
     the ordinary overlap rules apply to it, so the noun is necessary and not
     sufficient.

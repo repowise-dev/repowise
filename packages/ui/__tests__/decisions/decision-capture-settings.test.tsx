@@ -28,6 +28,7 @@ function settings(overrides: Partial<DecisionSettings> = {}): DecisionSettings {
     enabled: true,
     llm: true,
     preset: "default",
+    agent_acceptance: false,
     discovery: { max_sessions: 12, max_input_tokens: 30000 },
     sources: [source()],
     provider_available: true,

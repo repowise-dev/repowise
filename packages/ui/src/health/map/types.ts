@@ -5,6 +5,8 @@
  * a fill function should not be able to reach the packing algorithm.
  */
 
+import type { PerformanceActionabilityState } from "@repowise-dev/types/health";
+
 export interface CodeHealthMapFile {
   file_path: string;
   score: number;
@@ -41,7 +43,8 @@ export interface CodeHealthMapFile {
   security_findings?: number | null;
 }
 
-export type PerformanceActionability = "plan_ready" | "advisory" | "investigate";
+// The wire vocabulary itself, so a new state cannot drift past the map.
+export type PerformanceActionability = PerformanceActionabilityState;
 
 /**
  * Lens applied to the same field. Recolors every node without re-laying the

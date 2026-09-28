@@ -4,11 +4,9 @@ These tuples / frozensets shape what the analyzer treats as "always
 alive" (framework decorators, never-flag path globs) and where to skip
 entirely (test fixture directories, non-code languages).
 
-``never_flag_match`` lives here rather than on the analyzer because the
-pattern list it reads is here and because it is a pure function of a path:
-:func:`~.file_reachability.is_file_reachable` needs it, and a matcher that
-only the analyzer could reach was the reason the two callers of that
-predicate answered "is this file reachable?" differently.
+``never_flag_match`` lives here, beside its patterns, as a pure function of a
+path, so every caller of :func:`~.file_reachability.is_file_reachable` shares
+one matcher and one answer.
 """
 
 from __future__ import annotations
@@ -20,9 +18,7 @@ from functools import lru_cache
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
-# Non-code languages that should never be flagged as dead code.
-# Derived from the centralised LanguageRegistry — passthrough config/infra
-# languages plus "unknown".
+# Non-code languages (registry passthrough languages plus "unknown").
 _NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
 
 # Code languages whose files/symbols are entered through an external runtime
@@ -31,12 +27,12 @@ _DEAD_CODE_EXEMPT_LANGUAGES: frozenset[str] = (
     _NON_CODE_LANGUAGES | _LANG_REGISTRY.dead_code_exempt_languages()
 )
 
-# Patterns that should never be flagged as dead.
+# Patterns that should never be flagged as dead. ``fnmatch`` ``*`` spans ``/``,
+# so a leading ``*`` matches nested and repo-root paths alike.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
-    # Shell scripts are invoked by name from CI configs, Makefiles, and humans
-    # — static reachability is meaningless, so they are never flagged as dead.
-    # (Shell parses to a real AST now, so it left the passthrough-derived
-    # ``_NON_CODE_LANGUAGES`` exemption below; these globs restore it.)
+    # Shell scripts are invoked by name from CI, Makefiles and humans. Shell
+    # parses to an AST, so it is not in ``_NON_CODE_LANGUAGES``; these globs
+    # exempt it.
     "*.sh",
     "*.bash",
     "*.zsh",
@@ -44,11 +40,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*__main__.py",
     "*conftest.py",
     "*alembic/env.py",
-    # Alembic migration scripts live in <root>/versions/<rev>_<slug>.py and
-    # are loaded reflectively by Alembic at runtime from script_location in
-    # alembic.ini — they have no static importer by design. The legacy
-    # ``*migrations*`` glob only matches paths that literally contain the
-    # token ``migrations``; many Alembic setups use ``alembic/versions/``.
+    # Alembic loads version scripts reflectively; many setups use
+    # ``alembic/versions/``, which ``*migrations*`` does not match.
     "*/alembic/versions/*.py",
     "*manage.py",
     "*wsgi.py",
@@ -87,10 +80,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # qmlRegisterType), so a QML file never has a static importer.
     "*.qml",
     # ---- Objective-C conventions ------------------------------------
-    # The app delegate is named in Info.plist and instantiated by
-    # UIApplicationMain / NSApplicationMain, and a scene delegate by the
-    # scene manifest, so no file ever imports either by name. (main.m is
-    # already an entry point through the language spec.)
+    # App and scene delegates are named in Info.plist / the scene manifest
+    # and instantiated by the runtime, never imported.
     "*AppDelegate.m",
     "*AppDelegate.h",
     "*SceneDelegate.m",
@@ -134,25 +125,16 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # gRPC generated artifacts.
     "*.pb.cs",
     "*Grpc.cs",
-    # Minimal-API endpoint modules — ASP.NET Core convention. These
-    # static classes expose extension methods like ``MapCatalogApi``
-    # that are wired by ``app.MapCatalogApi()`` in ``Program.cs``. The
-    # static call doesn't currently land in the import graph, so without
-    # an explicit pass these read as orphaned every time.
+    # ASP.NET Core minimal-API modules, wired by ``app.MapXxxApi()`` in
+    # ``Program.cs``, a call the import graph does not see.
     "*/Apis/*.cs",
     "*/Endpoints/*.cs",
     "*/Routes/*.cs",
     # ---- Generic .NET / Win32 conventions ----------------------------
-    # Source-generator output directories. Many SDKs (CommunityToolkit
-    # MVVM, AOT, EF Core compiled-models, gRPC) emit generated files
-    # into a `Generated/` sibling next to the source. They get wired in
-    # at build time, never imported by name.
+    # Source-generator output directories, wired in at build time.
     "*/Generated/*.cs",
     "*/generated/*.cs",
-    # Win32 P/Invoke surfaces. NativeMethods / SafeNativeMethods are a
-    # decades-old .NET FX convention; they are reached only via
-    # `[DllImport]`-mediated calls, never via a `using` directive that
-    # names the type.
+    # Win32 P/Invoke surfaces, reached only via `[DllImport]` calls.
     "*NativeMethods.cs",
     "*SafeNativeMethods.cs",
     "*UnsafeNativeMethods.cs",
@@ -166,11 +148,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Styles/*.xaml",
     "*/Resources/*.xaml",
     # ---- Test infrastructure conventions -----------------------------
-    # Test classes are loaded by the test runner via reflection on
-    # ``[Test]`` / ``[TestMethod]`` / ``[Fact]`` attributes — they
-    # never appear in a `using` import that names the class. Match
-    # both the file location *and* the standard suffix patterns so we
-    # catch tests dropped at arbitrary paths.
+    # Test classes are loaded by the runner via attribute reflection. Both
+    # locations and suffixes are matched, to catch tests at arbitrary paths.
     "*Tests/*.cs",
     "*.Tests/*.cs",
     "*UnitTests/*.cs",
@@ -183,13 +162,12 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.UITests/*.cs",
     "*UITest/*.cs",
     "*UITestAutomation/*.cs",
-    # Singular forms used by PowerToys / Wox / etc.
+    # Singular forms.
     "*UnitTest/*.cs",
     "*.UnitTest/*.cs",
     "*.Test/*.cs",
     "*/Wox.Test/*.cs",
-    # MSTest convention of ``UnitTests-<Subject>`` / ``UITest-<Subject>``
-    # directories (PowerToys preview handler / per-module test projects).
+    # ``UnitTests-<Subject>`` / ``UITest-<Subject>`` per-module test projects.
     "*/UnitTests-*/*.cs",
     "*/UITest-*/*.cs",
     "*/UnitTests-*/*.cpp",
@@ -203,11 +181,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*Test.cpp",
     "*Tests.cpp",
     # ---- Precompiled headers and COM ClassFactory shims --------------
-    # ``pch.h`` / ``pch.cpp`` (and the older ``stdafx.*``) are MSVC
-    # precompiled-header anchors — referenced by build settings, never
-    # by user code. ``*ClassFactory.cpp`` is the COM ``IClassFactory``
-    # implementation; the type is registered via DllGetClassObject and
-    # activated by Windows, so it has no static caller.
+    # MSVC precompiled-header anchors are referenced by build settings; a COM
+    # ``IClassFactory`` is activated by Windows via DllGetClassObject.
     "*/pch.h",
     "*/pch.cpp",
     "*/pch.cc",
@@ -218,11 +193,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*ClassFactory.cpp",
     "*ClassFactory.h",
     # ---- C / C++ conventions ---------------------------------------------
-    # ``fnmatch`` ``*`` spans ``/`` so a leading ``*`` matches both nested
-    # module paths and repo-root layouts.
-    # Apps / demos / examples / tools / benchmarks — every file under these
-    # trees compiles to a standalone binary by CMake/Bazel ``add_executable``
-    # / ``cc_binary``. They have no static importer by design.
+    # Apps, demos, examples, tools and benchmarks build to standalone
+    # binaries (``add_executable`` / ``cc_binary``) with no importer.
     "*/apps/*.cc",
     "*/apps/*.cpp",
     "*/apps/*.cxx",
@@ -300,7 +272,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/bench/*.cpp",
     "bench/*.cc",
     "bench/*.cpp",
-    # C/C++ tool directories (``leveldbutil.cc`` / ``db_repair.cc`` shape).
+    # C/C++ tool directories.
     "*/tools/*.cc",
     "*/tools/*.cpp",
     "*/tools/**/*.cc",
@@ -309,9 +281,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "tools/*.cpp",
     "tools/**/*.cc",
     "tools/**/*.cpp",
-    # C/C++ test trees — every framework (GoogleTest / Catch2 / Boost.Test
-    # / doctest / Google Benchmark / libFuzzer) discovers tests by glob, not
-    # by static import.
+    # C/C++ test trees: test frameworks discover tests by glob, not import.
     "*/tests/**/*_test.cc",
     "*/tests/**/*_test.cpp",
     "*/tests/**/*_test.cxx",
@@ -339,12 +309,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/tests/integration/*.cc",
     "*/tests/integration/*.cpp",
     "*/tests/manual/*",
-    # Broad test-tree coverage for project layouts that don't follow the
-    # ``*_test.{cc,cpp}`` suffix convention. nlohmann/json uses ``tests/src/
-    # unit-*.cpp``, ``tests/abi/diag/diag_off.cpp``, and ``tests/cmake_*/
-    # project/*.cpp`` — none match the suffix globs above. Anything inside a
-    # repo-rooted ``tests/`` tree is framework-discovered by the build
-    # system, not statically imported.
+    # Any source under a ``tests/`` tree, for layouts without the
+    # ``*_test.{cc,cpp}`` suffix convention.
     "*/tests/**/*.cc",
     "*/tests/**/*.cpp",
     "*/tests/**/*.cxx",
@@ -366,16 +332,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "tests/fuzz/*.cc",
     "tests/fuzz/*.cpp",
     "tests/manual/*",
-    # Repo-rooted broad coverage matching the ``*/tests/**`` block above —
-    # nlohmann/json's tree (``tests/src/unit-*.cpp``, ``tests/abi/...``)
-    # lives under the repo root with no leading prefix.
+    # Repo-rooted form of the ``*/tests/**`` block above.
     "tests/**/*.cc",
     "tests/**/*.cpp",
     "tests/**/*.cxx",
     "tests/**/*.h",
     "tests/**/*.hpp",
-    # File-suffix conventions for tests dropped outside a standard test
-    # directory (GoogleTest / Google Benchmark / libFuzzer / Catch2).
+    # Test file suffixes outside a standard test directory.
     "*_test.cc",
     "*_test.cpp",
     "*_test.cxx",
@@ -392,16 +355,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_benchmarks.cpp",
     "*_fuzz.cc",
     "*_fuzz.cpp",
-    # Conventional port / example skeleton headers — projects ship them
-    # to document a portability layer; never actually built.
+    # Port / example skeleton headers: documentation, never built.
     "*/port_example.h",
     "*/port/port_example.h",
     "*_example.h",
     "*_example.hpp",
     "*_example.cc",
-    # Generated source roots (CMake build dirs, autoconf / out-of-tree
-    # builds). The walker normally skips them but, when they leak in,
-    # they're never importers.
+    # Build output roots, in case the walker lets them in.
     "*/build/**",
     "build/**",
     "*/cmake-build-*/**",
@@ -411,8 +371,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/out/build/**",
     "*/out/Debug/**",
     "*/out/Release/**",
-    # Generated source-file patterns. Wired in at build time, no static
-    # importer; the analyzer should silence them universally.
+    # Generated source files, wired in at build time.
     "moc_*.cpp",  # Qt MOC
     "moc_*.cc",
     "ui_*.h",  # Qt UIC
@@ -436,10 +395,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_wrap.cxx",  # SWIG
     "*_wrap.cpp",
     "*.cython.cpp",  # Cython
-    # Vendored / third-party roots. The existing ``vendor`` / ``third_party``
-    # / ``deps`` globs only cover ``.c`` / ``.h``; extend them to the full
-    # C++ extension set, and add the additional vendor conventions
-    # ``external/`` / ``extern/`` / ``contrib/`` / ``submodules/``.
+    # Vendored roots, C++ extensions (the ``.c`` / ``.h`` forms are below).
     "*/vendor/**/*.cc",
     "*/vendor/**/*.cpp",
     "*/vendor/**/*.cxx",
@@ -515,9 +471,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "**/benches/**/*.rs",
     "benches/*.rs",
     "benches/**/*.rs",
-    # Integration tests (run via `cargo test`)
-    # Note: fnmatch **/ requires at least one leading directory component, so
-    # we also add bare patterns for repos where tests/ sits at the root.
+    # Integration tests (run via `cargo test`). ``**/`` needs a leading
+    # directory, hence the bare repo-root forms.
     "**/tests/*.rs",
     "**/tests/**/*.rs",
     "tests/*.rs",
@@ -542,19 +497,12 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Protocol buffer generated code
     "**/proto/**/*.rs",
     # ---- Go conventions --------------------------------------------------
-    # ``fnmatch`` does not treat ``/`` specially, so a leading ``*`` already
-    # spans directory separators; the ``*/`` + bare pairs below match both
-    # nested and repo-root locations.
-    # Test files are compiled and run by ``go test`` via the runner, never
-    # imported by other packages.
+    # Run by ``go test``, never imported.
     "*_test.go",
-    # ``package main`` entry points — invoked by the Go toolchain / OS, never
-    # imported. Covers ``cmd/<name>/main.go`` and a repo-root ``main.go``.
+    # ``package main`` entry points.
     "*/main.go",
     "main.go",
-    # Package documentation stubs (the ``doc.go`` / ``docs.go`` convention):
-    # a file holding only the package-level doc comment, frequently the sole
-    # file in an aggregating directory, so it has no importer by design.
+    # Package documentation stubs holding only the package doc comment.
     "*/doc.go",
     "doc.go",
     "*/docs.go",
@@ -563,10 +511,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ``mage`` tool, excluded from normal builds, never imported.
     "*/magefile.go",
     "magefile.go",
-    # Generated code: stringer (``*_string.go``), protobuf (``*.pb.go``),
-    # gRPC (``*_grpc.pb.go``), go-bindata (``*bindata.go``), and the
-    # Kubernetes ``zz_generated*`` / generic ``*_gen.go`` / ``*.gen.go``
-    # conventions. Wired in at build time, no static importer.
+    # Generated code (stringer, protobuf, go-bindata, ``zz_generated*``).
     "*.gen.go",
     "*_gen.go",
     "*.pb.go",
@@ -574,31 +519,20 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*zz_generated*.go",
     "*bindata.go",
     # ---- JavaScript conventions ------------------------------------------
-    # ``fnmatch`` ``*`` spans ``/`` (see the Go note above), so leading-``*``
-    # suffix globs match nested asset paths too.
-    # esbuild / rollup / webpack bundle outputs and minified artifacts are
-    # build products served to the browser, not module-imported by name.
+    # Bundles and minified artifacts are served to the browser, not imported.
     "*.bundle.js",
     "*.min.js",
     "*.bundle.mjs",
-    # LiveReload ships a generated browser-global script set (IIFE /
-    # ``window.LiveReload =``) under ``livereload/gen/`` plus the
-    # ``livereload.js`` shim — loaded via a ``<script>`` tag, never imported.
+    # Generated browser-global scripts loaded by a ``<script>`` tag.
     "*/livereload/gen/*",
     "livereload/gen/*",
     "*/livereload/livereload.js",
     "livereload/livereload.js",
-    # Hugo embeds a WASM toolchain whose JS glue under ``internal/warpc/js``
-    # is shipped as a bundle and loaded by the Go side via ``go:embed``,
-    # never by a JS importer.
+    # Go's WASM JS glue, embedded and loaded by the host, not imported.
     "*wasm_exec.js",
     # ---- Vendored / third-party C ----------------------------------------
-    # A vendored C library (``deps/`` / ``vendor/`` / ``third_party/``) is a
-    # self-contained unit: its structs/typedefs and functions are used within
-    # the dependency's own translation units, not exported to the host repo
-    # by a statement the graph sees. Flagging its internals as dead is noise —
-    # the dependency is maintained upstream, not here. (Hugo's
-    # ``internal/warpc/deps/parson`` JSON lib is the canonical case.)
+    # A vendored C library is used within its own translation units and
+    # maintained upstream, so flagging its internals is noise.
     "*/deps/**/*.c",
     "*/deps/**/*.h",
     "deps/**/*.c",
@@ -612,10 +546,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "third_party/**/*.c",
     "third_party/**/*.h",
     # ---- JavaScript / TypeScript conventions -----------------------------
-    # ``fnmatch`` treats ``*`` as "match anything including ``/``", so a
-    # leading ``*`` is enough to span both repo-root and nested paths.
-    # Test files — discovered by the runner via filename glob (vitest,
-    # jest, mocha, playwright, cypress), never imported by sibling source.
+    # Test files, discovered by the runner via filename glob.
     "*.test.ts",
     "*.test.tsx",
     "*.test.js",
@@ -666,10 +597,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/generated/*.tsx",
     "*/generated/*.js",
     "*/__generated__/*",
-    # Next.js app router convention files beyond page/layout/route already
-    # covered above — loaded by the framework, no static importer. The
-    # ``*/foo.ts`` form ensures the literal basename is required (so
-    # ``mymiddleware.ts`` isn't accidentally exempt).
+    # More Next.js app router convention files. The ``*/foo.ts`` form requires
+    # the literal basename, so ``mymiddleware.ts`` is not exempt.
     "*/instrumentation.ts",
     "*/instrumentation-client.ts",
     "*/middleware.ts",
@@ -716,18 +645,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ESM declaration outputs in dist trees.
     "*/dist/*.d.ts",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------
-    # JPMS module descriptors and package-info files declare no importable
-    # symbols by design — they exist to carry module/package metadata that
-    # the JVM consumes via reflection at link/load time.
+    # Module / package metadata files, which declare no importable symbols.
     "*/module-info.java",
     "module-info.java",
     "*/package-info.java",
     "package-info.java",
-    # Gradle / Maven test source sets. ``fnmatch`` ``*`` spans ``/`` so a
-    # leading ``*`` matches both nested module trees and repo-root layouts.
-    # The ``*Test`` and ``*Tests`` globs catch project-specific source-set
-    # names (``apacheTest``, ``eclipseTest``, ``frayTest``, ``intTest``,
-    # ``functionalTest``, ``smokeTest`` …) without an explicit allowlist.
+    # Gradle / Maven test source sets. ``*Test`` / ``*Tests`` catch
+    # project-specific source-set names without an allowlist.
     "*/src/test/java/*",
     "*/src/test/kotlin/*",
     "*/src/integrationTest/*",
@@ -750,8 +674,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "src/intTest/*",
     "src/*Test/java/*",
     "src/*Tests/java/*",
-    # File-suffix conventions for tests dropped outside a standard source
-    # set (TestNG, JUnit, Spock, ArchUnit, pact-jvm, jqwik).
+    # Test file suffixes outside a standard source set.
     "*Test.java",
     "*Tests.java",
     "*IT.java",
@@ -766,9 +689,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*IT.kt",
     "*Spec.kt",
     "*Specification.kt",
-    # Generated source roots emitted by Gradle / Maven / KAPT / KSP /
-    # annotation-processors / GraalVM AOT. Wired in at build time by the
-    # JVM toolchain, never imported by static source.
+    # Generated source roots (Gradle, Maven, KAPT, KSP, AOT).
     "*/build/generated/*",
     "*/build/generated-src/*",
     "*/target/generated-sources/*",
@@ -787,8 +708,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*OuterClass.java",  # protoc generated outer class
     "*$WrapperImpl.java",
     # ---- Dart / Flutter conventions ---------------------------------------
-    # build_runner codegen outputs — linked from their source file via
-    # ``part`` directives, regenerated by tooling, never hand-imported.
+    # build_runner outputs, linked from their source via ``part``.
     "*.g.dart",
     "*.freezed.dart",  # freezed data classes
     "*.gr.dart",  # auto_route generated router
@@ -801,8 +721,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/integration_test/*",
     "*/test_driver/*",
     "*/example/*.dart",
-    # pub executables / repo tooling / benchmark harnesses are run directly
-    # (``dart run``), never imported (shelf live review).
+    # Run directly (``dart run``), never imported.
     "bin/*.dart",
     "*/bin/*.dart",
     "*/tool/*.dart",
@@ -861,9 +780,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
-    # Bare-name match against the stripped ``@Foo`` form. A class or
-    # method bearing one of these is wired into the container / route
-    # table / event bus by reflection — never imported by source name.
+    # Bare-name match against ``@Foo``; wired in by reflection.
     "Component",
     "Service",
     "Repository",
@@ -923,9 +840,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "OnClose",
     "OnMessage",
     "OnError",
-    # OSGi declarative-services lifecycle. The container calls these by
-    # reflection off the component descriptor, so they are private and have no
-    # caller in source by design.
+    # OSGi lifecycle, called by the container via reflection.
     "Activate",
     "Deactivate",
     "Modified",
@@ -955,8 +870,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Goal",
     "RegisterForReflection",
     # ---- JVM: routing / HTTP-verb annotations -----------------------
-    # A method bearing one of these is a route handler — invoked by the
-    # framework dispatcher, not by source. Treated as an entry point.
+    # Route handlers, invoked by the framework dispatcher.
     "RequestMapping",
     "GetMapping",
     "PostMapping",
@@ -978,35 +892,16 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Route",
 )
 
-# Decorator *suffixes* that indicate framework registration regardless of
-# the receiver name. Many Click/Typer codebases register subcommands on a
-# locally-named Group instance, e.g.::
-#
-#     decision_group = click.Group(...)
-#
-#     @decision_group.command("add")
-#     def decision_add(): ...
-#
-# The decorator is captured as ``decision_group.command`` — its prefix is
-# project-local, but its trailing attribute (``.command``) is a strong
-# signal that the wrapped function is registered with a framework
-# dispatcher and not called by name. Matching the suffix catches every
-# Click ``Group`` / Typer ``Typer`` / aiogram ``Dispatcher`` / aiohttp
-# ``RouteTableDef`` etc. without hard-coding receiver names.
+# Decorator *suffixes* that indicate framework registration whatever the
+# receiver is named: ``@my_group.command("add")`` registers with a locally named
+# Click group, so the trailing attribute is the signal, not the prefix.
 _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".command",
     ".group",
     ".callback",
-    # Registry registration (``@filter_registry.register``) is deliberately not
-    # here. It is one spelling of a rule that must also reach the bare
-    # ``@register_drainer`` form, which no dotted suffix can ever match, so
-    # ``_is_framework_registered`` carries both rather than this list carrying
-    # half.
-    # FastAPI / Flask / Sanic route decorators on a receiver the prefix list
-    # doesn't anticipate (``api = FastAPI()``, ``_repo_health_router =
-    # APIRouter()``). A decorator ending in an HTTP verb or routing method is
-    # a route registration regardless of the local variable name — the same
-    # reasoning that added ``.command`` for locally-named Click groups.
+    # ``.register`` is deliberately absent: ``_is_framework_registered`` also
+    # has to cover the bare ``@register_x`` form, so it owns both.
+    # Route decorators on a locally named app or router.
     ".route",
     ".get",
     ".post",
@@ -1018,34 +913,24 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".websocket",
     ".middleware",
     ".exception_handler",
-    # Startup/shutdown lifecycle hooks (``@app.on_event("shutdown")``). The
-    # framework calls them and nothing imports them, exactly as for the route
-    # decorators above; the list simply never carried the hook form.
+    # Startup/shutdown hooks (``@app.on_event("shutdown")``).
     ".on_event",
     # Celery apps under a non-``app``/``celery`` local name (``@worker.task``).
     ".task",
-    # Django template tags and filters. ``@register.tag(name="result_list")``
-    # registers the function under a string key; the template then invokes it
-    # as ``{% result_list cl %}``, so no Python source ever names it. The
-    # registry object is conventionally ``register`` but is file-local, which
-    # is why this matches the suffix rather than the receiver.
+    # Django template tags and filters, invoked by name from templates.
     ".tag",
     ".filter",
     ".simple_tag",
     ".inclusion_tag",
 )
 
-# Languages whose idiom is a static holder class: a container the source never
-# names at a call site, because the call names only the member. C# extension
-# methods are the shape (``Guard.Against.EmptyBasket(...)`` against a
-# ``static class BasketGuards``). Kept as a set rather than inlined so widening
-# it is a deliberate, measurable act.
+# Languages whose idiom is a static holder class the call site never names,
+# because it names only the member (C# extension methods). A set so widening it
+# is a deliberate act.
 _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
-# Annotations whose *argument* is the signal, so the base name alone cannot be
-# matched: ``@SuppressWarnings`` says nothing on its own, and only the
-# ``"unused"`` argument is the author stating that the symbol is deliberately
-# uncalled. Matched against the raw decorator text rather than its base.
+# Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
+# matched against the raw decorator text rather than its base name.
 _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
     ("SuppressWarnings", "unused"),
 )
@@ -1070,11 +955,8 @@ _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (
     "*_task",
 )
 
-# Top-level directories that are NOT packages — they're configuration,
-# CI, docs, or platform metadata. The zombie-package detector splits paths
-# on the first segment and treats everything as a candidate package; without
-# this guard, dotfile dirs like `.github` get reported as "zombie packages
-# with no importers" on every repo.
+# Top-level directories that are NOT packages (config, CI, docs, metadata). The
+# zombie-package detector treats every first path segment as a candidate.
 _NEVER_PACKAGE_DIRS: frozenset[str] = frozenset(
     {
         ".github",
@@ -1122,13 +1004,8 @@ _FIXTURE_PATH_SEGMENTS: tuple[str, ...] = (
 )
 
 
-# JSX namespace types discovered by the TypeScript compiler via tsconfig
-# ``jsxImportSource`` / the global ``namespace JSX`` declaration — never
-# imported by name from user code, but referenced implicitly by every
-# JSX expression. A symbol with one of these names declared inside a
-# ``namespace JSX`` block is an integration point with the JSX
-# transformer, not dead code. The set is intentionally small and
-# targeted; anything broader risks masking genuinely-unused exports.
+# JSX namespace types, referenced implicitly by every JSX expression rather
+# than imported. Kept small: anything broader risks masking unused exports.
 _TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset(
     {
         "IntrinsicElements",
@@ -1148,12 +1025,8 @@ _TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset(
 def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
     """Compile *patterns* into one alternation regex equivalent to fnmatch.
 
-    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
-    translated glob; doing that per (node x pattern) costs ~540 fnmatch
-    calls per node and dominated the whole dead-code pass (measured: 50s of
-    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
-    One pre-normcased alternation keeps the exact same match semantics at
-    one regex match per node.
+    One pre-normcased alternation keeps ``fnmatch`` semantics at one regex
+    match per node instead of one ``fnmatch`` call per (node, pattern).
     """
     return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
 
@@ -1164,11 +1037,8 @@ def _never_flag_suffix_index(
 ) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
     """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
 
-    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
-    ``.match()`` tries every branch at position 0 — most of them beginning
-    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
-    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
-    analysis, the single largest cost in the pass.
+    In one alternation every branch is tried and most begin ``.*``, so each
+    scans the whole path.
 
     The filter is sound because ``fnmatch.translate`` ends *each* alternative
     with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
@@ -1178,11 +1048,8 @@ def _never_flag_suffix_index(
     work, never a dropped match. Patterns ending in ``*`` constrain nothing at
     the tail and stay in one always-tried group.
 
-    Within a bucket the branches keep their original translated form, so the
-    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
-    commit to the first occurrence and never retry a later one — behave
-    exactly as they did in the single alternation. Alternation order does not
-    matter to a boolean "did anything match".
+    Branches keep their translated form, so ``fnmatch``'s atomic groups
+    behave as in the single alternation; order is irrelevant to a boolean.
 
     Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
     """
@@ -1212,12 +1079,9 @@ def never_flag_match(path: str) -> bool:
     """Memoized never-flag match for the default pattern set.
 
     Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
-    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
-    of *path*: the pattern set is a module constant, so process-wide
-    memoization is sound. The detector passes ask about the same node ids
-    repeatedly (every graph node is checked by the unreachable-files and the
-    unused-exports passes), which is what the cache is for; this function is
-    what the *first* ask of each id costs.
+    pinned to it path-for-path by ``test_never_flag_regex.py``. The pattern
+    set is a module constant, so process-wide memoization is sound; several
+    detector passes ask about the same node ids.
     """
     norm = os.path.normcase(path)
     always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)

@@ -26,11 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.kinds import classify_kind
 from repowise.core.analysis.decisions.lifecycle import (
     AGREEMENT_KIND,
+    RETIRED_STATUSES,
     currency_for_legacy_status,
 )
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_FOOTPRINT,
-    resolve_module_nodes,
     session_scope_basis,
 )
 
@@ -41,7 +41,12 @@ from .crud.authority import (
     record_acceptance,
     upsert_candidate_meta,
 )
-from .decision_graph import DecisionNodeLink
+from .decision_graph import (
+    DecisionNodeLink,
+    expected_node_links,
+    set_record_scope,
+    sync_links_from_record,
+)
 from .models import (
     DecisionAcceptance,
     DecisionCandidateMeta,
@@ -53,6 +58,7 @@ __all__ = [
     "MigrationPlan",
     "RowPlan",
     "apply_migration",
+    "backfill_decision_node_links",
     "backfill_scope_basis",
     "backfill_session_scope_basis",
     "plan_json",
@@ -68,9 +74,6 @@ __all__ = [
 #: purpose.
 _SELF_ACCEPTING_SOURCES: frozenset[str] = frozenset({"cli", "adr"})
 
-#: Statuses that record a retirement somebody performed. The migration keeps
-#: them: reclassifying one as an open candidate would undo the retirement.
-_RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
 
 
 @dataclass(slots=True)
@@ -221,7 +224,7 @@ async def plan_migration(
         # it as an unreviewed candidate would put a decision the user retired
         # back in front of them asking to be accepted, so all three retired
         # statuses keep their status and carry a tombstone.
-        if rec.status in _RETIRED_STATUSES:
+        if rec.status in RETIRED_STATUSES:
             plan.rows.append(
                 RowPlan(
                     rec.id,
@@ -364,7 +367,7 @@ async def apply_migration(
             continue
         if row.kind:
             rec.kind = row.kind
-        if rec.status in _RETIRED_STATUSES and row.outcome != "decision":
+        if rec.status in RETIRED_STATUSES and row.outcome != "decision":
             # Record the tombstone without touching the status that carries the
             # retirement.
             existed = await session.get(DecisionCandidateMeta, rec.id) is not None
@@ -382,6 +385,7 @@ async def apply_migration(
                     action="accepted",
                     currency="active",
                     accepter=f"migration:{rec.source}",
+                    kind="import",
                     note="reconstructed from a self-authored legacy record",
                 )
             except AcceptanceRefusedError as exc:
@@ -543,6 +547,50 @@ async def backfill_session_scope_basis(
     return changed
 
 
+async def backfill_decision_node_links(
+    session: AsyncSession, repository_id: str
+) -> int:
+    """Rebuild links for records whose scope never reached the graph.
+
+    Every hand-authored record predates :func:`sync_links_from_record`, and a
+    record with files but no links is invisible to every path-scoped surface.
+    Runs on each index, after the basis repairs so it mirrors the scope they
+    leave behind. Returns how many records were relinked.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    linked: dict[str, set[tuple[str, str]]] = {}
+    for decision_id, node_id, link_type in (
+        await session.execute(
+            select(
+                DecisionNodeLink.decision_id,
+                DecisionNodeLink.node_id,
+                DecisionNodeLink.link_type,
+            ).where(DecisionNodeLink.repository_id == repository_id)
+        )
+    ).all():
+        linked.setdefault(decision_id, set()).add((node_id, link_type))
+
+    changed = 0
+    for rec in rows:
+        files, modules = expected_node_links(rec)
+        want = {(n, "file") for n in files} | {(n, "module") for n in modules}
+        if want == linked.get(rec.id, set()):
+            continue
+        await sync_links_from_record(session, rec)
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
 #: Below this many indexed file nodes, the graph is treated as unbuilt rather
 #: than as evidence that a scope is wrong. Pruning against a graph that failed
 #: to build would empty every scope in the store, which is the one outcome
@@ -602,15 +650,7 @@ async def prune_unindexed_scope_files(
         kept = [f for f in files if f in indexed]
         if len(kept) == len(files):
             continue
-        rec.affected_files_json = json.dumps(kept)
-        rec.affected_modules_json = json.dumps(resolve_module_nodes(kept))
-        for dropped in set(files) - set(kept):
-            await session.execute(
-                delete(DecisionNodeLink).where(
-                    DecisionNodeLink.decision_id == rec.id,
-                    DecisionNodeLink.node_id == dropped,
-                )
-            )
+        await set_record_scope(session, rec, kept)
         changed += 1
     if changed:
         await session.flush()

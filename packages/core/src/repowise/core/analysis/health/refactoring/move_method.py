@@ -24,6 +24,22 @@ than of its own class, and almost nothing of its own class. We only ever
 consider classes ``m`` already calls into, so the target is always a class
 the method can legally reach. Dunder / framework hook methods are skipped —
 moving ``__init__`` or ``__eq__`` is never the intent.
+
+Two kinds of class are never a target, because touching their members is not
+envy:
+
+- a class the method **instantiates**. A method that builds a result object
+  and fills it in (``result = WriteResult(); result.record(...)``) is that
+  object's producer; moving it onto the result type turns a record into the
+  place the work happens. Envy is operating on an instance someone else owns.
+- an **ancestor** of the method's own class (``extends`` / ``implements``).
+  Calling an inherited method is calling your own member; the base class is
+  not somewhere else to move to.
+
+And the target must draw more of the method's calls than its home file does.
+The Jaccard sets see only class-owned callees, so a method whose work is three
+module-level helpers plus ``result.record`` / ``result.note`` on a collector it
+was handed looked like it envied the collector.
 """
 
 from __future__ import annotations
@@ -73,6 +89,18 @@ def _file_is_test(graph: Any, path: str) -> bool:
     if node is not None and "is_test" in node:
         return bool(node["is_test"])
     return is_test_related_path(path)
+
+
+def _ancestors(graph: Any, class_id: str) -> set[str]:
+    """Every class *class_id* inherits from, transitively."""
+    seen: set[str] = set()
+    stack = [class_id]
+    while stack:
+        for _u, base, data in graph.out_edges(stack.pop(), data=True):
+            if data.get("edge_type") in ("extends", "implements") and base not in seen:
+                seen.add(base)
+                stack.append(base)
+    return seen
 
 
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:
@@ -179,12 +207,15 @@ class MoveMethodDetector(RefactoringDetector):
 
         # Group the method's class-owned callees by the class they belong to.
         accessed_by_class: dict[str, set[str]] = {}
+        home: set[str] = set()
         for _u, callee, edata in graph.out_edges(method_id, data=True):
             if (
                 not is_reliable_call_edge(edata.get("edge_type"), edata.get("resolution_origin"))
                 or callee == method_id
             ):
                 continue
+            if (_node(graph, callee) or {}).get("file_path") == ctx.file_path:
+                home.add(callee)
             owner = _owning_class_id(graph, callee)
             if owner is None:
                 continue
@@ -202,7 +233,13 @@ class MoveMethodDetector(RefactoringDetector):
             return None
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
-        foreign = [(c, m) for c, m in accessed_by_class.items() if c != own_class_id]
+        # A constructor call lands the class id in its own member set.
+        inherited = _ancestors(graph, own_class_id)
+        foreign = [
+            (c, m)
+            for c, m in accessed_by_class.items()
+            if c != own_class_id and c not in inherited and c not in m
+        ]
         if not foreign:
             return None
         own_distance = self._distance(graph, own_class_id, accessed, members_cache)
@@ -216,7 +253,8 @@ class MoveMethodDetector(RefactoringDetector):
 
         if foreign_distinct < _MIN_FOREIGN_MEMBERS:
             return None
-        if foreign_distinct <= own_distinct:
+        # The own class lives in the home file, so this covers it too.
+        if foreign_distinct <= len(home):
             return None
         if target_distance > _MAX_TARGET_DISTANCE:
             return None

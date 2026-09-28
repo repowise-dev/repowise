@@ -85,7 +85,7 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     add_symbol_edge,
-    read_text,
+    source_text,
 )
 
 if TYPE_CHECKING:
@@ -104,18 +104,8 @@ def _has_gdscript(parsed_files: dict[str, Any]) -> bool:
     return any(p.file_info.language == "gdscript" for p in parsed_files.values())
 
 
-def _source_text(path: str, parsed: Any, source_map: dict[str, bytes]) -> str:
-    """Source text for *path*, preferring bytes ingestion already read.
-
-    This handler is the only one whose file set is the repo's dominant
-    language, so re-reading it would be a second full pass over the tree.
-    ``utf-8-sig`` on both paths: a BOM on line 1 would otherwise hide a
-    ``class_name`` declared there.
-    """
-    raw = source_map.get(path)
-    if raw is not None:
-        return raw.decode("utf-8-sig", errors="replace")
-    return read_text(parsed, encoding="utf-8-sig")
+def _has_gdscript_or_csharp(parsed_files: dict[str, Any]) -> bool:
+    return any(p.file_info.language in ("gdscript", "csharp") for p in parsed_files.values())
 
 
 def _add_class_name_edges(
@@ -139,7 +129,8 @@ def _add_class_name_edges(
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "gdscript":
             continue
-        text = _source_text(path, parsed, source_map)
+        # utf-8-sig: a BOM on line 1 would otherwise hide a `class_name` there.
+        text = source_text(path, parsed, source_map, "utf-8-sig")
         if not text:
             continue
         texts[path] = text
@@ -304,10 +295,12 @@ def _add_connection_edges(
     source_map = getattr(ctx, "source_map", None) or {}
     # `{script path: {function name: symbol id}}`. Methods included: GDScript
     # writes a handler as a plain `func`, but an inner class puts one under a
-    # parent, and either is a legitimate target for a connection.
+    # parent, and either is a legitimate target for a connection. C# is a
+    # first-class Godot scripting option too, and a scene's `[connection]`
+    # block is language-agnostic, so its methods belong in the same lookup.
     functions: dict[str, dict[str, str]] = {}
     for path, parsed in parsed_files.items():
-        if parsed.file_info.language != "gdscript":
+        if parsed.file_info.language not in ("gdscript", "csharp"):
             continue
         table = {
             sym.name: sym.id
@@ -325,12 +318,7 @@ def _add_connection_edges(
             continue
         if not path.lower().endswith((".tscn", ".escn")):
             continue
-        raw = source_map.get(path)
-        text = (
-            raw.decode("utf-8-sig", errors="replace")
-            if raw is not None
-            else read_text(parsed, encoding="utf-8-sig")
-        )
+        text = source_text(path, parsed, source_map, "utf-8-sig")
         if "[connection" not in text:
             continue
         resources, nodes, connections = parse_scene(text)
@@ -372,7 +360,7 @@ class _GodotClassNameHandler:
 
 class _GodotSceneConnectionHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return _has_gdscript(dctx.parsed_files) and any(
+        return _has_gdscript_or_csharp(dctx.parsed_files) and any(
             p.file_info.language == "godot_resource" for p in dctx.parsed_files.values()
         )
 

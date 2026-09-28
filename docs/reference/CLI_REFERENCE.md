@@ -166,7 +166,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI.md](../layers/WIKI.md#styles). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Continue a previous run instead of redoing it: completed phases (indexing, analysis) are skipped, the earlier run's git tier is kept, and generation writes only the pages this repo does not have yet. Use it after an interrupted run, and after one that finished with failed pages (a provider outage, rate limiting) — pages already written are skipped with no model call, so nothing is paid for twice. Matching is per page, not per model, so switching provider still keeps what the old one wrote. |
-| `--force` | Regenerate all pages even if they exist |
+| `--force` | Regenerate all pages even if they exist. Re-indexes this checkout from scratch in the mode you invoked, so inside a linked worktree it also skips seeding (a re-index is what seeding exists to avoid) and runs as a normal full init. Never triggers a model: `--force --no-prose` re-renders the whole wiki from templates at no cost. Use `repowise update --full` to regenerate with a model. |
 | `--commit-limit` | Max commits to analyze per file (default: 500, capped at 10000) |
 | `--follow-renames` | Track file renames in git history |
 | `--no-claude-md` | Don't generate `CLAUDE.md` |
@@ -959,7 +959,7 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 49 deterministic detectors (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 51 deterministic detectors (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -1011,6 +1011,8 @@ repowise decision add [PATH]            # interactive add
 repowise decision add --kind agreement  # a rule about how the work is done
 repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
 repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
+repowise decision confirm ID --agent SLUG  # an agent signing as itself, not as you
+                                        #   (also on dismiss and deprecate)
 repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
 repowise decision dedupe [PATH]         # fold candidates that duplicate another candidate (dry run by default)
@@ -1026,6 +1028,9 @@ repowise decision migrate [PATH]        # classify pre-split rows (dry run unles
 repowise decision config show [PATH]              # the resolved capture policy
 repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
 repowise decision config discovery [PATH]         # budget for the one broad discovery call
+repowise decision config agent-acceptance --on|--off  # may an agent grant authority? off by default
+repowise decision config capture-prompt --on|--off    # ask the agent to record what it just committed;
+                                                      # off by default, and --on installs the shell hook it needs
 repowise decision source list [PATH]              # the source registry and its state
 repowise decision source set SRC --on|--off       # switch one source
 repowise decision source set SRC --llm|--no-llm   # switch only its model stage

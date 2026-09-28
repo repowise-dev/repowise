@@ -28,7 +28,6 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".repowise").mkdir()
     # One ledger connection is cached per repo path for the life of the
     # process; the fixture gives each test its own path, so nothing leaks.
-    monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
     return tmp_path
 
 
@@ -133,7 +132,6 @@ def test_nothing_is_written_outside_a_repowise_repo(
 ) -> None:
     """The hook is installed globally. A directory that never opted in gets no
     sidecar, which is also why those commands can never be counted."""
-    monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
     _fire(tmp_path, "pytest -q", monkeypatch)
     assert not (tmp_path / ".repowise").exists()
 

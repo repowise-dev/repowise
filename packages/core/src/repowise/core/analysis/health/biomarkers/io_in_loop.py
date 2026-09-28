@@ -69,7 +69,11 @@ class IoInLoopDetector:
                         function_name=hit.function,
                         line_start=hit.line,
                         line_end=hit.line,
-                        details={"boundary_kind": hit.detail, "cross_function": False},
+                        details={
+                            "boundary_kind": hit.detail,
+                            "cross_function": False,
+                            **hit.loop_facts(),
+                        },
                         reason=f"{phrasing} runs once per loop iteration (N+1 / IO-in-loop)",
                     )
                 )
@@ -92,6 +96,7 @@ class IoInLoopDetector:
                 "cross_function": True,
                 "path": list(hit.path),
                 "resolution_basis": hit.resolution_basis,
+                **hit.loop_facts(),
             },
             reason=(
                 f"{phrasing} is reached once per loop iteration through "

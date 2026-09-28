@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { SavingsLede } from "../../src/savings/savings-lede";
@@ -18,11 +18,6 @@ import {
   SavingsResetNotice,
 } from "../../src/savings/savings-methodology";
 import { surfaceLabel, type SavingsView, type SpendView } from "../../src/savings/types";
-
-// jsdom has no scrollIntoView; `ViewTabs` keeps the active tab in view on mount.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 function makeSavings(overrides: Partial<SavingsView> = {}): SavingsView {
   return {
@@ -46,6 +41,12 @@ function makeSavings(overrides: Partial<SavingsView> = {}): SavingsView {
     priced_saved_output_tokens: 0,
     unpriced_saved_output_tokens: 0,
     priced_output_savings_usd: 0,
+    baseline_events: 120,
+    reducing_events: 110,
+    baseline_input_tokens: 2_000_000,
+    baseline_saved_input_tokens: 1_000_000,
+    input_reduction_ratio: 0.5,
+    input_reduction_ratio_p90: 0.88,
     per_operation: [
       { group: "get_answer", events: 40, saved_input_tokens: 600_000 },
       { group: "get_context", events: 20, saved_input_tokens: 400_000 },

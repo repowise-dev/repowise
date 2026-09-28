@@ -24,7 +24,7 @@ export const ROLE_STYLE: Record<NodeRole, RoleStyle> = {
   core: {
     label: "Core",
     color: "var(--color-warning)",
-    description: "In the largest cyclic group — the architectural center.",
+    description: "In the largest cyclic group: the architectural center.",
   },
   shared: {
     label: "Shared",

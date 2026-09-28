@@ -229,6 +229,23 @@ def resolve_db_url(repo_path: str | Path | None = None) -> str:
     return _default_db_url(repo_path)
 
 
+def has_db_store(repo_path: str | Path | None = None) -> bool:
+    """Whether :func:`resolve_db_url` has a store that already exists.
+
+    A configured database counts as existing. It is shared, it is migrated on
+    its own schedule, and the repo-local file it replaces is absent by design,
+    so a caller that gates on the file alone skips every write under one.
+
+    The filesystem defaults count only when the file is really there, which is
+    what keeps a caller from conjuring an empty database where none existed.
+    """
+    if get_configured_db_url() is not None:
+        return True
+    if repo_path is None:
+        return False
+    return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
+
+
 def create_engine(
     url: str | None = None,
     *,

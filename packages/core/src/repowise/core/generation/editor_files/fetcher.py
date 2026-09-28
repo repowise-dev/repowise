@@ -50,6 +50,24 @@ _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 8
 
 
+def _signed_by(signature) -> str:
+    """The mark for a decision a person did not sign, else ``""``.
+
+    An agent reads this block as standing rules, so one it accepted itself has
+    to be legible as that rather than as the team's. A person's acceptance is
+    the ordinary case and is left unmarked, which is also what keeps the line
+    cheap: these files are read into every session.
+    """
+    if signature is None or signature.kind == "person":
+        return ""
+    if signature.kind == "agent":
+        who = signature.accepter or "an agent"
+        return f" [accepted by {who}, not a person]"
+    if signature.kind == "import":
+        return " [accepted by a tracked file]"
+    return " [signer not recorded]"
+
+
 class EditorFileDataFetcher:
     """Fetches all data needed to render an editor-file template."""
 
@@ -282,9 +300,15 @@ class EditorFileDataFetcher:
         An agent reads this block as instructions, so it is the surface where
         the candidate/decision distinction matters most: acceptance, not a
         status string a recurrence check wrote, is what earns a line here.
+
+        It is also where an agent can read back its own acceptance as the
+        team's rule, so a line a person did not sign says so.
         """
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
-        from repowise.core.persistence.crud.authority import accepted_predicate
+        from repowise.core.persistence.crud.authority import (
+            accepted_predicate,
+            decision_signatures,
+        )
 
         result = await self._session.execute(
             select(DecisionRecord)
@@ -302,18 +326,16 @@ class EditorFileDataFetcher:
         records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
             :_MAX_DECISIONS
         ]
+        signatures = await decision_signatures(self._session, self._repo_id, records)
         summaries: list[DecisionSummary] = []
         for rec in records:
-            rationale = (rec.rationale or "").strip()
-            rationale = rationale[:100].rstrip(".,;") if rationale else ""
-            decision_text = (rec.decision or "").strip()
-            decision_text = decision_text[:120].rstrip(".,;") if decision_text else ""
             summaries.append(
                 DecisionSummary(
                     title=rec.title,
                     status=rec.status,
-                    rationale=rationale,
-                    decision=decision_text,
+                    rationale=_truncate_at_word(rec.rationale or "", 100),
+                    decision=_truncate_at_word(rec.decision or "", 120),
+                    signed_by=_signed_by(signatures.get(rec.id)),
                 )
             )
         return summaries

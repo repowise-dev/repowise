@@ -22,8 +22,10 @@ Three rules it does not get to relax:
 - **One event per omission ref.** The ref is content-addressed, so the same
   ref twice is the same distilled output. Counting it once undersells a
   genuine repeat, which is the floor this ledger is meant to be.
-- **Never repriced.** These happened at rates nobody recorded, so they are
-  counted in tokens and left unvalued rather than valued at today's rate.
+- **Never repriced.** A past saving is never revalued at today's model. That
+  is not the same as leaving it unvalued: the transcript names the model that
+  was in the chair, so each event is priced from *its own* evidence, and one
+  whose model the rate table does not know stays unpriced rather than guessed.
 """
 
 from __future__ import annotations
@@ -73,6 +75,52 @@ SYNC_BUDGET_S = 20.0
 #: is ``len // 4``, so capping characters and capping tokens agree exactly.
 HOST_OUTPUT_CAP_TOKENS = HOST_OUTPUT_CAP_CHARS // 4
 
+#: The largest shell result Codex was observed to actually deliver, across
+#: 95,814 of them in this repository. A host cannot have truncated below what
+#: it demonstrably handed the model, so this is a *measured* lower bound on
+#: Codex's cap rather than an estimate of one.
+#:
+#: Two observations sit behind this number and they disagree, so both are
+#: recorded:
+#:
+#: - Most large Codex results stop at a plateau: above 5,000 characters the
+#:   commonest lengths are 24,133 (164 texts) and a tight cluster at
+#:   40,100-40,104, over 200 texts within four characters of one another.
+#:   That is a cap with a variable-length truncation notice after it. Claude
+#:   Code's plateau is the same shape and sharper -- 24 texts at exactly
+#:   30,000, nothing above it.
+#: - But Codex does not always stop there. Results run to 159,585, 434,762,
+#:   1,510,994 and 2,552,250 characters, none of them truncated.
+#:
+#: So the plateau is a cap Codex applies *sometimes*, and picking it would
+#: undercount every result that escaped it. Set at the maximum instead, on
+#: the standing preference that a figure this ledger reports should err high
+#: rather than low. That is a real trade and not a free one: the five largest
+#: events become 29% of the recorded total, each crediting a single command
+#: with more tokens than a model's context can hold. The plateau figure
+#: (40,000 characters) is the conservative alternative and costs about 4x.
+#:
+#: Claude Code needs no equivalent choice -- its plateau *is* its maximum.
+_CODEX_OUTPUT_CAP_CHARS = 2_552_250
+
+#: Per-harness output cap, in tokens. ``estimate_tokens`` is ``len // 4``, so
+#: capping characters and capping tokens agree exactly.
+#:
+#: The defect this replaces: ``HOST_OUTPUT_CAP_CHARS`` is exactly right for
+#: Claude Code, and its own comment said it was "applied to every source".
+#: Charging it to Codex clipped 306 of this ledger's events to 7,500 tokens
+#: and left 111 of them delivering *more* than their own baseline, which is
+#: incoherent for a measured pair and banks zero.
+#:
+#: An unlisted harness gets ``None``, meaning no cap: a cap is a claim that a
+#: host truncated, and asserting one we never observed is precisely how this
+#: happened. ``_accounting`` never clips below what was actually delivered,
+#: so the invariant holds whatever this table says.
+_HARNESS_OUTPUT_CAP_TOKENS: dict[str, int | None] = {
+    "claude_code": HOST_OUTPUT_CAP_TOKENS,
+    "codex": _CODEX_OUTPUT_CAP_CHARS // 4,
+}
+
 #: Cursors for this surface alone. Sharing the decision miner's would starve
 #: whichever ran second, silently: that cursor advances as bytes are read.
 _CURSOR_FILENAME = "transcript-cursors.json"
@@ -111,6 +159,13 @@ class _Candidate:
     occurred_at: datetime
     delivered_tokens: int
     session_id: str | None
+    #: The model in the chair when this output was read back, or ``None``.
+    #: Not read off the event carrying the marker: a tool *result* is a user
+    #: line in every harness here and names no model. It is the most recent
+    #: assistant line before it in the same transcript -- the turn that ran
+    #: the command and then read the answer. Evidence that existed when the
+    #: saving happened, which is the whole basis for pricing this population.
+    model: str | None = None
 
 
 def sync_transcript_savings(
@@ -213,20 +268,34 @@ def _sweep(
 
 
 def _gate(adapter: HarnessAdapter) -> RawPrefilter | None:
-    """The adapter's tool-call gate, widened to keep every marker line.
+    """The adapter's tool-call gate, widened to keep marker and model lines.
 
     The tool call and the result carrying its marker are separate lines, and
     only the pair says a marker came from a shell command, so a marker-only
     gate sees results it can no longer attribute. Widening rather than
     narrowing matters because the cursor advances per line read: a line this
     gate drops is consumed, not revisited.
+
+    The model is the same shape of problem one line further out, and it cost
+    93% of the ledger's price. Codex states its model on a ``turn_context``
+    line that carries no tool call, so the unwidened gate consumed it and
+    every Codex event was written unpriced -- measured at 0 of 1,219
+    candidates here, against 25 of 27 for Claude Code, which happens to state
+    its model on the same assistant line as the tool call.
+
+    A substring rather than an adapter method: both harnesses spell it
+    ``"model"`` in the JSON, one extra line normalized is free, and a method
+    with two implementations and one caller is a worse answer than the test
+    it would wrap. Costs ~4.8% more lines on Codex and ~1.1% on Claude Code,
+    on a surface that runs at ``init`` and on demand under a 20-second
+    budget -- never inside an agent's tool call.
     """
     tool_gate = adapter.prefilter(INTENT_TOOL_CALLS)
     if tool_gate is None:
         return None
 
     def gate(raw_line: str) -> bool:
-        return tool_gate(raw_line) or "repowise#" in raw_line
+        return tool_gate(raw_line) or "repowise#" in raw_line or '"model"' in raw_line
 
     return gate
 
@@ -240,7 +309,13 @@ def _collect(
 ) -> set[str]:
     """Collect markers from shell results; return shell calls left unanswered."""
     shell_calls: set[str] = set()
+    # Carried forward rather than read per event: see ``_Candidate.model``.
+    # Scoped to this call, which is one transcript, so a model never leaks
+    # across sessions. A read resuming mid-file starts with None and leaves
+    # its first markers unpriced, which is the right way to be wrong here.
+    model: str | None = None
     for event in events:
+        model = _carried_model(event, model)
         for use in event.tool_uses:
             if use.name in shell_tools:
                 shell_calls.add(use.id)
@@ -250,7 +325,7 @@ def _collect(
             shell_calls.discard(block.tool_use_id)
             if not _in_repo(event, repo_root):
                 continue
-            _harvest(block, event, harness, candidates)
+            _harvest(block, event, harness, candidates, model)
     return shell_calls
 
 
@@ -259,6 +334,7 @@ def _harvest(
     event: Event,
     harness: str,
     candidates: dict[str, _Candidate],
+    model: str | None = None,
 ) -> None:
     for text in _result_texts(block):
         for marker in parse_markers(text):
@@ -270,6 +346,7 @@ def _harvest(
                     occurred_at=_occurred_at(event),
                     delivered_tokens=estimate_tokens(text),
                     session_id=event.session_id,
+                    model=model,
                 ),
             )
 
@@ -332,19 +409,59 @@ def _strings_in(blob: Any) -> Iterable[str]:
             yield from (value for value in blob.values() if isinstance(value, str))
 
 
+def _carried_model(event: Event, current: str | None) -> str | None:
+    """The model in the chair after *event*, given it was *current* before.
+
+    Two lines are refused rather than carried, and both were found by review
+    rather than by the numbers, because both fail quietly:
+
+    - **A sidechain.** Claude Code interleaves Task sub-agent lines into the
+      main transcript and a sub-agent can run a different model, so carrying
+      one prices the main thread's next command at the sub-agent's rate -- a
+      5x error where a Haiku sub-agent lands between an Opus tool call and
+      its result. Every other miner here filters them for the same reason
+      (``sessions/miners/decisions.py``, ``precedent``, ``decisions``).
+    - **A sentinel.** Claude Code writes ``<synthetic>`` for an API error or
+      an interrupted message. It resolves to no rate, which is right, but it
+      has to be refused *here* too: letting it overwrite a known-good model
+      leaves every later marker in the file unpriced. Angle brackets are the
+      shape harnesses use for "not a real value".
+    """
+    if not event.model or event.sidechain or event.model.startswith("<"):
+        return current
+    return event.model
+
+
 def _accounting(candidate: _Candidate) -> tuple[int, int]:
     """``(baseline, delivered)`` input tokens for one recovered marker.
 
     ``delivered`` is the text the marker was found in, which for a shell
     result is the command output the model read back. ``baseline`` adds back
-    what the marker says was dropped, minus the
-    marker's own cost, then re-applies the host truncation the live path
-    applies -- bytes past it never reached the model and cannot be claimed.
+    what the marker says was dropped, minus the marker's own cost, then
+    re-applies **this harness's** truncation -- bytes past it never reached
+    the model and cannot be claimed.
+
+    Whose truncation matters, and it used to be nobody's in particular:
+    Claude Code's 30,000-character cap was charged to every source, Codex
+    included, and Codex does not truncate. See
+    ``_HARNESS_OUTPUT_CAP_TOKENS`` for the measurement.
+
+    The cap never clips below ``delivered``. A host cannot have truncated
+    below what it demonstrably handed the model, so this is not a fudge but
+    the definition -- and it keeps the invariant true for a harness nobody
+    has measured yet, which is the case that produced this bug.
     """
     delivered = candidate.delivered_tokens
     kept = max(delivered - estimate_tokens(candidate.marker.text), 0)
     stored = kept + candidate.marker.tokens_omitted
-    return min(stored, HOST_OUTPUT_CAP_TOKENS), delivered
+    cap = _HARNESS_OUTPUT_CAP_TOKENS.get(candidate.harness)
+    capped = stored if cap is None else min(stored, cap)
+    # The floor applies on both branches. An uncapped harness can still land
+    # under ``delivered`` when the marker's own text costs more than what it
+    # says was omitted, and that would store a baseline smaller than the
+    # delivery it describes -- the very incoherence this function now exists
+    # to rule out.
+    return max(capped, delivered), delivered
 
 
 def _payload(
@@ -375,7 +492,28 @@ def _payload(
         "delivered_input_tokens": delivered,
         "omission_refs": (candidate.marker.ref,),
         "session_id": candidate.session_id,
+        **_pricing_payload(candidate),
     }
+
+
+def _pricing_payload(candidate: _Candidate) -> dict[str, Any]:
+    """The rate fields for one recovered marker, empty when it cannot be priced.
+
+    Not a departure from "never repriced" but the point of it. The rule exists
+    so a past saving is never revalued at *today's* model; this prices each
+    event at the model that was in the chair when it happened, read out of the
+    same transcript line that proves the saving. The evidence was always there
+    and the first version of this module simply dropped it, which left 93% of
+    the ledger's tokens carrying no rate at all.
+
+    Empty when the model is unknown to the rate table. An unpriced event is
+    the honest outcome and the report already counts the two populations
+    apart; a guessed rate would be worse than the silence it replaced.
+    """
+    from repowise.core.savings.pricing import snapshot_for_model
+
+    snapshot = snapshot_for_model(candidate.model, f"transcript_model:{candidate.harness}")
+    return snapshot.as_payload() if snapshot is not None else {}
 
 
 def _apply(

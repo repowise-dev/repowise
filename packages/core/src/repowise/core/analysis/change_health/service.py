@@ -13,6 +13,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from ...test_paths import is_test_related_path
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -51,17 +52,27 @@ _CLAIM_ATTEMPTS = 2
 
 _DIMENSION_ORDER = {"defect": 0, "maintainability": 1, "performance": 2, ADVISORY_DIMENSION: 3}
 
+#: Bases that place a finding away from the lines the change wrote.
+_INCIDENTAL_BASES = {"file_change", "context_change", "unknown"}
+
 
 @dataclass(frozen=True, slots=True)
 class DeltaRequest:
-    repo_path: str
+    """What to compare. ``repo_path`` is unused by the comparison; ``None`` is fine."""
+
+    repo_path: str | None
     revspec: str | None
     extensions: tuple[str, ...] = ()
     exclude_patterns: tuple[str, ...] = ()
 
 
 class ChangeHealthDeltaService:
-    """Compare the health of two revisions of the same repository."""
+    """Compare the health of two revisions of the same repository.
+
+    Without a checkout, pass a ``MappingRevisionSource`` (diff hunks plus raw
+    bytes at both SHAs). Both sides are re-scored from those bytes, so custom
+    health rules need ``RevisionHealthAnalyzer(config=...)`` to match the index.
+    """
 
     def __init__(
         self,
@@ -267,9 +278,12 @@ class ChangeHealthDeltaService:
             for f in base_run.findings
             if rename.get(f.file_path, f.file_path) in subject
             and not is_advisory(f.biomarker_type)
+            and not _is_test_perf(f)
         ]
         head_findings = [
-            f for f in head_run.findings_for(subject) if not is_advisory(f.biomarker_type)
+            f
+            for f in head_run.findings_for(subject)
+            if not is_advisory(f.biomarker_type) and not _is_test_perf(f)
         ]
         match = matcher.match(base_findings, head_findings)
 
@@ -399,18 +413,43 @@ def _limits() -> list[str]:
     ]
 
 
+def _is_test_perf(finding: HealthFindingData) -> bool:
+    """A performance finding on test code.
+
+    The perf model reasons about request-reachable hot paths, which a test file
+    is not, so these are dropped from both sides rather than ranked. Other
+    dimensions still report on tests; only their ordering is demoted.
+    """
+    return finding.dimension == "performance" and is_test_related_path(finding.file_path)
+
+
+def _authorship(finding: ChangeFinding) -> tuple[bool, bool, bool]:
+    """How much of this finding the change actually wrote.
+
+    Ranked ahead of severity because a reader asked "what did I just do" and a
+    capped list answered with the worst thing in a file they only brushed. An
+    incidental basis means the finding sits away from the changed lines; test
+    scaffolding sorts last because it is the change's own noise.
+    """
+    return (
+        finding.attribution_basis in _INCIDENTAL_BASES,
+        is_test_related_path(finding.path),
+        finding.change_kind != "introduced",
+    )
+
+
 def _priority(finding: ChangeFinding) -> tuple:
-    """Severity first, then dimension, then reach — never defect impact for perf."""
+    """Authorship first, then severity, then dimension and reach."""
     if finding.dimension == "performance":
         return (
-            0,
+            *_authorship(finding),
             -severity_rank(finding.severity),
             -(finding.opportunity_rank or 0),
             _DIMENSION_ORDER["performance"],
             finding.path,
         )
     return (
-        0,
+        *_authorship(finding),
         -severity_rank(finding.severity),
         -int((finding.health_impact or 0.0) * 1000),
         _DIMENSION_ORDER.get(finding.dimension, 9),
@@ -422,6 +461,8 @@ def _suggestion(finding: HealthFindingData, perf: PerfOpportunityView | None) ->
     if perf is not None:
         if perf.actionability_state == "plan_ready" and perf.intervention_symbol:
             return f"Hoist or batch the repeated call in {perf.intervention_symbol}."
+        if perf.actionability_state == "expected":
+            return "Nothing to change: the repetition is inherent or already batched."
         return perf.actionability_reason or "Confirm the cost before changing it."
     return finding.reason or f"Review the {finding.biomarker_type.replace('_', ' ')}."
 

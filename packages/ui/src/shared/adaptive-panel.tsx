@@ -34,6 +34,8 @@ export interface AdaptivePanelProps {
    * (no focus trap, overlay only on mobile). Default true.
    */
   modal?: boolean | undefined;
+  /** Radix's outside-interaction hook; `preventDefault()` keeps a non-modal panel open. */
+  onInteractOutside?: ((event: Event) => void) | undefined;
   className?: string | undefined;
 }
 
@@ -49,6 +51,7 @@ export function AdaptivePanel({
   sheetHeightClassName = "max-h-[85dvh]",
   hideHeader,
   modal = true,
+  onInteractOutside,
   className,
 }: AdaptivePanelProps) {
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -91,6 +94,7 @@ export function AdaptivePanel({
         <DialogPrimitive.Content
           ref={contentRef}
           aria-describedby={undefined}
+          {...(onInteractOutside ? { onInteractOutside } : {})}
           className={cn(
             "fixed z-[var(--z-modal)] flex flex-col bg-[var(--color-bg-surface)] shadow-2xl",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",

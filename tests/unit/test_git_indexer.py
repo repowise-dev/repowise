@@ -405,6 +405,8 @@ class TestStableClassification:
                 f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: old commit {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
+        # HEAD moved on today in another file; this one sat idle.
+        mock_repo.head.commit.committed_date = int(datetime.now(UTC).timestamp())
 
         meta = indexer._index_file("stable_file.py", mock_repo)
 
@@ -448,9 +450,8 @@ class TestStableClassification:
 
 
 class TestGitWindowAnchor:
-    """REPOWISE_GIT_WINDOW_ANCHOR anchors recency windows to the repo's most
-    recent commit instead of wall-clock now() — default off (product unchanged),
-    on for historical T0 scoring so windowed signals aren't silently empty."""
+    """Recency windows are anchored to the indexed commit by default;
+    REPOWISE_GIT_WINDOW_ANCHOR=now opts back into wall-clock time."""
 
     def _mock_repo_with_old_commits(self) -> tuple[MagicMock, datetime]:
         mock_repo = MagicMock()
@@ -466,16 +467,20 @@ class TestGitWindowAnchor:
         mock_repo.head.commit.committed_date = int(old_date.timestamp())
         return mock_repo, old_date
 
-    def test_default_uses_wall_clock(self, monkeypatch) -> None:
-        monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+    def test_wall_clock_opt_in(self, monkeypatch) -> None:
+        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "now")
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)
         # 180-day-old commits are outside a now()-anchored 90d window.
         assert meta["commit_count_90d"] == 0
 
-    def test_anchor_to_head_commit(self, monkeypatch) -> None:
-        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    @pytest.mark.parametrize("value", [None, "head"])
+    def test_anchor_to_head_commit(self, monkeypatch, value) -> None:
+        if value is None:
+            monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+        else:
+            monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", value)
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)

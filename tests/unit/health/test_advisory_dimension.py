@@ -81,6 +81,16 @@ def test_advisory_findings_carry_zero_health_impact():
     assert findings[0].dimension == ADVISORY_DIMENSION
 
 
+def test_hidden_coupling_is_advisory():
+    """Dropped from the score by a pre-registered test; still detected."""
+    assert is_advisory("hidden_coupling")
+    history = [_result("prior_defect")]
+    alone, _ = score_file(history)
+    with_coupling, deductions = score_file([*history, _result("hidden_coupling")])
+    assert with_coupling == alone
+    assert deductions[1] == 0.0
+
+
 def test_advisory_findings_do_not_dilute_a_real_deduction():
     """Adding an advisory finding to a scored one leaves the score alone."""
     scored_only, _ = score_file([_result("brain_method")])

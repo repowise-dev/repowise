@@ -25,7 +25,7 @@ import { formatNumber } from "../lib/format";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
 import type Graph from "graphology";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
-import { useCommunityFamilies } from "../shared/use-theme-tokens";
+import { useGraphCommunityFamilies } from "./community-colors";
 
 interface NeighborInfo {
   id: string;
@@ -114,7 +114,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   onEgoDepthChange,
   egoVisibleCount,
 }: GraphInspectionPanelProps) {
-  const communityFamily = useCommunityFamilies();
+  const communityFamily = useGraphCommunityFamilies();
   const touchStartY = useRef<number | null>(null);
   const neighbors = useMemo(() => {
     if (!graph || !graph.hasNode(nodeId)) return [];

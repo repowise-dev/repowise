@@ -35,7 +35,7 @@ class StringConcatInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason="string built by += in a loop; use a buffer / join for linear cost",
                 )
             )

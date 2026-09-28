@@ -766,6 +766,143 @@ class GitCommit(Base):
     )
 
 
+class GitCommitFile(Base):
+    """One file a commit touched, and the lines it changed there.
+
+    The per-file detail ``GitCommit`` aggregates away. No change type:
+    ``--numstat`` gives paths and counts only.
+    """
+
+    __tablename__ = "git_commit_files"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "sha", "file_path", name="uq_git_commit_file"),
+        Index("ix_git_commit_files_repo_sha", "repository_id", "sha"),
+        Index("ix_git_commit_files_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # 0/0 is a real answer for a binary file, not missing data.
+    lines_added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class GitCommitHealthDelta(Base):
+    """What one commit did to code health, precomputed at index time.
+
+    The comparison behind it needs both sides of every changed file and a
+    working tree, so it cannot run on a hosted read path. This row is that
+    answer, stored.
+
+    ``status`` distinguishes the three outcomes a reader must not conflate:
+    ``available`` (compared cleanly), ``partial`` (some files were skipped),
+    and no row at all (never scanned — a scan is bounded, so old commits can
+    legitimately have none).
+
+    The three version columns pin the row to the analyzer that produced it.
+    A reader compares them against the current versions and treats a mismatch
+    as absent rather than stale-but-usable, because findings from two analyzer
+    versions cannot be counted together.
+    """
+
+    __tablename__ = "git_commit_health_deltas"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "sha", name="uq_git_commit_health_delta"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="available")
+
+    analyzer_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rules_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    performance_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Totals for the whole comparison. `findings_stored` can be lower, because
+    # the stored findings are capped; the difference is what the UI is hiding.
+    introduced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    worsened_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    resolved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    files_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    files_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_stored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class GitCommitHealthFinding(Base):
+    """One thing a commit introduced or worsened, as the delta reported it.
+
+    Only ``introduced`` and ``worsened`` findings are surfaced by the
+    comparison, so only those are stored; the ``resolved`` count lives on
+    :class:`GitCommitHealthDelta` without per-finding detail.
+
+    ``position`` is the worst-first rank the scan assigned. It is stored rather
+    than re-derived so the cap and the display order stay the same answer.
+    """
+
+    __tablename__ = "git_commit_health_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id", "sha", "change_finding_id", name="uq_git_commit_health_finding"
+        ),
+        Index("ix_git_commit_health_findings_repo_sha", "repository_id", "sha"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    change_finding_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    change_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    dimension: Mapped[str] = mapped_column(String(32), nullable=False)
+    biomarker_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Only set for `worsened`: what the severity was before the commit.
+    severity_before: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # How the finding is tied to the commit, least-to-most direct. Kept so a
+    # reader can tell "this change wrote it" from "this change touched it".
+    attribution_basis: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
+    health_impact: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
 class FixEvent(Base):
     """One bug-fix commit's effect on one file, with its bug-introducing candidates.
 
@@ -1163,6 +1300,8 @@ class DecisionAcceptance(Base):
     The CHECK constraints are the acceptance contract, enforced by the database
     rather than by whichever caller happens to be writing: a reason, a scope, an
     evidence reference, and an accepter or artifact identity.
+
+    ``accepter_kind`` is the fifth: the identity says who, this says what.
     """
 
     __tablename__ = "decision_acceptances"
@@ -1172,6 +1311,12 @@ class DecisionAcceptance(Base):
         CheckConstraint("scope_json NOT IN ('', '[]')", name="ck_acceptance_scope"),
         CheckConstraint("evidence_json NOT IN ('', '[]')", name="ck_acceptance_evidence"),
         CheckConstraint("accepter <> '' OR artifact <> ''", name="ck_acceptance_identity"),
+        # A local store takes its columns from the additive reconciler and
+        # never this CHECK, so ``record_acceptance`` is the enforcement.
+        CheckConstraint(
+            "accepter_kind IN ('', 'person', 'agent', 'import')",
+            name="ck_acceptance_accepter_kind",
+        ),
         CheckConstraint(
             "currency IN ('active', 'needs_review', 'uncheckable', 'superseded', 'dismissed')",
             name="ck_acceptance_currency",
@@ -1207,6 +1352,10 @@ class DecisionAcceptance(Base):
     #: the only accepter that is not a person.
     accepter: Mapped[str] = mapped_column(Text, nullable=False, default="")
     artifact: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: person | agent | import, or '' on a row written before provenance.
+    accepter_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    #: The agent session that signed, when one did.
+    accepter_session: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

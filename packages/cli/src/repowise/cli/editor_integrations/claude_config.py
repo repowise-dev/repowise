@@ -260,6 +260,102 @@ _AUGMENT_HOOK_COMMAND = (
 _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
 
 
+#: The shell tools, as their own PostToolUse entry rather than widened into
+#: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
+#: them, it is off by default, and the narrowing of the shared matcher is a
+#: measured decision this must not quietly reverse: 51% of hook invocations
+#: for 0.7% of emissions. A separate entry means the cost is paid only where
+#: the prompt is switched on, and removing it is removing one entry.
+#:
+#: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
+#: the self-heal rewrites to the narrow matcher, and this entry exists
+#: precisely to survive it.
+_CAPTURE_MATCHER = "Bash|PowerShell"
+
+
+def _capture_entry() -> dict:
+    return {
+        "matcher": _CAPTURE_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _AUGMENT_HOOK_COMMAND,
+                "timeout": 10,
+                "statusMessage": "Checking for a decision to record...",
+            }
+        ],
+    }
+
+
+def _is_capture_entry(entry: object) -> bool:
+    if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
+        return False
+    entry_hooks = _hooks_of(entry)
+    return bool(entry_hooks) and all(_is_repowise_hook(h) for h in entry_hooks)
+
+
+def set_claude_code_capture_hook(enabled: bool) -> Path | None:
+    """Add or remove the shell PostToolUse entry the capture prompt needs.
+
+    The switch owns its own prerequisite: `decisions.capture_prompt` is a
+    per-repository policy, but the hook it fires from is a per-install
+    matcher, so turning the policy on without this writes a flag nothing
+    reads. Returns the settings file when it changed, else ``None``.
+
+    The entry is per *install*, so one repository opting in widens the surface
+    for every repository on this machine. They pay a process start on shell
+    calls and nothing else — the handler returns before any work when their
+    own policy is off — and turning it off here narrows it back for all of
+    them, which is why the caller says so.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return None
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return None
+
+    hooks = existing.setdefault("hooks", {}) if enabled else existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    entries = hooks.get("PostToolUse")
+    if not isinstance(entries, list):
+        if not enabled:
+            return None
+        entries = []
+        hooks["PostToolUse"] = entries
+
+    present = any(_is_capture_entry(e) for e in entries)
+    if enabled == present:
+        return None
+    if enabled:
+        entries.append(_capture_entry())
+    else:
+        entries[:] = [e for e in entries if not _is_capture_entry(e)]
+        if not entries:
+            hooks.pop("PostToolUse", None)
+        if not hooks:
+            existing.pop("hooks", None)
+    return settings_path if _write_settings(settings_path, existing) else None
+
+
+def claude_code_capture_hook_installed() -> bool:
+    """Whether the shell PostToolUse entry is present."""
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    entries = hooks.get("PostToolUse")
+    return isinstance(entries, list) and any(_is_capture_entry(e) for e in entries)
+
+
 def _session_start_entry() -> dict:
     return {
         "matcher": _SESSION_START_MATCHER,
@@ -308,7 +404,7 @@ def _failure_entry() -> dict:
 def install_claude_code_hooks() -> Path | None:
     """Register the augment hooks in ~/.claude/settings.json.
 
-    PostToolUse detects git staleness, enriches Grep/Glob results, and emits
+    PostToolUse enriches Grep/Glob results and emits
     Read-intelligence notices; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
@@ -458,6 +554,41 @@ def add_claude_code_distill_allow_rules() -> Path | None:
         except OSError:
             return None
     return settings_path
+
+
+def uninstall_claude_code_distill_allow_rules() -> bool:
+    """Remove the distill allow rules from ``permissions.allow`` in settings.json.
+
+    Returns True when at least one rule was removed and saved, False otherwise.
+    Strictly removes only rules matching DISTILL_ALLOW_RULES; user rules survive.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    permissions = existing.get("permissions")
+    if not isinstance(permissions, dict):
+        return False
+    allow = permissions.get("allow")
+    if not isinstance(allow, list):
+        return False
+
+    initial_len = len(allow)
+    allow[:] = [rule for rule in allow if rule not in DISTILL_ALLOW_RULES]
+    if len(allow) == initial_len:
+        return False
+
+    if not allow:
+        permissions.pop("allow", None)
+    if not permissions:
+        existing.pop("permissions", None)
+
+    return _write_settings(settings_path, existing)
+
 
 
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
@@ -652,6 +783,12 @@ def claude_code_leftover_reason() -> str | None:
                         _is_repowise_hook(hook) or _is_rewrite_hook(hook)
                     ):
                         return "one of our hooks was still present after the write"
+
+    permissions = existing.get("permissions")
+    if isinstance(permissions, dict):
+        allow = permissions.get("allow")
+        if isinstance(allow, list) and any(r in DISTILL_ALLOW_RULES for r in allow):
+            return "our distill permission rules were still present after the write"
     return None
 
 

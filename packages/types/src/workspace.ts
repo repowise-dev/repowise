@@ -57,6 +57,12 @@ export interface WorkspaceContractLinkEntry {
    */
   provider_symbol_id: string | null;
   consumer_symbol_id: string | null;
+  /**
+   * The consumer's own contract id when it is not spelled like `contract_id`,
+   * which names the provider's (a queue bound to that exchange, or a path
+   * matched across case, a wildcard method or a mount prefix); null otherwise.
+   */
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
   DECISION_KIND_LABELS,
@@ -12,6 +13,7 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
+  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -300,6 +302,7 @@ function DecisionLaneRow({
           {currency !== null && currency !== "active" && (
             <CurrencyMark currency={currency as DecisionCurrency} />
           )}
+          <SignatureMark decision={d} />
           {d.verification && d.verification !== "exact" && (
             <VerificationBadge verification={d.verification} />
           )}
@@ -403,6 +406,30 @@ function DecisionLaneRow({
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * Who signed the row's current authority record, marked only where it is not
+ * a person — the case this surface was built for, which carries no badge.
+ * `accepter` alone reads as a name, so an agent or an import would be taken
+ * for a colleague; an unrecorded kind would be taken for a person.
+ */
+function SignatureMark({ decision }: { decision: DecisionRecord }) {
+  const kind = decision.accepter_kind;
+  if (kind === null || kind === undefined || kind === "person") return null;
+  const label =
+    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
+  const who = [decision.accepter, decision.accepter_session]
+    .filter(Boolean)
+    .join(", session ");
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-[11px] text-[var(--color-text-tertiary)]"
+      title={who ? `${label}: ${who}` : label}
+    >
+      {label}
+    </span>
   );
 }
 

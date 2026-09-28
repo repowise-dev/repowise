@@ -339,3 +339,42 @@ def test_unused_internal_still_flagged_when_imports_dont_carry_name():
     )
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
     assert "_unused_helper" in names
+
+
+def test_unused_internal_rust_impl_uncallable():
+    """An impl block is an uncallable structural container; it must not be flagged as unused internal."""
+    g = _build_graph(
+        nodes={
+            "src/lib.rs": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "language": "rust",
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "MyStruct",
+                        "kind": "impl",
+                        "visibility": "private",
+                        "language": "rust",
+                        "decorators": [],
+                        "start_line": 10,
+                        "end_line": 25,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "MyStruct" not in names
+

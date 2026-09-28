@@ -608,7 +608,9 @@ async def test_canonical_emitter_reference_inventory(
                     resolved = await get_context([ref.value])
                     card = resolved["targets"][ref.value]
                     assert card.get("error") is None, (ref, card)
-                    assert card.get("target") == ref.value
+                    # The ref resolves because the card is keyed on it; the
+                    # card no longer echoes the key back as a ``target`` field.
+                    assert "target" not in card
                     if ref.kind == "symbol":
                         _assert_symbol_card(
                             resolved,
@@ -724,7 +726,8 @@ async def _seed_plan(session, repository_id: str) -> None:
 
 def _assert_symbol_card(result: dict, symbol_id: str, path: str, name: str) -> None:
     card = result["targets"][symbol_id]
-    assert card["target"] == symbol_id
+    # The map key is the target; the card no longer echoes it back as a field.
+    assert "target" not in card
     assert card["type"] == "symbol"
     assert card["docs"]["file_path"] == path
     assert card["docs"]["name"] == name
@@ -809,7 +812,7 @@ async def test_emitted_file_paths_resolve_to_content(reference_repo, path: str) 
     card = result["targets"][path]
     expected_type = "file" if "." in path.rsplit("/", 1)[-1] else "module"
     assert card.get("error") is None
-    assert card["target"] == path
+    assert "target" not in card
     assert card["type"] == expected_type, (path, card)
     assert "resolved_to" not in card
     assert card.get("docs") or card.get("summary") or card.get("files")

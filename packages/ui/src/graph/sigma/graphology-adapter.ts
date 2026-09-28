@@ -40,13 +40,34 @@ function simpleHash(str: string): number {
   return Math.abs(hash);
 }
 
+/**
+ * True for an edge that says two files change together rather than that one
+ * depends on the other. The `"dynamic"` edge kind is this, keyed "Co-change".
+ *
+ * Read off `edge_type` when the payload carries it. On this repo's export
+ * 5,521 of the 5,655 edges with no imported names are `co_changes`; the other
+ * 134 (`framework`, `dynamic_uses`, name-less `imports`) are real dependencies
+ * that the old names-only rule filed under the same key. A payload without
+ * `edge_type` keeps that rule.
+ */
+export function isCoChangeLink(link: GraphLink): boolean {
+  if (link.edge_type !== undefined) return link.edge_type === "co_changes";
+  return link.imported_names.length === 0;
+}
+
+/** A dependency drawn by default: not co-change, not low confidence. */
+export function isStructuralLink(link: GraphLink): boolean {
+  if (link.confidence !== undefined && link.confidence < 0.5) return false;
+  return !isCoChangeLink(link);
+}
+
 function classifyEdge(
   link: GraphLink,
   nodeMap: Map<string, GraphNode>,
 ): SigmaEdgeAttributes["edgeKind"] {
   if (link.confidence !== undefined && link.confidence < 0.5)
     return "lowConfidence";
-  if (link.imported_names.length === 0) return "dynamic";
+  if (isCoChangeLink(link)) return "dynamic";
   const sourceNode = nodeMap.get(link.source);
   const targetNode = nodeMap.get(link.target);
   if (

@@ -459,7 +459,8 @@ async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
     # Failing target carries a per-target error entry (keyed on its target).
     assert "boom" in targets
     assert "error" in targets["boom"]
-    assert targets["boom"]["target"] == "boom"
+    # The map key is the target. The card no longer echoes it back as a field.
+    assert "target" not in targets["boom"]
 
 
 @pytest.mark.asyncio
@@ -850,3 +851,18 @@ async def test_concept_target_returns_section_and_children(setup_mcp, session):
     )
     assert all(c["page_type"] != "file_page" for c in children)
     assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])
+
+
+@pytest.mark.asyncio
+async def test_get_context_meta_envelope(setup_mcp):
+    """get_context returns a well-formed _meta envelope without dead hint fields."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/payments/charge.py"])
+    assert "_meta" in result
+    meta = result["_meta"]
+    assert "contract_version" in meta
+    assert "timing_ms" in meta
+    # hint was dead/always None and has been removed; no empty or spurious hint field
+    assert "hint" not in meta
+

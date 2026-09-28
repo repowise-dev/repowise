@@ -431,6 +431,8 @@ export interface CommitDetailResponse {
   agent_confidence?: string | null;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
+  files?: CommitFileResponse[];
+  health?: CommitHealthResponse | null;
 }
 
 /**
@@ -462,6 +464,46 @@ export interface CommitEvolutionResponse {
   granularity: string;
   first_commit_at?: string | null;
   last_commit_at?: string | null;
+}
+
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFileResponse {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  prior_fixes?: number | null;
+}
+
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  attribution_basis: string;
+  reason: string;
+}
+
+/**
+ * What a commit did to code health, as computed at index time.
+ *
+ * Absent on the commit, rather than empty, when the commit was never
+ * scanned — the scan is bounded, so older commits routinely have no row and
+ * that is not the same claim as "changed nothing".
+ */
+export interface CommitHealthResponse {
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  findings?: CommitHealthFindingResponse[];
 }
 
 /**
@@ -756,6 +798,7 @@ export interface DecisionCountsResponse {
 
 export interface DecisionCreate {
   title: string;
+  kind?: "architectural" | "agreement" | null;
   context?: string;
   decision?: string;
   rationale?: string;
@@ -897,6 +940,9 @@ export interface DecisionRecordResponse {
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
   currency?: string | null;
+  accepter?: string | null;
+  accepter_kind?: string | null;
+  accepter_session?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -904,6 +950,7 @@ export interface DecisionSettings {
   enabled?: boolean;
   llm?: boolean;
   preset?: string;
+  agent_acceptance?: boolean;
   discovery?: DecisionDiscoveryBudget;
   sources?: DecisionSourceState[];
   provider_available?: boolean;
@@ -917,6 +964,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean | null;
   llm?: boolean | null;
   preset?: string | null;
+  agent_acceptance?: boolean | null;
   sources?: Record<string, DecisionSourcePatch> | null;
   discovery?: DecisionDiscoveryPatch | null;
   etag?: string | null;
@@ -2532,6 +2580,12 @@ export interface SavingsResponse {
   priced_saved_output_tokens?: number;
   unpriced_saved_output_tokens?: number;
   priced_output_savings_usd?: number;
+  baseline_events?: number;
+  reducing_events?: number;
+  baseline_input_tokens?: number;
+  baseline_saved_input_tokens?: number;
+  input_reduction_ratio?: number | null;
+  input_reduction_ratio_p90?: number | null;
   per_operation?: SavingsBreakdownRow[];
   per_surface?: SavingsBreakdownRow[];
   per_agent?: SavingsAgentRow[];
@@ -2858,10 +2912,22 @@ export interface WorkspaceCoChangeEntry {
   last_date: string;
 }
 
+/** What declared structure connects one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  pair_links: WorkspaceContractLinkEntry[];
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  source_file_links: number;
+  target_file_links: number;
+}
+
 export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
   total: number;
   total_mined?: number;
+  per_repo_pair_cap?: number | null;
+  total_cap?: number | null;
+  truncated_by?: "total" | "per_repo_pair" | null;
 }
 
 export interface WorkspaceConformanceResponse {
@@ -2933,6 +2999,7 @@ export interface WorkspaceContractLinkEntry {
   consumer_service?: string | null;
   provider_symbol_id?: string | null;
   consumer_symbol_id?: string | null;
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractSummary {
@@ -3067,6 +3134,13 @@ export interface WorkspaceRepoEntry {
   status?: string;
   docs_enabled?: boolean;
   docs_skip_reason?: string | null;
+}
+
+/** Response returned when a repo is removed from the workspace config. */
+export interface WorkspaceRepoRemovedResponse {
+  ok?: boolean;
+  alias: string;
+  remaining_repos: number;
 }
 
 export interface WorkspaceResponse {

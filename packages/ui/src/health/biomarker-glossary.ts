@@ -134,7 +134,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: "Hidden coupling",
     category: "organizational",
     description:
-      "Two files co-change in git history but have no explicit import between them. The implicit contract is invisible at the source level, so changes slip out of sync and break in production.",
+      "Two files co-change in git history but have no explicit import between them. The implicit contract is invisible at the source level, so changes slip out of sync and break in production. Advisory: it costs this file no points.",
   },
   complex_conditional: {
     label: "Complex conditional",
@@ -290,7 +290,19 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: "Serial await in loop",
     category: "performance",
     description:
-      "An awaited I/O round-trip run one-at-a-time inside a loop. When the iterations are independent, fan them out with gather / Promise.all / Task.WhenAll for concurrent execution. Advisory — a static analyzer cannot prove the iterations are independent.",
+      "An awaited I/O round-trip run one-at-a-time inside a loop. When the iterations are independent, fan them out with gather / Promise.all / Task.WhenAll for concurrent execution. Advisory: independence may be unproven, and against a database or network client a fan-out also needs a bound on concurrency.",
+  },
+  unbounded_read_reduced_in_memory: {
+    label: "Unbounded read reduced in memory",
+    category: "performance",
+    description:
+      "A database read with no limit/range/single bound, run once, whose result a loop then dedups down to one row per key (setdefault, a seen-set, a not-in guard). The table can grow without bound while the code still pays to transfer and decode every row. Move the selection into the query: DISTINCT ON, a window function, or a view.",
+  },
+  lazy_load_in_loop: {
+    label: "Lazy load in loop",
+    category: "performance",
+    description:
+      "A relationship declared lazy (no selectinload / joinedload, no select_related / prefetch_related) read on every iteration of a loop over its parent rows, one query per row. Load the relationship with the rows instead. Advisory: whether every iteration reaches the access, and whether another layer already loaded it, is not proven.",
   },
   membership_test_against_list_in_loop: {
     label: "List membership in loop",
@@ -370,13 +382,15 @@ export type BiomarkerDimension = "defect" | "maintainability" | "performance" | 
 
 /**
  * Biomarkers that home to the non-scoring `advisory` dimension. They measure
- * something real that no defect corpus labels, so they never deduct and the
- * chip has to say so rather than borrowing the defect pillar's label. Mirror of
+ * something real that no defect corpus labels, or that showed no defect signal
+ * when tested, so they never deduct and the chip has to say so rather than
+ * borrowing the defect pillar's label. Mirror of
  * ``_ADVISORY_HOME`` in core's `scoring.py`.
  */
 export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "assertion_free_test",
   "mock_saturated_test",
+  "hidden_coupling",
 ]);
 
 /**
@@ -429,6 +443,8 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "array_spread_in_reduce",
   "goroutine_in_unbounded_loop",
   "sql_cartesian_join",
+  "unbounded_read_reduced_in_memory",
+  "lazy_load_in_loop",
 ]);
 
 /**

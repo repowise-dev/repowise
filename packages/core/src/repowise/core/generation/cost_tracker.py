@@ -104,9 +104,15 @@ def is_local_model(model: str) -> bool:
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
         or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
-        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
-        # and a `family:size` tag is not a shape any hosted vendor uses.
-        or (":" in model and "/" not in model)
+        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`.
+        # The trailing tag must not be a bare number: Bedrock addresses hosted
+        # Anthropic models as `anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+        # reading that as local priced a Bedrock user's whole history at $0.00
+        # while stamping it as measured — a fabricated rate, just a zero one,
+        # and worse than `None` because it is indistinguishable from a real
+        # local-model zero. Ollama size tags (`:8b`, `:latest`, `:q4_K_M`) are
+        # never purely numeric, so the two shapes separate cleanly.
+        or (":" in model and "/" not in model and not model.rsplit(":", 1)[1].isdigit())
     )
 
 
@@ -157,8 +163,20 @@ def _routed_model_leaf(model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
-def _get_pricing(model: str) -> dict[str, float]:
-    """Return pricing for *model*, falling back and warning if unknown."""
+def resolve_model_pricing(model: str) -> dict[str, float] | None:
+    """Pricing for *model*, or ``None`` when this table does not know it.
+
+    The honest half of the lookup, and the one a caller that *records* a rate
+    has to use. :func:`get_model_pricing` answers the same question but
+    substitutes the default tier for a miss, and once that substitute has been
+    written down it is indistinguishable from a measurement: a saving stamped
+    $3/$15 reads as real whether the table knew the model or invented it.
+
+    So anything that stores a rate asks here and stays unpriced on ``None``.
+    Anything merely displaying a rough figure may still take the fallback.
+
+    A local model is a real answer of zero, not a miss.
+    """
     if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
@@ -166,9 +184,14 @@ def _get_pricing(model: str) -> dict[str, float]:
     leaf = _routed_model_leaf(model)
     if leaf in _PRICING:
         return _PRICING[leaf]
-    family = _family_pricing(model) or _family_pricing(leaf)
-    if family is not None:
-        return family
+    return _family_pricing(model) or _family_pricing(leaf)
+
+
+def _get_pricing(model: str) -> dict[str, float]:
+    """Return pricing for *model*, falling back and warning if unknown."""
+    resolved = resolve_model_pricing(model)
+    if resolved is not None:
+        return resolved
     if model not in _warned_models:
         log.warning("cost_tracker.unknown_model", model=model, fallback=_FALLBACK_PRICING)
         _warned_models.add(model)
@@ -181,6 +204,9 @@ def get_model_pricing(model: str) -> dict[str, float]:
     Unknown models fall back to the default tier (with a one-time warning).
     Used outside generation (e.g. ``repowise saved``) to turn token counts
     into dollar estimates with the same table the cost ledger uses.
+
+    Prefer :func:`resolve_model_pricing` when the rate will be *stored*: this
+    one cannot tell the caller that the number it returned was invented.
     """
     return _get_pricing(model)
 

@@ -272,25 +272,27 @@ def _query_health_line(repo_path: Path) -> str | None:
         return None
     worst_path = data["worst_performer_path"] or "n/a"
     worst_score = data["worst_performer_score"]
-    worst_repr = f"{worst_score:.1f}" if worst_score is not None else "—"
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
         band_for,
+        format_score,
     )
+
+    worst_repr = format_score(worst_score) if worst_score is not None else "—"
 
     band = band_for(float(data["average_health"]))
     band_color = BAND_TERMINAL_COLOR[band]
     # Maintainability and performance are co-surfaced pillars; show each when the
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
-    maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
+    maint_part = f" · {format_score(maint)} (maintainability)" if maint is not None else ""
     # Performance leads with the finding COUNT (the honest signal); the bounded
     # /10 average trails in parens as a summary, never as a verification claim.
     perf = data.get("performance_average")
     perf_findings = data.get("performance_findings", 0)
     perf_part = (
-        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({perf:.1f})"
+        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({format_score(perf)})"
         if perf is not None
         else ""
     )
@@ -298,9 +300,9 @@ def _query_health_line(repo_path: Path) -> str | None:
     # rather than printing a 10.0 that would read as "your hotspots are
     # perfect" when there are none to score.
     hotspot = data.get("hotspot_health")
-    hotspot_part = f"{hotspot:.1f} (hotspots) · " if hotspot is not None else ""
+    hotspot_part = f"{format_score(hotspot)} (hotspots) · " if hotspot is not None else ""
     return (
-        f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
+        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
         f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"

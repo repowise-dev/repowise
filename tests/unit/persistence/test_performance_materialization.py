@@ -370,3 +370,22 @@ def test_the_migration_upgrades_and_rolls_back(tmp_path: Path) -> None:
     assert not {"performance_opportunities", "performance_summaries"} & _tables(db_path)
     assert not {"public_id", "opportunity_id"} & _columns(db_path, "health_findings")
     assert "opportunity_id" not in _columns(db_path, "refactoring_suggestions")
+
+
+def test_a_non_leading_marker_never_leads_the_summary():
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.crud.analysis.performance import _summary_payload
+
+    def _opp(oid: str, marker: str):
+        return SimpleNamespace(
+            opportunity_id=oid, actionability_state="advisory", biomarker_type=marker,
+            boundary_kind="db", execution_context="production", intervention_symbol=None,
+            terminal_sink=None, evidence=[{"file_path": "a.py"}], observations_total=1,
+            affected_call_sites_total=1, affected_files_total=1, why_ranked=[],
+            prerequisites=(), actionability_reason="",
+        )
+
+    ranked = [_opp("lazy", "lazy_load_in_loop"), _opp("io", "io_in_loop")]
+    assert _summary_payload(ranked, {})["lead"]["opportunity_id"] == "io"
+    assert _summary_payload(ranked[:1], {})["lead"] is None

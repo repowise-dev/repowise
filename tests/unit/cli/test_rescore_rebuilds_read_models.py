@@ -27,7 +27,9 @@ from repowise.core.persistence import (
     upsert_repository,
 )
 from repowise.core.persistence.models import (
+    GitMetadata,
     HealthFileMetric,
+    HealthFinding,
     PerformanceOpportunity,
     PerformanceSummary,
 )
@@ -181,3 +183,70 @@ class TestRescoreRebuildsTheReadModels:
         assert summary_commit == head
         # The column the index-freshness signal is read from.
         assert metrics[_SCORED] == head
+
+
+async def _seed_history(repo_path: Path) -> str:
+    """Stored git metadata that clears every percentile gate, plus a stored
+    blame-marker finding the re-score has no blame index to recompute."""
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    await init_db(engine)
+    factory = create_session_factory(engine)
+    async with get_session(factory) as session:
+        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        session.add(
+            GitMetadata(
+                repository_id=repo.id,
+                file_path=_SCORED,
+                commit_count_total=40,
+                commit_count_90d=30,
+                is_hotspot=True,
+                prior_defect_count=6,
+                prior_defect_pct=0.99,
+                co_change_partner_count=60,
+                co_change_mass=9.0,
+                co_change_scatter_pct=0.99,
+            )
+        )
+        session.add(
+            HealthFinding(
+                repository_id=repo.id,
+                file_path=_SCORED,
+                biomarker_type="function_hotspot",
+                severity="high",
+                function_name="run",
+                line_start=1,
+                line_end=2,
+                details_json='{"modification_count": 12, "repo_p80": 4}',
+                reason="run has been modified across 12 commits",
+            )
+        )
+        await session.commit()
+        repo_id = repo.id
+    await engine.dispose()
+    return repo_id
+
+
+async def _finding_types(repo_path: Path, repo_id: str) -> set[str]:
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    async with get_session(create_session_factory(engine)) as session:
+        rows = await session.execute(
+            select(HealthFinding.biomarker_type).where(
+                HealthFinding.repository_id == repo_id, HealthFinding.file_path == _SCORED
+            )
+        )
+        types = set(rows.scalars())
+    await engine.dispose()
+    return types
+
+
+class TestRescoreKeepsHistoryMarkers:
+    async def test_stored_history_reaches_every_history_marker(self, git_repo: Path):
+        repo_id = await _seed_history(git_repo)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        types = await _finding_types(git_repo, repo_id)
+        # Percentile-gated markers read columns a hand-kept projection dropped.
+        assert {"prior_defect", "co_change_scatter"} <= types
+        # No blame index is persisted, so the stored finding is kept, not deleted.
+        assert "function_hotspot" in types

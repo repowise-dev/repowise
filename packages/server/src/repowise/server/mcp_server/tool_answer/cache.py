@@ -32,9 +32,8 @@ _log = logging.getLogger("repowise.mcp.answer")
 def _json_default(obj):
     """Serialize the non-JSON types retrieval hits carry (``_sources`` sets).
 
-    Before this fallback existed, EVERY cache write failed on the sets the
-    hybrid retriever attaches to hits — silently, under the old blanket
-    suppress. The cache never stored a single post-hybrid-pipeline answer.
+    Without it every cache write fails on the sets the hybrid retriever
+    attaches to hits.
     """
     if isinstance(obj, (set, frozenset)):
         # str-key the sort: a serializer whose whole job is "never fail the
@@ -77,22 +76,13 @@ def _cache_bypass_reason(
     Each reason is logged where it is decided, with its own values, so the log
     says why a caller got a fresh synthesis rather than merely that it did.
 
-    * schema: payloads from a pre-rework code path do not carry the fields the
-      current consumer expects. Serving them masks every later improvement until
-      the row happens to expire, so bypass silently and let the next write
-      upgrade the row.
-    * hedged: the retrieval and symbol pipeline has been upgraded since, so give
-      synthesis another shot with the new context rather than pinning a bad
-      answer.
-    * empty: older versions cached gated empty-answer payloads, which pinned a
-      retrieval miss until TTL. The write side no longer does this; the check
-      retires the rows that predate the fix.
-    * excluded: a row cached before ``exclude_patterns`` changed may reference a
-      now-excluded file in its fields or in its prose. Re-synthesize rather than
-      scrub the fields and leave the prose dangling.
-    * commit / TTL: a row synthesised against a previous index may cite moved
-      code or stale values. The TTL covers pre-stamping rows and gitless repos,
-      where there is no commit to compare.
+    * schema: an older shape would mask every later improvement until expiry.
+    * hedged: give synthesis another shot rather than pin a bad answer.
+    * empty: retires gated empty-answer rows the write side no longer makes.
+    * excluded: the row references a now-excluded file, possibly in its prose,
+      so re-synthesize rather than scrub fields and leave the prose dangling.
+    * commit / TTL: the row may cite moved code; the TTL covers unstamped rows
+      and gitless repos.
     """
     cached_version = payload.get("_schema_version", 1)
     if cached_version < _ANSWER_SCHEMA_VERSION:
@@ -164,9 +154,7 @@ async def _serve_cached_answer(
             targets=[p for p in cached_paths if isinstance(p, str) and p],
             extra=({"retrieval_degraded": retrieval_degraded} if retrieval_degraded else None),
         )
-        # Serve-time, on this path as well as the fresh one: the episode is read
-        # on every call and never cached into an answer, so a disagreement
-        # cannot be frozen into a row and served after it has been superseded.
+        # Serve-time on this path too, so an episode is never frozen into a row.
         await _attach_episode(
             payload,
             question=question,
@@ -190,14 +178,10 @@ async def _write_answer_cache(
 ) -> None:
     """Persist this answer as the cache row for the question (upsert).
 
-    Best-effort: a cache failure must never block the response, but it must be
-    LOGGED rather than suppressed. A plain INSERT under a blanket suppress
-    violated ``uq_answer_cache_q`` on every bypass-and-resynthesize round and
-    failed silently, so hedged and stale rows were never upgraded.
-    Delete-then-insert in one transaction is the dialect-agnostic upsert. It
-    also removes the legacy question-only identity on the first successful
-    synthesis, while the versioned lookup guarantees that row is never served.
-    The stamped ``_indexed_commit`` is what the read-side freshness check reads.
+    Best-effort, but LOGGED rather than suppressed, so a failing write cannot
+    silently leave stale rows in place. Delete-then-insert in one transaction
+    is the dialect-agnostic upsert (``uq_answer_cache_q``), and also removes the
+    legacy question-only identity.
 
     The row is a shallow copy taken here, so anything the caller attaches to the
     payload after this point reaches the caller and never the cache.

@@ -11,11 +11,16 @@ cannot mean one thing in the database and another on the wire.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "ACCEPTANCE_ACTIONS",
+    "ACCEPTER_KINDS",
+    "ACCEPTER_SESSION_MAX",
+    "AGENT_ACCEPTANCE_REMEDY",
     "AGREEMENT_KIND",
     "AGREEMENT_SCOPE",
     "ARCHITECTURAL_KIND",
@@ -23,17 +28,27 @@ __all__ = [
     "DECISION_CURRENCIES",
     "DECISION_KINDS",
     "DECISION_STATUS_ORDER",
+    "GRANTING_ACTIONS",
     "NEEDS_REVIEW_STALENESS",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
+    "UNRECORDED_ACCEPTER_KIND",
     "AcceptanceRequirement",
     "acceptance_blockers",
+    "accepter_kind_blocker",
     "bundles_decisions",
     "currency_for_legacy_status",
     "effective_currency",
     "is_governing",
+    "is_repo_wide",
     "legacy_status_for_currency",
+    "machine_grant_blocker",
+    "named_scope",
+    "record_blockers",
+    "record_evidence",
+    "record_scope",
+    "requirement",
     "status_rank",
 ]
 
@@ -156,6 +171,56 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "returned_to_review",
 )
 
+#: Actions that create or renew authority, against the three that withdraw it.
+GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
+
+#: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent
+#: or a pipeline stage, ``import`` a tracked artifact or manifest speaking for
+#: whoever committed it. ``accepter`` alone cannot answer this: it is a free
+#: string resolved from the repository's git identity, so a machine signing
+#: reads as a person.
+#:
+#: Stored ``""`` is a row written before this column, never backfilled to
+#: ``person``: "unrecorded" and "a human signed" are what this keeps apart.
+ACCEPTER_KINDS: tuple[str, ...] = ("person", "agent", "import")
+UNRECORDED_ACCEPTER_KIND = ""
+
+#: Width of ``decision_acceptances.accepter_session``, so a caller can refuse
+#: a longer id rather than hand Postgres a truncation error.
+ACCEPTER_SESSION_MAX = 64
+
+#: What fixes a :func:`machine_grant_blocker` refusal. Addressed to a person,
+#: because the party reading it is the agent that was just refused.
+AGENT_ACCEPTANCE_REMEDY = (
+    "Someone who owns this repository can allow it with "
+    "`repowise decision config agent-acceptance --on`, or accept it themselves."
+)
+
+
+def accepter_kind_blocker(kind: str) -> str | None:
+    """Why *kind* cannot be stamped on a new acceptance, or ``None``."""
+    if kind in ACCEPTER_KINDS:
+        return None
+    if kind == UNRECORDED_ACCEPTER_KIND:
+        return "no accepter kind: say whether a person, an agent or an import signed this"
+    return f"unknown accepter kind {kind!r}: one of {', '.join(ACCEPTER_KINDS)}"
+
+
+def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
+    """Why an agent may not take *action*, or ``None``.
+
+    A machine revokes but does not grant: withdrawing narrows what a record
+    claims and re-accepting undoes it, while granting mints a constraint
+    nobody agreed to. Stated rather than left true by omission.
+    """
+    if kind != "agent" or action not in GRANTING_ACTIONS or granted:
+        return None
+    return (
+        f"an agent may not record a {action!r} acceptance: machines withdraw "
+        "authority but do not grant it"
+    )
+
+
 #: The fraction of a decision's files that must have moved before the decision
 #: is worth re-reading. Same 0.5 the staleness surfaces already use; the number
 #: stays an internal supporting fact and the product word is what is shown.
@@ -164,6 +229,33 @@ NEEDS_REVIEW_STALENESS: float = 0.5
 #: Currencies that still bind future work. ``needs_review`` deliberately does:
 #: a decision whose code moved is a decision to re-read, not one to ignore.
 _GOVERNING: frozenset[str] = frozenset({"active", "needs_review"})
+
+#: Statuses that record a retirement somebody performed. The migration keeps
+#: them: reclassifying one as an open candidate would undo the retirement.
+RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
+
+#: Retirements that leave nothing in the decision's place, and so govern no
+#: path. A record at one of these keeps its files and its place in a lookup by
+#: id and links no code, because the graph is what "what governs this path" is
+#: answered from.
+#:
+#: ``superseded`` is deliberately *not* here even though it is retired: it has
+#: a successor, it still governs the path, and ``get_risk``'s
+#: ``superseded_decision`` directive finds it through those very links to tell
+#: a reviewer their change is governed by a decision that has been replaced.
+#: ``proposed`` is absent because a candidate is not retired at all, and the
+#: candidate lane delivers on its links.
+WITHDRAWN_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated"})
+
+
+def is_retired(status: str) -> bool:
+    """Whether *status* records a retirement somebody performed."""
+    return status in RETIRED_STATUSES
+
+
+def is_withdrawn(status: str) -> bool:
+    """Whether *status* leaves nothing in the decision's place, so governs no path."""
+    return status in WITHDRAWN_STATUSES
 
 
 def is_governing(currency: str) -> bool:
@@ -238,6 +330,112 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     if not req.accepter.strip() and not req.artifact.strip():
         blockers.append("no accepter or tracked-artifact identity")
     return blockers
+
+
+# The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
+# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``evidence_file``; list fields may be stored JSON text. ORM rows go through
+# ``crud.authority.decision_fields``.
+
+
+def _str_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [str(v) for v in parsed] if isinstance(parsed, list) else []
+    return [str(v) for v in (value or [])]
+
+
+def _non_blank(values: list[str]) -> list[str]:
+    return [v for v in values if v and v.strip()]
+
+
+def _first_non_blank(*values: str | None) -> str:
+    return next((v for v in values if v and v.strip()), "")
+
+
+def named_scope(rec: Mapping[str, Any]) -> list[str]:
+    """The files or modules *rec* actually names, blanks dropped."""
+    # Blank entries fall through to the modules rather than short-circuiting on
+    # them, so this agrees with the TypeScript mirror about a whitespace path.
+    return _non_blank(_str_list(rec.get("affected_files"))) or _non_blank(
+        _str_list(rec.get("affected_modules"))
+    )
+
+
+def is_repo_wide(rec: Mapping[str, Any]) -> bool:
+    """Whether *rec* governs the repository as a whole rather than part of it.
+
+    Both halves are needed. An agreement that names files has been given a real
+    scope by something, and the ordinary rules apply to it: the noun says the
+    record is *allowed* to name nothing, not that anything it does name should
+    be ignored. Keying this off the kind alone would take a record with real
+    files out of staleness checking for good, and the classifier is a regex
+    with a measured false-positive rate.
+    """
+    return rec.get("kind") == AGREEMENT_KIND and not named_scope(rec)
+
+
+def record_scope(rec: Mapping[str, Any]) -> list[str]:
+    """What *rec* claims to govern, for every reader of the contract.
+
+    An agreement naming no file governs the repository rather than part of it,
+    so it reports that scope instead of an empty one. The acceptance contract,
+    the review flag and the currency all read this, and those three disagreeing
+    about what an agreement governs is the failure this exists to prevent.
+    """
+    return named_scope(rec) or (
+        [AGREEMENT_SCOPE] if rec.get("kind") == AGREEMENT_KIND else []
+    )
+
+
+def record_evidence(rec: Mapping[str, Any]) -> list[str]:
+    """The evidence references *rec* already carries."""
+    evidence = _str_list(rec.get("evidence_commits"))
+    if rec.get("evidence_file"):
+        evidence.append(rec["evidence_file"])
+    return evidence
+
+
+def requirement(
+    rec: Mapping[str, Any],
+    *,
+    reason: str = "",
+    scope: list[str] | None = None,
+    evidence: list[str] | None = None,
+    accepter: str = "",
+    artifact: str = "",
+) -> AcceptanceRequirement:
+    """What the acceptance contract would be asked to take for *rec*."""
+    # A record somebody typed is its own provenance: the accepter did not read
+    # an inference, they wrote the claim. Everything mined from a transcript, a
+    # commit or a document still has to say what it rests on.
+    self_authored = rec.get("source") == "cli" and bool(accepter.strip())
+    resolved_evidence = evidence if evidence is not None else record_evidence(rec)
+    if not resolved_evidence and self_authored:
+        resolved_evidence = [f"accepted by {accepter}"]
+    # The why comes from `rationale` or `context` ("what forced this decision?"),
+    # never from `decision`, which is the what.
+    return AcceptanceRequirement(
+        reason=_first_non_blank(reason, rec.get("rationale"), rec.get("context")),
+        scope=scope if scope is not None else record_scope(rec),
+        evidence=resolved_evidence,
+        accepter=accepter,
+        artifact=artifact,
+        self_authored=self_authored,
+    )
+
+
+def record_blockers(rec: Mapping[str, Any]) -> list[str]:
+    """Why the contract would refuse *rec* as it stands, empty if it would not.
+
+    The accepter and artifact are what a reviewer supplies at the moment they
+    act, so this asks with an identity in hand: what is left is what a person
+    has to go and fill in first.
+    """
+    return acceptance_blockers(requirement(rec, accepter="reviewer"))
 
 
 #: How the pre-split ``decision_records.status`` column maps onto currency, and

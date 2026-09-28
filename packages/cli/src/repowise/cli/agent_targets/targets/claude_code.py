@@ -440,6 +440,7 @@ class ClaudeCodeTarget:
             claude_code_leftover_reason,
             claude_desktop_leftover_reason,
             uninstall_claude_code_augment_hooks,
+            uninstall_claude_code_distill_allow_rules,
             uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
             uninstall_claude_desktop_mcp_entry,
@@ -458,6 +459,7 @@ class ClaudeCodeTarget:
         # `or` would skip the later removals whenever an earlier one succeeded.
         removed = uninstall_claude_code_rewrite_hook()
         removed = uninstall_claude_code_augment_hooks() or removed
+        removed = uninstall_claude_code_distill_allow_rules() or removed
         removed = uninstall_claude_code_mcp_entry() or removed
         # The Desktop config too, because `install` writes it and `detect` reads
         # it. Leaving it made a removed Claude Code still look wired, so the

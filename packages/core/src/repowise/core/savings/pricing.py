@@ -148,33 +148,56 @@ def _cache_path(repo_root: Path) -> Path:
     return repo_root / ".repowise" / "omissions" / _CACHE_NAME
 
 
-def _scan(repo_root: Path) -> PricingSnapshot | None:
-    """Detect the coding agent's model and freeze its rates.
+def snapshot_for_model(model: str | None, pricing_source: str) -> PricingSnapshot | None:
+    """Freeze *model*'s rates, or ``None`` when it cannot be priced honestly.
 
-    Returns ``None`` rather than an over-long model id. The id is read out of a
-    transcript the user's agent wrote, and the event contract bounds ``model``
-    at 128 characters -- by *raising*, which would drop the whole event before
-    it was written. A pricing snapshot we cannot use must cost the event its
-    price, never its existence.
+    The single place a model id becomes a stored rate, so every surface that
+    writes one refuses the same three things:
+
+    - **No model.** Nothing to look up.
+    - **An over-long id.** The event contract bounds ``model`` at 128
+      characters by *raising*, which would drop the whole event before it was
+      written. A snapshot we cannot use must cost the event its price, never
+      its existence.
+    - **A model the rate table does not know.** This is the one that used to
+      get through. ``get_model_pricing`` answers a miss with the default tier
+      and a warning into a log no caller reads, so a session on an
+      unrecognised model was stamped $3/$15 and marked with a real-looking
+      provenance -- a fabricated rate wearing a measurement's clothes.
+      :func:`resolve_model_pricing` says ``None`` instead, and an unpriced
+      event is a correct event: the report counts priced and unpriced tokens
+      separately for exactly this reason.
+
+    Non-model labels (``codex-auto-review``, ``<synthetic>``) need no separate
+    rule -- they are unknown to the table, so the third refusal already covers
+    them.
     """
-    from repowise.core.distill.session_model import resolve_session_model
-    from repowise.core.generation.cost_tracker import get_model_pricing, pricing_table_version
+    from repowise.core.generation.cost_tracker import pricing_table_version, resolve_model_pricing
 
-    resolved = resolve_session_model(repo_root)
-    if not resolved.model or len(resolved.model) > _MAX_MODEL_LENGTH:
+    if not model or len(model) > _MAX_MODEL_LENGTH:
         return None
-    rates = get_model_pricing(resolved.model)
+    rates = resolve_model_pricing(model)
+    if rates is None:
+        return None
     return PricingSnapshot(
-        model=resolved.model,
-        # Machine-readable provenance rather than the detector's human label,
-        # so a consumer can tell a detected rate from the default without
-        # parsing prose. ``unknown`` is the detector's own word for "nothing
-        # found", and stays distinguishable from a real agent.
-        pricing_source=f"session_model:{resolved.agent}",
+        model=model,
+        pricing_source=pricing_source,
         pricing_version=pricing_table_version(),
         input_rate_usd_per_million=float(rates["input"]),
         output_rate_usd_per_million=float(rates["output"]),
     )
+
+
+def _scan(repo_root: Path) -> PricingSnapshot | None:
+    """Detect the coding agent's model and freeze its rates."""
+    from repowise.core.distill.session_model import resolve_session_model
+
+    resolved = resolve_session_model(repo_root)
+    # Machine-readable provenance rather than the detector's human label, so a
+    # consumer can tell a detected rate from the default without parsing prose.
+    # ``unknown`` is the detector's own word for "nothing found", and stays
+    # distinguishable from a real agent.
+    return snapshot_for_model(resolved.model, f"session_model:{resolved.agent}")
 
 
 def _read_cache(path: Path) -> tuple[PricingSnapshot, float] | None:

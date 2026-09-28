@@ -132,7 +132,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
             className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
-            {f.snippet ?? "—"}
+            {f.snippet || "—"}
           </span>
         ),
       },

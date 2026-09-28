@@ -196,6 +196,26 @@ export const DECISION_CURRENCY_DESCRIPTIONS: Record<DecisionCurrency, string> =
     dismissed: "Authority withdrawn. Kept for history.",
   };
 
+/**
+ * What signed an acceptance, as against who. `accepter` is a free string that
+ * resolves to the repository's git identity, so a machine signing read as a
+ * person. A stored `""` is a row written before the column and is not
+ * `person`: "unrecorded" and "a human signed" are what this keeps apart.
+ */
+export const ACCEPTER_KINDS = ["person", "agent", "import"] as const;
+
+export type AccepterKind = (typeof ACCEPTER_KINDS)[number];
+
+/**
+ * Worded for the signature, not the action: the same row records withdrawals,
+ * so "accepted" would present a revocation as a grant.
+ */
+export const ACCEPTER_KIND_LABELS: Record<AccepterKind, string> = {
+  person: "Signed by a person",
+  agent: "Signed by an agent",
+  import: "Signed by a tracked artifact",
+};
+
 /** Currencies that still bind future work. A moved decision is one to re-read. */
 export const GOVERNING_CURRENCIES: readonly DecisionCurrency[] = [
   "active",
@@ -268,6 +288,13 @@ export interface DecisionRecord {
    * surface that needs the distinction should ask for the lane instead.
    */
   currency?: DecisionCurrency | null;
+  /**
+   * Who signed the current authority record. Null on a candidate, beside
+   * `currency`. `""` means written before provenance, not that a person did.
+   */
+  accepter?: string | null;
+  accepter_kind?: AccepterKind | "" | null;
+  accepter_session?: string | null;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
@@ -285,6 +312,11 @@ export interface EvidencePreview {
 
 export interface DecisionCreateInput {
   title: string;
+  /**
+   * Omit to state no opinion: the engine then leaves an existing record's
+   * noun alone rather than defaulting it back to `architectural`.
+   */
+  kind?: DecisionKind;
   context?: string;
   decision?: string;
   rationale?: string;
@@ -561,6 +593,11 @@ export interface DecisionSettings {
   enabled: boolean;
   llm: boolean;
   preset: DecisionPreset;
+  /**
+   * Whether an agent may grant a decision authority, as against withdrawing
+   * it. False is the shipped posture.
+   */
+  agent_acceptance: boolean;
   discovery: DecisionDiscoveryBudget;
   sources: DecisionSourceState[];
   provider_available: boolean;
@@ -582,6 +619,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean;
   llm?: boolean;
   preset?: Exclude<DecisionPreset, "custom">;
+  agent_acceptance?: boolean;
   sources?: Record<string, DecisionSourcePatch>;
   discovery?: DecisionDiscoveryPatch;
   etag?: string;

@@ -145,14 +145,6 @@ def _details_payload(
             profile_id = _validation_profile_id(validation)
             profiles.setdefault(profile_id, {"id": profile_id, **validation})
             payload["validation_profile_id"] = profile_id
-        # The findings this step's cause names, so an agent can round-trip from
-        # a step back to the diagnosis that produced it in one call. Emitted
-        # only when this file has addressable findings at all: on a store
-        # written before findings carried public ids there are none, and an
-        # empty list there would claim "this cause produced no finding" when
-        # the truth is "no finding here is addressable by id".
-        if finding_ids:
-            payload["finding_ids"] = finding_ids.get(step.source_biomarker, [])
         steps.append(payload)
     return {
         "steps": steps,
@@ -305,8 +297,12 @@ async def finalize_refactoring_opportunities(
         .all()
     )
 
+    # Findings let each step name the diagnosis its own target answers, so an
+    # agent round-trips from a step to it in one call.
     opportunities = compose_opportunities(
-        live_plans, primary_biomarker_by_file=primary_biomarker_by_file(findings)
+        live_plans,
+        primary_biomarker_by_file=primary_biomarker_by_file(findings),
+        findings=findings,
     )
 
     # Validation is resolved once, here, for exactly the plans that became

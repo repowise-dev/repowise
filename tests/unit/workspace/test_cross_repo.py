@@ -18,10 +18,10 @@ from repowise.core.workspace.cross_repo import (
     _is_noise_path,
     _parse_git_log,
     detect_cross_repo_co_changes,
-    detect_package_dependencies,
     load_overlay,
     save_overlay,
 )
+from repowise.core.workspace.manifests import detect_package_dependencies
 
 # ---------------------------------------------------------------------------
 # _parse_git_log
@@ -395,7 +395,7 @@ class TestCrossRepoCoChanges:
         # a<->c: one weaker (older) pair
         ac_a = [("x@co.com", now - (100 + i * 2) * day, ["shared.py"]) for i in range(2)]
         ac_c = [("x@co.com", now - (100 + i * 2) * day + 60, ["consumer.go"]) for i in range(2)]
-        with patch.object(cr, "_MAX_EDGES_PER_REPO_PAIR", 5):
+        with patch.object(cr, "MAX_EDGES_PER_REPO_PAIR", 5):
             results = self._detect_with_mocked_logs(
                 {
                     "a": _make_commits("a", ab_a + ac_a),
@@ -439,7 +439,7 @@ class TestCoChangeTruncationTotals:
         ]
         import repowise.core.workspace.cross_repo as cr
 
-        with patch.object(cr, "_MAX_EDGES_PER_REPO_PAIR", 3):
+        with patch.object(cr, "MAX_EDGES_PER_REPO_PAIR", 3):
             results, total = self._detect(
                 {"a": _make_commits("a", commits_a), "b": _make_commits("b", commits_b)},
                 min_score=0.0,

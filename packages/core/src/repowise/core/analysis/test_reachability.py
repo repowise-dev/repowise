@@ -150,6 +150,7 @@ from __future__ import annotations
 import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
 
 from sqlalchemy import select, text
@@ -162,6 +163,9 @@ from repowise.core.analysis.execution_graph import (
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GraphNode
+from repowise.core.test_paths import paired_test_names
+
+from .dead_code.file_reachability import BARREL_FILENAMES
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section above.
@@ -181,7 +185,8 @@ MAX_TESTS_PER_TARGET = 50
 
 # Which tier answered. The CLI prints this so a reader can tell "this test runs
 # into the file" from the weaker "this test imports it".
-ReachedVia = Literal["call-graph", "import-graph"]
+# ``name-match`` is weaker still: a test named for the file, with no edge.
+ReachedVia = Literal["call-graph", "import-graph", "name-match"]
 
 __all__ = [
     "DEFAULT_CALL_DEPTH",
@@ -193,7 +198,10 @@ __all__ = [
     "call_graph_from_db",
     "call_graph_from_graph",
     "files_reached_by_tests",
+    "files_with_paired_tests",
     "load_test_files",
+    "rank_tests",
+    "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
 ]
@@ -208,9 +216,9 @@ class ReachedBy:
 
     ``total`` is how many the walk actually found, before
     ``MAX_TESTS_PER_TARGET`` trimmed ``tests``. A surface that prints
-    ``len(tests)`` as the answer is stating a cap as a measurement, and the cut
-    is alphabetical, so *which* ones survive is arbitrary. Carry the total and
-    say the bound.
+    ``len(tests)`` as the answer is stating a cap as a measurement. The cut keeps
+    the test named for the target and its directory neighbours first
+    (:func:`rank_tests`). Carry the total and say the bound.
     """
 
     tests: list[str]
@@ -309,6 +317,69 @@ def files_reached_by_tests(
     return {file_of_symbol(symbol) for symbol in reached} - test_files
 
 
+def _dependencies_of(graph: Any, path: str) -> set[str]:
+    try:
+        return {
+            dst
+            for _src, dst, data in graph.out_edges(path, data=True)
+            if data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES
+        }
+    except Exception:
+        return set()
+
+
+def files_with_paired_tests(
+    graph: Any, paths: Collection[str], test_files: Collection[str]
+) -> set[str]:
+    """Files among *paths* that have a test of their own, import graph first.
+
+    A test file that imports a file directly is its test, wherever either
+    lives: ``tests/unit/cli/test_init.py`` importing ``cli/main.py`` pairs
+    them although no name says so. A test *named* for a file
+    (:func:`paired_test_names`) still pairs, but only when the graph agrees
+    or cannot say: the named test imports the file directly or through a
+    re-export barrel, has no resolved dependency at all, or there is no graph.
+    Otherwise the name is a collision - ``distill/test_engine.py`` tests the
+    distill engine, not ``health/engine.py`` - and does not pair.
+
+    One hop only, and a file-level "some test imports this", never a quantity.
+    The reach walk above stays call-graph-only; pairing is the looser question
+    "does this file have a test", and against this repository's stored line
+    coverage direct-import pairing finds 71.6% of covered files at 98.9%
+    precision where names alone found 34.6% at 100%.
+    """
+    paired: set[str] = set()
+    deps: dict[str, set[str]] = {}
+    if graph is not None:
+        for test in test_files:
+            deps[test] = _dependencies_of(graph, test)
+            paired.update(deps[test])
+    paired &= set(paths)
+
+    by_name: dict[str, list[str]] = {}
+    for path in {*paths, *test_files}:
+        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+
+    def named_pair_holds(test: str, path: str) -> bool:
+        if graph is None:
+            return True
+        imported = deps[test] if test in deps else _dependencies_of(graph, test)
+        if not imported or path in imported:
+            return True
+        return any(
+            PurePosixPath(mid).name in BARREL_FILENAMES and path in _dependencies_of(graph, mid)
+            for mid in imported
+        )
+
+    for path in paths:
+        if path in paired:
+            continue
+        candidates = (c for name in paired_test_names(path) for c in by_name.get(name, ()))
+        if any(c != path and named_pair_holds(c, path) for c in candidates):
+            paired.add(path)
+    return paired
+
+
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     """Paths of every file node ingestion classified as a test."""
     res = await session.execute(
@@ -383,7 +454,7 @@ async def tests_reaching_by_tier(
             session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
         )
         for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+            ordered = tuple(rank_tests(seed, tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
             )
@@ -392,7 +463,7 @@ async def tests_reaching_by_tier(
     if unanswered and import_depth >= 1:
         found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
         for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+            ordered = tuple(rank_tests(seed, tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
             )
@@ -574,3 +645,38 @@ async def _edges_into(
         params,
     )
     return [(s, t) for s, t in rows]
+
+
+def rank_tests(target: str, tests: Collection[str]) -> list[str]:
+    """*tests* with the one named for *target* first, then by how much of its directory
+    path each mirrors, so a capped list keeps the test most likely to exercise it."""
+    names = paired_test_names(target)
+    dirs = set(target.split("/")[:-1])
+
+    def key(test: str) -> tuple[bool, int, str]:
+        path = test.split("::", 1)[0]
+        return path.rsplit("/", 1)[-1] not in names, -len(dirs & set(path.split("/")[:-1])), test
+
+    return sorted(tests, key=key)
+
+
+def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
+    """Tests named for each target by convention: the fallback when no edge answered.
+
+    An unresolved graph (dynamic client, unindexed framework) leaves
+    ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
+    against a change a test guards.
+    """
+    by_name: dict[str, list[str]] = {}
+    for path in test_files:
+        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+    out: dict[str, ReachedBy] = {}
+    for target in targets:
+        found = rank_tests(
+            target, [path for name in paired_test_names(target) for path in by_name.get(name, ())]
+        )
+        if found:
+            out[target] = ReachedBy(
+                found[:MAX_TESTS_PER_TARGET], "name-match", len(found), tuple(found)
+            )
+    return out

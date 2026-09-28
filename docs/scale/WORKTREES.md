@@ -29,6 +29,7 @@ Auto-seeding only fires when all of these hold; otherwise repowise falls back to
 - The worktree has no `.repowise/state.json` yet (an already-indexed worktree is left alone).
 - The base checkout has a healthy index (`state.json` + `wiki.db`).
 - Base and worktree share the same initial commit, and the base's last synced commit is an ancestor of the worktree's HEAD.
+- `--force` was not passed.
 
 ## Overrides
 
@@ -36,6 +37,7 @@ Auto-seeding only fires when all of these hold; otherwise repowise falls back to
 |------|--------|
 | `--no-seed` | Force a cold full init inside a worktree; skip auto-detection entirely. |
 | `--seed-from <path>` | Seed from an explicit checkout instead of the auto-detected base. Useful for unusual layouts, e.g. seeding one full clone from another. All the same validations apply. |
+| `--force` | Re-index this checkout from scratch, in the mode you invoked. Seeding is skipped, because a re-index is the work seeding exists to avoid. Still free: `--force --no-prose` renders the whole wiki from templates with no model. `repowise update --full` remains the only path that regenerates with a model. |
 
 `--seed-from` also works outside worktrees: any two checkouts of the same repository qualify, as long as they share history.
 

@@ -25,14 +25,22 @@ type Scope = "communities" | "files";
 // falls through to the "community" default rather than erroring.
 const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community"]);
 
-/** `?show=tests,docs` ↔ the population flags. Absent or empty = production only. */
+/** `?show=tests,docs` ↔ the population flags. Absent or empty = production only.
+ *  `external` rides in the same list: it is the same question ("which files
+ *  that are not this repo's own code are drawn"), asked of the Files view. */
 const POPULATION_KEYS = ["tests", "examples", "docs"] as const;
-function parsePopulation(raw: string | null): GraphPopulation {
+function parseShow(raw: string | null): GraphPopulation & { external: boolean } {
   const on = new Set((raw ?? "").split(",").map((s) => s.trim()));
-  return { tests: on.has("tests"), examples: on.has("examples"), docs: on.has("docs") };
+  return {
+    tests: on.has("tests"),
+    examples: on.has("examples"),
+    docs: on.has("docs"),
+    external: on.has("external"),
+  };
 }
-function serializePopulation(p: GraphPopulation): string | null {
-  const on = POPULATION_KEYS.filter((k) => p[k]);
+function serializeShow(p: GraphPopulation, external: boolean): string | null {
+  const on: string[] = POPULATION_KEYS.filter((k) => p[k]);
+  if (external) on.push("external");
   return on.length ? on.join(",") : null;
 }
 
@@ -73,15 +81,25 @@ export function GraphView({
   // stepping out of the community — the breadcrumb and Escape are the way up.
   const [communityParam, setCommunityParam] = useQueryState("community");
   const [showParam, setShowParam] = useQueryState("show");
+  const show = useMemo(() => parseShow(showParam), [showParam]);
   const population = useMemo<GraphPopulation>(
-    () => (showParam ? parsePopulation(showParam) : PRODUCTION_ONLY),
-    [showParam],
+    () =>
+      showParam
+        ? { tests: show.tests, examples: show.examples, docs: show.docs }
+        : PRODUCTION_ONLY,
+    [showParam, show],
   );
   const handlePopulationChange = useCallback(
     (next: GraphPopulation) => {
-      void setShowParam(serializePopulation(next));
+      void setShowParam(serializeShow(next, show.external));
     },
-    [setShowParam],
+    [setShowParam, show.external],
+  );
+  const handleShowExternalChange = useCallback(
+    (next: boolean) => {
+      void setShowParam(serializeShow(population, next));
+    },
+    [setShowParam, population],
   );
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
@@ -273,7 +291,7 @@ export function GraphView({
       description={
         isCommunities
           ? "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on."
-          : "Every file and how it depends on the others. Pick two files to trace a path between them."
+          : "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
       }
       headerActions={headerControls}
       banner={
@@ -305,6 +323,8 @@ export function GraphView({
       onActiveCommunityChange={handleActiveCommunityChange}
       population={population}
       onPopulationChange={handlePopulationChange}
+      showExternal={show.external}
+      onShowExternalChange={handleShowExternalChange}
       // Same value the banner reports, so the caption and the canvas can
       // never disagree about how many files are drawn.
       graphLimit={graphLimit}

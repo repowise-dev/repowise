@@ -13,15 +13,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .models import Severity
+from .models import Severity, primary_finding
 from .ranking import worst_metric
 from .rows import detail_map, field
 from .scoring import (
     CATEGORY_CAPS,
+    HISTORY_CATEGORY,
     SCORE_FLOOR,
     SCORE_MAX,
     biomarker_category,
     biomarker_weight,
+    deduction_split,
+    history_cap,
     is_advisory,
     severity_deduction,
 )
@@ -34,6 +37,8 @@ __all__ = [
     "finding_raw_deduction",
     "module_label",
     "module_rollups",
+    "primary_and_magnitude",
+    "primary_and_magnitude_by_file",
     "score_breakdown",
     "severity_breakdown",
 ]
@@ -205,6 +210,31 @@ def finding_raw_deduction(finding: Any) -> float:
     )
 
 
+def primary_and_magnitude(findings: Sequence[Any]) -> dict[str, Any]:
+    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
+
+    ``total_deduction`` sums stored ``health_impact``, the applied (capped)
+    value; :func:`finding_raw_deduction` is unscaled and differs on capped files.
+    """
+    if not findings:
+        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
+    primary = primary_finding(findings)
+    total = sum(float(field(x, "health_impact", 0.0) or 0.0) for x in findings)
+    return {
+        "primary_biomarker": field(primary, "biomarker_type") if primary else None,
+        "primary_reason": field(primary, "reason") if primary else None,
+        "total_deduction": round(total, 3),
+    }
+
+
+def primary_and_magnitude_by_file(findings: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    """:func:`primary_and_magnitude` for each ``file_path`` in *findings*."""
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(field(f, "file_path"), []).append(f)
+    return {path: primary_and_magnitude(fs) for path, fs in by_file.items()}
+
+
 def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """Reconstruct one file's per-category deductions from its open findings.
 
@@ -228,10 +258,13 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
 
     categories: list[dict[str, Any]] = []
     total_deduction = 0.0
-    for category, cap in CATEGORY_CAPS.items():
+    # The history cap follows the structure half, so report the one it scored under.
+    structure, _ = deduction_split(findings)
+    for category, static_cap in CATEGORY_CAPS.items():
         entries = per_category.get(category, [])
         if not entries:
             continue
+        cap = history_cap(structure) if category == HISTORY_CATEGORY else static_cap
         raw_each = [finding_raw_deduction(f) for f in entries]
         applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
         raw_sum = sum(raw_each)

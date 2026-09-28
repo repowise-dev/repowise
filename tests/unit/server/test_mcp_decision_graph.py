@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -333,7 +334,16 @@ async def decision_db(session: AsyncSession, repo_id: str) -> str:
         action="superseded",
         currency="superseded",
         accepter="test",
+        kind="person",
         evidence=["seed:dec_superseded"],
+    )
+    await session.flush()
+
+    # Accepting a record now mirrors its scope into the graph, so clear that
+    # before writing the links this fixture wants: it states the graph
+    # exactly, rather than layering on whatever the scope arrays imply.
+    await session.execute(
+        delete(DecisionNodeLink).where(DecisionNodeLink.repository_id == rid)
     )
     await session.flush()
 

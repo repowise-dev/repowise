@@ -1,6 +1,6 @@
 """Repo-wide co-change accumulation + change entropy (FULL-tier signals).
 
-A single ``git log --name-only`` walk feeds two history signals at once:
+A single ``git log --name-status`` walk feeds two history signals at once:
 
 * **Co-change** — decay-weighted co-occurrence pairs across tracked files,
   each carrying its raw shared-commit count and both files' commit totals.
@@ -35,6 +35,7 @@ from ._constants import (
     _MAX_PARTNERS_PER_FILE,
     _MIN_CO_CHANGE_SUPPORT,
 )
+from .records import RenameTrail, name_status_path
 
 logger = structlog.get_logger(__name__)
 
@@ -43,7 +44,7 @@ __all__ = ["CoChangeWalk", "compute_co_changes_and_entropy"]
 
 @dataclass
 class CoChangeWalk:
-    """Everything one ``git log --name-only`` walk yields, keyed by file path.
+    """Everything one ``git log --name-status`` walk yields, keyed by file path.
 
     A record rather than a tuple, like ``PriorDefects`` and ``FixWalk`` in the
     orchestrator that consumes this, because the walk keeps acquiring signals.
@@ -109,8 +110,10 @@ def compute_co_changes_and_entropy(
 ) -> CoChangeWalk:
     """Walk recent commits once, returning every history signal it yields.
 
-    Uses a single ``git log --name-only`` call instead of spawning one
+    Uses a single ``git log --name-status`` call instead of spawning one
     ``git diff`` subprocess per commit — O(1) processes vs O(commit_limit).
+    Its rename rows file each older commit under the path at HEAD, so a file
+    keeps its co-change partners and entropy across a rename, like its churn.
 
     **Co-change** applies exponential decay so recent co-changes weigh more
     than ancient ones, and divides each commit's weight by ``n - 1`` so a pair
@@ -164,7 +167,7 @@ def compute_co_changes_and_entropy(
         # %x00 = commit separator, %ct = committer timestamp (Unix epoch).
         raw = repo.git.log(
             f"-{commit_limit}",
-            "--name-only",
+            "--name-status",
             "--no-merges",
             "--format=%x00%ct",
         )
@@ -176,6 +179,8 @@ def compute_co_changes_and_entropy(
         on_co_change_start(actual_commits)
 
     current: set[str] = set()
+    moved: list[tuple[str, str]] = []
+    renames = RenameTrail()
     current_ts: int = 0
     # Position in the newest-first walk (0 is HEAD): the pair decay's clock.
     current_ordinal: int = 0
@@ -231,7 +236,10 @@ def compute_co_changes_and_entropy(
         if line == "\x00" or line.startswith("\x00"):
             # Commit boundary — flush previous, parse timestamp.
             _flush_commit()
+            for old_path, new_path in moved:
+                renames.record(old_path, new_path)
             current = set()
+            moved = []
             ts_part = line.lstrip("\x00").strip()
             try:
                 current_ts = int(ts_part)
@@ -241,9 +249,12 @@ def compute_co_changes_and_entropy(
             commits_seen += 1
             if on_commit_done is not None:
                 on_commit_done()
-        else:
-            path = line.strip()
-            if path and path in all_files:
+        elif line.strip():
+            path, renamed_from = name_status_path(line)
+            if renamed_from:
+                moved.append((renamed_from, path))
+            path = renames.resolve(path)
+            if path in all_files:
                 current.add(path)
 
     _flush_commit()  # final commit

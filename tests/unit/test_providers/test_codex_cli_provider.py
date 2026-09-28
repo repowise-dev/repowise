@@ -16,6 +16,7 @@ from repowise.core.providers.llm.codex_cli import (
     CodexCliProvider,
     CodexModelReasoning,
     _extract_codex_model_catalog,
+    _resolve_concurrency,
 )
 
 
@@ -410,8 +411,10 @@ async def test_generate_raises_when_jsonl_has_no_agent_message(monkeypatch, tmp_
         await CodexCliProvider(repo_path=tmp_path).generate("sys", "user")
 
 
-async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
+async def test_generate_respects_configured_concurrency(monkeypatch, tmp_path):
+    """The semaphore is the fan-out knob: 2 in flight, never more."""
     monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "2")
     active = 0
     max_active = 0
 
@@ -431,9 +434,56 @@ async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
     await asyncio.gather(
         provider.generate("sys", "user 1"),
         provider.generate("sys", "user 2"),
+        provider.generate("sys", "user 3"),
     )
 
-    assert max_active == 1
+    assert max_active == 2
+
+
+async def test_generate_fans_out_to_the_default_concurrency(monkeypatch, tmp_path):
+    """Serializing made a 104-page generate take about 95 minutes."""
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.delenv("REPOWISE_CODEX_CLI_CONCURRENCY", raising=False)
+    active = 0
+    max_active = 0
+
+    async def on_communicate() -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
+        return FakeProcess(stdout=_success_jsonl("OK"), on_communicate=on_communicate)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    provider = CodexCliProvider(repo_path=tmp_path)
+
+    await asyncio.gather(*[provider.generate("sys", f"user {i}") for i in range(4)])
+
+    assert max_active == 4
+
+
+def test_concurrency_env_overrides_the_default(monkeypatch):
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "6")
+    assert _resolve_concurrency() == 6
+
+
+def test_concurrency_default_is_four(monkeypatch):
+    monkeypatch.delenv("REPOWISE_CODEX_CLI_CONCURRENCY", raising=False)
+    assert _resolve_concurrency() == 4
+
+
+def test_concurrency_rejects_invalid_and_clamps_to_one(monkeypatch):
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "not-a-number")
+    assert _resolve_concurrency() == 4
+
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "0")
+    assert _resolve_concurrency() == 1
+
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", " 2 ")
+    assert _resolve_concurrency() == 2
 
 
 async def test_generate_times_out_and_kills_codex_exec(monkeypatch, tmp_path):

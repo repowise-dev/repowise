@@ -13,6 +13,11 @@ from repowise.core.savings.contracts import (
     SavingsReport,
     utc_text,
 )
+from repowise.core.savings.formulas import (
+    REDUCTION_DENOMINATOR_SQL,
+    reduction_quantile_offset,
+    reduction_ratio,
+)
 from repowise.core.savings.reporting import (
     DAY_LIMIT,
     agent_breakdown_rows,
@@ -178,6 +183,29 @@ class SavingsRepository:
         )
         return cursor.rowcount == 1
 
+    def _reduction_p90(
+        self, where: str, params: list[Any], population: int
+    ) -> float | None:
+        """The reduction ratio at the published quantile, over reducing events.
+
+        One bounded row, not the population: a percentile is the value at a
+        rank, so the database seeks to that rank rather than handing every
+        ratio over to be sorted here, and the method stays as cheap as the
+        aggregates beside it. ``reduction_quantile_offset`` is shared with the
+        pure builder so the two land on the same row.
+        """
+        if not population:
+            return None
+        den = REDUCTION_DENOMINATOR_SQL
+        hit = self._conn.execute(
+            f"SELECT CAST(saved_input_tokens AS REAL) / {den} "
+            f"FROM savings_events WHERE {where} AND {den} > 0 "
+            "AND saved_input_tokens > 0 "
+            "ORDER BY 1 ASC LIMIT 1 OFFSET ?",
+            [*params, reduction_quantile_offset(population)],
+        ).fetchone()
+        return float(hit[0]) if hit is not None else None
+
     def report(
         self,
         repository_id: str,
@@ -202,6 +230,7 @@ class SavingsRepository:
             cutoff = as_of - timedelta(days=days)
             where += " AND occurred_at >= ?"
             params.append(utc_text(cutoff))
+        den = REDUCTION_DENOMINATOR_SQL
         row = self._conn.execute(
             f"""
             SELECT
@@ -230,7 +259,14 @@ class SavingsRepository:
                     THEN COALESCE(saved_output_tokens, 0) * output_rate_usd_per_million
                          / 1000000.0 ELSE 0 END), 0.0),
                 MIN(occurred_at),
-                MAX(occurred_at)
+                MAX(occurred_at),
+                COALESCE(SUM(CASE WHEN {den} > 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN {den} ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN saved_input_tokens ELSE 0 END), 0)
             FROM savings_events WHERE {where}
             """,
             params,
@@ -260,6 +296,11 @@ class SavingsRepository:
             "GROUP BY 1 ORDER BY 3 DESC, 1 ASC LIMIT ?",
             [*params, limit],
         ).fetchall()
+        baseline_events = int(row[16])
+        reducing_events = int(row[17])
+        baseline_input = int(row[18])
+        baseline_saved = int(row[19])
+        p90 = self._reduction_p90(where, params, reducing_events)
         saved_input = int(row[5])
         priced_input = int(row[8])
         saved_output = int(row[11])
@@ -282,6 +323,12 @@ class SavingsRepository:
             priced_output_savings_usd=float(row[13]),
             opportunity_count=int(opportunity_count),
             opportunity_tokens_excluded=int(opportunity_tokens),
+            baseline_events=baseline_events,
+            reducing_events=reducing_events,
+            baseline_input_tokens=baseline_input,
+            baseline_saved_input_tokens=baseline_saved,
+            input_reduction_ratio=reduction_ratio(baseline_saved, baseline_input),
+            input_reduction_ratio_p90=p90,
             per_operation=breakdown_rows("operation", operations),
             per_surface=breakdown_rows("surface", surfaces),
             per_agent=agent_breakdown_rows(agents),

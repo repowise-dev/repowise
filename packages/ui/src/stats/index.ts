@@ -1,4 +1,3 @@
-export { SizeClassHero } from "./size-class-hero";
 export {
   StatCallout,
   NLOC_HINT,
@@ -9,7 +8,8 @@ export {
 export { OriginBlock } from "./origin-block";
 export { ChurnLedger } from "./churn-ledger";
 export { StatRibbon, type RibbonStat } from "./stat-ribbon";
-export { RecordsGrid } from "./records-grid";
+export { RecordsList, type RecordLinks } from "./records-list";
+export { StatsReport, type StatsReportProps } from "./stats-report";
 export { ChronotypeList } from "./chronotype-list";
 export { ArrivalsTimeline } from "./arrivals-timeline";
 export { PunchCard } from "./punch-card";

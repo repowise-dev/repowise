@@ -20,6 +20,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from repowise.core.analysis.decisions.commit_mining import pr_candidates, signal_commits
 from repowise.core.analysis.decisions.extractor import (
     DecisionExtractor,
     _coerce_paths,
@@ -255,6 +258,40 @@ async def test_git_archaeology_shows_the_files_in_a_reproducible_order(tmp_path)
     (prompt,) = ex.test_provider.prompts
     shown = prompt.split("Files changed: ")[1].split("\n")[0].split(", ")
     assert shown == sorted(shown)
+
+
+# --- stored commit metadata in a shape the miners cannot use ---------------
+
+_UNUSABLE_COMMIT_METADATA = {
+    "none": None,
+    "json_dict": json.dumps({"sha": _SHA, "message": "not a list"}),
+    "json_list_of_non_dicts": json.dumps([1, "two", None]),
+    "malformed_json": '[{"sha": ',
+}
+
+
+@pytest.mark.parametrize("value", _UNUSABLE_COMMIT_METADATA.values(), ids=_UNUSABLE_COMMIT_METADATA)
+async def test_both_miners_read_unusable_commit_metadata_as_no_commits(tmp_path, value):
+    """Git archaeology and the PR miner degrade alike instead of raising."""
+    ex = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+    ex._git_meta_map = {_SUBJECT: {"significant_commits_json": value}}
+
+    assert await ex.mine_git_archaeology() == []
+    assert await ex.mine_pr_bodies() == []
+    assert ex.test_provider.prompts == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("value", _UNUSABLE_COMMIT_METADATA.values(), ids=_UNUSABLE_COMMIT_METADATA)
+def test_one_unusable_file_does_not_hide_the_valid_ones(value):
+    meta = {**_meta_map([_SUBJECT]), "packages/other.py": {"significant_commits_json": value}}
+
+    commit_map, commit_files = signal_commits(meta)
+    candidates, files_by_sha = pr_candidates(meta)
+
+    assert list(commit_map) == [_SHA]
+    assert commit_files == {_SHA: [_SUBJECT]}
+    assert list(candidates) == [_SHA]
+    assert files_by_sha == {_SHA: [_SUBJECT]}
 
 
 # --- what the model returned, when it is not a list of paths ---------------

@@ -14,6 +14,7 @@ import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
 export type CommitAuthorship = "all" | "human" | "agent";
+export type CommitKind = "all" | "high" | "fixes";
 
 export interface CommitTableProps {
   commits: Commit[];
@@ -24,14 +25,19 @@ export interface CommitTableProps {
    *  no handler is provided. */
   authorship?: CommitAuthorship;
   onAuthorshipChange?: (authorship: CommitAuthorship) => void;
+  /** Server-driven review-priority / fixes filter. */
+  kind?: CommitKind;
+  onKindChange?: (kind: CommitKind) => void;
+  /** Repo-wide counts for the filter chips. Page-scoped counts read as
+   *  "All (50), High priority (50)" on a risk-sorted feed, where every loaded
+   *  row is already in the top tercile. */
+  counts?: { all: number; high: number; fixes: number } | undefined;
   onSelect?: (commit: Commit) => void;
   total?: number;
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
 }
-
-type Filter = "all" | "high" | "fixes";
 
 type CommitRow = Commit & { _idx: number };
 
@@ -128,21 +134,6 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
       </span>
     ),
   },
-  {
-    key: "top_driver",
-    header: "Top driver",
-    headerClassName: "max-xl:hidden",
-    cellClassName: "max-xl:hidden max-w-[220px]",
-    hideInCard: true,
-    render: (c) => (
-      <span
-        className="block truncate text-xs text-[var(--color-text-tertiary)]"
-        title={c.top_driver ?? undefined}
-      >
-        {c.top_driver ?? "—"}
-      </span>
-    ),
-  },
 ];
 
 /**
@@ -157,6 +148,9 @@ export function CommitTable({
   onSortChange,
   authorship = "all",
   onAuthorshipChange,
+  kind = "all",
+  onKindChange,
+  counts,
   onSelect,
   total,
   hasMore,
@@ -164,23 +158,19 @@ export function CommitTable({
   onLoadMore,
 }: CommitTableProps) {
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
 
+  // Search stays client-side over the loaded page; the band and fix filters
+  // are server-driven, so they narrow the repository rather than the page.
   const filtered = useMemo(() => {
-    let items = commits;
-    if (search) {
-      const q = search.toLowerCase();
-      items = items.filter(
-        (c) =>
-          c.subject.toLowerCase().includes(q) ||
-          c.author_name.toLowerCase().includes(q) ||
-          c.sha.toLowerCase().includes(q),
-      );
-    }
-    if (filter === "high") items = items.filter((c) => c.review_priority === "high");
-    else if (filter === "fixes") items = items.filter((c) => c.is_fix);
-    return items;
-  }, [commits, search, filter]);
+    if (!search) return commits;
+    const q = search.toLowerCase();
+    return commits.filter(
+      (c) =>
+        c.subject.toLowerCase().includes(q) ||
+        c.author_name.toLowerCase().includes(q) ||
+        c.sha.toLowerCase().includes(q),
+    );
+  }, [commits, search]);
 
   if (commits.length === 0 && authorship === "all") {
     return (
@@ -191,14 +181,10 @@ export function CommitTable({
     );
   }
 
-  const filters: { key: Filter; label: string; count: number }[] = [
-    { key: "all", label: "All", count: commits.length },
-    {
-      key: "high",
-      label: "High priority",
-      count: commits.filter((c) => c.review_priority === "high").length,
-    },
-    { key: "fixes", label: "Fixes", count: commits.filter((c) => c.is_fix).length },
+  const filters: { key: CommitKind; label: string; count: number | undefined }[] = [
+    { key: "all", label: "All", count: counts?.all },
+    { key: "high", label: "High priority", count: counts?.high },
+    { key: "fixes", label: "Fixes", count: counts?.fixes },
   ];
 
   const sorts: { key: CommitSort; label: string }[] = [
@@ -222,16 +208,21 @@ export function CommitTable({
           {filters.map((f) => (
             <button
               key={f.key}
-              onClick={() => setFilter(f.key)}
+              onClick={() => onKindChange?.(f.key)}
+              aria-pressed={kind === f.key}
               className={cn(
                 "px-2.5 py-1.5 font-medium transition-colors",
-                filter === f.key
+                kind === f.key
                   ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
                   : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
               )}
             >
               {f.label}
-              <span className="ml-1 text-[10px] opacity-70">({f.count})</span>
+              {f.count != null && (
+                <span className="ml-1 text-[10px] opacity-70">
+                  ({f.count.toLocaleString()})
+                </span>
+              )}
             </button>
           ))}
         </div>

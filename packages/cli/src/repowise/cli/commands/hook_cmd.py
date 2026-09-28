@@ -350,6 +350,10 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
     """Remove the rewrite hooks and the AGENTS.md awareness section."""
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations.codex_config import (
+        remove_agents_md_distill_section,
+    )
+    from repowise.cli.helpers import save_distill_commands_enabled
 
     removed = ClaudeCodeAdapter().uninstall_rewrite_hook()
     console.print(f"Rewrite hook: {'[green]removed[/green]' if removed else 'not installed'}")
@@ -360,14 +364,23 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
         console.print(
             f"Codex rewrite hook: {'[green]removed[/green]' if codex_removed else 'not installed'}"
         )
-        from repowise.cli.editor_integrations.codex_config import (
-            remove_agents_md_distill_section,
-        )
 
-        target = _hook_target(path, workspace, no_workspace)
-        for repo_path in _target_repo_paths(target):
-            if remove_agents_md_distill_section(repo_path):
-                console.print(f"  [green]✓[/green] AGENTS.md distill section removed ({repo_path})")
+    target = _hook_target(path, workspace, no_workspace)
+    for repo_path in _target_repo_paths(target):
+        if remove_agents_md_distill_section(repo_path):
+            console.print(f"  [green]✓[/green] AGENTS.md distill section removed ({repo_path})")
+
+    if target.is_workspace:
+        assert target.ws_root is not None and target.ws_config is not None
+        for entry in target.ws_config.repos:
+            abs_path = (target.ws_root / entry.path).resolve()
+            if (abs_path / ".repowise").is_dir():
+                save_distill_commands_enabled(abs_path, enabled=False)
+                console.print(f"  {entry.alias}: [yellow]disabled[/yellow]")
+    else:
+        assert target.repo_path is not None
+        if (target.repo_path / ".repowise").is_dir():
+            save_distill_commands_enabled(target.repo_path, enabled=False)
 
 
 @rewrite_group.command("status")

@@ -7,6 +7,8 @@ registry and a dialect file reads as "this recogniser is for Rust" at a glance.
 
 from __future__ import annotations
 
+import re
+
 from repowise.core.ingestion.languages.registry import REGISTRY as _REGISTRY
 
 JS_TS = _REGISTRY.extensions_for(["javascript", "typescript"])
@@ -19,3 +21,6 @@ GO = _REGISTRY.extensions_for(["go"])
 CSHARP = _REGISTRY.extensions_for(["csharp"])
 RUST = _REGISTRY.extensions_for(["rust"])
 PROTO = _REGISTRY.extensions_for(["proto"])
+
+# A JS / TS module file's extension, which an import specifier leaves off.
+JS_EXTENSION_RE = re.compile(r"\.(?:[cm]?[jt]sx?)$")
