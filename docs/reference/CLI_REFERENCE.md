@@ -902,12 +902,14 @@ counts. See [Branch overlap](../layers/CHANGE_RISK.md#branch-overlap).
 Security signal scanning. Working-tree scanning already runs during
 `repowise init` / `repowise update`. The CLI group exists so you can also walk
 **full git history** for leaked secrets and risky patterns that were later
-removed (something the working-tree scan cannot see).
+removed (something the working-tree scan cannot see), and to gate a change in
+CI.
 
 **Subcommands:**
 
 ```bash
 repowise security scan --history [OPTIONS]
+repowise security check [REVSPEC] [OPTIONS]   # CI gate on what a change adds
 ```
 
 Without `--history`, `security scan` prints a short hint and exits — it does
@@ -921,7 +923,7 @@ not re-run the working-tree scan.
 | `--since <rev>` | Lower git revision bound (exclusive). Defaults to all history |
 | `--to <rev>` | Upper git revision bound (inclusive). Defaults to HEAD / all history |
 | `--path <dir>` | Repo path (defaults to cwd / workspace primary) |
-| `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (`hardcoded_password` / `hardcoded_secret`) to avoid noise |
+| `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (the credential assignments and vendor key shapes) to avoid noise |
 | `--format` | `table` (default) or `json`. `--output` is a deprecated alias, still accepted; when both are given `--output` wins |
 
 ```bash
@@ -931,7 +933,43 @@ repowise security scan --history --all-patterns --format json
 ```
 
 Findings are written to the `security_findings` table (idempotent on re-run)
-and surface in the local server security API / UI.
+and surface in the local server security API / UI. The command prints counts;
+read the findings there.
+
+#### `repowise security check [REVSPEC]`
+
+Gate a change on the security findings it adds. Built for CI: it needs git and
+nothing else (no index, no database, no API key) and stores nothing. It scans
+the files the change touched, as its head has them, and keeps the findings on
+changed lines; secret kinds are also checked in every commit of the change, so
+a key committed and then deleted inside it still fails. Snippets are masked in
+every format.
+
+REVSPEC is the change: `origin/main...HEAD` (the pull-request view),
+`base..head`, or one commit. Without it, the base comes from the CI's
+pull-request variables (GitHub, GitLab, Jenkins, Bitbucket), else the remote's
+default branch.
+
+| Flag | Description |
+|------|-------------|
+| `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low` |
+| `--baseline` | Accept the findings recorded in this file; only new ones fail |
+| `--write-baseline` | Add this change's findings to this file, keeping its entries, and exit 0 |
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif` |
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --format github --baseline .security-baseline.json
+repowise security check --format sarif > security.sarif
+repowise security check --write-baseline .security-baseline.json
+```
+
+Exit codes: `0` gate passed, `1` gate failed, `2` could not evaluate (not a git
+repository, unknown revision, a shallow clone missing the merge-base or cutting
+a commit of the change, an unreadable baseline). Check out with full history
+(`fetch-depth: 0`). See [In CI](../layers/SECURITY.md#in-ci-repowise-security-check)
+for the scoping rules and a GitHub Actions recipe with SARIF upload.
 
 ---
 

@@ -169,6 +169,7 @@ the items that matter most to you can be prioritized.
 | Auto-generated CLAUDE.md | ✅ | ✅ |
 | Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
+| Local CI security gate on a change (`repowise security check`, SARIF output, committed baseline) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |

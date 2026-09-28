@@ -21,17 +21,22 @@ repowise init                       # working-tree signals populate during index
 repowise security scan --history    # walk every tracked revision for leaked secrets
 repowise security scan --history --since v1.0.0 --to HEAD
 repowise security scan --history --all-patterns --format json
+repowise security check origin/main...HEAD   # CI gate on what a change adds (see below)
 ```
+
+`scan --history` stores what it finds and prints counts, not a list:
 
 ```
 repowise security scan --history
-
-  8 findings across 412 commits
-
-  high   hardcoded_secret     config/settings.py:14      a3f19c2  2025-11-04
-  high   hardcoded_password   deploy/bootstrap.sh:31     91b7ee0  2025-08-22
-  high   hardcoded_secret     tests/fixtures/auth.py:7   4c02da8  2025-06-13
+  Commits scanned: 412
+  Blobs scanned:   2318
+  Files scanned:   1604
+  Findings stored: 8
+  By severity:     high=6, low=2
+  By kind:         aws_access_key=1, hardcoded_password=2, hardcoded_secret=5
 ```
+
+The findings themselves are read where the stored rows surface, below.
 
 From an agent, through the risk surface:
 
@@ -45,8 +50,11 @@ Findings also appear on the Security tab of the code-health page, and at
 ## What the registry catches
 
 Twenty-two patterns plus a symbol-name scan, giving twenty-three kinds across
-three severities. Severity is a fixed property of the pattern; nothing is
-scored, ranked, or aggregated.
+three severities. Severity is a fixed property of the pattern, with one
+exception: a secret kind found in test material, or under a `test`, `spec`,
+`fixtures`, `mock` or `example` directory (and their plural and dunder forms),
+is recorded at `low`, since those are mostly fake keys but a real one is still
+worth seeing. Nothing is scored, ranked, or aggregated.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
@@ -211,14 +219,93 @@ Both paths land in the same `security_findings` table, with a unique constraint
 on `(repository_id, file_path, kind, line_number, commit_sha)`. Re-running either
 scan is idempotent.
 
+## In CI: `repowise security check`
+
+A third surface, for pull requests. It needs git and nothing else: no index,
+no database, no API key, and it stores nothing.
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --fail-on med --format github
+repowise security check --format sarif > security.sarif
+```
+
+It judges what the change adds, not the repository:
+
+- **At the change's head**, every file the change touched is scanned as the
+  head commit has it, and a finding counts only when a line it spans is one
+  the change added or edited. The two multi-line kinds count when any line of
+  their span changed, so editing only the `shell=True` line of a call, or only
+  the body of a PEM key, still counts. In a documentation file (`.md`, `.mdx`,
+  `.rst`, `.txt`, `.adoc`) only the secret kinds count: prose naming
+  `pickle.loads` is not a call, but a key pasted into a README is a leak.
+- **Inside the change**, every commit in the range is scanned the same way
+  for the secret kinds only. A key committed in one commit and deleted in the
+  next is absent from the head and present in every clone; the gate reports it
+  with the commit that added it and says to rotate it. Merge commits are
+  skipped, so merging the target branch in does not blame its lines on the
+  change. A code smell added and removed inside the change does not count.
+
+`--fail-on` names the lowest severity that fails (`high` by default, then
+`med`, `low`). Exit codes are the ones every repowise CI gate uses: `0` passed,
+`1` failed, `2` could not evaluate (not a git repository, unknown revision, no
+merge-base in a shallow clone, a commit of the change cut off by a shallow
+clone, an unreadable baseline). A git error is never read as a clean change.
+
+Every format carries the masked snippet only, because CI logs are often
+public: `table`, `json`, `markdown`, `github` (annotations plus the job
+summary) and `sarif` (for code-scanning upload). The gate is the registry
+above and has its limits: a pass means no pattern matched a changed line.
+
+**Baseline.** `--write-baseline FILE` records the change's findings in a
+committed JSON file and exits 0; `--baseline FILE` accepts what it lists, so
+only new findings fail. A finding is keyed on its file, kind and masked
+matched line, never on the raw value, so it stays accepted when an edit above
+it shifts its line number and changes when the matched line itself changes.
+Because the gate sees one change at a time, writing to an existing baseline
+adds to its entries instead of replacing them; remove an entry by deleting it
+from the file.
+
+GitHub Actions, with the SARIF uploaded from your own workflow:
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the gate reads every commit of the change
+      - run: pip install repowise
+      - run: repowise security check --format github --baseline .security-baseline.json
+      - if: always()
+        run: repowise security check --format sarif --baseline .security-baseline.json > security.sarif || true
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security.sarif
+```
+
+Without a REVSPEC the base comes from the CI's pull-request variables
+(`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Jenkins'
+`CHANGE_TARGET`, Bitbucket's `BITBUCKET_PR_DESTINATION_BRANCH`), else the
+remote's default branch. A shallow checkout cannot be read commit by commit,
+so fetch the full history; the gate exits 2 rather than guess.
+
 ## Line verification
 
 A finding's `line_number` is written at scan time, and the file moves on. A wrong
 line on a security finding is worse than none: it sends the reader to innocent
 code while looking authoritative. So the line is re-checked against the live file
-every time a finding is served, using the stored snippet — the first 120
-characters of the matched line, which is always a substring of the line it came
-from.
+every time a finding is served, using the stored snippet: the matched line,
+stripped and trimmed to 120 characters, with every credential value on it
+masked to its first four characters and `****`. An unmasked snippet is a
+substring of the line it came from; a masked one is matched on the text before
+the first `****`.
 
 Three outcomes, on every finding the API returns:
 
@@ -246,8 +333,8 @@ One table, `security_findings`, written by both scan paths:
 |---|---|
 | `file_path` | Repo-relative |
 | `kind` | One of the kinds in the table above |
-| `severity` | `high`, `med`, `low` — fixed per pattern |
-| `snippet` | Matched line, trimmed to 120 characters; a symbol name for `security_sensitive_symbol` |
+| `severity` | `high`, `med`, `low`: fixed per pattern, except a secret kind in test material is `low` |
+| `snippet` | Matched line, trimmed to 120 characters, credential values masked (`AKIA****`); a symbol name for `security_sensitive_symbol`. The raw value is never stored |
 | `line_number` | As of scan time; verified at serve time |
 | `commit_sha` | Empty for working-tree rows, the introducing commit for history rows |
 | `commit_at` | Author date, history rows only |

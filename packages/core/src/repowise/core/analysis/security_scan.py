@@ -609,6 +609,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 if is_low_sev_file:
                     severity = "low"
             start_line = source.count("\n", 0, match.start()) + 1
+            end_line = source.count("\n", 0, match.end()) + 1
             if kind == "private_key_pem":
                 end = source.find("-----END", match.end())
                 end_line = source.count("\n", 0, end if end != -1 else match.end()) + 1
@@ -625,6 +626,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     "severity": severity,
                     "snippet": _snippet(source[line_start:line_end]),
                     "line": start_line,
+                    # The last line the match spans, so a diff-scoped reader
+                    # counts an edit anywhere inside the call or key.
+                    "end_line": end_line,
                 }
             )
 
