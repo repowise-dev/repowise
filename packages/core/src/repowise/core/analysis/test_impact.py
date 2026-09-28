@@ -42,20 +42,20 @@ def _freshness(
             "ingested_commit": ingested_commit,
             "indexed_commit": None,
         }
-    if not ingested_commit or not indexed_commit:
-        return {
-            "status": "unknown",
-            "reason": "coverage_or_index_commit_unavailable",
-            "ingested_commit": ingested_commit,
-            "indexed_commit": indexed_commit,
-        }
     status = coverage_freshness(ingested_commit, indexed_commit)
     return {
         "status": status,
-        "reason": None if status == "current" else "coverage_commit_differs_from_index",
+        "reason": _FRESHNESS_REASONS[status],
         "ingested_commit": ingested_commit,
         "indexed_commit": indexed_commit,
     }
+
+
+_FRESHNESS_REASONS: dict[str, str | None] = {
+    "current": None,
+    "stale": "coverage_commit_differs_from_index",
+    "unknown": "coverage_or_index_commit_unavailable",
+}
 
 
 def _recommendation_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:

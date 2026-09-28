@@ -110,7 +110,8 @@ class RescoreCoverage:
     source_format: str | None = None
     # True for a reingestion, including an empty one that must clear stored rows.
     authoritative: bool = False
-    mapping_partial: bool = False
+    # How the reingested report mapped (``CoverageProvenance``); None when reused.
+    provenance: Any = None
 
 
 async def _coverage_for_rescore(
@@ -154,7 +155,7 @@ async def _coverage_for_rescore(
                     resolved.files,
                     resolved.source_format,
                     authoritative=True,
-                    mapping_partial=resolved.mapping_partial,
+                    provenance=resolved.provenance,
                 )
 
         # Reingestion is authoritative. Falling back to old rows when a report
@@ -1504,7 +1505,7 @@ async def _rescore_health_from_db(
                     coverage.files,
                     source_format=coverage.source_format or "lcov",
                     ingested_commit_sha=live_head,
-                    mapping_partial=coverage.mapping_partial,
+                    provenance=coverage.provenance,
                 )
             await persist_graph_nodes(session, repo_id, graph_builder)
 

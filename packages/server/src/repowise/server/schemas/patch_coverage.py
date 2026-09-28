@@ -41,7 +41,7 @@ class PatchCoverageScope(_Strict):
     label: str
     source_formats: list[str]
     reports: list[str]
-    #: Null when unknown: stored coverage keeps only the paths that matched.
+    #: Null when unknown: stored by an ingest that did not record its path counts.
     report_path_count: int | None
     unmatched_report_path_count: int | None
     #: Fewer than half the report's paths matched this repository.

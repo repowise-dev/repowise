@@ -10,8 +10,8 @@ from .contexts import (
     parse_lcov_contexts,
 )
 from .decay import (
-    STALE_DRIFT_PCT,
-    STALE_MIN_MEASURED,
+    DRIFT_MIN_MEASURED,
+    DRIFT_PCT,
     CoverageDecay,
     decay_for_file,
     decay_since,
@@ -20,6 +20,7 @@ from .decay import (
 from .detector import PARSERS, detect_format, is_test_file, paired_test_file, parse
 from .discovery import (
     CoverageConfig,
+    CoverageProvenance,
     ResolvedCoverage,
     ResolvedTestCoverage,
     build_coverage_map,
@@ -42,12 +43,13 @@ from .model import (
 from .repowise_json import parse_repowise_json
 
 __all__ = [
+    "DRIFT_MIN_MEASURED",
+    "DRIFT_PCT",
     "PARSERS",
-    "STALE_DRIFT_PCT",
-    "STALE_MIN_MEASURED",
     "ContextCoverageReport",
     "CoverageConfig",
     "CoverageDecay",
+    "CoverageProvenance",
     "CoverageReport",
     "FileCoverage",
     "FreshnessStatus",

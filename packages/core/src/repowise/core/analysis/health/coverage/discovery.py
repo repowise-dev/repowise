@@ -177,6 +177,39 @@ class ResolvedCoverage:
     def total(self) -> int:
         return self.matched + len(self.unmatched) + len(self.ambiguous)
 
+    @property
+    def provenance(self) -> CoverageProvenance:
+        return CoverageProvenance(
+            source_formats=tuple(self.source_formats),
+            report_path_count=self.total,
+            matched_path_count=self.matched,
+            unmatched_path_count=len(self.unmatched),
+            ambiguous_path_count=len(self.ambiguous),
+            unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
+            mapping_partial=self.mapping_partial,
+        )
+
+
+#: Unmatched report paths kept for the diagnostic; the counts stay exact.
+UNMATCHED_SAMPLE_CAP = 10
+
+
+@dataclass(frozen=True)
+class CoverageProvenance:
+    """Where an ingest's coverage came from, stored beside its rows.
+
+    Counts are over the report's file entries. ``None`` means the writer did
+    not know them, which is not zero.
+    """
+
+    source_formats: tuple[str, ...] = ()
+    report_path_count: int | None = None
+    matched_path_count: int | None = None
+    unmatched_path_count: int | None = None
+    ambiguous_path_count: int | None = None
+    unmatched_sample: tuple[str, ...] = ()
+    mapping_partial: bool = False
+
 
 def discover_artifacts(
     repo_root: Path,
@@ -356,6 +389,7 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     dst.covered_lines = sorted(covered)
     dst.coverable_lines = sorted(coverable)
     dst.total_coverable_lines = total
+    dst.covered_line_count = len(covered)
     dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
     if src.branch_coverage_pct is not None:
         dst.branch_coverage_pct = (
@@ -411,6 +445,7 @@ def resolve_reports(
                 covered_lines=list(fc.covered_lines),
                 total_coverable_lines=fc.total_coverable_lines,
                 coverable_lines=list(fc.coverable_lines),
+                covered_line_count=fc.covered_line_count,
             )
             if key in by_key:
                 _merge_into(by_key[key], resolved_fc)

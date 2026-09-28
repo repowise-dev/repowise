@@ -408,11 +408,19 @@ async def test_health_for_a_symbol_target_reads_its_file_with_stored_coverage_an
     assert health["max_ccn"] == 15
     assert health["has_test_file"] is False
     assert health["module"] == "auth"
-    assert health["coverage"] == {
+    coverage = health["coverage"]
+    assert "covered_lines" not in coverage
+    assert {k: coverage[k] for k in (
+        "file_path", "source_format", "line_coverage_pct", "branch_coverage_pct",
+        "total_coverable_lines", "covered_line_count",
+    )} == {
+        "file_path": "src/auth/service.py",
         "source_format": "lcov",
         "line_coverage_pct": 61.5,
         "branch_coverage_pct": 40.0,
         "total_coverable_lines": 200,
+        # No stored count on this row, so derived from 61.5% of 200.
+        "covered_line_count": 123,
     }
     assert len(health["top_biomarkers"]) == 2
     top = health["top_biomarkers"][0]

@@ -228,7 +228,7 @@ def coverage_add(
                         resolved.files,
                         source_format=resolved.source_format or "lcov",
                         ingested_commit_sha=head_sha,
-                        mapping_partial=mapping_partial,
+                        provenance=resolved.provenance,
                     )
                     agg_matched = resolved.matched
                     console.print(

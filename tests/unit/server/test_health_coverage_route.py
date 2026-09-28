@@ -196,3 +196,24 @@ async def test_covered_lines_are_withheld_from_the_list_response(
 
     assert all("covered_lines" not in f for f in listed["files"])
     assert detail["files"][0]["covered_lines"] == [1, 2, 3]
+
+
+async def test_summary_says_whether_coverage_was_measured_at_the_indexed_commit(
+    client, session, tmp_path
+) -> None:
+    from repowise.core.persistence.models import Repository
+
+    repo = await create_test_repo(client, tmp_path)
+    await save_coverage_files(
+        session, repo["id"], _FILES, source_format="lcov", ingested_commit_sha="aaa"
+    )
+    row = await session.get(Repository, repo["id"])
+    row.head_commit = "bbb"
+    await session.commit()
+
+    summary = (await _get(client, repo["id"], include_inferred="false"))["summary"]
+
+    assert summary["freshness"] == {"status": "stale", "indexed_commit": "bbb"}
+    # Written without provenance: the counts are unknown, not zero.
+    assert summary["report_paths"] is None
+    assert summary["source_formats"] == ["lcov"]

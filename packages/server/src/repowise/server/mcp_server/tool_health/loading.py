@@ -281,11 +281,14 @@ async def _read_coverage(
         "file_path",
     )
     # A stored repo-wide aggregate cannot describe a narrowed population, so
-    # it is omitted there; the rows stay.
+    # it is omitted there; the rows stay. Freshness is against the indexed
+    # commit, the tree every other figure in the response describes.
     summary = (
         {}
         if pop.reported_scope == "production"
-        else await get_coverage_summary(session, repository.id)
+        else await get_coverage_summary(
+            session, repository.id, reference_commit=getattr(repository, "head_commit", None)
+        )
     )
     return rows, summary
 

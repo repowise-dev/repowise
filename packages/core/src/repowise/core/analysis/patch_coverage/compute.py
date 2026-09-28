@@ -80,7 +80,7 @@ class PatchScope:
     source_formats: tuple[str, ...] = ()
     reports: tuple[str, ...] = ()  # report files read, as the caller named them
     # File entries across those reports, and how many did not map to a file in
-    # the repository. ``None`` when unknown (stored coverage keeps only matches).
+    # the repository. ``None`` when unknown (an ingest that did not record them).
     report_path_count: int | None = None
     unmatched_report_path_count: int | None = None
     # Fewer than half the report's files mapped: the figure covers a fragment.
@@ -211,7 +211,7 @@ def patch_coverage_from_resolved(
             label=label,
             source_formats=tuple(resolved.source_formats),
             reports=tuple(reports),
-            report_path_count=resolved.matched + unmatched,
+            report_path_count=resolved.total,
             unmatched_report_path_count=unmatched,
             mapping_partial=resolved.mapping_partial,
         ),

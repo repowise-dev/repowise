@@ -43,6 +43,7 @@ async def stored_patch_coverage(
     wanted = sorted(set(changed) & measured)
     coverage = await load_file_coverage(session, repository_id, file_paths=wanted) if wanted else {}
     commit = summary["ingested_commit_sha"]
+    paths = summary["report_paths"]
     return compute_patch_coverage(
         changed,
         coverage,
@@ -50,7 +51,9 @@ async def stored_patch_coverage(
         report_paths=measured,
         scope=PatchScope(
             label=label,
-            source_formats=(summary["source_format"],) if summary["source_format"] else (),
+            source_formats=tuple(summary["source_formats"]),
+            report_path_count=paths["total"] if paths else None,
+            unmatched_report_path_count=paths["unmatched"] + paths["ambiguous"] if paths else None,
             mapping_partial=bool(summary["mapping_partial"]),
             measured_commit=commit,
             freshness=coverage_freshness(commit, head_commit),

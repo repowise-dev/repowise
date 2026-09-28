@@ -708,6 +708,47 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+/** How the report's own file entries mapped to the repository at ingest. */
+export interface CoverageReportPaths {
+  total: number;
+  matched: number;
+  unmatched: number;
+  ambiguous: number;
+  unmatched_sample: string[];
+}
+
+/** ``GET /health/coverage``. ``basis`` is absent when the graph was not consulted. */
+export interface CoverageResponse {
+  summary: CoverageSummary;
+  files: Record<string, unknown>[];
+  modules: Record<string, unknown>[];
+  modules_total: number;
+  basis?: "measured" | "inferred" | "none" | null;
+  inferred?: Record<string, unknown> | null;
+}
+
+/** The repository's stored coverage, aggregated. Zero counts and nulls when none is stored. */
+export interface CoverageSummary {
+  file_count: number;
+  covered_lines: number;
+  total_lines: number;
+  line_coverage_pct: number | null;
+  branch_coverage_pct: number | null;
+  source_format: string | null;
+  source_formats: string[];
+  mapping_partial: boolean | null;
+  ingested_at: string | null;
+  ingested_commit_sha: string | null;
+  report_paths: CoverageReportPaths | null;
+  freshness: CoverageSummaryFreshness | null;
+}
+
+/** Whether the coverage was measured at the commit the index describes. */
+export interface CoverageSummaryFreshness {
+  status: "current" | "stale" | "unknown";
+  indexed_commit: string | null;
+}
+
 /** 202 launch payload for a re-analysis (an index-only job, no LLM work). */
 export interface DeadCodeAnalyzeResponse {
   job_id: string;

@@ -1199,6 +1199,26 @@ get_health(only=["top_findings"])                     # + top_findings_total, au
 get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
 
+### Coverage: the stored report and how far to trust it
+
+`include=["coverage"]` returns the stored per-file rows and a repo-wide
+`summary`. Every row carries `covered_line_count` beside
+`total_coverable_lines`; targeted mode adds the `covered_lines` array. The
+summary's `freshness.status` is `current` when the report was measured at the
+indexed commit, `stale` when at another one (its line numbers may describe
+code that has moved), and `unknown` when either commit is missing.
+`report_paths` says how the report's own file entries mapped at ingest
+(`total`, `matched`, `unmatched`, `ambiguous`, and a short `unmatched_sample`);
+it is null for coverage stored before that record existed. `source_formats`
+lists every report format merged.
+
+In targeted mode each row also carries a `decay` block: how many of the
+report's covered lines are unchanged since it ran (`confirmed_lines`) and how
+many have moved since (`invalidated_lines`, now unknown rather than uncovered).
+`decay.drifted` is true once a fifth of a file's measurement has moved. It is a
+per-file statement about lines, separate from the summary's commit-level
+`freshness`.
+
 ### Performance: one lead, then drill down
 
 A bare `get_health()` carries `performance_directive`: one bounded lead with

@@ -332,6 +332,7 @@ def test_base_includes_all_models():
         "performance_opportunities",
         "performance_summaries",
         "coverage_files",
+        "coverage_ingests",
         "test_coverage",
         "pipeline_jobs",
         "graph_metrics",

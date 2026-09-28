@@ -115,6 +115,14 @@ the longest trailing-path overlap. A tie refuses to guess and is reported as
 ambiguous rather than mapped to the wrong file. If a whole report comes back
 unmatched, set `coverage.strip_prefix` in `.repowise/config.yaml`.
 
+Each ingest records how the report mapped: every format merged, how many of
+its paths matched, did not match or tied, a short sample of the misses, and
+the commit it was measured at. The coverage summary (REST `/health/coverage`,
+MCP `get_health`) reports it as `report_paths`, and its `freshness` says
+whether the measurement matches the indexed commit. Stored patch coverage
+reads the same record, so its report path counts are real numbers rather than
+null.
+
 ## Building a per-test map
 
 The map needs a report that records *which test* covered each line. Two paths

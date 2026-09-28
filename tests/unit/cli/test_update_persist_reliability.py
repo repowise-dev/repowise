@@ -278,8 +278,8 @@ def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, mon
     assert coverage.source_format == "lcov"
 
 
-def test_reingest_carries_the_partial_mapping_flag(tmp_path: Path, monkeypatch) -> None:
-    # A fragment re-ingested on update must be stored as a fragment.
+def test_reingest_carries_the_ingest_provenance(tmp_path: Path, monkeypatch) -> None:
+    # A fragment re-ingested on update must be stored as a fragment, with its counts.
     from repowise.cli.commands.update_cmd import persistence
     from repowise.core.analysis.health.coverage import FileCoverage, ResolvedCoverage
 
@@ -292,6 +292,9 @@ def test_reingest_carries_the_partial_mapping_flag(tmp_path: Path, monkeypatch) 
         coverage_map={"a.py": {}},
         files=[FileCoverage("a.py", 100.0, None, [1], 1, [1])],
         source_format="lcov",
+        source_formats=["lcov"],
+        matched_exact=1,
+        unmatched=["x/b.py", "x/c.py"],
         mapping_partial=True,
     )
     monkeypatch.setattr(
@@ -301,7 +304,9 @@ def test_reingest_carries_the_partial_mapping_flag(tmp_path: Path, monkeypatch) 
 
     coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
     assert coverage.authoritative is True
-    assert coverage.mapping_partial is True
+    assert coverage.provenance.mapping_partial is True
+    assert coverage.provenance.report_path_count == 3
+    assert coverage.provenance.unmatched_sample == ("x/b.py", "x/c.py")
 
 
 # ---------------------------------------------------------------------------

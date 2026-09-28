@@ -22,6 +22,10 @@ class FileCoverage:
     (hit or not). It is what tells an uncovered changed line apart from a
     changed comment or blank line, so patch coverage needs it. Empty means
     the report did not say which lines are executable, not that none are.
+
+    ``covered_line_count`` is the numerator of ``line_coverage_pct``, kept so
+    aggregates never derive it back from the rounded percentage. ``None``
+    when the source stated a percentage rather than a count.
     """
 
     file_path: str
@@ -30,6 +34,7 @@ class FileCoverage:
     covered_lines: list[int] = field(default_factory=list)
     total_coverable_lines: int = 0
     coverable_lines: list[int] = field(default_factory=list)
+    covered_line_count: int | None = None
 
 
 def file_coverage(
@@ -61,6 +66,7 @@ def file_coverage(
         covered_lines=sorted(covered_set),
         total_coverable_lines=n_total,
         coverable_lines=sorted(coverable_set),
+        covered_line_count=n_hit,
     )
 
 

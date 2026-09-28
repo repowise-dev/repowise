@@ -18,6 +18,9 @@ from . import (  # noqa: F401
     refactoring,
 )
 from .coverage import (
+    coverage_by_module,
+    coverage_row_dict,
+    empty_coverage_summary,
     file_coverage_from_row,
     get_coverage_summary,
     load_coverage_for_repo,
@@ -119,9 +122,12 @@ __all__ = [
     "backfill_is_test",
     "backfill_module_attribution",
     "count_refactoring_suggestions",
+    "coverage_by_module",
+    "coverage_row_dict",
     "covered_source_files",
     "doc_drift_findings_stored",
     "doc_drift_references_stored",
+    "empty_coverage_summary",
     "file_coverage_from_row",
     "files_covered_by",
     "finalize_performance_opportunities",

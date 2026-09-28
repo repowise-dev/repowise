@@ -321,23 +321,15 @@ async def file_detail(
         )
 
     # --- Coverage (incl. line-level set for the heatmap) --------------------
-    coverage_rows = await crud.load_coverage_for_repo(session, repo_id, file_paths=[file_path])
+    # ``covered_line_count`` is sent in both modes so "N of M lines hit" never
+    # has to count the array client-side, which is what forced it to travel.
+    coverage_rows = await crud.load_coverage_for_repo(
+        session, repo_id, file_paths=[file_path], include_covered_lines=not slim
+    )
     coverage: dict | None = None
     if coverage_rows:
-        c = coverage_rows[0]
-        covered_lines = _json_or(c.covered_lines_json, [])
-        coverage = {
-            "line_coverage_pct": c.line_coverage_pct,
-            "branch_coverage_pct": c.branch_coverage_pct,
-            "total_coverable_lines": c.total_coverable_lines,
-            # Sent in both modes so "N of M lines hit" never has to count the
-            # array client-side, which is what forced the array to travel.
-            "covered_line_count": len(covered_lines),
-            "covered_lines": [] if slim else covered_lines,
-            "source_format": c.source_format,
-            "ingested_at": c.ingested_at.isoformat() if c.ingested_at else None,
-            "ingested_commit_sha": c.ingested_commit_sha,
-        }
+        coverage = crud.coverage_row_dict(coverage_rows[0], include_covered_lines=not slim)
+        coverage.setdefault("covered_lines", [])
 
     # --- Graph context ------------------------------------------------------
     graph: dict | None = None

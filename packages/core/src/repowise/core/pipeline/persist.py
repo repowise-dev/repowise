@@ -1958,7 +1958,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
                 ingested_commit_sha=head_sha,
-                mapping_partial=bool(getattr(hr, "coverage_mapping_partial", False)),
+                provenance=getattr(hr, "coverage_provenance", None),
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
