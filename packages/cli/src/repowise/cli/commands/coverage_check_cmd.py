@@ -24,7 +24,7 @@ from repowise.cli.ci import (
     cannot_evaluate,
     ci_notices,
 )
-from repowise.cli.helpers import console
+from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 
@@ -108,25 +108,57 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
 
     root = _repo_root(repo)
     cfg = _coverage_config(root, validate_threshold=fail_under is None)
+    threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
+    changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
     if not report_paths:
-        raise _CannotEvaluateError(
-            "no_report",
-            "No coverage report found. Pass one with --report (lcov.info, coverage.xml, "
-            "coverage.out, jacoco.xml, ...) or set coverage.paths in .repowise/config.yaml."
-        )
+        # No report on disk: an index's stored coverage still answers locally.
+        stored = run_async(_stored(root, changed, label, threshold))
+        if stored is None:
+            raise _CannotEvaluateError(
+                "no_report",
+                "No coverage report found. Pass one with --report (lcov.info, coverage.xml, "
+                "coverage.out, jacoco.xml, ...), set coverage.paths in "
+                ".repowise/config.yaml, or ingest one with `repowise coverage add`.",
+            )
+        return stored
     if notices is console:
         # Machine formats carry the list in ``scope.reports`` instead.
         notices.print(f"[dim]Reading {', '.join(escape(str(p)) for p in report_paths)}[/dim]")
 
-    changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
     return patch_coverage_from_resolved(
         changed,
         _resolve_reports(root, cfg, report_paths, report_format, notices),
-        threshold=fail_under if fail_under is not None else cfg.fail_under,
+        threshold=threshold,
         label=label,
         reports=[str(p) for p in report_paths],
     )
+
+
+async def _stored(root: Path, changed, label: str, threshold: float | None):
+    """Patch coverage from the index's stored coverage, or ``None`` without one."""
+    from repowise.core import git_refs
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        return await stored_patch_coverage(
+            session,
+            repo_id,
+            changed,
+            label=label,
+            head_commit=git_refs.resolve(str(root), _head_of(label)),
+            threshold=threshold,
+        )
+
+
+def _head_of(revspec: str) -> str:
+    from repowise.core.analysis.change_risk.features import split_revspec
+
+    parts = split_revspec(revspec)
+    return parts[2] if parts else revspec
 
 
 def _resolve_reports(root, cfg, report_paths, report_format, notices):

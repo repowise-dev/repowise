@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from ...test_paths import is_test_related_path
 from ..changed_lines import line_ranges
+from ..health.coverage.freshness import FreshnessStatus
 from ..health.coverage.model import FileCoverage
 
 if TYPE_CHECKING:
@@ -81,6 +82,11 @@ class PatchScope:
     report_path_count: int = 0  # file entries across those reports
     # Report entries that did not map to a file in the repository.
     unmatched_report_path_count: int = 0
+    # The commit the coverage was measured at, and whether that is the
+    # change's head (``coverage_freshness``). Stale coverage still computes,
+    # but its line numbers describe other code, so every renderer says so.
+    measured_commit: str | None = None
+    freshness: FreshnessStatus = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +95,8 @@ class PatchScope:
             "reports": list(self.reports),
             "report_path_count": self.report_path_count,
             "unmatched_report_path_count": self.unmatched_report_path_count,
+            "measured_commit": self.measured_commit,
+            "freshness": self.freshness,
         }
 
 
@@ -151,9 +159,15 @@ def compute_patch_coverage(
     *,
     threshold: float | None = None,
     scope: PatchScope | None = None,
+    report_paths: Iterable[str] | None = None,
 ) -> PatchCoverage:
-    """Intersect a change with a coverage report. See the module docstring."""
-    measured_suffixes = {PurePosixPath(p).suffix for p in coverage}
+    """Intersect a change with a coverage report. See the module docstring.
+
+    *report_paths* is every path the report measures, when *coverage* holds
+    only the changed files' entries (a stored report read for one change); it
+    decides which unlisted files count as ``not_in_report``.
+    """
+    measured_suffixes = {PurePosixPath(p).suffix for p in report_paths or coverage}
     files: list[FilePatchCoverage] = []
     out_of_scope = 0
     for path in sorted(changed):
@@ -182,6 +196,7 @@ def patch_coverage_from_resolved(
     threshold: float | None = None,
     label: str = "",
     reports: Sequence[str] = (),
+    freshness: FreshnessStatus = "unknown",
 ) -> PatchCoverage:
     """:func:`compute_patch_coverage` over reports already resolved to repo keys."""
     unmatched = len(resolved.unmatched) + len(resolved.ambiguous)
@@ -195,6 +210,7 @@ def patch_coverage_from_resolved(
             reports=tuple(reports),
             report_path_count=resolved.matched + unmatched,
             unmatched_report_path_count=unmatched,
+            freshness=freshness,
         ),
     )
 

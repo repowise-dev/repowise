@@ -148,6 +148,7 @@ async def get_change_risk(
     change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``patch_coverage`` is the share of changed executable lines stored coverage ran.
     ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
     fixes on these exact lines. ``branch_overlap`` names other branches editing
     them. ``diff_shape`` is one line on size, not a danger verdict. An empty
@@ -228,6 +229,9 @@ async def get_change_risk(
         payload["impacted_tests"] = await _impacted_tests_block(
             ctx, changed, changed_error, collector
         )
+        patch = await _patch_coverage_block(ctx, changed, changed_error, revspec, result)
+        if patch is not None:
+            payload["patch_coverage"] = patch
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
             # One fix record, not two. The blocks answered the same question
@@ -1084,6 +1088,47 @@ async def _inferred_impacted(
         }
     )
     return block
+
+
+async def _patch_coverage_block(
+    ctx: Any,
+    changed: dict[str, set[int]],
+    changed_error: tuple[str, str] | None,
+    revspec: str | None,
+    result: Any,
+) -> dict[str, Any] | None:
+    """Share of the change's executable lines the stored coverage ran, or ``None``.
+
+    The same computation ``repowise coverage check`` gates on, read from the
+    coverage the index stores. ``None`` when there is no index, no stored
+    coverage, or no readable change: ``impacted_tests`` already says why.
+    """
+    from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import split_revspec
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or changed_error is not None or not changed:
+        return None
+    # Uncommitted edits were never measured, so no commit can vouch for them.
+    head_commit = None
+    if not result.working_tree:
+        target = revspec or "HEAD"
+        parts = split_revspec(target)
+        head_commit = git_refs.resolve(str(ctx.path), parts[2] if parts else target) or None
+    try:
+        async with get_session(session_factory) as session:
+            patch = await stored_patch_coverage(
+                session,
+                (await _get_repo(session)).id,
+                changed,
+                label=result.features.ref,
+                head_commit=head_commit,
+            )
+    except (LookupError, SQLAlchemyError):
+        return None
+    return patch.to_dict() if patch is not None else None
 
 
 async def _impacted_tests_block(

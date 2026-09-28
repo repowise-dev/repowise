@@ -63,6 +63,9 @@ def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
     if pc.out_of_scope_count:
         files += f", {pc.out_of_scope_count} out of scope"
     parts.append(files)
+    if scope.freshness == "stale":
+        at = f" at {scope.measured_commit[:7]}" if scope.measured_commit else ""
+        parts.append(f"coverage was measured{at}, not at this change's head")
     if scope.unmatched_report_path_count:
         parts.append(
             f"{scope.unmatched_report_path_count} of {scope.report_path_count} report paths "

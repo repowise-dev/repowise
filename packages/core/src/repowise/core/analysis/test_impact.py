@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.exclusion import is_excluded
 from repowise.core.persistence.models import Repository
 
@@ -48,11 +49,10 @@ def _freshness(
             "ingested_commit": ingested_commit,
             "indexed_commit": indexed_commit,
         }
+    status = coverage_freshness(ingested_commit, indexed_commit)
     return {
-        "status": "current" if ingested_commit == indexed_commit else "stale",
-        "reason": None
-        if ingested_commit == indexed_commit
-        else "coverage_commit_differs_from_index",
+        "status": status,
+        "reason": None if status == "current" else "coverage_commit_differs_from_index",
         "ingested_commit": ingested_commit,
         "indexed_commit": indexed_commit,
     }

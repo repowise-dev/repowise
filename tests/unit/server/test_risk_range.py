@@ -225,3 +225,38 @@ async def test_route_scores_through_the_shared_facade(
     assert body["fix_history"]["density"] == expected.fix_density
     assert body["fix_history"]["percentile"] == expected.fix_percentile
     assert body["fix_history"]["available"] == expected.fix_history_available
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_reads_stored_coverage(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/coverage/patch"
+
+    # Nothing ingested yet: null, not a zero.
+    empty = await client.get(url, params={"base": base})
+    assert empty.status_code == 200 and empty.json() is None
+
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+        source_format="lcov",
+        ingested_commit_sha=head,
+    )
+    await session.commit()
+    data = (await client.get(url, params={"base": base})).json()
+
+    assert data["patch_coverage_pct"] == 66.66
+    assert data["files"][0]["uncovered_ranges"] == [[3, 3]]
+    assert data["scope"]["freshness"] == "current"
+    assert data["scope"]["label"] == f"{base}...HEAD"
+    assert (await client.get(url, params={"base": "nope"})).status_code == 400

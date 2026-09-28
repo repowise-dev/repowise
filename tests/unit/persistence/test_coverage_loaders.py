@@ -59,3 +59,52 @@ async def test_rows_without_line_sets_load_as_unknown(async_session, repo) -> No
     (fc,) = (await load_file_coverage(async_session, repo.id)).values()
     assert fc.coverable_lines == []
     assert fc.covered_lines == []
+
+
+async def test_stored_patch_coverage_matches_a_fresh_report(async_session, repo) -> None:
+    from repowise.core.analysis.patch_coverage import (
+        compute_patch_coverage,
+        stored_patch_coverage,
+    )
+
+    fc = file_coverage("src/a.py", [1, 4], [1, 3, 4])
+    other = file_coverage("src/b.py", [1], [1])
+    await save_coverage_files(
+        async_session, repo.id, [fc, other], source_format="lcov", ingested_commit_sha="abc"
+    )
+    changed = {"src/a.py": {1, 2, 3}, "src/new.py": {1}, "README.md": {1}}
+
+    stored = await stored_patch_coverage(
+        async_session, repo.id, changed, label="main...HEAD", head_commit="abc"
+    )
+    fresh = compute_patch_coverage(changed, {"src/a.py": fc, "src/b.py": other})
+
+    assert stored is not None
+    assert stored.files == fresh.files
+    assert stored.out_of_scope_count == fresh.out_of_scope_count == 1
+    assert stored.scope.freshness == "current"
+    assert stored.scope.source_formats == ("lcov",)
+
+
+async def test_stored_patch_coverage_marks_coverage_from_another_commit(
+    async_session, repo
+) -> None:
+    from repowise.core.analysis.patch_coverage import render_markdown, stored_patch_coverage
+
+    fc = file_coverage("src/a.py", [1], [1, 2])
+    await save_coverage_files(
+        async_session, repo.id, [fc], source_format="lcov", ingested_commit_sha="abcdef0123"
+    )
+    stored = await stored_patch_coverage(
+        async_session, repo.id, {"src/a.py": {2}}, head_commit="fff"
+    )
+
+    assert stored is not None
+    assert stored.scope.freshness == "stale"
+    assert "measured at abcdef0, not at this change's head" in render_markdown(stored)
+
+
+async def test_stored_patch_coverage_is_none_without_coverage(async_session, repo) -> None:
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    assert await stored_patch_coverage(async_session, repo.id, {"a.py": {1}}) is None

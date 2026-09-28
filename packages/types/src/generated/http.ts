@@ -2138,6 +2138,45 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+export interface PatchCoverageFile {
+  file_path: string;
+  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
+  changed_line_count: number;
+  coverable_line_count: number;
+  covered_line_count: number;
+  patch_coverage_pct: number | null;
+  uncovered_ranges: number[][];
+}
+
+export interface PatchCoverageFileCounts {
+  measured: number;
+  not_in_report: number;
+  no_line_data: number;
+  no_coverable_changes: number;
+  out_of_scope: number;
+}
+
+export interface PatchCoverageResponse {
+  patch_coverage_pct: number | null;
+  covered_line_count: number;
+  coverable_line_count: number;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set";
+  file_counts: PatchCoverageFileCounts;
+  files: PatchCoverageFile[];
+  scope: PatchCoverageScope;
+}
+
+export interface PatchCoverageScope {
+  label: string;
+  source_formats: string[];
+  reports: string[];
+  report_path_count: number;
+  unmatched_report_path_count: number;
+  measured_commit: string | null;
+  freshness: "current" | "stale" | "unknown";
+}
+
 /**
  * What the map is counting.
  *

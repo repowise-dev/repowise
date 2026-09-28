@@ -22,6 +22,7 @@ from .render import (
     render_markdown,
     scope_line,
 )
+from .stored import stored_patch_coverage
 
 __all__ = [
     "RANGE_LIMIT",
@@ -40,4 +41,5 @@ __all__ = [
     "patch_coverage_from_resolved",
     "render_markdown",
     "scope_line",
+    "stored_patch_coverage",
 ]

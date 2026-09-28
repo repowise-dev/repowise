@@ -663,6 +663,15 @@ the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
 
+When the index stores coverage, the response also carries `patch_coverage`:
+the share of the change's executable lines the stored coverage ran, the same
+computation and JSON shape `repowise coverage check --format json` gates on.
+`patch_coverage_pct` is null when no changed line is executable, files the
+coverage never names read `not_in_report` rather than 0%, and
+`scope.freshness` is `stale` when the coverage was measured at another commit
+than the change's head (`unknown` for uncommitted work), so its line numbers
+may describe other code. The block is absent when no coverage is stored.
+
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
 `inferred`, `none` or `unresolved`), up to five `tests_to_run` rows carrying

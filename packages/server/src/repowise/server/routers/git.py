@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core import git_refs
 from repowise.core.analysis.change_risk import (
     SCORE_MEASURES,
     SCORE_UNIT,
@@ -66,6 +68,7 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -752,6 +755,40 @@ def _revision_exists(repo_path: str, rev: str) -> bool:
         text=True,
     )
     return result.returncode == 0
+
+
+@router.get("/{repo_id}/coverage/patch", response_model=PatchCoverageResponse | None)
+async def get_patch_coverage(
+    repo_id: str,
+    base: str = Query(..., description="Base revision; the change is what head did since"),
+    head: str = Query("HEAD", description="Head revision"),
+    repo: Repository = Depends(_resolve_local_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> PatchCoverageResponse | None:
+    """Patch coverage of ``base...head`` from the coverage the index stores.
+
+    The same computation ``repowise coverage check`` gates on; three dots, so
+    only what head did since it forked counts. ``null`` when no coverage has
+    been ingested.
+    """
+    from repowise.core.analysis.changed_lines import changed_lines
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    local_path = repo.local_path
+    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
+        raise HTTPException(status_code=400, detail=f"Unknown revision in {base!r}...{head!r}")
+    try:
+        changed, label = await asyncio.to_thread(changed_lines, local_path, f"{base}...{head}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    patch = await stored_patch_coverage(
+        session,
+        repo.id,
+        changed,
+        label=label,
+        head_commit=git_refs.resolve(local_path, head) or None,
+    )
+    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None
 
 
 @router.get("/{repo_id}/risk/range", response_model=RiskRangeResponse)

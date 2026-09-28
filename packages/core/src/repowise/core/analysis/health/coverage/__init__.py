@@ -28,6 +28,7 @@ from .discovery import (
     resolve_reports,
     resolve_test_reports,
 )
+from .freshness import FreshnessStatus, coverage_freshness
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -49,10 +50,12 @@ __all__ = [
     "CoverageDecay",
     "CoverageReport",
     "FileCoverage",
+    "FreshnessStatus",
     "ResolvedCoverage",
     "ResolvedTestCoverage",
     "TestCoverage",
     "build_coverage_map",
+    "coverage_freshness",
     "decay_for_file",
     "decay_since",
     "detect_format",

@@ -199,7 +199,14 @@ Report paths are resolved against `git ls-files` rather than an index, so a file
 the change adds resolves too. Without `REVSPEC` the base comes from the CI's
 pull-request variables, else the default branch; pass it explicitly in CI so the
 job says what it measures. Reports come from `--report`, else `coverage.paths`,
-else discovery.
+else discovery, else (locally) the coverage an index already stores from
+`coverage add`.
+
+The same figure is on every surface, from the same computation over stored
+coverage: `get_change_risk`'s `patch_coverage` block, and
+`GET /api/repos/{id}/coverage/patch?base=&head=` (diffs `base...head`; `null`
+when nothing is ingested), which the editor's branch-risk view reads. Stored
+coverage measured at another commit than the change's head is marked `stale`.
 
 The denominator is changed lines the report marks executable, so a changed
 comment or blank line is neither covered nor uncovered. What counts is decided by
