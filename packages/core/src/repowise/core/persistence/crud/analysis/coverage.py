@@ -36,25 +36,26 @@ async def save_coverage_files(
     property of the ingest, stamped on every row). Without it the ingest
     records ``source_format`` alone and its path counts stay unknown.
     """
-    mapping_partial = bool(provenance and provenance.mapping_partial)
+    from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
+
+    p = provenance or CoverageProvenance()
     for model in (CoverageFile, CoverageIngest):
         existing = await session.execute(select(model).where(model.repository_id == repository_id))
         for row in existing.scalars().all():
             await session.delete(row)
     await session.flush()
 
-    formats = list(provenance.source_formats) if provenance else []
     session.add(
         CoverageIngest(
             id=_new_uuid(),
             repository_id=repository_id,
-            source_formats_json=json.dumps(formats or [source_format]),
-            report_path_count=provenance.report_path_count if provenance else None,
-            matched_path_count=provenance.matched_path_count if provenance else None,
-            unmatched_path_count=provenance.unmatched_path_count if provenance else None,
-            ambiguous_path_count=provenance.ambiguous_path_count if provenance else None,
-            unmatched_sample_json=json.dumps(list(provenance.unmatched_sample) if provenance else []),
-            mapping_partial=mapping_partial,
+            source_formats_json=json.dumps(list(p.source_formats) or [source_format]),
+            report_path_count=p.report_path_count,
+            matched_path_count=p.matched_path_count,
+            unmatched_path_count=p.unmatched_path_count,
+            ambiguous_path_count=p.ambiguous_path_count,
+            unmatched_sample_json=json.dumps(list(p.unmatched_sample)),
+            mapping_partial=p.mapping_partial,
             ingested_commit_sha=ingested_commit_sha,
         )
     )
@@ -67,7 +68,7 @@ async def save_coverage_files(
                     repository_id=repository_id,
                     source_format=source_format,
                     ingested_commit_sha=ingested_commit_sha,
-                    mapping_partial=mapping_partial,
+                    mapping_partial=p.mapping_partial,
                     **_row_columns(f),
                 )
             )
