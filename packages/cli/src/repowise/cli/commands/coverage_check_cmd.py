@@ -110,13 +110,10 @@ def coverage_check(
 
 
 def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
-    from repowise.core import git_refs
-    from repowise.core.analysis.health.coverage import build_coverage_map
     from repowise.core.analysis.patch_coverage import patch_coverage_from_resolved
 
     root = _repo_root(repo)
     cfg = _coverage_config(root, validate_threshold=fail_under is None)
-    threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
     if not report_paths:
         raise _CannotEvaluateError(
@@ -128,6 +125,20 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
         notices.print(f"[dim]Reading {', '.join(escape(str(p)) for p in report_paths)}[/dim]")
 
     changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
+    return patch_coverage_from_resolved(
+        changed,
+        _resolve_reports(root, cfg, report_paths, report_format, notices),
+        threshold=fail_under if fail_under is not None else cfg.fail_under,
+        label=label,
+        reports=[str(p) for p in report_paths],
+    )
+
+
+def _resolve_reports(root, cfg, report_paths, report_format, notices):
+    """Parse the reports against the files git tracks, failing when nothing usable remains."""
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import build_coverage_map
+
     resolved, errors = build_coverage_map(
         root,
         report_paths,
@@ -150,13 +161,7 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
             "[yellow]More than half the report paths did not match a file in this "
             "repository; check coverage.strip_prefix / coverage.path_prefix.[/yellow]"
         )
-    return patch_coverage_from_resolved(
-        changed,
-        resolved,
-        threshold=threshold,
-        label=label,
-        reports=[str(p) for p in report_paths],
-    )
+    return resolved
 
 
 def _repo_root(repo: str | None) -> Path:
