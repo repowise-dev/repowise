@@ -31,8 +31,8 @@ from repowise.core.ci.markdown import ROW_LIMIT, cell, more_line, plural
 from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
-from .changed_lines import parse_unified_diff
-from .security_scan import SECRET_KINDS, _source_lines, scan_source
+from .changed_lines import DIFF_PREFIXES, parse_unified_diff
+from .security_scan import SECRET_KINDS, scan_source, source_lines
 
 #: Severities from least to most severe; ``--fail-on`` names the lowest that fails.
 SEVERITIES = ("low", "med", "high")
@@ -157,7 +157,11 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
         nl = out.index(b"\n", pos)
         header = out[pos:nl].split()
         pos = nl + 1
-        # "<sha> <type> <size>", else "<spec> missing" (the spec may hold spaces).
+        # "<sha> <type> <size>", "<sha> submodule" for a gitlink, else
+        # "<spec> missing" (the spec may hold spaces).
+        if len(header) == 2 and header[1] == b"submodule":
+            texts.append(None)
+            continue
         if len(header) != 3 or not header[2].isdigit():
             raise MissingObjectError(f"git has no object for {spec!r}")
         size = int(header[2])
@@ -174,7 +178,7 @@ def _scoped(path: str, source: str, lines: set[int], *, secrets_only: bool) -> l
     call, but a key pasted into a README is still a leak.
     """
     secrets_only = secrets_only or PurePosixPath(path).suffix.lower() in DOC_EXTENSIONS
-    text_lines = _source_lines(source)
+    text_lines = source_lines(source)
     rows = []
     for f in scan_source(path, source):
         if secrets_only and f["kind"] not in SECRET_KINDS:
@@ -224,7 +228,7 @@ def _history_secrets(root: str, revspec: str) -> tuple[list[dict], int]:
     log_range = _log_range(root, revspec)
     cut = _shallow_boundary(root, log_range)
     args = ["log", "--no-merges", "--reverse", "-p", "--unified=0", "--no-color"]
-    args += ["--no-ext-diff", "--format=%x00%H", *log_range, "--"]
+    args += ["--no-ext-diff", *DIFF_PREFIXES, "--format=%x00%H", *log_range, "--"]
     raw = _git(args, root)
     chunks = raw.split("\0")[1:]
     rows: list[dict] = []

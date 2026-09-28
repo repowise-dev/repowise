@@ -128,3 +128,12 @@ def test_write_baseline_merges_the_given_baseline_and_speaks_json(repo, tmp_path
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == {"baseline": str(new), "recorded": 1, "entries": 2}
+
+
+def test_sarif_suppresses_baselined_findings_below_the_threshold(repo, tmp_path):
+    _commit(repo, "h.py", "import hashlib\nhashlib.md5(b'')\n")
+    baseline = tmp_path / "b.json"
+    assert _check(repo, "--write-baseline", str(baseline)).exit_code == 0
+    result = _check(repo, "--baseline", str(baseline), "--format", "sarif")
+    (res,) = json.loads(result.stdout)["runs"][0]["results"]
+    assert res["ruleId"] == "weak_hash" and res["suppressions"] == [{"kind": "external"}]

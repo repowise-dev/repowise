@@ -292,7 +292,7 @@ def security_check(
     if accepted is not None:
         baseline = frozenset(e["fingerprint"] for e in accepted)
     gate = evaluate(scan.findings, fail_on=fail_on, baseline=baseline)
-    _emit_check(fmt, scan, gate, label)
+    _emit_check(fmt, scan, gate, label, accepted=baseline or frozenset())
     if not gate.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
@@ -354,7 +354,10 @@ def _record_baseline(path: Path, scan: ChangeScan, fmt: str, *, also_keep: list[
     )
 
 
-def _emit_check(fmt: str, scan: ChangeScan, gate: GateResult, label: str) -> None:
+def _emit_check(
+    fmt: str, scan: ChangeScan, gate: GateResult, label: str, *, accepted: frozenset[str]
+) -> None:
+    """Write the verdict in *fmt*; *accepted* is the whole baseline, below the threshold too."""
     from repowise.core.analysis import security_gate
 
     if fmt == "json":
@@ -376,7 +379,7 @@ def _emit_check(fmt: str, scan: ChangeScan, gate: GateResult, label: str) -> Non
                 scan.findings,
                 tool_version=__version__,
                 fail_on=gate.fail_on,
-                accepted=frozenset(f["fingerprint"] for f in gate.baselined),
+                accepted=accepted,
             )
         )
     elif fmt in ("markdown", "github"):

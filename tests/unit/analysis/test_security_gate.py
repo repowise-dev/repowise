@@ -421,3 +421,57 @@ def test_sarif_suppresses_the_baseline_and_drops_history_lines():
     assert by_rule["eval_call"]["suppressions"] == [{"kind": "external"}]
     assert "suppressions" not in by_rule["aws_access_key"]
     assert "region" not in by_rule["aws_access_key"]["locations"][0]["physicalLocation"]
+
+
+@pytest.mark.parametrize(
+    ("line", "raw"),
+    [
+        ("ENV NEXT_PUBLIC_API_KEY p@ssw0rd!Xy#Zq9 md5\n", "p@ssw0rd!Xy#Zq9"),
+        ('ENV["NEXT_PUBLIC_TOKEN"] = "Ab$9!kLm@2#Qr%zz"  # md5\n', "Ab$9!kLm@2#Qr%zz"),
+        ('x = NEXT_PUBLIC_SECRET ?? "p@ss:w0rd!2024x" // md5\n', "p@ss:w0rd!2024x"),
+        ("password = \"ab'SuperSecretPassword123\"; eval(x)\n", "SuperSecretPassword123"),
+    ],
+)
+def test_values_with_symbols_or_an_early_quote_are_masked(line, raw):
+    from repowise.core.analysis.security_scan import scan_source
+
+    findings = scan_source("cfg.js", line)
+    assert findings and all(raw[4:] not in f["snippet"] for f in findings)
+
+
+def test_ordinary_text_after_a_public_env_name_is_left_readable():
+    from repowise.core.analysis.security_scan import scan_source
+
+    (hit,) = scan_source("a.ts", "const k = process.env.NEXT_PUBLIC_API_KEY;\n")
+    assert hit["snippet"] == "const k = process.env.NEXT_PUBLIC_API_KEY;"
+
+
+def test_a_pem_header_constant_does_not_mask_the_code_after_it():
+    from repowise.core.analysis.security_scan import scan_source
+
+    source = 'PEM = "-----BEGIN RSA PRIVATE KEY-----"\n\ndef f(s):\n    return eval(s)\n'
+    (hit,) = [f for f in scan_source("a.py", source) if f["kind"] == "eval_call"]
+    assert hit["snippet"] == "return eval(s)"
+
+
+def test_a_lone_carriage_return_does_not_crash_the_scan():
+    from repowise.core.analysis.security_scan import scan_source
+
+    assert [f["kind"] for f in scan_source("a.py", "import os\rx = 1\reval(y)\r")] == ["eval_call"]
+
+
+def test_a_submodule_in_the_change_is_skipped_not_fatal(repo, tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _git(sub, "init", "-q")
+    _git(sub, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "s")
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.as_uri(), "sub")
+    _commit(repo, "submodule")
+    assert _scan(repo).findings == []
+
+
+def test_diff_noprefix_config_does_not_misread_paths(repo):
+    _git(repo, "config", "diff.noprefix", "true")
+    _write(repo, "b/cfg.py", "password = 'Zq8vLm2pXr7w'\n")
+    _commit(repo, "nested")
+    assert [f["file_path"] for f in _scan(repo).findings] == ["b/cfg.py"]
