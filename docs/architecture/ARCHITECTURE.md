@@ -1060,7 +1060,7 @@ repowise decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server/tool_why.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
+| `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 

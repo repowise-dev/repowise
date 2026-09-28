@@ -14,6 +14,7 @@ from the manifest file to the named class's source file.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -55,33 +56,42 @@ def _add_android_edges(
     for path in list(path_set):
         if not path.endswith("AndroidManifest.xml"):
             continue
-        try:
-            text = Path(parsed_files[path].file_info.abs_path).read_text(
-                encoding="utf-8", errors="ignore"
-            )
-        except (OSError, KeyError, AttributeError):
+        text = _read_manifest(parsed_files, path)
+        if text is None or jvm_index is None:
             continue
-
-        # Only collect names from inside component tags. The regex below
-        # is generous; the gate cuts manifest-permission lines.
-        for tag in _ANDROID_COMPONENT_TAGS:
-            for chunk in text.split(tag)[1:]:
-                head = chunk.split(">", 1)[0]
-                for m in _ANDROID_NAME_RE.finditer(head):
-                    fqn = m.group(1).lstrip(".")
-                    if not fqn:
-                        continue
-                    targets: tuple[str, ...] = ()
-                    if jvm_index is not None:
-                        targets = jvm_index.files_for_fqn(fqn)
-                    for target in targets:
-                        if target in path_set and _add_edge_if_new(graph, path, target):
-                            count += 1
-                            node = graph.nodes.get(target)
-                            if node is not None:
-                                node["is_entry_point"] = True
+        for fqn in _component_class_names(text):
+            for target in jvm_index.files_for_fqn(fqn):
+                if target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+                    node = graph.nodes.get(target)
+                    if node is not None:
+                        node["is_entry_point"] = True
 
     return count
+
+
+def _read_manifest(parsed_files: dict[str, Any], path: str) -> str | None:
+    try:
+        return Path(parsed_files[path].file_info.abs_path).read_text(
+            encoding="utf-8", errors="ignore"
+        )
+    except (OSError, KeyError, AttributeError):
+        return None
+
+
+def _component_class_names(text: str) -> Iterator[str]:
+    """Class names registered by component tags, in document order per tag.
+
+    Only names inside component tags count: the name regex is generous and
+    this gate cuts manifest-permission lines.
+    """
+    for tag in _ANDROID_COMPONENT_TAGS:
+        for chunk in text.split(tag)[1:]:
+            head = chunk.split(">", 1)[0]
+            for m in _ANDROID_NAME_RE.finditer(head):
+                fqn = m.group(1).lstrip(".")
+                if fqn:
+                    yield fqn
 
 
 class _AndroidManifestHandler:

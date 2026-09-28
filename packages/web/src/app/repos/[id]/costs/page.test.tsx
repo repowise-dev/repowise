@@ -13,7 +13,7 @@
 import React from "react";
 import { SWRConfig } from "swr";
 import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CostSummary, Savings } from "@/lib/api/costs";
 
@@ -49,12 +49,6 @@ vi.mock("next/link", () => ({
 
 import CostsPage from "./page";
 import { ACCOUNTING_METHOD_VERSION } from "@repowise-dev/ui/savings";
-
-beforeAll(() => {
-  // jsdom implements no layout, so `ViewTabs` scrolling its active tab into
-  // view on mount throws rather than doing nothing.
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 /** A report with something in it. Every figure is a wire field; the page does
  *  no arithmetic, so the values only have to be distinguishable. */

@@ -141,7 +141,7 @@ off switches.
 |---|---|---|---|
 | Where source is read | your machine | your VPC | the hosted indexer |
 | Where the index lives | `.repowise/` on your machine | Postgres + LanceDB/pgvector in your network | Repowise-operated infrastructure |
-| Who calls the LLM | you, with your key | you, with your key | the platform, or your key |
+| Who calls the LLM | you, with your key | you, with your key | the platform |
 | Outbound from your network | anonymous telemetry (disableable), your LLM provider | same, plus configured integrations | n/a, you are sending code to the platform |
 | Commercial security features (CVE triage, SBOM/VEX, hosted secret detection, compliance reports, audit trail) | not included (local pattern + full-history scan via `repowise security scan --history` is OSS) | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities--in-detail) | GA today |
 

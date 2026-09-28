@@ -6,9 +6,11 @@ import {
   agentHandoffCall,
   boundaryLabel,
   facetValueLabel,
+  humanizeToken,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
+  siblingFixLabel,
   whyRankedLabel,
 } from "../../src/health/performance/presentation";
 import { contiguousSections } from "../../src/health/performance/queue";
@@ -94,6 +96,33 @@ describe("performance presentation", () => {
 
   it("quotes the opportunity id in the agent drill-down", () => {
     expect(agentHandoffCall("perf2_abc")).toBe('get_health(opportunity_id="perf2_abc")');
+  });
+
+  it("prefers a sibling's strategy over its biomarker for the fix label", () => {
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: "batch_or_prefetch_io",
+        relation: "preferred",
+      }),
+    ).toBe("Batch or prefetch io");
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: null,
+        relation: "same_site",
+      }),
+    ).toBe("Nested loop with io");
+  });
+
+  it("reads a new actionability reason and prerequisite tokens honestly", () => {
+    expect(humanizeToken("loop_already_chunked")).toBe("Loop already chunked");
+    expect(humanizeToken("bounded_concurrency")).toBe("Bounded concurrency");
+    expect(humanizeToken("query_supports_group_selection")).toBe(
+      "Query supports group selection",
+    );
   });
 });
 

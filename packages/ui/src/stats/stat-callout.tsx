@@ -6,7 +6,7 @@ export type CalloutTone = "default" | "accent" | "success" | "warning" | "info";
 // Canonical clarifications for the two most-misread stats, shared by every
 // surface that shows them (stats tabs, overview teaser, size-class hero).
 export const NLOC_HINT =
-  "Lines of code in the repo today: non-blank, non-comment lines, excluding lockfiles, generated and vendored files. Not a historical total — deleted code doesn't count.";
+  "Lines of code in the repo today: non-blank, non-comment lines, excluding lockfiles, generated and vendored files. Not a historical total: deleted code doesn't count.";
 export const AGENT_PCT_HINT =
   "Share of commits with a verifiable agent signature: known bot identities, agent commit footers, or Co-authored-by agent trailers. Squash merges that drop trailers and agents committing under a human git identity can't be detected, so the true share may be higher.";
 

@@ -93,6 +93,27 @@ def test_health_delta_is_identical_across_sources(make_repo, revspec):
     ]
 
 
+def test_supplied_source_needs_no_repo_path(make_repo):
+    """A caller with no checkout has content and SHAs, never a path."""
+    repo: Repo = make_repo("parity")
+    repo.commit("base", {"app/a.py": python_complex("run", 2)})
+    repo.commit("head", {"app/a.py": python_complex("run", 9)})
+
+    from_git = ChangeHealthDeltaService(repo_path=str(repo.path)).compare(
+        DeltaRequest(repo_path=str(repo.path), revspec="HEAD")
+    )
+
+    supplied = _mirror(GitRevisionSource(str(repo.path)), "HEAD")
+    from_supplied = ChangeHealthDeltaService(supplied).compare(
+        DeltaRequest(repo_path=None, revspec="HEAD")
+    )
+
+    assert from_git.findings, "the fixture must surface findings to compare"
+    assert from_supplied.status == from_git.status
+    assert from_supplied.scope == from_git.scope
+    assert from_supplied.findings == from_git.findings
+
+
 # ---------------------------------------------------------------------------
 # Change shapes that must survive the round trip
 # ---------------------------------------------------------------------------

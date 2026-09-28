@@ -31,7 +31,7 @@ class ListInsertZeroInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "insert(0, ...) in a loop shifts the whole list each pass (O(n^2)); "
                         "use collections.deque.appendleft or append-then-reverse"

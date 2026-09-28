@@ -122,10 +122,13 @@ class ClaudeCodeAdapter(AgentAdapter):
 
     def uninstall_rewrite_hook(self) -> bool:
         from repowise.cli.editor_integrations.claude_config import (
+            uninstall_claude_code_distill_allow_rules,
             uninstall_claude_code_rewrite_hook,
         )
 
-        return uninstall_claude_code_rewrite_hook()
+        hook_removed = uninstall_claude_code_rewrite_hook()
+        rules_removed = uninstall_claude_code_distill_allow_rules()
+        return hook_removed or rules_removed
 
     def rewrite_hook_installed(self) -> bool:
         from repowise.cli.editor_integrations.claude_config import (

@@ -378,59 +378,6 @@ class TestBuildFilteredChangedPaths:
         assert result == ["src/main.py", ".claude/config.yml"]
 
 
-class TestGitMetadataToDict:
-    def test_converts_orm_row_to_dict(self):
-        from types import SimpleNamespace
-
-        from repowise.cli.commands.update_cmd import _git_metadata_to_dict
-
-        gm = SimpleNamespace(
-            file_path="src/main.py",
-            commit_count_total=42,
-            commit_count_90d=10,
-            commit_count_30d=3,
-            first_commit_at=None,
-            last_commit_at=None,
-            primary_owner_name="alice",
-            primary_owner_email="alice@example.com",
-            primary_owner_commit_pct=0.7,
-            top_authors_json="[]",
-            significant_commits_json="[]",
-            co_change_partners_json="[]",
-            commit_categories_json="{}",
-            is_hotspot=True,
-            is_stable=False,
-            churn_percentile=0.9,
-            age_days=100,
-            commit_count_capped=False,
-            lines_added_90d=120,
-            lines_deleted_90d=30,
-            avg_commit_size=15.0,
-            recent_owner_name="alice",
-            recent_owner_commit_pct=0.8,
-            bus_factor=2,
-            contributor_count=4,
-            original_path=None,
-            merge_commit_count_90d=1,
-            temporal_hotspot_score=0.8,
-            prior_defect_count=5,
-            prior_defect_raw_count=9,
-            change_entropy=0.42,
-            change_entropy_pct=0.6,
-        )
-
-        d = _git_metadata_to_dict(gm)
-        assert d["file_path"] == "src/main.py"
-        assert d["commit_count_total"] == 42
-        assert d["is_hotspot"] is True
-        assert d["bus_factor"] == 2
-        # Columns added by the newer health biomarkers must flow through too.
-        assert d["prior_defect_count"] == 5
-        assert d["prior_defect_raw_count"] == 9
-        assert d["change_entropy"] == 0.42
-        assert d["change_entropy_pct"] == 0.6
-
-
 class TestRescoreFailureFingerprint:
     def test_failed_rescore_does_not_advance_fingerprint(self, tmp_path, monkeypatch):
         """A failed re-score must not persist the new fingerprint, so the next

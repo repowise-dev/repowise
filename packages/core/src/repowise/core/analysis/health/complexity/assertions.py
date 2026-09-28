@@ -244,7 +244,10 @@ def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | 
         # only ever appear as the single child of an ``expression_statement``,
         # so they can't form a run of ≥2 at this level.)
         call: Node | None = stmt
-    elif stmt.type == _EXPRESSION_STATEMENT:
+    elif stmt.type == _EXPRESSION_STATEMENT or stmt.type in lmap.expr_stmt_kinds:
+        # ``expr_stmt_kinds`` is the same shape as the hardcoded
+        # ``expression_statement`` name above, for a grammar whose wrapper is
+        # not literally called that (Pascal's is ``statement``).
         call = _find_assert_call(stmt, lmap.assert_call_kinds)
         if call is None:
             # A property-terminated assertion is capped at broad for the same

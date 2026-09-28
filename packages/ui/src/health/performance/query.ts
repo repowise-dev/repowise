@@ -50,6 +50,7 @@ const ACTIONABILITIES: readonly PerformanceActionabilityState[] = [
   "plan_ready",
   "advisory",
   "investigate",
+  "expected",
 ];
 const CONTEXTS: readonly PerformanceContextFilter[] = [
   "all",

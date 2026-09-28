@@ -425,3 +425,22 @@ def test_score_measures_names_only_the_supporting_diff_shape_signal() -> None:
     assert "diff size and spread" in SCORE_MEASURES
     assert "where the change lands" in SCORE_MEASURES
     assert "probability" not in SCORE_MEASURES
+
+
+@pytest.mark.asyncio
+async def test_health_references_on_an_index_without_a_repository_are_skipped(factory) -> None:
+    """An index with no repository row reads as "no index", not a failed call."""
+    from repowise.server.mcp_server import tool_change_risk as tool
+
+    finding = SimpleNamespace(
+        path="a.py",
+        biomarker_type="complex_method",
+        symbol="f",
+        line_start=1,
+        line_end=2,
+        health_reference=None,
+    )
+    await tool._attach_health_references(
+        SimpleNamespace(session_factory=factory), SimpleNamespace(findings=[finding])
+    )
+    assert finding.health_reference is None

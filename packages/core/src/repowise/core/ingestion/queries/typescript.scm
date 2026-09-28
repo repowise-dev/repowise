@@ -281,7 +281,7 @@
 ;
 ; Mirrors the C# / Go pattern: a single ``@param.type`` capture name fans
 ; in every position where a user-defined type appears outside an import
-; statement. The TypeScript head extractor in parser_helpers.py unwraps
+; statement. The TypeScript head extractor in lang_helpers/type_heads.py unwraps
 ; ``Foo[]`` / ``Promise<Foo>`` / ``ns.Foo`` / ``Foo | Bar`` shells and
 ; filters TS builtins (``string`` / ``number`` / ``Promise`` / ...). The
 ; result lets the dead-code analyzer see an ``interface Foo`` referenced

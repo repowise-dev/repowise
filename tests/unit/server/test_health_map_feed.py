@@ -141,6 +141,54 @@ async def test_rows_carry_the_burden_the_lens_rings_by(app, client):
     assert "performance_actionability" not in big
 
 
+async def test_a_file_with_only_expected_causes_reads_clear_on_the_map(
+    app, client: AsyncClient
+):
+    """The map counts what the default queue shows; the repository rollup still counts all."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    metrics = [_metric("src/fs.py", 5), _metric("src/big.py", 500)]
+    findings = [
+        HealthFindingData(
+            biomarker_type="io_in_loop",
+            severity=Severity.MEDIUM,
+            file_path="src/fs.py",
+            function_name="run",
+            line_start=1,
+            line_end=1,
+            details={
+                "boundary_kind": "filesystem",
+                "cross_function": True,
+                "path": ["src/fs.py::run", "src/fs.py::read"],
+                "resolution_basis": "reliable-edge",
+            },
+            health_impact=0.0,
+            reason="A file is read for every loop iteration.",
+            dimension="performance",
+        )
+    ]
+    link_performance_findings(findings)
+    async with app.state.session_factory() as session:
+        await crud.save_health_metrics(session, repo_id, metrics)
+        await crud.save_health_findings(session, repo_id, findings)
+        await crud.finalize_performance_opportunities(
+            session, repo_id, analyzed_commit="b" * 40
+        )
+        await session.commit()
+
+    feed = await _feed(client, repo_id, cap=100)
+    row = next(f for f in feed["files"] if f["file_path"] == "src/fs.py")
+    assert row["performance_opportunities"] == 0
+    assert "performance_actionability" not in row
+    perf = feed["performance"]
+    assert perf["actionability"]["expected"] == 1
+    assert sum(perf["actionability"].values()) == perf["opportunities_total"]
+    # Nor does it take a priority slot from the size sample.
+    capped = await _feed(client, repo_id, cap=1)
+    assert [f["file_path"] for f in capped["files"]] == ["src/big.py"]
+    assert capped["selection"]["performance_shown"] == 0
+
+
 async def test_the_repository_block_reports_what_the_lens_can_say(app, client):
     repo_id = await _seed(app, client)
     feed = await _feed(client, repo_id, cap=100)

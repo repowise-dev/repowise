@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
+from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
 from repowise.core.workspace.test_impact import (
     UnresolvedLink,
     WorkspaceTestImpactResult,
@@ -445,6 +446,54 @@ class TestGetContracts:
         assert data["total_contracts"] == 0
         assert data["total_links"] == 0
 
+    @pytest.mark.asyncio
+    async def test_search_matches_every_term_across_fields(self, tmp_path: Path) -> None:
+        """``q`` is case-insensitive and every term must match somewhere."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            by_path = (await c.get("/api/workspace/contracts", params={"q": "USERS"})).json()
+            by_file_and_repo = (
+                await c.get("/api/workspace/contracts", params={"q": "client.ts frontend"})
+            ).json()
+            no_hit = (await c.get("/api/workspace/contracts", params={"q": "users grpc"})).json()
+        assert by_path["total_contracts"] == 2
+        assert by_path["total_links"] == 1
+        assert [r["file_path"] for r in by_file_and_repo["contracts"]] == ["client.ts"]
+        assert no_hit["total_contracts"] == 0
+        assert no_hit["total_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_filter_by_linked(self, tmp_path: Path) -> None:
+        """``linked`` splits contracts by whether their own side sits on a link."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yes = (await c.get("/api/workspace/contracts", params={"linked": "true"})).json()
+            no = (
+                await c.get(
+                    "/api/workspace/contracts", params={"linked": "false", "role": "provider"}
+                )
+            ).json()
+        assert {(r["repo"], r["file_path"]) for r in yes["contracts"]} == {
+            ("backend", "routes.py"),
+            ("frontend", "client.ts"),
+        }
+        assert [r["contract_id"] for r in no["contracts"]] == ["grpc::Auth/Login"]
+
+    @pytest.mark.asyncio
+    async def test_include_links_false_omits_rows_but_keeps_the_count(self, tmp_path: Path) -> None:
+        """A pager that already holds the links can skip them; the total still counts."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            data = (
+                await c.get("/api/workspace/contracts", params={"include_links": "false"})
+            ).json()
+        assert data["links"] == []
+        assert data["total_links"] == 1
+        assert data["total_contracts"] == 4
+
 
 class TestContractWireFields:
     """The list endpoint carries everything but ``schema``."""
@@ -705,6 +754,82 @@ class TestGetCoChanges:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stored", "total_mined", "expected"),
+        [
+            (1, 1, None),  # nothing dropped
+            (1, 9, "per_repo_pair"),  # trimmed below the global budget
+            (MAX_EDGES, MAX_EDGES + 5, "total"),  # the workspace-wide cap stopped it
+        ],
+    )
+    async def test_reports_which_cap_trimmed(
+        self, tmp_path: Path, stored: int, total_mined: int, expected: str | None
+    ) -> None:
+        """The page words its scope from the cap that applied, not a guess."""
+        enricher = _make_enricher(tmp_path)
+        row = enricher._co_changes[0]
+        enricher._co_changes = [dict(row, source_file=f"f{i}.py") for i in range(stored)]
+        enricher._total_co_changes = total_mined
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            # A filter narrower than the overlay must not change the verdict.
+            resp = await c.get("/api/workspace/co-changes", params={"limit": 1})
+        data = resp.json()
+        assert data["truncated_by"] == expected
+        assert data["per_repo_pair_cap"] == MAX_EDGES_PER_REPO_PAIR
+        assert data["total_cap"] == MAX_EDGES
+
+
+class TestGetCoChangeStructure:
+    @staticmethod
+    async def _get(tmp_path: Path, **params: str) -> dict:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/workspace/co-changes/structure", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    @pytest.mark.asyncio
+    async def test_pair_linked_by_contract(self, tmp_path: Path) -> None:
+        """Either orientation of the pair finds the link between the two files."""
+        data = await self._get(
+            tmp_path,
+            source_repo="frontend",
+            source_file="client.ts",
+            target_repo="backend",
+            target_file="routes.py",
+        )
+        assert [lk["contract_id"] for lk in data["pair_links"]] == ["http::GET::/api/users"]
+        assert data["repo_links_total"] == 1
+        assert data["repo_links_by_type"] == {"http": 1}
+        assert data["source_file_links"] == 1
+        assert data["target_file_links"] == 1
+
+    @pytest.mark.asyncio
+    async def test_pair_with_no_declared_link(self, tmp_path: Path) -> None:
+        """A pair the contracts do not connect still reports the repo-level links."""
+        data = await self._get(
+            tmp_path,
+            source_repo="backend",
+            source_file="api/routes.py",
+            target_repo="frontend",
+            target_file="src/client.ts",
+        )
+        assert data["pair_links"] == []
+        assert data["repo_links_total"] == 1
+        assert data["source_file_links"] == 0
+        assert data["target_file_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_all_four_params_required(self, tmp_path: Path) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/co-changes/structure", params={"source_repo": "backend"}
+            )
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

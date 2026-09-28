@@ -242,3 +242,19 @@ async def test_generated_schema_advertises_id_alias():
     )
     assert accepts_string, f"`id` is not typed as a string: {id_schema}"
     assert "id" not in tool.inputSchema.get("required", [])
+
+
+@pytest.mark.parametrize("symbol_id", ["pkg/mod.py:1-2", "pkg/mod.py::alpha"])
+@pytest.mark.asyncio
+async def test_no_repo_path_is_a_named_error(setup_mcp, factory, monkeypatch, symbol_id):
+    """A pathless context names the problem instead of failing on the exclusion spec."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server import tool_symbol
+
+    async def _context(_repo):
+        return SimpleNamespace(path=None, session_factory=factory, alias="")
+
+    monkeypatch.setattr(tool_symbol, "_resolve_repo_context", _context)
+    result = await tool_symbol.get_symbol(symbol_id)
+    assert result["error"] == "MCP server has no repo path configured"

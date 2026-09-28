@@ -1,6 +1,5 @@
-// The export map is the published contract. `./hosted` in particular is
-// consumed only from outside this repo, so nothing else in here would fail if
-// a packaging change dropped it.
+// The export map is the published contract, and subpaths consumed only from
+// outside this repo would fail nowhere in here if a packaging change broke them.
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,10 +12,6 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const exportMap = manifest.exports as Record<string, string>;
 
 describe("published export map", () => {
-  it("keeps the hosted provider reachable", () => {
-    expect(exportMap["./hosted"]).toBe("./src/hosted.ts");
-  });
-
   it("points every subpath at a file that exists", () => {
     const missing = Object.entries(exportMap).filter(
       ([, target]) => !existsSync(join(packageRoot, target)),

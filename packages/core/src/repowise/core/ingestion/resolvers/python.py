@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,15 @@ from .context import ResolverContext
 
 if TYPE_CHECKING:
     from ..models import Import
+
+# Stdlib top-level names, independent of the indexer's own Python: the running
+# interpreter's set drops modules removed in 3.12/3.13 that older code imports.
+_STDLIB_NAMES = sys.stdlib_module_names | {
+    "asynchat", "asyncore", "distutils", "imp", "smtpd",  # removed in 3.12
+    "aifc", "audioop", "cgi", "cgitb", "chunk", "crypt", "imghdr", "mailcap",
+    "msilib", "nis", "nntplib", "ossaudiodev", "pipes", "sndhdr", "spwd",
+    "sunau", "telnetlib", "uu", "xdrlib", "lib2to3",  # removed in 3.13
+}  # fmt: skip
 
 
 def _module_index(ctx: ResolverContext) -> dict[str, str]:
@@ -74,10 +84,19 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
     # Stem-only fallback, Python files only. The stem map holds every indexed
     # file, so without the suffix guard ``import httpx`` resolved to a
     # ``baselines/httpx.json`` fixture; Ruby and PHP guard theirs the same way.
+    # Stdlib names skip it: a nested ``specs/json.py`` is not what ``import
+    # json`` loads, and that one stem drew 527 false edges on this repo. A
+    # sibling of the importer still wins, as it does for a script run from
+    # its own directory.
     stem = module_path.split(".")[-1].lower()
-    for candidate in ctx.stem_map.get(stem, ()):
-        if candidate.endswith((".py", ".pyi")):
-            return candidate
+    if module_path.split(".")[0] in _STDLIB_NAMES:
+        sibling = (importer_dir / f"{module_path.replace('.', '/')}.py").as_posix()
+        if sibling in ctx.path_set:
+            return sibling
+    else:
+        for candidate in ctx.stem_map.get(stem, ()):
+            if candidate.endswith((".py", ".pyi")):
+                return candidate
 
     # Nothing in the repo defines this module, so register it the way every
     # other language resolver does: the packages tab and the import counts can

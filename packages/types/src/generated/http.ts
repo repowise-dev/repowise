@@ -2912,10 +2912,22 @@ export interface WorkspaceCoChangeEntry {
   last_date: string;
 }
 
+/** What declared structure connects one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  pair_links: WorkspaceContractLinkEntry[];
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  source_file_links: number;
+  target_file_links: number;
+}
+
 export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
   total: number;
   total_mined?: number;
+  per_repo_pair_cap?: number | null;
+  total_cap?: number | null;
+  truncated_by?: "total" | "per_repo_pair" | null;
 }
 
 export interface WorkspaceConformanceResponse {
@@ -2987,6 +2999,7 @@ export interface WorkspaceContractLinkEntry {
   consumer_service?: string | null;
   provider_symbol_id?: string | null;
   consumer_symbol_id?: string | null;
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractSummary {

@@ -639,8 +639,8 @@ def head_commit_ts(repo_path: Path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    rather than wall clock, the same anchor the git history windows use, so
+    the cadence is deterministic and correct for historical checkouts.
 
     Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
     the same units the gate reads it back in.
@@ -947,8 +947,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -974,6 +974,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):

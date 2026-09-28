@@ -49,6 +49,20 @@ class BrainMethodDetector:
             return self._DEPENDENTS_THRESHOLD
         return min(self._DEPENDENTS_THRESHOLD, max(p80, self._CENTRALITY_MIN_FLOOR))
 
+    @classmethod
+    def severity_for(cls, ccn: int, nloc: int) -> Severity | None:
+        """The severity a function of this shape earns in a file that already
+        clears the centrality gate, ``None`` below the size/complexity bar."""
+        if nloc < cls._NLOC_THRESHOLD or ccn < cls._CCN_THRESHOLD:
+            return None
+        return (
+            Severity.CRITICAL
+            if ccn >= 20 and nloc >= 150
+            else Severity.HIGH
+            if ccn >= 14 or nloc >= 120
+            else Severity.MEDIUM
+        )
+
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         floor = self._centrality_floor(ctx)
         if ctx.dependents_count < floor:
@@ -56,18 +70,9 @@ class BrainMethodDetector:
 
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            if fn.nloc < self._NLOC_THRESHOLD:
+            severity = self.severity_for(fn.ccn, fn.nloc)
+            if severity is None:
                 continue
-            if fn.ccn < self._CCN_THRESHOLD:
-                continue
-
-            severity = (
-                Severity.CRITICAL
-                if fn.ccn >= 20 and fn.nloc >= 150
-                else Severity.HIGH
-                if fn.ccn >= 14 or fn.nloc >= 120
-                else Severity.MEDIUM
-            )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

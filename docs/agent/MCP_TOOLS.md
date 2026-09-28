@@ -235,7 +235,7 @@ Architecture summary, module map, and entry points.
 | `"tour"` | `guided_tour` and `reading_order` — onboarding walks |
 | `"decisions"` | `key_decisions`. `get_why` is the richer route |
 | `"graph"` | `community_summary` — code-community clusters |
-| `"ownership"` | `knowledge_map` — top owners and knowledge silos |
+| `"ownership"` | `knowledge_map` — top 3 owners by files owned |
 
 **When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
 
@@ -328,7 +328,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. Symbol ids take the same `"path/to/file.py::Name"` form `get_symbol` accepts, with the same `::` / `.` / `/` separator normalisation, so an id from either tool works in the other. |
 | `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens), `"health"` (code-health score and biomarkers), `"doc_drift"` (the documents that name this file, and whether those documents carry drift of their own). An empty `callers`, `callees` or `used_by` list sits beside a `*_basis` object: the language, how many call edges the index resolved for it, the share of those that are guesses, and a note that unbound call sites are not counted, so an empty list means no resolved edge, not proof of none |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
+| `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
 
 **Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
 
@@ -494,7 +494,8 @@ matches or resolving a `symbol_id`, read `results`.
 
 Tombstoned and `exclude_patterns`-excluded results are filtered. In workspace
 mode, structural and concept searches both federate across repos and merge
-(this is the one tool where `repo="all"` is fully supported).
+(with `get_overview`, `get_dead_code` and `get_why` with a query, one of the
+four tools that accept `repo="all"`).
 
 **When to use:** Locating a function/class/method by name, resolving a
 path-shaped query, or discovering pages by topic: the symbol/file shapes pipe
@@ -927,6 +928,7 @@ representations of the same work in one response. The `include` **dimension** na
 | `performance_context` | string | No | `production` (default) / `tooling` / `test` / `unknown` / `all`. The summary block is scoped to the same context as the queue; `repository_total` stays the count over every context. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
+| `performance_actionability` | string | No | `plan_ready` / `advisory` / `investigate` / `expected`. Unset means all but `expected` (real repetition with nothing to change), which is still counted in the facet and `repository_total`. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
 | `scope` | string | No | Which files every figure describes: `all` (default) or `production`. Narrowing drops test files from the headline, the distribution and every ranked list. Tests score higher than production code, so `production` lowers the number without a defect having been found. |
 | `counts` | string | No | What the score counts: `everything` (default, the calibrated number) or `code_shape`, which removes the git-derived half. Change history rises as a file is worked on, so it answers what a repository has been through rather than what its code is like — `code_shape` is the reading that answers "is this code getting better". Files with no stored split are reported in `unscored_files` rather than counted. Findings from history are dropped, not re-scored. |
@@ -1192,7 +1194,10 @@ get_health(only=["kpis"], limit=0)                    # headline numbers, no row
 A bare `get_health()` carries `performance_directive`: one bounded lead with
 its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
 up to three `why_ranked` facets, the exact plan state, and a structured
-`next_action`. Performance findings carry `health_impact: 0` by construction, so
+`next_action`, and, when a plan is stored, its `validation` basis. An opportunity
+by id adds `plan_steps`, `validation` (tests and commands) and `siblings`: other
+causes observed on the same lines. A rejected filter value is echoed with its
+accepted values in `ignored_arguments`. Performance findings carry `health_impact: 0` by construction, so
 they never competed for the main `directive` and the dashboard used to report
 counts and nothing to act on. `clear` means no supported pattern surfaced, which
 is not a claim about how the code runs; `unavailable` means this index has not

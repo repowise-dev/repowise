@@ -81,7 +81,7 @@ function link(overrides: Partial<WorkspaceContractLinkEntry> = {}): WorkspaceCon
 }
 
 describe("ContractDrawer", () => {
-  it("renders the contract identity, role, location and confidence", () => {
+  it("renders the contract identity, role, location and how it was found", () => {
     render(
       <ContractDrawer
         contract={contract()}
@@ -90,44 +90,54 @@ describe("ContractDrawer", () => {
         fullPageHref="/workspace/contracts/detail?id=x"
       />,
     );
-    expect(screen.getByText("GET /users/{id}")).toBeInTheDocument();
+    // The verb is its own label and the path wraps at its slashes.
+    expect(screen.getAllByText("GET").length).toBeGreaterThan(0);
     expect(screen.getByText("http::GET::/users/{id}")).toBeInTheDocument();
-    // Type and role share the eyebrow line, so they are read off it together.
-    expect(screen.getByText(/HTTP contract/).textContent).toContain("Provider");
+    expect(screen.getByText("HTTP contract / Provider")).toBeInTheDocument();
     expect(screen.getByText("users-api")).toBeInTheDocument();
-    expect(screen.getByText("src/routes/users.ts")).toBeInTheDocument();
-    expect(screen.getByText("line 42")).toBeInTheDocument();
+    // The file reads as a dim directory and its name, with the line after it.
+    expect(screen.getByText("users.ts").parentElement).toHaveAttribute(
+      "title",
+      "src/routes/users.ts:42",
+    );
     expect(screen.getByText("92%")).toBeInTheDocument();
     expect(screen.getByText("fastapi")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "AI prompt" })).toBeInTheDocument();
   });
 
-  it("links the file and the counterpart symbol with the supplied hrefs", () => {
+  it("links the file and the counterpart code, and swaps to the counterpart", () => {
     const c = contract();
-    const links = [link()];
+    const onSelectContract = vi.fn();
     render(
       <ContractDrawer
         contract={c}
         open
         onOpenChange={() => {}}
-        links={linksForContract(c, links)}
+        links={linksForContract(c, [link()])}
         codeLinks={{
           fileHref: (repo, file) => `/repos/${repo}/files/${file}`,
           symbolHref: (repo, symbolId) => `/repos/${repo}/symbols/${symbolId}`,
         }}
         fullPageHref="/workspace/contracts/detail?id=x"
+        onSelectContract={onSelectContract}
       />,
     );
-    expect(screen.getByText("src/routes/users.ts").closest("a")).toHaveAttribute(
+    expect(screen.getByText("users.ts").closest("a")).toHaveAttribute(
       "href",
       "/repos/users-api/files/src/routes/users.ts",
     );
-    // The consumer bound to a symbol id, so its link goes to the symbol page.
-    expect(screen.getByText("src/api/users-client.ts").closest("a")).toHaveAttribute(
+    // The consumer bound to a symbol id, so its code link goes to the symbol page.
+    expect(screen.getByRole("link", { name: "Code" })).toHaveAttribute(
       "href",
       "/repos/web-app/symbols/src/api/users-client.ts::fetchUser",
     );
-    expect(screen.getByText("web-app")).toBeInTheDocument();
     expect(screen.getByText("fetchUser")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /open the consumer in web-app/i }));
+    expect(onSelectContract).toHaveBeenCalledWith({
+      repo: "web-app",
+      file_path: "src/api/users-client.ts",
+      contract_id: "http::GET::/users/{id}",
+    });
     expect(screen.getByRole("link", { name: "Open full page" })).toHaveAttribute(
       "href",
       "/workspace/contracts/detail?id=x",
@@ -153,16 +163,36 @@ describe("ContractDrawer", () => {
     expect(screen.getByText("Required")).toBeInTheDocument();
   });
 
-  it("says nothing resolves when the contract has no links", () => {
+  it("says nothing resolves to a provider without calling it dead", () => {
     render(<ContractDrawer contract={contract()} open onOpenChange={() => {}} links={[]} />);
-    expect(screen.getByText("Callers")).toBeInTheDocument();
-    expect(screen.getByText(/nothing in this workspace resolves/i)).toBeInTheDocument();
+    expect(screen.getByText("No caller found")).toBeInTheDocument();
+    expect(screen.getByText(/neither reading makes it dead code/i)).toBeInTheDocument();
+  });
+
+  it("names an unmatched consumer's reason and next step", () => {
+    render(
+      <ContractDrawer
+        contract={contract({ role: "consumer", meta: { host: "api.github.com" } })}
+        open
+        onOpenChange={() => {}}
+        unmatchedReason="external_host"
+      />,
+    );
+    expect(screen.getByText("Outside this workspace")).toBeInTheDocument();
+    expect(screen.getByText(/add its repository to the workspace/i)).toBeInTheDocument();
+  });
+
+  it("shows loading until a deep-linked contract arrives", () => {
+    render(
+      <ContractDrawer contract={null} pendingId="http::GET::/x" open onOpenChange={() => {}} loading />,
+    );
+    expect(screen.getByText("Loading contract...")).toBeInTheDocument();
   });
 
   it("fires the close callback from the close button", () => {
     const onOpenChange = vi.fn();
     render(<ContractDrawer contract={contract()} open onOpenChange={onOpenChange} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close contract" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
@@ -184,5 +214,18 @@ describe("linksForContract", () => {
     });
     const mine = link();
     expect(linksForContract(c, [mine])).toEqual([mine]);
+  });
+
+  it("finds a consumer that reached its provider under another id", () => {
+    const c = contract({
+      role: "consumer",
+      contract_id: "topic::audit",
+      repo: "web-app",
+      file_path: "src/api/users-client.ts",
+    });
+    const bridged = link({ contract_id: "topic::orders", consumer_contract_id: "topic::audit" });
+    const provider = contract({ contract_id: "topic::orders" });
+    expect(linksForContract(c, [bridged])).toEqual([bridged]);
+    expect(linksForContract(provider, [bridged])).toEqual([bridged]);
   });
 });

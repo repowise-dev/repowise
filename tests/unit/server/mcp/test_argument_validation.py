@@ -219,3 +219,69 @@ class TestSearchKind:
         result = await search_codebase("AuthService", kind="tests")
 
         assert _entry(result, "kind")["values"] == ["tests"]
+
+
+class TestSearchMode:
+    # An unknown mode used to be remapped to ``auto`` inside ``_resolve_mode``
+    # with nothing in the response, so the caller got a different search
+    # strategy than the one it asked for and could not tell (#2347).
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_named(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="symbl")
+
+        entry = _entry(result, "mode")
+        assert entry["values"] == ["symbl"]
+        assert entry["valid"] == ["auto", "concept", "hybrid", "path", "symbol"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_still_runs_under_auto(self, setup_mcp):
+        # An identifier-shaped query is what ``auto`` routes to symbol search,
+        # so landing there shows the dropped mode fell back to ``auto``.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbl")
+
+        assert result["mode"] == "symbol"
+        assert _entry(result, "mode")["values"] == ["symbl"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_falls_back_to_auto_not_a_fixed_mode(self, setup_mcp):
+        # ``auto`` sends a path-shaped query to path search, so this tells a
+        # real ``auto`` fallback apart from one pinned to any single mode.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("src/auth/service.py", mode="symbl")
+
+        assert result["mode"] == "path"
+        assert _entry(result, "mode")["values"] == ["symbl"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_reported_as_spelled(self, setup_mcp):
+        # Only a valid mode is case-folded; a miss is named as the caller wrote it.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="Symbl")
+
+        assert _entry(result, "mode")["values"] == ["Symbl"]
+
+    @pytest.mark.asyncio
+    async def test_known_mode_adds_nothing(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="concept")
+
+        assert "ignored_arguments" not in result
+
+    @pytest.mark.asyncio
+    async def test_mode_is_still_case_insensitive(self, setup_mcp):
+        # ``_resolve_mode`` has always lowercased the mode; validation must not
+        # turn a capitalised but valid mode into a typo.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="Symbol")
+
+        assert result["mode"] == "symbol"
+        assert "ignored_arguments" not in result

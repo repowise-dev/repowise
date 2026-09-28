@@ -1359,44 +1359,6 @@ async def _persist_full_update_async(
         await engine.dispose()
 
 
-def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
-    """Convert a GitMetadata ORM row to the dict format HealthAnalyzer expects."""
-    return {
-        "file_path": gm.file_path,
-        "commit_count_total": gm.commit_count_total,
-        "commit_count_90d": gm.commit_count_90d,
-        "commit_count_30d": gm.commit_count_30d,
-        "first_commit_at": gm.first_commit_at,
-        "last_commit_at": gm.last_commit_at,
-        "primary_owner_name": gm.primary_owner_name,
-        "primary_owner_email": gm.primary_owner_email,
-        "primary_owner_commit_pct": gm.primary_owner_commit_pct,
-        "top_authors_json": gm.top_authors_json,
-        "significant_commits_json": gm.significant_commits_json,
-        "co_change_partners_json": gm.co_change_partners_json,
-        "commit_categories_json": gm.commit_categories_json,
-        "is_hotspot": gm.is_hotspot,
-        "is_stable": gm.is_stable,
-        "churn_percentile": gm.churn_percentile,
-        "age_days": gm.age_days,
-        "commit_count_capped": gm.commit_count_capped,
-        "lines_added_90d": gm.lines_added_90d,
-        "lines_deleted_90d": gm.lines_deleted_90d,
-        "avg_commit_size": gm.avg_commit_size,
-        "recent_owner_name": gm.recent_owner_name,
-        "recent_owner_commit_pct": gm.recent_owner_commit_pct,
-        "bus_factor": gm.bus_factor,
-        "contributor_count": gm.contributor_count,
-        "original_path": gm.original_path,
-        "merge_commit_count_90d": gm.merge_commit_count_90d,
-        "temporal_hotspot_score": gm.temporal_hotspot_score,
-        "prior_defect_count": gm.prior_defect_count,
-        "prior_defect_raw_count": gm.prior_defect_raw_count,
-        "change_entropy": gm.change_entropy,
-        "change_entropy_pct": gm.change_entropy_pct,
-    }
-
-
 async def _rescore_health_from_db(
     repo_path: Any,
     graph_builder: Any,
@@ -1428,6 +1390,10 @@ async def _rescore_health_from_db(
         from repowise.cli.helpers import get_db_url_for_repo
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
+        from repowise.core.analysis.health.history_refresh import (
+            BLAME_MARKERS,
+            git_meta_rows_to_map,
+        )
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -1436,7 +1402,7 @@ async def _rescore_health_from_db(
             upsert_repository,
         )
         from repowise.core.persistence.crud import save_coverage_files
-        from repowise.core.persistence.models import GitMetadata
+        from repowise.core.persistence.models import GitMetadata, HealthFinding
         from repowise.core.pipeline.persist import (
             persist_graph_nodes,
             save_full_health_report,
@@ -1470,11 +1436,23 @@ async def _rescore_health_from_db(
                 )
                 await session.flush()
 
-            git_meta_map = {
-                gm.file_path: _git_metadata_to_dict(gm)
+            # Every stored column, so a gate added with a new column reaches the
+            # detectors here as it does on a full index.
+            git_meta_map = git_meta_rows_to_map(
+                gm
                 for gm in git_rows
                 if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
-            }
+            )
+            stored_blame_findings: dict[str, list[HealthFinding]] = {}
+            for finding in (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.biomarker_type.in_(BLAME_MARKERS),
+                    )
+                )
+            ).scalars():
+                stored_blame_findings.setdefault(finding.file_path, []).append(finding)
 
             # Preserve coverage across a re-score. The previous behaviour
             # rebuilt the analyzer with no coverage_map, nulling every file's
@@ -1495,6 +1473,7 @@ async def _rescore_health_from_db(
                 coverage_map=coverage_map,
                 duplication_cache_dir=resolve_store_dir(repo_path),
                 repo_root=repo_path,
+                stored_blame_findings=stored_blame_findings,
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
@@ -1617,8 +1596,8 @@ def _run_full_health_rescore(
 # decay refresh runs every update, but the health *findings* for idle files only
 # recover when the analyzer re-scores them. Those biomarkers have a ~125-180d
 # half-life, so weekly is ample. The interval is anchored to the repo's
-# newest-commit timestamp (not wall clock) so it stays deterministic under
-# REPOWISE_GIT_WINDOW_ANCHOR / historical checkouts; override for tests.
+# HEAD commit timestamp (not wall clock), like the git history windows, so it
+# stays deterministic on historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
 
