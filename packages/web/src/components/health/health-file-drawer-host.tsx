@@ -14,6 +14,7 @@ import {
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
 import { useFileBreakdown } from "./use-file-breakdown";
+import { useTranslations } from "next-intl";
 import type { HealthCounts } from "@repowise-dev/types/health";
 
 /** Causes listed for one file. A file with more than this is its own queue. */
@@ -34,6 +35,7 @@ export function HealthFileDrawerHost({
   /** The surface the file was opened from; drives what the drawer leads with. */
   lens?: string;
 }) {
+  const t = useTranslations("health");
   const router = useRouter();
   const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
   const prefix = `/repos/${repoId}`;
@@ -104,9 +106,11 @@ export function HealthFileDrawerHost({
             findingId,
             status as Parameters<typeof updateFindingStatus>[2],
           );
-          toast.success(`Finding marked ${status.replace("_", " ")}`);
+          toast.success(
+            t("findingMarked", { status: status.replace("_", " ") }),
+          );
         } catch (err) {
-          toast.error("Couldn't update finding status");
+          toast.error(t("findingStatusFailed"));
           throw err;
         }
       }}

@@ -14,6 +14,7 @@ import {
   listDecisions,
   patchDecision,
 } from "@/lib/api/decisions";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -30,6 +31,7 @@ interface Props {
  * a repository with a hundred rules in it.
  */
 export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
+  const t = useTranslations("decisions");
   const [lane, setLane] = React.useState<DecisionLane>("active");
   // A set, not one id: two accepts can be in flight, and a single value let
   // the first to resolve re-enable the second row's buttons while its own
@@ -83,8 +85,8 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         await patchDecision(repoId, d.id, { status });
         toast.success(
           status === "active"
-            ? "Accepted. It governs the files it names."
-            : "Dismissed. Reindexing will not propose it again.",
+            ? t("review.accepted")
+            : t("review.dismissed"),
         );
         // Both, and in parallel: a review action moves a record between lanes,
         // so refreshing the rows without the badges leaves every tab count
@@ -96,8 +98,10 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         // generic failure: it is the whole instruction for what to do next.
         toast.error(
           err instanceof Error
-            ? `Couldn't ${status === "active" ? "accept" : "dismiss"}: ${err.message}`
-            : "The review action failed.",
+            ? status === "active"
+              ? t("review.acceptFailed", { message: err.message })
+              : t("review.dismissFailed", { message: err.message })
+            : t("review.actionFailed"),
         );
       } finally {
         setPending((prev) => {
@@ -107,7 +111,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         });
       }
     },
-    [repoId, mutate, mutateCounts],
+    [repoId, mutate, mutateCounts, t],
   );
 
   const rows = data ?? [];
@@ -153,13 +157,13 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0 || isLoading}
             >
-              Previous
+              {t("review.previous")}
             </PageButton>
             <PageButton
               onClick={() => setPage((p) => p + 1)}
               disabled={!hasNext || isLoading}
             >
-              Next
+              {t("review.next")}
             </PageButton>
           </div>
         </div>

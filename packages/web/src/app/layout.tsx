@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getTranslations } from "next-intl/server";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Lora } from "next/font/google";
@@ -29,19 +31,26 @@ const lora = Lora({ subsets: ["latin"], variable: "--font-lora", display: "swap"
 // healthy server, and it sticks until a hard reload (#2260).
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: {
-    default: "repowise",
-    template: "%s — repowise",
-  },
-  description: "Open-source codebase documentation engine",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("app");
+  return {
+    title: {
+      default: "repowise",
+      template: "%s — repowise",
+    },
+    description: t("description"),
+  };
+}
 
 export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // The locale the request resolved to (cookie `NEXT_LOCALE`, else English).
+  // Read here so `<html lang>` and every server-rendered string agree.
+  const locale = await getLocale();
+  const t = await getTranslations("shell");
   // Fetch repos + workspace info server-side for the sidebar.
   //
   // A rejection is NOT an empty account. Falling back to `[]` silently made
@@ -65,17 +74,22 @@ export default async function RootLayout({
 
   return (
     <html
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable} ${lora.variable}`}
     >
       <body className="bg-[var(--color-bg-root)] text-[var(--color-text-primary)] antialiased">
+        {/* Rendered in a Server Component, so every message the request
+            resolved is handed to the client tree automatically — client
+            components call `useTranslations()` against the same catalog the
+            server rendered with. */}
+        <NextIntlClientProvider>
         <ThemeProvider>
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-accent-primary)]"
         >
-          Skip to content
+          {t("skipToContent")}
         </a>
         <NuqsAdapter>
         <SWRProvider>
@@ -119,6 +133,7 @@ export default async function RootLayout({
         </NuqsAdapter>
         <ThemedToaster />
         </ThemeProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

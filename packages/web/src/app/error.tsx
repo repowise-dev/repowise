@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button } from "@repowise-dev/ui/ui/button";
 
 export default function GlobalError({
@@ -11,6 +12,8 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const t = useTranslations("errors");
+
   useEffect(() => {
     console.error(error);
   }, [error]);
@@ -22,20 +25,20 @@ export default function GlobalError({
       </div>
       <div>
         <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-          Something went wrong
+          {t("errorTitle")}
         </h2>
         <p className="mt-1 text-sm text-[var(--color-text-secondary)] max-w-sm">
-          {error.message || "An unexpected error occurred. Please try again."}
+          {error.message || t("errorFallback")}
         </p>
         {error.digest && (
           <p className="mt-1 text-xs font-mono text-[var(--color-text-tertiary)]">
-            Digest: {error.digest}
+            {t("digest")}: {error.digest}
           </p>
         )}
       </div>
       <Button onClick={reset} size="sm" className="gap-2">
         <RefreshCw className="h-3.5 w-3.5" />
-        Try again
+        {t("tryAgain")}
       </Button>
     </div>
   );

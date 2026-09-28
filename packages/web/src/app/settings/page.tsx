@@ -7,6 +7,7 @@ import { WebhookSection } from "@/components/settings/webhook-section";
 import { McpSection } from "@/components/settings/mcp-section";
 import { McpToolsSection } from "@/components/settings/mcp-tools-section";
 import { DisplaySection } from "@/components/settings/display-section";
+import { getTranslations } from "next-intl/server";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -21,11 +22,13 @@ export const metadata: Metadata = { title: "Settings" };
  * `max-w-3xl` rather than the default 1280: this is a form, and a control that
  * stretches to 1280 loses the relationship between its label and itself.
  */
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const t = await getTranslations("views.globalSettings");
+
   return (
     <PageShell
-      title="Settings"
-      description="How this dashboard reaches your server, which model it defaults to, and what the MCP server offers an agent. Changes save as you make them."
+      title={t("title")}
+      description={t("description")}
       className="max-w-3xl"
     >
       <ConnectionSection />
@@ -36,14 +39,16 @@ export default function SettingsPage() {
       <WebhookSection />
 
       <p className="border-t border-[var(--color-border-default)] pt-6 text-xs text-[var(--color-text-tertiary)]">
-        Sync schedule, exclude patterns and deletion are per repository, on{" "}
-        <Link
-          href="/"
-          className="text-[var(--color-accent-primary)] hover:underline"
-        >
-          a repo&apos;s own settings page
-        </Link>
-        .
+        {t.rich("footer", {
+          link: (chunks) => (
+            <Link
+              href="/"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
       </p>
     </PageShell>
   );

@@ -1,0 +1,1139 @@
+{
+  "app": {
+    "description": "开源代码库文档引擎"
+  },
+  "common": {
+    "search": "搜索",
+    "loading": "加载中…",
+    "cancel": "取消",
+    "save": "保存",
+    "refresh": "刷新",
+    "refreshing": "刷新中…",
+    "dismiss": "忽略",
+    "close": "关闭",
+    "back": "返回",
+    "retry": "重试"
+  },
+  "language": {
+    "label": "语言",
+    "switched": "语言已切换为{language}"
+  },
+  "shell": {
+    "skipToContent": "跳到主内容",
+    "expandSidebar": "展开侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "openNavMenu": "打开导航菜单",
+    "openSearch": "打开搜索",
+    "repositories": "代码仓库",
+    "workspace": "工作区",
+    "indexingNow": "索引中",
+    "cantReachApiTitle": "无法连接 API",
+    "cantReachApiBody": "无法加载你的代码仓库列表。请确认 Repowise 服务正在运行，然后重新加载。",
+    "pillMissing": "缺失",
+    "pillIndex": "索引",
+    "statusDirectoryMissing": "目录不存在",
+    "statusNeedsIndexing": "待索引",
+    "titleDirectoryMissing": "目录不存在 —— 打开「工作区」移除或修复",
+    "titleNotIndexedSynthetic": "尚未索引。打开「工作区」开始索引。",
+    "titleNotIndexedRepo": "尚未索引。打开该仓库开始索引。",
+    "updateAvailable": "有可用更新",
+    "whatsNew": "更新内容",
+    "updateBanner": "repowise <b>v{latest}</b> 已发布",
+    "updateBannerCurrent": "（当前 v{current}）",
+    "updateBannerCommand": "运行 <code>{command}</code> 升级。",
+    "ask": "提问",
+    "commandPalette": {
+      "label": "命令面板",
+      "placeholder": "跳转到文件、搜索页面、切换仓库…",
+      "searching": "搜索中…",
+      "navigate": "导航",
+      "workspace": "工作区",
+      "workspaceOverview": "工作区概览",
+      "repositories": "代码仓库",
+      "files": "文件",
+      "pages": "页面",
+      "askGroup": "提问",
+      "askWithQuery": "问 repowise：“{query}”",
+      "askEmpty": "问 repowise…",
+      "goTo": "前往 — {repo}",
+      "noResults": "没有找到结果。",
+      "hintNavigate": "↑↓ 移动",
+      "hintSelect": "↵ 选择",
+      "hintClose": "esc 关闭"
+    },
+    "feedback": {
+      "title": "帮我们改进 Repowise",
+      "description": "发现了 bug 或有想法？反馈会直接送达维护者，每一条我们都会看。默认匿名 —— 无需账号。",
+      "empty": "请输入你的反馈内容。",
+      "thanks": "感谢你的反馈！",
+      "failed": "反馈发送失败，请重试。",
+      "category": "分类",
+      "categoryUiUx": "界面 / 体验",
+      "categoryBug": "缺陷",
+      "categoryFeature": "功能建议",
+      "categoryOther": "其他",
+      "messageLabel": "你的反馈",
+      "messagePlaceholder": "告诉我们哪里好用、哪里有问题，或者你希望看到什么……",
+      "emailLabel": "邮箱",
+      "emailOptional": "（可选，方便我们回复你）",
+      "anonymous": "以匿名方式提交。只有你在上面填写邮箱后，我们才能看到你的邮箱。",
+      "sending": "发送中…",
+      "send": "发送反馈"
+    },
+    "skeleton": {
+      "loading": "正在加载 Repowise"
+    },
+    "reindexHint": {
+      "body": "这个索引是由旧版 repowise 构建的。它仍然可用，但建议重新索引，以采用最新的存储格式。"
+    },
+    "whatsNewModal": {
+      "title": "repowise 更新内容",
+      "loading": "正在加载发行说明…",
+      "unavailable": "发行说明暂不可用。<link>在 GitHub 上查看</link>"
+    }
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "settings": "设置",
+    "overview": "概览",
+    "chat": "对话",
+    "docs": "文档",
+    "architecture": "架构",
+    "knowledgeGraph": "知识图谱",
+    "codeHealth": "代码健康",
+    "refactoring": "重构",
+    "files": "文件",
+    "commits": "提交",
+    "contributors": "贡献者",
+    "decisions": "决策",
+    "stats": "统计",
+    "usageAndSavings": "用量与节省",
+    "systemMap": "系统地图",
+    "conformance": "一致性",
+    "contracts": "契约",
+    "coChanges": "共变分析",
+    "groupPeopleAndHistory": "人员与历史",
+    "groupSettings": "设置"
+  },
+  "breadcrumb": {
+    "overview": "概览",
+    "docs": "文档",
+    "chat": "对话",
+    "architecture": "架构",
+    "codeHealth": "代码健康",
+    "coverage": "测试",
+    "refactoringTargets": "重构目标",
+    "trend": "趋势",
+    "search": "搜索",
+    "graph": "依赖图",
+    "symbols": "符号",
+    "ownership": "归属",
+    "hotspots": "热点",
+    "deadCode": "死代码",
+    "blastRadius": "影响范围",
+    "decisions": "决策",
+    "commits": "提交",
+    "owners": "贡献者",
+    "modules": "模块",
+    "wiki": "维基",
+    "health": "代码健康",
+    "costs": "用量与节省",
+    "risk": "风险",
+    "security": "安全",
+    "settings": "设置",
+    "knowledgeGraph": "知识图谱",
+    "zoom": "缩放地图",
+    "files": "文件"
+  },
+  "errors": {
+    "notFoundTitle": "页面不存在",
+    "notFoundBody": "你请求的页面不存在，可能已被移动，或从未存在。",
+    "backToDashboard": "返回仪表盘",
+    "errorTitle": "出错了",
+    "errorFallback": "发生了意外错误，请重试。",
+    "digest": "摘要",
+    "tryAgain": "重试",
+    "repoErrorTitle": "无法加载仓库",
+    "repoErrorFallback": "无法加载仓库数据，后端可能不可用。",
+    "retry": "重试",
+    "dashboard": "仪表盘",
+    "repoNotFoundTitle": "页面不存在",
+    "repoNotFoundBody": "该仓库中不存在你请求的页面或资源，它可能已被移动，或从未存在。"
+  },
+  "dashboard": {
+    "title": "代码仓库",
+    "description": "repowise 从本机索引的全部内容。",
+    "ledeLabel": "代码仓库",
+    "ledeUnit": "已在本机索引",
+    "intro": "{files} 个文件与 {symbols} 个符号已纳入智能分析，并据此撰写了 {pages} 页文档。以下每个数字都来自索引实测，而非估算。",
+    "ribbon": {
+      "files": "文件",
+      "filesSub": "分布于 {count} 个代码仓库",
+      "symbols": "符号",
+      "symbolsSub": "函数、类与方法",
+      "docFreshness": "文档新鲜度",
+      "docFreshnessSub": "{fresh} / {total} 页",
+      "docFreshnessNone": "尚未生成文档",
+      "hotspots": "热点",
+      "hotspotsSub": "按变更频率与历史修复排名的文件",
+      "unusedExports": "未使用的导出",
+      "unusedExportsSub": "未关闭的死代码发现"
+    },
+    "indexingNow": "正在索引",
+    "indexingNowCount": "正在索引（{count}）",
+    "indexingNowDescription": "进度实时推送，本页无需刷新即可跟上。",
+    "repositoriesTitle": "代码仓库",
+    "repositoriesDescription": "按需要优先处理的程度排序 —— 先是从未索引的，其次是落后于工作区的，最后按健康分排序 —— 而不是按最近变更时间。",
+    "recentActivity": "最近活动",
+    "recentActivityDescription": "所有代码仓库最近的索引与同步运行记录。",
+    "quickActions": {
+      "sync": "同步",
+      "resync": "全量重新同步",
+      "deadCode": "死代码扫描",
+      "actionFailed": "{action} 失败",
+      "deadCodeFinished": "死代码扫描已完成",
+      "deadCodeFailed": "死代码扫描失败",
+      "syncStarted": "同步已开始{name}",
+      "resyncStarted": "全量重新同步已开始{name}",
+      "deadCodeStarted": "死代码分析已开始",
+      "inFlight": "正在显示进行中任务的进度。要启动新任务，请先在面板中取消它。"
+    }
+  },
+  "attention": {
+    "unindexedOne": "{name} 尚未索引。",
+    "unindexedMany": "{count} 个代码仓库尚未索引。",
+    "behindOne": "{name} 落后于其工作区 —— 在其中运行 repowise update 即可追上。",
+    "behindMany": "{count} 个仓库落后于各自的工作区 —— 在它们之中运行 repowise update 即可追上。",
+    "lowestScore": "最低健康分为 10 分中的 {score} 分，出现在 {name}。",
+    "nothingAnalysed": "它们都尚未分析，因此没有健康分可供比较。",
+    "allCurrent": "所有索引都与其检出保持同步。{parts}"
+  },
+  "views": {
+    "files": {
+      "title": "文件",
+      "description": "下钻这幅地图，看清目录树的形状以及健康度薄弱的位置，再筛选表格定位具体文件。"
+    },
+    "stats": {
+      "title": "数据一览",
+      "description": "这些是这个代码库在其他地方看不到的信息：它有多大、从何时开始、工作发生在什么时间，以及它保持的纪录。"
+    },
+    "commits": {
+      "title": "提交",
+      "description": "每个提交都针对该仓库自身的历史评定了变更风险，因此「偏高」是相对本仓库偏高，而不是套用某条全局曲线。",
+      "emptyDescription": "每个提交都针对该仓库自身的历史评定了变更风险。",
+      "emptyHint": "每次完整索引时会采集逐提交的变更风险。跑一次同步，评审队列随后就会填充。",
+      "reviewQueueTitle": "评审队列",
+      "reviewQueueDescription": "默认按最新排序。优先级取自本仓库自身分布的三分位，因此按它排序只会显示前三分之一——筛选条件收窄的是整个仓库，而不是当前这一页。",
+      "scoreBehaviourTitle": "分数在这个仓库里的表现",
+      "scoreBehaviourDescription": "同一个模型的两种视角：分档线落在哪里，以及什么样的提交形态能让你高于这些线。",
+      "changeRisk": "变更风险",
+      "evolutionTitle": "工作形态如何变化",
+      "evolutionDescription": "按提交标题归类出的各类提交随时间的变化。修复类高亮显示，因为这张图存在的意义就是展示这一条序列。"
+    },
+    "architecture": {
+      "couplingTitle": "变更耦合",
+      "tabs": {
+        "map": "地图",
+        "coupling": "耦合",
+        "packages": "第三方",
+        "symbols": "符号"
+      }
+    },
+    "codeHealth": {
+      "title": "代码健康",
+      "scopeFiles": "文件",
+      "scopeCounts": "计数",
+      "scopeAll": "全部代码",
+      "scopeProduction": "生产代码",
+      "countsEverything": "全部",
+      "countsCodeShape": "仅代码形态",
+      "refresh": "刷新",
+      "refreshing": "刷新中…",
+      "trendTitle": "健康趋势",
+      "trendDescription": "分数在历次索引快照之间如何变化。",
+      "indexed": "索引于 {date}",
+      "notIndexed": "尚未索引",
+      "snapshots": "{count} 个快照",
+      "coChangeNoticeTitle": "本次发布中健康分数发生了变化。",
+      "coChangeNoticeBody": "共变耦合现在相对你的仓库来度量，并随提交历史衰减，而不是按日历时间衰减，因此大约每十个文件中就有一个会跨越档位。分数与此前发布所取的快照不可比。",
+      "tabs": {
+        "triage": "总览",
+        "performance": "性能",
+        "findings": "发现",
+        "coverage": "测试",
+        "deadCode": "死代码",
+        "docDrift": "文档漂移",
+        "security": "安全",
+        "impact": "影响半径"
+      }
+    },
+    "knowledgeGraph": {
+      "title": "知识图谱",
+      "description": "像看地图一样探索你的代码库：滚动缩放、拖拽平移，双击任意卡片可深入其分层、目录与文件，并按代码实际的运行方式排序。",
+      "loading": "正在构建知识图谱…",
+      "error": "无法加载这个代码仓库的知识图谱。"
+    },
+    "refactoring": {
+      "title": "重构",
+      "description": "每个文件一条机会：健康度检查依据你的代码写出的有序步骤。打开一条查看改动，或把它交给编码智能体执行。",
+      "promptTitle": "AI 重构提示词",
+      "promptDescription": "一份可直接粘贴的计划，把有序步骤、其中哪些是机械改动、诊断背后的证据，以及用于回查的 id 一并交给你的 AI 编码智能体。",
+      "loading": "正在加载重构机会",
+      "loadFailed": "无法加载重构机会。该仓库可能尚未索引，或者接口不可达。",
+      "tabAll": "全部",
+      "tabStructural": "结构性",
+      "sectionTitleAll": "全部重构机会",
+      "sectionTitleStructural": "结构性重构机会",
+      "sectionTitleFiltered": "{type} 类机会"
+    },
+    "decisions": {
+      "title": "决策",
+      "description": "这个代码库已经定下来的事，以及你脚下这份检出的真实状况：约束、权衡，以及那些容易让人踩坑的事实。",
+      "ledeAccepted": "已接受",
+      "ledeConfirmed": "已确认",
+      "ledeEmpty": "索引器从拉取请求、提交信息、代码注释和你自己的会话里挖掘出决策，你亲手记录时它们也会落到这里——在下方记录，或者用 <code>repowise decision add</code>。每条决策都会保留它出处的那段引用，以及它所约束的文件。",
+      "ledeNoGovernance": "这里还没有任何有约束力的记录。一条记录只有在有人接受它、并指明它覆盖哪些文件以及为什么之后才有约束力——被挖掘出来、反复出现、被判定为可信，这些都还达不到这一步。",
+      "ledeCandidates": "下方有 {count} 条候选记录等待处理，而且它们都还在：没有任何东西被删除，每个 id 仍然可以解析。如果这个页面过去显示的是已确认的决策，那些记录现在就在 Candidates 分区里。接受一条只需点一下，不会改动任何代码。",
+      "ledeAcceptedRecords": "已有 {count} 条记录被接受：有人读过它，并把它标记为团队认可的东西，这正是它日后值得被引用给智能体的原因。",
+      "ledeAcceptedMore": "还有 {count} 条是索引器挖掘出来、无人接受的候选。在被接受之前，它只是关于你代码库的一个猜测，而不是一条规则，也永远不会被交给任何智能体。打开下方的 Candidates 分区逐条处理；接受或驳回一条只需点一下，不会改动任何代码。",
+      "checkoutTitle": "关于这份检出",
+      "checkoutDescription": "这些是关于工作区本身的事实，而不是谁对它的声明；它们在索引时推导得出，不调用模型、无需历史记录。正是这些事实最容易绊倒新来的人，无论他是人还是智能体。",
+      "reviewTitle": "评审",
+      "reviewDescription": "按每条记录的「被接受」实际意味着什么来划分，而不是按状态词划分。每条记录只落在一个分区里，计数可以相加：有约束力的、无人评审过的、与所指向代码已脱节的、什么都指不到的，以及已退役的。"
+    },
+    "contributors": {
+      "title": "贡献者",
+      "description": "谁懂哪部分代码，从完整 git 历史中挖掘得出。归属跟随仍然存活的那些行的作者，而不是最后提交的人。",
+      "profileTitle": "贡献者",
+      "profileEmptyTitle": "该贡献者没有可展示的资料",
+      "profileEmptyDescription": "已索引的 git 历史中没有这个名字或地址。对方可能用了别的地址提交，或者历史尚未同步。",
+      "tenureSince": "自 {date} 起在此提交",
+      "tenureLastTouched": "最近提交于 {time}",
+      "unknownName": "未知"
+    },
+    "costs": {
+      "title": "用量与节省",
+      "description": "智能体避开了什么、Repowise 花了多少，以及我们凭什么这么说。",
+      "savingsErrorTitle": "无法加载智能体节省数据",
+      "spendTitle": "Repowise 模型开销",
+      "spendDescription": "Repowise 自身模型工作产生的花费，与智能体节省并列展示，且从不从中扣除。",
+      "spendErrorTitle": "无法加载模型开销",
+      "savingsEmptyTitle": "尚未记录任何智能体节省",
+      "savingsEmptyDescription": "把嘈杂的命令走 repowise distill，或者用 repowise hook rewrite install 安装重写钩子。一旦有智能体开始使用这个仓库，节省数据就会自动出现在这里。",
+      "bySourceTitle": "按来源划分的节省",
+      "bySourceDescription": "总额中每一部分各由哪个采集面产生。",
+      "opportunitiesTitle": "观察到的机会",
+      "opportunitiesDescription": "本可被优化却没有被优化的行为。永不计入上面的总额。",
+      "detailsTitle": "明细",
+      "detailsDescription": "同样的节省数据，按日期、操作、计价模型和智能体拆分。",
+      "loadingSavings": "正在加载智能体节省数据",
+      "loadingSpend": "正在加载模型开销…",
+      "savingsErrorBody": "节省数据接口没有响应。",
+      "savingsErrorBodySpendUnaffected": "节省数据接口没有响应，下方的模型开销不受影响。",
+      "surfaceHeader": "采集面",
+      "surfaceCaption": "按产生这些节省的采集面划分",
+      "surfaceEmpty": "这个时间窗口内没有任何节省带有采集面。"
+    },
+    "repoSettings": {
+      "title": "设置",
+      "description": "{repo} 的索引、模型密钥与健康度。服务器、webhook 与编辑器配置由所有代码仓库共享。",
+      "generalTitle": "通用",
+      "generalDescription": "这个代码仓库所在的位置，以及索引的是哪个分支。",
+      "syncTitle": "同步与索引",
+      "syncDescription": "把最近的提交拉进现有索引，或者从零重建索引。",
+      "providerTitle": "AI 提供商",
+      "providerDescription": "有了模型密钥，这个代码仓库的文档就可以用 AI 撰写。密钥随仓库一起保存，供界面或 CLI 触发的生成使用。",
+      "captureTitle": "决策采集",
+      "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会产生候选：这里没有任何操作能替你接受一条决策。",
+      "refactoringTitle": "重构代码生成",
+      "refactoringDescription": "选择是否用你配置的模型把重构计划变成可评审的差异。",
+      "healthTitle": "索引健康",
+      "healthDescription": "按群体对比漂移：wiki 页面与其页面向量、决策记录与其决策向量。出现缺口意味着搜索正在用过期的集合作答。",
+      "deleteTitle": "删除这个代码仓库",
+      "deleteDescription": "删除索引以及由它生成的一切——页面、符号、决策和历史。你的源文件不会被改动。此操作无法撤销。",
+      "footer": "服务器连接、webhook、模型默认值和 MCP 配置都在 <link>全局设置</link> 里。"
+    },
+    "globalSettings": {
+      "title": "设置",
+      "description": "这个仪表盘如何连接你的服务器、默认使用哪个模型，以及 MCP 服务器向智能体提供什么。改动会随改随存。",
+      "footer": "同步计划、排除规则与删除按代码仓库分别设置，见<link>代码仓库页面</link>。"
+    },
+    "workspace": {
+      "title": "工作区",
+      "description": "这个工作区中注册的全部代码仓库，以及它们之间的关联。",
+      "emptyTitle": "尚未发现任何代码仓库",
+      "emptyDescription": "在工作区根目录运行 `repowise init .` 以扫描 git 仓库并建立索引。扫描完成后它们就会出现在这里。",
+      "ledeLabel": "代码仓库",
+      "syncWorkspace": "同步工作区",
+      "reposTitle": "代码仓库",
+      "reposDescription": "按需要优先处理的程度排序 —— 先是从未索引的，其次是磁盘上已缺失的，最后按健康分排序 —— 而不是按名称。",
+      "contractsTitle": "契约",
+      "contractsDescription": "一个代码仓库发布、另一个消费的路由、主题与数据表，在整个工作区范围内完成匹配。",
+      "coChangesTitle": "一起变更的文件",
+      "coChangesDescription": "近期提交在同一会话中触碰过的跨仓库文件对。这是从 git 历史中挖掘出的工作模式信号，而非声明的依赖。",
+      "sync": "同步",
+      "indexNow": "立即索引",
+      "syncThisRepo": "同步此仓库",
+      "syncing": "同步中…",
+      "syncNoRepos": "无仓库",
+      "syncQueued": "{count} 个已排队",
+      "syncSkipped": "{count} 个已跳过",
+      "syncErrors": "{count} 个出错",
+      "removeConfirm": "确定要从 .repowise-workspace.yaml 中移除「{name}」吗？",
+      "removeFailed": "移除失败：{message}",
+      "removeAria": "从工作区移除 {alias}",
+      "removing": "移除中…",
+      "remove": "移除",
+      "ledeUnit": "在此工作区中",
+      "seeSystemMap": "查看系统地图",
+      "ledeSentence": "{files} 个文件与 {symbols} 个符号在此接受智能分析{pages}。",
+      "ledePagesWith": "，并由此撰写了 {pages} 页文档",
+      "ledeRootedAt": "所有内容都以 <root>{path}</root> 为根目录。",
+      "viewAllContracts": "全部契约",
+      "viewAllCoChanges": "全部共同变更",
+      "unregisteredNote": "下面的跨仓库数据还涵盖 {count} 个工作区配置已不再登记的仓库（{names}）。重新运行一次工作区同步即可让两者重新一致。",
+      "attention": {
+        "none": "所有已登记的仓库都已索引，并且都存在于磁盘上。",
+        "suffix": "{parts}。每一项都在下面的列表中标注。",
+        "needsIndex": "{count} 个仓库尚未索引（{names}）",
+        "missing": "{count} 个目录在磁盘上缺失（{names}）",
+        "docsSkipped": "{count} 个仓库跳过了文档生成（{names}）",
+        "andMore": "{list} 等另外 {count} 个"
+      },
+      "ribbon": {
+        "files": "文件",
+        "filesSub": "横跨 {count} 个仓库",
+        "symbols": "符号",
+        "symbolsSub": "函数、类与方法",
+        "docFreshness": "文档新鲜度",
+        "docFreshnessNoPages": "尚未生成文档",
+        "docFreshnessSub": "按 {pages} 页加权",
+        "hotspots": "热点",
+        "hotspotsSub": "按改动频率与历史修复排序的文件",
+        "contractLinks": "契约链接",
+        "contractLinksSub": "已匹配的提供方与消费方",
+        "contractLinksNone": "尚无契约数据"
+      }
+    },
+    "docsFreshness": {
+      "title": "文档新鲜度",
+      "header": "{count} 页文档的新鲜度",
+      "freshPct": "{pct}% 的页面是新鲜的",
+      "fresh": "新鲜",
+      "stale": "陈旧",
+      "outdated": "过期",
+      "pctOfPages": "{pct}% 的页面",
+      "distribution": "分布"
+    },
+    "overview": {
+      "title": "概览"
+    },
+    "modules": {
+      "breadcrumb": "代码健康度",
+      "notFoundTitle": "未找到模块",
+      "notFoundDescription": "该仓库的索引中不存在请求的模块路径。"
+    }
+  },
+  "settings": {
+    "connection": {
+      "title": "服务器",
+      "description": "这个仪表盘如何连接你的 repowise 服务器。配置保存在浏览器中，不会发送到服务器。",
+      "urlLabel": "服务器 URL",
+      "urlHint": "留空即使用同源地址，这也是 Next.js 代理部署所期望的方式。",
+      "apiKeyLabel": "API 密钥",
+      "apiKeyHint": "仅当服务端设置了 REPOWISE_API_KEY 时才需要填写。",
+      "apiKeyPlaceholder": "可选",
+      "testLabel": "连接",
+      "testHint": "检查服务器是否有响应，并报告它正在运行的版本与数据库。",
+      "testing": "测试中",
+      "test": "测试连接",
+      "status": "已连接 · v{version} · 数据库 {db}"
+    },
+    "webhook": {
+      "title": "Webhook",
+      "description": "在 GitHub 或 GitLab 中注册其中一个地址，推送时便会重新同步索引。这些 URL 使用的是本仪表盘的地址，如果该主机无法被访问，请替换为公网主机名。",
+      "githubHint": "内容类型：application/json。",
+      "gitlabHint": "推送事件。",
+      "signatureLabel": "签名校验",
+      "signatureHint": "本地开发时两者都可省略，以跳过校验。",
+      "serverOnly": "在服务端设置，不在这里设置。"
+    },
+    "providerPanel": {
+      "keySaved": "API 密钥已保存",
+      "keySavedDescription": "已写入该代码仓库。测试一下以确认可用。",
+      "keySaveFailed": "无法保存密钥",
+      "keyRemoved": "API 密钥已移除",
+      "keyRemoveFailed": "无法移除密钥",
+      "activateFailed": "无法设置当前提供商"
+    },
+    "display": {
+      "title": "显示",
+      "description": "这个浏览器显示什么、怎么显示。这里的设置不会改变索引。",
+      "weekendLabel": "周末日",
+      "weekendHint": "决定编码节奏热力图中“周末”时段所占的比例。",
+      "chatDockLabel": "向 Repowise 提问",
+      "chatDockHint": "每个代码仓库页面右下角的对话胶囊按钮。隐藏它也会隐藏下面两个控件，但不影响完整的对话页面。",
+      "chatDockAria": "显示「向 Repowise 提问」对话胶囊",
+      "chatAskLabel": "就此提问",
+      "chatAskHint": "文件、符号、发现、决策或提交旁边的小对话按钮。隐藏后这些按钮会消失；对话胶囊和完整对话页面仍然可用。",
+      "chatAskAria": "显示「就此提问」按钮",
+      "chatSelectionLabel": "就选中内容提问",
+      "chatSelectionHint": "在代码或文档中选中文本时出现的控件。隐藏后该控件会消失；选中文本的行为不受影响。",
+      "chatSelectionAria": "显示「就选中内容提问」控件",
+      "chatGatedHint": "{hint} 隐藏「向 Repowise 提问」时不可用。"
+    },
+    "mcp": {
+      "title": "编辑器配置",
+      "description": "把这段配置粘贴到 Claude Code、Cursor 或 Cline 中，让智能体可以查询这个代码库。把路径替换成你要提供服务的代码仓库，并先完成索引，这样才有内容可供回答。",
+      "serverLabel": "MCP 服务器",
+      "serverHint": "写入编辑器的 MCP 配置文件。"
+    },
+    "mcpTools": {
+      "title": "工具集",
+      "description": "MCP 服务器向智能体提供哪些工具。会保存到代码仓库的 .repowise/config.yaml，并在你下次为它启动 repowise mcp 时生效。",
+      "empty": "索引一个代码仓库后，它的工具集就会显示在这里。",
+      "repoLabel": "代码仓库",
+      "repoHint": "工具集按代码仓库分别保存。",
+      "workspaceOnly": "仅工作区",
+      "summary": "已开放 {on}/{total} 个工具。{mode}",
+      "summaryWorkspace": "当前为工作区模式，因此仅限工作区的工具可用。",
+      "summarySingleRepo": "当前为单仓库模式，因此仅限工作区的工具在此不可用。"
+    },
+    "provider": {
+      "title": "模型默认值",
+      "description": "从此仪表盘触发 init 或 sync 时使用。",
+      "descriptionWithServer": "从此仪表盘触发 init 或 sync 时使用。服务器自身当前配置为 {provider}。",
+      "providerLabel": "提供商",
+      "providerAria": "提供商",
+      "modelLabel": "模型",
+      "modelHint": "留空则使用提供商的默认值。",
+      "embedderLabel": "嵌入模型",
+      "embedderHint": "语义搜索基于它构建。mock 嵌入模型会禁用语义搜索。",
+      "embedderAria": "嵌入模型",
+      "embedderOffNote": "语义搜索已关闭。请在服务端设置 <code>REPOWISE_EMBEDDER=gemini</code> 或 <code>REPOWISE_EMBEDDER=openai</code> 以启用真实检索。",
+      "embedderOnNote": "请在服务端设置 <code>{env}</code>。"
+    }
+  },
+  "repos": {
+    "addDialog": {
+      "toastStarted": "代码仓库已添加，索引已开始",
+      "toastAdded": "代码仓库已添加",
+      "trigger": "添加代码仓库"
+    },
+    "delete": {
+      "button": "删除代码仓库",
+      "toastDeleted": "已删除 {name} —— 移除 {pages} 个页面",
+      "toastFailed": "删除失败：{error}",
+      "title": "删除代码仓库",
+      "aria": "删除 {name}",
+      "confirm": "这会永久删除 <repo>{name}</repo> 及其生成的所有页面、符号和历史记录。",
+      "deleting": "删除中…"
+    },
+    "empty": {
+      "title": "还没有代码仓库",
+      "description": "让 repowise 指向一个本地 git 仓库，即可为它构建索引、文档与健康信号。",
+      "action": "添加代码仓库",
+      "terminalHint": "更习惯用终端？在某个仓库中运行 <code>repowise init</code>，或查看<link>安装指南</link>。"
+    },
+    "firstIndex": {
+      "startFailed": "无法启动索引",
+      "startHere": "从这里开始",
+      "title": "这个代码仓库尚未建立索引",
+      "description": "一次点击即可构建代码索引、健康信号与文档。整个过程都能实时查看。",
+      "starting": "正在启动…",
+      "action": "为该仓库建立索引"
+    },
+    "coordinator": {
+      "status": "状态",
+      "wikiPages": "Wiki 页面",
+      "wikiPagesHelp": "SQL 中已生成的 Wiki 页面数与向量库中对应的页面向量数对比。",
+      "sqlVsVectors": "{sql} 条 SQL / {vectors} 个向量",
+      "pageDrift": "页面漂移",
+      "pageDriftHelp": "Wiki 页面数与页面向量数之间的偏差。0% 表示每个页面都已嵌入；偏差过大通常意味着索引中断 —— 运行一次同步即可对齐。",
+      "decisions": "决策",
+      "decisionsHelp": "SQL 中的决策记录数与对应的决策向量数对比。决策向量与页面向量分开计数。",
+      "decisionDrift": "决策漂移",
+      "decisionDriftHelp": "决策记录数与决策向量数之间的偏差。",
+      "graphNodes": "图节点",
+      "noData": "暂无数据 —— 点击「刷新」加载。",
+      "checking": "检查中…",
+      "refresh": "刷新"
+    },
+    "ops": {
+      "syncStarted": "同步已开始 —— {name}",
+      "syncFailed": "同步失败",
+      "resyncStarted": "全量重新同步已开始 —— {name}",
+      "resyncFailed": "重新同步失败",
+      "title": "运维操作",
+      "export": "导出",
+      "starting": "正在启动…",
+      "sync": "同步",
+      "resync": "全量重新同步",
+      "resyncConfirm": "这会从头重新生成 <repo>{name}</repo> 的每一个页面。所有现有页面都会被覆盖。",
+      "resyncConfirmAction": "重新同步全部"
+    },
+    "settings": {
+      "toastSaved": "代码仓库设置已保存",
+      "saveFailed": "保存设置失败",
+      "regenQueued": "Wiki 重新生成已排队",
+      "regenFailed": "重新生成排队失败",
+      "regenTitle": "现在重新生成 Wiki？",
+      "regenDescription": "文档风格已改为「{style}」。现在重新生成整个 Wiki 以应用它？这会执行 LLM 生成（会产生费用）。你也可以稍后从「同步」中执行。",
+      "regenConfirm": "立即重新生成",
+      "regenCancel": "稍后"
+    }
+  },
+  "docs": {
+    "viewer": {
+      "topPercent": "前 {pct}%",
+      "centrality": "中心性",
+      "notScored": "尚未评分",
+      "degree": "度数",
+      "degreeValue": "{inbound} 入 · {outbound} 出",
+      "entryPoint": "入口点",
+      "community": "社区",
+      "calledBy": "被调用（{count}）",
+      "calls": "调用（{count}）",
+      "hotspot": "热点 · 前 {pct}%",
+      "stable": "稳定",
+      "busFactorOne": "巴士系数 1",
+      "bugMagnetTitle": "反复修复缺陷，最近一次在 {age}。",
+      "bugMagnet": "缺陷高发",
+      "owner": "负责人",
+      "commits90d": "提交（90 天）",
+      "bugFixes": "缺陷修复",
+      "bugFixesTitle": "在最近的缺陷统计窗口内修改过该文件的缺陷修复提交。",
+      "contributors": "贡献者",
+      "agentAuthored": "智能体撰写",
+      "renamedFrom": "重命名自",
+      "historyCapped": "索引时历史记录已截断，因此更早的提交未计入上方统计。",
+      "signals": "信号"
+    },
+    "explorer": {
+      "emptyTitle": "还没有文档",
+      "emptyBody": "运行一次生成任务，为这个代码库创建 AI 驱动的文档。",
+      "hideTree": "隐藏页面树",
+      "showTree": "显示页面树",
+      "askQuestion": "结合源码解释「{title}」，并列出它所依赖的文件。",
+      "askLabel": "就 {title} 提问"
+    },
+    "bulk": {
+      "button": "撰写子系统页面",
+      "title": "撰写子系统页面",
+      "writing": "正在撰写子系统页面"
+    },
+    "bulkConfirm": {
+      "description": "用你配置的模型撰写所有仍由结构生成的子系统页面。",
+      "writePages": "撰写 {count} 个页面",
+      "writeWithAi": "用 AI 撰写"
+    },
+    "pageGenerate": {
+      "failed": "无法启动生成"
+    }
+  },
+  "zoom": {
+    "breadcrumb": {
+      "label": "缩放位置"
+    },
+    "hint": {
+      "scroll": "滚动缩放",
+      "drag": "拖拽平移",
+      "doubleClick": "双击卡片进入下一层",
+      "dismiss": "关闭提示"
+    },
+    "search": {
+      "placeholder": "搜索文件…",
+      "aria": "搜索系统地图",
+      "clear": "清除搜索"
+    },
+    "export": {
+      "downloaded": "已下载 {filename}",
+      "failed": "无法构建 Structurizr DSL",
+      "title": "把这个代码仓库的架构下载为 Structurizr DSL",
+      "workspaceLabel": "工作区（workspace.dsl）",
+      "workspaceHint": "包含默认视图的完整文件。可直接在 Structurizr 中打开。",
+      "fragmentLabel": "模型片段（repowise-model.dsl）",
+      "fragmentHint": "仅含模型块，可由你已有的 workspace.dsl 通过 !include 引入。",
+      "building": "构建中…"
+    },
+    "mapKey": {
+      "showingFiltered": "仅显示 <verbs>{list}</verbs>。箭头粗细表示该关系覆盖的文件对数量。",
+      "hoverHint": "把鼠标悬停在卡片上可以看到它依赖什么。箭头粗细表示该依赖覆盖的文件对数量。",
+      "unclaimed": "有 {shown} / {total} 个文件不在图上；它们不属于任何分层。",
+      "clear": "清除",
+      "topRightDot": "右上角圆点",
+      "entryDotHelp": "入口点、热点、死代码，或位于某条执行流上。悬停可查看具体是哪一种。",
+      "footerDot": "页脚圆点",
+      "healthBand": "代码健康度：{good} 自 {goodMin} 起，{fair} 自 {fairMin} 起，{needsWork} 自 {needsWorkMin} 起，{atRisk} 低于该值。"
+    },
+    "detail": {
+      "close": "关闭详情",
+      "healthOutOfTen": "代码健康度（满分 10）",
+      "healthOutOfTenSubtree": "代码健康度（满分 10），按规模加权平均整个子树",
+      "files": "文件",
+      "hotspots": "热点",
+      "entryPoints": "入口点",
+      "onFlow": "在执行流上",
+      "dead": "死代码",
+      "relations": "关系",
+      "capSuffix": "{cap} 已显示在图上。",
+      "language": "语言",
+      "zoomIn": "放大查看",
+      "readModule": "阅读模块页面",
+      "openFile": "打开文件页面"
+    }
+  },
+  "architecture": {
+    "dependencies": {
+      "title": "外部依赖",
+      "description": "已声明的第三方包，与持久化的导入图证据相结合。选中一个包即可查看声明次数、版本以及导入它的文件。",
+      "includeAuxiliary": "包含辅助目录中的声明",
+      "loadFailed": "无法加载外部依赖",
+      "loading": "正在加载外部依赖",
+      "auxiliaryExcluded": "已排除 {count} 条来自辅助目录的声明",
+      "showingAll": "显示此次索引检出中出现的全部主目录与辅助目录"
+    },
+    "graph": {
+      "communitiesDescription": "相互依赖程度高于对代码仓库其余部分的文件组，自动检出。圆的大小表示该组包含的代码量，越靠近中心越接近入口点。双击一个组即可查看其中的文件以及它们依赖什么。",
+      "filesDescription": "每个文件按它最依赖的社区分组，社区之间的每条强连接用一条带表示。把鼠标悬停或选中某个文件，即可看到它导入了什么、又被谁导入。"
+    }
+  },
+  "chat": {
+    "noProvider": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥，然后就可以开始提问了。",
+    "noProviderShort": "尚未配置对话提供商。请先在<link>设置</link>中添加 API 密钥。"
+  },
+  "codeHealth": {
+    "hotspots": {
+      "title": "热点",
+      "description": "按变更频率与历史缺陷修复排序，从完整 git 历史中挖掘。危险的不只是频繁变更，而是那种频繁改动却只有一个人看得懂的文件。",
+      "commitHistory": "提交历史",
+      "loadFailed": "无法加载热点。请运行一次同步，为该代码仓库挖掘 git 历史。",
+      "promptTitle": "AI 稳定化提示词",
+      "promptDescription": "一段可直接粘贴的提示词，让 AI 智能体诊断该文件为何频繁变更，并提出降低维护成本的改动建议。"
+    }
+  },
+  "commits": {
+    "detail": {
+      "title": "审阅这次提交",
+      "promptLabel": "AI 审阅提示词",
+      "promptTitle": "AI 提交审阅",
+      "promptDescription": "一段可直接粘贴的提示词，让 AI 智能体审阅这次提交的变更风险、标出需要重点核查之处，并推荐审阅人。"
+    }
+  },
+  "coupling": {
+    "loadFailed": "无法加载变更耦合"
+  },
+  "coverage": {
+    "jobRunning": "已有生成任务正在运行，请等它完成。",
+    "regenStarted": "重新生成已开始",
+    "regenFailed": "无法启动重新生成"
+  },
+  "decisions": {
+    "add": {
+      "trigger": "记录一条决策",
+      "title": "记录一条决策",
+      "description": "团队已经定下来的事。写明它约束哪些文件，它就会被记为已确认，因为确认的人就是你。"
+    },
+    "capture": {
+      "saveFailedWithMessage": "保存采集设置失败：{message}",
+      "saveFailed": "保存采集设置失败。"
+    },
+    "review": {
+      "accepted": "已接受。它将约束其指定的文件。",
+      "dismissed": "已忽略。重新索引不会再提出它。",
+      "acceptFailed": "接受失败：{message}",
+      "dismissFailed": "忽略失败：{message}",
+      "actionFailed": "审阅操作失败。",
+      "previous": "上一页",
+      "next": "下一页"
+    }
+  },
+  "files": {
+    "health": {
+      "findingMarked": "发现项已标记为 {status}",
+      "statusFailed": "无法更新发现项状态"
+    },
+    "explorer": {
+      "loadFailed": "无法加载该代码仓库的文件索引。"
+    }
+  },
+  "health": {
+    "findingMarked": "发现项已标记为 {status}",
+    "findingStatusFailed": "无法更新发现项状态"
+  },
+  "jobs": {
+    "completed": "文档已更新{name}",
+    "pagesGenerated": "已生成 {count} 个页面",
+    "failed": "生成失败",
+    "unknownError": "未知错误",
+    "cancelled": "任务已取消",
+    "cancelledDescription": "流水线在完成之前就被停止了。",
+    "cancelFailed": "无法取消任务",
+    "progressCount": "{completed}/{total} 个页面"
+  },
+  "overview": {
+    "ask": {
+      "placeholder": "增量流水线如何决定重新索引哪些内容？",
+      "suggestion1": "认证是怎么工作的？",
+      "suggestion2": "重试逻辑在哪里？",
+      "suggestion3": "这个模块为什么这样组织？",
+      "label": "就这个代码库提问",
+      "submit": "提问"
+    }
+  },
+  "risk": {
+    "analysisTimeout": "分析耗时超出预期。请重新加载以查看结果。",
+    "syncStarted": "同步已开始 —— 完成后发现项会刷新",
+    "syncFailed": "无法启动同步",
+    "description": "索引过程中检出的密钥、危险模式与策略命中。每次同步后发现项都会刷新。",
+    "loadFailed": "无法加载发现项",
+    "loadFailedBody": "安全接口返回了错误。请尝试重新运行数据摄取。",
+    "allFindings": "全部发现项",
+    "findingsCount": "{count} 条发现项",
+    "promptTitle": "AI 修复提示词",
+    "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。"
+  },
+  "symbols": {
+    "clearFileFilter": "清除文件筛选",
+    "fileOnly": "仅显示该文件中的符号"
+  },
+  "conformance": {
+    "title": "一致性检查",
+    "description": "工作区的形态如何，以及它是否遵守你声明的依赖规则。",
+    "ledeLabel": "架构评分",
+    "ledeUnit": "满分 10",
+    "ledeSeeSystemMap": "查看系统地图",
+    "ledeSentence": "这里的改动可经 {services} 个服务之间的 {links} 条结构链接触达全系统的 {pct}%。评分会把这一触达范围与相互依赖的核心规模以及循环依赖一起权衡；它每次请求都从系统图重新计算，因此不依赖下方检查是否运行过。",
+    "ledeNoGraph": "尚未构建系统图，因此没有可度量的内容。运行一次工作区同步即可构建。",
+    "dsmTitle": "依赖结构矩阵",
+    "dsmDescription": "每个填充格表示行服务依赖列服务，颜色按传输方式着色。红色格违反了声明的规则；琥珀色格处于循环依赖上。矩阵同时统计共同变更关系，因此其总数高于上方的结构链接数量。",
+    "dsmSystemMapLink": "系统地图",
+    "violationsTitle": "规则违反",
+    "violationsTitleCount": "规则违反（{count}）",
+    "violationsDescription": "图中存在、但被你声明的规则禁止的依赖。",
+    "violationBreaks": "违反",
+    "cyclesTitle": "依赖循环（{count}）",
+    "cyclesDescription": "互相循环依赖的一组服务，其中任何一个都无法独立变更或部署。",
+    "cyclesDetectedNotListed": "检测到 {count} 个循环依赖，但未列出",
+    "noCyclesTitle": "没有循环依赖",
+    "cyclesUnlistedDescription": "该计数由系统图重新计算，但每个循环中的服务由一致性检查记录。运行它即可看到涉及哪些服务。",
+    "noCyclesDescription": "图中每条依赖都是单向的，没有任何东西需要同步变更。",
+    "cycleServices": "{count} 个服务",
+    "ruleCheckedClean": "已针对该系统图校验 {rules} 条声明的规则，没有任何依赖违反它们。",
+    "ruleCheckedViolations": "已针对该系统图校验 {rules} 条声明的规则，其中 {violations} 条依赖违反了它们。",
+    "ruleNoneDeclared": "检查已运行，但没有声明任何依赖规则，因此无从执行。在 <f>.repowise-workspace.yaml</f> 中添加 <c>conformance:</c> 块，以描述哪些服务可以依赖哪些服务。",
+    "ruleNeverRan": "一致性检查尚未在此工作区运行过，因此下面的内容都不是结论——这里的空违反列表意味着未度量，而不是干净。运行 <c>repowise workspace check</c> 来评估它。",
+    "emptyNoRulesBrokenTitle": "没有规则被违反",
+    "emptyNoRulesBrokenDescription": "图中每条依赖都被你声明的规则允许。",
+    "emptyNoRulesDeclaredTitle": "未声明任何规则",
+    "emptyNoRulesDeclaredDescription": "尚未禁止任何依赖，因此也不会有违反。在 .repowise-workspace.yaml 的 `conformance:` 下声明哪些服务可以依赖哪些服务，然后运行 `repowise workspace check` 来用它把关 CI。",
+    "emptyNotCheckedTitle": "尚未检查",
+    "emptyNotCheckedDescription": "一致性分析器尚未在此工作区运行，因此没有评估任何规则。这不代表一切正常——运行 `repowise workspace check` 才能得到一份结论。",
+    "emptyUnavailableTitle": "一致性报告不可用",
+    "emptyUnavailableDescription": "无法读取该报告。运行一次工作区同步即可重建。",
+    "ribbon": {
+      "services": "服务",
+      "servicesSub": "仓库及其子包",
+      "structuralLinks": "结构链接",
+      "structuralLinksSub": "契约与导入，不含共同变更",
+      "propagationCost": "影响范围",
+      "propagationCostSub": "一次改动可触达的系统比例",
+      "coreSize": "核心规模",
+      "coreSizeSubPct": "占全部服务的 {pct}%",
+      "coreSizeSub": "相互依赖的中心",
+      "cycles": "循环",
+      "cyclesSub": "服务间的循环依赖"
+    },
+    "aiPrompt": {
+      "label": "用 AI 修复违规",
+      "title": "AI 一致性修复",
+      "description": "一段可直接粘贴的提示词，让你的 AI 代理通过移除不被允许的依赖来解决这些架构规则违规。"
+    }
+  },
+  "contracts": {
+    "links": {
+      "title": "匹配链接",
+      "loadFailed": "无法加载匹配的链接。请刷新后重试。",
+      "loading": "正在加载匹配的链接…",
+      "allExact": "全部 {count} 条都是精确匹配。",
+      "filteredHead": "{count} 条链接符合类型、仓库与搜索条件。",
+      "defaultHead": "每个提供方都与调用它的消费方相连，匹配最强的排在前面。",
+      "description": "{head}{basis}打开某一行即可查看提供方及其所有调用方。"
+    },
+    "breaking": {
+      "title": "破坏性变更",
+      "description": "最近一次工作区更新中发生变更的提供方契约，以及与之关联的消费方。破坏性变更在前，随后是警告。"
+    },
+    "title": "契约",
+    "description": "一个仓库发布、另一个仓库消费的路由、表与导出。",
+    "ledeUnknown": "未知",
+    "ledeUnit": "提供方 → 消费方",
+    "ledeLinkLine1": "每条链接都是一个调用点，指向另一个仓库或服务中为它提供服务的路由、表或导出。",
+    "ledeLinkLine2": "它只是按路径或名称匹配，并不证明双方共享同一套 schema。没有匹配到任何内容的调用，以及没有任何调用方的提供方，都归在「{attention}」下。",
+    "ledeNoDiagnostics": "提取诊断信息不可用，因此无法显示总计。运行一次工作区同步即可重建。",
+    "attention": {
+      "title": "需要注意"
+    },
+    "list": {
+      "title": "检测到的全部契约",
+      "description": "工作区共检测到 {total} 个契约，每页 {pageSize} 个。同一个契约可能在多处声明，因此名称可能重复。",
+      "filtered": "{total} 个契约符合这些筛选条件。",
+      "filteredOf": "{workspaceTotal} 个契约中有 {total} 个符合这些筛选条件。",
+      "loadFailed": "无法加载契约列表。API 可能正在重启，请稍后刷新。",
+      "pagePastEnd": "第 {page} 页已超出列表末尾，该列表共有 {total} 个契约。<first>回到第一页</first>。",
+      "noMatch": "没有契约符合这些筛选条件。清除搜索或某个筛选条件即可扩大列表范围。",
+      "noneDetected": "未检测到契约。它们会在工作区同步期间，通过读取各仓库提供的路由以及其他仓库发出的调用来发现。"
+    },
+    "footer": {
+      "note": "契约按路径匹配。共享同一路径的两条路由在这里算作同一个契约，因此一个仓库也可能出现在它为自身使用而声明的契约下。<link>查看它们如何连接</link>。"
+    },
+    "ribbon": {
+      "providers": "提供方",
+      "providersSub": "已发布的路由、表与导出",
+      "consumers": "消费方",
+      "consumersSub": "解析到某个契约的调用点",
+      "unmatched": "未匹配的消费方",
+      "orphans": "没有调用方的提供方",
+      "orphansSub": "仅限本工作区；与「未使用」不同",
+      "httpResolved": "已解析的 HTTP 调用",
+      "httpUnresolved": "定位到 {count} 个但无法解析",
+      "httpSub": "占提取定位到的客户端调用"
+    },
+    "reasons": {
+      "no_provider": "未找到提供方",
+      "unlinked": "未建立链接",
+      "internal_only": "仅限同一服务内部",
+      "external_host": "外部主机",
+      "unknown": "未记录原因",
+      "everyMatched": "每个消费方都匹配到了提供方"
+    },
+    "filters": {
+      "allTypes": "全部",
+      "typeAria": "契约类型",
+      "searchLabel": "搜索契约",
+      "searchPlaceholder": "搜索路径、表、文件、符号或服务",
+      "repoLabel": "仓库",
+      "allRepos": "全部仓库",
+      "roleLabel": "角色",
+      "roleAll": "提供方与消费方",
+      "roleProviders": "提供方",
+      "roleConsumers": "消费方",
+      "linkedLabel": "链接",
+      "linkedAll": "不论是否已链接",
+      "linkedYes": "位于已匹配的链接上",
+      "linkedNo": "未在任何链接上",
+      "updating": "更新中…"
+    },
+    "pager": {
+      "label": "契约"
+    },
+    "detail": {
+      "back": "契约",
+      "typeContract": "契约",
+      "roleProvider": "提供方",
+      "roleConsumer": "消费方",
+      "declaredHere": "在此声明",
+      "calledHere": "在此调用",
+      "declaredHereDescription": "该契约在何处声明，以及提取对「这里就是声明处」的置信度。",
+      "calledHereDescription": "调用点，以及提取对「它指向该契约」的置信度。",
+      "fact": {
+        "repository": "仓库",
+        "file": "文件",
+        "service": "服务",
+        "symbol": "符号",
+        "confidence": "置信度",
+        "contractId": "契约 ID",
+        "detail": "详情"
+      },
+      "symbolNone": "未记录",
+      "howFound": "是如何被找到的",
+      "howFoundDescription": "提取器记录的关于该契约的信息。其中 layer 最值得一读：index 契约来自解析后的符号表，regex 契约来自文本方言，而后者是召回最不确定的地方。",
+      "extractorNone": "提取器没有记录任何内容。",
+      "noCallerFound": "未找到调用方",
+      "callers": "调用方",
+      "servedBy": "由谁提供",
+      "servedByDescription": "该调用会解析到为它提供服务的代码。匹配只是把调用点与某个声明连起来，并不意味着两者是按同一套 schema 编写的。",
+      "caption": {
+        "providersServing": "为该调用提供服务的提供方",
+        "callSites": "解析到这里的调用点"
+      },
+      "col": {
+        "match": "匹配方式"
+      },
+      "reasonTitle": {
+        "no_provider": "未找到提供方",
+        "unlinked": "未建立链接",
+        "internal_only": "不是跨仓库链接",
+        "external_host": "不在本工作区内",
+        "unknown": "未找到提供方"
+      },
+      "prose": {
+        "unlinkedProviderWithService": "本工作区内没有任何内容解析到该契约。它可能被工作区之外的代码调用，或者被提取无法跟踪的代码调用；而来自 {repo}/{service} 内部的调用按设计就被排除在外。这两种解读都不意味着它是死代码。",
+        "unlinkedProvider": "本工作区内没有任何内容解析到该契约。它可能被工作区之外的代码调用，或者被提取无法跟踪的代码调用；而来自 {repo} 其他位置且不隶属任何服务的调用按设计就被排除在外。这两种解读都不意味着它是死代码。",
+        "linkedFromOne": "{calls} 个调用点解析到该契约，来自 {repo} 内的另一个服务。",
+        "linkedAllFromOne": "{calls} 个调用点都解析到该契约，且都来自 {repo} 内的另一个服务。",
+        "linkedAcross": "{calls} 个调用点分布在 {repos} 个仓库中解析到该契约。",
+        "unmatchedExternalHost": "该调用发往 {host}，而它不是本工作区中的服务。发往字面外部主机的调用按设计不参与匹配，因此没有可建立的链接。如果 {host} 是你自己的服务之一，请把它的仓库加入工作区。",
+        "unmatchedExternalHostGeneric": "该调用发往第三方主机，而它不是本工作区中的服务。发往字面外部主机的调用按设计不参与匹配，因此没有可建立的链接。如果该主机是你自己的服务之一，请把它的仓库加入工作区。",
+        "unmatchedInternalOnly": "与该调用匹配的声明都位于同一仓库、同一服务内，因此它从未跨越边界。服务内部的调用按设计不进入链接集合：一条链接意味着两个服务互相依赖。",
+        "unmatchedNoProvider": "本工作区内没有任何内容声明 {contract}。请检查路径是否有拼写错误、端点是否被重命名或删除、该服务是否在这些仓库之外，或者路由是否以提取无法识别的方式声明。",
+        "unmatchedUnlinked": "另一个服务中存在具有该 id 的声明，但两者之间没有建立链接。这种情况很少见，它指向匹配器的缺口，而不是代码的问题。",
+        "unmatchedDefault": "该调用没有匹配到任何声明，也没有记录原因。原因来自系统图，因此尚未构建系统图的工作区只能报告数量，而无法给出解释。"
+      },
+      "shape": "结构",
+      "shapeEmptyFields": "读取器解析出的结构不包含任何字段。",
+      "schema": {
+        "recovered": "由 {source} 读取器解析得到。",
+        "withResponse": "{head} 字段是声明中列出的内容，而不是某个调用方实际传入的内容。",
+        "signature": "{head} 它只读取声明的参数就停下，因此下面没有返回结构；返回内容只能来自 OpenAPI 或 proto 声明。",
+        "noReturn": "{head} 它没有为该契约解析出返回结构。",
+        "dataTable": "表契约不携带字段结构。它按表名匹配，而这条路径上没有任何环节会读取列清单，因此本节对每个表契约都是空的，并非只有这一个如此。",
+        "noReader": "没有任何读取器为该契约解析出结构。结构来自带类型的声明，因此无类型的签名、仅通过装饰器声明的路由，或索引从未解析过的文件，都会在这里没有结构。"
+      },
+      "field": {
+        "request": "请求",
+        "response": "响应",
+        "field": "字段",
+        "type": "类型",
+        "required": "必填"
+      },
+      "line": "第 {line} 行"
+    }
+  },
+  "coChanges": {
+    "title": "共同变更",
+    "description": "不同仓库中、被近期提交一起改动的文件。",
+    "emptyTitle": "未发现跨仓库的共同变更",
+    "emptyDescription": "共同变更会在工作区同步期间从各仓库的 git 历史中挖掘。当时间上接近的提交同时改动了两个仓库中的文件时，就会出现这样的文件对。",
+    "ledeLabel": "文件对",
+    "ledeUnitFound": "已找到",
+    "ledeUnitOfFound": "共找到 {total} 个",
+    "ledeSentence": "同一作者在两个仓库中反复于同一批工作会话里改动的文件：这是从 git 历史中读出的模式，而不是声明的依赖。",
+    "ribbon": {
+      "repoPairs": "仓库对",
+      "repoPairsSub": "有共同工作会话",
+      "strongest": "最强的仓库对",
+      "strongestSub": "按其中最强的文件对衡量",
+      "peakStrength": "最高强度",
+      "peakStrengthSub": "单个最强的文件对",
+      "sessionsPerPair": "每文件对会话数",
+      "sessionsPerPairSub": "每个文件对的共同工作会话数",
+      "sessionsRange": "{min} 至 {max}",
+      "mostRecent": "最近一次",
+      "mostRecentSub": "上一次共同会话"
+    },
+    "pairs": {
+      "title": "仓库对",
+      "descriptionRanked": "按各自最强的文件对排序。",
+      "descriptionCapped": "按各自最强的文件对排序。每个仓库对的文件对数量止于 {cap} 个，因为挖掘器不再保留更多。"
+    },
+    "files": {
+      "titleAll": "一起改动的文件",
+      "titleScoped": "{repo1} 与 {repo2} 中的文件",
+      "filterLabel": "按文件路径筛选",
+      "searchPlaceholder": "这个文件会和什么一起改动？输入一个路径",
+      "clearPair": "显示全部仓库对",
+      "emptyTitle": "没有匹配的文件对",
+      "emptyDescription": "列表中没有文件对涉及包含「{query}」的路径。这里只列出最强的 {count} 个文件对，因此可能存在未显示的较弱配对。"
+    },
+    "scope": {
+      "filteredInPair": "{repo1} 与 {repo2} 中的 {scope} 个文件对里，有 {rows} 个涉及匹配「{query}」的路径，最强的排在前面。",
+      "filtered": "{scope} 个文件对中有 {rows} 个涉及匹配「{query}」的路径，最强的排在前面。",
+      "selected": "{repo1} 与 {repo2} 中有 {rows} 个文件对，最强的排在前面。",
+      "all": "{total} 个文件对中的 {rows} 个，最强的排在前面。",
+      "capped": "（{rule}），因此工作区中还有 {dropped} 个较弱的文件对未列出。",
+      "rulePerPair": "每个仓库对只保留最强的 {cap} 个",
+      "ruleTotal": "整个工作区只保留最强的 {cap} 对",
+      "ruleTotalWithPerPair": "整个工作区只保留最强的 {cap} 对，且任一仓库对最多 {perPair} 个",
+      "ruleUnknown": "挖掘器只保留最强的那些"
+    },
+    "reason": {
+      "repoNotIndexed": "仓库未索引，因此没有历史记录",
+      "historyFailed": "历史记录加载失败",
+      "noGitHistory": "该文件没有已索引的 git 历史",
+      "linksFailed": "契约链接加载失败，因此未检查该文件对。"
+    },
+    "prompt": {
+      "title": "AI 共同变更提示词",
+      "descriptionRepo": "一段可直接粘贴的提示词，让你的代理按共享的概念为该仓库对的共同变更文件分组，并判断其中哪些同步改动应由契约、共享类型或生成的客户端来替代。",
+      "descriptionFile": "一段可直接粘贴的提示词，让你的代理查明这两个文件为何一起改动，以及是否应由契约、共享类型或生成的客户端来替代这种手工同步。"
+    }
+  },
+  "systemMap": {
+    "title": "系统地图",
+    "description": "服务及它们之间的带类型关系，每次工作区更新都会从代码与 git 历史重建。",
+    "section": {
+      "title": "服务与关系",
+      "description": "每个方块是一个服务；每条连线是两者之间的契约、导入或共同变更。选择一个视角，一次向这张图提一个问题。"
+    },
+    "lede": {
+      "label": "架构评分",
+      "labelHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。",
+      "unit": "满分 10",
+      "counts": "{services} 个服务分布在 {repos} 个仓库中，由 {relationships} 条关系相连：{structural} 条结构关系（代码中的契约或导入）与 {behavioral} 条共同变更关系（在同一批提交中一起改动的文件，而非调用）。",
+      "cycleMore": "另有 {count} 个循环列在「需要注意」下。",
+      "cycleOne": "它列在「需要注意」下，并附有一段打破它的提示词。",
+      "noCycles": "没有依赖循环：每个服务都可以在不形成回环的情况下变更。",
+      "reachAndScore": "平均而言，一个服务通过依赖可触达其他服务的 {pct}%，并且{core}。这两个数字决定了评分。",
+      "coreForms": "{count} 个服务构成循环核心",
+      "noCore": "不存在循环核心",
+      "cycleDepend": "{names} 互相依赖",
+      "cycleTail": "，形成一个依赖循环：其中任何一个都无法单独变更契约、构建或部署。"
+    },
+    "lens": {
+      "none": {
+        "label": "无",
+        "hint": "按提取结果原样展示，不套用视角"
+      },
+      "blast": {
+        "label": "影响半径",
+        "hint": "哪些内容直接或间接依赖于某个服务",
+        "disabled": "尚无关系可追踪。"
+      },
+      "breaking": {
+        "label": "破坏性变更",
+        "disabledFailed": "无法加载破坏性变更报告。",
+        "disabledLoading": "正在加载破坏性变更报告。",
+        "disabledNotRun": "尚未运行破坏性变更检测。请运行一次工作区更新。",
+        "disabledNone": "最近一次更新中没有提供方契约发生不兼容变更。"
+      },
+      "conformance": {
+        "label": "一致性",
+        "hint": "规则违反与依赖循环",
+        "disabledFailed": "无法加载一致性报告。",
+        "disabledLoading": "正在加载一致性报告。",
+        "disabledNotRun": "尚未进行一致性检查。请运行一次工作区更新。",
+        "disabledNone": "没有规则违反或依赖循环。"
+      },
+      "core": {
+        "label": "核心",
+        "hint": "相互依赖的最大服务群组，以及每个服务的角色",
+        "disabledFailed": "无法加载架构指标。",
+        "disabledLoading": "正在加载架构指标。",
+        "disabledNone": "没有可分类的服务。"
+      }
+    },
+    "ribbon": {
+      "services": "服务",
+      "servicesSub": "分布在 {count} 个仓库中",
+      "relationships": "关系",
+      "relationshipsSub": "{structural} 条结构关系，{behavioral} 条共同变更",
+      "propagationCost": "影响范围",
+      "propagationCostSub": "平均每个服务可触达的其他服务比例",
+      "propagationCostHint": "平均每个服务通过结构依赖可触达的其他服务的比例。0% 表示完全解耦，100% 表示一切都互相触达。",
+      "contractLinks": "契约链接",
+      "contractLinksSub": "来自 {providers} 个提供方、{consumers} 个消费方",
+      "contractLinksHint": "跨服务匹配到对应提供方的消费方调用。",
+      "unmatched": "未匹配的消费方",
+      "unmatchedSub": "工作区内没有提供方的调用",
+      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失、属于第三方主机，或位于同一服务内。"
+    }
+  },
+  "loading": {
+    "repo": "正在加载",
+    "architecture": "正在加载架构",
+    "commits": "正在加载提交",
+    "coverage": "正在加载覆盖率",
+    "knowledgeGraph": "正在加载知识图谱"
+  }
+}

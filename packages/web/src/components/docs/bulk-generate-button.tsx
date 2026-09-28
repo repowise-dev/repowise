@@ -11,6 +11,7 @@ import {
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
 import { BulkGenerateConfirm } from "./bulk-generate-confirm";
 import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
+import { useTranslations } from "next-intl";
 
 /**
  * The one bulk generation action, mounted in the docs header. Writes every
@@ -26,6 +27,7 @@ export function BulkGenerateButton({
   /** Called once a run completes so the host can refresh the page list. */
   onGenerated?: () => void;
 }) {
+  const t = useTranslations("docs");
   const bulk = useBulkGenerate(repoId);
 
   return (
@@ -38,10 +40,14 @@ export function BulkGenerateButton({
         className="h-7 gap-1.5 border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] text-xs text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-hover)]"
       >
         <Sparkles className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">Write subsystem pages</span>
+        <span className="hidden sm:inline">{t("bulk.button")}</span>
       </Button>
 
-      <BulkGenerateConfirm flow={bulk} repoId={repoId} title="Write the subsystem pages" />
+      <BulkGenerateConfirm
+        flow={bulk}
+        repoId={repoId}
+        title={t("bulk.title")}
+      />
 
       <Dialog
         open={bulk.jobId != null}
@@ -51,7 +57,7 @@ export function BulkGenerateButton({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Writing the subsystem pages</DialogTitle>
+            <DialogTitle>{t("bulk.writing")}</DialogTitle>
           </DialogHeader>
           {bulk.jobId != null && (
             <GenerationProgressWrapper

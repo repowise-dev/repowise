@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Command } from "cmdk";
 import useSWR from "swr";
 import { Search, LayoutDashboard, Settings, BookOpen, FileCode, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
@@ -20,6 +21,8 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
+  const t = useTranslations("shell.commandPalette");
+  const tn = useTranslations("nav");
   const isWorkspace = workspace?.is_workspace ?? false;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -101,7 +104,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
     <Command.Dialog
       open={open}
       onOpenChange={setOpen}
-      label="Command palette"
+      label={t("label")}
       className="fixed inset-0 z-[calc(var(--z-modal)+1)] flex items-start justify-center pt-[10vh] sm:pt-[20vh] px-4"
     >
       <div
@@ -114,7 +117,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           <Command.Input
             value={query}
             onValueChange={setQuery}
-            placeholder="Jump to a file, search pages, navigate repos…"
+            placeholder={t("placeholder")}
             className="flex-1 bg-transparent text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
           <kbd className="hidden sm:inline-flex items-center rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] font-mono">
@@ -124,12 +127,12 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
         <Command.List className="max-h-[60dvh] overflow-y-auto py-2">
           <Command.Empty className="px-4 py-8 text-center text-sm text-[var(--color-text-tertiary)]">
-            {isLoading ? "Searching…" : "No results found."}
+            {isLoading ? t("searching") : t("noResults")}
           </Command.Empty>
 
           {/* Quick-ask — always available when a repo is in scope */}
           {activeRepo && (
-            <Command.Group heading="Ask" className="px-2 pb-1">
+            <Command.Group heading={t("askGroup")} className="px-2 pb-1">
               <Command.Item
                 value={`ask-repowise ${query}`}
                 onSelect={() =>
@@ -145,10 +148,10 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                 <span className="truncate">
                   {query.trim() ? (
                     <>
-                      Ask repowise: <span className="text-[var(--color-text-primary)]">“{query.trim()}”</span>
+                      {t("askWithQuery", { query: query.trim() })}
                     </>
                   ) : (
-                    "Ask repowise…"
+                    t("askEmpty")
                   )}
                 </span>
               </Command.Item>
@@ -157,7 +160,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
           {/* Per-repo page navigation */}
           {activeRepo && repoPages.length > 0 && (
-            <Command.Group heading={`Go to — ${activeRepo.name}`} className="px-2 pb-1">
+            <Command.Group heading={t("goTo", { repo: activeRepo.name })} className="px-2 pb-1">
               {repoPages.map((item) => {
                 const Icon = item.icon;
                 return (
@@ -168,7 +171,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                     className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
                   >
                     <Icon className="h-4 w-4" />
-                    {item.label}
+                    {tn(item.labelKey)}
                   </Command.Item>
                 );
               })}
@@ -177,7 +180,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
           {/* Quick navigation */}
           <Command.Group
-            heading="Navigate"
+            heading={t("navigate")}
             className="px-2 pb-1"
           >
             <Command.Item
@@ -186,7 +189,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
               className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
             >
               <LayoutDashboard className="h-4 w-4" />
-              Dashboard
+              {tn("dashboard")}
             </Command.Item>
             <Command.Item
               value="settings"
@@ -194,20 +197,20 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
               className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
             >
               <Settings className="h-4 w-4" />
-              Settings
+              {tn("settings")}
             </Command.Item>
           </Command.Group>
 
           {/* Workspace */}
           {isWorkspace && (
-            <Command.Group heading="Workspace" className="px-2 pb-1">
+            <Command.Group heading={t("workspace")} className="px-2 pb-1">
               <Command.Item
                 value="workspace-overview"
                 onSelect={() => navigate("/workspace")}
                 className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
               >
                 <Layers className="h-4 w-4" />
-                Workspace Overview
+                {t("workspaceOverview")}
               </Command.Item>
               <Command.Item
                 value="workspace-contracts"
@@ -215,7 +218,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                 className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
               >
                 <Link2 className="h-4 w-4" />
-                Contracts
+                {tn("contracts")}
               </Command.Item>
               <Command.Item
                 value="workspace-co-changes"
@@ -223,14 +226,14 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                 className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
               >
                 <GitMerge className="h-4 w-4" />
-                Co-Changes
+                {tn("coChanges")}
               </Command.Item>
             </Command.Group>
           )}
 
           {/* Repos */}
           {repos.length > 0 && (
-            <Command.Group heading="Repositories" className="px-2 pb-1">
+            <Command.Group heading={t("repositories")} className="px-2 pb-1">
               {repos.map((repo) => (
                 <Command.Item
                   key={repo.id}
@@ -247,7 +250,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
           {/* File jump */}
           {activeRepo && fileMatches.length > 0 && (
-            <Command.Group heading="Files" className="px-2 pb-1">
+            <Command.Group heading={t("files")} className="px-2 pb-1">
               {fileMatches.map((path) => {
                 const name = path.split("/").pop() ?? path;
                 const dir = path.slice(0, path.length - name.length);
@@ -277,7 +280,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
           {/* Search results */}
           {results.length > 0 && (
-            <Command.Group heading="Pages" className="px-2 pb-1">
+            <Command.Group heading={t("pages")} className="px-2 pb-1">
               {results.map((r) => (
                 <Command.Item
                   key={r.page_id}
@@ -302,9 +305,9 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
         </Command.List>
 
         <div className="border-t border-[var(--color-border-default)] px-4 py-2 flex items-center gap-4 text-xs text-[var(--color-text-tertiary)]">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
-          <span>esc close</span>
+          <span>{t("hintNavigate")}</span>
+          <span>{t("hintSelect")}</span>
+          <span>{t("hintClose")}</span>
         </div>
       </div>
     </Command.Dialog>

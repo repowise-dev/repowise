@@ -86,6 +86,7 @@ import {
   type HealthOverviewResponse,
   type HealthTrendResponse,
 } from "@/lib/api/code-health";
+import { useTranslations } from "next-intl";
 
 const TABS = [
   "triage",
@@ -99,15 +100,15 @@ const TABS = [
 ] as const;
 type TabId = (typeof TABS)[number];
 
-const TAB_LABELS: Record<TabId, string> = {
-  triage: "Overview",
-  performance: "Performance",
-  findings: "Findings",
-  coverage: "Tests",
-  "dead-code": "Dead code",
-  "doc-drift": "Doc drift",
-  security: "Security",
-  impact: "Blast radius",
+const TAB_LABEL_KEYS: Record<TabId, string> = {
+  triage: "tabs.triage",
+  performance: "tabs.performance",
+  findings: "tabs.findings",
+  coverage: "tabs.coverage",
+  "dead-code": "tabs.deadCode",
+  "doc-drift": "tabs.docDrift",
+  security: "tabs.security",
+  impact: "tabs.impact",
 };
 
 /**
@@ -155,9 +156,9 @@ const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance
  */
 const SCOPED_TABS: TabId[] = ["triage", "findings"];
 
-const SCOPE_LABEL: Record<HealthScope, string> = {
-  all: "All code",
-  production: "Production",
+const SCOPE_LABEL_KEYS: Record<HealthScope, string> = {
+  all: "scopeAll",
+  production: "scopeProduction",
 };
 
 /**
@@ -207,9 +208,9 @@ function ViewSelect({
   );
 }
 
-const COUNTS_LABEL: Record<HealthCounts, string> = {
-  everything: "Everything",
-  code_shape: "Code shape only",
+const COUNTS_LABEL_KEYS: Record<HealthCounts, string> = {
+  everything: "countsEverything",
+  code_shape: "countsCodeShape",
 };
 
 /**
@@ -237,6 +238,7 @@ const MAP_CAP = 2000;
 const CHURN_POINT_LIMIT = 5000;
 
 export default function CodeHealthPage() {
+  const t = useTranslations("views.codeHealth");
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -492,7 +494,7 @@ export default function CodeHealthPage() {
 
   return (
     <PageShell
-      title="Code health"
+      title={t("title")}
       icon={<HeartPulse className="h-5 w-5 text-[var(--color-success)]" />}
       // No description: the lede below opens with what the score is built from,
       // and a header that says it first only says it twice.
@@ -509,25 +511,31 @@ export default function CodeHealthPage() {
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           {SCOPED_TABS.includes(activeTab) && (
             <ViewSelect
-              label="Files"
+              label={t("scopeFiles")}
               value={scope}
               onValueChange={setScope}
-              options={HEALTH_SCOPES.map((id) => ({ id, label: SCOPE_LABEL[id] }))}
+              options={HEALTH_SCOPES.map((id) => ({
+                id,
+                label: t(SCOPE_LABEL_KEYS[id]),
+              }))}
             />
           )}
           {COUNTED_TABS.includes(activeTab) && (
             <ViewSelect
-              label="Counts"
+              label={t("scopeCounts")}
               value={counts}
               onValueChange={setCounts}
-              options={HEALTH_COUNTS.map((id) => ({ id, label: COUNTS_LABEL[id] }))}
+              options={HEALTH_COUNTS.map((id) => ({
+                id,
+                label: t(COUNTS_LABEL_KEYS[id]),
+              }))}
             />
           )}
           <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
             <RotateCw
               className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`}
             />{" "}
-            {refreshing ? "Refreshing…" : "Refresh"}
+            {refreshing ? t("refreshing") : t("refresh")}
           </Button>
         </div>
       }
@@ -536,20 +544,18 @@ export default function CodeHealthPage() {
           dismissible for good and a later change introduces its own. */}
       <ReleaseNotice id="health-cochange-scoring">
         <span className="font-medium text-[var(--color-text-primary)]">
-          Health scores changed in this release.
+          {t("coChangeNoticeTitle")}
         </span>{" "}
-        Co-change coupling is now measured relative to your repository and decays with
-        commit history rather than calendar time, so roughly one file in ten moves a
-        band. Scores are not comparable to snapshots taken before this release.
+        {t("coChangeNoticeBody")}
       </ReleaseNotice>
 
       {meta ? (
         <p className="-mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {meta.last_indexed_at
-            ? `Indexed ${formatDateTime(meta.last_indexed_at)}`
-            : "Not indexed yet"}
+            ? t("indexed", { date: formatDateTime(meta.last_indexed_at) })
+            : t("notIndexed")}
           {meta.head_commit ? ` · ${meta.head_commit.slice(0, 8)}` : ""}
-          {` · ${meta.snapshot_count} snapshot${meta.snapshot_count === 1 ? "" : "s"}`}
+          {` · ${t("snapshots", { count: meta.snapshot_count })}`}
         </p>
       ) : null}
 
@@ -558,7 +564,7 @@ export default function CodeHealthPage() {
           const Icon = TAB_ICONS[id];
           return {
             id,
-            label: TAB_LABELS[id],
+            label: t(TAB_LABEL_KEYS[id]),
             icon: <Icon className="h-3.5 w-3.5" />,
             ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
           };
@@ -583,8 +589,8 @@ export default function CodeHealthPage() {
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection
-                title="Health trend"
-                description="How the scores have moved across indexed snapshots."
+                title={t("trendTitle")}
+                description={t("trendDescription")}
               >
                 <TrendSection
                   data={trend}

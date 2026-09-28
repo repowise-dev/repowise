@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import {
   Select,
@@ -25,36 +26,32 @@ import {
   setChatSelectionAskHidden,
 } from "@/lib/config";
 
-/** The three chat switches, in the order a reader meets them: the dock first,
- *  then the two controls it gates. Each hint names what switching off removes. */
-const CHAT_SWITCHES = [
-  {
-    key: "dock",
-    label: "Ask Repowise",
-    hint: "The chat pill in the bottom-right of every repository page. Hiding it also hides the two controls below, and does not affect the full chat page.",
-    ariaLabel: "Show the Ask Repowise chat pill",
-    read: () => !config.getChatDockHidden(),
-    write: (shown: boolean) => setChatDockHidden(!shown),
-  },
-  {
-    key: "ask",
-    label: "Ask about this",
-    hint: "The small chat button beside a file, symbol, finding, decision or commit. Hiding it removes those buttons; the pill and the full chat page still work.",
-    ariaLabel: "Show the Ask about this buttons",
-    read: () => !config.getChatAskControlsHidden(),
-    write: (shown: boolean) => setChatAskControlsHidden(!shown),
-  },
-  {
-    key: "selection",
-    label: "Ask about a selection",
-    hint: "The control that appears when you select text in code or documentation. Hiding it removes that control; selecting text behaves normally.",
-    ariaLabel: "Show the Ask about selection control",
-    read: () => !config.getChatSelectionAskHidden(),
-    write: (shown: boolean) => setChatSelectionAskHidden(!shown),
-  },
-] as const;
+/** Keys of the three chat switches, in the order a reader meets them: the dock
+ *  first, then the two controls it gates. The copy lives under
+ *  `settings.display.chat*` and is read inside the component, so the entries
+ *  follow the active locale instead of being frozen at module load. */
+const CHAT_SWITCH_KEYS = ["dock", "ask", "selection"] as const;
 
-type ChatSwitchKey = (typeof CHAT_SWITCHES)[number]["key"];
+type ChatSwitchKey = (typeof CHAT_SWITCH_KEYS)[number];
+
+/** Storage behaviour per switch: how each reads and writes its hidden flag. */
+const CHAT_SWITCH_BEHAVIOUR: Record<
+  ChatSwitchKey,
+  { read: () => boolean; write: (shown: boolean) => void }
+> = {
+  dock: {
+    read: () => !config.getChatDockHidden(),
+    write: (shown) => setChatDockHidden(!shown),
+  },
+  ask: {
+    read: () => !config.getChatAskControlsHidden(),
+    write: (shown) => setChatAskControlsHidden(!shown),
+  },
+  selection: {
+    read: () => !config.getChatSelectionAskHidden(),
+    write: (shown) => setChatSelectionAskHidden(!shown),
+  },
+};
 
 /** Reader-local display preferences for the stats surfaces. */
 export function DisplaySection() {
@@ -66,6 +63,38 @@ export function DisplaySection() {
   });
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const t = useTranslations("settings");
+  /** The three switches, with their copy taken from the active locale. */
+  const chatSwitches: {
+    key: ChatSwitchKey;
+    label: string;
+    hint: string;
+    ariaLabel: string;
+    read: () => boolean;
+    write: (shown: boolean) => void;
+  }[] = [
+    {
+      key: "dock",
+      label: t("display.chatDockLabel"),
+      hint: t("display.chatDockHint"),
+      ariaLabel: t("display.chatDockAria"),
+      ...CHAT_SWITCH_BEHAVIOUR.dock,
+    },
+    {
+      key: "ask",
+      label: t("display.chatAskLabel"),
+      hint: t("display.chatAskHint"),
+      ariaLabel: t("display.chatAskAria"),
+      ...CHAT_SWITCH_BEHAVIOUR.ask,
+    },
+    {
+      key: "selection",
+      label: t("display.chatSelectionLabel"),
+      hint: t("display.chatSelectionHint"),
+      ariaLabel: t("display.chatSelectionAria"),
+      ...CHAT_SWITCH_BEHAVIOUR.selection,
+    },
+  ];
 
   // Read after mount so SSR and the first client render agree.
   useEffect(() => {
@@ -78,9 +107,9 @@ export function DisplaySection() {
   useEffect(() => {
     const sync = () =>
       setChatShown({
-        dock: CHAT_SWITCHES[0].read(),
-        ask: CHAT_SWITCHES[1].read(),
-        selection: CHAT_SWITCHES[2].read(),
+        dock: CHAT_SWITCH_BEHAVIOUR.dock.read(),
+        ask: CHAT_SWITCH_BEHAVIOUR.ask.read(),
+        selection: CHAT_SWITCH_BEHAVIOUR.selection.read(),
       });
     sync();
     window.addEventListener(CHAT_DOCK_VISIBILITY_EVENT, sync);
@@ -111,7 +140,7 @@ export function DisplaySection() {
   }
 
   function handleChatChange(
-    entry: (typeof CHAT_SWITCHES)[number],
+    entry: { key: ChatSwitchKey; write: (shown: boolean) => void },
     shown: boolean,
   ) {
     // Goes through the helper, not `config` directly: the affordances are
@@ -124,14 +153,14 @@ export function DisplaySection() {
 
   return (
     <OverviewSection
-      title="Display"
-      description="What this browser shows and how it presents it. Nothing here changes the index."
+      title={t("display.title")}
+      description={t("display.description")}
       action={<SaveIndicator state={saveState} />}
     >
       <SettingsRows>
         <SettingsRow
-          label="Weekend days"
-          hint="Drives the “on weekends” share on the coding-rhythm heatmap."
+          label={t("display.weekendLabel")}
+          hint={t("display.weekendHint")}
         >
           <Select value={weekend} onValueChange={handleChange}>
             <SelectTrigger className="w-full sm:w-64">
@@ -146,7 +175,7 @@ export function DisplaySection() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        {CHAT_SWITCHES.map((entry) => {
+        {chatSwitches.map((entry) => {
           // The dock gates the other two, so their switches cannot act while it
           // is hidden. Say why rather than leaving a live-looking control.
           const gated = entry.key !== "dock" && !chatShown.dock;
@@ -156,7 +185,7 @@ export function DisplaySection() {
               label={entry.label}
               hint={
                 gated
-                  ? `${entry.hint} Unavailable while Ask Repowise is hidden.`
+                  ? t("display.chatGatedHint", { hint: entry.hint })
                   : entry.hint
               }
             >

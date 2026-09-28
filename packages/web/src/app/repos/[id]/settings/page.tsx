@@ -12,6 +12,7 @@ import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { OperationsPanel } from "@/components/repos/operations-panel";
+import { getTranslations } from "next-intl/server";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -41,6 +42,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
  */
 export default async function RepoSettingsPage({ params }: Props) {
   const { id } = await params;
+  const t = await getTranslations("views.repoSettings");
 
   let repo;
   try {
@@ -53,50 +55,50 @@ export default async function RepoSettingsPage({ params }: Props) {
 
   return (
     <PageShell
-      title="Settings"
-      description={`Indexing, model keys and health for ${repo.name}. Server, webhook and editor configuration are shared across repositories.`}
+      title={t("title")}
+      description={t("description", { repo: repo.name })}
       className="max-w-3xl"
     >
       <OverviewSection
-        title="General"
-        description="Where this repository lives and which branch is indexed."
+        title={t("generalTitle")}
+        description={t("generalDescription")}
         flush
       >
         <RepoSettingsForm repo={repo} />
       </OverviewSection>
 
       <OverviewSection
-        title="Sync and indexing"
-        description="Pull recent commits into the existing index, or rebuild it from scratch."
+        title={t("syncTitle")}
+        description={t("syncDescription")}
       >
         <OperationsPanel repoId={id} repoName={repo.name} />
       </OverviewSection>
 
       <OverviewSection
         id="provider"
-        title="AI provider"
-        description="A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI."
+        title={t("providerTitle")}
+        description={t("providerDescription")}
       >
         <ProviderSettingsPanel repoId={id} />
       </OverviewSection>
 
       <OverviewSection
-        title="Decision capture"
-        description="What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf."
+        title={t("captureTitle")}
+        description={t("captureDescription")}
       >
         <DecisionCaptureSettingsWrapper repoId={id} />
       </OverviewSection>
 
       <OverviewSection
-        title="Refactoring code generation"
-        description="Opt in to turning refactoring plans into reviewable diffs with your configured model."
+        title={t("refactoringTitle")}
+        description={t("refactoringDescription")}
       >
         <RefactoringSettingsSection repoId={id} />
       </OverviewSection>
 
       <OverviewSection
-        title="Index health"
-        description="Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set."
+        title={t("healthTitle")}
+        description={t("healthDescription")}
       >
         <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
       </OverviewSection>
@@ -105,12 +107,10 @@ export default async function RepoSettingsPage({ params }: Props) {
           the sentence, not on a coloured ground the eye reads before either. */}
       <section className="flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
         <h2 className="text-base font-semibold tracking-tight text-[var(--color-error)]">
-          Delete this repository
+          {t("deleteTitle")}
         </h2>
         <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
-          Removes the index and everything generated from it — pages, symbols,
-          decisions and history. Your source files are untouched. This cannot be
-          undone.
+          {t("deleteDescription")}
         </p>
         <div>
           <DeleteRepoButton
@@ -123,14 +123,16 @@ export default async function RepoSettingsPage({ params }: Props) {
       </section>
 
       <p className="border-t border-[var(--color-border-default)] pt-6 text-xs text-[var(--color-text-tertiary)]">
-        Server connection, webhooks, model defaults and MCP configuration are in{" "}
-        <Link
-          href="/settings"
-          className="text-[var(--color-accent-primary)] hover:underline"
-        >
-          global settings
-        </Link>
-        .
+        {t.rich("footer", {
+          link: (chunks) => (
+            <Link
+              href="/settings"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
       </p>
     </PageShell>
   );
