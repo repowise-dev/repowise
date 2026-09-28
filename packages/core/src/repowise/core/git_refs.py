@@ -28,6 +28,7 @@ __all__ = [
     "refs_merged_into",
     "resolve",
     "toplevel",
+    "tracked_paths",
 ]
 
 #: Subprocess failures that mean "no answer", not "bug": a wedged or missing
@@ -66,6 +67,11 @@ def toplevel(repo_path: str) -> str:
     to resolve it before it can match a path against an index.
     """
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
+
+
+def tracked_paths(repo_path: str) -> frozenset[str]:
+    """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
+    return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
 
 
 def current_branch(repo_path: str) -> str | None:

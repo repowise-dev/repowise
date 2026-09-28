@@ -143,8 +143,8 @@ def changed_lines(
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
-    *revspec* mirrors ``repowise risk``: ``base..head`` is a range, a bare ref
-    is a single commit. With no *revspec* (or *staged*), the staged diff
+    *revspec* mirrors ``repowise risk``: ``base..head`` is a range,
+    ``base...head`` the change since the two forked, a bare ref a single commit. With no *revspec* (or *staged*), the staged diff
     (``git diff --cached``) is used - the "what will I commit" case.
     *working_tree* widens that to everything ``HEAD`` does not have, staged or
     not, matching what change risk counts for an uncommitted change. *label*
@@ -163,12 +163,15 @@ def changed_lines(
         return _parse_unified_diff(diff), "staged changes"
 
     if ".." in revspec:
-        base, _, head = revspec.partition("..")
+        # ``base...head`` is what a pull request changed: git diffs from the
+        # merge-base, so commits that landed on base meanwhile stay out.
+        sep = "..." if "..." in revspec else ".."
+        base, _, head = revspec.partition(sep)
         head = head or "HEAD"
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
-        diff = _git(["diff", "--unified=0", f"{base}..{head}"], repo_path)
-        return _parse_unified_diff(diff), f"{base}..{head}"
+        diff = _git(["diff", "--unified=0", f"{base}{sep}{head}"], repo_path)
+        return _parse_unified_diff(diff), f"{base}{sep}{head}"
 
     _verify_ref(repo_path, revspec)
     # --format= drops the commit message so only the diff body is parsed.

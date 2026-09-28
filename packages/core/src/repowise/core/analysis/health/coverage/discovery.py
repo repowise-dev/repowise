@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
 
-from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot
+from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
 from .detector import parse as parse_coverage
 from .model import ContextCoverageReport, CoverageReport, FileCoverage, TestCoverage
@@ -52,13 +52,19 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     "**/clover.xml",
     "target/llvm-cov/**/*.lcov",
     "target/nextest/**/*.xml",
+    "coverage.out",
+    "cover.out",
+    "target/site/jacoco/jacoco.xml",
+    "**/jacocoTestReport.xml",
+    "build/reports/jacoco/**/*.xml",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
 # vendored, or irrelevant. The shared junk set plus derived-output names;
 # NOT ``coverage``/``target`` (that is where the reports live). Applied at
 # traversal time via the shared pruned walk, and post-hoc as a safety net
-# for the non-recursive glob paths.
+# for the non-recursive glob paths. A pruned name spelled literally in a
+# pattern (``build/reports/...``) is an explicit opt-in and is not pruned.
 _PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 
 # Hard cap on discovered artifacts — a sane upper bound that still covers
@@ -87,6 +93,8 @@ class CoverageConfig:
     # Re-discover + re-parse reports on every ``repowise update`` (default:
     # reuse the rows already in the DB; only re-ingest if a report is found).
     reingest_on_update: bool = False
+    # Patch-coverage gate for ``repowise coverage check`` (percent, 0-100).
+    fail_under: float | None = None
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -109,7 +117,15 @@ class CoverageConfig:
             strip_prefix=block.get("strip_prefix") or None,
             path_prefix=block.get("path_prefix") or None,
             reingest_on_update=bool(block.get("reingest_on_update", False)),
+            fail_under=_percent(block.get("fail_under")),
         )
+
+
+def _percent(value: object) -> float | None:
+    """A 0-100 percentage from config, ``None`` when absent or not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 <= value <= 100 else None
 
 
 @dataclass
@@ -122,7 +138,10 @@ class ResolvedCoverage:
     # ``FileCoverage`` rows with ``file_path`` rewritten to canonical keys,
     # for DB persistence (``save_coverage_files``).
     files: list[FileCoverage] = field(default_factory=list)
+    # The first report's format (the single-valued persisted column) and every
+    # distinct format merged, in report order.
     source_format: str | None = None
+    source_formats: list[str] = field(default_factory=list)
     # Diagnostics — surfaced to the user so "coverage didn't show up" is
     # never silent.
     matched_exact: int = 0
@@ -164,6 +183,15 @@ def discover_artifacts(
     patterns = tuple(globs) if globs else DEFAULT_DISCOVERY_GLOBS
     snapshot: WalkSnapshot | None = None
 
+    def _literal_depth(pattern: str) -> int:
+        """How many leading directory segments of *pattern* are spelled literally."""
+        depth = 0
+        for seg in pattern.split("/")[:-1]:
+            if any(ch in seg for ch in "*?["):
+                break
+            depth += 1
+        return depth
+
     def _expand(pattern: str) -> Iterable[Path]:
         nonlocal snapshot
         if not any(ch in pattern for ch in "*?["):
@@ -184,11 +212,16 @@ def discover_artifacts(
             roots = [d for d in repo_root.glob(prefix) if d.is_dir()]
         else:
             roots = [repo_root / prefix]
+            # The snapshot never enters a pruned dir, so a root spelled under
+            # one is walked live (still pruning below it).
+            if any(part in _PRUNE_DIRS for part in Path(prefix).parts):
+                return iter_glob(roots[0], tail, prune_dirs=_PRUNE_DIRS)
         return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
 
     seen: set[Path] = set()
     out: list[Path] = []
     for pattern in patterns:
+        literal = _literal_depth(pattern)
         for match in _expand(pattern):
             if not match.is_file():
                 continue
@@ -196,7 +229,7 @@ def discover_artifacts(
                 rel_parts = match.relative_to(repo_root).parts
             except ValueError:
                 rel_parts = match.parts
-            if any(part in _PRUNE_DIRS for part in rel_parts[:-1]):
+            if any(part in _PRUNE_DIRS for part in rel_parts[literal:-1]):
                 continue
             resolved = match.resolve()
             if resolved in seen:
@@ -302,8 +335,10 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     multi-suite / multi-language ingestion with no config.
     """
     covered = set(dst.covered_lines) | set(src.covered_lines)
+    coverable = set(dst.coverable_lines) | set(src.coverable_lines)
     total = max(dst.total_coverable_lines, src.total_coverable_lines, len(covered))
     dst.covered_lines = sorted(covered)
+    dst.coverable_lines = sorted(coverable)
     dst.total_coverable_lines = total
     dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
     if src.branch_coverage_pct is not None:
@@ -332,8 +367,11 @@ def resolve_reports(
     by_key: dict[str, FileCoverage] = {}
     report_file_count = 0
     for report in reports:
-        if result.source_format is None and report.source_format not in (None, "unknown"):
-            result.source_format = report.source_format
+        if report.source_format not in (None, "unknown"):
+            if result.source_format is None:
+                result.source_format = report.source_format
+            if report.source_format not in result.source_formats:
+                result.source_formats.append(report.source_format)
         for fc in report.files:
             report_file_count += 1
             norm = normalize_report_path(
@@ -356,6 +394,7 @@ def resolve_reports(
                 branch_coverage_pct=fc.branch_coverage_pct,
                 covered_lines=list(fc.covered_lines),
                 total_coverable_lines=fc.total_coverable_lines,
+                coverable_lines=list(fc.coverable_lines),
             )
             if key in by_key:
                 _merge_into(by_key[key], resolved_fc)
@@ -503,6 +542,11 @@ def build_coverage_map(
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
             errors.append((path, f"could not read: {exc}"))
+            continue
+        except UnicodeDecodeError:
+            # A binary artifact, most often a coverage.py ``.coverage`` database:
+            # export it with ``coverage lcov`` or ``coverage xml`` first.
+            errors.append((path, "not a text coverage report"))
             continue
         report = parse_coverage(text, format=coverage_format)
         if not report.files:

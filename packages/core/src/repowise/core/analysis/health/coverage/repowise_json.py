@@ -1,10 +1,10 @@
 """Repowise normalized-JSON coverage parser.
 
-A small, explicit JSON schema so coverage produced by *any* runner
-(``pytest-cov``, ``c8``/``nyc``, ``cargo-llvm-cov``, ``go test
--coverprofile``, JaCoCo, coverlet, or a Codecov/Coveralls scrape) can be
+A small, explicit JSON schema so coverage from a runner with no native
+parser here (coverlet, a Codecov/Coveralls scrape, a custom tool) can be
 normalized once to a single shape and fed to ``repowise health
---coverage``. Keyed by **repo-relative POSIX path**.
+--coverage``. LCOV, Cobertura, Clover, Go cover profiles and JaCoCo XML are
+read directly. Keyed by **repo-relative POSIX path**.
 
 Schema (``format: "repowise-coverage-v1"``)::
 
@@ -16,6 +16,7 @@ Schema (``format: "repowise-coverage-v1"``)::
           "line_coverage_pct": 87.5,     # 0..100; derivable from covered/total
           "branch_coverage_pct": 70.0,   # optional, may be null
           "covered_lines": [1, 2, 5],    # optional explicit hit set
+          "coverable_lines": [1, 2, 3, 5],  # optional executable set (patch coverage)
           "total_coverable_lines": 40    # optional; derivable from pct+covered
         },
         ...
@@ -77,11 +78,13 @@ def _parse_entry(key: str | None, entry: dict[str, Any]) -> FileCoverage | None:
         return None
     path = Path(str(path).replace("\\", "/")).as_posix()
 
-    covered = entry.get("covered_lines")
-    covered_lines = sorted({int(x) for x in covered}) if isinstance(covered, (list, tuple)) else []
+    covered_lines = _line_set(entry.get("covered_lines"))
+    coverable_lines = _line_set(entry.get("coverable_lines"))
 
     total = entry.get("total_coverable_lines")
     total = int(total) if isinstance(total, (int, float)) and total >= 0 else None
+    if total is None and coverable_lines:
+        total = len(coverable_lines)
 
     pct = entry.get("line_coverage_pct")
     pct = float(pct) if isinstance(pct, (int, float)) else None
@@ -112,4 +115,15 @@ def _parse_entry(key: str | None, entry: dict[str, Any]) -> FileCoverage | None:
         branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
         covered_lines=covered_lines,
         total_coverable_lines=int(total or 0),
+        coverable_lines=coverable_lines,
     )
+
+
+def _line_set(raw: Any) -> list[int]:
+    """Sorted unique line numbers from a JSON list, ``[]`` when absent or malformed."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    try:
+        return sorted({int(x) for x in raw})
+    except (TypeError, ValueError):
+        return []

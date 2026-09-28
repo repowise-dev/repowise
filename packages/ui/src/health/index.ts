@@ -41,6 +41,7 @@ export * from "./file-opportunity";
 export * from "./triage-view";
 export * from "./findings-view";
 export * from "./performance-view";
+export * from "./coverage-formats";
 export * from "./coverage-view";
 export * from "./inferred-tests-view";
 export * from "./tests-reaching-list";

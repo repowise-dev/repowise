@@ -112,3 +112,21 @@ def test_changed_lines_unknown_revision_raises(git_repo) -> None:
         changed_lines(str(git_repo), "nope123..HEAD")
     with pytest.raises(ValueError):
         changed_lines(str(git_repo), "deadbeef")
+
+
+def test_changed_lines_three_dot_diffs_from_merge_base(git_repo) -> None:
+    # A branch edits line 2 while base moves on and edits line 3: the PR view
+    # (three dots) reports only the branch's own line.
+    _git(git_repo, "branch", "-M", "main")
+    _git(git_repo, "switch", "-qc", "feat")
+    (git_repo / "mod.py").write_text("a = 1\nb = 22\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "feat edit")
+    _git(git_repo, "switch", "-q", "main")
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 33\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "base edit")
+
+    changed, label = changed_lines(str(git_repo), "main...feat")
+    assert label == "main...feat"
+    assert changed == {"mod.py": {2}}
+    # Two dots compares the tips, so base's own edit shows up too.
+    assert changed_lines(str(git_repo), "main..feat")[0] == {"mod.py": {2, 3}}

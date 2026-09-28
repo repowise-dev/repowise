@@ -486,22 +486,6 @@ async def _repository(ctx: Any) -> Any | None:
         return None
 
 
-def _normalize_revspec(revspec: str | None) -> str:
-    """Mirror ``score_live_change``'s three-dot handling for ``changed_lines``.
-
-    ``changed_lines`` verifies each side of a ``base..head`` range as a ref, so a
-    three-dot ``base...head`` (whose head parses as ``.head``) would fail its
-    ref check. Strip the extra dot to the two-dot form the scorer already uses.
-    """
-    if revspec is None:
-        return "HEAD"
-    if ".." in revspec:
-        base, _, head = revspec.partition("..")
-        head = head.lstrip(".") or "HEAD"
-        return f"{base}..{head}"
-    return revspec
-
-
 def _filter_changed(
     changed: dict[str, set[int]],
     extensions: tuple[str, ...],
@@ -769,7 +753,7 @@ async def _changed_in_scope(
             partial(
                 changed_lines,
                 repo_path,
-                _normalize_revspec(revspec),
+                revspec or "HEAD",
                 working_tree=working_tree,
             )
         )
@@ -941,7 +925,7 @@ async def _independent_changes_block(
         return None
     # Returns [] without a git call for anything that is not a range, so the
     # range test lives in one place rather than here as well.
-    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), _normalize_revspec(revspec))
+    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), revspec)
     try:
         async with get_session(session_factory) as session:
             repo_id = (await _get_repo(session)).id

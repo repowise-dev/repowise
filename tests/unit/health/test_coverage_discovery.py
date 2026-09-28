@@ -163,6 +163,30 @@ def test_discover_recursive_patterns_reach_deep_files(tmp_path: Path) -> None:
     assert {deep_cob, deep_lcov, rust} <= found
 
 
+def test_discover_finds_go_and_jacoco_defaults(tmp_path: Path) -> None:
+    """A literally spelled ``build/`` is searched even though ``build`` is pruned."""
+    go = tmp_path / "coverage.out"
+    go.write_text("mode: set\n")
+    maven = tmp_path / "target" / "site" / "jacoco" / "jacoco.xml"
+    maven.parent.mkdir(parents=True)
+    maven.write_text("<report/>")
+    gradle = tmp_path / "build" / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
+    gradle.parent.mkdir(parents=True)
+    gradle.write_text("<report/>")
+    # ``build`` reached only through ``**`` stays pruned.
+    nested = tmp_path / "lib" / "build" / "reports" / "jacoco" / "jacocoTestReport.xml"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("<report/>")
+    below = tmp_path / "build" / "reports" / "jacoco" / "node_modules" / "x.xml"
+    below.parent.mkdir(parents=True)
+    below.write_text("<report/>")
+
+    found = set(discover_artifacts(tmp_path))
+    assert {go, maven, gradle} <= found
+    assert nested not in found
+    assert below not in found
+
+
 def test_discover_root_only_patterns_stay_root_only(tmp_path: Path) -> None:
     """Literal patterns must NOT gain match-anywhere semantics: a checked-in
     fixture named ``lcov.info``/``coverage.xml`` deep in the tree is not a

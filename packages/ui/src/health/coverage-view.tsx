@@ -51,6 +51,7 @@ import {
   type CoverageFilePromptInput,
 } from "./ai-prompt-builder";
 import { scoreBadgeClass } from "./tokens";
+import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
@@ -591,7 +592,7 @@ function NoCoverageState() {
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
         Nothing here can say whether your code is tested
       </h2>
-      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+      <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
         No coverage report has been ingested, and the dependency graph found no
         test files to trace either. Either would fill this tab: a report gives the
         lines your tests executed, and the graph alone can name which tests reach
@@ -603,7 +604,7 @@ function NoCoverageState() {
         repowise coverage add coverage.lcov
       </pre>
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        LCOV · Cobertura · Clover
+        {COVERAGE_REPORT_FORMATS_LABEL}
       </p>
     </div>
   );
