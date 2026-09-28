@@ -40,27 +40,7 @@ async def save_coverage_files(
     await session.flush()
 
     for i in range(0, len(files), _BATCH_SIZE):
-        batch = files[i : i + _BATCH_SIZE]
-        for f in batch:
-            if hasattr(f, "file_path"):
-                data = {
-                    "file_path": f.file_path,
-                    "line_coverage_pct": float(f.line_coverage_pct),
-                    "branch_coverage_pct": (
-                        float(f.branch_coverage_pct) if f.branch_coverage_pct is not None else None
-                    ),
-                    "covered_lines_json": json.dumps(list(f.covered_lines or [])),
-                    "total_coverable_lines": int(f.total_coverable_lines or 0),
-                    "coverable_lines_json": json.dumps(
-                        list(getattr(f, "coverable_lines", None) or [])
-                    ),
-                }
-            else:
-                data = dict(f)
-                for key in ("covered_lines", "coverable_lines"):
-                    if key in data:
-                        data[f"{key}_json"] = json.dumps(list(data.pop(key) or []))
-
+        for f in files[i : i + _BATCH_SIZE]:
             session.add(
                 CoverageFile(
                     id=_new_uuid(),
@@ -68,22 +48,38 @@ async def save_coverage_files(
                     source_format=source_format,
                     ingested_commit_sha=ingested_commit_sha,
                     mapping_partial=mapping_partial,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k
-                        not in (
-                            "id",
-                            "repository_id",
-                            "source_format",
-                            "ingested_commit_sha",
-                            "mapping_partial",
-                        )
-                        and hasattr(CoverageFile, k)
-                    },
+                    **_row_columns(f),
                 )
             )
         await session.flush()
+
+
+#: Columns the ingest sets for every row, so a per-file input never overrides them.
+_INGEST_COLUMNS = frozenset(
+    {"id", "repository_id", "source_format", "ingested_commit_sha", "mapping_partial"}
+)
+
+
+def _row_columns(f: Any) -> dict[str, Any]:
+    """Per-file column values from a ``FileCoverage`` or a dict of the same shape."""
+    if hasattr(f, "file_path"):
+        return {
+            "file_path": f.file_path,
+            "line_coverage_pct": float(f.line_coverage_pct),
+            "branch_coverage_pct": (
+                float(f.branch_coverage_pct) if f.branch_coverage_pct is not None else None
+            ),
+            "covered_lines_json": json.dumps(list(f.covered_lines or [])),
+            "total_coverable_lines": int(f.total_coverable_lines or 0),
+            "coverable_lines_json": json.dumps(list(getattr(f, "coverable_lines", None) or [])),
+        }
+    data = dict(f)
+    for key in ("covered_lines", "coverable_lines"):
+        if key in data:
+            data[f"{key}_json"] = json.dumps(list(data.pop(key) or []))
+    return {
+        k: v for k, v in data.items() if k not in _INGEST_COLUMNS and hasattr(CoverageFile, k)
+    }
 
 
 #: Every column of ``CoverageFile`` except the two line-set blobs
