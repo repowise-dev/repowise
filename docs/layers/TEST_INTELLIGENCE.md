@@ -204,7 +204,7 @@ else discovery, else (locally) the coverage an index already stores from
 
 The same figure is on every surface, from the same computation over stored
 coverage: `get_change_risk`'s `patch_coverage` block, and
-`GET /api/repos/{id}/coverage/patch?base=&head=` (diffs `base...head`; `null`
+`GET /api/repos/{id}/health/coverage/patch?base=&head=` (diffs `base...head`; `null`
 when nothing is ingested), which the editor's branch-risk view reads. Stored
 coverage measured at another commit than the change's head is marked `stale`.
 

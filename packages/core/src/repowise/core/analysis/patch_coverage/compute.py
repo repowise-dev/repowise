@@ -79,9 +79,12 @@ class PatchScope:
     label: str = ""  # the diff, e.g. "origin/main...HEAD"
     source_formats: tuple[str, ...] = ()
     reports: tuple[str, ...] = ()  # report files read, as the caller named them
-    report_path_count: int = 0  # file entries across those reports
-    # Report entries that did not map to a file in the repository.
-    unmatched_report_path_count: int = 0
+    # File entries across those reports, and how many did not map to a file in
+    # the repository. ``None`` when unknown (stored coverage keeps only matches).
+    report_path_count: int | None = None
+    unmatched_report_path_count: int | None = None
+    # Fewer than half the report's files mapped: the figure covers a fragment.
+    mapping_partial: bool = False
     # The commit the coverage was measured at, and whether that is the
     # change's head (``coverage_freshness``). Stale coverage still computes,
     # but its line numbers describe other code, so every renderer says so.
@@ -95,6 +98,7 @@ class PatchScope:
             "reports": list(self.reports),
             "report_path_count": self.report_path_count,
             "unmatched_report_path_count": self.unmatched_report_path_count,
+            "mapping_partial": self.mapping_partial,
             "measured_commit": self.measured_commit,
             "freshness": self.freshness,
         }
@@ -196,7 +200,6 @@ def patch_coverage_from_resolved(
     threshold: float | None = None,
     label: str = "",
     reports: Sequence[str] = (),
-    freshness: FreshnessStatus = "unknown",
 ) -> PatchCoverage:
     """:func:`compute_patch_coverage` over reports already resolved to repo keys."""
     unmatched = len(resolved.unmatched) + len(resolved.ambiguous)
@@ -210,7 +213,7 @@ def patch_coverage_from_resolved(
             reports=tuple(reports),
             report_path_count=resolved.matched + unmatched,
             unmatched_report_path_count=unmatched,
-            freshness=freshness,
+            mapping_partial=resolved.mapping_partial,
         ),
     )
 

@@ -189,3 +189,26 @@ def test_flag_overrides_a_bad_config_threshold(repo) -> None:
     )
     report = _lcov(repo, {2: 1, 3: 1})
     assert _run(repo, "main...feat", "--report", report, "--fail-under", "50").exit_code == 0
+
+
+def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
+    from repowise.cli.commands.coverage_check_cmd import _CannotEvaluateError, _gateable
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import PatchScope, compute_patch_coverage
+
+    def _pc(fc, freshness):
+        return compute_patch_coverage(
+            {"a.py": {1}}, {"a.py": fc}, threshold=80, scope=PatchScope(freshness=freshness)
+        )
+
+    fresh = _pc(file_coverage("a.py", [1], [1]), "current")
+    assert _gateable(fresh) is fresh
+    with pytest.raises(_CannotEvaluateError) as stale:
+        _gateable(_pc(file_coverage("a.py", [1], [1]), "stale"))
+    assert stale.value.code == "coverage_stale"
+    with pytest.raises(_CannotEvaluateError) as legacy:
+        _gateable(_pc(file_coverage("a.py", [1], []), "current"))
+    assert legacy.value.code == "no_line_data"
+    with pytest.raises(_CannotEvaluateError) as missing:
+        _gateable(None)
+    assert missing.value.code == "no_report"

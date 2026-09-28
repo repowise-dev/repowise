@@ -107,6 +107,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     report_path_count: 10,
     unmatched_report_path_count: 0,
     measured_commit: "abcdef1234567890",
+    mapping_partial: false,
     freshness: "stale",
   },
 };

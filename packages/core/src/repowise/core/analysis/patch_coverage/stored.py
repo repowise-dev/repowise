@@ -29,15 +29,20 @@ async def stored_patch_coverage(
     *head_commit* is the commit the change ends at; coverage measured anywhere
     else is marked ``stale`` in the scope.
     """
-    from repowise.core.persistence.crud import load_coverage_for_repo, load_file_coverage
+    from repowise.core.persistence.crud import (
+        get_coverage_summary,
+        load_coverage_for_repo,
+        load_file_coverage,
+    )
 
     rows = await load_coverage_for_repo(session, repository_id, include_covered_lines=False)
     if not rows:
         return None
+    summary = await get_coverage_summary(session, repository_id, rows=rows)
     measured = {row.file_path for row in rows}
-    latest = max(rows, key=lambda r: r.ingested_at)
     wanted = sorted(set(changed) & measured)
     coverage = await load_file_coverage(session, repository_id, file_paths=wanted) if wanted else {}
+    commit = summary["ingested_commit_sha"]
     return compute_patch_coverage(
         changed,
         coverage,
@@ -45,9 +50,9 @@ async def stored_patch_coverage(
         report_paths=measured,
         scope=PatchScope(
             label=label,
-            source_formats=tuple(dict.fromkeys(row.source_format for row in rows)),
-            report_path_count=len(rows),
-            measured_commit=latest.ingested_commit_sha,
-            freshness=coverage_freshness(latest.ingested_commit_sha, head_commit),
+            source_formats=(summary["source_format"],) if summary["source_format"] else (),
+            mapping_partial=bool(summary["mapping_partial"]),
+            measured_commit=commit,
+            freshness=coverage_freshness(commit, head_commit),
         ),
     )

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import CoverageFile, _new_uuid
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.health.coverage.model import FileCoverage
 from .._shared import _BATCH_SIZE
 
 
@@ -129,9 +132,10 @@ async def load_coverage_for_repo(
     """Coverage rows for a repo, optionally scoped to *file_paths*.
 
     ``include_covered_lines=False`` returns ``Row`` objects carrying every
-    column except ``covered_lines_json``. They are attribute-accessed exactly
+    column except the two line-set blobs. They are attribute-accessed exactly
     like the ORM entities, so a caller that reads named fields needs no change
-    — but a caller that touches ``covered_lines_json`` must ask for it.
+    — but a caller that touches ``covered_lines_json`` or
+    ``coverable_lines_json`` must ask for them.
     """
     q = (
         select(CoverageFile)
@@ -153,7 +157,7 @@ def _line_list(raw: str | None) -> list[int]:
         return []
 
 
-def file_coverage_from_row(row: CoverageFile) -> Any:
+def file_coverage_from_row(row: Any) -> FileCoverage:
     """A stored row as the parsers' ``FileCoverage``, the one row-to-model conversion."""
     from repowise.core.analysis.health.coverage.model import FileCoverage
 
@@ -172,7 +176,7 @@ async def load_file_coverage(
     repository_id: str,
     *,
     file_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, FileCoverage]:
     """Stored coverage as ``{path: FileCoverage}``, line sets included."""
     rows = await load_coverage_for_repo(session, repository_id, file_paths=file_paths)
     return {row.file_path: file_coverage_from_row(row) for row in rows}
@@ -182,10 +186,16 @@ async def load_coverage_map(session: AsyncSession, repository_id: str) -> dict[s
     """Stored coverage in the shape ``HealthAnalyzer`` takes as ``coverage_map``."""
     from repowise.core.analysis.health.coverage.model import coverage_map_entry
 
-    rows = await load_coverage_for_repo(session, repository_id)
+    # Health scoring never reads the executable-line set, so its blob is not
+    # loaded (it is at least as large as the covered set).
+    result = await session.execute(
+        select(*_COVERAGE_SCALAR_COLUMNS, CoverageFile.covered_lines_json).where(
+            CoverageFile.repository_id == repository_id
+        )
+    )
     return {
         row.file_path: coverage_map_entry(file_coverage_from_row(row), row.source_format)
-        for row in rows
+        for row in result.all()
     }
 
 

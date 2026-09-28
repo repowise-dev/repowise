@@ -2,7 +2,10 @@
 
 Needs git and a coverage report, nothing else: no index, no API key. Report
 paths are resolved against ``git ls-files``, so a file added by the change
-resolves too (an index cached from the base branch would not know it).
+resolves too (an index cached from the base branch would not know it). With no
+report on disk it falls back to the coverage an index stores, but gates on it
+only when that coverage was measured at the change's head and carries
+executable-line data; otherwise it cannot evaluate.
 
 Exit codes and output channels are the shared CI ones (:mod:`repowise.cli.ci`):
 0 when the gate passes or there is nothing to judge, 1 when patch coverage is
@@ -110,18 +113,14 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     cfg = _coverage_config(root, validate_threshold=fail_under is None)
     threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
+    if not report_paths and not (root / ".repowise" / "wiki.db").is_file():
+        raise _CannotEvaluateError("no_report", _NO_REPORT)
     changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
     if not report_paths:
-        # No report on disk: an index's stored coverage still answers locally.
-        stored = run_async(_stored(root, changed, label, threshold))
-        if stored is None:
-            raise _CannotEvaluateError(
-                "no_report",
-                "No coverage report found. Pass one with --report (lcov.info, coverage.xml, "
-                "coverage.out, jacoco.xml, ...), set coverage.paths in "
-                ".repowise/config.yaml, or ingest one with `repowise coverage add`.",
-            )
-        return stored
+        # No report on disk: the index's stored coverage answers, when it can.
+        if notices is console:
+            notices.print("[dim]Reading the coverage stored in the index[/dim]")
+        return _gateable(run_async(_stored(root, changed, label, threshold)))
     if notices is console:
         # Machine formats carry the list in ``scope.reports`` instead.
         notices.print(f"[dim]Reading {', '.join(escape(str(p)) for p in report_paths)}[/dim]")
@@ -135,30 +134,64 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     )
 
 
+_NO_REPORT = (
+    "No coverage report found. Pass one with --report (lcov.info, coverage.xml, "
+    "coverage.out, jacoco.xml, ...), set coverage.paths in .repowise/config.yaml, "
+    "or ingest one with `repowise coverage add`."
+)
+
+
+def _gateable(pc):
+    """Stored coverage the gate can trust, or why it cannot evaluate.
+
+    Coverage from another commit describes other code, and coverage stored
+    before executable lines were kept cannot tell an uncovered line from a
+    comment: either would pass a gate that measured nothing.
+    """
+    if pc is None:
+        raise _CannotEvaluateError("no_report", _NO_REPORT)
+    if pc.scope.freshness != "current":
+        at = f" at {pc.scope.measured_commit[:7]}" if pc.scope.measured_commit else ""
+        raise _CannotEvaluateError(
+            "coverage_stale",
+            f"The stored coverage was measured{at}, not at this change's head. "
+            "Pass a fresh report with --report, or re-run `repowise coverage add`.",
+        )
+    measurable = pc.with_status("measured") + pc.with_status("no_coverable_changes")
+    if pc.with_status("no_line_data") and not measurable:
+        raise _CannotEvaluateError(
+            "no_line_data",
+            "The stored coverage predates executable-line data. Re-run "
+            "`repowise coverage add` with the report, or pass it with --report.",
+        )
+    return pc
+
+
 async def _stored(root: Path, changed, label: str, threshold: float | None):
     """Patch coverage from the index's stored coverage, or ``None`` without one."""
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import revspec_head
     from repowise.core.analysis.patch_coverage import stored_patch_coverage
 
     async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened
-        return await stored_patch_coverage(
-            session,
-            repo_id,
-            changed,
-            label=label,
-            head_commit=git_refs.resolve(str(root), _head_of(label)),
-            threshold=threshold,
-        )
-
-
-def _head_of(revspec: str) -> str:
-    from repowise.core.analysis.change_risk.features import split_revspec
-
-    parts = split_revspec(revspec)
-    return parts[2] if parts else revspec
+        try:
+            return await stored_patch_coverage(
+                session,
+                repo_id,
+                changed,
+                label=label,
+                head_commit=git_refs.resolve(str(root), revspec_head(label)),
+                threshold=threshold,
+            )
+        except SQLAlchemyError as exc:
+            raise _CannotEvaluateError(
+                "index_unreadable", f"Could not read the index's coverage: {exc}"
+            ) from exc
 
 
 def _resolve_reports(root, cfg, report_paths, report_format, notices):

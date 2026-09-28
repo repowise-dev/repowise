@@ -76,6 +76,12 @@ def split_revspec(revspec: str) -> tuple[str, str, str] | None:
     return base or "HEAD", sep, head or "HEAD"
 
 
+def revspec_head(revspec: str | None) -> str:
+    """The revision a change ends at: a range's head, else the revision itself."""
+    parts = split_revspec(revspec) if revspec else None
+    return parts[2] if parts else revspec or "HEAD"
+
+
 def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
     # pipe handles can wedge the session (same failure mode _meta.py guards

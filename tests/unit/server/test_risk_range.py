@@ -239,7 +239,7 @@ async def test_patch_coverage_reads_stored_coverage(
     ).stdout.strip()
     head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
     repo = await _register(client, tmp_path)
-    url = f"/api/repos/{repo['id']}/coverage/patch"
+    url = f"/api/repos/{repo['id']}/health/coverage/patch"
 
     # Nothing ingested yet: null, not a zero.
     empty = await client.get(url, params={"base": base})

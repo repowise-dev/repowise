@@ -342,6 +342,10 @@ def test_cross_repo_block_never_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _collector(tmp_path) -> OmissionCollector:
+    return OmissionCollector("get_change_risk", repo_root=tmp_path)
+
+
 def _scored(ref: str = "main...HEAD", working_tree: bool = False) -> SimpleNamespace:
     return SimpleNamespace(working_tree=working_tree, features=SimpleNamespace(ref=ref))
 
@@ -371,14 +375,16 @@ async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
     monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
     ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
 
-    block = await tool._patch_coverage_block(ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored())
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
     assert block["patch_coverage_pct"] == 50.0
     assert block["scope"]["freshness"] == "current"
     assert block["scope"]["label"] == "main...HEAD"
 
     # Uncommitted edits were never measured: no commit vouches for them.
     dirty = await tool._patch_coverage_block(
-        ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True)
+        ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True), _collector(tmp_path)
     )
     assert dirty["scope"]["freshness"] == "unknown"
 
@@ -389,8 +395,42 @@ async def test_patch_coverage_is_absent_without_a_readable_change_or_index(
 ):
     ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
     error = ("unknown", "Could not read changed lines from git.")
-    assert await tool._patch_coverage_block(ctx, {}, error, None, _scored()) is None
+    c = _collector(tmp_path)
+    assert await tool._patch_coverage_block(ctx, {}, error, None, _scored(), c) is None
     no_index = SimpleNamespace(session_factory=None, path=tmp_path)
-    assert await tool._patch_coverage_block(no_index, {"a.py": {1}}, None, None, _scored()) is None
+    assert await tool._patch_coverage_block(no_index, {"a.py": {1}}, None, None, _scored(), c) is None
     _get_repo_raising(monkeypatch, LookupError("no repo"))
-    assert await tool._patch_coverage_block(ctx, {"a.py": {1}}, None, None, _scored()) is None
+    assert await tool._patch_coverage_block(ctx, {"a.py": {1}}, None, None, _scored(), c) is None
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_files_are_capped_to_what_needs_attention(
+    monkeypatch, factory, tmp_path
+):
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import compute_patch_coverage
+
+    coverage = {f"f{i}.py": file_coverage(f"f{i}.py", [], [1]) for i in range(15)}
+    coverage["ok.py"] = file_coverage("ok.py", [1], [1])
+    changed = {path: {1} for path in coverage}
+
+    async def _stored(*_a, **_k):
+        return compute_patch_coverage(changed, coverage)
+
+    import repowise.core.analysis.patch_coverage as pc_module
+
+    monkeypatch.setattr(pc_module, "stored_patch_coverage", _stored)
+    collector = _collector(tmp_path)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    async def _repo(_session, *_a, **_k):
+        return SimpleNamespace(id="r")
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    block = await tool._patch_coverage_block(ctx, changed, None, "HEAD", _scored(), collector)
+
+    assert len(block["files"]) == 10
+    assert all(f["status"] == "measured" and f["uncovered_ranges"] for f in block["files"])
+    # Totals still count every file, the fully covered one included.
+    assert block["file_counts"]["measured"] == 16
+    assert block["coverable_line_count"] == 16

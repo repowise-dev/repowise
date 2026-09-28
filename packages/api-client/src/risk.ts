@@ -1,7 +1,7 @@
 /**
  * REST client for the change-risk endpoints.
- * Backend: packages/server/src/repowise/server/routers/git.py (risk/range,
- * coverage/patch)
+ * Backend: packages/server/src/repowise/server/routers/git.py (risk/range) and
+ * routers/code_health/coverage_routes.py (health/coverage/patch)
  */
 
 import { apiGet } from "./client";
@@ -86,7 +86,7 @@ export async function getPatchCoverage(
   params: Pick<RiskRangeParams, "base" | "head">,
 ): Promise<PatchCoverageResponse | null> {
   return apiGet<PatchCoverageResponse | null>(
-    `/api/repos/${repoId}/coverage/patch`,
+    `/api/repos/${repoId}/health/coverage/patch`,
     { base: params.base, head: params.head },
   );
 }

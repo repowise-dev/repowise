@@ -100,6 +100,18 @@ export function PatchCoverageSummary({
         </p>
       )}
 
+      {coverage.scope.mapping_partial && (
+        <p className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+          <span
+            aria-hidden
+            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+          />
+          <span>
+            Most report paths did not match this repository, so this covers a fragment
+          </span>
+        </p>
+      )}
+
       {uncovered.length > 0 && (
         <ul className="mt-1 flex flex-col gap-0.5">
           {uncovered.slice(0, MAX_FILES).map((f) => (

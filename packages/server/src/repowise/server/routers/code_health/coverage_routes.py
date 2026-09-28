@@ -14,6 +14,7 @@ any ratio built from it would be a coverage figure the data cannot support.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -27,7 +28,10 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
+from repowise.server.routers._local_git import resolve_local_repo, revision_exists
+from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 
 from ._router import router
 
@@ -373,3 +377,45 @@ async def health_tests_reaching(
         "total": total,
         "truncated": total > len(reached.tests),
     }
+
+
+def _read_change(local_path: str, base: str, head: str) -> tuple[dict[str, set[int]], str, str]:
+    """``(changed lines, label, head sha)`` for ``base...head``; git only, run off the loop."""
+    import subprocess
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.changed_lines import changed_lines
+
+    if not revision_exists(local_path, base) or not revision_exists(local_path, head):
+        raise HTTPException(status_code=400, detail=f"Unknown revision in {base!r}...{head!r}")
+    try:
+        changed, label = changed_lines(local_path, f"{base}...{head}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="git timed out reading the change") from exc
+    return changed, label, git_refs.resolve(local_path, head)
+
+
+@router.get(
+    "/api/repos/{repo_id}/health/coverage/patch",
+    response_model=PatchCoverageResponse | None,
+)
+async def health_coverage_patch(
+    base: str = Query(..., description="Base revision; the change is what head did since"),
+    head: str = Query("HEAD", description="Head revision"),
+    repo: Repository = Depends(resolve_local_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> PatchCoverageResponse | None:
+    """Patch coverage of ``base...head`` from the coverage the index stores.
+
+    The computation ``repowise coverage check`` gates on. ``null`` when no
+    coverage has been ingested, which is not the same as 0%.
+    """
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
+    patch = await stored_patch_coverage(
+        session, repo.id, changed, label=label, head_commit=head_sha or None
+    )
+    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None

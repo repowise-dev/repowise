@@ -37,6 +37,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       report_path_count: fileCount,
       unmatched_report_path_count: 0,
       measured_commit: "abcdef1234",
+      mapping_partial: false,
       freshness: "current",
     },
   };

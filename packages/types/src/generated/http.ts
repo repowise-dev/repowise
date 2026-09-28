@@ -2171,8 +2171,9 @@ export interface PatchCoverageScope {
   label: string;
   source_formats: string[];
   reports: string[];
-  report_path_count: number;
-  unmatched_report_path_count: number;
+  report_path_count: number | null;
+  unmatched_report_path_count: number | null;
+  mapping_partial: boolean;
   measured_commit: string | null;
   freshness: "current" | "stale" | "unknown";
 }

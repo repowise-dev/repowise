@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import subprocess
 from collections import Counter
 from datetime import datetime, timedelta
 
@@ -14,7 +11,6 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core import git_refs
 from repowise.core.analysis.change_risk import (
     SCORE_MEASURES,
     SCORE_UNIT,
@@ -43,6 +39,7 @@ from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
+from repowise.server.routers._local_git import resolve_local_repo, revision_exists
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -68,7 +65,6 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
-from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -731,66 +727,6 @@ async def get_reviewer_suggestions(
     return ReviewerSuggestionsResponse(paths=paths, suggestions=suggestions)
 
 
-async def _resolve_local_repo(
-    repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
-) -> Repository:
-    """Resolve a repository with a usable local checkout, or raise 404."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path or not os.path.isdir(repo.local_path):
-        raise HTTPException(status_code=404, detail="Repository not found")
-    return repo
-
-
-def _revision_exists(repo_path: str, rev: str) -> bool:
-    # Reject option-shaped input outright; git refuses ref names starting
-    # with "-", so this loses no legitimate revision and keeps user input
-    # from ever being parsed as a git flag here or downstream.
-    if not rev or rev.startswith("-"):
-        return False
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
-
-
-@router.get("/{repo_id}/coverage/patch", response_model=PatchCoverageResponse | None)
-async def get_patch_coverage(
-    repo_id: str,
-    base: str = Query(..., description="Base revision; the change is what head did since"),
-    head: str = Query("HEAD", description="Head revision"),
-    repo: Repository = Depends(_resolve_local_repo),
-    session: AsyncSession = Depends(get_db_session),
-) -> PatchCoverageResponse | None:
-    """Patch coverage of ``base...head`` from the coverage the index stores.
-
-    The same computation ``repowise coverage check`` gates on; three dots, so
-    only what head did since it forked counts. ``null`` when no coverage has
-    been ingested.
-    """
-    from repowise.core.analysis.changed_lines import changed_lines
-    from repowise.core.analysis.patch_coverage import stored_patch_coverage
-
-    local_path = repo.local_path
-    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
-        raise HTTPException(status_code=400, detail=f"Unknown revision in {base!r}...{head!r}")
-    try:
-        changed, label = await asyncio.to_thread(changed_lines, local_path, f"{base}...{head}")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    patch = await stored_patch_coverage(
-        session,
-        repo.id,
-        changed,
-        label=label,
-        head_commit=git_refs.resolve(local_path, head) or None,
-    )
-    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None
-
-
 @router.get("/{repo_id}/risk/range", response_model=RiskRangeResponse)
 def get_risk_range(
     repo_id: str,
@@ -801,7 +737,7 @@ def get_risk_range(
         ge=0,
         description="Recent commits to sample for the repo-relative percentile (0 skips it)",
     ),
-    repo: Repository = Depends(_resolve_local_repo),
+    repo: Repository = Depends(resolve_local_repo),
 ) -> RiskRangeResponse:
     """Assess a ``base..head`` range from its live diff shape and history.
 
@@ -812,7 +748,7 @@ def get_risk_range(
     the threadpool, since it shells out to git.
     """
     local_path = repo.local_path
-    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
+    if not revision_exists(local_path, base) or not revision_exists(local_path, head):
         raise HTTPException(status_code=400, detail=f"Unknown revision in range {base!r}..{head!r}")
 
     try:

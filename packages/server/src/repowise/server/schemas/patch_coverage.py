@@ -6,14 +6,20 @@ reading this endpoint and a CI job reading the command see one shape.
 
 from __future__ import annotations
 
-from typing import Literal
+from pydantic import BaseModel, ConfigDict
 
-from pydantic import BaseModel
+from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
+from repowise.core.analysis.patch_coverage.compute import FileStatus, GateStatus
 
 
-class PatchCoverageFile(BaseModel):
+class _Strict(BaseModel):
+    # A key ``to_dict`` gains must fail validation, not vanish from the API.
+    model_config = ConfigDict(extra="forbid")
+
+
+class PatchCoverageFile(_Strict):
     file_path: str
-    status: Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
+    status: FileStatus
     changed_line_count: int
     coverable_line_count: int
     covered_line_count: int
@@ -23,7 +29,7 @@ class PatchCoverageFile(BaseModel):
     uncovered_ranges: list[list[int]]
 
 
-class PatchCoverageFileCounts(BaseModel):
+class PatchCoverageFileCounts(_Strict):
     measured: int
     not_in_report: int
     no_line_data: int
@@ -31,24 +37,27 @@ class PatchCoverageFileCounts(BaseModel):
     out_of_scope: int
 
 
-class PatchCoverageScope(BaseModel):
+class PatchCoverageScope(_Strict):
     label: str
     source_formats: list[str]
     reports: list[str]
-    report_path_count: int
-    unmatched_report_path_count: int
+    #: Null when unknown: stored coverage keeps only the paths that matched.
+    report_path_count: int | None
+    unmatched_report_path_count: int | None
+    #: Fewer than half the report's paths matched this repository.
+    mapping_partial: bool
     measured_commit: str | None
     #: ``stale`` when the coverage was measured at another commit than the
     #: change's head: the figure still computes but describes other code.
-    freshness: Literal["current", "stale", "unknown"]
+    freshness: FreshnessStatus
 
 
-class PatchCoverageResponse(BaseModel):
+class PatchCoverageResponse(_Strict):
     patch_coverage_pct: float | None
     covered_line_count: int
     coverable_line_count: int
     threshold: float | None
-    gate: Literal["pass", "fail", "no_data", "not_set"]
+    gate: GateStatus
     file_counts: PatchCoverageFileCounts
     files: list[PatchCoverageFile]
     scope: PatchCoverageScope

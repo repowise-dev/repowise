@@ -66,7 +66,9 @@ def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
     if scope.freshness == "stale":
         at = f" at {scope.measured_commit[:7]}" if scope.measured_commit else ""
         parts.append(f"coverage was measured{at}, not at this change's head")
-    if scope.unmatched_report_path_count:
+    if scope.mapping_partial:
+        parts.append("most report paths did not match this repository, so this covers a fragment")
+    elif scope.unmatched_report_path_count:
         parts.append(
             f"{scope.unmatched_report_path_count} of {scope.report_path_count} report paths "
             "did not match a file in this repository"
