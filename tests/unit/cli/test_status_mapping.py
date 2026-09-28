@@ -128,6 +128,28 @@ def test_a_slightly_behind_index_is_still_valid(tmp_path: Path) -> None:
     assert status_cmd._mapping_report(repo)["mapping_valid"] is True
 
 
+def test_assets_beside_a_fully_indexed_tree_are_still_valid(tmp_path: Path) -> None:
+    """The count must be the ingestion set, not every path the walk yields.
+
+    ``_walk()`` yields images, fonts and lockfiles; ``traverse()`` drops them in
+    ``_build_file_info``, so only the second answers "what can be indexed". With
+    the walk count, a frontend with an assets folder trips ``indexed * 4 < tree``
+    and tells the user to re-run ``init`` over a healthy index, which is #1748
+    pointed the other way.
+    """
+    repo = _checkout(tmp_path, 12)
+    _seed(repo, file_nodes=12)
+    assets = repo / "assets"
+    assets.mkdir()
+    for i in range(40):
+        (assets / f"icon_{i}.png").write_text("PNGDATA", encoding="utf-8")
+
+    report = status_cmd._mapping_report(repo)
+    assert report["working_tree_files"] == 12
+    assert report["mapping_valid"] is True
+    assert report["reason"] is None
+
+
 def test_the_single_repo_json_carries_the_preflight(tmp_path: Path, monkeypatch) -> None:
     """#1748 asks for a machine-readable check an automation can run first."""
     from click.testing import CliRunner
