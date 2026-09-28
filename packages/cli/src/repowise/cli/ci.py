@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, NoReturn
 
 import click
@@ -50,6 +51,50 @@ def cannot_evaluate(fmt: str, code: str, message: str) -> NoReturn:
     if fmt != "json":
         err_console.print(f"[red]{escape(message)}[/red]")
     raise click.exceptions.Exit(EXIT_CANNOT_EVALUATE)
+
+
+class CannotEvaluateError(Exception):
+    """The check could not run; *code* names why, the message what to do instead."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def repo_root(path: str | None) -> Path:
+    """The git toplevel holding *path* (default: cwd)."""
+    from repowise.core import git_refs
+
+    root = git_refs.toplevel(str(Path(path or ".").resolve()))
+    if not root:
+        raise CannotEvaluateError(
+            "not_a_git_repository", "Not a git repository (or git is not installed)."
+        )
+    return Path(root)
+
+
+def change_lines(root: str, revspec: str | None) -> tuple[dict[str, set[int]], str]:
+    """``({file: new-side lines}, label)`` for *revspec*, else the CI's target branch."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import changed_lines
+    from repowise.core.ci.base import BaseNotFoundError, default_revspec
+
+    try:
+        revspec = revspec or default_revspec(root)
+    except BaseNotFoundError as exc:
+        raise CannotEvaluateError("base_not_found", str(exc)) from exc
+    try:
+        return changed_lines(root, revspec)
+    except ValueError as exc:
+        raise CannotEvaluateError(
+            "diff_failed",
+            f"Could not diff {revspec}: {exc}. A shallow CI clone needs the base "
+            "branch and enough history for a merge-base (fetch-depth: 0, or "
+            "git fetch --deepen)."
+        ) from exc
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
 def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:

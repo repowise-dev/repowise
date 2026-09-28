@@ -1,24 +1,35 @@
 """A committed file of accepted documentation drift.
 
-The baseline lets a repository adopt the gate without first fixing every
-existing finding: what it lists does not fail, anything new does. It is a file
-path the caller names, never ``.repowise/config.yaml``, because that config is
-local state and a CI policy has to live in the repository.
-
-Entries are keyed on the line-independent fingerprint and sorted, and the bytes
-are deterministic, so rewriting an unchanged baseline is a no-op diff.
+The envelope (version, sorted entries, deterministic bytes, refusals) is the
+shared one in :mod:`repowise.core.ci.baseline`; this module supplies the
+entries. They are keyed on the line-independent fingerprint, so an accepted
+finding stays accepted when an edit above it shifts its line.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ci.baseline import (
+    BASELINE_VERSION,
+    BaselineError,
+    build_document,
+    read_baseline,
+    write_document,
+)
+
 from .serialize import fingerprint_of
 
-BASELINE_VERSION = 1
+__all__ = [
+    "BASELINE_BASIS",
+    "BASELINE_VERSION",
+    "BaselineError",
+    "build_baseline",
+    "read_baseline",
+    "write_baseline",
+]
 
 BASELINE_BASIS = (
     "Documentation drift accepted as known. A listed finding does not fail the "
@@ -26,63 +37,24 @@ BASELINE_BASIS = (
 )
 
 
-class BaselineError(ValueError):
-    """A baseline file that cannot be used; the message says why."""
-
-
 def build_baseline(findings: Iterable[Mapping[str, Any]]) -> dict:
     """The baseline document for *findings*, one entry per fingerprint."""
-    entries: dict[str, dict] = {}
-    for finding in findings:
-        fp = fingerprint_of(finding)
-        entries.setdefault(
-            fp,
-            {
-                "fingerprint": fp,
-                "file_path": finding["file_path"],
-                "kind": str(finding["kind"]),
-                "target": finding["target"],
-            },
-        )
-    ordered = sorted(
-        entries.values(), key=lambda e: (e["file_path"], e["kind"], e["target"])
+    entries = (
+        {
+            "fingerprint": fingerprint_of(finding),
+            "file_path": finding["file_path"],
+            "kind": str(finding["kind"]),
+            "target": finding["target"],
+        }
+        for finding in findings
     )
-    return {"version": BASELINE_VERSION, "basis": BASELINE_BASIS, "entries": ordered}
+    return build_document(
+        entries,
+        basis=BASELINE_BASIS,
+        sort_key=lambda e: (e["file_path"], e["kind"], e["target"]),
+    )
 
 
 def write_baseline(path: Path | str, findings: Iterable[Mapping[str, Any]]) -> int:
     """Write the baseline for *findings* to *path*; returns entries written."""
-    doc = build_baseline(findings)
-    text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
-    Path(path).write_text(text, encoding="utf-8")
-    return len(doc["entries"])
-
-
-def read_baseline(path: Path | str) -> frozenset[str]:
-    """The fingerprints *path* accepts; raises :class:`BaselineError` if unusable."""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise BaselineError(f"cannot read baseline {path}: {exc}") from exc
-    try:
-        doc = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise BaselineError(f"baseline {path} is not valid JSON: {exc}") from exc
-    if not isinstance(doc, dict):
-        raise BaselineError(f"baseline {path} must be a JSON object")
-    version = doc.get("version")
-    if version != BASELINE_VERSION:
-        raise BaselineError(
-            f"baseline {path} has version {version!r}; this build reads "
-            f"version {BASELINE_VERSION}"
-        )
-    entries = doc.get("entries")
-    if not isinstance(entries, list):
-        raise BaselineError(f"baseline {path} has no 'entries' list")
-    out: set[str] = set()
-    for i, entry in enumerate(entries):
-        fp = entry.get("fingerprint") if isinstance(entry, dict) else None
-        if not isinstance(fp, str) or not fp:
-            raise BaselineError(f"baseline {path} entry {i} has no fingerprint")
-        out.add(fp)
-    return frozenset(out)
+    return write_document(path, build_baseline(findings))

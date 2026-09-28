@@ -23,22 +23,17 @@ from rich.markup import escape
 from repowise.cli.ci import (
     CI_FORMATS,
     EXIT_GATE_FAILED,
+    CannotEvaluateError,
     append_step_summary,
     cannot_evaluate,
+    change_lines,
     ci_notices,
+    repo_root,
 )
 from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.persistence.database import has_db_store
-
-
-class _CannotEvaluateError(Exception):
-    """The check could not run; *code* names why, the message what to do instead."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 @click.command("check")
@@ -100,7 +95,7 @@ def coverage_check(
     notices = ci_notices(fmt)
     try:
         pc = _evaluate(revspec, reports, report_format, fail_under, repo, notices)
-    except _CannotEvaluateError as exc:
+    except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
     _emit(pc, fmt)
     if pc.gate == "fail":
@@ -110,13 +105,13 @@ def coverage_check(
 def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     from repowise.core.analysis.patch_coverage import patch_coverage_from_resolved
 
-    root = _repo_root(repo)
+    root = repo_root(repo)
     cfg = _coverage_config(root, validate_threshold=fail_under is None)
     threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
     if not report_paths and not has_db_store(root):
-        raise _CannotEvaluateError("no_report", _NO_REPORT)
-    changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
+        raise CannotEvaluateError("no_report", _NO_REPORT)
+    changed, label = change_lines(str(root), revspec)
     if not report_paths:
         # No report on disk: the index's stored coverage answers, when it can.
         if notices is console:
@@ -150,17 +145,17 @@ def _gateable(pc):
     comment: either would pass a gate that measured nothing.
     """
     if pc is None:
-        raise _CannotEvaluateError("no_report", _NO_REPORT)
+        raise CannotEvaluateError("no_report", _NO_REPORT)
     if pc.scope.freshness != "current":
         at = f" at {pc.scope.measured_commit[:7]}" if pc.scope.measured_commit else ""
-        raise _CannotEvaluateError(
+        raise CannotEvaluateError(
             "coverage_stale",
             f"The stored coverage was measured{at}, not at this change's head. "
             "Pass a fresh report with --report, or re-run `repowise coverage add`.",
         )
     measurable = pc.with_status("measured") + pc.with_status("no_coverable_changes")
     if pc.with_status("no_line_data") and not measurable:
-        raise _CannotEvaluateError(
+        raise CannotEvaluateError(
             "no_line_data",
             "The stored coverage predates executable-line data. Re-run "
             "`repowise coverage add` with the report, or pass it with --report.",
@@ -190,7 +185,7 @@ async def _stored(root: Path, changed, label: str, threshold: float | None):
                 threshold=threshold,
             )
         except SQLAlchemyError as exc:
-            raise _CannotEvaluateError(
+            raise CannotEvaluateError(
                 "index_unreadable", f"Could not read the index's coverage: {exc}"
             ) from exc
 
@@ -211,11 +206,11 @@ def _resolve_reports(root, cfg, report_paths, report_format, notices):
     for path, err in errors:
         notices.print(f"[yellow]{escape(path.name)}: {escape(err)}[/yellow]")
     if len(errors) == len(report_paths):
-        raise _CannotEvaluateError(
+        raise CannotEvaluateError(
             "report_unreadable", "No coverage report could be read; see the messages above."
         )
     if not resolved.files:
-        raise _CannotEvaluateError(
+        raise CannotEvaluateError(
             "report_unmatched",
             "No report path matched a file in this repository. If the report paths "
             "carry a build prefix, set coverage.strip_prefix in .repowise/config.yaml."
@@ -228,17 +223,6 @@ def _resolve_reports(root, cfg, report_paths, report_format, notices):
     return resolved
 
 
-def _repo_root(repo: str | None) -> Path:
-    from repowise.core import git_refs
-
-    root = git_refs.toplevel(str(Path(repo or ".").resolve()))
-    if not root:
-        raise _CannotEvaluateError(
-            "not_a_git_repository", "Not a git repository (or git is not installed)."
-        )
-    return Path(root)
-
-
 def _coverage_config(root: Path, *, validate_threshold: bool):
     from repowise.core.analysis.health.coverage import CoverageConfig
     from repowise.core.repo_config import RepoConfigError, load_repo_config
@@ -246,44 +230,17 @@ def _coverage_config(root: Path, *, validate_threshold: bool):
     try:
         raw = load_repo_config(root)
     except RepoConfigError as exc:
-        raise _CannotEvaluateError("config_invalid", str(exc)) from exc
+        raise CannotEvaluateError("config_invalid", str(exc)) from exc
     cfg = CoverageConfig.from_repo_config(raw)
     block = raw.get("coverage")
     bad = isinstance(block, dict) and block.get("fail_under") is not None and cfg.fail_under is None
     if validate_threshold and bad:
         # A gate that silently stops gating is worse than no gate.
-        raise _CannotEvaluateError(
+        raise CannotEvaluateError(
             "config_invalid",
             f"coverage.fail_under must be a number from 0 to 100, got {block['fail_under']!r}."
         )
     return cfg
-
-
-def _default_revspec(root: str) -> str:
-    from repowise.core.ci.base import BaseNotFoundError, default_revspec
-
-    try:
-        return default_revspec(root)
-    except BaseNotFoundError as exc:
-        raise _CannotEvaluateError("base_not_found", str(exc)) from exc
-
-
-def _changed_lines(root: str, revspec: str) -> tuple[dict[str, set[int]], str]:
-    import subprocess
-
-    from repowise.core.analysis.changed_lines import changed_lines
-
-    try:
-        return changed_lines(root, revspec)
-    except ValueError as exc:
-        raise _CannotEvaluateError(
-            "diff_failed",
-            f"Could not diff {revspec}: {exc}. A shallow CI clone needs the base "
-            "branch and enough history for a merge-base (fetch-depth: 0, or "
-            "git fetch --deepen)."
-        ) from exc
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise _CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
 def _emit(pc, fmt: str) -> None:

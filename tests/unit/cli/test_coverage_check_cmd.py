@@ -192,7 +192,8 @@ def test_flag_overrides_a_bad_config_threshold(repo) -> None:
 
 
 def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
-    from repowise.cli.commands.coverage_check_cmd import _CannotEvaluateError, _gateable
+    from repowise.cli.ci import CannotEvaluateError
+    from repowise.cli.commands.coverage_check_cmd import _gateable
     from repowise.core.analysis.health.coverage import file_coverage
     from repowise.core.analysis.patch_coverage import PatchScope, compute_patch_coverage
 
@@ -203,12 +204,12 @@ def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
 
     fresh = _pc(file_coverage("a.py", [1], [1]), "current")
     assert _gateable(fresh) is fresh
-    with pytest.raises(_CannotEvaluateError) as stale:
+    with pytest.raises(CannotEvaluateError) as stale:
         _gateable(_pc(file_coverage("a.py", [1], [1]), "stale"))
     assert stale.value.code == "coverage_stale"
-    with pytest.raises(_CannotEvaluateError) as legacy:
+    with pytest.raises(CannotEvaluateError) as legacy:
         _gateable(_pc(file_coverage("a.py", [1], []), "current"))
     assert legacy.value.code == "no_line_data"
-    with pytest.raises(_CannotEvaluateError) as missing:
+    with pytest.raises(CannotEvaluateError) as missing:
         _gateable(None)
     assert missing.value.code == "no_report"
