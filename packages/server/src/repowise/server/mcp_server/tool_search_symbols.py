@@ -69,8 +69,8 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
 
     Tiers, in priority order: exact name / qualified-name match, the query's
     leaf token naming the symbol, query-token coverage, substring fallback,
-    then graph-centrality and entry-point boosts. Tests are penalised so a
-    non-test definition ranks above its test unless the caller asked for tests.
+    then graph-centrality and entry-point boosts. Non-exact tests are penalised
+    so a non-test definition ranks above its test unless the caller asked for tests.
     """
     name = (row.name or "").lower()
     qn = _qual_norm(row.qualified_name)
@@ -107,8 +107,11 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
     # the query was after, so it keeps its score. The flag is read first for the
     # same reason everywhere else does, but note it decides nothing here today —
     # it is stamped on file nodes and these are symbol nodes, so the path rules
-    # are what answer in practice.
-    if (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language):
+    # are what answer in practice. Exact matches skip it: the shared key ranks
+    # kind before test path for them.
+    if not exact and (
+        (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language)
+    ):
         score -= 5.0
     return score
 

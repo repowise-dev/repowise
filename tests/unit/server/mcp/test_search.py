@@ -569,7 +569,7 @@ class TestSymbolTestPenalty:
     """The -5 a symbol takes for living in a test file (#1103)."""
 
     @staticmethod
-    def _score(path: str, language: str = "python") -> float:
+    def _score(path: str, language: str = "python", query: str = "build index") -> float:
         from repowise.core.persistence.models import WikiSymbol
         from repowise.server.mcp_server.tool_search_symbols import _score_symbol
 
@@ -581,11 +581,14 @@ class TestSymbolTestPenalty:
         )
         # No graph node: symbol nodes never carry `is_test`, so the path rules
         # are what decide here in practice.
-        return _score_symbol(row, None, {"build", "index"}, "build_index")
+        return _score_symbol(row, None, {"build", "index"}, query)
 
     def test_tests_are_penalised_and_support_is_not(self):
         base = self._score("src/indexing/build.py")
         assert self._score("packages/core/tests/test_build.py") == base - 5.0
+        # An exact match is left to the shared rank key, which puts kind first.
+        exact = self._score("src/indexing/build.py", query="build_index")
+        assert self._score("packages/core/tests/test_build.py", query="build_index") == exact
         assert self._score("myapp/tests.py") == base - 5.0
         # A fixture factory is often what the query was after.
         assert self._score("packages/core/tests/conftest.py") == base
@@ -1401,3 +1404,28 @@ async def test_a_bare_name_search_leads_with_the_class_over_a_docs_constant(
     ]
     res = await search_codebase(query="gizmos", limit=5)
     assert res["results"][0]["symbol_id"] == "src/gizmo/core.py::Gizmos"
+
+
+async def test_an_exact_test_class_outranks_an_exact_code_function(
+    session, populated_db, setup_mcp
+) -> None:
+    """For exact matches the shared key decides, and it ranks kind before test path."""
+    from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server.tool_search import search_codebase
+
+    rid = populated_db
+    for path, kind in (("src/widget/core.py", "function"), ("tests/test_widget.py", "class")):
+        session.add(
+            WikiSymbol(
+                id=f"wd-{path}", repository_id=rid, file_path=path,
+                symbol_id=f"{path}::Widgets", name="Widgets", qualified_name="Widgets",
+                kind=kind, signature="Widgets", start_line=1, end_line=5, language="python",
+            )
+        )
+    await session.commit()
+
+    res = await search_codebase(query="Widgets", limit=5)
+    assert [r["symbol_id"] for r in res["results"][:2]] == [
+        "tests/test_widget.py::Widgets",
+        "src/widget/core.py::Widgets",
+    ]
