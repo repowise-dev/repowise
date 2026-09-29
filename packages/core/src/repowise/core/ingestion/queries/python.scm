@@ -82,10 +82,11 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Method call: obj.method(arg1, arg2)
+; Method call: obj.method(arg1, arg2), and obj.a.b.method() -- an attribute
+; receiver is kept only when it is a plain dotted path, which the parser checks.
 (call
   function: (attribute
-    object: (identifier) @call.receiver
+    object: [(identifier) (attribute)] @call.receiver
     attribute: (identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

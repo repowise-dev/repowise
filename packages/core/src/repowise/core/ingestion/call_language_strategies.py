@@ -73,6 +73,8 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # tier of its own, so a typed receiver is looked for in the caller's
     # file, in what the file imports, and then in the global pair index.
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # TypeScript's typed fallback also walks a dotted receiver's fields.
+    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }

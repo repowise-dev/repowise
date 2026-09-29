@@ -271,9 +271,12 @@
 ; parse time on angular for the two-pattern form, ~0% for this one), and there
 ; is no duplicate rule to keep in sync. ``receiver_name`` then reads "this",
 ; which call_resolver Strategy 3 already resolves against the caller's class.
+; A member_expression receiver (``this.a.b.m()``) is kept only when it is a
+; plain dotted path, which the parser checks; the resolver types it field by
+; field.
 (call_expression
   function: (member_expression
-    object: [(identifier) (this)] @call.receiver
+    object: [(identifier) (this) (member_expression)] @call.receiver
     property: [(property_identifier) (private_property_identifier)] @call.target
   )
   arguments: (arguments) @call.arguments

@@ -466,6 +466,12 @@ ResolutionOrigin = Literal[
     "receiver_extension_same_file",  # 0.93
     "receiver_extension_import",  # 0.88 — the holder class's file is imported
     "receiver_extension_global",  # 0.75 — declared somewhere; a name match
+    # A dotted receiver (`this.a.b.m()`) typed hop by hop through each class's
+    # declared fields. No global tier: every hop's type must be bound by an
+    # import or declared in the file that wrote it, and the tier is the
+    # weakest hop's.
+    "receiver_chain_same_file",  # 0.93
+    "receiver_chain_import",  # 0.88
     # Chained receiver typed from the inner callee's declared return type.
     "return_type_same_file",  # 0.93
     "return_type_same_package",  # 0.90 (JVM)

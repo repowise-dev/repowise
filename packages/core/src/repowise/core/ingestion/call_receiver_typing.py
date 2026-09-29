@@ -7,11 +7,15 @@ from pathlib import Path
 from typing import TypeVar
 
 from .languages.receiver_types import (
+    BINDING_LANGUAGES,
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
+    bound_types,
     framework_decorated_type,
+    in_spans,
+    merge_spans,
     names_in_span,
     scan_bindings,
     scan_declarations,
@@ -19,7 +23,7 @@ from .languages.receiver_types import (
     types_in_span,
     unwrapped_names_in_span,
 )
-from .models import CallSite, Symbol
+from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .type_names import POINTER_LIKE_MEMBERS
 
@@ -30,6 +34,17 @@ _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"
 _FUNCTION_KINDS = frozenset({"function", "method"})
 
 _SOURCE_CACHE_FILES = 4
+
+# Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
+# receiver, every segment after the head a field. Go's selector receiver is
+# absent: ``pkg.Var`` and ``s.field`` are one shape there. Each maps to the
+# name that means the caller's own instance; TypeScript's ``self`` is a
+# global, not ``this``.
+_CHAIN_SELF = {"python": "self", "typescript": "this"}
+# Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
+_MAX_CHAIN_FIELDS = 3
+# A chain is only as scoped as its weakest hop.
+_CHAIN_TIER_RANK = {"same_file": 0, "import": 1}
 _BODY_TYPE_CACHE_ENTRIES = 2048
 
 _K = TypeVar("_K")
@@ -47,6 +62,15 @@ def _is_module_level_function(symbol: Symbol) -> bool:
     return symbol.kind in _FUNCTION_KINDS and not symbol.parent_name
 
 
+def _types_by_name(parsed: ParsedFile) -> dict[str, list[str]]:
+    """``{name: [type symbol ids]}`` for the types one file declares."""
+    by_name: dict[str, list[str]] = {}
+    for symbol in parsed.symbols:
+        if symbol.kind in _TYPE_KINDS:
+            by_name.setdefault(symbol.name, []).append(symbol.id)
+    return by_name
+
+
 class ReceiverTypingMixin:
     """Typed-receiver and C# extension strategies, with the source caches they read."""
 
@@ -59,6 +83,9 @@ class ReceiverTypingMixin:
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
         self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
+        self._module_types: dict[str, dict[str, str | None]] = {}
+        # {file: {type name: [type symbol ids]}}, built once on first use.
+        self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
@@ -210,6 +237,10 @@ class ReceiverTypingMixin:
             return None
 
         receiver_name = call.receiver_name or ""
+        if "." in receiver_name:
+            if language not in _CHAIN_SELF:
+                return None
+            return self._resolve_chained_receiver(file_path, call, caller_id, language)
         type_name, scope = self._receiver_type_and_scope(
             file_path, caller_id, language, receiver_name
         )
@@ -240,26 +271,148 @@ class ReceiverTypingMixin:
 
         A local shadows a field, so the body answers first and its answer
         stands — including when that answer is "declared twice, no usable
-        type". Only a name the body never mentions reaches class scope.
+        type". Only a name the body never mentions reaches class scope, and
+        only a name neither binds reaches module scope.
         """
         body_types = self._declared_types_in(file_path, caller_id, language)
         if receiver_name in body_types:
             return body_types[receiver_name], "body"
-        type_name, scope = None, "body"
         if language in IMPLICIT_FIELD_LANGUAGES:
             class_id = caller_id.rpartition("::")[0]
-            type_name = (
-                self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
-            )
-            scope = "field"
+            fields = self._field_types_in(file_path, language).get(class_id, {})
+            if receiver_name in fields:
+                return fields[receiver_name], "field"
         # Third scope: a module-level def a framework decorator turned into an
         # instance, which is neither in the body nor a field.
-        if type_name is None and language in FRAMEWORK_DECORATOR_LANGUAGES:
-            return (
-                self._framework_receiver_type(file_path, caller_id, language, receiver_name),
-                "framework",
-            )
-        return type_name, scope
+        if language in FRAMEWORK_DECORATOR_LANGUAGES:
+            type_name = self._framework_receiver_type(file_path, caller_id, language, receiver_name)
+            if type_name is not None:
+                return type_name, "framework"
+        return self._module_receiver_type(file_path, caller_id, language, receiver_name), "body"
+
+    def _module_receiver_type(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        receiver_name: str,
+    ) -> str | None:
+        """The type a module-scope declaration gives *receiver_name*, if unshadowed.
+
+        Asked only where a binding scan can prove the name is not a local:
+        every function enclosing the caller is checked, since a closure's
+        parameter shadows the module name just as the caller's own does.
+        """
+        if language not in BINDING_LANGUAGES:
+            return None
+        type_name = self._module_types_in(file_path, language).get(receiver_name)
+        if type_name is None:
+            return None
+        span = self._spans_for(file_path).get(caller_id)
+        if span is not None:
+            bindings = self._bindings_for(file_path, language)
+            for start, end in (span, *self._enclosing_function_spans(file_path, span)):
+                if receiver_name in names_in_span(bindings, start, end):
+                    return None
+        return type_name
+
+    def _enclosing_function_spans(
+        self, file_path: str, span: tuple[int, int]
+    ) -> list[tuple[int, int]]:
+        parsed = self._parsed_files.get(file_path)
+        return [
+            (s.start_line, s.end_line)
+            for s in (parsed.symbols if parsed else ())
+            if s.kind in _FUNCTION_KINDS and s.start_line <= span[0] and span[1] <= s.end_line
+        ]
+
+    def _resolve_chained_receiver(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        language: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``h.f1…fn.m()`` by typing ``h``, then each field in turn.
+
+        ``this`` (Python's ``self``) is the caller's own class. Every hop must name
+        exactly one class, bound by an import or declared in the file that
+        wrote the type, and the last class must itself declare the method: a
+        field whose type is a union, a builtin, a bare type parameter or
+        missing refuses the whole chain.
+        """
+        head, *fields = (call.receiver_name or "").split(".")
+        if len(fields) > _MAX_CHAIN_FIELDS or not all(fields):
+            return None
+        found = self._chain_head(file_path, caller_id, language, head)
+        for field in fields:
+            if found is None:
+                return None
+            found = self._chain_hop(found, field, language)
+        if found is None:
+            return None
+
+        _, class_id, tier = found
+        sym_id = self._declares(class_id, call.target_name)
+        if sym_id is None or sym_id == caller_id:
+            return None
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_chain_same_file")
+        return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_chain_import")
+
+    def _chain_head(
+        self, file_path: str, caller_id: str, language: str, head: str
+    ) -> tuple[str, str, str] | None:
+        """``(file, class id, tier)`` for a chain's head name."""
+        if head == _CHAIN_SELF[language]:
+            class_id = caller_id.rpartition("::")[0]
+            symbol = self._symbols_by_id.get(class_id)
+            if symbol is None or symbol.kind not in _TYPE_KINDS:
+                return None
+            return file_path, class_id, "same_file"
+        type_name, _ = self._receiver_type_and_scope(file_path, caller_id, language, head)
+        return None if type_name is None else self._class_named(file_path, type_name)
+
+    def _chain_hop(
+        self, found: tuple[str, str, str], field: str, language: str
+    ) -> tuple[str, str, str] | None:
+        """The class *field* of *found*'s class holds, tiered by the weaker hop."""
+        class_file, class_id, tier = found
+        type_name = self._field_types_in(class_file, language).get(class_id, {}).get(field)
+        hop = None if type_name is None else self._class_named(class_file, type_name)
+        if hop is None:
+            return None
+        return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _class_named(self, file_path: str, type_name: str) -> tuple[str, str, str] | None:
+        """``(file, class id, tier)`` for the one class *type_name* names in *file_path*.
+
+        The name must be imported (a re-export followed to its declaration)
+        or declared in *file_path* itself, and name exactly one type there:
+        no repo-wide guess, since every hop of a chain rests on this.
+        """
+        bound = self._import_names.get(file_path, {}).get(type_name)
+        if bound is not None:
+            if bound.startswith("external:"):
+                return None
+            binding = self._import_bindings.get(file_path, {}).get(type_name)
+            exported = (binding.exported_name if binding else None) or type_name
+            declaring = self._barrel_origins.get(bound, {}).get(exported) or bound
+            class_id = self._only_type_in(declaring, exported)
+            return None if class_id is None else (declaring, class_id, "import")
+        if type_name in self._externally_bound_names(file_path):
+            return None
+        class_id = self._only_type_in(file_path, type_name)
+        return None if class_id is None else (file_path, class_id, "same_file")
+
+    def _only_type_in(self, file_path: str, type_name: str) -> str | None:
+        """The id of the single type *file_path* declares as *type_name*."""
+        if self._type_ids is None:
+            self._type_ids = {
+                path: _types_by_name(parsed) for path, parsed in self._parsed_files.items()
+            }
+        ids = self._type_ids.get(file_path, {}).get(type_name, ())
+        return ids[0] if len(ids) == 1 else None
 
     def _framework_receiver_type(
         self,
@@ -319,7 +472,7 @@ class ReceiverTypingMixin:
         )
 
     def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
-        """Stamp an edge whose receiver was typed from the calling body."""
+        """Stamp an edge whose receiver was typed from the calling body or module scope."""
         if tier == "same_file":
             return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_typed_same_file")
         if tier == "same_package":
@@ -427,12 +580,60 @@ class ReceiverTypingMixin:
             return types
 
         span = self._spans_for(file_path).get(caller_id)
+        declarations = self._declarations_for(file_path, language)
         if span is None:
             types = {}
+        elif language in BINDING_LANGUAGES:
+            start, end = span
+            types = bound_types(
+                (d for d in declarations if start <= d.line <= end),
+                (b for b in self._bindings_for(file_path, language) if start <= b[0] <= end),
+                language,
+            )
         else:
-            types = types_in_span(self._declarations_for(file_path, language), *span)
+            types = types_in_span(declarations, *span)
 
         _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
+        return types
+
+    def _module_types_in(self, file_path: str, language: str) -> dict[str, str | None]:
+        """``{name: type}`` for the declarations one file makes at module scope.
+
+        A line is at module scope when no function or type encloses it and
+        any other symbol enclosing it is the declared name itself (the
+        ``const client = …`` it sits in). That keeps an object literal's keys
+        and a type alias's members out.
+        """
+        types = self._module_types.get(file_path)
+        if types is not None:
+            return types
+        parsed = self._parsed_files.get(file_path)
+        symbols = parsed.symbols if parsed else ()
+        blocked = merge_spans(
+            (s.start_line, s.end_line)
+            for s in symbols
+            if s.kind in _FUNCTION_KINDS or s.kind in _TYPE_KINDS
+        )
+        owners: dict[int, str] = {}
+        for s in symbols:
+            if s.kind not in _FUNCTION_KINDS and s.kind not in _TYPE_KINDS:
+                for line in range(s.start_line, s.end_line + 1):
+                    owners[line] = s.name
+
+        def at_module_scope(line: int, name: str) -> bool:
+            return not in_spans(blocked, line) and owners.get(line, name) == name
+
+        types = bound_types(
+            (
+                d
+                for d in self._declarations_for(file_path, language)
+                if at_module_scope(d.line, d.name)
+            ),
+            (b for b in self._bindings_for(file_path, language) if at_module_scope(*b)),
+            language,
+            rebinding_refuses=True,
+        )
+        _store_capped(self._module_types, file_path, types, _SOURCE_CACHE_FILES)
         return types
 
     def _field_types_in(
@@ -452,6 +653,7 @@ class ReceiverTypingMixin:
             self._declarations_for(file_path, language),
             class_spans,
             [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
+            language,
         )
         _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
         return by_class

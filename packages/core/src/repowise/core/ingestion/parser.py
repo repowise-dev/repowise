@@ -414,6 +414,27 @@ def grammar_tag_for(language: str, path: str) -> str:
 _node_text = node_text
 
 
+# The receiver captures that are themselves a member access, by language (the
+# queries widen only these two), and what a plain dotted path of names looks
+# like once whitespace is gone.
+_PATH_RECEIVERS = frozenset({("typescript", "member_expression"), ("python", "attribute")})
+_DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
+
+
+def _receiver_text(language: str, node: Node, src: str) -> str | None:
+    """The receiver's text, or None to drop the site.
+
+    A dotted receiver (``this.a.b.m()``) is kept only as a plain path of
+    names: a call, subscript or optional hop inside it types nothing, and
+    dropping the site keeps it off the bare-call tiers.
+    """
+    text = _node_text(node, src).strip()
+    if (language, node.type) not in _PATH_RECEIVERS:
+        return text
+    path = "".join(text.split())
+    return path if _DOTTED_PATH.fullmatch(path) else None
+
+
 def _normalize_php_receiver(text: str) -> str:
     """Spell PHP's receiver the way the resolver's strategies expect.
 
@@ -1734,7 +1755,11 @@ class ASTParser:
                 continue
 
             line = site_node.start_point[0] + 1
-            receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            receiver_name = None
+            if receiver_nodes:
+                receiver_name = _receiver_text(file_info.language, receiver_nodes[0], src)
+                if receiver_name is None:
+                    continue
             if receiver_name and file_info.language == "php":
                 receiver_name = _normalize_php_receiver(receiver_name)
             # F#: a dotted static path (``Path.Combine(a, b)``) collapses into
