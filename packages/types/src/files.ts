@@ -217,6 +217,7 @@ export interface FileDeadCodeFinding {
 export interface FileRow {
   file_path: string;
   language: string;
+  /** NLOC, not raw lines; null where health measured none (see `loc_null_reason`). */
   loc: number | null;
   symbol_count: number;
   pagerank_pct: number;
@@ -246,6 +247,10 @@ export interface FilesIndexResponse {
   files: FileRow[];
   total: number;
   languages: FileLanguageCount[];
+  /** What `loc` counts. Optional so older servers parse. */
+  loc_unit?: "nloc";
+  /** Why a row's `loc` is null. */
+  loc_null_reason?: string;
 }
 
 export interface FileDetailResponse {

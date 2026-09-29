@@ -108,49 +108,74 @@ def _is_external(node: Row) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def build_scale(file_nodes: Iterable[Row], metrics: Iterable[Row]) -> dict[str, Any]:
-    """Counts, NLOC and the language mix.
+def file_mix(file_nodes: Iterable[Row]) -> dict[str, Any]:
+    """The language split and module count every surface reports for a file set.
 
-    ``file_nodes`` are graph file nodes; external dependency nodes are dropped
-    so the file count describes the repo. Only code languages are counted:
-    JSON, YAML and Markdown are formats a developer would not list as the
-    languages a project is written in.
+    ``languages`` holds code: any ``is_code`` language, parsed or not, so a
+    Haskell repo still lists Haskell. ``docs_config_languages`` holds config,
+    markup, data and unregistered tags, which a developer would not list as what
+    a project is written in. ``module_count`` is the code files' modules on the
+    :func:`module_label` axis, the one module health buckets on.
     """
+    from repowise.core.analysis.health.aggregation import module_labels
     from repowise.core.ingestion.languages.registry import REGISTRY
 
-    code = REGISTRY.code_languages()
+    code: Counter[str] = Counter()
+    other: Counter[str] = Counter()
+    code_paths: list[str] = []
+    for node in file_nodes:
+        lang = node.get("language")
+        if not lang or _is_external(node):
+            continue
+        spec = REGISTRY.get(lang)
+        if spec is not None and spec.is_code:
+            code[lang] += 1
+            code_paths.append(str(node.get("node_id") or node.get("id") or ""))
+        else:
+            other[lang] += 1
+    return {
+        "languages": _ranked_languages(code),
+        "docs_config_languages": _ranked_languages(other),
+        "language_count": len(code),
+        "module_count": len(module_labels(code_paths)),
+    }
+
+
+def _ranked_languages(counts: Counter[str]) -> list[dict[str, Any]]:
+    """Busiest first; ties on the name so the order is stable across requests."""
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"language": lang, "file_count": n} for lang, n in ranked]
+
+
+def build_scale(file_nodes: Iterable[Row], metrics: Iterable[Row]) -> dict[str, Any]:
+    """Counts and NLOC, plus the :func:`file_mix` languages and module count.
+
+    ``file_nodes`` are graph file nodes; external dependency nodes are dropped
+    so the file count describes the repo.
+    """
+    file_nodes = list(file_nodes)
     file_count = 0
     symbol_count = 0
-    langs: Counter[str] = Counter()
     for node in file_nodes:
         if _is_external(node):
             continue
         file_count += 1
         symbol_count += _int(node.get("symbol_count"))
-        lang = node.get("language")
-        if lang in code:
-            langs[lang] += 1
 
     total_nloc = 0
     test_nloc = 0
-    modules: set[str] = set()
     for m in metrics:
         nloc = _int(m.get("nloc"))
         total_nloc += nloc
         if m.get("is_test"):
             test_nloc += nloc
-        if m.get("module"):
-            modules.add(m["module"])
 
-    languages = [{"language": k, "file_count": v} for k, v in langs.most_common()]
     return {
         "file_count": file_count,
         "symbol_count": symbol_count,
-        "module_count": len(modules),
         "total_nloc": total_nloc,
         "test_nloc": test_nloc,
-        "language_count": len(languages),
-        "languages": languages,
+        **file_mix(file_nodes),
         "size_class": size_class(total_nloc),
     }
 

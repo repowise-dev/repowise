@@ -31,11 +31,13 @@ from .scoring import (
 
 __all__ = [
     "MODULE_ROOT_LABEL",
+    "NLOC_NULL_REASON",
     "SEVERITY_ORDER",
     "biomarker_breakdown",
     "finding_base_deduction",
     "finding_raw_deduction",
     "module_label",
+    "module_labels",
     "module_rollups",
     "primary_and_magnitude",
     "primary_and_magnitude_by_file",
@@ -45,6 +47,9 @@ __all__ = [
 
 #: Label for a file that sits directly in the repository root.
 MODULE_ROOT_LABEL = "root"
+
+#: Why a file has no NLOC, for surfaces that show the gap as null.
+NLOC_NULL_REASON = "not measured: health analysis counts NLOC only in files it parses as code"
 
 #: The buckets a severity breakdown always declares, worst first. Fixed rather
 #: than derived from the data so an absent severity reads as 0, not as missing.
@@ -64,6 +69,15 @@ def module_label(file_path: str | None) -> str:
     """
     head, separator, _ = (file_path or "").partition("/")
     return head if separator else MODULE_ROOT_LABEL
+
+
+def module_labels(file_paths: Iterable[str | None]) -> set[str]:
+    """The modules *file_paths* span: the one axis every module count uses.
+
+    Module health buckets on :func:`module_label`, so a count taken any other way
+    (package boundaries, top two segments) names a number no module list shows.
+    """
+    return {module_label(path) for path in file_paths if path}
 
 
 def _nloc(row: Any) -> int:

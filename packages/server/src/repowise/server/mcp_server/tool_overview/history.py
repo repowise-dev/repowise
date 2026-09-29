@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from repowise.core.analysis.health.aggregation import module_label
+
 
 def _build_git_health(all_git: list) -> dict[str, Any]:
     """Repo-wide git health summary (hotspots, bus factor, churn trend, top modules)."""
@@ -37,10 +39,10 @@ def _churn_trend(all_git: list) -> str:
 
 
 def _top_churn_modules(all_git: list) -> list[str]:
-    """Five busiest modules by 90-day commits, keyed on the first two path segments."""
+    """Five busiest modules by 90-day commits, on the module axis every count uses."""
     module_churn: Counter = Counter()
     for g in all_git:
-        module_churn["/".join(g.file_path.split("/")[:2])] += g.commit_count_90d or 0
+        module_churn[module_label(g.file_path)] += g.commit_count_90d or 0
     return [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
 
 

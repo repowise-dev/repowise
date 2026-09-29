@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.ids import is_external
@@ -220,6 +221,8 @@ async def files_index(
         "files": files,
         "total": len(files),
         "languages": languages,
+        "loc_unit": "nloc",
+        "loc_null_reason": NLOC_NULL_REASON,
     }
 
 

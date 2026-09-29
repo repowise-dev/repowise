@@ -34,6 +34,8 @@ export interface StatsScale {
   /** Code languages only: data and markup formats are not counted. */
   language_count: number;
   languages: StatsLanguage[];
+  /** Config, markup and data formats, kept apart from `languages`. */
+  docs_config_languages?: StatsLanguage[];
   size_class: StatsSizeClass;
 }
 
