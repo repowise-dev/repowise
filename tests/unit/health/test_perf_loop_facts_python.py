@@ -380,6 +380,7 @@ def test_magnitude_grows_through_a_result_attribute():
 
 def test_a_retry_loop_inside_a_loop_over_rows_is_not_bounded():
     facts = _loop(
+        b"from sqlalchemy import select\n"
         b"async def f(session):\n"
         b"    rows = (await session.execute(q)).scalars().all()\n"
         b"    for row in rows:\n"

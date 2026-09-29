@@ -200,6 +200,14 @@ class BasePerfDialect:
         is an *execution sink*, else ``None`` ("not an I/O round-trip")."""
         return None
 
+    def shows_a_query(self, call: Node) -> bool:
+        """The call's own shape is db evidence (a SQL argument, a query chain).
+
+        Counted alongside a db import by the dialects whose DB verbs need
+        evidence; ``False`` for a dialect that recognises no such shape.
+        """
+        return False
+
     def call_sink_kind(
         self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
     ) -> str | None:

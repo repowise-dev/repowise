@@ -55,6 +55,31 @@ _CASES = [
     ),
     (
         "python",
+        b"def f(client, queries):\n"
+        b"    for q in queries:\n"
+        b"        client.request(q).execute()\n"
+        b"        client.scalar(q)\n",
+        [],
+        "execute / scalar with no db evidence is an SDK verb, not a DB sink",
+    ),
+    (
+        "python",
+        b"def f(cur, ids):\n"
+        b"    for i in ids:\n"
+        b"        cur.execute('SELECT * FROM t WHERE id = %s', (i,))\n",
+        [("io_in_loop", "db")],
+        "a SQL statement argument is db evidence without an import",
+    ),
+    (
+        "python",
+        b"def f(client, ids):\n"
+        b"    for i in ids:\n"
+        b"        client.table('t').select('*').eq('id', i).execute()\n",
+        [("io_in_loop", "db")],
+        "a PostgREST table chain is db evidence without an import",
+    ),
+    (
+        "python",
         b"import subprocess\n"
         b"def f(paths):\n"
         b"    for p in paths:\n"
