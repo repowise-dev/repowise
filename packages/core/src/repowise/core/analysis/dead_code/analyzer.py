@@ -49,6 +49,7 @@ from .file_reachability import (
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .name_occurrences import (
     IDENTIFIER_RE,
+    clamp_path_mentions,
     clamp_unverified_absence,
     drop_internals_used_in_own_file,
 )
@@ -860,6 +861,7 @@ class DeadCodeAnalyzer:
         # this" but "did we look anywhere except the import graph".
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
+        findings = clamp_path_mentions(findings, self._source_map)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
