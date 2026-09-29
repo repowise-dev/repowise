@@ -2270,6 +2270,35 @@ class CoverageIngest(Base):
     )
 
 
+class ActionState(Base):
+    """A person's answer to one next action: dismissed, snoozed, or done.
+
+    Actions themselves are computed on read (``analysis.actions``), so this is
+    the only stored half. ``action_id`` is stable across re-index because it is
+    derived from the rule and its target. ``fingerprint`` is the one the action
+    carried when the person acted; a dismissal holds only while it still
+    matches, so an action whose facts changed materially comes back.
+    """
+
+    __tablename__ = "action_states"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    action_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "action_id", name="uq_action_states"),
+    )
+
+
 class TestCoverageEntry(Base):
     """One ``(test, source file)`` coverage fact - the test-to-code map.
 

@@ -9,6 +9,66 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
+export interface ActionContext {
+  production_files: number;
+  active_authors_90d: number;
+  fix_commits_90d: number;
+  busy_threshold: number;
+  coverage: "measured" | "stale" | "unknown";
+}
+
+export interface ActionHorizon {
+  actions: NextAction[];
+  /** Every visible action in this horizon, not only those listed. */
+  total: number;
+  /** Actions the person dismissed, snoozed or marked done. */
+  hidden: number;
+  by_tier: Record<string, number>;
+}
+
+export interface ActionRuleStatus {
+  rule: string;
+  status: "evaluated" | "not_applicable" | "unavailable";
+  reason: string;
+  emitted: number;
+}
+
+export interface ActionStateRequest {
+  /** None clears the person's answer. */
+  state: "dismissed" | "snoozed" | "done" | null;
+  fingerprint?: string;
+  snooze_days?: number;
+}
+
+export interface ActionStateResponse {
+  action_id: string;
+  state: "dismissed" | "snoozed" | "done" | null;
+  until?: string | null;
+}
+
+export interface ActionTarget {
+  kind: "file" | "symbol" | "folder" | "document" | "decision" | "repo";
+  path: string;
+  symbol?: string | null;
+}
+
+export interface ActionWhy {
+  label: string;
+  value: string;
+  basis: "measured" | "inferred" | "unknown";
+}
+
+export interface ActionsResponse {
+  status: "available";
+  /** Newest indexed commit time; windows count back from it. */
+  anchor: string | null;
+  week_start: string | null;
+  context: ActionContext;
+  horizons: Record<string, ActionHorizon>;
+  rules: ActionRuleStatus[];
+  unavailable: Record<string, string>;
+}
+
 /** The provider/model this scope resolves to; ``None`` when unset. */
 export interface ActiveProviderSelection {
   provider?: string | null;
@@ -2000,6 +2060,29 @@ export interface NeighboringCommunity {
   community_id: number;
   label: string;
   cross_edge_count: number;
+}
+
+export interface NextAction {
+  id: string;
+  rule: string;
+  tier: "act_now" | "plan" | "improve_signal";
+  horizons: ("week" | "quarter")[];
+  severity: "critical" | "high" | "medium" | "low";
+  /** Verb first; paths and symbols wrapped in backticks. */
+  title: string;
+  impact: string;
+  why: ActionWhy[];
+  target: ActionTarget;
+  surface: string;
+  effort: "S" | "M" | "L";
+  confidence: "high" | "medium";
+  done_when: string;
+  command?: string | null;
+  marker?: string | null;
+  evidence_ids: string[];
+  evidence_total: number;
+  includes: string[];
+  fingerprint: string;
 }
 
 export interface NodeSearchResult {

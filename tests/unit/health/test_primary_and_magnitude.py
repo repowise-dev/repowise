@@ -76,3 +76,14 @@ def test_plain_dicts_fold_like_rows() -> None:
     from repowise.core.analysis.health.aggregation import primary_and_magnitude_by_file
 
     assert primary_and_magnitude_by_file([vars(f) for f in FINDINGS]) == GOLDEN
+
+
+def test_primary_finding_prefers_code_shape_over_history() -> None:
+    """A history marker names context, not an edit; a code-shape finding leads
+    even when the history one deducts more, and history leads only alone."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    shaped = _f("e.py", "complex_method", 0.4, "ccn 14")
+    history = _f("e.py", "change_entropy", 2.5, "changed with 25 files")
+    assert primary_finding([history, shaped]) is shaped
+    assert primary_finding([history]) is history

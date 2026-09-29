@@ -57,3 +57,29 @@ def test_attention_vocabularies_match_python() -> None:
     assert ui == set(ATTENTION_ITEM_TYPES)
     assert _union_members("OverviewAttentionType", "overview.ts") == set(ATTENTION_ITEM_TYPES)
     assert _union_members("OverviewAttentionArea", "overview.ts") == set(AREA_ORDER)
+
+
+def test_action_vocabularies_match_python() -> None:
+    from repowise.core.analysis.actions import (
+        ACTION_RULES,
+        ACTION_STATES,
+        ACTION_SURFACES,
+        ACTION_TIERS,
+        FACT_BASES,
+        HORIZONS,
+        RULE_STATUSES,
+        TARGET_KINDS,
+    )
+
+    pairs = {
+        "ActionRule": ACTION_RULES,
+        "ActionTier": ACTION_TIERS,
+        "ActionFactBasis": FACT_BASES,
+        "ActionSurface": ACTION_SURFACES,
+        "ActionTargetKind": TARGET_KINDS,
+        "ActionRuleStatus": RULE_STATUSES,
+        "ActionStateValue": ACTION_STATES,
+        "ActionHorizonKey": HORIZONS,
+    }
+    for alias, values in pairs.items():
+        assert _union_members(alias, "actions.ts") == set(values), alias

@@ -37,6 +37,7 @@ from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
+    actions,
     blast_radius,
     c4,
     chat,
@@ -386,6 +387,7 @@ _ROUTERS = (
     files,
     external_systems,
     feedback,
+    actions,
 )
 
 

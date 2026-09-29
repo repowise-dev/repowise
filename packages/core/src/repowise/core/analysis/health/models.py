@@ -60,7 +60,7 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     """
     from .biomarkers.registry import continuous_biomarkers
     from .rows import field as row_field
-    from .scoring import is_advisory
+    from .scoring import HISTORY_CATEGORY, biomarker_category, is_advisory
 
     if not findings:
         return None
@@ -72,6 +72,16 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     ]
     if not candidates:
         return None
+    # A history marker is measured from git, so it names a file's context, not
+    # something an edit changes. When the file also carries a code-shape
+    # finding, that one leads: the Findings list put `change_entropy` at the
+    # head of four of its top five rows and asked an agent to fix it.
+    shaped = [
+        item
+        for item in candidates
+        if biomarker_category(row_field(item, "biomarker_type")) != HISTORY_CATEGORY
+    ]
+    candidates = shaped or candidates
     continuous = continuous_biomarkers()
     discrete = [
         item for item in candidates if row_field(item, "biomarker_type") not in continuous
