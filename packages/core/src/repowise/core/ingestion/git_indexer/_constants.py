@@ -167,7 +167,8 @@ _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 # above it are dropped from the entropy accumulation entirely.
 _MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
 
-# Commit message classification regexes (Phase 2.2).
+# Commit message classification regexes. "fix" is not here: a
+# commit is a fix exactly when ``is_fix_commit`` says so, on every surface.
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     "feature": re.compile(
         r"\b(add|implement|introduce|create|new|feat)\b",
@@ -175,10 +176,6 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     ),
     "refactor": re.compile(
         r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|simplify|move)\b",
-        re.IGNORECASE,
-    ),
-    "fix": re.compile(
-        r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
         re.IGNORECASE,
     ),
     "dependency": re.compile(
@@ -194,10 +191,9 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
 # INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
 # (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
 #
-# Deliberately NOT reusing ``_COMMIT_CATEGORIES["fix"]`` — that is a broader
-# classifier tuned for commit-category *ratios* (it catches "refactor to fix
-# crash", "error handling"), whereas the defect label wants high-precision
-# fix-only matches and must stay byte-identical to the benchmark's regex set.
+# The one fix definition: the per-file category counts and the evolution
+# timeline both label a commit "fix" exactly when this rule does, so every
+# fix count the product shows counts the same commits.
 _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bfix\b", re.IGNORECASE),
     re.compile(r"\bbug\b", re.IGNORECASE),
@@ -269,9 +265,6 @@ _CONVENTIONAL_PREFIX = re.compile(
 _CONVENTIONAL_MAP: dict[str, str] = {
     "feat": "feature",
     "feature": "feature",
-    "fix": "fix",
-    "bugfix": "fix",
-    "hotfix": "fix",
     "perf": "refactor",
     "refactor": "refactor",
     "style": "refactor",
@@ -283,7 +276,6 @@ _CONVENTIONAL_MAP: dict[str, str] = {
     "deps": "deps",
     "ci": "chore",
     "chore": "chore",
-    "revert": "fix",
 }
 
 # Keyword fallback, tried in this exact order; first hit wins.
@@ -298,7 +290,6 @@ _EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("fix", re.compile(r"\b(fix|fixes|fixed|bug|patch|hotfix|regression|crash|revert)\b", re.IGNORECASE)),
     (
         "refactor",
         re.compile(
@@ -324,11 +315,15 @@ _EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
 def classify_commit_category(subject: str) -> str:
     """Assign a commit *subject* exactly one :data:`EVOLUTION_CATEGORIES` label.
 
-    A leading conventional-commit prefix is authoritative; otherwise the first
+    "fix" is exactly :func:`is_fix_commit`, checked first, so the timeline's
+    fix band counts the same commits as every other fix count. Otherwise a
+    leading conventional-commit prefix is authoritative, then the first
     matching keyword pattern (in priority order) wins. Unmatched -> ``"other"``.
     """
     if not subject:
         return "other"
+    if is_fix_commit(subject):
+        return "fix"
     m = _CONVENTIONAL_PREFIX.match(subject)
     if m:
         mapped = _CONVENTIONAL_MAP.get(m.group("type").lower())

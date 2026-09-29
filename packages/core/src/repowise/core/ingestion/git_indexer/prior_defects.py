@@ -275,6 +275,7 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         raw = repo.git.log(
             rev_range,
             "--no-merges",
+            "-M",
             "--name-status",
             f"--format={_PRIOR_LOG_FORMAT}",
         )

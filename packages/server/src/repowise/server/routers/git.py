@@ -159,7 +159,7 @@ def _commit_fields(
 ) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
-    top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
+    top_driver = risk.top_driver.label if risk and risk.top_driver else None
     return {
         "sha": r.sha,
         "short_sha": r.sha[:8],

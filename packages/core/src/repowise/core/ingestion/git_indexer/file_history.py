@@ -27,6 +27,7 @@ from ._constants import (
     _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
     _truncate_body,
+    is_fix_commit,
 )
 from .enrich import detect_original_path, is_significant_commit
 from .function_blame import (
@@ -215,6 +216,7 @@ def _per_file_log_args(file_path: str, commit_limit: int, follow_renames: bool) 
     walk = [
         "--no-merges",
         f"-{commit_limit}",
+        "-M",
         "--numstat",
         f"--format={_LOG_FORMAT}",
         "--",
@@ -253,12 +255,17 @@ def _add_own_churn(
         if len(numstat_parts) < 3:
             continue
         match_path = numstat_parts[2]
-        if "=>" in match_path:
+        renamed = "=>" in match_path
+        if renamed:
             _old, _new = _extract_rename_paths(match_path, known_paths)
             match_path = _new or match_path
         changed_paths.add(match_path)
         if match_path in known_paths:
             _add_row_churn(current, numstat_parts)
+            # Accumulate: a later row for the file must not clear the rename.
+            current.pure_move |= renamed and numstat_parts[:2] == ["0", "0"]
+    # Still a pure move only if no row for the file changed a line.
+    current.pure_move = current.pure_move and not (current.added or current.deleted)
     return changed_paths
 
 
@@ -438,6 +445,8 @@ class _Authors:
     def tally(cls, commits: list[_CommitRec], recent_since_ts: float) -> _Authors:
         authors = cls()
         for c in commits:
+            if c.pure_move:
+                continue  # moving a file is not authoring it
             name = c.author_name
             authors.counts[name] += 1
             if c.ts >= recent_since_ts:
@@ -610,6 +619,8 @@ def _significant_entry(c: _CommitRec, msg: str) -> dict[str, Any]:
 
 
 def _commit_category(msg: str) -> str | None:
+    if is_fix_commit(msg):
+        return "fix"
     for cat, pattern in _COMMIT_CATEGORIES.items():
         if pattern.search(msg):
             return cat

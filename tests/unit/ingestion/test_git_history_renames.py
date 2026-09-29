@@ -124,3 +124,93 @@ def test_rename_trail_resolves_chains(renames, path, want) -> None:
     for old, new in renames:
         trail.record(old, new)
     assert trail.resolve(path) == want
+
+
+def _bulk_move_repo(root, *, renames_off: bool = False):
+    """Bob writes three files; Carol moves them all into src/ without editing a line."""
+    repo = _repo(root)
+    if renames_off:
+        with repo.config_writer() as cw:
+            cw.set_value("diff", "renames", "false")
+    files = {"a.py": _BODY, "b.py": _BODY.replace("x +", "x -"), "notes.md": "# notes\n" * 20}
+    for i in range(3):
+        _commit(
+            repo,
+            root,
+            {name: body + f"# rev {i}\n" for name, body in files.items()},
+            f"feat: round {i}",
+            f"2024-01-0{i + 1}T12:00:00",
+            author="Bob",
+        )
+    (root / "src").mkdir()
+    for name in files:
+        repo.git.mv(name, f"src/{name}")
+    env = {
+        "GIT_AUTHOR_NAME": "Carol",
+        "GIT_AUTHOR_EMAIL": "carol@example.com",
+        "GIT_COMMITTER_NAME": "Carol",
+        "GIT_COMMITTER_EMAIL": "carol@example.com",
+        "GIT_AUTHOR_DATE": "2024-02-01T12:00:00",
+        "GIT_COMMITTER_DATE": "2024-02-01T12:00:00",
+    }
+    repo.git.commit("-q", "-m", "refactor: move everything into src", env=env)
+    repo.close()
+
+
+@pytest.mark.parametrize("renames_off", [False, True])
+async def test_bulk_pure_move_counts_for_the_file_but_credits_nobody(
+    tmp_path, monkeypatch, renames_off
+) -> None:
+    monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    _bulk_move_repo(tmp_path, renames_off=renames_off)
+
+    _s, rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("r")
+    meta = {row["file_path"]: row for row in rows}
+
+    for path in ("src/a.py", "src/b.py", "src/notes.md"):
+        row = meta[path]
+        # Three edits plus the move: the move is one of the file's commits,
+        # even with the repository's own rename detection switched off.
+        assert row["commit_count_total"] == 4
+        authors = {a["name"]: a["commit_count"] for a in json.loads(row["top_authors_json"])}
+        assert authors == {"Bob": 3}
+        assert row["contributor_count"] == 1
+        assert row["primary_owner_commit_pct"] == 1.0
+        assert row["last_commit_at"].date().isoformat() == "2024-02-01"
+    assert meta["src/a.py"]["primary_owner_name"] == "Bob"
+
+
+async def test_per_file_fallback_lane_also_skips_a_pure_move(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    _bulk_move_repo(tmp_path)
+
+    # --follow runs the per-file lane for every file.
+    _s, rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL, follow_renames=True).index_repo(
+        "r"
+    )
+    row = {r["file_path"]: r for r in rows}["src/a.py"]
+    assert row["commit_count_total"] == 4
+    authors = {a["name"]: a["commit_count"] for a in json.loads(row["top_authors_json"])}
+    assert authors == {"Bob": 3}
+
+
+@pytest.mark.parametrize(
+    ("rows", "want"),
+    [
+        (["0	0	{old => new}/a.py", "0	0	other.py"], True),
+        (["0	0	{old => new}/a.py", "0	0	new/a.py"], True),
+        (["0	0	{old => new}/a.py", "3	1	new/a.py"], False),
+        (["2	0	{old => new}/a.py"], False),
+        (["0	0	new/a.py"], False),
+    ],
+)
+def test_per_file_lane_pure_move_is_accumulated_across_rows(rows, want) -> None:
+    """A later row naming the file cannot clear an earlier pure-move rename."""
+    from repowise.core.ingestion.git_indexer.file_history import _add_own_churn
+    from repowise.core.ingestion.git_indexer.records import _CommitRec
+
+    rec = _CommitRec(
+        sha="s", author_name="C", author_email="c@x", ts=0, is_merge=False, subject="m"
+    )
+    _add_own_churn(rec, rows, {"new/a.py"})
+    assert rec.pure_move is want

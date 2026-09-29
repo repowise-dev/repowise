@@ -119,7 +119,8 @@ export function SymbolDetailBody({
           value={data.complexity_estimate != null ? String(data.complexity_estimate) : "—"}
         />
         <StatTile
-          label="Modifications"
+          label="Commits in current code"
+          title="Distinct commits that wrote this symbol's current lines, by git blame. A commit whose lines were all rewritten since is not counted."
           value={data.blame_mod_count != null ? String(data.blame_mod_count) : "—"}
           {...(data.blame_recent_mod_count != null
             ? { hint: `${data.blame_recent_mod_count} recent` }
@@ -127,7 +128,7 @@ export function SymbolDetailBody({
         />
         <StatTile label="Median age" value={age != null ? `${age}d` : "—"} />
         {data.fix_count != null && data.fix_count > 0 && (
-          // "How often changed" (Modifications) beside "how often broken" is
+          // "How often changed" (commits in current code) beside "how often broken" is
           // the contrast that earns this tile. It appears only for a positive
           // count, since a symbol nobody has had to fix says nothing worth a cell,
           // and the hint hedges, because fixes are matched to symbols by line

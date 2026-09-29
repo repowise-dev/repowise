@@ -165,8 +165,10 @@ def compute_co_changes_and_entropy(
 
     try:
         # %x00 = commit separator, %ct = committer timestamp (Unix epoch).
+        # ``-M`` explicitly, so the rename rows survive ``diff.renames=false``.
         raw = repo.git.log(
             f"-{commit_limit}",
+            "-M",
             "--name-status",
             "--no-merges",
             "--format=%x00%ct",

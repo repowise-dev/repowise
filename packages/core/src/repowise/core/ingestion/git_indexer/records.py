@@ -84,6 +84,9 @@ class _CommitRec:
     # the record so per-file rollups don't re-run the regex per touched file).
     agent: str | None = None
     agent_tier: int | None = None
+    # The commit only moved this file (a rename row with 0/0 lines). It counts
+    # as one of the file's commits but credits nobody with ownership.
+    pure_move: bool = False
 
 
 def _tz_offset_minutes(iso: str) -> int | None:
