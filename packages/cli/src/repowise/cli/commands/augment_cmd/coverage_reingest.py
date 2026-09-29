@@ -322,12 +322,17 @@ def _newest_ingested_at(con) -> object:
     """``MAX(ingested_at)`` from the ingest history, else the coverage rows."""
     import sqlite3
 
+    found: object = _NO_TABLE
     for table in ("coverage_ingests", "coverage_files"):
         try:
-            return con.execute(f"SELECT MAX(ingested_at) FROM {table}").fetchone()[0]
+            found = con.execute(f"SELECT MAX(ingested_at) FROM {table}").fetchone()[0]
         except sqlite3.OperationalError:
             continue  # an index older than the table
-    return _NO_TABLE
+        if found is not None:
+            return found
+        # Empty: an index upgraded from before the ingest history keeps its
+        # ingests only on the coverage rows, so read those next.
+    return found
 
 
 def _epoch(raw: object) -> float | None:

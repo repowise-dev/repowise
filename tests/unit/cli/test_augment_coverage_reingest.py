@@ -180,6 +180,19 @@ def test_silent_for_partial_runs_other_commands_and_unindexed_repos(
     assert spawned == []
 
 
+def test_an_upgraded_index_reads_its_ingests_from_the_coverage_rows(tmp_path, spawned) -> None:
+    # The ingest history exists but is empty; earlier ingests live on the rows.
+    _db(tmp_path)
+    con = sqlite3.connect(tmp_path / ".repowise" / "wiki.db")
+    con.execute("CREATE TABLE coverage_files (ingested_at DATETIME)")
+    con.execute("INSERT INTO coverage_files VALUES (?)", (_INGESTED_AT,))
+    con.commit()
+    con.close()
+    _report(tmp_path)
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(tmp_path)) is not None
+    assert len(spawned) == 1
+
+
 def test_a_repo_that_never_ingested_coverage_is_left_alone(tmp_path, spawned) -> None:
     _db(tmp_path)
     _report(tmp_path)

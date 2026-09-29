@@ -152,9 +152,10 @@ def test_working_tree_from_a_base_is_everything_a_push_brings(git_repo) -> None:
     assert changed == {"mod.py": {2, 4}, "new.py": {1, 2}}
     # Without a base it stays the uncommitted edit alone.
     assert changed_lines(str(git_repo), working_tree=True) == ({"mod.py": {4}}, "working tree")
-    # A base that does not resolve falls back to that, label and all.
+    # A base that does not resolve falls back to the uncommitted edit, still
+    # with the new files a push would bring.
     assert changed_lines(str(git_repo), working_tree=True, base="nope") == (
-        {"mod.py": {4}},
+        {"mod.py": {4}, "new.py": {1, 2}},
         "working tree",
     )
 

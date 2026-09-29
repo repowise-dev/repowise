@@ -273,11 +273,14 @@ def _working_tree_lines(repo_path: str, base: str | None) -> tuple[dict[str, set
         changed = _parse_unified_diff(diff)
         changed.update(_untracked_lines(repo_path))
         return changed, working_tree_label(base)
-    # Untracked files are absent here by design: this is what the commit
-    # would change, and neither caller (prior fixes, per-test coverage)
-    # has a row to find for a new file anyway.
     diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, "HEAD"], repo_path)
-    return _parse_unified_diff(diff), working_tree_label()
+    changed = _parse_unified_diff(diff)
+    if base:
+        # Asked for what a push brings, with no merge-base to diff from: new
+        # files are still part of it. Without a base this is what the commit
+        # would change, and untracked files stay out by design.
+        changed.update(_untracked_lines(repo_path))
+    return changed, working_tree_label()
 
 
 def _merge_base_or_empty(repo_path: str, base: str) -> str:
