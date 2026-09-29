@@ -44,7 +44,14 @@ def repo_root(tmp_path: Path) -> Path:
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
     _git(repo, "config", "commit.gpgsign", "false")
-    for rel in ("src/old_name.py", "legacy/a.py", "legacy/b.py", "pkg/core.py", "pkg/util.py"):
+    for rel in (
+        "src/old_name.py",
+        "legacy/a.py",
+        "legacy/b.py",
+        "pkg/core.py",
+        "pkg/util.py",
+        "tools/why.py",
+    ):
         _write(repo, rel, f"# {rel}\n" + "value = 1\n" * 20)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "initial")
@@ -58,6 +65,11 @@ def repo_root(tmp_path: Path) -> Path:
     _git(repo, "rm", "-q", "-r", "legacy")
     _git(repo, "mv", "pkg", "core")
     _git(repo, "commit", "-q", "-m", "drop legacy, move pkg")
+    # A module split into a package of the same name, too different to be a rename.
+    _git(repo, "rm", "-q", "tools/why.py")
+    _write(repo, "tools/why/__init__.py", "from .modes import run\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "split why into a package")
     return repo
 
 
@@ -125,6 +137,7 @@ async def test_renamed_file_is_not_missing_and_deleted_directory_is(async_sessio
     )
     moved_dir = await _record(async_session, repo.id, "Core pkg", ["pkg/core.py"])
     mixed = await _record(async_session, repo.id, "Mixed", ["legacy/a.py", "pkg/util.py"])
+    split = await _record(async_session, repo.id, "Why module", ["tools/why.py"])
     # Untracked but present in the working tree: not deleted.
     _write(repo_root, "notes/local.md")
     local = await _record(async_session, repo.id, "Local notes", ["notes/local.md"])
@@ -141,7 +154,7 @@ async def test_renamed_file_is_not_missing_and_deleted_directory_is(async_sessio
 
     assert result == {"gone": 2, "back": 0}
     assert deleted.artifacts_gone and text_only.artifacts_gone
-    for rec in (renamed, moved_dir, mixed, text_keeps, local):
+    for rec in (renamed, moved_dir, mixed, text_keeps, local, split):
         assert not rec.artifacts_gone, rec.title
     # Idempotent: a second pass changes nothing.
     assert await apply_head_artifact_check(async_session, repo.id, str(repo_root)) == {
@@ -190,6 +203,21 @@ async def test_no_checkout_changes_nothing(async_session, tmp_path):
     assert await apply_head_artifact_check(async_session, repo.id, None) == {"gone": 0, "back": 0}
     # A directory git cannot answer for is not an empty tree.
     assert await apply_head_artifact_check(async_session, repo.id, str(tmp_path)) == {
+        "gone": 0,
+        "back": 0,
+    }
+    assert not rec.artifacts_gone
+
+
+async def test_failed_rename_walk_changes_nothing(async_session, repo_root, monkeypatch):
+    """Without renames a moved file would read as deleted, so nothing is judged."""
+    from repowise.core.analysis.decisions import head_artifacts
+
+    monkeypatch.setattr(head_artifacts, "_history_renames", lambda _root: None)
+    repo = await insert_repo(async_session)
+    rec = await _record(async_session, repo.id, "Legacy layer", ["legacy/a.py"])
+
+    assert await apply_head_artifact_check(async_session, repo.id, str(repo_root)) == {
         "gone": 0,
         "back": 0,
     }

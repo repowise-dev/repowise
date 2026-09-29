@@ -520,7 +520,8 @@ def _alignment_score(
             else ""
         )
         return "low", (
-            "Every accepted decision here is deprecated/superseded. "
+            "Every accepted decision here is deprecated/superseded, or names only "
+            "files that no longer exist. "
             "This file likely contains technical debt that should be migrated." + trailer
         )
     if candidates:
@@ -609,7 +610,8 @@ def _compute_alignment(
         "governing_count": len(governing),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
-        # Accepted once and withdrawn since, whether superseded or dismissed.
+        # Accepted once and now history: superseded, dismissed, or naming only
+        # files gone at HEAD.
         "deprecated_count": len(deprecated),
         "uncheckable_count": len(uncheckable),
         "stale_count": len(stale),
