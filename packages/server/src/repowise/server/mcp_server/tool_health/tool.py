@@ -252,6 +252,7 @@ def _finish(
             "trends": mode_totals.trends,
             "modules": mode_totals.modules,
             "worst_files": len(data.metric_rows),
+            "test_worst_files": len(data.test_metric_rows),
             "high_leverage_files": len(data.by_leverage),
             "top_findings": findings.findings_total,
             "test_findings": findings.test_findings_total,

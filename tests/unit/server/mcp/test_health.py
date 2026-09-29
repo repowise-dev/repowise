@@ -1479,11 +1479,11 @@ async def test_metric_rows_say_whether_a_file_is_test_material(setup_mcp, health
     """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(only=["worst_files", "high_leverage_files"])
-    by_path = {m["file_path"]: m for m in result["worst_files"]}
+    result = await get_health(only=["worst_files", "test_worst_files", "high_leverage_files"])
+    by_path = {m["file_path"]: m for m in result["worst_files"] + result["test_worst_files"]}
     assert by_path["tests/test_service.py"]["is_test"] is True
     assert by_path["src/auth/service.py"]["is_test"] is False
-    # Both ranked file lists carry it.
+    # Every ranked file list carries it.
     assert all("is_test" in m for m in result["high_leverage_files"])
 
 
@@ -1545,6 +1545,9 @@ async def test_targeted_mode_asks_only_about_the_files_it_was_given(
 async def test_kpis_still_include_test_files(setup_mcp, health_data_with_tests):
     """Excluding test material from the KPIs is a scoring change, not a display one.
 
+    The ranked worst-file list is a worklist, so it is production only and the
+    test files rank in ``test_worst_files``.
+
     Measured across this workspace, dropping tests moves NLOC-weighted
     ``average_health`` 7.52 -> 6.87 on this repo, 7.07 -> 6.27 on the backend
     and 7.59 -> 7.46 on the frontend: test files score *better* than
@@ -1553,9 +1556,10 @@ async def test_kpis_still_include_test_files(setup_mcp, health_data_with_tests):
     """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(only=["kpis", "worst_files"])
+    result = await get_health(only=["kpis", "worst_files", "test_worst_files"])
     assert result["kpis"]["file_count"] == 3
-    assert any(m["file_path"] == "tests/test_service.py" for m in result["worst_files"])
+    assert all(m["file_path"] != "tests/test_service.py" for m in result["worst_files"])
+    assert [m["file_path"] for m in result["test_worst_files"]] == ["tests/test_service.py"]
 
 
 @pytest.mark.asyncio

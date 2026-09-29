@@ -31,6 +31,7 @@ from repowise.core.analysis.actions.facts import (
     SecretFacts,
 )
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
+from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
@@ -453,7 +454,7 @@ async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.status == "open",
                 DeadCodeFinding.safe_to_delete.is_(True),
-                DeadCodeFinding.kind.not_in(excluded_types()),
+                DeadCodeFinding.kind.not_in(excluded_types() | REVIEW_ONLY_KINDS),
             )
         )
     ).all()

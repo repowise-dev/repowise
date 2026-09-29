@@ -151,6 +151,7 @@ class HealthRequest:
             self.wants_findings
             or self.wants_test_findings
             or self.wants("worst_files")
+            or self.wants("test_worst_files")
             or self.wants("high_leverage_files")
             or self.wants("metrics")
             or ("refactoring" in self.include_set and self.wants("suggestion_legend"))

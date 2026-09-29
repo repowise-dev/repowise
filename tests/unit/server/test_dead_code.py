@@ -141,9 +141,9 @@ async def test_list_dead_code_safe_only(client: AsyncClient, app) -> None:
         params={"safe_only": True},
     )
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["safe_to_delete"] is True
+    # The only stored-safe row is a whole file, which reads back as a review
+    # candidate: file-level findings are never deletion-ready.
+    assert resp.json() == []
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,8 @@ async def test_dead_code_summary(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_findings"] == 2
-    assert data["deletable_lines"] == 50  # Only the safe-to-delete finding
+    # The stored-safe row is a whole file, re-derived as review-only.
+    assert data["deletable_lines"] == 0
     assert "unreachable_file" in data["by_kind"]
 
 

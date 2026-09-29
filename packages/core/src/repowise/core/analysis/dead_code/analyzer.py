@@ -870,7 +870,7 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", []))
 
         if cfg.get("detect_unreachable_files", True):
-            findings.extend(self._detect_unreachable_files(dynamic_patterns, whitelist))
+            findings.extend(self._detect_unreachable_files(whitelist))
             if on_step:
                 on_step("unreachable_files")
 
@@ -936,7 +936,6 @@ class DeadCodeAnalyzer:
 
     def _detect_unreachable_files(
         self,
-        dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
         """Detect files nothing can reach that are not tests, fixtures, or config."""
@@ -969,7 +968,7 @@ class DeadCodeAnalyzer:
             if is_file_reachable(str(node), self.graph, rescues):
                 continue
 
-            finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
+            finding = self._make_unreachable_finding(str(node), node_data)
             if finding:
                 findings.append(finding)
 
@@ -1067,7 +1066,6 @@ class DeadCodeAnalyzer:
         self,
         node: str,
         node_data: dict,
-        dynamic_patterns: tuple[str, ...],
     ) -> DeadCodeFindingData | None:
         """Create an unreachable file finding with confidence scoring."""
         git_meta = self.git_meta_map.get(node)
@@ -1116,9 +1114,9 @@ class DeadCodeAnalyzer:
         if risk_factors:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-        safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
-        if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
-            safe = False
+        # A whole file is a review candidate, never deletion-ready: see
+        # ``REVIEW_ONLY_KINDS``. Confidence still ranks it.
+        safe = False
 
         evidence = ["in_degree=0 (no files import this)"]
         if no_git_signal:
@@ -1940,10 +1938,6 @@ class DeadCodeAnalyzer:
                     return True
         return False
 
-
-    def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
-        name = Path(path).stem
-        return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
     def _name_matches_dynamic(self, name: str, patterns: tuple[str, ...]) -> bool:
         return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)

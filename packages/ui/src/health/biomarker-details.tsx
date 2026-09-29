@@ -211,7 +211,11 @@ export function BiomarkerDetails({
           <div>
             <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
             {" boundary"}
-            {crossFn ? " · cross-function N+1" : " · in loop body"}
+            {crossFn
+              ? kind === "db"
+                ? " · cross-function N+1"
+                : " · cross-function, in loop"
+              : " · in loop body"}
           </div>
         ) : null}
         {path.length > 1 ? (

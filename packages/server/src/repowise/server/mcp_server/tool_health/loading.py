@@ -92,6 +92,9 @@ class HealthData:
     snapshots: list[Any] = field(default_factory=list)
     plan_biomarkers_by_path: dict[str, set[str]] = field(default_factory=dict)
     plan_count_by_path: dict[str, int] = field(default_factory=dict)
+    # Dashboard only: the worst-first test files, ranked apart from
+    # ``metric_rows`` so a test never heads the production worklist.
+    test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
 
 
 async def load_health_data(
@@ -113,8 +116,12 @@ async def load_health_data(
     # input order, so every block must see the same order as ``worst_files``.
     pop.all_metrics = sort_metrics_worst_first(pop.all_metrics, deductions)
     targets = set(pop.effective_targets)
+    # Targeted mode keeps what was named. The dashboard's ranked lists are
+    # production files; tests get their own list.
     metric_rows = (
-        [m for m in pop.all_metrics if m.file_path in targets] if pop.scoped else pop.all_metrics
+        [m for m in pop.all_metrics if m.file_path in targets]
+        if pop.scoped
+        else [m for m in pop.all_metrics if not _is_test(m, test_paths)]
     )
     data = HealthData(
         repository=repository,
@@ -128,6 +135,9 @@ async def load_health_data(
         performance=_PerformanceBlocks(),
         by_leverage=[],
         leads={},
+        test_metric_rows=(
+            [] if pop.scoped else [m for m in pop.all_metrics if _is_test(m, test_paths)]
+        ),
     )
     data.hotspot_paths = await _read_hotspot_paths(session, repository, pop, req)
     data.perf_coverage, data.perf_findings_count = await _read_perf_headline(
@@ -149,11 +159,18 @@ async def load_health_data(
     )
     data.churn_points = await _read_churn_points(session, repository, pop, req)
     data.snapshots = await _read_snapshots(session, repository, pop, req)
-    data.by_leverage, data.leads = _rank_leverage_and_leads(pop, metric_rows, findings, req)
+    data.by_leverage, data.leads = _rank_leverage_and_leads(
+        pop, metric_rows, findings, req, data.test_metric_rows
+    )
     data.plan_biomarkers_by_path, data.plan_count_by_path = await _read_directive_plans(
         session, repository, pop, req, data.by_leverage
     )
     return data
+
+
+def _is_test(m: HealthFileMetric, test_paths: set[str]) -> bool:
+    """Test material by the metric's own flag or the graph's, whichever is read."""
+    return bool(m.is_test) or m.file_path in test_paths
 
 
 async def _read_test_paths(
@@ -378,6 +395,7 @@ def _rank_leverage_and_leads(
     metric_rows: list[HealthFileMetric],
     findings: FindingSets,
     req: HealthRequest,
+    test_metric_rows: list[HealthFileMetric],
 ) -> tuple[list[HealthFileMetric], dict[str, dict[str, Any]]]:
     """Dominant-cause lead per file, and the leverage ranking it is printed beside.
 
@@ -392,11 +410,12 @@ def _rank_leverage_and_leads(
     # Ranked by NLOC-weighted deficit, not raw score: a big mid-band file
     # moves the average more than a tiny at-risk one.
     by_leverage = sorted(
-        (m for m in pop.all_metrics if m.score < TARGET_SCORE),
+        (m for m in metric_rows if m.score < TARGET_SCORE),
         key=lambda m: max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1),
         reverse=True,
     )
     printed = {m.file_path for m in metric_rows[: req.limit]}
+    printed |= {m.file_path for m in test_metric_rows[: req.limit]}
     printed |= {m.file_path for m in by_leverage[: req.limit]}
     # The directive's candidates, unconditionally: its leads must not depend
     # on ``limit``, or ``limit=0`` would make it assert wrong claims.

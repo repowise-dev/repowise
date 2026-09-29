@@ -71,10 +71,14 @@ def build_dashboard(
         "distribution": health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
         "gap_analysis": gap,
+        # Production files only: a test is never the worst file to work on.
+        # Test files rank in their own list, as findings do.
         "worst_files": pager.bound([_metric_row(data, m) for m in data.metric_rows], "worst_files"),
-        # Ranked file lists keep test files in place and mark them; dropping
-        # them would change which files are "worst". Only finding lists split.
         "worst_files_total": len(data.metric_rows),
+        "test_worst_files": pager.bound(
+            [_metric_row(data, m) for m in data.test_metric_rows], "test_worst_files"
+        ),
+        "test_worst_files_total": len(data.test_metric_rows),
         "high_leverage_files": pager.bound(_high_leverage_rows(data, gap), "high_leverage_files"),
         "high_leverage_files_total": len(data.by_leverage),
         "top_findings": pager.bound(
@@ -147,6 +151,7 @@ def _defer_to_secondary_rankings(
     repo = req.repo
     totals = {
         "worst_files": len(data.metric_rows),
+        "test_worst_files": len(data.test_metric_rows),
         "top_findings": data.findings.findings_total,
         "test_findings": data.findings.test_findings_total,
         "modules": modules_total,

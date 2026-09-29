@@ -51,7 +51,8 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
         cov_line += f"; {coverage.skipped_files} skipped in unsupported languages ({langs})"
     console.print(cov_line)
     console.print(
-        "[dim]Scope: I/O-in-loop / N+1, resource/regex/defer-in-loop, blocking-in-async. "
+        "[dim]Scope: I/O-in-loop (N+1 on database calls), resource/regex/defer-in-loop, "
+        "blocking-in-async. "
         "Not covered: algorithmic blowups, GC pressure, ORM lazy-load N+1.[/dim]"
     )
 

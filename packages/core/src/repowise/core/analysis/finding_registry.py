@@ -47,7 +47,37 @@ class FindingTypeStatus:
 
 _VALIDATED = FindingTypeStatus("validated")
 
-REGISTRY: dict[str, FindingTypeStatus] = {}
+_LABELLED = "hand-labelled findings from one TS/Python monorepo"
+
+REGISTRY: dict[str, FindingTypeStatus] = {
+    "unused_internal": FindingTypeStatus(
+        "hidden",
+        precision=0.005,
+        corpus=f"{_LABELLED}, 1,511 in all",
+        measured_on="2026-09-29",
+        reason=(
+            "Private-symbol findings were almost all false: TS/JS/Python emit no "
+            "'reads' edges, so same-file uses are invisible to the graph."
+        ),
+    ),
+    "duplicated_assertion_block": FindingTypeStatus(
+        "hidden",
+        corpus=f"{_LABELLED}, 1,168 in all",
+        measured_on="2026-09-29",
+        reason="Clones are matched on token shape only, so unrelated assertions pair up.",
+    ),
+    # The failing subset is clones over import blocks and data literals. A
+    # ClonePair carries only line spans, not the token kinds that would tell
+    # that subset apart, so the whole type is hidden until clone detection
+    # drops those windows itself (upgrade path: filter in the tokenizer, then
+    # re-measure and flip this back).
+    "dry_violation": FindingTypeStatus(
+        "hidden",
+        corpus=_LABELLED,
+        measured_on="2026-09-29",
+        reason="Flags duplicated import blocks and data literals as design duplication.",
+    ),
+}
 
 
 def status_of(finding_type: str) -> FindingTypeStatus:

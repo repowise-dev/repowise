@@ -7,6 +7,7 @@ from typing import Any
 from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
+from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
     hotspot_health,
     nloc_weighted_attr,
@@ -249,6 +250,8 @@ def _compute_kpis(
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
+            "worst_test_path": None,
+            "worst_test_score": None,
             "maintainability_average": None,
             "performance_average": None,
             "structure_average": None,
@@ -257,7 +260,10 @@ def _compute_kpis(
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    worst = min(metrics, key=lambda r: r.score)
+    # Production first; test files are ranked apart and named on their own.
+    production, tests = split_tests(metrics)
+    worst = min(production or metrics, key=lambda r: r.score)
+    worst_test = min(tests, key=lambda r: r.score) if tests else None
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -269,6 +275,8 @@ def _compute_kpis(
         "band": band_for(round(avg, 2)),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
+        "worst_test_path": worst_test.file_path if worst_test else None,
+        "worst_test_score": round(worst_test.score, 2) if worst_test else None,
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),

@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
@@ -246,7 +247,9 @@ def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
                     "kind": str(f.kind),
                     "reason": f.reason,
                     "confidence": f.confidence,
-                    "safe_to_delete": f.safe_to_delete,
+                    "safe_to_delete": effective_safe_to_delete(
+                        f.confidence, f.file_path, f.safe_to_delete, str(f.kind)
+                    ),
                 }
             )
     return dead_code_by_file

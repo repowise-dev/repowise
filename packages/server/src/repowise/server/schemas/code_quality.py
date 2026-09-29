@@ -71,7 +71,12 @@ class DeadCodeFindingResponse(BaseModel):
             lines=obj.lines,  # type: ignore[attr-defined]
             start_line=obj.start_line,  # type: ignore[attr-defined]
             end_line=obj.end_line,  # type: ignore[attr-defined]
-            safe_to_delete=effective_safe_to_delete(confidence, file_path, stored_safe),
+            safe_to_delete=effective_safe_to_delete(
+                confidence,
+                file_path,
+                stored_safe,
+                obj.kind,  # type: ignore[attr-defined]
+            ),
             risk_factors=list(path_risk_factors(file_path)),
             evidence=evidence,
             primary_owner=obj.primary_owner,  # type: ignore[attr-defined]

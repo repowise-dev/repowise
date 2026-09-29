@@ -221,22 +221,20 @@ def test_analyzer_flags_a_file_whose_only_in_edge_is_co_change():
     read a raw ``in_degree``, so a doc committed alongside a file counted as
     that file's importer and silenced the finding."""
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-    from repowise.core.analysis.dead_code.constants import _DEFAULT_DYNAMIC_PATTERNS
 
     g = _graph(
         {"src/orphan.py": {}, "docs/notes.md": {"language": "markdown"}},
         [("docs/notes.md", "src/orphan.py", "co_changes")],
     )
-    findings = DeadCodeAnalyzer(g)._detect_unreachable_files(_DEFAULT_DYNAMIC_PATTERNS, set())
+    findings = DeadCodeAnalyzer(g)._detect_unreachable_files(set())
     assert "src/orphan.py" in {f.file_path for f in findings}
 
 
 def test_analyzer_flags_a_file_that_only_imports_itself():
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-    from repowise.core.analysis.dead_code.constants import _DEFAULT_DYNAMIC_PATTERNS
 
     g = _graph({"src/orphan.py": {}}, [("src/orphan.py", "src/orphan.py", "imports")])
-    findings = DeadCodeAnalyzer(g)._detect_unreachable_files(_DEFAULT_DYNAMIC_PATTERNS, set())
+    findings = DeadCodeAnalyzer(g)._detect_unreachable_files(set())
     assert "src/orphan.py" in {f.file_path for f in findings}
 
 
@@ -270,7 +268,6 @@ def test_the_predicate_is_the_only_thing_deciding_reachability():
     ``_is_synthetic_node`` and ``_is_fixture_path`` are not represented.
     """
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-    from repowise.core.analysis.dead_code.constants import _DEFAULT_DYNAMIC_PATTERNS
 
     g = _graph(
         {
@@ -294,7 +291,7 @@ def test_the_predicate_is_the_only_thing_deciding_reachability():
     rescues = analyzer._reachability_rescues(whitelist)
     flagged = {
         f.file_path
-        for f in analyzer._detect_unreachable_files(_DEFAULT_DYNAMIC_PATTERNS, whitelist)
+        for f in analyzer._detect_unreachable_files(whitelist)
     }
     unreachable = {n for n in g.nodes() if not is_file_reachable(str(n), g, rescues)}
 

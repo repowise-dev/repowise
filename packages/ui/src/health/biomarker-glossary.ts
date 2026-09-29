@@ -89,10 +89,10 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
       "A function with too many non-comment lines of code. Even simple logic gets hard to hold in your head past a point.",
   },
   primitive_obsession: {
-    label: "Primitive obsession",
+    label: "Long parameter list",
     category: "size_and_complexity",
     description:
-      "Many primitive parameters where a domain object would carry the same data. Calls become positional and easy to mismatch.",
+      "A function that takes many parameters, where a value object would often carry the same data. Calls become positional and easy to mismatch. Test cases are skipped: their parameters are injected fixtures.",
   },
   dry_violation: {
     label: "DRY violation",
@@ -248,7 +248,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: "I/O in loop",
     category: "performance",
     description:
-      "A database call, network request, filesystem read, or subprocess spawn that runs once per loop iteration — the classic N+1. Detected across function boundaries via the call graph, resolved to a classified I/O boundary. A static performance RISK (high precision, low recall), not measured runtime.",
+      "A database call, network request, filesystem read, or subprocess spawn that runs once per loop iteration. On a database boundary this is the classic N+1 query; elsewhere it is an I/O call inside a loop. Detected across function boundaries via the call graph, resolved to a classified I/O boundary. A static performance RISK (high precision, low recall), not measured runtime.",
   },
   string_concat_in_loop: {
     label: "String concat in loop",

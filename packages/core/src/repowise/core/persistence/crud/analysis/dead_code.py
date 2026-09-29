@@ -277,7 +277,7 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
     deletable_lines = sum(
         f.lines or 0
         for f in findings
-        if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+        if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
     )
 
     return {

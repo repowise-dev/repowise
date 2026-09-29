@@ -20,6 +20,7 @@ _PAGED_COLLECTIONS = frozenset(
         "findings",
         "trends",
         "worst_files",
+        "test_worst_files",
         "high_leverage_files",
         "top_findings",
         "test_findings",

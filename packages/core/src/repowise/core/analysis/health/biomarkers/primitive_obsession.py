@@ -1,4 +1,4 @@
-"""Primitive Obsession — long parameter lists of unstructured values.
+"""Long parameter list (key ``primitive_obsession``) — wide signatures of raw values.
 
 A proxy for the OOP smell: when a function signature carries 5+ raw
 parameters, the call sites usually pass strings/ints/bools that *should*
@@ -42,6 +42,10 @@ class PrimitiveObsessionDetector:
             return []
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
+            # A test case's parameters are fixtures the runner injects, not a
+            # signature anyone calls.
+            if fn.is_test_case:
+                continue
             threshold = _PARAM_THRESHOLD
             if fn.name in _CTOR_NAMES:
                 threshold += _CTOR_GRACE
@@ -64,7 +68,7 @@ class PrimitiveObsessionDetector:
                     details={
                         "param_count": fn.param_count,
                     },
-                    reason=f"{fn.name} takes {fn.param_count} parameters",
+                    reason=f"long parameter list: {fn.name} takes {fn.param_count} parameters",
                 )
             )
         return out

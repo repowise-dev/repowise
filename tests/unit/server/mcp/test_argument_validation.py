@@ -59,7 +59,8 @@ class TestDeadCodeMinConfidence:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("value", "expected"),
-        [("high", 1), ("medium", 3), ("low", 3)],
+        # Engine bands (0.7 / 0.4): dc1 0.9 and dc2 0.7 are high, dc3 0.5 medium.
+        [("high", 2), ("medium", 3), ("low", 3)],
     )
     async def test_tier_names_resolve_to_their_own_bands(self, setup_mcp, value, expected):
         # The response is organised by these words and each tier description

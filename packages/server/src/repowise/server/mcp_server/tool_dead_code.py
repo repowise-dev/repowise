@@ -12,6 +12,7 @@ from sqlalchemy import select
 from repowise.core.analysis.dead_code.models import DeadCodeKind
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
     effective_safe_to_delete,
     path_risk_factors,
 )
@@ -187,11 +188,14 @@ async def _get_dead_code_all_repos(
 
 # The bands this tool tiers by, in one place: the tier descriptions quote them
 # and ``min_confidence="high"`` resolves to them, so the vocabulary the response
-# is organised by and the one it accepts cannot drift apart (#1496). Deliberately
-# this tool's own numbers — the web and CLI tier at 0.7/0.4
-# (``DEAD_CODE_CONFIDENCE`` in packages/types/src/dead-code.ts); reconciling the
-# two changes output and is not this change.
-_TIER_FLOORS: dict[str, float] = {"high": 0.8, "medium": 0.5, "low": 0.0}
+# is organised by and the one it accepts cannot drift apart (#1496). The engine's
+# own thresholds, so this tool, the web and the CLI (``DEAD_CODE_CONFIDENCE`` in
+# packages/types/src/dead-code.ts) put a finding in the same tier.
+_TIER_FLOORS: dict[str, float] = {
+    "high": SAFE_CONFIDENCE_THRESHOLD,
+    "medium": RISK_CAP_CONFIDENCE,
+    "low": 0.0,
+}
 
 # The four kinds the analyzer writes, taken from the enum it writes them with
 # rather than re-listed here, so a fifth kind never reads as a caller's typo.
@@ -242,15 +246,17 @@ async def _load_git_meta_map(session: Any, repository_id: Any, findings: list) -
 
 
 _TIER_DESC_HIGH = (
-    "High confidence (>=0.8): No references found in the codebase. "
-    "Strong cleanup candidates — review (especially runtime-loaded files) before deleting."
+    f"High confidence (>={SAFE_CONFIDENCE_THRESHOLD}): No references found in the codebase. "
+    "Strong cleanup candidates — review (especially whole files and runtime-loaded files) "
+    "before deleting."
 )
 _TIER_DESC_MEDIUM = (
-    "Medium confidence (0.5-0.8): Likely unused but may have indirect references. "
-    "Review before deleting."
+    f"Medium confidence ({RISK_CAP_CONFIDENCE}-{SAFE_CONFIDENCE_THRESHOLD}): Likely unused "
+    "but may have indirect references. Review before deleting."
 )
 _TIER_DESC_LOW = (
-    "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first."
+    f"Low confidence (<{RISK_CAP_CONFIDENCE}): Potentially used via dynamic imports or "
+    "reflection. Investigate first."
 )
 
 
@@ -304,10 +310,10 @@ async def get_dead_code(
             An unrecognised value is dropped and named in ignored_arguments,
             never applied as a filter that matches nothing.
         min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
-            accepts a tier name: "high" (0.8) | "medium" (0.5) | "low" (0.0).
+            accepts a tier name: "high" | "medium" | "low".
         safe_only: deletion-ready findings only (no runtime-load risk).
         limit: max findings per tier (clamped to 25).
-        tier: "high" (>=0.8) | "medium" | "low".
+        tier: "high" | "medium" | "low", banded as min_confidence.
         directory: path-prefix filter.
         owner: primary-owner filter.
         group_by: "directory" | "owner" rollup.
@@ -551,7 +557,7 @@ def _effective_safe(f: Any) -> bool:
     files (and findings written before risk factors existed) never read as
     safe-to-delete.
     """
-    return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+    return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
 
 
 def _dead_code_finding_id(f: Any, repository: str) -> str:
