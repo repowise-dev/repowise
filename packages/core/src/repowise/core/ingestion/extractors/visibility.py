@@ -31,9 +31,10 @@ def py_visibility(name: str, _mods: list[str]) -> str:
     return "public"
 
 
-def ts_visibility(_name: str, mods: list[str]) -> str:
+def ts_visibility(name: str, mods: list[str]) -> str:
     mods_lower = [m.lower() for m in mods]
-    if "private" in mods_lower:
+    # ``#x`` is an ECMAScript private member: private without any modifier.
+    if "private" in mods_lower or name.startswith("#"):
         return "private"
     if "protected" in mods_lower:
         return "protected"

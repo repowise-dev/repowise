@@ -44,15 +44,13 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
-; Method inside class body
+; Method inside class body, including ECMAScript #private members. One
+; pattern carries both the accessibility modifier and the parameters: the
+; parser keeps the first match per (line, name), so a second pattern for
+; ``private foo(...)`` used to win the dedup with no @symbol.params.
 (method_definition
-  name: (property_identifier) @symbol.name
-  parameters: (formal_parameters) @symbol.params
-) @symbol.def
-
-; Private method inside class body (ECMAScript #private members)
-(method_definition
-  name: (private_property_identifier) @symbol.name
+  (accessibility_modifier)? @symbol.modifiers
+  name: [(property_identifier) (private_property_identifier)] @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
@@ -76,12 +74,6 @@
   )
 ) @symbol.def
 
-; Public method accessor modifier capture
-(method_definition
-  (accessibility_modifier) @symbol.modifiers
-  name: (property_identifier) @symbol.name
-) @symbol.def
-
 ; Class property holding a function: ``static create = (...) => {}`` and
 ; ``handler = function () {}``.
 ;
@@ -93,7 +85,7 @@
 ; static-factory idiom was absent from every symbol table.
 ;
 ; The optional accessibility_modifier capture keeps ``private handler =
-; () => {}`` from reading as public, matching the method patterns above.
+; () => {}`` from reading as public, matching the method pattern above.
 (public_field_definition
   (accessibility_modifier)? @symbol.modifiers
   name: [(property_identifier) (private_property_identifier)] @symbol.name
@@ -130,6 +122,7 @@
         (new_expression) (member_expression) (as_expression) (satisfies_expression)
         (call_expression) (function_expression) (class)
         (await_expression) (parenthesized_expression) (non_null_expression)
+        (regex) (ternary_expression)
       ]
     ) @symbol.def
   )
@@ -146,6 +139,7 @@
           (new_expression) (member_expression) (as_expression) (satisfies_expression)
           (call_expression) (function_expression) (class)
           (await_expression) (parenthesized_expression) (non_null_expression)
+          (regex) (ternary_expression)
         ]
       ) @symbol.def
     )
