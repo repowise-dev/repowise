@@ -2,7 +2,6 @@ import * as React from "react";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
-import { fileEntityPath } from "../shared/entity";
 import { StatRibbon } from "../stats/stat-ribbon";
 import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
@@ -10,7 +9,6 @@ import { CommitRows, DecisionRows, type CommitRow } from "./activity-lists";
 import { ChangeLine } from "./change-line";
 import { ExploreList } from "./explore-list";
 import { HealthLede } from "./health-lede";
-import { HotspotTable } from "./hotspot-table";
 import { LanguageBar } from "./language-bar";
 import {
   buildChangeStats,
@@ -27,7 +25,6 @@ import { OverviewSection, SectionLink } from "./section";
 
 /** How many rows each list section shows before deferring to its own page. */
 const ATTENTION_ROWS = 6;
-const HOTSPOT_ROWS = 5;
 const DECISION_ROWS = 6;
 
 export interface OverviewBodySlots {
@@ -44,6 +41,11 @@ export interface OverviewBodySlots {
    *  routes to a chat page from Explore instead, and the section then does not
    *  render at all rather than rendering empty. */
   ask?: React.ReactNode;
+  /** The "Do next" list, bound to the host's routes and write path. When
+   *  present it leads the page and the per-detector areas fold into an
+   *  inventory lower down; when absent (a host not yet serving actions) the
+   *  areas keep their old place. */
+  actions?: React.ReactNode;
 }
 
 export interface OverviewBodyProps {
@@ -74,6 +76,10 @@ export interface OverviewBodyProps {
  * directly under the health hero rather than fourth, because the page is
  * mostly opened by someone who was here last week and wants the delta, not by
  * a stranger who wants the tour.
+ *
+ * When the host supplies actions, "Do next" takes that place: a few things to
+ * do, each with its reason, instead of a count per detector. The per-detector
+ * areas stay reachable as a folded inventory further down.
  */
 export function OverviewBody({
   summary,
@@ -99,6 +105,41 @@ export function OverviewBody({
   // nothing.
   const attentionTotal = summary.attention_summary?.total ?? summary.attention.length;
   const areas = summary.attention_summary?.areas ?? [];
+  const hasAttention = areas.length > 0 || summary.attention.length > 0;
+
+  const attention = (inventory: boolean) => (
+    <OverviewSection
+      title={inventory ? "Everything we found" : "Needs attention"}
+      description={
+        inventory
+          ? "Every detector's open count by area, each with its worst example. An inventory, not a to-do list: the actions above are the part worth doing."
+          : "Every detector, by area of work, each leading with the worst thing in it: code health and the test-quality biomarkers, security, refactoring, documentation drift, decision records, ownership, and dead code."
+      }
+      collapsible={inventory}
+      defaultOpen={!inventory}
+      hint={inventory ? `${formatNumber(attentionTotal)} open` : undefined}
+      // No section link: these span seven pages, so there is no single
+      // destination that holds "all of them", and a count linking to one
+      // of them would be a lie about where the rest live.
+      action={
+        <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+          {formatNumber(attentionTotal)} open
+        </span>
+      }
+    >
+      {areas.length > 0 ? (
+        <AttentionAreas areas={areas} prefix={base} LinkComponent={LinkComponent} />
+      ) : (
+        // A server predating the area rollup still sends ranked items, and
+        // rendering those is strictly better than rendering nothing.
+        <AttentionRows
+          items={summary.attention.slice(0, ATTENTION_ROWS)}
+          hrefFor={(item) => getDefaultHref(item, base)}
+          LinkComponent={LinkComponent}
+        />
+      )}
+    </OverviewSection>
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 p-[var(--page-pad)] sm:gap-8">
@@ -127,32 +168,7 @@ export function OverviewBody({
         </div>
       </div>
 
-      {(areas.length > 0 || summary.attention.length > 0) && (
-        <OverviewSection
-          title="Needs attention"
-          description="Every detector, by area of work, each leading with the worst thing in it: code health and the test-quality biomarkers, security, refactoring, documentation drift, decision records, ownership, and dead code."
-          // No section link: these span seven pages, so there is no single
-          // destination that holds "all of them", and a count linking to one
-          // of them would be a lie about where the rest live.
-          action={
-            <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-              {formatNumber(attentionTotal)} open
-            </span>
-          }
-        >
-          {areas.length > 0 ? (
-            <AttentionAreas areas={areas} prefix={base} LinkComponent={LinkComponent} />
-          ) : (
-            // A server predating the area rollup still sends ranked items, and
-            // rendering those is strictly better than rendering nothing.
-            <AttentionRows
-              items={summary.attention.slice(0, ATTENTION_ROWS)}
-              hrefFor={(item) => getDefaultHref(item, base)}
-              LinkComponent={LinkComponent}
-            />
-          )}
-        </OverviewSection>
-      )}
+      {slots.actions ?? (hasAttention && attention(false))}
 
       <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
 
@@ -188,23 +204,10 @@ export function OverviewBody({
         </div>
       </OverviewSection>
 
-      {summary.top_hotspots.length > 0 && (
-        <OverviewSection
-          title="Where the risk concentrates"
-          description="Ranked by prior bug fixes and change frequency, mined from full git history rather than from the code alone."
-          action={
-            <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={LinkComponent}>
-              {`All ${formatNumber(stats.hotspot_count)} hotspots`}
-            </SectionLink>
-          }
-        >
-          <HotspotTable
-            hotspots={summary.top_hotspots.slice(0, HOTSPOT_ROWS)}
-            hrefFor={(path) => fileEntityPath(base, path)}
-            LinkComponent={LinkComponent}
-          />
-        </OverviewSection>
-      )}
+      {/* The areas, now as the inventory behind "Do next": every detector's
+          count and its worst example, folded because the list above already
+          says what to do. */}
+      {slots.actions && hasAttention && attention(true)}
 
       {summary.languages.length > 0 && (
         <OverviewSection
