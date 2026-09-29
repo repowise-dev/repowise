@@ -1111,6 +1111,17 @@ async def _persist_full_update_async(
                 if timings is not None:
                     timings.stop("persist.decisions")
 
+            # Every run, not only when this one added records: the revert
+            # usually lands after the decision it retires was stored.
+            try:
+                from repowise.core.analysis.decisions.reverts import (
+                    apply_revert_supersession,
+                )
+
+                await apply_revert_supersession(session, repo_id, repo_path)
+            except Exception as exc:
+                _skip("Revert supersession", exc)
+
             # Governance findings pass: runs after decisions + staleness.
             if timings is not None:
                 timings.start("persist.governance")

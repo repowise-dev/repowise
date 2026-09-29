@@ -2122,6 +2122,15 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             except Exception as _stale_err:
                 logger.debug("staleness_scoring_skipped", error=str(_stale_err))
 
+    # Retire records whose commits were reverted. Outside the block above: a
+    # new revert retires a decision stored by an earlier run just as well.
+    try:
+        from repowise.core.analysis.decisions.reverts import apply_revert_supersession
+
+        await apply_revert_supersession(session, repo_id, getattr(result, "repo_path", None))
+    except Exception as _revert_err:
+        logger.debug("revert_supersession_skipped", error=str(_revert_err))
+
     # ---- Governance findings (additive pass, after decisions are persisted) ----
     # Runs after bulk_upsert_decisions + detect_supersessions_and_conflicts so
     # the decision graph is complete. Best-effort — never breaks persist.
