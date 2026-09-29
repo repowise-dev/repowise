@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { ActionsResponse } from "@repowise-dev/types/actions";
 import { NextActions } from "@repowise-dev/ui/overview/next-actions";
 import { actionHref } from "@repowise-dev/ui/overview";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { setActionState } from "@/lib/api/actions";
 
 /**
@@ -26,6 +27,7 @@ export function NextActionsPanel({
       repoName={repoName}
       LinkComponent={Link}
       hrefFor={(action) => actionHref(action, base)}
+      fileHref={(path) => fileEntityPath(base, path)}
       onSetState={async (action, state) => {
         await setActionState(repoId, action.id, {
           state,

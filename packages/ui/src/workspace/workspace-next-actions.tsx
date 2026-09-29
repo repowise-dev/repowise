@@ -8,8 +8,7 @@ import type {
   WorkspaceRepoActions,
 } from "@repowise-dev/types/actions";
 
-import { AiPromptModal } from "../health/ai-prompt-modal";
-import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
+import { ActionDrawer } from "../overview/action-drawer";
 import { ActionRow, renderActionTitle } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
 import { Segmented } from "../shared/segmented";
@@ -20,6 +19,8 @@ export interface WorkspaceNextActionsProps {
   hrefFor: (repoId: string, action: NextAction) => string | null;
   /** The repository's own Overview, where its full list lives. */
   repoHref: (repoId: string) => string;
+  /** A file's page in a given repository. */
+  fileHref?: ((repoId: string, path: string) => string | null) | undefined;
   /** Where cross-repository contract changes are listed. */
   contractsHref: string;
   LinkComponent?: ElementType | undefined;
@@ -43,13 +44,16 @@ export function WorkspaceNextActions({
   data,
   hrefFor,
   repoHref,
+  fileHref,
   contractsHref,
   LinkComponent,
 }: WorkspaceNextActionsProps) {
   const [horizon, setHorizon] = useState<ActionHorizonKey>(
     data.repos.some((r) => work(r, "week") > 0) ? "week" : "quarter",
   );
-  const [promptFor, setPromptFor] = useState<{ action: NextAction; repo: string } | null>(null);
+  const [opened, setOpened] = useState<{ action: NextAction; repo: string; repoId: string } | null>(
+    null,
+  );
   const Link = LinkComponent ?? "a";
 
   const available = data.repos.filter((r) => r.status === "available");
@@ -137,9 +141,8 @@ export function WorkspaceNextActions({
                   <ActionRow
                     key={action.id}
                     action={action}
-                    href={hrefFor(repoId, action)}
-                    LinkComponent={LinkComponent}
-                    onPrompt={() => setPromptFor({ action, repo: repo.alias })}
+                    selected={opened?.action.id === action.id && opened.repoId === repoId}
+                    onOpen={() => setOpened({ action, repo: repo.alias, repoId })}
                   />
                 ))}
               </ul>
@@ -160,19 +163,14 @@ export function WorkspaceNextActions({
         )}
       </div>
 
-      <AiPromptModal
-        open={promptFor !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromptFor(null);
-        }}
-        getPrompt={
-          promptFor
-            ? (flavor) => buildActionPrompt({ action: promptFor.action, flavor, repoName: promptFor.repo })
-            : null
-        }
-        filePath={promptFor?.action.target.path || null}
-        title="Agent handoff"
-        description="The action, its evidence, and what done looks like. The agent is asked to confirm the facts before changing anything."
+      <ActionDrawer
+        action={opened?.action ?? null}
+        onClose={() => setOpened(null)}
+        evidenceHref={opened ? hrefFor(opened.repoId, opened.action) : null}
+        fileHref={opened && fileHref ? (path) => fileHref(opened.repoId, path) : undefined}
+        repoName={opened?.repo}
+        LinkComponent={LinkComponent}
+        renderTitle={renderActionTitle}
       />
     </OverviewSection>
   );

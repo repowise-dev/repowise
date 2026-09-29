@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useMemo, useState, type ElementType, type ReactNode } from "react";
-import { BellOff, Check, Copy, X } from "lucide-react";
+import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
 import type {
   ActionHorizonKey,
@@ -11,11 +11,11 @@ import type {
   NextAction,
 } from "@repowise-dev/types/actions";
 
-import { AiPromptModal } from "../health/ai-prompt-modal";
-import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
 import { SeverityMark } from "../health/severity-mark";
+import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
 import { Segmented } from "../shared/segmented";
+import { ActionDrawer } from "./action-drawer";
 import { OverviewSection } from "./section";
 
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
@@ -37,6 +37,8 @@ export interface NextActionsProps {
   /** `null` when the server predates actions; the section then renders nothing. */
   data: ActionsResponse | null;
   hrefFor: (action: NextAction) => string | null;
+  /** A file's own page, for the files an opened action names. */
+  fileHref?: ((path: string) => string | null) | undefined;
   /** Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs. */
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
   repoName?: string | undefined;
@@ -104,7 +106,14 @@ export function actionsStatus(
   return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
 }
 
-export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent }: NextActionsProps) {
+export function NextActions({
+  data,
+  hrefFor,
+  fileHref,
+  onSetState,
+  repoName,
+  LinkComponent,
+}: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
   const work = (key: ActionHorizonKey, less: ReadonlySet<string> = new Set()) =>
@@ -120,7 +129,7 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
   // Optimistic: a row the person answered leaves at once and comes back if the
   // write fails.
   const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
-  const [promptFor, setPromptFor] = useState<NextAction | null>(null);
+  const [opened, setOpened] = useState<NextAction | null>(null);
 
   const rows = useMemo(
     () => (data ? data.horizons[horizon].actions.filter((a) => !answered.has(a.id)) : []),
@@ -198,9 +207,8 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
                   <ActionRow
                     key={action.id}
                     action={action}
-                    href={hrefFor(action)}
-                    LinkComponent={LinkComponent}
-                    onPrompt={() => setPromptFor(action)}
+                    selected={opened?.id === action.id}
+                    onOpen={() => setOpened(action)}
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
                   />
                 ))}
@@ -240,19 +248,19 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
         )}
       </div>
 
-      <AiPromptModal
-        open={promptFor !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromptFor(null);
-        }}
-        getPrompt={
-          promptFor
-            ? (flavor) => buildActionPrompt({ action: promptFor, flavor, ...(repoName ? { repoName } : {}) })
-            : null
+      <ActionDrawer
+        action={opened}
+        onClose={() => setOpened(null)}
+        evidenceHref={opened ? hrefFor(opened) : null}
+        fileHref={fileHref}
+        onAnswer={
+          onSetState && opened
+            ? (state, message) => answer(opened, state, message)
+            : undefined
         }
-        filePath={promptFor?.target.path || null}
-        title="Agent handoff"
-        description="The action, its evidence, and what done looks like. The agent is asked to confirm the facts before changing anything."
+        repoName={repoName}
+        LinkComponent={LinkComponent}
+        renderTitle={renderActionTitle}
       />
     </OverviewSection>
   );
@@ -270,21 +278,19 @@ function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
 
 export function ActionRow({
   action,
-  href,
-  LinkComponent,
-  onPrompt,
+  onOpen,
+  selected = false,
   onAnswer,
 }: {
   action: NextAction;
-  href: string | null;
-  LinkComponent?: ElementType | undefined;
-  onPrompt: () => void;
+  /** Open the action's drawer; the whole row is the trigger. */
+  onOpen: () => void;
+  selected?: boolean | undefined;
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
 }) {
-  const Link = LinkComponent ?? "a";
-  const title = renderActionTitle(action.title);
+  const plainTitle = action.title.replace(/`/g, "");
   const items = [
-    { label: "Copy an agent prompt", icon: Copy, onSelect: onPrompt },
+    { label: "Open details", icon: PanelRight, onSelect: onOpen },
     ...(onAnswer
       ? [
           {
@@ -305,25 +311,22 @@ export function ActionRow({
         ]
       : []),
   ];
-  const plainTitle = action.title.replace(/`/g, "");
   return (
-    <li className="flex items-start gap-3 py-3.5 sm:gap-4">
+    <li
+      aria-label={`Open ${plainTitle}`}
+      aria-current={selected ? "true" : undefined}
+      className={`${CLICKABLE_ROW_CLS} group flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
+        selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
+      }`}
+      {...clickableRowProps(onOpen)}
+    >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           {action.tier === "act_now" && (
             <SeverityMark severity={action.severity} className="translate-y-[-1px]" />
           )}
-          <p className="min-w-0 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)] [text-wrap:pretty]">
-            {href ? (
-              <Link
-                href={href}
-                className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-              >
-                {title}
-              </Link>
-            ) : (
-              title
-            )}
+          <p className="min-w-0 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)] [text-wrap:pretty] group-hover:text-[var(--color-accent-primary)]">
+            {renderActionTitle(action.title)}
           </p>
         </div>
         <p className="mt-1 max-w-[72ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
@@ -348,30 +351,6 @@ export function ActionRow({
             </div>
           ))}
         </dl>
-        {action.includes.length > 0 && (
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-            {"Covers "}
-            {action.includes.slice(0, 3).map((p, i) => (
-              <Fragment key={p}>
-                {i > 0 && ", "}
-                <code className="font-mono text-[0.85em]">{p.split("/").pop()}</code>
-              </Fragment>
-            ))}
-            {action.includes.length > 3 && ` and ${action.includes.length - 3} more`}
-          </p>
-        )}
-        <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-          {"Done when: "}
-          {renderActionTitle(action.done_when)}
-          {action.command && (
-            <>
-              {" "}
-              <code className="rounded bg-[var(--color-bg-inset)] px-1 font-mono text-[0.85em] text-[var(--color-text-secondary)]">
-                {action.command}
-              </code>
-            </>
-          )}
-        </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="text-xs text-[var(--color-text-tertiary)]">

@@ -71,8 +71,8 @@ function response(week: NextAction[], quarter: NextAction[]): ActionsResponse {
 describe("NextActions", () => {
   it("sets paths in mono and leads with the time frame that has work", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => "/x"} />);
-    const title = screen.getByRole("link", { name: /Raise test coverage/ });
-    expect(within(title).getByText("src/a.py").tagName).toBe("CODE");
+    const row = screen.getByRole("listitem", { name: /Open Raise test coverage/ });
+    expect(within(row).getByText("src/a.py").tagName).toBe("CODE");
     expect(screen.getByRole("radio", { name: /This quarter/ })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -121,6 +121,22 @@ describe("NextActions", () => {
   it("renders nothing for a server that predates actions", () => {
     const { container } = render(<NextActions data={null} hrefFor={() => null} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("the action drawer", () => {
+  it("opens on a row click with the evidence link, the facts and the prompt", async () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => "/repos/r/files/src/a.py"} />);
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("link", { name: /Open the file/ })).toHaveAttribute(
+      "href",
+      "/repos/r/files/src/a.py",
+    );
+    expect(within(dialog).getByText("Why it is on the list")).toBeInTheDocument();
+    expect(within(dialog).getByText("Not measured.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Copy prompt/ })).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/Line coverage on this file reaches 80%/).length).toBe(2);
   });
 });
 
