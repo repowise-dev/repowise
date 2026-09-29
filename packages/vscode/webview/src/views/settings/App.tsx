@@ -91,7 +91,7 @@ const GROUPS: Group[] = [
         key: "docDrift.diagnostics.enabled",
         label: "Documentation drift",
         description:
-          "Flag paths, links, anchors, and commands in visible markdown files that the tree no longer has.",
+          "Flag paths, links, anchors, commands, and code symbols in visible markdown files that the tree no longer has.",
         kind: "toggle",
       },
       {

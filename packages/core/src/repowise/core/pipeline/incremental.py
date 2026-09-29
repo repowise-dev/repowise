@@ -20,7 +20,8 @@ best-effort step that already degrades gracefully.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -872,6 +873,23 @@ def run_partial_analysis(
     return partial_health_report, dead_code_report
 
 
+@dataclass(frozen=True)
+class DocDriftUpdate:
+    """What an update tells the drift pass about the change it is applying."""
+
+    base_ref: str | None = None
+    """The commit the update diffs from, to the working tree."""
+    changed_paths: tuple[str, ...] = ()
+    """Every path the update adds, edits, deletes or renames (both sides)."""
+    symbol_names: frozenset[str] | None = None
+    """The index's symbol names; ``None`` reads them from the graph."""
+
+    @classmethod
+    def from_file_diffs(cls, base_ref: str | None, file_diffs: Iterable[Any]) -> DocDriftUpdate:
+        paths = tuple(p for fd in file_diffs for p in (fd.path, fd.old_path) if p)
+        return cls(base_ref=base_ref, changed_paths=paths)
+
+
 def run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
@@ -879,6 +897,7 @@ def run_doc_drift_partial(
     repo_path: Any | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    update: DocDriftUpdate | None = None,
 ) -> Any | None:
     """Re-check the repository's own markdown on the incremental path.
 
@@ -886,6 +905,11 @@ def run_doc_drift_partial(
     :func:`run_partial_analysis`'s tuple, mirroring the full path where drift is
     its own phase. Returns ``None`` when the pass could not run, which the
     caller must treat as "write nothing".
+
+    The cheap kinds are re-derived for every document. Symbol references are
+    re-resolved only where *update* could have changed them (see
+    :class:`~repowise.core.analysis.doc_drift.symbols.SymbolRecheck`); the rest
+    carry forward in the store.
     """
     log = log or _noop_log
     if not source_map:
@@ -902,10 +926,12 @@ def run_doc_drift_partial(
             if not tracked_paths:
                 return None
 
+            root = Path(repo_path) if repo_path else None
             report = DocDriftAnalyzer(
                 source_map=source_map,
                 tracked_paths=tracked_paths,
-                repo_root=Path(repo_path) if repo_path else None,
+                repo_root=root,
+                symbols=_drift_symbol_options(graph_builder, root, update or DocDriftUpdate()),
             ).analyze()
             report.authoritative_paths = report.documents
             if report.total_findings:
@@ -914,6 +940,22 @@ def run_doc_drift_partial(
         except Exception as exc:
             log(f"[yellow]Doc drift analysis skipped: {exc}[/yellow]")
             return None
+
+
+def _drift_symbol_options(graph_builder: Any, root: Path | None, update: DocDriftUpdate) -> Any:
+    """The drift pass's symbol options for *update*; ``None`` without a working tree."""
+    from repowise.core.analysis.doc_drift.symbols import (
+        SymbolOptions,
+        graph_symbol_names,
+        symbol_recheck,
+    )
+
+    if root is None:
+        return None
+    names = update.symbol_names
+    if names is None:
+        names = graph_symbol_names(graph_builder.graph())
+    return SymbolOptions(names, symbol_recheck(root, update.base_ref, update.changed_paths))
 
 
 async def refresh_knowledge_graph(

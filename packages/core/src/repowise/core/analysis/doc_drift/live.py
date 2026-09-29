@@ -21,6 +21,7 @@ from .analyzer import DocDriftAnalyzer
 from .constants import MANIFEST_NAMES, MAX_DOC_BYTES
 from .extractor import is_checkable_document
 from .models import DocDriftReport
+from .symbols import SymbolOptions
 
 _GIT_TIMEOUT_SECONDS = 60
 _GITLINK_MODE = "160000"
@@ -132,13 +133,19 @@ def collect_live_inputs(root: Path) -> LiveInputs:
     )
 
 
-def run_live(root: Path, *, config: dict | None = None) -> DocDriftReport:
-    """Run the drift pass over the working tree containing *root*, no index needed."""
+def run_live(
+    root: Path, *, config: dict | None = None, symbol_names: frozenset[str] | None = None
+) -> DocDriftReport:
+    """Run the drift pass over the working tree containing *root*, no index needed.
+
+    *symbol_names*, read from an index when one opens, turns on the ``symbol`` kind.
+    """
     inputs = collect_live_inputs(Path(root))
     analyzer = DocDriftAnalyzer(
         source_map=inputs.source_map,
         tracked_paths=inputs.tracked_paths,
         repo_root=inputs.root,
         opaque_dirs=inputs.opaque_dirs,
+        symbols=SymbolOptions(symbol_names) if symbol_names is not None else None,
     )
     return analyzer.analyze(config)

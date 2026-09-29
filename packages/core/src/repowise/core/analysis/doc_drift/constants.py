@@ -121,6 +121,7 @@ DriftOrigin = Literal[
     "path_no_candidate_in_guide",
     "anchor_no_heading",
     "command_no_target",
+    "symbol_no_definition",
 ]
 
 ORIGIN_CONFIDENCE: dict[str, float] = {
@@ -142,6 +143,9 @@ ORIGIN_CONFIDENCE: dict[str, float] = {
     # A ``make``/``npm run`` target, written inside an inline code span, that
     # the manifest in the tree does not declare.
     "command_no_target": 0.85,
+    # A backticked identifier that git proves was a symbol definition when the
+    # line was written, and that no non-document file mentions at all now.
+    "symbol_no_definition": 0.85,
 }
 
 #: Every origin in the ``DriftOrigin`` vocabulary, for parity checks.
@@ -154,6 +158,7 @@ SuggestionBasis = Literal[
     "git_rename",
     "similar_heading",
     "similar_target",
+    "symbol_rename",
 ]
 
 SUGGESTION_BASIS_VALUES: frozenset[str] = frozenset(get_args(SuggestionBasis))

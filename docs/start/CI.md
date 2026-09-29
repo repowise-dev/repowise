@@ -18,6 +18,11 @@ resolution, described once below. Each layer's own page has the detail:
 [security](../layers/SECURITY.md#in-ci-repowise-security-check),
 [change risk](../layers/CHANGE_RISK.md#in-ci).
 
+Doc drift's `--check` needs no index. `--kind symbol` adds symbol references
+(names of functions and classes a document mentions) and needs an index, so it
+exits `2` without one. It also reads `git blame`: in a shallow clone every line
+blames to the boundary commit, so give that job `fetch-depth: 0`.
+
 ## What every gate does the same way
 
 **Exit codes.** `0` passed, or had nothing to judge. `1` the change failed the

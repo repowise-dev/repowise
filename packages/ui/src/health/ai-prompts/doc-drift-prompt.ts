@@ -47,7 +47,7 @@ const MAX_DOC_DRIFT_FINDINGS = 20;
 
 const CONSTRAINTS = [
   "**Edit the document, not the code.** Each entry names a document that makes a claim the repository no longer satisfies. The fix is almost always to correct the prose, the path or the link — not to recreate the file it names.",
-  "**Find out what replaced the target before you touch the line.** A path that no longer resolves usually moved or was renamed; point the document at the new location rather than deleting the sentence around it.",
+  "**Find out what replaced the target before you touch the line.** A path that no longer resolves usually moved or was renamed, and a symbol that is defined nowhere now was usually renamed or folded into another; point the document at what replaced it rather than deleting the sentence around it.",
   "**Some findings are correct as written.** A guide that teaches the reader to add a file names one that was never meant to exist, and an example path inside a tutorial is not drift. If a line is doing its job, leave it and say so.",
   "**Do not touch a changelog or release note.** Those describe the repository as it was at a release; a reference that no longer resolves is the document doing its job.",
   "**Keep the surrounding prose true.** Fixing a link that sits inside a sentence about how something works means checking that the sentence is still accurate, not just that the path resolves.",
@@ -122,6 +122,6 @@ export function buildDocDriftAiPrompt({
     ...closingSections(CONSTRAINTS, EXPECTED),
     flavor === "claude-code-mcp"
       ? "For each target, call `get_context([\"<target>\"])` to find where it lives now — repowise already indexed the tree, so use it instead of globbing for a renamed path. `get_why(...)` on a target that is genuinely gone will often name the change that removed it, which is what the document should now say."
-      : "For each target, search the repository for the file or heading it names before editing — most of these moved rather than disappeared, and the document should point at where they went.",
+      : "For each target, search the repository for the file, heading or symbol it names before editing: most of these moved rather than disappeared, and the document should point at where they went.",
   ]);
 }

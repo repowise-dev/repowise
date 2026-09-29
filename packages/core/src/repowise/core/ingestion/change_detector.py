@@ -517,7 +517,7 @@ class ChangeDetector:
         """Parse a git blob (old file version from git history)."""
         try:
             source = blob.data_stream.read()
-            return self._parse_bytes(source, path)
+            return self.parse_bytes(source, path)
         except Exception as exc:
             log.warning("Failed to parse blob", path=path, error=str(exc))
             return None
@@ -525,12 +525,13 @@ class ChangeDetector:
     def _parse_path(self, abs_path: Path, rel_path: str) -> ParsedFile | None:
         """Parse a file from the working tree."""
         try:
-            return self._parse_bytes(abs_path.read_bytes(), rel_path)
+            return self.parse_bytes(abs_path.read_bytes(), rel_path)
         except Exception as exc:
             log.warning("Failed to parse file", path=rel_path, error=str(exc))
             return None
 
-    def _parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+    def parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+        """Parse one file's *source* as *path* with the repository's parser, or ``None``."""
         from datetime import datetime
 
         from .parser import parse_file

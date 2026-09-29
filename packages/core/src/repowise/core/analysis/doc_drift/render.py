@@ -17,7 +17,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from repowise.core.ci import github, gitlab, sarif
-from repowise.core.ci.markdown import ROW_LIMIT, cell, more_line, plural
+from repowise.core.ci.markdown import (
+    ROW_LIMIT,
+    cell,
+    code,
+    longest_backtick_run,
+    more_line,
+    plural,
+)
 
 from .constants import DETECTION_BASIS, HIGH_CONFIDENCE_THRESHOLD
 from .gate import GateResult
@@ -44,6 +51,11 @@ _RULE_TEXT: dict[DriftKind, tuple[str, str]] = {
         "Document shows a command target that is not declared",
         "A make or npm run target shown in a document is not declared by the manifest.",
     ),
+    DriftKind.SYMBOL: (
+        "Document names a code symbol that no longer exists",
+        "An identifier that was a symbol definition when the document line was written "
+        "is defined nowhere in the tree now.",
+    ),
 }
 
 
@@ -56,6 +68,13 @@ def _order(findings: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
 
 def _likely(finding: Mapping[str, Any]) -> str:
     return (finding.get("suggestion") or "").strip()
+
+
+def _edit(finding: Mapping[str, Any]) -> tuple[str, list[tuple[int, int]]] | None:
+    """``(suggested line, replaced spans)`` when the run placed the suggestion."""
+    line = finding.get("suggested_line") or ""
+    spans = [(int(a), int(b)) for a, b in finding.get("suggestion_columns") or []]
+    return (line, spans) if _likely(finding) and line and spans else None
 
 
 def _message(finding: Mapping[str, Any]) -> str:
@@ -140,9 +159,35 @@ def render_markdown(
             )
         if len(ordered) > ROW_LIMIT:
             lines += ["", more_line(len(ordered) - ROW_LIMIT, "findings")]
+        lines += _suggestion_blocks(ordered[:ROW_LIMIT])
 
     lines += ["", f"_{DETECTION_BASIS}_"]
     return "\n".join(lines) + "\n"
+
+
+def _suggestion_blocks(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """A review ``suggestion`` block with the whole replaced line, per finding that has one."""
+    out: list[str] = []
+    current = None
+    for f in rows:
+        edit = _edit(f)
+        if edit is None:
+            continue
+        if not out:
+            out += ["", "**Suggested edits**"]
+        if f["file_path"] != current:
+            current = f["file_path"]
+            out += ["", code(current)]
+        fence = "`" * max(3, longest_backtick_run(edit[0]) + 1)
+        out += [
+            "",
+            f"Line {int(f['line_number'])}: likely now {code(_likely(f))}",
+            "",
+            f"{fence}suggestion",
+            edit[0],
+            fence,
+        ]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +278,21 @@ def render_sarif(
             "origin": f["origin"],
             "target": f["target"],
         }
+        fixes = None
         if likely := _likely(f):
             properties["suggestion"] = likely
             if f.get("suggestion_basis"):
                 properties["suggestion_basis"] = f["suggestion_basis"]
+            if edit := _edit(f):
+                fixes = [
+                    sarif.fix(
+                        f"Replace with {likely}",
+                        str(f["file_path"]),
+                        int(f["line_number"]),
+                        edit[1],
+                        likely,
+                    )
+                ]
         results.append(
             sarif.result(
                 str(f["kind"]),
@@ -248,6 +304,7 @@ def render_sarif(
                 fingerprint_of(f),
                 properties,
                 suppressed=fingerprint_of(f) in accepted,
+                fixes=fixes,
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)
@@ -268,6 +325,7 @@ def render_gitlab(
 
     The same line :func:`render_sarif` draws between ``error`` and ``warning``.
     *accepted* (the baseline) is applied by :func:`~repowise.core.ci.gitlab.report`.
+    A likely replacement ends the description as ``Likely now:`` and a code span.
     """
     return gitlab.report(
         SARIF_TOOL_NAME,
@@ -275,7 +333,7 @@ def render_gitlab(
             gitlab.issue(
                 str(f["kind"]),
                 "major" if float(f["confidence"]) >= fail_on else "minor",
-                _message(f),
+                f"{f['reason']} Likely now: {code(_likely(f))}" if _likely(f) else str(f["reason"]),
                 str(f["file_path"]),
                 int(f["line_number"]),
                 fingerprint_of(f),

@@ -14,7 +14,14 @@ import pytest
 
 from repowise.core.analysis.doc_drift import DocDriftAnalyzer
 from repowise.core.pipeline import PhaseTimings
-from repowise.core.pipeline.incremental import run_doc_drift_partial
+from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial
+
+
+def _partial(*args: Any, **kwargs: Any) -> Any:
+    """The pass with the index's symbol names given, as the stub has no graph."""
+    return run_doc_drift_partial(
+        *args, update=DocDriftUpdate(symbol_names=frozenset()), **kwargs
+    )
 
 
 class _Builder:
@@ -30,7 +37,7 @@ def _sources(doc: bytes) -> dict[str, bytes]:
 
 
 def test_a_document_naming_a_live_file_is_not_a_finding() -> None:
-    report = run_doc_drift_partial(
+    report = _partial(
         _Builder({"docs/guide.md", "src/real.py"}),
         _sources(b"# Guide\n\nSee `src/real.py` for details.\n"),
     )
@@ -39,7 +46,7 @@ def test_a_document_naming_a_live_file_is_not_a_finding() -> None:
 
 
 def test_a_document_naming_a_missing_file_is_a_finding() -> None:
-    report = run_doc_drift_partial(
+    report = _partial(
         _Builder({"docs/guide.md", "src/real.py"}),
         _sources(b"# Guide\n\nSee `src/gone.py` for details.\n"),
     )
@@ -54,7 +61,7 @@ def test_the_write_is_scoped_to_the_documents_actually_read() -> None:
     not open, and nothing would write them back: ``prune_deleted_file_rows``
     correctly judges the file live and leaves it alone.
     """
-    report = run_doc_drift_partial(
+    report = _partial(
         _Builder({"docs/guide.md", "docs/unread.md", "src/real.py"}),
         _sources(b"# Guide\n\nSee `src/gone.py`.\n"),
     )
@@ -69,7 +76,7 @@ def test_tracked_paths_come_from_the_traversal_not_the_source_map() -> None:
     ``source_map`` omits it; resolving against that narrower set would report a
     live path as missing, which is a fabricated finding rather than drift.
     """
-    report = run_doc_drift_partial(
+    report = _partial(
         # ``src/unparsed.py`` is tracked but absent from source_map.
         _Builder({"docs/guide.md", "src/real.py", "src/unparsed.py"}),
         _sources(b"# Guide\n\nSee `src/unparsed.py`.\n"),
@@ -84,8 +91,8 @@ def test_a_builder_without_a_traversal_skips_rather_than_falling_back() -> None:
     The fallback would narrow the tree and fabricate findings, and the report
     would look perfectly valid on the way to a scoped delete.
     """
-    assert run_doc_drift_partial(_Builder(None), _sources(b"See `src/gone.py`.\n")) is None
-    assert run_doc_drift_partial(_Builder(set()), _sources(b"See `src/gone.py`.\n")) is None
+    assert _partial(_Builder(None), _sources(b"See `src/gone.py`.\n")) is None
+    assert _partial(_Builder(set()), _sources(b"See `src/gone.py`.\n")) is None
 
 
 @pytest.mark.parametrize("empty", [None, {}])
@@ -96,12 +103,12 @@ def test_an_empty_source_map_returns_none_rather_than_an_empty_report(empty: Any
     ingestion degraded would look like a clean pass. Returning ``None`` keeps
     "the pass did not run" distinguishable from "the pass found nothing".
     """
-    assert run_doc_drift_partial(_Builder({"docs/guide.md"}), empty) is None
+    assert _partial(_Builder({"docs/guide.md"}), empty) is None
 
 
 def test_a_clean_run_still_returns_a_report_so_stale_rows_are_cleared() -> None:
     """Zero findings is a result, not a reason to skip the write."""
-    report = run_doc_drift_partial(
+    report = _partial(
         _Builder({"docs/guide.md", "src/real.py"}),
         _sources(b"# Guide\n\nNothing to see.\n"),
     )
@@ -120,7 +127,7 @@ def test_an_analyzer_failure_degrades_to_none(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(dd, "DocDriftAnalyzer", _boom)
     messages: list[str] = []
     assert (
-        run_doc_drift_partial(
+        _partial(
             _Builder({"docs/guide.md"}),
             _sources(b"See `src/gone.py`.\n"),
             log=messages.append,
@@ -133,7 +140,7 @@ def test_an_analyzer_failure_degrades_to_none(monkeypatch: pytest.MonkeyPatch) -
 def test_the_pass_records_its_own_timing_row() -> None:
     """Visible as ``analysis.doc_drift`` rather than absorbed into rebuild."""
     timings = PhaseTimings()
-    run_doc_drift_partial(
+    _partial(
         _Builder({"docs/guide.md", "src/real.py"}),
         _sources(b"# Guide\n"),
         timings=timings,
@@ -151,7 +158,7 @@ def test_the_incremental_pass_agrees_with_the_full_one() -> None:
     tracked = {"docs/guide.md", "src/real.py"}
 
     full = DocDriftAnalyzer(source_map=sources, tracked_paths=tracked).analyze()
-    partial = run_doc_drift_partial(_Builder(tracked), sources)
+    partial = _partial(_Builder(tracked), sources)
 
     assert partial is not None
     assert [(f.file_path, f.target) for f in partial.findings] == [

@@ -35,11 +35,11 @@ export type DocDriftUnavailable =
 /**
  * The reference classes the detector ships.
  *
- * `symbol` is deliberately absent: it was measured at a 55-69% flag rate and
- * killed, because backticks in technical prose mean "this is a literal token",
- * not "this is a code symbol".
+ * `symbol` flags only an identifier git proves was a symbol definition when
+ * the document line was written and is defined nowhere now. It needs an index,
+ * so an index-free run reports the other four.
  */
-export type DocDriftKind = "path" | "link" | "anchor" | "command";
+export type DocDriftKind = "path" | "link" | "anchor" | "command" | "symbol";
 
 /**
  * The one set of confidence boundaries, mirroring the engine.
@@ -80,6 +80,7 @@ export const DOC_DRIFT_KIND_LABELS: Record<DocDriftKind, string> = {
   link: "Link",
   anchor: "Heading link",
   command: "Command",
+  symbol: "Symbol",
 };
 
 /** Label for one reference class, falling back to the raw slug. */
@@ -98,6 +99,7 @@ export const SUGGESTION_BASIS_LABELS: Readonly<Record<string, string>> = {
   git_rename: "Renamed in git",
   similar_heading: "Similar heading",
   similar_target: "Similar target",
+  symbol_rename: "Renamed symbol",
 };
 
 export interface DocDriftFinding {

@@ -750,20 +750,21 @@ clean run is not a claim that every sentence is true.
 
 Where the analysis can see a likely replacement, a finding carries it: a module
 that became a package, a file git recorded as renamed, a heading or build target
-with a close match. It is a suggestion to check, never applied.
+with a close match, a symbol its defining file shows renamed. It is a suggestion
+to check, never applied.
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
 | `--min-confidence` | Hide findings below this confidence (default: show everything stored) |
-| `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`. Repeatable |
+| `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`, `symbol`. Repeatable |
 | `--document` | Only findings in this document. Repeatable |
-| `--check` | Read the working tree without an index and gate on the result |
+| `--check` | Read the working tree without an index and gate on the result. With `--kind symbol` it checks symbol references, which needs an index (exit 2 without one) |
 | `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
 | `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
-| `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, and commands whose manifest it edits. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
+| `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, commands whose manifest it edits, and symbols whose defining file it edits or removes. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
 | `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |

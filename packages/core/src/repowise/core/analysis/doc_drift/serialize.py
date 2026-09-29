@@ -112,6 +112,9 @@ def finding_dict(
     evidence: Sequence[str] | None = None,
     suggestion: str | None = None,
     suggestion_basis: str | None = None,
+    suggested_line: str | None = None,
+    suggestion_columns: Sequence[Sequence[int]] | None = None,
+    defined_in: Sequence[str] | None = None,
 ) -> dict:
     """One finding as a dict, from primitives either producer can supply.
 
@@ -127,6 +130,10 @@ def finding_dict(
 
     ``suggestion``/``suggestion_basis`` appear only when a suggestion exists,
     so a finding without one (most of them) serializes as it always did.
+    ``suggested_line``, ``suggestion_columns`` and ``defined_in`` exist only
+    on a run that read the documents (see :class:`~.models.DocDriftFindingData`);
+    a stored row never has them, so only :func:`serialize_finding` with
+    ``live=True`` passes them.
     """
     out = {
         "file_path": file_path,
@@ -147,6 +154,11 @@ def finding_dict(
         out["suggestion"] = suggestion
         if suggestion_basis:
             out["suggestion_basis"] = suggestion_basis
+        if suggested_line and suggestion_columns:
+            out["suggested_line"] = suggested_line
+            out["suggestion_columns"] = [[int(a), int(b)] for a, b in suggestion_columns]
+    if defined_in:
+        out["defined_in"] = list(defined_in)
     return out
 
 
@@ -174,7 +186,7 @@ def reference_dict(
     return out
 
 
-def serialize_finding(finding: Any, *, evidence: bool = True) -> dict:
+def serialize_finding(finding: Any, *, evidence: bool = True, live: bool = False) -> dict:
     """A ``DocDriftFindingData`` as a dict, identical to the stored row's.
 
     The dataclass carries ``evidence`` as a list where the row carries it as a
@@ -193,6 +205,10 @@ def serialize_finding(finding: Any, *, evidence: bool = True) -> dict:
         evidence=list(finding.evidence or []) if evidence else None,
         suggestion=finding.suggestion,
         suggestion_basis=finding.suggestion_basis,
+        # Stored rows lack these, so the parity artifact must too.
+        suggested_line=finding.suggested_line if live else None,
+        suggestion_columns=finding.suggestion_columns if live else None,
+        defined_in=finding.defined_in if live else None,
     )
 
 

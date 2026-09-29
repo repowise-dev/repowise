@@ -112,6 +112,7 @@ async def _run_doc_drift_analysis(
     source_map: dict[str, bytes] | None,
     *,
     file_infos: list[Any] | None = None,
+    graph_builder: Any | None = None,
     repo_id: str = "",
     repo_path: Path | None = None,
     progress: ProgressCallback | None,
@@ -125,6 +126,7 @@ async def _run_doc_drift_analysis(
     """
     try:
         from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+        from repowise.core.analysis.doc_drift.symbols import SymbolOptions, graph_symbol_names
 
         # analyze() drives three stages: collect, index, resolve.
         if progress:
@@ -141,6 +143,9 @@ async def _run_doc_drift_analysis(
             source_map=source_map,
             tracked_paths=tracked_paths,
             repo_root=repo_path,
+            symbols=(
+                SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
+            ),
         )
 
         def _step(_stage: str) -> None:

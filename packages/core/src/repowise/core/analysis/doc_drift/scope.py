@@ -8,7 +8,9 @@ finding is in scope when the change:
 * edits, adds or renames the document it sits in (``edited``);
 * deletes or renames away the file or directory it names (``removed``);
 * edits or removes the document its anchor points into (``anchor_host``);
-* edits the kind of manifest that declares its command (``manifest``).
+* edits the kind of manifest that declares its command (``manifest``);
+* edits or removes a file that defined its symbol (``definition``), read from
+  the finding's ``defined_in``, which only a run that read the documents has.
 
 The last rule is per kind of manifest, not per file: a finding names a target,
 not the manifest expected to declare it. A change to any ``package.json``
@@ -103,6 +105,10 @@ class ChangeScope:
             runner = target.partition(":")[0]
             if self.manifests & _RUNNER_MANIFESTS.get(runner, frozenset()):
                 return "manifest"
+        elif kind == "symbol" and any(
+            p in self.changed or p in self.removed for p in finding.get("defined_in", ())
+        ):
+            return "definition"
         return None
 
     def _removes(self, path: str) -> bool:

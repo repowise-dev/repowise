@@ -257,10 +257,17 @@ def _run_doc_drift_partial(
     *,
     repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
+    base_ref: str | None = None,
+    file_diffs: list[Any] = (),
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
-    from repowise.core.pipeline.incremental import run_doc_drift_partial
+    from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial
 
     return run_doc_drift_partial(
-        graph_builder, source_map, repo_path=repo_path, log=console.print, timings=timings
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        log=console.print,
+        timings=timings,
+        update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
     )

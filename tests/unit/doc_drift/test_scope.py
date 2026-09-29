@@ -164,3 +164,12 @@ def test_a_bare_ref_means_the_change_since_it_including_the_working_tree(tmp_pat
     assert scope.label == "main...HEAD"
     assert scope.removed == {"src/committed.py", "src/uncommitted.py"}
     assert scope.documents == {"docs/new.md"}
+
+
+def test_a_symbol_finding_is_owned_by_a_change_to_its_defining_file():
+    finding = {**_finding(kind="symbol", target="Loader.parse_config"), "defined_in": ["src/app.py"]}
+    assert _scope(_change("modified", "src/app.py", "src/app.py")).reason(finding) == "definition"
+    assert _scope(_change("deleted", "src/app.py", None)).reason(finding) == "definition"
+    assert _scope(_change("modified", "src/other.py", "src/other.py")).reason(finding) is None
+    # A stored finding has no ``defined_in``: only an edit to its document owns it.
+    assert _scope(_change("modified", "src/app.py", "src/app.py")).reason(_finding(kind="symbol")) is None

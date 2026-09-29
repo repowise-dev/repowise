@@ -5,11 +5,15 @@ reference, a command. Repowise already holds the graph those claims are about,
 so it checks them and reports the ones the tree refutes.
 
 This is part of the code-health layer, not a separate analysis you run. It
-happens on every `init` and every `update`, needs no model, and costs nothing.
+happens on every `init` and every `update` and needs no model. The four
+file-level kinds take well under a second; the `symbol` kind reads git history
+and, measured on a repository of about 4,800 files and 190 documents, adds
+about 7 seconds to `init` and 1 to 4 seconds to an `update`, which re-resolves
+only the references the update could have changed.
 
 ## What it checks
 
-Four classes of reference, all of them things the repository itself can settle:
+Five classes of reference, all of them things the repository itself can settle:
 
 | Kind | The claim | How it is refuted |
 |---|---|---|
@@ -17,10 +21,39 @@ Four classes of reference, all of them things the repository itself can settle:
 | `link` | a document links to another document | the target is not there |
 | `anchor` | a link points at a heading | the heading was renamed or removed |
 | `command` | a document tells you to run something | the manifest no longer declares it |
+| `symbol` | a document names a function, class or method | it was defined when the line was written and is defined nowhere now |
 
 The anchor case is the one people are most surprised by, because it is the one
 that rots silently: renaming a heading breaks every link into it, and nothing
 in an ordinary toolchain notices.
+
+### Symbols
+
+Backticks in prose mean "this is literal text", not "this is code", so a
+backticked word the code does not define is usually just a word: `string`,
+`true`, a config key, an invented example. The `symbol` kind therefore never
+flags a token for being absent. It flags one only when git proves it was a
+symbol when the document said it:
+
+1. The token looks like code: `parse_config()`, `ChangeDetector.detect`,
+   `my_func` or `parseConfig`. All-caps constants, plain words and short names
+   are never candidates.
+2. The index holds no symbol by that name, and no file other than a document
+   mentions it as a word. A mention could be a definition the index skipped,
+   so a mentioned name is not treated as a reference at all.
+3. `git blame` finds the commit that last wrote the document line, and at that
+   commit a source file, parsed with Repowise's own parser, defined a symbol
+   with exactly that name. A definition in a test file does not count. A name
+   that only appeared in a comment or a string, or never appeared at all, was
+   never a symbol reference and is not reported.
+
+When the defining file still exists, or git records where it moved, and it now
+defines exactly one new symbol of the same kind whose name is close to the old
+one, the finding suggests the reference with that name.
+
+This kind needs an index and git history. `init` and `update` run it; in CI it
+runs only when asked for with `--kind symbol`. Its git work has fixed limits
+per run, and anything past them is counted as uncheckable (`over-budget`).
 
 ## What it deliberately does not check
 
@@ -63,6 +96,7 @@ When the tree says where a reference probably went, the finding says so too:
 | Renamed in git | git history records the file moving, and the new path exists |
 | Similar heading | the linked heading is gone and one declared heading is a close match |
 | Similar target | the `make` or `npm run` target is gone and one declared target is a close match |
+| Renamed symbol | the symbol's defining file shows it renamed, and the new name is defined now |
 
 A suggestion is evidence for you to check, not an edit. It never changes a
 finding's confidence, and Repowise never rewrites your documents.
@@ -90,7 +124,11 @@ it. Silenced references are counted in the report, never dropped quietly.
 `--check` reads the working tree directly. It needs git and nothing else: no
 index, no model, a few seconds on a large repository. It exits `1` when a
 finding at or above `--fail-on-confidence` (default 0.7) is present, and `2`
-when it cannot evaluate.
+when it cannot evaluate. `--kind symbol` adds symbol references when an index
+exists (it exits `2` without one), and it needs full history
+(`fetch-depth: 0`), since a shallow clone blames every line to its boundary
+commit. A baseline written without `--kind symbol` holds no symbol entries, so
+record it again when you add the kind.
 
 ```bash
 repowise doc-drift --check --format github
@@ -101,7 +139,17 @@ summary to the job page. `--format sarif` produces a file for GitHub code
 scanning, `--format gitlab` a GitLab Code Quality report for the merge request
 widget (baselined findings left out), and `--format markdown` is for posting a
 comment yourself. In the Code Quality report a finding at or above
-`--fail-on-confidence` is `major` and one below it `minor`. Full history
+`--fail-on-confidence` is `major` and one below it `minor`.
+
+A finding with a likely replacement carries it into every format. The JSON has
+`suggestion`, plus `suggested_line` (the whole document line with every copy of
+the reference replaced) and `suggestion_columns` (each replaced span: 1-based,
+end exclusive, in UTF-16 code units). SARIF carries a `fixes` entry that
+replaces exactly those spans, the markdown summary adds a `suggestion` block
+with the replaced line under each finding, ready to paste into a pull-request
+review, and the Code Quality description ends with "Likely now:" and the
+replacement. Findings read back from an index keep the suggestion but not the
+placed line. Full history
 (`fetch-depth: 0`) is optional and only improves the rename suggestions. The
 GitHub Action and GitLab template that run it beside the other gates are in
 [Repowise in CI](../start/CI.md).
@@ -129,7 +177,8 @@ repowise doc-drift --check --since auto --format github
 
 `--since REVSPEC` keeps a finding when the change edits its document, deletes
 or renames the file or directory it names, edits the document its anchor
-points into, or edits a manifest of the kind that declares its command. `auto`
+points into, edits a manifest of the kind that declares its command, or edits
+or removes a file that defined its symbol. `auto`
 reads the target branch from the CI's pull-request variables and diffs from the
 merge-base (`origin/main...HEAD`), so a shallow checkout needs `fetch-depth: 0`.
 A bare ref means `REF...HEAD`, and when the range ends at `HEAD` uncommitted and

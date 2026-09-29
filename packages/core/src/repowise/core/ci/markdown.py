@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -15,6 +16,18 @@ def cell(value: Any) -> str:
     for char, escaped in (("\\", "\\\\"), ("|", "\\|"), ("`", "\\`"), ("<", "&lt;")):
         text = text.replace(char, escaped)
     return text
+
+
+def longest_backtick_run(text: str) -> int:
+    """Length of the longest run of backticks in *text*, for choosing a fence."""
+    return max((len(run) for run in re.findall(r"`+", text)), default=0)
+
+
+def code(text: str) -> str:
+    """*text* as an inline code span that no backtick inside it can close early."""
+    fence = "`" * (longest_backtick_run(text) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
 
 
 def plural(n: int, word: str, many: str | None = None) -> str:

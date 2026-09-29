@@ -1494,7 +1494,12 @@ def run_update(
         timings=timings,
     )
     doc_drift_report = _run_doc_drift_partial(
-        graph_builder, source_map, repo_path=repo_path, timings=timings
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        timings=timings,
+        base_ref=base_ref,
+        file_diffs=file_diffs,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before

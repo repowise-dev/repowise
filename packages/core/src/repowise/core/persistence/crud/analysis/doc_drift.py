@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.doc_drift.constants import bucket_confidences
 from repowise.core.analysis.doc_drift.serialize import finding_dict, reference_dict
 
-from ...models import DocDriftFinding, DocDriftReference
+from ...models import DocDriftFinding, DocDriftReference, WikiSymbol
 from .._shared import _BATCH_SIZE
 
 #: Width of the two ``String(1024)`` columns. ``target`` is lifted verbatim
@@ -69,14 +69,36 @@ _REFERENCES_TABLE = _DriftTable(
 )
 
 
+@dataclass(frozen=True)
+class _WriteScope:
+    """What one drift write may speak for, and how it stamps the rows it inserts."""
+
+    documents: frozenset[str] | None
+    """Document paths this write may speak for; ``None`` means repo-wide."""
+    stamp: Callable[[dict], None] | None = None
+    carried: tuple[str, Any] | None = None
+    """``(kind, SymbolScope)``: rows of that kind are replaced only where the
+    :class:`~repowise.core.analysis.doc_drift.models.SymbolScope` covers them
+    and kept everywhere else, for a run that re-derived one kind in less than
+    the rest."""
+
+    def admits(self, table: _DriftTable, item: Any, kwargs: dict) -> bool:
+        """Whether this write may insert *item*."""
+        if self.documents is not None and table.path_of(item) not in self.documents:
+            # Outside the scope it would be inserted and never deleted by the
+            # next scoped run, so it would outlive its own evidence.
+            return False
+        if self.carried is None or kwargs["kind"] != self.carried[0]:
+            return True
+        return self.carried[1].covers(table.path_of(item), item.target)
+
+
 async def _replace_scoped(
     session: AsyncSession,
     table: _DriftTable,
     repository_id: str,
     items: list[Any],
-    *,
-    scoped: frozenset[str] | None,
-    stamp: Callable[[dict], None] | None = None,
+    write: _WriteScope,
 ) -> int:
     """Delete-then-insert one drift table, converging on re-run.
 
@@ -84,50 +106,84 @@ async def _replace_scoped(
     speak for the same set of documents, or one describes a run the other
     never made.
 
-    ``scoped`` names the document paths this write may speak for; ``None``
-    means repo-wide. Idempotency rests on the unique constraint, and on the
-    DELETE and INSERT scopes being identical so no surviving row can collide.
-    The dedup closes the last gap: two items in one batch sharing a site,
-    which would otherwise raise after the DELETE had run.
+    Idempotency rests on the unique constraint, and on the DELETE and INSERT
+    scopes being identical so no surviving row can collide. The dedup closes
+    the last gap: two items in one batch sharing a site, which would otherwise
+    raise after the DELETE had run.
     """
     model = table.model
-    if scoped is None:
-        await session.execute(delete(model).where(model.repository_id == repository_id))
-    else:
-        # Chunked so a large scope stays under SQLite's parameter limit.
-        paths = sorted(scoped)
-        for i in range(0, len(paths), _IN_CLAUSE_CHUNK):
-            chunk = paths[i : i + _IN_CLAUSE_CHUNK]
-            await session.execute(
-                delete(model).where(
-                    model.repository_id == repository_id,
-                    table.path_column.in_(chunk),
-                )
-            )
+    base = [model.repository_id == repository_id]
+    if write.carried is not None:
+        base.append(model.kind != write.carried[0])
+        await _delete_carried(session, table, repository_id, write)
+    await _delete_in(session, table, base, write.documents)
 
+    rows = _rows_to_insert(table, repository_id, items, write)
+    for i in range(0, len(rows), _BATCH_SIZE):
+        session.add_all(model(**r) for r in rows[i : i + _BATCH_SIZE])
+        await session.flush()
+    return len(rows)
+
+
+def _rows_to_insert(
+    table: _DriftTable, repository_id: str, items: list[Any], write: _WriteScope
+) -> list[dict]:
     rows: list[dict] = []
     seen: set[tuple] = set()
     for item in items or []:
-        if scoped is not None and table.path_of(item) not in scoped:
-            # Outside the scope it would be inserted and never deleted by the
-            # next scoped run, so it would outlive its own evidence.
-            continue
         kwargs = table.row_kwargs(item, repository_id)
+        if not write.admits(table, item, kwargs):
+            continue
         # Keyed on the truncated values, so two targets differing only past the
         # column width collapse here rather than colliding in the database.
         key = tuple(kwargs[field] for field in table.key_fields)
         if key in seen:
             continue
         seen.add(key)
-        if stamp is not None:
-            stamp(kwargs)
+        if write.stamp is not None:
+            write.stamp(kwargs)
         rows.append(kwargs)
+    return rows
 
-    for i in range(0, len(rows), _BATCH_SIZE):
-        session.add_all(model(**r) for r in rows[i : i + _BATCH_SIZE])
-        await session.flush()
 
-    return len(rows)
+async def _delete_carried(
+    session: AsyncSession, table: _DriftTable, repository_id: str, write: _WriteScope
+) -> None:
+    """Delete the carried kind's rows where the write's symbol scope covers them."""
+    kind, cover = write.carried  # type: ignore[misc]
+    model = table.model
+    of_kind = [model.repository_id == repository_id, model.kind == kind]
+    scoped = write.documents
+    documents = cover.documents if scoped is None else cover.documents & scoped
+    await _delete_in(session, table, of_kind, documents)
+    pairs = sorted(
+        (doc, target[:_PATH_COLUMN_WIDTH])
+        for doc, target in cover.references
+        if scoped is None or doc in scoped
+    )
+    # Two parameters per pair, so half the usual chunk.
+    step = _IN_CLAUSE_CHUNK // 2
+    for i in range(0, len(pairs), step):
+        await session.execute(
+            delete(model).where(
+                *of_kind, tuple_(table.path_column, model.target).in_(pairs[i : i + step])
+            )
+        )
+
+
+async def _delete_in(
+    session: AsyncSession, table: _DriftTable, where: list, paths: frozenset[str] | None
+) -> None:
+    """Delete *where* rows, narrowed to *paths* when given (``None``: every path)."""
+    model = table.model
+    if paths is None:
+        await session.execute(delete(model).where(*where))
+        return
+    # Chunked so a large scope stays under SQLite's parameter limit.
+    ordered = sorted(paths)
+    for i in range(0, len(ordered), _IN_CLAUSE_CHUNK):
+        chunk = ordered[i : i + _IN_CLAUSE_CHUNK]
+        await session.execute(delete(model).where(*where, table.path_column.in_(chunk)))
 
 
 def _row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -157,6 +213,7 @@ async def replace_doc_drift_findings(
     findings: list[Any],
     *,
     scope: frozenset[str] | set[str] | None = None,
+    symbol_scope: Any | None = None,
 ) -> int:
     """Replace this repository's drift findings, converging on re-run.
 
@@ -170,9 +227,14 @@ async def replace_doc_drift_findings(
     on (document, kind, target) so an edit that moves a line keeps its age.
     Ceiling: a renamed document's findings start a new age, as the key holds
     the path; carrying them needs the rename map the incremental pass has.
+    ``symbol_scope``, a :class:`~repowise.core.analysis.doc_drift.models.SymbolScope`
+    when given, narrows the ``symbol`` rows replaced to what it covers; stored
+    symbol findings elsewhere carry forward untouched.
+
     Returns the number of rows inserted.
     """
     scoped = frozenset(scope) if scope is not None else None
+    carried = ("symbol", symbol_scope) if symbol_scope is not None else None
     written_at = datetime.now(UTC)
     prior = await _first_seen_before(session, repository_id, scoped)
 
@@ -185,7 +247,11 @@ async def replace_doc_drift_findings(
             row["first_seen_at"] = prior.get(_age_key(row), written_at)
 
     return await _replace_scoped(
-        session, _FINDINGS_TABLE, repository_id, findings, scoped=scoped, stamp=stamp
+        session,
+        _FINDINGS_TABLE,
+        repository_id,
+        findings,
+        _WriteScope(scoped, stamp, carried),
     )
 
 
@@ -284,7 +350,7 @@ async def replace_doc_drift_references(
         _REFERENCES_TABLE,
         repository_id,
         references,
-        scoped=frozenset(scope) if scope is not None else None,
+        _WriteScope(frozenset(scope) if scope is not None else None),
     )
 
 
@@ -313,6 +379,7 @@ async def replace_doc_drift_guarded(
             repository_id,
             report.findings,
             scope=report.authoritative_paths,
+            symbol_scope=getattr(report, "symbol_scope", None),
         )
         await replace_doc_drift_references(
             session,
@@ -321,6 +388,16 @@ async def replace_doc_drift_guarded(
             scope=report.authoritative_paths,
         )
         return written
+
+
+async def get_symbol_names(session: AsyncSession, repository_id: str) -> frozenset[str]:
+    """Every symbol name the index holds: the set the ``symbol`` drift kind resolves against."""
+    stmt = (
+        select(WikiSymbol.name)
+        .where(WikiSymbol.repository_id == repository_id)
+        .distinct()
+    )
+    return frozenset((await session.execute(stmt)).scalars())
 
 
 async def get_doc_drift_findings(

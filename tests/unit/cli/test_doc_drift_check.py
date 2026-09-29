@@ -324,3 +324,76 @@ def test_since_requires_check_and_refuses_write_baseline(monkeypatch, tmp_path):
         ["--check", "--since", "main...HEAD", "--write-baseline", str(tmp_path / "b.json")],
     )
     assert both.exit_code == 2
+
+
+def _symbol_history(tmp_path):
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            check=True,
+            capture_output=True,
+        )
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def parse_config():\n    pass\n", encoding="utf-8")
+    (tmp_path / "docs" / "guide.md").write_text("Call `parse_config()`.\n", encoding="utf-8")
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    (tmp_path / "src" / "app.py").write_text(
+        "def parse_conf():\n    pass\n", encoding="utf-8"
+    )
+    git("commit", "-qam", "rename")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_check_runs_no_symbol_pass_unless_asked(monkeypatch, tmp_path):
+    _symbol_history(tmp_path)
+
+    async def _names(root):  # an index exists, but nobody asked for symbols
+        raise AssertionError("the index must not be read")
+
+    monkeypatch.setattr(doc_drift_cmd, "_index_symbol_names", _names)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["findings"] == []
+    assert payload["references_checked"] == 0
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_kind_symbol_without_an_index_cannot_evaluate(tmp_path):
+    _symbol_history(tmp_path)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--kind", "symbol", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.output)["error"] == "no_index"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_kind_symbol_with_an_index_reports_a_renamed_symbol(monkeypatch, tmp_path):
+    _symbol_history(tmp_path)
+
+    async def _names(root):
+        return frozenset({"parse_conf"})
+
+    monkeypatch.setattr(doc_drift_cmd, "_index_symbol_names", _names)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--kind", "symbol", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 1, result.output
+    (finding,) = json.loads(result.output)["findings"]
+    assert finding["kind"] == "symbol"
+    assert finding["target"] == "parse_config"
+    assert finding["suggestion"] == "parse_conf()"
+    assert finding["suggestion_basis"] == "symbol_rename"
+    assert finding["suggested_line"] == "Call `parse_conf()`."
+    assert finding["suggestion_columns"] == [[7, 21]]
+    assert finding["defined_in"] == ["src/app.py"]

@@ -97,8 +97,8 @@ export function DocDriftLede({
           <>
             <p>
               Every reference this detector could resolve still resolves. No document
-              names a file, a heading or a command that the repository has since moved
-              or removed.
+              names a file, a heading, a command or a code symbol that the repository
+              has since moved or removed.
             </p>
             <p className="mt-2.5">{summary.findings_basis}</p>
           </>

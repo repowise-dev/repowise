@@ -101,7 +101,7 @@
         "repowise.docDrift.diagnostics.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show documentation-drift findings (paths, links, anchors and commands a markdown file names that the tree no longer has) for visible markdown files in the Problems panel. On by default: findings are sparse and each names the line to edit."
+          "description": "Show documentation-drift findings (paths, links, anchors, commands and code symbols a markdown file names that the tree no longer has) for visible markdown files in the Problems panel. On by default: findings are sparse and each names the line to edit."
         },
         "repowise.docDrift.diagnostics.minConfidence": {
           "type": "number",

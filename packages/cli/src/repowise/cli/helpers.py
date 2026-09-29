@@ -217,11 +217,15 @@ def get_db_url_for_repo(repo_path: Path) -> str:
 
 
 @contextlib.asynccontextmanager
-async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+async def repo_index_session(
+    root: Path, *, reconcile: bool = True
+) -> AsyncIterator[tuple[AsyncSession, str] | None]:
     """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
 
     A scoring or scanning command must never fail because the index is absent,
     stale or locked, so every storage error yields ``None`` instead.
+    ``reconcile=False`` skips the schema reconcile, so a caller that only reads
+    writes nothing to the store.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -239,7 +243,8 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
         opened: tuple[AsyncSession, str] | None = None
         try:
             url = get_db_url_for_repo(root)
-            await reconcile_schema_best_effort(url)
+            if reconcile:
+                await reconcile_schema_best_effort(url)
             engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
             factory = create_session_factory(engine)

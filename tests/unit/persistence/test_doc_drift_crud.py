@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from repowise.core.analysis.doc_drift.models import DocDriftFindingData, DriftKind
+from repowise.core.analysis.doc_drift.models import DocDriftFindingData, DriftKind, SymbolScope
 from repowise.core.persistence.crud import (
     doc_drift_last_written,
     get_doc_drift_findings,
@@ -334,3 +334,63 @@ async def test_a_snapshot_records_the_stored_drift_count(async_session):
     await replace_doc_drift_findings(async_session, repo.id, [_finding(), _finding(line=2)])
     counted = await save_health_snapshot(async_session, repo.id, **kwargs)
     assert counted.doc_drift_count == 2
+
+
+async def test_symbol_findings_of_untouched_documents_carry_forward(async_session):
+    """An update re-resolves symbols in some documents; the rest keep theirs."""
+    repo = await insert_repo(async_session)
+    kept = _finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL)
+    fixed = _finding("docs/b.md", 4, "gone_helper", DriftKind.SYMBOL)
+    await replace_doc_drift_findings(
+        async_session, repo.id, [kept, fixed, _finding("docs/a.md", 9)]
+    )
+    await async_session.commit()
+
+    # Both documents re-read (cheap kinds re-derived); symbols only in b.md.
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding("docs/a.md", 9)],
+        scope={"docs/a.md", "docs/b.md"},
+        symbol_scope=SymbolScope(documents=frozenset({"docs/b.md"})),
+    )
+    await async_session.commit()
+    rows = {(r.file_path, r.kind, r.target) for r in await _rows(async_session, repo.id)}
+    assert rows == {("docs/a.md", "symbol", "old_helper"), ("docs/a.md", "path", "src/gone.py")}
+
+
+async def test_a_rechecked_reference_is_replaced_and_its_neighbours_kept(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [
+            _finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL),
+            _finding("docs/a.md", 5, "other_helper", DriftKind.SYMBOL),
+        ],
+    )
+    await async_session.commit()
+
+    # Only ``old_helper`` was re-resolved, and it now resolves.
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [],
+        scope={"docs/a.md"},
+        symbol_scope=SymbolScope(references=frozenset({("docs/a.md", "old_helper")})),
+    )
+    await async_session.commit()
+    rows = {r.target for r in await _rows(async_session, repo.id)}
+    assert rows == {"other_helper"}
+
+
+async def test_a_symbol_finding_outside_the_symbol_scope_is_not_inserted(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL)],
+        symbol_scope=SymbolScope(),
+    )
+    await async_session.commit()
+    assert await _rows(async_session, repo.id) == []

@@ -148,7 +148,7 @@ def test_sarif_required_fields():
     assert driver["name"] == "repowise-doc-drift"
     assert driver["version"] == "1.2.3"
     assert driver["informationUri"] == "https://repowise.dev"
-    assert [r["id"] for r in driver["rules"]] == ["path", "link", "anchor", "command"]
+    assert [r["id"] for r in driver["rules"]] == ["path", "link", "anchor", "command", "symbol"]
     assert all(DETECTION_BASIS in r["fullDescription"]["text"] for r in driver["rules"])
 
     by_rule = {r["ruleId"]: r for r in run["results"]}
@@ -206,7 +206,7 @@ def test_gitlab_severity_follows_the_gate_and_drops_the_baseline():
             "location": {"path": "docs/a.md", "lines": {"begin": 3}},
         },
         {
-            "description": "Document names a.py, which no longer exists. Likely now: pkg/a/.",
+            "description": "Document names a.py, which no longer exists. Likely now: `pkg/a/`",
             "check_name": "repowise-doc-drift/path",
             "fingerprint": derive_doc_drift_fingerprint("docs/a.md", "path", "a.py"),
             "severity": "major",
@@ -223,3 +223,94 @@ def test_gitlab_is_deterministic_and_unique():
     assert one == render_gitlab(list(reversed(findings)))
     fps = [i["fingerprint"] for i in one]
     assert len(set(fps)) == 3 and fps[1] == fps[0] + ":2"
+
+
+# -- placed suggestions -----------------------------------------------------
+
+
+def _placed(**kw) -> dict:
+    out = _f("a.py", suggestion="pkg/a/", **kw)
+    out["suggested_line"] = "See `pkg/a/` here."
+    out["suggestion_columns"] = [[6, 10]]
+    return out
+
+
+def _symbol(suggestion: str, line: str, spans: list) -> dict:
+    out = _f("Loader.parse_config", kind="symbol", suggestion=suggestion)
+    out["suggestion_basis"] = "symbol_rename"
+    out["suggested_line"] = line
+    out["suggestion_columns"] = spans
+    return out
+
+
+def test_sarif_declares_utf16_columns():
+    (run,) = render_sarif([_placed()], tool_version="x")["runs"]
+    assert run["columnKind"] == "utf16CodeUnits"
+
+
+def test_sarif_carries_a_fix_on_the_exact_span():
+    (result,) = render_sarif([_placed()], tool_version="x")["runs"][0]["results"]
+    (fix,) = result["fixes"]
+    (change,) = fix["artifactChanges"]
+    assert change["artifactLocation"] == {"uri": "docs/a.md", "uriBaseId": "%SRCROOT%"}
+    (replacement,) = change["replacements"]
+    assert replacement == {
+        "deletedRegion": {"startLine": 3, "startColumn": 6, "endLine": 3, "endColumn": 10},
+        "insertedContent": {"text": "pkg/a/"},
+    }
+    assert fix["description"]["text"] == "Replace with pkg/a/"
+
+
+def test_sarif_replaces_every_copy_of_a_repeated_token():
+    finding = _symbol(
+        "Loader.parse_conf()", "`Loader.parse_conf()` and `Loader.parse_conf()`", [[2, 23], [30, 51]]
+    )
+    (result,) = render_sarif([finding], tool_version="x")["runs"][0]["results"]
+    regions = [r["deletedRegion"] for r in result["fixes"][0]["artifactChanges"][0]["replacements"]]
+    assert [(r["startColumn"], r["endColumn"]) for r in regions] == [(2, 23), (30, 51)]
+
+
+def test_sarif_has_no_fix_without_a_placed_suggestion():
+    (result,) = render_sarif([_f("a.py", suggestion="pkg/a/")], tool_version="x")["runs"][0][
+        "results"
+    ]
+    assert "fixes" not in result
+
+
+def test_markdown_puts_a_suggestion_block_with_the_whole_line_under_its_document():
+    md = render_markdown([_placed(), _f("b.py", line=9)], gate=None)
+    assert "**Suggested edits**" in md
+    block = md.split("**Suggested edits**", 1)[1]
+    assert "`docs/a.md`" in block
+    assert "Line 3: likely now `pkg/a/`" in block
+    assert "```suggestion\nSee `pkg/a/` here.\n```" in block
+    assert "Line 9" not in block
+
+
+def test_markdown_suggestion_block_for_a_symbol():
+    finding = _symbol("Loader.parse_conf()", "Call `Loader.parse_conf()` first.", [[7, 28]])
+    md = render_markdown([finding], gate=None)
+    assert "Line 3: likely now `Loader.parse_conf()`" in md
+    assert "```suggestion\nCall `Loader.parse_conf()` first.\n```" in md
+    assert "| Loader.parse_config | symbol |" in md
+
+
+def test_markdown_fence_outgrows_backticks_in_the_line():
+    finding = _placed()
+    finding["suggested_line"] = "Run ```pkg/a/``` now."
+    md = render_markdown([finding], gate=None)
+    assert "````suggestion\nRun ```pkg/a/``` now.\n````" in md
+
+
+def test_a_backtick_in_a_suggestion_never_breaks_the_code_span():
+    finding = _placed()
+    finding["suggestion"] = "make `x`"
+    md = render_markdown([finding], gate=None)
+    assert "likely now `` make `x` ``" in md
+    (issue,) = render_gitlab([finding])
+    assert issue["description"].endswith("Likely now: `` make `x` ``")
+
+
+def test_gitlab_description_ends_with_the_suggestion():
+    (issue,) = render_gitlab([_placed()])
+    assert issue["description"].endswith("Likely now: `pkg/a/`")

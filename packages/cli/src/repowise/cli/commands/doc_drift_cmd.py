@@ -78,19 +78,43 @@ async def _read(root: Path, *, min_confidence: float | None, kinds: tuple[str, .
         return [serialize_doc_drift_row(r) for r in rows]
 
 
+async def _index_symbol_names(root: Path) -> frozenset[str] | None:
+    """Every symbol name the index at *root* holds, or ``None`` when none opens.
+
+    Read-only: the schema reconcile is skipped, so a CI read writes nothing.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.crud import get_symbol_names
+
+    async with repo_index_session(root, reconcile=False) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        try:
+            return await get_symbol_names(session, repo_id)
+        except (SQLAlchemyError, OSError):
+            return None
+
+
 def _read_live(
     root: Path,
     *,
     min_confidence: float | None,
     kinds: tuple[str, ...],
+    symbol_names: frozenset[str] | None = None,
 ) -> tuple[Any, list[dict[str, Any]]]:
-    """Run the analyzer over the working tree: ``(report, finding dicts)``."""
+    """Run the analyzer over the working tree: ``(report, finding dicts)``.
+
+    The ``symbol`` kind runs only with *symbol_names*, which ``--kind symbol``
+    reads from the index.
+    """
     from repowise.core.analysis.doc_drift.live import run_live
     from repowise.core.analysis.doc_drift.serialize import serialize_finding
 
     config = {"min_confidence": min_confidence} if min_confidence is not None else None
-    report = run_live(root, config=config)
-    findings = [serialize_finding(f) for f in report.findings]
+    report = run_live(root, config=config, symbol_names=symbol_names)
+    findings = [serialize_finding(f, live=True) for f in report.findings]
     if kinds:
         findings = [f for f in findings if f["kind"] in kinds]
     return report, findings
@@ -275,11 +299,6 @@ def _run_check(
     since: str | None = None,
 ) -> None:
     from repowise.cli.helpers import silence_logs_for_machine_output
-    from repowise.core.analysis.doc_drift.baseline import (
-        BaselineError,
-        read_baseline,
-        write_baseline,
-    )
     from repowise.core.analysis.doc_drift.gate import evaluate_gate
     from repowise.core.analysis.doc_drift.live import LiveTreeError
 
@@ -290,8 +309,11 @@ def _run_check(
             f"[yellow]--min-confidence {min_confidence:.2f} is above --fail-on-confidence "
             f"{fail_on:.2f}; findings between them are hidden from the gate.[/yellow]"
         )
+    symbol_names = _check_symbol_names(root, kinds, fmt)
     try:
-        report, findings = _read_live(root, min_confidence=min_confidence, kinds=kinds)
+        report, findings = _read_live(
+            root, min_confidence=min_confidence, kinds=kinds, symbol_names=symbol_names
+        )
     except LiveTreeError as exc:
         cannot_evaluate(fmt, "not_a_git_repository", str(exc))
     findings = _only_documents(findings, documents)
@@ -300,25 +322,10 @@ def _run_check(
         findings, scope = _scope_to(root, since, findings, fmt)
 
     if write_baseline_path is not None:
-        try:
-            written = write_baseline(write_baseline_path, findings)
-        except OSError as exc:
-            cannot_evaluate(
-                fmt, "baseline_unwritable", f"cannot write baseline {write_baseline_path}: {exc}"
-            )
-        ci_notices(fmt).print(
-            f"Recorded {len(findings)} finding(s) as {written} baseline entr"
-            f"{'y' if written == 1 else 'ies'} in {write_baseline_path}."
-        )
+        _write_check_baseline(write_baseline_path, findings, fmt)
         return
 
-    baseline = None
-    if baseline_path is not None:
-        try:
-            baseline = read_baseline(baseline_path)
-        except BaselineError as exc:
-            cannot_evaluate(fmt, "baseline_unreadable", str(exc))
-
+    baseline = _read_check_baseline(baseline_path, fmt)
     gate = evaluate_gate(findings, fail_on=fail_on, baseline=baseline)
     payload = _payload(root, findings, min_confidence)
     payload.update(
@@ -332,6 +339,44 @@ def _run_check(
     _emit(fmt, payload, gate=gate, report=report, accepted=baseline or frozenset())
     if not gate.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
+
+
+def _check_symbol_names(root: Path, kinds: tuple[str, ...], fmt: str) -> frozenset[str] | None:
+    """The index's symbol names when ``--kind symbol`` asks; exit 2 without an index."""
+    if DriftKind.SYMBOL.value not in kinds:
+        return None
+    names = run_async(_index_symbol_names(root))
+    if names is None:
+        cannot_evaluate(
+            fmt,
+            "no_index",
+            f"--kind symbol needs a Repowise index at {root}; run 'repowise init' there.",
+        )
+    return names
+
+
+def _write_check_baseline(path: Path, findings: list[dict], fmt: str) -> None:
+    from repowise.core.analysis.doc_drift.baseline import write_baseline
+
+    try:
+        written = write_baseline(path, findings)
+    except OSError as exc:
+        cannot_evaluate(fmt, "baseline_unwritable", f"cannot write baseline {path}: {exc}")
+    ci_notices(fmt).print(
+        f"Recorded {len(findings)} finding(s) as {written} baseline entr"
+        f"{'y' if written == 1 else 'ies'} in {path}."
+    )
+
+
+def _read_check_baseline(path: Path | None, fmt: str) -> frozenset[str] | None:
+    from repowise.core.analysis.doc_drift.baseline import BaselineError, read_baseline
+
+    if path is None:
+        return None
+    try:
+        return read_baseline(path)
+    except BaselineError as exc:
+        cannot_evaluate(fmt, "baseline_unreadable", str(exc))
 
 
 @click.command("doc-drift")
@@ -363,7 +408,10 @@ def _run_check(
     "--check",
     is_flag=True,
     default=False,
-    help="Read the working tree without an index and exit 1 when the gate fails.",
+    help=(
+        "Read the working tree without an index and exit 1 when the gate fails. "
+        "With --kind symbol it also checks symbol references, which needs an index."
+    ),
 )
 @click.option(
     "--fail-on-confidence",
@@ -393,7 +441,8 @@ def _run_check(
     help=(
         "With --check, gate only drift this change is answerable for: documents it "
         "edits, documents naming files it deletes or renames, anchors into documents "
-        "it edits, and commands whose manifest it edits. A bare ref means REF...HEAD, "
+        "it edits, commands whose manifest it edits, and symbols whose defining file "
+        "it edits or removes. A bare ref means REF...HEAD, "
         "plus uncommitted changes; 'auto' reads the target branch from CI."
     ),
 )
