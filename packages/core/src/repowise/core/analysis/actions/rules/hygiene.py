@@ -37,6 +37,9 @@ _QUOTED = re.compile(r"""["']([^"']*)["']""")
 
 
 def _looks_like_code(path: str, snippet: str) -> bool:
+    # The scanner applies these checks to the raw value, so a fresh row already
+    # passed them. They stay for rows an older scanner stored: a row is only
+    # rewritten when its file is rescanned.
     lowered = path.lower()
     if lowered.endswith(tuple(DOC_EXTENSIONS)) or lowered.startswith("docs/") or "/docs/" in lowered:
         return False
