@@ -7,6 +7,8 @@ framework-mediated wiring.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 import structlog
 
 from ...co_change import (
@@ -17,11 +19,19 @@ from ...co_change import (
     canonical_pair,
     parse_partners,
 )
+from ...test_paths import is_test_related_path
+from ..models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+
+def _language_from_path(path: str) -> str | None:
+    """Language from the name or extension alone, as the traverser decides it."""
+    p = PurePosixPath(path)
+    return SPECIAL_FILENAMES.get(p.name) or EXTENSION_TO_LANGUAGE.get(p.suffix.lower())
 
 
 class EdgesMixin:
@@ -89,6 +99,10 @@ class EdgesMixin:
         seen: set[tuple[str, str]] = set()
 
         for file_path, meta in git_meta_map.items():
+            # Git covers every tracked file, parsed or not; ``add_edge`` would
+            # create an unparsed one as a bare node the traverser never saw.
+            if file_path not in self._graph:
+                continue
             for partner in parse_partners(meta.get("co_change_partners_json")):
                 partner_path, co_count = partner.file_path, partner.weight
                 if partner.support < min_support:
@@ -138,7 +152,13 @@ class EdgesMixin:
             if e.target not in self._graph:
                 if self._exclude.patterns and self._exclude.match_file(e.target):
                     continue
-                self._graph.add_node(e.target)
+                # Stamp what the traverser would have, or persist stores the
+                # node as production code with an unknown language.
+                language = _language_from_path(e.target)
+                attrs: dict = {"is_test": is_test_related_path(e.target, language)}
+                if language is not None:
+                    attrs["language"] = language
+                self._graph.add_node(e.target, **attrs)
             # `DynamicEdge.edge_type` is a `DynamicKind`, so there is no empty
             # case to fall back on. The `or "dynamic"` that used to sit here
             # was the only writer of a bare `"dynamic"` edge — unreachable in

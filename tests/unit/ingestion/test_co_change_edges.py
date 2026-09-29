@@ -48,6 +48,16 @@ def test_the_pair_is_added_once_from_either_side(builder: GraphBuilder) -> None:
     assert b.add_co_change_edges(meta) == 1
 
 
+def test_an_unparsed_file_does_not_become_a_node(builder: GraphBuilder) -> None:
+    """Git covers files the index skipped; they must not enter the graph bare."""
+    b = builder
+    meta = {
+        "tests/fixtures/x.py": _meta([{"file_path": "a.py", "co_change_count": 9, "frequency": 9}])
+    }
+    assert b.add_co_change_edges(meta) == 0
+    assert "tests/fixtures/x.py" not in b._graph
+
+
 def test_a_pair_seen_once_is_not_an_edge(builder: GraphBuilder) -> None:
     """The gate counts shared commits, so a heavy but rare pair is still rare."""
     b = builder
