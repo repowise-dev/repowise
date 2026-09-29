@@ -467,7 +467,7 @@ def _docs(n: int) -> tuple[DriftFacts, ...]:
 def _mixed() -> RepoFacts:
     return _facts(
         _many_files(),
-        secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'KEY = "x"'),),
+        secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'KEY = "sk_live_a1b2c3"'),),
         drift=_docs(4),
         dead=tuple(DeadFacts(f"d{i}", "src/a.py", f"f{i}", 20) for i in range(3)),
     )
@@ -580,3 +580,19 @@ def test_fragile_id_survives_a_change_of_lead_function() -> None:
     (a,) = _run(code.fragile_file, _facts([before]), **ctx).actions
     (b,) = _run(code.fragile_file, _facts([after]), **ctx).actions
     assert a.action_id == b.action_id
+
+
+def test_secret_ignores_placeholder_examples_in_code() -> None:
+    examples = (
+        SecretFacts("src/embed.py", "hardcoded_secret", 15, 'embedder = Embedder(api_key="AIza...")'),
+        SecretFacts("src/p.py", "hardcoded_secret", 12, 'p = get("openai", api_key="sk-...", model="gpt")'),
+        SecretFacts("src/q.py", "hardcoded_secret", 3, 'token = "your-token-here"'),
+    )
+    assert _run(hygiene.live_secret, _facts(secrets=examples)).actions == ()
+    real = SecretFacts("src/r.py", "hardcoded_secret", 3, 'API_KEY = "sk-live-a****"')
+    assert len(_run(hygiene.live_secret, _facts(secrets=(real,))).actions) == 1
+
+
+def test_secret_ignores_a_dummy_word_value() -> None:
+    dummy = SecretFacts("src/ollama.py", "hardcoded_secret", 3, 'OpenAI(api_key="ollama", base_url=u)')
+    assert _run(hygiene.live_secret, _facts(secrets=(dummy,))).actions == ()

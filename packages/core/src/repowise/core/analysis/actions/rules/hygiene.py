@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import timedelta
 
@@ -27,13 +28,31 @@ _DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt", ".adoc")
 _COMMENT_PREFIXES = ("#", "//", "*", "/*", ">>>", "--", '"', "'")
 
 
+#: Values nobody would ship: the elided or templated examples in docstrings
+#: and READMEs (`api_key="sk-..."`, `"your-key-here"`). A masked real secret
+#: reads `sk-a****`, which none of these match.
+_PLACEHOLDER_MARKERS = ("...", "…", "<", "your", "xxx", "example", "placeholder", "dummy", "fake", "changeme")
+_QUOTED = re.compile(r"""["']([^"']*)["']""")
+
+
 def _looks_like_code(path: str, snippet: str) -> bool:
     lowered = path.lower()
     if lowered.endswith(_DOC_SUFFIXES) or lowered.startswith("docs/") or "/docs/" in lowered:
         return False
     # Comments, docstrings and quoted examples: the scanner matches text, and a
     # sentence about passwords is not a password.
-    return not snippet.lstrip().startswith(_COMMENT_PREFIXES)
+    if snippet.lstrip().startswith(_COMMENT_PREFIXES):
+        return False
+    values = _QUOTED.findall(snippet)
+    if any(marker in v.lower() for v in values for marker in _PLACEHOLDER_MARKERS):
+        return False
+    # A credential is long and not a plain word: `api_key="ollama"` is the
+    # dummy value a local server's client requires, not a secret.
+    return not values or any(_credential_shaped(v) for v in values)
+
+
+def _credential_shaped(value: str) -> bool:
+    return len(value) >= 8 and not value.isalpha()
 
 
 def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
