@@ -100,6 +100,9 @@ class Repository(Base):
     # from that sample — otherwise a multi-year repo reads as a few months old
     # (issue #730). NULL until the first index writes them / for non-git repos.
     total_commit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``total_commit_count`` is non-merge commits reachable from HEAD, the one
+    # meaning "commits" has everywhere; merges are counted here instead.
+    total_merge_commit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # All-time unique authors (mailmap-folded) and the founding author's name.
     # Contributor count shares the #730 bug when read off the bounded sample;

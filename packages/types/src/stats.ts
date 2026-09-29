@@ -46,7 +46,10 @@ export interface StatsOrigin {
   first_commit_subject: string | null;
   last_commit_at: string | null;
   age_days: number | null;
+  /** Non-merge commits reachable from HEAD, the meaning "commits" has everywhere. */
   total_commits: number;
+  /** Merge commits, counted apart. Null until an index captures it. */
+  total_merge_commits?: number | null;
   contributor_count: number;
 }
 

@@ -377,13 +377,17 @@ def _sample_complete(
 ) -> bool:
     """Whether the commit sample reaches the root commit.
 
-    Decided by date where the root is known: the sample walk skips merge
-    commits and the whole-history count does not, so the counts never match on
-    a repo that merges.
+    The sample and the whole-history total both count non-merge commits, so a
+    sample as large as the total is complete; the sample reaching the root's
+    date proves the same thing. Truncated only when neither holds. A total
+    stored before merges were excluded is too large, and the date keeps it from
+    calling a complete sample truncated until the next index corrects it.
     """
+    if true_total is not None and total >= int(true_total):
+        return True
     if true_first is not None:
         return first_at is not None and first_at <= true_first + timedelta(seconds=60)
-    return true_total is None or total >= int(true_total)
+    return true_total is None
 
 
 def _most_common(counter: Counter[Any]) -> tuple[Any, int] | None:
@@ -466,6 +470,7 @@ def _origin(
     first = parse_dt(totals.get("first_commit_at")) or first_at
     true_total = totals.get("total_commit_count")
     true_people = totals.get("total_contributor_count")
+    merges = totals.get("total_merge_commit_count")
     return {
         "first_commit_at": _iso(first),
         "first_commit_author": totals.get("first_commit_author"),
@@ -473,6 +478,8 @@ def _origin(
         "last_commit_at": _iso(last_at),
         "age_days": (last_at - first).days if (first and last_at) else None,
         "total_commits": int(true_total) if true_total is not None else sampled,
+        # Merges are counted apart: "commits" is non-merge everywhere.
+        "total_merge_commits": int(merges) if merges is not None else None,
         "contributor_count": int(true_people) if true_people is not None else people,
     }
 

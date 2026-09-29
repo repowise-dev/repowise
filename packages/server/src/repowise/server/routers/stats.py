@@ -164,6 +164,7 @@ async def stats_highlights(
 
     totals = {
         "total_commit_count": repo.total_commit_count,
+        "total_merge_commit_count": repo.total_merge_commit_count,
         "first_commit_at": repo.first_commit_at,
         "total_contributor_count": repo.total_contributor_count,
         "first_commit_author": repo.first_commit_author,

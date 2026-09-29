@@ -1454,6 +1454,7 @@ async def persist_incremental_commits(
         session,
         repo_id,
         total_commit_count=totals.total_commit_count,
+        total_merge_commit_count=totals.total_merge_commit_count,
         first_commit_at=totals.first_commit_at,
         total_contributor_count=totals.total_contributor_count,
         first_commit_author=totals.first_commit_author,

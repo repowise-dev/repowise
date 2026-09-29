@@ -203,12 +203,21 @@ def _parse_per_file_log(
 
 
 def _per_file_log_args(file_path: str, commit_limit: int, follow_renames: bool) -> list[str]:
-    walk = [f"-{commit_limit}", "--numstat", f"--format={_LOG_FORMAT}", "--", file_path]
+    # No merges in any lane: "commits" means non-merge commits everywhere, so a
+    # file's count means the same thing whichever lane produced it.
+    walk = [
+        "--no-merges",
+        f"-{commit_limit}",
+        "--numstat",
+        f"--format={_LOG_FORMAT}",
+        "--",
+        file_path,
+    ]
     if follow_renames:
         return ["--follow", *walk]
-    # The repo-wide lanes' contract: no merges, and the full diff for churn and
+    # The repo-wide lanes' contract also carries the full diff for churn and
     # changed paths, so a file moving between lanes keeps the same history.
-    return ["--no-merges", "--full-diff", *walk]
+    return ["--full-diff", *walk]
 
 
 def _known_paths(

@@ -322,7 +322,12 @@ class RepoTotals:
     persists what succeeded. See :func:`capture_repo_totals`.
     """
 
+    # Non-merge commits reachable from HEAD: the one definition of "commits"
+    # every surface uses, matching the ``--no-merges`` walks that fill the
+    # per-commit table. Merges are counted apart so nothing reads a larger
+    # merge-inclusive total against a non-merge sample and calls it truncated.
     total_commit_count: int | None = None
+    total_merge_commit_count: int | None = None
     first_commit_at: datetime | None = None
     total_contributor_count: int | None = None
     first_commit_author: str | None = None
@@ -407,6 +412,9 @@ def _folded_churn(
     therefore holds only when nothing was dropped and nothing appeared
     underneath: a rebase, a force-push, a branch swap and an ``--unshallow``
     all break it. That is why the check is on counts and not just on ancestry.
+    Every count here is non-merge, like the stored total; the argument holds
+    for that subset unchanged, and a total stored before merges were excluded
+    simply fails the equality once and forces a full walk.
 
     *The anchor is still an ancestor.* ``merge-base --is-ancestor`` runs first
     because it is cheaper than the count, it rejects an anchor whose object git
@@ -442,7 +450,9 @@ def _folded_churn(
         # Raises (non-zero exit) when the anchor is not an ancestor, which is
         # the answer we want rather than an error.
         repo.git.merge_base("--is-ancestor", anchor, head_sha)
-        since_count = int(repo.git.rev_list("--count", f"{anchor}..{head_sha}").strip())
+        since_count = int(
+            repo.git.rev_list("--count", "--no-merges", f"{anchor}..{head_sha}").strip()
+        )
     except Exception:
         return None
 
@@ -512,7 +522,8 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     the indexer's ``commit_limit``, so they stay cheap no matter how deep the
     history is:
 
-    - ``git rev-list --count`` — the true total commit count.
+    - ``git rev-list --count --no-merges`` — the true total commit count, and
+      ``--merges`` for the merge count kept beside it.
     - the root commit(s) — earliest committed date (project age), the founding
       author's name, and that commit's subject. Multiple roots (merged
       histories) use the earliest root.
@@ -536,7 +547,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     rev = head_sha or "HEAD"
 
     with contextlib.suppress(Exception):
-        totals.total_commit_count = int(repo.git.rev_list("--count", rev).strip())
+        totals.total_commit_count = int(repo.git.rev_list("--count", "--no-merges", rev).strip())
+    with contextlib.suppress(Exception):
+        totals.total_merge_commit_count = int(repo.git.rev_list("--count", "--merges", rev).strip())
 
     try:
         roots = repo.git.rev_list("--max-parents=0", rev).split()
