@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.coverage_gap import CoverageGapDetector
 from repowise.core.analysis.health.biomarkers.coverage_gradient import (
@@ -10,7 +12,14 @@ from repowise.core.analysis.health.biomarkers.coverage_gradient import (
 from repowise.core.analysis.health.biomarkers.untested_hotspot import (
     UntestedHotspotDetector,
 )
+from repowise.core.analysis.health.complexity.models import FunctionComplexity
 from repowise.core.analysis.health.coverage import parse_repowise_json
+
+_ONE_FUNCTION = (
+    FunctionComplexity(
+        name="run", start_line=1, end_line=5, ccn=1, max_nesting=0, cognitive=0, nloc=4
+    ),
+)
 
 
 def _ctx(
@@ -24,6 +33,7 @@ def _ctx(
     branch_cov: float | None = None,
     covered_lines: set[int] | None = None,
     total_lines: int = 0,
+    functions: tuple[FunctionComplexity, ...] = _ONE_FUNCTION,
 ) -> FileContext:
     return FileContext(
         file_path=path,
@@ -38,6 +48,7 @@ def _ctx(
         branch_coverage_pct=branch_cov,
         covered_lines=covered_lines or set(),
         total_coverable_lines=total_lines,
+        all_functions=functions,
     )
 
 
@@ -100,6 +111,28 @@ def test_untested_hotspot_skips_when_paired_test_present() -> None:
         git_meta={"commit_count_90d": 12, "is_hotspot": True},
         dependents=6,
         has_test_file=True,
+    )
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
+@pytest.mark.parametrize(
+    ("path", "functions"),
+    [
+        # Types only: interfaces and aliases, no function to call.
+        ("src/types/router.types.ts", ()),
+        ("src/settings.py", ()),
+        # Build/tool configuration and declaration files, even with a function in them.
+        ("vite.config.ts", _ONE_FUNCTION),
+        ("src/api.d.ts", _ONE_FUNCTION),
+        ("config/app.yaml", ()),
+    ],
+)
+def test_untested_hotspot_skips_files_with_nothing_to_test(path, functions) -> None:
+    ctx = _ctx(
+        path=path,
+        git_meta={"is_hotspot": True},
+        dependents=10,
+        functions=functions,
     )
     assert UntestedHotspotDetector().detect(ctx) == []
 

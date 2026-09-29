@@ -343,17 +343,32 @@ def files_with_paired_tests(
     Otherwise the name is a collision - ``distill/test_engine.py`` tests the
     distill engine, not ``health/engine.py`` - and does not pair.
 
-    One hop only, and a file-level "some test imports this", never a quantity.
-    The reach walk above stays call-graph-only; pairing is the looser question
-    "does this file have a test", and against this repository's stored line
-    coverage direct-import pairing finds 71.6% of covered files at 98.9%
-    precision where names alone found 34.6% at 100%.
+    One hop, plus one more through a re-export barrel: a test importing a
+    package's ``index.ts`` or ``__init__.py`` pairs the files that barrel
+    imports, since that is how a package's tests reach its modules. A
+    file-level "some test imports this", never a quantity. The reach walk
+    above stays call-graph-only; pairing is the looser question "does this
+    file have a test", and against this repository's stored line coverage
+    direct-import pairing finds 71.6% of covered files at 98.9% precision
+    where names alone found 34.6% at 100%.
     """
+    barrel_deps: dict[str, set[str]] = {}
+
+    def imports_of(test: str) -> set[str]:
+        direct = _dependencies_of(graph, test)
+        through: set[str] = set()
+        for mid in direct:
+            if PurePosixPath(mid).name in BARREL_FILENAMES:
+                if mid not in barrel_deps:
+                    barrel_deps[mid] = _dependencies_of(graph, mid)
+                through |= barrel_deps[mid]
+        return direct | through
+
     paired: set[str] = set()
     deps: dict[str, set[str]] = {}
     if graph is not None:
         for test in test_files:
-            deps[test] = _dependencies_of(graph, test)
+            deps[test] = imports_of(test)
             paired.update(deps[test])
     paired &= set(paths)
 
@@ -364,13 +379,8 @@ def files_with_paired_tests(
     def named_pair_holds(test: str, path: str) -> bool:
         if graph is None:
             return True
-        imported = deps[test] if test in deps else _dependencies_of(graph, test)
-        if not imported or path in imported:
-            return True
-        return any(
-            PurePosixPath(mid).name in BARREL_FILENAMES and path in _dependencies_of(graph, mid)
-            for mid in imported
-        )
+        imported = deps[test] if test in deps else imports_of(test)
+        return not imported or path in imported
 
     for path in paths:
         if path in paired:
