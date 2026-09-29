@@ -2622,3 +2622,21 @@ async def test_the_ranked_findings_leave_performance_out_but_asking_returns_it(
 
     asked = await get_health(include=["performance"], only=["top_findings"])
     assert any(f["dimension"] == "performance" for f in asked["top_findings"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets", [["does/not/exist.py"], ["src/db/models.py"]])
+async def test_a_targeted_read_returns_its_connection(setup_mcp, health_data, factory, targets):
+    """The analysis meta used to query a closed session, checking out a connection
+    nothing returned. A garbage collection then dropped it, and on the one-connection
+    test pool that dropped the whole in-memory database mid-test."""
+    import gc
+
+    from sqlalchemy import text
+
+    from repowise.server.mcp_server import get_health
+
+    await get_health(targets=targets, only=["metrics"])
+    gc.collect()
+    async with factory() as s:
+        assert (await s.execute(text("SELECT count(*) FROM repositories"))).scalar() == 1

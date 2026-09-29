@@ -211,26 +211,27 @@ async def get_health(
         data = await load_health_data(
             session, repository, reference_repository, ctx.path, req
         )
+        # The rest stays inside the session: the analysis meta queries it, and a
+        # query on a closed session checks out a connection nothing returns.
+        if data.pop.scoped:
+            result, mode_totals = build_targeted(data, req, pager, ctx.path)
+        else:
+            result, mode_totals = build_dashboard(data, req, pager)
+        add_optional_blocks(result, data, req, pager, str(ctx.path))
+        result = _finish(result, data, req, pager, mode_totals)
 
-    if data.pop.scoped:
-        result, mode_totals = build_targeted(data, req, pager, ctx.path)
-    else:
-        result, mode_totals = build_dashboard(data, req, pager)
-    add_optional_blocks(result, data, req, pager, str(ctx.path))
-    result = _finish(result, data, req, pager, mode_totals)
-
-    # Targeted mode scopes the stale signal to the asked-about files.
-    result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
-    if data.pop.scoped:
-        # Analysis freshness is repo-wide, so both modes report the same status.
-        await _attach_repository_analysis_meta(session, repository, result["_meta"])
-    else:
-        _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
-    pager.report_omissions(result, omission_collector, reference_repository)
-    omission_collector.attach(result)
-    # Server-side wall clock, as ``get_context`` reports.
-    result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
-    return result
+        # Targeted mode scopes the stale signal to the asked-about files.
+        result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
+        if data.pop.scoped:
+            # Analysis freshness is repo-wide, so both modes report the same status.
+            await _attach_repository_analysis_meta(session, repository, result["_meta"])
+        else:
+            _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
+        pager.report_omissions(result, omission_collector, reference_repository)
+        omission_collector.attach(result)
+        # Server-side wall clock, as ``get_context`` reports.
+        result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
+        return result
 
 
 def _finish(
