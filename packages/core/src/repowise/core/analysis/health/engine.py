@@ -119,6 +119,10 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v36: files a package manifest declares (package.json ``bin``, a built
+# ``main`` mapped to its source, a distribution's package ``__init__``) are
+# entry points, so perf findings reachable from them are marked so.
+#
 # v35: the update's full re-score reads every stored git column, so the
 # percentile gates of ``prior_defect`` and ``co_change_scatter`` see their
 # inputs, and it keeps the stored blame-marker findings it cannot recompute.

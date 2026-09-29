@@ -44,7 +44,6 @@ class TestParityGoldens:
                 "cli",
                 "__main__",
                 "bootstrap",
-                "entry",
             }
         ) == _ENTRY_FILENAME_STEMS
 
@@ -337,7 +336,8 @@ class TestDriftManifests:
         # hard-coded frozenset (run.py/server.py extras were redundant with the
         # run/server stems). The traverser now flags on this *unioned* with
         # conventional_entry_stems(); that union is pinned in
-        # tests/unit/generation/test_entry_points.py.
+        # tests/unit/generation/test_entry_points.py. ``entry`` moved here from
+        # the ranking stems, so the union (the traverser's flag) is unchanged.
         assert REGISTRY.entry_flag_stems() == frozenset(
-            {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
+            {"main", "index", "app", "run", "server", "start", "entry", "wsgi", "asgi"}
         )

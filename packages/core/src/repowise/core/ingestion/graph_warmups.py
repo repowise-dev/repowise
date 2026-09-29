@@ -321,6 +321,12 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     to. Without this, files reachable only through the package boundary
     (downstream npm consumers) read as ``in_degree==0`` and ship as
     unreachable findings.
+
+    Files a ``package.json`` declares as where it starts (``bin``, ``main``,
+    ``exports["."]``) are stamped on the parsed ``FileInfo`` too, as
+    manifest entries: they are what the entry-point list ranks first. The
+    other sources here stay graph-only, since they keep code alive without
+    being anywhere a reader enters.
     """
     from .resolvers.ts_workspace import (
         find_mdx_import_targets,
@@ -333,7 +339,13 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     graph = getattr(ctx, "graph", None)
     if graph is None:
         return
-    entry_paths: set[str] = set(index.exports_entry_paths)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path in index.manifest_entry_paths:
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf, "file_info", None) is not None:
+            pf.file_info.is_entry_point = True
+            pf.file_info.is_manifest_entry = True
+    entry_paths: set[str] = set(index.exports_entry_paths) | index.manifest_entry_paths
     # MDX-only consumers (docs sites that import TSX components into
     # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
     # invisible to the TS parser, both real entry points.

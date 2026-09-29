@@ -157,6 +157,10 @@ class FileInfo:
     is_config: bool
     is_api_contract: bool
     is_entry_point: bool
+    # Named by a package manifest (package.json bin/main/exports["."],
+    # pyproject scripts, a distribution's package ``__init__``): the strongest
+    # entry evidence, ranked above every filename guess.
+    is_manifest_entry: bool = False
 
 
 @dataclass

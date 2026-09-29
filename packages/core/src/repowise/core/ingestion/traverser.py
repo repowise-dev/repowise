@@ -416,6 +416,10 @@ class FileTraverser:
     def _distributions(self) -> frozenset[str]:
         return self._console_script_tables().distributions
 
+    @property
+    def _distribution_inits(self) -> frozenset[str]:
+        return self._console_script_tables().package_inits
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -686,6 +690,10 @@ class FileTraverser:
         if language is None or self._skip_generated(abs_path, rel_str, language):
             return None
 
+        manifest_entry = (
+            _is_console_script_target(rel_str, self._console_script_modules)
+            or rel_str in self._distribution_inits
+        )
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -696,9 +704,8 @@ class FileTraverser:
             is_test=is_test_related_path(rel_str, language),
             is_config=_is_config_file(language),
             is_api_contract=_is_api_contract(abs_path, language),
-            is_entry_point=_is_entry_point(
-                rel_str, abs_path, language, self._console_script_modules
-            ),
+            is_entry_point=_is_entry_point(rel_str, abs_path, language) or manifest_entry,
+            is_manifest_entry=manifest_entry,
         )
 
     # ------------------------------------------------------------------
@@ -964,18 +971,14 @@ def _stem_is_entry_point(abs_path: Path) -> bool:
     return stem in _ENTRY_POINT_STEMS
 
 
-def _is_entry_point(
-    rel_str: str,
-    abs_path: Path,
-    language: str,
-    console_script_modules: frozenset[str],
-) -> bool:
-    """Whether this file gets ``FileInfo.is_entry_point``.
+def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
+    """Whether this file's *name* earns ``FileInfo.is_entry_point``.
 
     A conventional filename or stem is a guess, so it passes through
     ``not_an_execution_start``, the same correction the wiki's orientation list
-    uses. A ``[project.scripts]`` target is named evidence, so it is checked
-    outside that gate: this flag is what exempts a file from dead-code detection.
+    uses. A manifest-named file (a ``[project.scripts]`` target) is evidence,
+    so the caller ORs it in outside that gate: this flag is what exempts a
+    file from dead-code detection.
     """
     filename = abs_path.name
     named_entry = (
@@ -983,9 +986,7 @@ def _is_entry_point(
         or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
         or _stem_is_entry_point(abs_path)
     )
-    if named_entry and not not_an_execution_start(rel_str, language):
-        return True
-    return _is_console_script_target(rel_str, console_script_modules)
+    return named_entry and not not_an_execution_start(rel_str, language)
 
 
 class ConsoleScriptTables(NamedTuple):
@@ -997,6 +998,8 @@ class ConsoleScriptTables(NamedTuple):
     """Dotted module targets, used for entry-point detection."""
     distributions: frozenset[str]
     """``[project].name`` values — the distributions this repo installs as."""
+    package_inits: frozenset[str]
+    """Repo-relative ``__init__.py`` of each distribution's own import package."""
 
 
 def _collect_console_scripts(
@@ -1015,12 +1018,13 @@ def _collect_console_scripts(
     names: set[str] = set()
     modules: set[str] = set()
     distributions: set[str] = set()
+    inits: set[str] = set()
     try:
         config_files = list(
             iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
         )
     except OSError:
-        return ConsoleScriptTables(frozenset(), frozenset(), frozenset())
+        return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         project = _pyproject_project_table(config_file)
         if project is None:
@@ -1028,8 +1032,27 @@ def _collect_console_scripts(
         dist = project.get("name")
         if isinstance(dist, str) and dist.strip():
             distributions.add(dist.strip())
+            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                inits.add(init)
         _add_script_targets(project, names, modules)
-    return ConsoleScriptTables(frozenset(names), frozenset(modules), frozenset(distributions))
+    return ConsoleScriptTables(
+        frozenset(names), frozenset(modules), frozenset(distributions), frozenset(inits)
+    )
+
+
+def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
+    """The distribution's import package ``__init__.py``, flat or ``src/`` layout.
+
+    Ceiling: the import name is the normalised distribution name, so a package
+    that installs under another name (``[tool.setuptools] packages``, hatch
+    ``packages``) is not found; reading those tables is the upgrade path.
+    """
+    name = re.sub(r"[-.]+", "_", dist.strip()).lower()
+    inits = (base / name / "__init__.py", base / "src" / name / "__init__.py")
+    init = next((path for path in inits if path.is_file()), None)
+    if init is None or not init.is_relative_to(repo_root):
+        return None
+    return init.relative_to(repo_root).as_posix()
 
 
 def _pyproject_project_table(config_file: Path) -> dict | None:
