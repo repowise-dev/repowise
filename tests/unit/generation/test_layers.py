@@ -202,8 +202,12 @@ def test_infer_layer_dotnet_test_project_dirs():
     # Sibling Foo.Tests/ projects are test roots for everything inside.
     assert infer_layer("Billing.Tests/InvoiceFixture.cs") == "Test"
     assert infer_layer("src/Billing.Tests/data/sample.json") == "Test"
-    # Case matters: a lowercase "billing.tests" dir is not the convention.
-    assert infer_layer("billing.tests/notes.md") != "Test"
+    # Case matters for the .NET convention: a lowercase "billing.specs" dir is
+    # an ambiguous spec folder, not a test project. (A lowercase
+    # "billing.tests" still is a test tree, because "tests" heads the name.)
+    assert infer_layer("Billing.Specs/notes.md") == "Test"
+    assert infer_layer("billing.specs/notes.md") != "Test"
+    assert infer_layer("billing.tests/notes.md") == "Test"
 
 
 # ---------------------------------------------------------------------------

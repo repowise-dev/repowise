@@ -103,7 +103,14 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: a multi-item ``with`` header is classified on its oracle rather
+# Current stamp: which files are tests changed (``repowise.core.test_paths``).
+# Compound directories headed by a test word (``e2e-tests/``, ``pkg_tests/``,
+# ``integration_test/``) became test trees, and ``test``/``.test.`` filenames
+# stopped counting on configuration (``tsconfig.test.json``, a workflow's
+# ``*.test.yml``) and on a bare non-Python ``test.ts``. Every biomarker that
+# exempts or targets tests reads that flag, so stored findings move.
+#
+# v35 (also): a multi-item ``with`` header is classified on its oracle rather
 # than on whichever context manager the author happened to type first.
 # ``assert_call_kinds`` is the language's plain call node, not an assertion
 # shape, so the header scan returned the first call it met and classified only
@@ -321,7 +328,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 35
+HEALTH_ANALYZER_VERSION = 36
 
 
 def walked_functions(

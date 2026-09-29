@@ -92,6 +92,71 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("app/fixtures/premier_league.py", None, ""),
     ("src/testdata_loader.py", None, ""),
     ("tests/testdata/golden.json", None, "support"),
+    # compound directory names: a segment's words split on - _ . and its last
+    # word, the head of the compound, says what the directory holds
+    ("e2e-tests/pages/login.ts", None, "test"),
+    ("e2e-tests/playwright.config.ts", None, "test"),
+    ("integration_test/driver.dart", None, "test"),  # flutter
+    ("mylib/mylib_tests/core/__init__.py", None, "test"),
+    ("extensions/api-tests/package.json", None, "test"),
+    ("extensions/api-tests/workspace/image.png", None, "test"),
+    ("apps/client-e2e/src/app.cy.ts", None, "test"),
+    ("apps/client-e2e/src/support/commands.ts", None, "support"),
+    ("mylib/unit.tests/run.py", None, "test"),
+    # ...so a word that merely contains a test token, or a compound that is
+    # *about* testing, is not a test tree
+    ("src/latest-release/api.py", None, ""),
+    ("contest_results/main.py", None, ""),
+    ("docs/test-api/class-test.md", None, ""),
+    ("docs/test-tools/index.md", None, ""),
+    ("src/generators/e2e-project/index.ts", None, ""),
+    # singular `test` heads a compound naming one thing - a generator, an
+    # executor, a package, an example project - in either spelling
+    ("src/generators/component-test/index.ts", None, ""),
+    ("src/executors/unit-test/schema.json", None, ""),
+    ("packages/runner-test/cli.js", None, ""),
+    ("examples/assets_smoke_test/setup.py", None, ""),
+    ("third_party/packages/svg_test/lib/src/finders.dart", None, ""),
+    ("example/integration_test/app_test.dart", None, "test"),
+    # a library for writing tests is that library's production code
+    ("packages/testing-library/src/index.ts", None, ""),
+    ("src/testing_library/render.py", None, ""),
+    ("src/test-utils/render.ts", None, ""),
+    # `test-data` / `test_data` are golden data, the same as Go's `testdata`
+    ("test-data/users.json", None, "support"),
+    ("pkg/test_data/input.csv", None, "support"),
+    ("tests/test-data/expected.yaml", None, "support"),
+    # `spec` still needs corroboration when it heads a compound
+    ("openapi-specs/users.yaml", None, ""),
+    ("acceptance-specs/users.rb", "ruby", "test"),
+    # filename rules are source rules: configuration that shares the word is
+    # not a test
+    ("tsconfig.test.json", None, ""),
+    ("packages/app/tsconfig.spec.json", None, ""),
+    ("config/app.test.yaml", None, ""),
+    ("resources/rpm/app.spec.template", None, ""),
+    ("src/generators/files/__name__.spec.ts__tmpl__", None, ""),
+    ("conf/app_template/tests.py-tpl", None, ""),
+    # ...except snapshot output, which Jest/Vitest's `__snapshots__` owns
+    ("src/components/__snapshots__/Button.test.tsx.snap", None, "support"),
+    # tsd / vitest type tests
+    ("src/types/index.test-d.ts", None, "test"),
+    # a bare `test`/`tests` stem is a suite in Python and Rust only; `test.ts` in an
+    # examples folder is an example, and `scripts/test.sh` runs the suite
+    ("examples/basic/src/test.ts", None, ""),
+    ("src/common/test.ts", None, ""),
+    ("scripts/test.sh", None, ""),
+    ("examples/basic/tests/test.ts", None, "test"),
+    ("scripts/test.py", None, "test"),
+    ("crates/ide/src/tests.rs", None, "test"),
+    ("lib/plug/test.ex", None, ""),
+    # repository metadata is never test material, whatever it is named
+    (".github/workflows/ci.test.yml", None, ""),
+    (".github/workflows/tests.yml", None, ""),
+    (".github/skills/unit-tests/SKILL.md", None, ""),
+    (".github/workflows/data/test_settings.py.tpl", None, ""),
+    # ...but a test of an action's own script is still a test
+    (".github/actions/notify/notify.test.mjs", None, "test"),
 )
 
 

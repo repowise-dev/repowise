@@ -216,7 +216,9 @@ def _slugify(text: str) -> str:
 # macros reach the export instead of being dropped.
 # "4": `framework_binds` joined the map, so a container-wired symbol pair
 # reaches the export instead of being dropped.
-KG_BUILDER_VERSION = "4"
+# "5": which files are tests changed (``repowise.core.test_paths``), moving the
+# ``test`` tag on file nodes without moving a node or edge count.
+KG_BUILDER_VERSION = "5"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
