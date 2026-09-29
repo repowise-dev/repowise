@@ -119,3 +119,18 @@ def test_no_declaration_keeps_every_root_at_any_depth(tmp_path: Path) -> None:
 
     # Unnamed manifests fall back to the directory name.
     assert _packages(tmp_path) == {"a/b/c": ("deep", False), "svc": ("svc", False)}
+
+
+def test_empty_declaration_still_governs_its_kind(tmp_path: Path) -> None:
+    # A root-only pnpm workspace and a uv workspace whose globs match nothing
+    # are still declarations: nested manifests of their kinds are not members.
+    _write(tmp_path, "package.json", json.dumps({"name": "root"}))
+    _write(tmp_path, "pnpm-workspace.yaml", "onlyBuiltDependencies:\n  - esbuild\n")
+    _npm(tmp_path, "scripts/tool", "tool")
+    _write(tmp_path, "pyproject.toml", "[tool.uv.workspace]\nmembers = ['libs/*']\n")
+    _write(tmp_path, "scratch/pyproject.toml", "[project]\nname = 'scratch'\n")
+    # A Cargo workspace table with no members list leaves crates undeclared.
+    _write(tmp_path, "Cargo.toml", "[workspace]\n")
+    _write(tmp_path, "crates/cli/Cargo.toml", "[package]\nname = 'acme-cli'\n")
+
+    assert _packages(tmp_path) == {"crates/cli": ("acme-cli", False)}

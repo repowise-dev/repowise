@@ -61,28 +61,32 @@ def _toml(path: Path) -> dict:
         return {}
 
 
-def _toml_workspace(repo_root: Path, manifest: str, *table: str) -> set[str]:
-    """``members``/``exclude`` of a TOML workspace table (Cargo and uv share the shape)."""
+def _toml_workspace(repo_root: Path, manifest: str, *table: str) -> set[str] | None:
+    """``members``/``exclude`` of a TOML workspace table (Cargo and uv share the shape).
+
+    None without a ``members`` list: Cargo then makes the root's path
+    dependencies members implicitly, which this does not read.
+    """
     data: object = _toml(repo_root / manifest)
     for key in table:
         data = data.get(key) if isinstance(data, dict) else None
     if not isinstance(data, dict):
-        return set()
+        return None
     members, exclude = data.get("members"), data.get("exclude")
     if not isinstance(members, list):
-        return set()
+        return None
     return _globbed(repo_root, members, exclude if isinstance(exclude, list) else [])
 
 
 _GO_WORK_USE = re.compile(r"^\s*use\s*(?:\(([^)]*)\)|(\S+))", re.MULTILINE)
 
 
-def _go_work_members(repo_root: Path) -> set[str]:
+def _go_work_members(repo_root: Path) -> set[str] | None:
     """Directories ``go.work`` pulls in with ``use`` (single or block form)."""
     try:
         text = (repo_root / "go.work").read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return set()
+        return None
     text = re.sub(r"//[^\n]*", "", text)
     out: set[str] = set()
     for block, single in _GO_WORK_USE.findall(text):
@@ -94,15 +98,22 @@ def _go_work_members(repo_root: Path) -> set[str]:
 
 
 def declared_workspace_members(repo_root: Path) -> dict[str, set[str]]:
-    """``{manifest filename: member dirs}`` for every non-empty root declaration."""
+    """``{manifest filename: member dirs}`` for every root declaration.
+
+    A declaration whose members expand to nothing (a root-only pnpm workspace,
+    ``members = []``) is kept with an empty set: it still says no other
+    manifest of its kind is a member.
+    """
     js = _read_workspace_declaration(repo_root)
     found = {
-        "package.json": _globbed(repo_root, list(js.includes), list(js.excludes)),
+        "package.json": (
+            None if js.is_empty else _globbed(repo_root, list(js.includes), list(js.excludes))
+        ),
         "Cargo.toml": _toml_workspace(repo_root, "Cargo.toml", "workspace"),
         "pyproject.toml": _toml_workspace(repo_root, "pyproject.toml", "tool", "uv", "workspace"),
         "go.mod": _go_work_members(repo_root),
     }
-    return {name: dirs for name, dirs in found.items() if dirs}
+    return {name: dirs for name, dirs in found.items() if dirs is not None}
 
 
 def manifest_package_name(manifest: Path) -> str | None:
