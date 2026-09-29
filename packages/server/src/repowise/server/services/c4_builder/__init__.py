@@ -173,11 +173,12 @@ async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     )
 
 
-async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
+async def build_l2(
+    session: AsyncSession, repo_id: str, *, include_co_changes: bool = False
+) -> C4L2:
+    """Container view; ``include_co_changes`` overlays co-change relations."""
     repo = await load_repo(session, repo_id)
-    containers = await detect_containers(
-        session, repo_id, root_name=repo.name if repo else None
-    )
+    containers = await _detect_containers(session, repo_id, repo)
     externals, _ = await _external_views(session, repo_id)
 
     file_to_container = await _file_to_container_map(session, repo_id, containers)
@@ -192,6 +193,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
         repo_id,
         file_to_box=file_to_container,
         file_to_external=file_to_external,
+        include_co_changes=include_co_changes,
     )
 
     # Only surface externals actually depended on by at least one container.
@@ -203,9 +205,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
 async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str) -> C4L3 | None:
     """Return L3 view for one container, or ``None`` if it doesn't exist."""
     repo = await load_repo(session, repo_id)
-    containers = await detect_containers(
-        session, repo_id, root_name=repo.name if repo else None
-    )
+    containers = await _detect_containers(session, repo_id, repo)
     container = next((c for c in containers if c.id == container_id_value), None)
     if container is None:
         return None
@@ -280,7 +280,7 @@ async def build_model(
     """
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
-    containers = await detect_containers(session, repo_id, root_name=repo.name if repo else None)
+    containers = await _detect_containers(session, repo_id, repo)
     externals_all, _ = await _external_views(session, repo_id)
 
     people, actor_relations = await _actors_for(session, repo_id, system)
@@ -431,6 +431,17 @@ async def _tour_steps(session: AsyncSession, repo_id: str) -> list[TourStep]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _detect_containers(
+    session: AsyncSession, repo_id: str, repo: Repository | None
+) -> list[Container]:
+    return await detect_containers(
+        session,
+        repo_id,
+        root_name=repo.name if repo else None,
+        local_path=repo.local_path if repo else None,
+    )
 
 
 async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str]:

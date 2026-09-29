@@ -14,15 +14,19 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Literal
 
+from .test_paths import is_test_related_path
+
 __all__ = [
     "CONFIG_EXTENSIONS",
     "DOC_EXTENSIONS",
     "FilePopulation",
     "classification_token",
     "file_population",
+    "is_config_path",
     "is_doc_or_config_path",
     "is_example_path",
     "is_support_path",
+    "is_test_or_example_path",
 ]
 
 
@@ -72,6 +76,15 @@ def is_example_path(path: str) -> bool:
     return _has_dir_token(path, EXAMPLE_DIR_TOKENS)
 
 
+def is_test_or_example_path(path: str) -> bool:
+    """Whether *path* sits in test material or example/benchmark code.
+
+    A manifest here marks a fixture or sample project, not one of the repo's
+    packages.
+    """
+    return is_test_related_path(path) or is_example_path(path)
+
+
 # Shared with the knowledge graph's node classifier.
 CONFIG_EXTENSIONS = frozenset(
     {
@@ -94,6 +107,11 @@ def classification_token(path: str) -> str:
     """
     parsed = PurePosixPath(path)
     return (parsed.suffix or parsed.name).lower()
+
+
+def is_config_path(path: str) -> bool:
+    """Whether *path* is a configuration file."""
+    return classification_token(path) in CONFIG_EXTENSIONS
 
 
 def is_doc_or_config_path(path: str) -> bool:

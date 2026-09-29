@@ -826,7 +826,7 @@ class FileTraverser:
         declared member (a template or fixture shipped with that package).
         Undeclared roots of kinds no declaration covers are kept.
         """
-        from ..support_paths import is_example_path
+        from ..support_paths import is_test_or_example_path
         from .workspace_members import declared_workspace_members, manifest_package_name
 
         packages: list[PackageInfo] = []
@@ -838,8 +838,7 @@ class FileTraverser:
         for rel_pkg, found in sorted(self.package_manifests().items()):
             pkg_dir = self.repo_root / rel_pkg
             manifests = sorted(found)
-            probe = f"{rel_pkg}/{manifests[0]}"
-            if is_test_related_path(probe) or is_example_path(probe):
+            if is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
                 continue
             declaring = [m for m in manifests if rel_pkg in members.get(m, ())]
             if not declaring and (
