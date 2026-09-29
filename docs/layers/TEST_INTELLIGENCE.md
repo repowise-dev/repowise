@@ -353,31 +353,17 @@ changes the verdict.
 ### Project coverage and coverage outside the change
 
 Patch coverage cannot see a change that deletes a test, or removes a code path
-that ran other files. `--base-report PATH` (repeatable, read like `--report`)
-takes a report measured at the change's base commit and adds `project` to the
-output: project coverage at the base and the head (`base`, `head`, `delta_pct`
-in points), gated by `--max-drop P` (or `coverage.max_drop`) with no
-small-change tolerance, and `outside_change`, the files whose coverage changed
-on lines the change did not touch. Two measurements compare only when they
-read the same number of reports of each format with the same
-`coverage.ignore` and neither mapped fewer than half its files; each ingest
-records that scope, so the history basis can tell too. Without a base report,
-an index's ingest at the base commit gives the totals alone (`basis: history`,
-`outside_change: null`), which is also what `get_change_risk` and the REST
-endpoint report, never gated.
-
-In `outside_change`, base lines are moved to the head through the diff and
-renames are followed. Files whose lines do not line up (a base report measured
-at another commit) are left out, and `outside_change_note` says how many.
-Each file that lost coverage carries `causes`, the changed files that explain
-it: a deleted or modified test that reached it (`per_test` from the per-test
-map, else `graph`), a changed dependent with a call or import edge into it
-(`dependent_changed`, basis `graph`), or a changed test named for the file
-(`name`: without an index, where the index names no test, and always for a
-deleted test). `causes` is `null` when not assessed and empty when nothing in
-the change explains the loss; it never changes the verdict. Recipes for keeping
-the base report in CI are in
-[Project coverage and coverage outside the change](../start/CI.md#project-coverage-and-coverage-outside-the-change).
+that ran other files. `--base-report PATH` takes a report measured at the
+change's base commit and adds `project`: coverage at the base and the head,
+gated by `--max-drop P` (or `coverage.max_drop`), and `outside_change`, the
+files whose coverage changed on lines the change did not touch, each loss with
+the changed files that explain it. Without a base report, an index's ingest at
+the base commit gives the totals alone, as `get_change_risk` and the REST
+endpoint do (never gated). See
+[Project coverage and coverage outside the change](../start/CI.md#project-coverage-and-coverage-outside-the-change)
+for recipes and the
+[`coverage check` reference](../reference/CLI_REFERENCE.md#repowise-coverage-check-revspec)
+for the fields.
 
 A coverage.py `.coverage` database is not a text report: export it with
 `coverage lcov` or `coverage xml` first.

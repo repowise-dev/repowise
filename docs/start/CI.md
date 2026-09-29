@@ -117,7 +117,7 @@ release the action installs.
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
 | `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
 | `coverage-fail-under-risky` | `coverage.fail_under_risky` | Minimum patch coverage percent over risky files only: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. |
-| `coverage-base-report` | none | Reports measured at the change's base commit, one per line like `coverage-report`: adds project coverage and the files whose coverage changed outside the change. See [Project coverage and coverage outside the change](#project-coverage-and-coverage-outside-the-change). |
+| `coverage-base-report` | none | Reports measured at the change's base commit, one per line. See [Project coverage](#project-coverage-and-coverage-outside-the-change). |
 | `coverage-max-drop` | `coverage.max_drop` | Most project coverage may fall from the base, in percentage points. |
 | `doc-drift-baseline` | none | Committed baseline file. |
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
@@ -446,114 +446,63 @@ failed: that failure is reported.
 
 ### Project coverage and coverage outside the change
 
-Patch coverage judges only the lines a change touched. It cannot see a change
-that deletes a test file, or removes a code path that ran other files: their
-lines lose coverage, but none of them changed. Give the check a report measured
-at the change's base commit and it adds two views:
-
-- **Project coverage**: the whole report's covered lines over its coverable
-  lines at the base and at the head, and the difference in points. `--max-drop
-  P` (the action's `coverage-max-drop`, or `coverage.max_drop`) fails the check
-  when project coverage falls more than `P` points. The small-change tolerance
-  does not apply: a one-line change can still delete the test that ran half
-  the project. The line reads `Project coverage 81.2% · down 0.30 points from
-  81.5% at a1b2c3d · within the 0.5-point max-drop gate`; the short commit is
-  the base it was compared with.
-- **Coverage outside the change**: each file whose coverage changed on lines
-  the change did not touch. Every base line is moved to the head through the
-  diff, lines the change touched are left to patch coverage, and a file the
-  base report named but the head's no longer does is listed as "not measured".
-  Each file that lost coverage names what in the change explains it when
-  something does: a test file the change deleted or modified that reached it,
-  measured from the per-test map or inferred from the index's graph, or a
-  changed dependent: a changed file that calls or imports it. A changed test
-  named for the file (`tests/test_auth.py` for `auth.py`) is named too, marked
-  "by name": without an index, and always for a deleted test, which an index
-  built after the change no longer knows. The causes are advice and never
-  change the verdict.
+Patch coverage cannot see a change that deletes a test or a code path other
+files relied on. Given a report measured at the change's base commit, the check
+adds project coverage at the base and the head, and lists files whose coverage
+changed outside the change with the changed test or dependent that explains it.
 
 ```bash
 repowise coverage check origin/main...HEAD --report coverage/lcov.info \
   --base-report base/lcov.info --max-drop 0.5
 ```
 
-The base report must be measured at the change's base commit (the merge-base
-for `A...B`, `A` for `A..B`): its line numbers are mapped through the diff from
-that commit, and a report from any other commit maps onto the wrong lines. The
-check notices: a file whose untouched lines mostly land where the head report
-counts no line is left out of the list, and when most files are, the list is
-dropped, with one line saying "the base report does not line up with a1b2c3d
-in N files; measure it at the base commit". The two measurements must also be
-comparable: the same number of reports of each format, the same
-`coverage.ignore`, and neither mapping fewer than half its files. When they
-are not, the check exits `2` naming the difference rather than compare them.
+- `--max-drop P` fails when project coverage falls more than `P` points. The
+  small-change tolerance does not apply.
+- The base report must be measured at the merge-base (`A` for `A..B`). Files
+  whose lines do not line up are left out, and a note says how many.
+- Both sides must be measured the same way: the same reports of each format,
+  the same `coverage.ignore`, neither mapping fewer than half its files.
+- A base the check cannot use exits `2` under the `--max-drop` or
+  `--base-report` flag (the action's inputs), and is a note with exit `0` when
+  the gate comes from `coverage.max_drop` alone.
 
-Without `--base-report`, an index answers the project figure alone from the
-coverage ingested at the base commit, if there was one; stored history keeps
-repo-wide figures only, so it lists no files. The same figure appears in the
-agent, REST and editor views as `project`, never gated there. Nothing is read
-unless you ask: a `--base-report`, or a max-drop gate.
-
-A base the check cannot use (none found, not comparable, or no coverable line
-on one side) is judged by who asked. The `--max-drop` or `--base-report` flag
-(the action's inputs) makes it exit `2`, since a gate you set cannot pass
-unjudged. `coverage.max_drop` in config makes it a note and exit `0`, so a
-config shared by every job does not break the jobs that have no base report.
-Either way, a failure another gate already found is reported as the failure.
-In CI, prefer the action input, set only when the base report was found, as in
-the recipe below.
-
-On GitHub Actions, the default branch's job saves its report under its commit,
-and a pull request restores the one for its merge-base:
+On GitHub Actions, in a job that runs on pushes to the default branch and on
+pull requests, checked out with `fetch-depth: 0`:
 
 ```yaml
-on:
-  push:
-    branches: [main]
-  pull_request:
-jobs:
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
-      - if: github.event_name == 'push'
-        run: mkdir -p base-coverage && cp coverage/lcov.info base-coverage/
-      - if: github.event_name == 'push'
-        uses: actions/cache/save@v4
-        with: {path: base-coverage, key: "coverage-${{ github.sha }}"}
-      - if: github.event_name == 'pull_request'
-        id: merge-base
-        run: echo "sha=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" >> "$GITHUB_OUTPUT"
-      - if: github.event_name == 'pull_request'
-        id: base
-        uses: actions/cache/restore@v4
-        with: {path: base-coverage, key: "coverage-${{ steps.merge-base.outputs.sha }}"}
-      - if: github.event_name == 'pull_request'
-        uses: repowise-dev/repowise@main
-        with:
-          checks: coverage
-          coverage-report: coverage/lcov.info
-          # Only when the base's report was found; a missing file exits 2.
-          coverage-base-report: ${{ steps.base.outputs.cache-hit == 'true' && 'base-coverage/lcov.info' || '' }}
-          coverage-max-drop: ${{ steps.base.outputs.cache-hit == 'true' && '0.5' || '' }}
+- run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
+- if: github.event_name == 'push'
+  run: mkdir -p base-coverage && cp coverage/lcov.info base-coverage/
+- if: github.event_name == 'push'
+  uses: actions/cache/save@v4
+  with: {path: base-coverage, key: "coverage-${{ github.sha }}"}
+- if: github.event_name == 'pull_request'
+  id: merge-base
+  run: echo "sha=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" >> "$GITHUB_OUTPUT"
+- if: github.event_name == 'pull_request'
+  id: base
+  uses: actions/cache/restore@v4
+  with: {path: base-coverage, key: "coverage-${{ steps.merge-base.outputs.sha }}"}
+- if: github.event_name == 'pull_request'
+  uses: repowise-dev/repowise@main
+  with:
+    checks: coverage
+    coverage-report: coverage/lcov.info
+    # Only when the base's report was found; a missing file exits 2.
+    coverage-base-report: ${{ steps.base.outputs.cache-hit == 'true' && 'base-coverage/lcov.info' || '' }}
+    coverage-max-drop: ${{ steps.base.outputs.cache-hit == 'true' && '0.5' || '' }}
 ```
 
-On GitLab, the default branch's test job records its commit beside the report,
-and the merge request job downloads that job's latest artifact through the job
-artifacts API, using it only when it was measured at the change's merge-base.
-That holds when the target branch's latest pipeline ran at the merge-base: a
-merge request rebased on the target, or merged-results pipelines. Otherwise
-the check runs without a base and says so:
+On GitLab, the merge request job uses the target branch's latest `test`
+artifact only when it was measured at the merge-base (a rebased merge request,
+or merged-results pipelines); otherwise the check runs without a base:
 
 ```yaml
 test:
   script:
     - pytest --cov=src --cov-report=lcov:coverage/lcov.info
     - echo "$CI_COMMIT_SHA" > coverage/commit.txt
-  artifacts:
-    paths: [coverage/]
+  artifacts: {paths: [coverage/]}
 
 repowise-coverage:
   needs: [test]
@@ -587,6 +536,5 @@ repowise-coverage:
 | "The risky-file gate reads bug-fix history, and this clone is shallow." | fetch full history |
 | "Could not read the risk of N changed files, so the risky-file gate cannot run." | fetch full history, or index the repository |
 | "The max-drop gate needs coverage measured at the change's base ..." | pass `--base-report`, or ingest a report at the base commit |
-| "Project coverage cannot be compared: the base measured no coverable line." | check the base report is the full report, not an empty shard |
-| "Project coverage cannot be compared with the base: ..." | measure the base and the head the same way (same reports, same `coverage.ignore`) |
+| "Project coverage cannot be compared ..." | measure the base and the head the same way (same full reports, same `coverage.ignore`) |
 | "Base report: No report path matched a file in this repository." | the base report must name files the base commit tracked; check its prefix |
