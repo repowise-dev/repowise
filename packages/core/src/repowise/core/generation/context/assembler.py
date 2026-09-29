@@ -505,6 +505,7 @@ class ContextAssembler:
         scope: str = "",
         is_rollup: bool = False,
         child_pages: list[dict] | None = None,
+        packages: list[dict] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template."""
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
@@ -647,6 +648,7 @@ class ContextAssembler:
             scope=scope,
             is_rollup=is_rollup,
             child_pages=child_pages or [],
+            packages=packages or [],
             hotspot_count=hotspot_count,
             stable_count=stable_count,
             single_owner_files=single_owner_files,

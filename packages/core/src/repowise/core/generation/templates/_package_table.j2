@@ -1,0 +1,12 @@
+{#- One row per package a package roll-up covers, rendered from the grouping and
+    appended after the model has written the page, so no response can drop or
+    merge a package. -#}
+## Packages
+
+This page covers {{ rows | length }} sibling packages, each with its own manifest.
+
+| Package | Files |
+| --- | --- |
+{% for row in rows -%}
+| `{{ row.path }}` | {{ row.files }} |
+{% endfor -%}

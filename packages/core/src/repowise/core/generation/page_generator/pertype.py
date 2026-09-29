@@ -209,6 +209,7 @@ class PerTypeGenerationMixin:
         is_rollup: bool = False,
         child_pages: list[dict] | None = None,
         owns_files: bool = True,
+        packages: list[dict] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -225,6 +226,7 @@ class PerTypeGenerationMixin:
             scope=scope,
             is_rollup=is_rollup,
             child_pages=child_pages,
+            packages=packages,
         )
         module_git_summary = None
         if git_meta_map:
@@ -320,13 +322,21 @@ class PerTypeGenerationMixin:
             After ``_build_generated_page`` too, so the page summary is still
             drawn from the model's opening rather than from a table row.
             """
+            tables = []
+            if ctx.packages:
+                # One row per package of a roll-up, for the same reason.
+                tables.append(
+                    self._render("_package_table.j2", style_prefix=False, rows=ctx.packages)
+                )
             rows, omitted = build_concept_index(file_contexts)
-            if not rows:
-                return page
-            table = self._render(
-                "_concept_index_table.j2", style_prefix=False, rows=rows, omitted=omitted
-            )
-            page.content = f"{(page.content or '').rstrip()}\n\n{table.strip()}\n"
+            if rows:
+                tables.append(
+                    self._render(
+                        "_concept_index_table.j2", style_prefix=False, rows=rows, omitted=omitted
+                    )
+                )
+            for table in tables:
+                page.content = f"{(page.content or '').rstrip()}\n\n{table.strip()}\n"
             return page
 
         if self._config.deterministic:

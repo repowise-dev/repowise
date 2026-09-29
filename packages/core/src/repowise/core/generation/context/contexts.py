@@ -120,6 +120,8 @@ class ModulePageContext:
     is_rollup: bool = False
     # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
     child_pages: list[dict] = field(default_factory=list)
+    # Sibling packages a package roll-up covers: [{"path", "files"}].
+    packages: list[dict] = field(default_factory=list)
     # Git-derived subsystem health, aggregated over the page's member files.
     # All degrade to zero/empty when no git metadata is available, so the
     # template renders nothing rather than a wrong number.

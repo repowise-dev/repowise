@@ -293,7 +293,8 @@ def _repair_targets(outline: ConceptOutline, report: OutlineReport) -> set[str]:
     targets |= set(report.bare_directory_titles)
     targets |= {t.rsplit(" (", 1)[0] for t in report.bad_length_titles}
     targets |= {p.title for p in outline.pages if not p.named_by_model}
-    return targets
+    # A package roll-up keeps its deterministic title; see ``decode_response``.
+    return targets - {p.title for p in outline.pages if p.group.packages}
 
 
 async def plan_outline(

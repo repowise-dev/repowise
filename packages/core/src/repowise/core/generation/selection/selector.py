@@ -16,6 +16,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.package_roots import package_roots_from_paths
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
@@ -105,6 +106,8 @@ class ModuleGroup:
     #: silently broke all three: a rollup out-claimed its own leaves for every
     #: file in the subtree.
     context_paths: tuple[str, ...] = ()
+    #: Package roots of a roll-up of thin sibling packages; empty otherwise.
+    packages: tuple[str, ...] = ()
 
 
 @dataclass
@@ -494,7 +497,12 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         return ConceptCandidates()
 
     layer_of_file, layer_labels = _layer_map_from_kg(inputs)
-    groups = group_files(files, layer_of_file=layer_of_file)
+    # Read off the parsed file list, not the disk, so the estimate, the run and
+    # the update cascade all see the same walls and mint the same page ids.
+    # Ceiling: a manifest the traverser does not emit (go.mod, pom.xml) is no
+    # wall; threading the disk scan through every SelectionInputs lifts it.
+    package_roots = package_roots_from_paths({p.file_info.path for p in inputs.parsed_files})
+    groups = group_files(files, layer_of_file=layer_of_file, package_roots=package_roots)
 
     lang_of = {p.file_info.path: p.file_info.language for p in inputs.parsed_files}
     # Names are decided over the whole set, not per group: two packages that
@@ -517,7 +525,8 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         langs = Counter(lang_of.get(m, "") for m in group.members)
         langs.pop("", None)
         score = sum(inputs.pagerank.get(m, 0.0) for m in group.members)
-        subsystem = chapters.get(group.target_path)
+        # A package roll-up keeps its own name and material, never a chapter's.
+        subsystem = None if group.packages else chapters.get(group.target_path)
         scored.append(
             (
                 score,
@@ -543,6 +552,7 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                     ),
                     is_rollup=subsystem is not None,
                     context_paths=tuple(subsystem or ()),
+                    packages=group.packages,
                 ),
             )
         )

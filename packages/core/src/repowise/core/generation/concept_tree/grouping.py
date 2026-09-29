@@ -40,9 +40,11 @@ commit. The ladder only moves at a band edge.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
+from ...ingestion.package_roots import module_for
 from ..models import member_structural_key
 
 #: Prefix for a concept group's structural key. Distinct from ``module`` and
@@ -65,6 +67,16 @@ class GroupingParams:
 
     min_files: int = 10
     max_files: int = 30
+
+    @property
+    def thin_package_files(self) -> int:
+        """Below this a package rolls up with its thin siblings instead of taking a page.
+
+        A third of the ceiling on the larger bands: a package that cannot fill a
+        third of a page is a table row, and per-package pages there would grow a
+        wide monorepo's page count by a quarter.
+        """
+        return max(self.min_files, self.max_files // 3)
 
 
 # Repository size bands and the ceiling each one uses. Chosen so a repository
@@ -113,6 +125,9 @@ class ConceptGroup:
     #: therefore could not be split by any path-based rule.
     oversized: bool = False
     structural_key: str = field(default="", repr=False)
+    #: Set only on a roll-up of whole thin sibling packages: their roots, sorted.
+    #: Every other group sits inside one package, so this is empty.
+    packages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.structural_key:
@@ -243,13 +258,56 @@ def _is_local_merge(left: Sequence[str], right: Sequence[str]) -> bool:
     return all("/" not in m for m in left) and all("/" not in m for m in right)
 
 
+def _package_of(path: str, roots: set[str]) -> str:
+    """The deepest package root holding *path*, or ``""`` outside every package."""
+    owner = module_for(path, roots)
+    return owner if owner in roots else ""
+
+
+def package_file_counts(members: Sequence[str], packages: Sequence[str]) -> list[tuple[str, int]]:
+    """``(package root, files)`` for each package a roll-up covers, in path order."""
+    return [(p, sum(1 for m in members if m.startswith(p + "/"))) for p in sorted(packages)]
+
+
 class _Partitioner:
-    def __init__(self, params: GroupingParams, layer_of_file: dict[str, str]):
+    def __init__(
+        self,
+        params: GroupingParams,
+        layer_of_file: dict[str, str],
+        package_of: dict[str, str] | None = None,
+    ):
         self.params = params
         self.layer_of_file = layer_of_file
+        self.package_of = package_of or {}
         self.groups: list[ConceptGroup] = []
 
-    def make(self, members: Sequence[str]) -> ConceptGroup:
+    def _one_package(self, paths: Iterable[str]) -> bool:
+        return len({self.package_of.get(p, "") for p in paths}) <= 1
+
+    def may_merge(self, left: Sequence[str], right: Sequence[str]) -> bool:
+        """Local, and never across a package root: two packages never share a page."""
+        return _is_local_merge(left, right) and self._one_package([*left, *right])
+
+    def roll_up_thin_packages(self, files: Sequence[str]) -> list[str]:
+        """Group thin sibling packages whole; return the files left to partition.
+
+        A package too small for a page of its own cannot merge with a
+        neighbour, so sibling thin packages (same parent directory) become one
+        roll-up whose page lists them one row each. A thin package with no thin
+        sibling stays in the partition as its own small page.
+        """
+        sizes = Counter(o for o in (self.package_of.get(f, "") for f in files) if o)
+        by_parent: dict[str, list[str]] = {}
+        for root in sorted(r for r, n in sizes.items() if n < self.params.thin_package_files):
+            by_parent.setdefault("/".join(root.split("/")[:-1]), []).append(root)
+        runs = [tuple(roots) for _parent, roots in sorted(by_parent.items()) if len(roots) > 1]
+        for run in runs:
+            members = [f for f in files if self.package_of.get(f, "") in run]
+            self.groups.append(self.make(members, packages=run))
+        rolled = {root for run in runs for root in run}
+        return [f for f in files if self.package_of.get(f, "") not in rolled]
+
+    def make(self, members: Sequence[str], packages: tuple[str, ...] = ()) -> ConceptGroup:
         ordered = sorted(members)
         dirs = _dirs_of(ordered)
         # A group over the ceiling whose files all sit directly in one
@@ -267,6 +325,7 @@ class _Partitioner:
             target_path=_target_path(ordered, dirs),
             dominant_layer=_dominant(ordered, self.layer_of_file),
             oversized=oversized,
+            packages=packages,
         )
 
     def _same_layer(self, left: Sequence[str], right: Sequence[str]) -> bool:
@@ -291,7 +350,11 @@ class _Partitioner:
         or, at the top, flushes them as their own group.
         """
         if node.subtree <= self.params.max_files:
-            return _subtree_files(node)
+            files = _subtree_files(node)
+            # A subtree that fits but holds two packages descends instead, so
+            # each package is grouped on its own side of the wall.
+            if self._one_package(files):
+                return files
 
         pending: list[str] = list(node.own)
         for _name, child in sorted(node.children.items()):
@@ -301,7 +364,7 @@ class _Partitioner:
             if (
                 len(pending) + len(left) <= self.params.max_files
                 and self._same_layer(pending, left)
-                and _is_local_merge(pending, left)
+                and self.may_merge(pending, left)
             ):
                 pending.extend(left)
                 continue
@@ -320,7 +383,7 @@ class _Partitioner:
             if (
                 len(last.members) + len(pending) <= self.params.max_files
                 and self._same_layer(last.members, pending)
-                and _is_local_merge(last.members, pending)
+                and self.may_merge(last.members, pending)
             ):
                 merged = self.make(last.members + pending)
                 self.groups[-1] = merged
@@ -360,7 +423,7 @@ def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[Concept
                 other = working[j]
                 if other.file_count + group.file_count > params.max_files:
                     continue
-                if not _is_local_merge(other.members, group.members):
+                if not part.may_merge(other.members, group.members):
                     continue
                 # A same-layer neighbour is preferred, but a thin group takes
                 # a cross-layer neighbour over standing alone. The layer gate
@@ -419,16 +482,19 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
     # Largest first so the group with the strongest claim to a directory keeps
     # the shortest name; ties break on the key so the order never depends on
     # the traversal.
-    for group in sorted(groups, key=lambda g: (-g.file_count, g.structural_key)):
+    # Roll-ups last: a directory's own files have the stronger claim to its name.
+    for group in sorted(groups, key=lambda g: (bool(g.packages), -g.file_count, g.structural_key)):
         owned = _target_path(group.members, group.dirs)
-        candidates = [owned] if owned in group.dirs else []
+        # A package roll-up is named for the parent its packages share.
+        candidates = [owned] if group.packages or owned in group.dirs else []
         # A whole repository under the ceiling is one group spanning several
         # top-level directories — the guard cannot refuse it, there is nothing
         # to merge. Naming it after a member would put the repository under a
         # name describing one corner of it, so it takes the root.
         if not owned and "" not in candidates and len({m.split("/")[0] for m in group.members}) > 1:
             candidates.append("")
-        candidates.extend(d for d in group.dirs if d and d not in candidates)
+        if not group.packages:
+            candidates.extend(d for d in group.dirs if d and d not in candidates)
         if owned and owned not in candidates:
             candidates.append(owned)
         # The root is substituted before the uniqueness check, never after.
@@ -463,6 +529,7 @@ def group_files(
     *,
     layer_of_file: dict[str, str] | None = None,
     params: GroupingParams | None = None,
+    package_roots: Iterable[str] = (),
 ) -> list[ConceptGroup]:
     """Partition *paths* into bounded, path-local concept groups.
 
@@ -471,16 +538,21 @@ def group_files(
     it. *layer_of_file* maps a file to its curated layer id and only affects
     whether two adjacent runs may be merged; grouping works without it.
 
+    *package_roots* are hard walls: no group holds files of two packages,
+    except a roll-up of whole thin sibling packages, which records them in
+    ``packages``.
+
     Groups come back in path order, which is also the order their members were
     walked, so the sequence itself is stable.
     """
     files = sorted({p.replace("\\", "/") for p in paths if p})
     if not files:
         return []
-    tree = _build_tree(files)
     resolved = params or params_for(len(files))
-    part = _Partitioner(resolved, layer_of_file or {})
-    leftover = part.visit(tree)
+    roots = set(package_roots)
+    package_of = {f: _package_of(f, roots) for f in files} if roots else {}
+    part = _Partitioner(resolved, layer_of_file or {}, package_of)
+    leftover = part.visit(_build_tree(part.roll_up_thin_packages(files)))
     if leftover:
         # The whole repository fits under the ceiling: one group, which is the
         # honest answer for a tiny repository.

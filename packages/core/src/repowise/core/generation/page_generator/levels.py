@@ -17,6 +17,7 @@ import structlog
 from repowise.core.ids import is_external
 
 from .. import onboarding as _onboarding
+from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from .helpers import _is_infra_file, decisions_for_files, rank_decisions
@@ -314,6 +315,10 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # shape implies: a chapter that is also a leaf directory
                     # heads its children *and* documents its own loose files.
                     owns_files=bool(mg.file_paths),
+                    packages=[
+                        {"path": path, "files": count}
+                        for path, count in package_file_counts(mg.file_paths, mg.packages)
+                    ],
                 ),
             )
         )

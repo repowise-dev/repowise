@@ -3,6 +3,9 @@ You are documenting **{{ ctx.title }}**, an OVERVIEW of the `{{ ctx.directories[
 {% else %}
 You are documenting **{{ ctx.title }}** (language: {{ ctx.language }}), a group of files that belong together, not a single directory. Write about what the group does as a whole.
 {% endif %}
+{% if ctx.packages %}
+This page covers {{ ctx.packages | length }} sibling packages: {% for p in ctx.packages %}`{{ p.path }}`{% if not loop.last %}, {% endif %}{% endfor %}. Each is a separate package with its own manifest. Say what they share and how they differ; never describe the group as one of them or name the page after one. A table listing every package is appended after you write the page, so do not reproduce it.
+{% endif %}
 
 {% if ctx.scope %}
 SCOPE (use this to open by situating the page against its siblings — say what it covers and what it deliberately leaves to other pages; do NOT quote this line verbatim):
