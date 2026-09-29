@@ -230,32 +230,15 @@ def _first_set(flag, configured):
 
 
 def _cli_reports(args: tuple[str, ...], flag: str = "--report") -> dict[Path, str | None]:
-    """``--report`` values: each a path or glob relative to cwd, optionally ``=PREFIX``.
+    """*flag* values (``--report``, ``--base-report``), relative to cwd; one that matches no file
+    cannot be evaluated."""
+    from repowise.core.analysis.health.coverage import expand_report_args
 
-    The whole argument is expanded first, so a path or glob holding ``=``
-    (``artifacts/shard=1/*.info``) stays one; only when it matches nothing is
-    it split on the last ``=``, and the prefix applies to every file the left
-    side matches. One that matches no file cannot be evaluated: a report
-    missing from a CI job is a broken setup, not a pass. *flag* names the
-    option in that message (``--base-report`` reads the same way).
-    """
-    from repowise.core.analysis.health.coverage import expand_report_patterns
-
-    cwd = Path()  # relative, so reports read as the caller named them
-    out: dict[Path, str | None] = {}
-    for arg in args:
-        pattern, prefix = arg, None
-        matches = expand_report_patterns([arg], cwd)
-        if not matches and "=" in arg:
-            pattern, _, prefix = arg.rpartition("=")
-            matches = expand_report_patterns([pattern], cwd)
-        if not matches:
-            raise CannotEvaluateError(
-                "report_not_found", f"{flag} {arg}: no coverage report matches {pattern}."
-            )
-        for path in matches:
-            out.setdefault(path, prefix or None)
-    return out
+    try:
+        # Relative, so reports read as the caller named them.
+        return expand_report_args(args, Path())
+    except FileNotFoundError as exc:
+        raise CannotEvaluateError("report_not_found", f"{flag}: {exc}") from None
 
 
 _NO_REPORT = (

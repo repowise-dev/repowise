@@ -38,6 +38,7 @@ from repowise.core.persistence.crud import (
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
+    load_coverage_history,
 )
 from repowise.core.persistence.models import HealthFileMetric, RefactoringSuggestion
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
@@ -83,6 +84,7 @@ class HealthData:
     refactoring_recommendations: list[Recommendation] = field(default_factory=list)
     coverage_rows: list[Any] = field(default_factory=list)
     coverage_summary: dict[str, Any] = field(default_factory=dict)
+    coverage_history: list[dict[str, Any]] = field(default_factory=list)
     signals_by_path: dict[str, dict[str, Any]] = field(default_factory=dict)
     drift_rows: list[Any] = field(default_factory=list)
     drift_unavailable: str | None = None
@@ -138,7 +140,7 @@ async def load_health_data(
     data.refactoring, data.performance = await _read_pillars(
         session, repository, reference_repository, pop, req
     )
-    data.coverage_rows, data.coverage_summary = await _read_coverage(
+    data.coverage_rows, data.coverage_summary, data.coverage_history = await _read_coverage(
         session, repository, pop, req
     )
     data.signals_by_path = await _read_signals(session, repository, pop, req)
@@ -265,9 +267,9 @@ async def _read_pillars(
 
 async def _read_coverage(
     session: Any, repository: Any, pop: Population, req: HealthRequest
-) -> tuple[list[Any], dict[str, Any]]:
+) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
     if "coverage" not in req.include_set or pop.nothing_resolved:
-        return [], {}
+        return [], {}, []
     rows = pop.in_scope_rows(
         # ``effective_targets``: a raw ``module:foo`` is not a file path.
         # Only targeted mode serializes ``covered_lines``, so the dashboard
@@ -290,7 +292,10 @@ async def _read_coverage(
             session, repository.id, reference_commit=getattr(repository, "head_commit", None)
         )
     )
-    return rows, summary
+    # Repo-wide and dashboard only, as on REST: a targeted read never draws it.
+    stored = summary.get("file_count") and not pop.scoped
+    history = await load_coverage_history(session, repository.id) if stored else []
+    return rows, summary, history
 
 
 async def _read_signals(

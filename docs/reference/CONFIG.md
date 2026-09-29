@@ -319,7 +319,12 @@ hooks:
   read_skeleton: false           # serve large indexed files as skeletons
   read_reread: false             # serve unchanged re-reads as a pointer
   search_digest: false           # serve multi-file grep floods as a digest
+  coverage_reingest: false       # re-ingest coverage after an agent's full test run
 ```
+
+- `coverage_reingest` re-ingests coverage after an agent's full test run, at
+  a process start per shell command (`REPOWISE_HOOK_COVERAGE_REINGEST=1` for
+  one session). Details: [test intelligence](../layers/TEST_INTELLIGENCE.md).
 
 - `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
   short notice instead of the content, when the same range was already served

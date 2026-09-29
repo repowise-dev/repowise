@@ -1960,6 +1960,11 @@ def init_command(
         options=editor_options,
         no_editor_setup=not editor_setup,
     )
+    if editor_setup:
+        # The index may carry a coverage ingest now; see ``sync_repo_hook``.
+        from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+        sync_repo_hook(repo_path, console)
 
     _record_init_outcome(
         result=result,

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import sqlite3
+import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
 from repowise.cli.commands.augment_cmd import coverage_reingest as hook
-from repowise.cli.commands.augment_cmd.command import _handle_post_tool_use
+from repowise.cli.commands.augment_cmd.command import _handle_post_tool_use, _run_augment
 
 #: When the last ingest happened, in the stored UTC shape SQLite keeps.
 _INGESTED_AT = "2026-09-01 12:00:00.000000"
@@ -25,11 +30,20 @@ def _db(root, *ingests: str) -> None:
     con.close()
 
 
-@pytest.fixture
-def repo(tmp_path, monkeypatch):
-    """An indexed repo whose last coverage ingest is ``_INGESTED_AT``."""
+#: The re-ingest is opt-in; every fixture repo opts in unless a test says otherwise.
+_OPT_IN = "hooks:\n  coverage_reingest: true\n"
+
+
+@pytest.fixture(autouse=True)
+def _no_env_override(monkeypatch):
     monkeypatch.delenv("REPOWISE_HOOK_COVERAGE_REINGEST", raising=False)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """An opted-in indexed repo whose last coverage ingest is ``_INGESTED_AT``."""
     _db(tmp_path, _INGESTED_AT)
+    _config(tmp_path, "")
     return tmp_path
 
 
@@ -48,7 +62,9 @@ def _report(repo, rel: str = "coverage/lcov.info", *, after: float = 60) -> None
 
 
 def _config(repo, text: str) -> None:
-    (repo / ".repowise" / "config.yaml").write_text(text, encoding="utf-8")
+    """Write *text* as the config, opted in unless *text* sets the flag itself."""
+    opt_in = "" if "coverage_reingest" in text else _OPT_IN
+    (repo / ".repowise" / "config.yaml").write_text(opt_in + text, encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -79,6 +95,11 @@ def _config(repo, text: str) -> None:
         "repowise distill pytest -q",
         "repowise distill --source hook 'cd api && pytest -q'",
         ["pytest", "-q"],
+        "pytest -p no:cacheprovider",
+        "pytest -n 4 -W error",
+        "go test -count 1 -coverprofile cover.out ./...",
+        "go test -p 4 ./...",
+        "cargo test --workspaces",
     ],
 )
 def test_full_test_runs_are_recognised(command) -> None:
@@ -100,6 +121,17 @@ def test_full_test_runs_are_recognised(command) -> None:
         "mvn test -Dtest=AuthTest",
         "./gradlew test --tests AuthTest",
         "dotnet test --filter Auth",
+        "pytest -x tests/test_a.py",
+        "pytest -m slow",
+        "pytest -w x",
+        "cargo test -p x",
+        "cargo llvm-cov -p x --lcov --output-path lcov.info",
+        "npm test -w x",
+        "./gradlew test -p x",
+        "go test -C sub ./...",
+        "cargo test --package foo",
+        "npm test --workspace=foo",
+        "mvn test -pl core",
     ],
 )
 def test_partial_runs_are_not_full(command) -> None:
@@ -142,12 +174,38 @@ def test_a_fresh_report_is_reingested_once(repo, spawned) -> None:
     assert len(spawned) == 2
 
 
-def test_only_the_fresh_reports_are_passed(repo, spawned) -> None:
-    _report(repo, "coverage.xml", after=-60)  # older than the ingest: left alone
+def test_one_fresh_report_reingests_every_watched_report(repo, spawned) -> None:
+    """The ingest replaces stored coverage, so an older shard must ride along."""
+    _report(repo, "coverage.xml", after=-60)
     _report(repo)
     _report(repo, ".coverage")  # a coverage.py database: never on its own account
     assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is not None
-    assert spawned[0][1] == [repo.resolve() / "coverage" / "lcov.info"]
+    assert spawned[0][1] == [
+        repo.resolve() / "coverage" / "lcov.info",
+        repo.resolve() / "coverage.xml",
+    ]
+
+
+def test_nothing_fresh_spawns_nothing(repo, spawned) -> None:
+    _report(repo, after=-60)
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
+
+
+def test_an_absolute_glob_skips_pruned_dirs(repo, spawned) -> None:
+    _config(repo, f"coverage:\n  paths: ['{(repo / 'out').as_posix()}/*/lcov.info']\n")
+    _report(repo, "out/web/lcov.info")
+    _report(repo, "out/node_modules/lcov.info")
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is not None
+    assert [Path(p).resolve() for p in spawned[0][1]] == [
+        (repo / "out" / "web" / "lcov.info").resolve()
+    ]
+
+
+@pytest.mark.parametrize("var", ["REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"])
+def test_a_configured_database_keeps_the_hook_quiet(repo, spawned, monkeypatch, var) -> None:
+    _report(repo)
+    monkeypatch.setenv(var, "postgresql://x/y")
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
 
 
 def test_a_fresh_coverage_database_alone_does_nothing(repo, spawned) -> None:
@@ -188,6 +246,7 @@ def test_an_upgraded_index_reads_its_ingests_from_the_coverage_rows(tmp_path, sp
     con.execute("INSERT INTO coverage_files VALUES (?)", (_INGESTED_AT,))
     con.commit()
     con.close()
+    _config(tmp_path, "")
     _report(tmp_path)
     assert hook.coverage_reingest_notice({"command": "pytest"}, str(tmp_path)) is not None
     assert len(spawned) == 1
@@ -195,16 +254,20 @@ def test_an_upgraded_index_reads_its_ingests_from_the_coverage_rows(tmp_path, sp
 
 def test_a_repo_that_never_ingested_coverage_is_left_alone(tmp_path, spawned) -> None:
     _db(tmp_path)
+    _config(tmp_path, "")
     _report(tmp_path)
     assert hook.coverage_reingest_notice({"command": "pytest"}, str(tmp_path)) is None
     assert spawned == []
 
 
-def test_the_opt_out_and_its_env_override(repo, spawned, monkeypatch) -> None:
+def test_off_by_default_and_the_env_override(repo, spawned, monkeypatch) -> None:
     _report(repo)
-    _config(repo, "hooks:\n  coverage_reingest: false\n")
-    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
-    monkeypatch.setenv("REPOWISE_HOOK_COVERAGE_REINGEST", "1")
+    for block in ("", "hooks:\n  coverage_reingest: false\n", "coverage_reingest: true\n"):
+        # Absent, false, or not under ``hooks:``: all off.
+        (repo / ".repowise" / "config.yaml").write_text(block, encoding="utf-8")
+        assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
+    assert spawned == []
+    monkeypatch.setenv("REPOWISE_HOOK_COVERAGE_REINGEST", "1")  # one session
     assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is not None
     monkeypatch.setenv("REPOWISE_HOOK_COVERAGE_REINGEST", "0")
     _report(repo, after=120)
@@ -236,11 +299,14 @@ def test_never_raises(repo, monkeypatch) -> None:
     assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
 
 
-def test_the_bash_dispatch_carries_the_note(repo, spawned) -> None:
+def test_the_codex_shell_dispatch_respects_the_flag(repo, spawned) -> None:
     _report(repo)
-    result = _handle_post_tool_use(
-        "Bash", {"command": "pytest"}, {"stdout": "1 passed", "exit_code": 0}, str(repo)
-    )
+    args = ("Bash", {"command": "pytest"}, {"stdout": "1 passed", "exit_code": 0}, str(repo))
+    _config(repo, "hooks:\n  coverage_reingest: false\n")
+    assert "Re-ingesting" not in (_handle_post_tool_use(*args, client="codex").context or "")
+    assert spawned == []
+    _config(repo, "")
+    result = _handle_post_tool_use(*args, client="codex")
     assert "Re-ingesting coverage" in (result.context or "")
 
 
@@ -265,3 +331,251 @@ def test_spawn_runs_coverage_add_detached_with_a_fresh_log(tmp_path, monkeypatch
     assert seen["stdin"] is subprocess.DEVNULL
     assert "creationflags" in seen or seen.get("start_new_session") is True
     assert (tmp_path / ".repowise" / hook.LOG_FILENAME).read_text(encoding="utf-8") == ""
+
+
+def test_a_mapped_config_entry_is_reingested_with_its_prefix(repo, spawned) -> None:
+    _config(
+        repo,
+        "coverage:\n  paths:\n    - {path: 'web/*.info', path_prefix: web}\n    - out/cov.info\n",
+    )
+    _report(repo, "web/lcov.info")
+    _report(repo, "out/cov.info")
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is not None
+    assert spawned[0][1] == [
+        f"{repo.resolve() / 'web' / 'lcov.info'}=web",
+        repo.resolve() / "out" / "cov.info",
+    ]
+
+
+def test_a_report_only_a_recursive_glob_finds_is_not_watched(repo, spawned) -> None:
+    _config(repo, "coverage:\n  paths: ['**/lcov.info']\n")
+    _report(repo)
+    assert hook.coverage_reingest_notice({"command": "pytest"}, str(repo)) is None
+
+
+def _run_hook(payload: dict, monkeypatch, tmp_dir: Path, **kwargs) -> str:
+    """The real stdin/stdout entry point; a private tempdir isolates the emission dedup marker."""
+    out = io.StringIO()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_dir))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(sys, "stdout", out)
+    _run_augment(**kwargs)
+    return out.getvalue()
+
+
+def _shell_payload(repo, event: str, command: str, **extra) -> dict:
+    return {
+        "hook_event_name": event,
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(repo),
+        "session_id": "s1",
+        **extra,
+    }
+
+
+def test_a_failing_test_run_is_reingested_from_the_failure_event(
+    repo, spawned, monkeypatch, tmp_path_factory
+) -> None:
+    """Claude Code delivers a non-zero exit as PostToolUseFailure, with the rewritten command."""
+    _report(repo)
+    payload = _shell_payload(
+        repo,
+        "PostToolUseFailure",
+        "repowise distill --source hook 'pytest -q'",
+        error="Exit code 1\n1 failed, 3 passed",
+        is_interrupt=False,
+    )
+    out = _run_hook(payload, monkeypatch, tmp_path_factory.mktemp("tmp"), coverage_only=True)
+    assert "Re-ingesting coverage" in out
+    assert len(spawned) == 1
+
+
+def test_an_interrupted_test_run_is_left_alone(
+    repo, spawned, monkeypatch, tmp_path_factory
+) -> None:
+    _report(repo)
+    payload = _shell_payload(
+        repo, "PostToolUseFailure", "pytest", error="Interrupted", is_interrupt=True
+    )
+    out = _run_hook(payload, monkeypatch, tmp_path_factory.mktemp("tmp"), coverage_only=True)
+    assert out == ""
+    assert spawned == []
+
+
+def test_coverage_only_runs_nothing_else(repo, spawned, monkeypatch, tmp_path_factory) -> None:
+    """The repo-local entry must not revive the shell notices the shared matcher dropped."""
+    _report(repo)
+    payload = _shell_payload(repo, "PostToolUse", "git commit -m x", tool_response={})
+    out = _run_hook(payload, monkeypatch, tmp_path_factory.mktemp("tmp"), coverage_only=True)
+    assert out == ""
+
+
+def test_the_full_claude_handler_leaves_coverage_to_its_own_entry(repo, spawned) -> None:
+    """Otherwise a capture-prompt shell entry and the coverage entry would both spawn."""
+    _report(repo)
+    result = _handle_post_tool_use("Bash", {"command": "pytest"}, {"stdout": ""}, str(repo))
+    assert "Re-ingesting" not in (result.context or "")
+    assert spawned == []
+
+
+@pytest.mark.parametrize("nt", [True, False])
+def test_spawn_breaks_away_from_the_job_and_retries_inside_it(monkeypatch, nt) -> None:
+    import subprocess
+
+    from repowise.cli import spawn
+
+    calls: list[dict] = []
+
+    def _popen(argv, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("creationflags", 0) & spawn._CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(spawn.os, "name", "nt" if nt else "posix")
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    spawn.spawn_detached(["x"], ".")
+
+    if nt:
+        assert [c["creationflags"] for c in calls] == [
+            spawn._WINDOWS_FLAGS | spawn._CREATE_BREAKAWAY_FROM_JOB,
+            spawn._WINDOWS_FLAGS,
+        ]
+    else:
+        assert len(calls) == 1 and calls[0]["start_new_session"] is True
+
+
+# --- the repo-local Claude Code entries --------------------------------------
+
+
+@pytest.fixture
+def claude_home(tmp_path_factory, monkeypatch) -> Path:
+    """A user settings.json carrying the repowise augment hooks."""
+    from repowise.cli.editor_integrations import claude_config
+
+    path = tmp_path_factory.mktemp("home") / "settings.json"
+    entry = {
+        "matcher": claude_config._AUGMENT_MATCHER,
+        "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
+    }
+    path.write_text(json.dumps({"hooks": {"PostToolUse": [entry]}}), encoding="utf-8")
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: path)
+    return path
+
+
+class _Console:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def print(self, text: str) -> None:
+        self.lines.append(text)
+
+
+def _local_hooks(repo: Path) -> dict:
+    path = repo / ".claude" / "settings.local.json"
+    return json.loads(path.read_text(encoding="utf-8")).get("hooks", {}) if path.exists() else {}
+
+
+def test_sync_adds_the_coverage_only_entry_under_both_events(repo, claude_home) -> None:
+    console = _Console()
+    hook.sync_repo_hook(repo, console)
+
+    hooks = _local_hooks(repo)
+    for event in ("PostToolUse", "PostToolUseFailure"):
+        (entry,) = hooks[event]
+        assert entry["matcher"] == "Bash|PowerShell"
+        assert "repowise-augment --coverage-only" in entry["hooks"][0]["command"]
+    assert "statusMessage" not in hooks["PostToolUse"][0]["hooks"][0]  # runs silently
+    (line,) = console.lines
+    assert "this repository only" in line and "settings.local.json" in line
+    hook.sync_repo_hook(repo, console)  # idempotent, and silent when nothing changes
+    assert len(console.lines) == 1
+
+
+def test_default_config_writes_nothing(repo, claude_home) -> None:
+    (repo / ".repowise" / "config.yaml").unlink()
+    console = _Console()
+    hook.sync_repo_hook(repo, console)
+    assert _local_hooks(repo) == {}
+    assert console.lines == []
+
+
+def test_turning_the_flag_off_again_removes_the_entries(repo, claude_home) -> None:
+    hook.sync_repo_hook(repo, _Console())
+    (repo / ".repowise" / "config.yaml").unlink()  # absent reads as off
+    hook.sync_repo_hook(repo, _Console())
+    assert _local_hooks(repo) == {}
+
+
+def test_the_opt_out_removes_only_our_entries(repo, claude_home) -> None:
+    local = repo / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    local.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}), encoding="utf-8")
+    hook.sync_repo_hook(repo, _Console())
+    assert _local_hooks(repo)
+
+    _config(repo, "hooks:\n  coverage_reingest: false\n")
+    console = _Console()
+    hook.sync_repo_hook(repo, console)
+
+    assert json.loads(local.read_text(encoding="utf-8")) == {
+        "permissions": {"allow": ["Bash(ls)"]}
+    }
+    assert "Removed" in console.lines[0]
+
+
+def test_a_file_the_opt_out_empties_is_removed(repo, claude_home) -> None:
+    hook.sync_repo_hook(repo, _Console())
+    _config(repo, "hooks:\n  coverage_reingest: false\n")
+    hook.sync_repo_hook(repo, _Console())
+    assert not (repo / ".claude" / "settings.local.json").exists()
+
+
+def test_sync_needs_a_stored_ingest_and_the_augment_install(
+    repo, tmp_path_factory, claude_home
+) -> None:
+    never = tmp_path_factory.mktemp("never")
+    _db(never)
+    hook.sync_repo_hook(never, _Console())
+    assert _local_hooks(never) == {}
+
+    claude_home.write_text("{}", encoding="utf-8")
+    hook.sync_repo_hook(repo, _Console())
+    assert _local_hooks(repo) == {}
+
+
+def test_uninstall_sweeps_the_repo_local_entries(repo, claude_home) -> None:
+    from repowise.cli.agent_targets.targets.claude_code import ClaudeCodeTarget
+    from repowise.cli.agent_targets.types import Scope
+
+    hook.sync_repo_hook(repo, _Console())
+    local = str(repo / ".claude" / "settings.local.json")
+    assert local in ClaudeCodeTarget().describe_paths(Scope.PROJECT, repo_path=repo)
+
+    ClaudeCodeTarget().uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert _local_hooks(repo) == {}
+
+
+def test_only_our_shell_entry_is_owned(repo, claude_home) -> None:
+    """A repowise ``--coverage-only`` command under another matcher is not ours to remove."""
+    from repowise.cli.agent_targets.targets.claude_code import ClaudeCodeTarget
+    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.editor_integrations import claude_config
+
+    foreign = {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "repowise-augment --coverage-only --mine"}],
+    }
+    local = repo / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    local.write_text(json.dumps({"hooks": {"PostToolUse": [foreign]}}), encoding="utf-8")
+
+    hook.sync_repo_hook(repo, _Console())
+    assert len(_local_hooks(repo)["PostToolUse"]) == 2
+    claude_config.set_repo_coverage_hook(repo, False)
+    assert _local_hooks(repo) == {"PostToolUse": [foreign]}
+
+    hook.sync_repo_hook(repo, _Console())
+    ClaudeCodeTarget().uninstall(Scope.PROJECT, repo_path=repo)
+    assert _local_hooks(repo) == {"PostToolUse": [foreign]}

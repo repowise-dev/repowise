@@ -360,6 +360,31 @@ def expand_report_patterns(patterns: Iterable[str], base: Path) -> list[Path]:
     return out
 
 
+def expand_report_args(args: Iterable[str], base: Path) -> dict[Path, str | None]:
+    """Report arguments given on a command line, each mapped to its prefix (or ``None``).
+
+    Each is a path or glob relative to *base*, optionally ``PATH=PREFIX``. The
+    whole argument is expanded first, so a path or glob holding ``=``
+    (``artifacts/shard=1/*.info``) stays one; only when it matches nothing is
+    it split on the last ``=``, and the prefix applies to every file the left
+    side matches. Raises :class:`FileNotFoundError` naming the argument when one
+    matches no file: a report the caller named and did not get is a broken setup.
+    """
+    out: dict[Path, str | None] = {}
+    for arg in args:
+        pattern, prefix = arg, None
+        matches = expand_report_patterns([arg], base)
+        if not matches and "=" in arg:
+            pattern, _, prefix = arg.rpartition("=")
+            matches = expand_report_patterns([pattern], base)
+        if not matches:
+            where = f"{arg}: " if pattern != arg else ""
+            raise FileNotFoundError(f"{where}no coverage report matches {pattern}.")
+        for path in matches:
+            out.setdefault(path, prefix or None)
+    return out
+
+
 @dataclass
 class ResolvedCoverage:
     """Outcome of resolving a parsed report against the indexed tree."""

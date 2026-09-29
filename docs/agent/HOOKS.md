@@ -24,6 +24,7 @@ crashes or blocks your agent.
 | **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Live index-freshness line, core-tool trust rule, and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read-intelligence notices, and edit-time "governed by" decision notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a `Read` / `Edit` / `Write` / `Grep` / `Glob` / `NotebookEdit` that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
+| **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell`, success or failure | Re-ingests a fresh full-suite coverage report in the background; a process start per shell command in that repo |
 | **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / edit / shell | Reminds Codex to use the MCP tools and flags stale context after edits |
 
@@ -314,10 +315,12 @@ migrate either. A hook *you* wrote on that event is left alone, and a timeout
 you raised yourself is never moved.
 
 Codex names its shell tool `shell_command` on current releases and `Bash` on
-older ones, so the matcher covers both. The Claude Code hook deliberately does
-*not* watch shell commands: it has `Read` / `Grep` / `Glob` tools and a
+older ones, so the matcher covers both. The shared Claude Code hook deliberately
+does *not* watch shell commands: it has `Read` / `Grep` / `Glob` tools and a
 SessionStart freshness line, so the shell adds cost without adding reach. Codex
-has neither, which is why it keeps the surface.
+has neither, which is why it keeps the surface. The opt-in exceptions are the
+decision capture prompt and the coverage re-ingest (see
+[What gets written where](#what-gets-written-where)).
 
 Full Codex setup: [CODEX.md](CODEX.md).
 
@@ -352,13 +355,19 @@ returned silence.
 ## What gets written where
 
 `repowise init` writes these entries into `~/.claude/settings.json` (Claude Code)
-and `.codex/hooks.json` (Codex when `--codex` is passed):
+and `.codex/hooks.json` (Codex when `--codex` is passed). The opt-in coverage
+re-ingest entries go to the repository's own `.claude/settings.local.json`
+instead: with `hooks.coverage_reingest: true`, the next `repowise coverage add`,
+`init` or `update` that finds stored coverage writes them when the Claude Code
+hooks above are installed, and removes them once the key is false or gone
+(`repowise uninstall` removes them too). The plugin does not carry them.
 
 | Client | Hook type | Matcher | Command |
 |--------|-----------|---------|---------|
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` [^guard] |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
 | Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` |
+| Claude Code, this repo only | `PostToolUse` and `PostToolUseFailure` | `Bash\|PowerShell` | `repowise-augment --coverage-only` [^guard] |
 | Codex | `SessionStart` | `startup\|resume\|clear` | context reminder |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | staleness check |
 

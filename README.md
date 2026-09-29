@@ -297,6 +297,10 @@ changed file and outside caller across the repository.
 **[Install the PR bot →](https://github.com/apps/repowise-bot)** ·
 [how it works →](https://www.repowise.dev/bot)
 
+Patch coverage, doc drift, security and change risk also run as CI gates in your own
+pipeline, with a GitHub Action and a GitLab template, and need no index or API key.
+[Repowise in CI →](docs/start/CI.md)
+
 ---
 
 <a id="code-health"></a>

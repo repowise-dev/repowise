@@ -1636,6 +1636,46 @@ async def test_coverage_payload_shape_is_unchanged(setup_mcp, health_data):
 
 
 @pytest.mark.asyncio
+async def test_coverage_carries_its_trend_capped_to_the_newest_points(
+    setup_mcp, health_data, session
+):
+    """The REST route's history shape, newest ten, with the cap stated."""
+    from datetime import UTC, datetime, timedelta
+
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health.coverage import HISTORY_POINTS
+
+    none = await get_health(include=["coverage"], only=["coverage"])
+    assert "history" not in none["coverage"]
+
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    for i in range(HISTORY_POINTS + 2):
+        # A different figure each time: an unchanged one restamps the newest ingest.
+        fc = file_coverage("src/auth/service.py", range(1, i + 2), range(1, 30))
+        await save_coverage_files(
+            session, health_data, [fc], source_format="lcov", ingested_at=start + timedelta(i)
+        )
+
+    block = (await get_health(include=["coverage"], only=["coverage"]))["coverage"]
+    history = block["history"]
+    assert len(history) == block["history_emitted"] == HISTORY_POINTS
+    assert block["history_total"] == HISTORY_POINTS + 2
+    assert block["history_reduced_reason"] == "limit"
+    assert set(history[0]) == {
+        "ingested_at", "ingested_commit_sha", "line_coverage_pct", "branch_coverage_pct"
+    }
+    stamps = [point["ingested_at"] for point in history]
+    assert stamps == sorted(stamps)  # oldest first
+    assert stamps[-1].startswith("2026-09-12")  # the newest ingest is kept
+
+    # Repo-wide, like REST: a targeted read does not draw the trend.
+    targeted = await get_health(include=["coverage"], targets=["src/auth/service.py"])
+    assert "history" not in targeted["coverage"]
+
+
+@pytest.mark.asyncio
 async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, session):
     """The explicit file_spread view spreads the cap without changing rank.
 

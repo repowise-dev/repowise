@@ -8,16 +8,23 @@ from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.persistence.crud import coverage_row_dict
 from repowise.server.mcp_server.tool_health.paging import Pager
 
+#: The newest ingests the trend carries; ``history_total`` counts the complete ones kept.
+HISTORY_POINTS = 10
+
 
 def _coverage_block(
     rows: list[Any],
     summary: dict[str, Any],
+    history: list[dict[str, Any]],
     *,
     scoped: bool,
     pager: Pager,
     repo_path: str,
 ) -> dict[str, Any]:
-    """Per-file coverage rows plus the stored repo-wide summary.
+    """Per-file coverage rows, the stored repo-wide summary, and its trend.
+
+    ``history`` is the REST route's shape (one point per complete ingest, oldest
+    first), cut to the newest :data:`HISTORY_POINTS`.
 
     Drop the bulky covered-lines arrays from dashboard mode; full
     detail is available in targeted mode.
@@ -43,6 +50,12 @@ def _coverage_block(
     }
     if len(coverage_payload) < len(rows):
         block["files_reduced_reason"] = "limit"
+    if history:
+        block["history"] = history[-HISTORY_POINTS:]
+        block["history_total"] = len(history)
+        block["history_emitted"] = len(block["history"])
+        if len(history) > HISTORY_POINTS:
+            block["history_reduced_reason"] = "limit"
     return block
 
 

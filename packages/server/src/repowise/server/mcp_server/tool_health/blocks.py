@@ -49,6 +49,7 @@ def add_optional_blocks(
         result["coverage"] = _coverage_block(
             data.coverage_rows,
             data.coverage_summary,
+            data.coverage_history,
             scoped=data.pop.scoped,
             pager=pager,
             repo_path=repo_path,

@@ -176,6 +176,10 @@ def _refresh_editor_stamp(
         # but a stale CLAUDE.md stamp is worth an honest mention.
         if degraded is not None:
             degraded.append(f"Editor file refresh: {exc}")
+    # This run may have stored coverage (or the flag changed): keep the hook in step.
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+    sync_repo_hook(repo_path, console)
 
 
 def _surface_release_news(*, written_by: str | None) -> None:

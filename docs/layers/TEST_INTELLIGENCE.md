@@ -474,31 +474,40 @@ rule above. When changed lines are uncovered, the directive gains one
 uncovered; extend <the hinted tests>", or, when the coverage is stale, a line
 saying to re-run the tests with coverage first.
 
-The loop closes itself in Claude Code and Codex. After a Bash command that
+The loop can close itself in Claude Code and Codex, opt-in per repository
+with `hooks.coverage_reingest: true` in `.repowise/config.yaml`
+(`REPOWISE_HOOK_COVERAGE_REINGEST=1` for one session). It costs a process
+start after every shell command in that repository. After a Bash command that
 runs a whole test suite, such as `pytest`, `python -m pytest`,
 `coverage run -m pytest`, `go test ./...`, `npm test`, `npx vitest run`,
-`jest`, `cargo test`, `cargo llvm-cov`, `mvn test` or `./gradlew test`, the
-augment hook checks the aggregate reports (`coverage.paths`, else the fixed
-default locations such as `coverage/lcov.info`, `coverage.xml` and
-`coverage.out`). When some are newer than the index's last coverage ingest, it
-starts `repowise coverage add` on exactly those reports in the background and
-adds one line to the transcript: "Re-ingesting coverage from
-coverage/lcov.info in the background (log: .repowise/.coverage.log);
-get_change_risk reads it once the ingest finishes."
+`jest`, `cargo test`, `cargo llvm-cov`, `mvn test` or `./gradlew test`,
+passed or failed (not interrupted), the augment hook checks the aggregate
+reports (`coverage.paths`, else the fixed default locations such as
+`coverage/lcov.info`, `coverage.xml` and `coverage.out`). When any is newer
+than the index's last coverage ingest, it starts `repowise coverage add` on
+every watched report in the background and adds one line to the transcript:
+"Re-ingesting coverage from coverage/lcov.info in the background (log:
+.repowise/.coverage.log); get_change_risk reads it once the ingest finishes."
 
 The ingest replaces the stored coverage, so the hook is conservative. It acts
-only in a repository that has ingested coverage before, only on a run that
-does not target some tests (a path, a `::` node id, `-k`, `-run`, `-t`,
-`--testNamePattern` or `--filter` makes a run partial, and a partial report
-must not replace full-suite coverage), never on a coverage.py `.coverage`
-database alone, and not when discovery is customised (`auto_discover: false`
-without `paths`, or custom `artifacts` globs). A `.repowise/.coverage.queued`
-marker keeps a second test run from spawning over an ingest already running
-for the same reports. It costs a few file stats and one SQLite read, only
-after a test command, and reads only a repo-local index. A report that only a
-`**` discovery pattern finds is not watched: name it in `coverage.paths`. Turn
-it off with `hooks.coverage_reingest: false` in `.repowise/config.yaml`
-(`REPOWISE_HOOK_COVERAGE_REINGEST=0` for one session).
+only in a repository that has ingested coverage before, and only on a run
+that does not target some tests: a path, a `::` node id, `-k`, `-run`, `-t`,
+`--testNamePattern`, `--filter`, `--package`, `--workspace`, `-pl`,
+`--projects`, or a short flag's argument the runner does not document as a
+value (`cargo test -p x`) makes a run partial, and a partial report must not
+replace full-suite coverage. It never acts on a coverage.py `.coverage`
+database alone, when discovery is customised (`auto_discover: false` without
+`paths`, or custom `artifacts` globs), or under `REPOWISE_DB_URL`. A
+`.repowise/.coverage.queued` marker keeps a second test run from spawning
+over an ingest already running for the same reports. It costs a few file
+stats and one SQLite read, only after a test command, and reads only a
+repo-local index. A report that only a `**` pattern finds is not watched:
+name it in `coverage.paths` (single-level globs such as `coverage/*.xml` are
+watched).
+
+Claude Code runs it from repo-local entries ([what gets written
+where](../agent/HOOKS.md#what-gets-written-where)); Codex only after a
+successful command, so a failing run there may need `repowise coverage add`.
 
 ## The inferred tier: no coverage report needed
 

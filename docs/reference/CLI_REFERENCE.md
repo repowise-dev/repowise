@@ -1293,7 +1293,15 @@ repowise coverage suggest-gates         # propose path-scoped gates for coverage
 |------|-------------|
 | `--path` | Repo path (defaults to cwd / workspace primary) |
 | `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
+| `--strict` | Also exit non-zero when some report files did not map to the repo tree |
 | `--verbose` / `-v` | Show debug logs while discovering and ingesting coverage |
+
+Each `PATH` is a report path or a quoted glob, relative to cwd, as in
+`coverage check --report`; only when it matches nothing is it read as
+`PATH=PREFIX`, prepending `PREFIX` to the paths inside the report (like
+`path_prefix` in `coverage.paths`). A `PATH` matching no file exits 2. A
+successful ingest also syncs the opt-in coverage re-ingest hook
+(`hooks.coverage_reingest`).
 
 `add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover,
 JaCoCo XML, a Go coverprofile (`go test -coverprofile`), or a coverage.py
@@ -1310,6 +1318,8 @@ per-file coverage; it just skips the map.
 repowise coverage add                       # discover coverage/lcov.info, .coverage, etc.
 repowise coverage add coverage/lcov.info
 repowise coverage add web.lcov api.lcov     # merged, hit wins
+repowise coverage add 'artifacts/**/lcov.info'   # every shard's report
+repowise coverage add web/coverage/lcov.info=web # report paths are relative to web/
 repowise coverage add --verbose             # show ingestion debug logs
 coverage run --contexts=test -m pytest      # produce .coverage with contexts
 repowise coverage add .coverage             # per-file coverage + per-test map

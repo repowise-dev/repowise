@@ -1246,6 +1246,11 @@ code that has moved), and `unknown` when either commit is missing.
 it is null for coverage stored before that record existed. `source_formats`
 lists every report format merged.
 
+In dashboard mode the block also carries `history`, one point per complete
+(not partial) ingest (`ingested_at`, `ingested_commit_sha`, `line_coverage_pct`,
+`branch_coverage_pct`), oldest first, newest 10, with `history_total`,
+`history_emitted` and `history_reduced_reason: "limit"` when cut.
+
 In targeted mode each row also carries a `decay` block: how many of the
 report's covered lines are unchanged since it ran (`confirmed_lines`) and how
 many have moved since (`invalidated_lines`, now unknown rather than uncovered).
@@ -1476,7 +1481,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
-- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, git operations can trigger stale-wiki notices, and a full test run that wrote a fresh coverage report re-ingests it in the background, so `patch_coverage` reads the new run once the ingest finishes (off with `hooks.coverage_reingest: false`).
+- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, git operations can trigger stale-wiki notices, and with `hooks.coverage_reingest: true` (opt-in) a full test run, passing or failing, re-ingests its fresh coverage report in the background ([details](HOOKS.md#what-gets-written-where)).
 - **Codex SessionStart**: Codex receives concise repowise MCP workflow guidance when a session starts.
 - **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 
