@@ -284,7 +284,7 @@ class GraphNode(Base):
     is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_entry_point: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Dead-code exempt: reached from outside the graph. Every entry point is one.
-    is_reachability_root: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_reachability_root: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # The commit ``betweenness`` was last actually computed at. Betweenness is
