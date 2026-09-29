@@ -120,6 +120,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
         self._cycle_subgraph_cache: nx.DiGraph | None = None
+        self._centrality_subgraph_cache: nx.DiGraph | None = None
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
@@ -134,6 +135,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # ``__setstate__`` recreates the lock.
         state = self.__dict__.copy()
         state["_subgraph_lock"] = None
+        # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
+        state["_cycle_subgraph_cache"] = None
+        state["_centrality_subgraph_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -145,6 +149,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # this is an explicit cross-version process boundary — default it rather
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
+        self.__dict__.setdefault("_centrality_subgraph_cache", None)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -166,6 +171,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
         self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
@@ -179,6 +185,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.
