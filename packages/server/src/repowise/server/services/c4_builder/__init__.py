@@ -229,14 +229,13 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
     )[0]
 
     # Files outside this container map to their owning container so cross-
-    # container edges show as component → other-container.
-    file_to_box: dict[str, str] = dict(in_container_index)
-    other_containers_index = await _file_to_container_map(
-        session,
-        repo_id,
-        [c for c in containers if c.id != container.id],
-    )
-    file_to_box.update(other_containers_index)
+    # container edges show as component → other-container. Built from the
+    # all-container map so a root ("") container, which matches every path,
+    # cannot claim this container's files; component mappings go on last.
+    file_to_box: dict[str, str] = {
+        path: cid for path, cid in full_file_to_container.items() if cid != container.id
+    }
+    file_to_box.update(in_container_index)
 
     file_to_external = await external_node_to_system_id(session, repo_id)
     relations = await aggregate_relations(
