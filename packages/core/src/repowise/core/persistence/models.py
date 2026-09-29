@@ -2226,11 +2226,12 @@ class CoverageFile(Base):
 class CoverageIngest(Base):
     """Where the stored ``coverage_files`` rows came from: one row per ingest.
 
-    Replaced together with the rows it describes, so a repository has at most
-    one. Ceiling: no history; a per-ingest trend drops the unique constraint.
-    The path counts are over the report's own file entries, matched or not,
-    which the coverage rows cannot say (they keep only matches). NULL counts
-    mean the writer did not know them.
+    Kept as history: the newest row describes the stored coverage rows, and
+    older ones (pruned past ``COVERAGE_HISTORY_RETENTION``) keep the repo-wide
+    figures of earlier reports for the trend. The path counts are over the
+    report's own file entries, matched or not, which the coverage rows cannot
+    say (they keep only matches). NULL counts mean the writer did not know
+    them; NULL figures mean the row predates them.
     """
 
     __tablename__ = "coverage_ingests"
@@ -2252,8 +2253,16 @@ class CoverageIngest(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
     ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # The repo-wide figures this ingest wrote, aggregated the way the summary
+    # aggregates the stored rows, so the trend reads one row per report.
+    line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    covered_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    __table_args__ = (UniqueConstraint("repository_id", name="uq_coverage_ingests"),)
+    __table_args__ = (
+        Index("ix_coverage_ingests_repo_ingested", "repository_id", "ingested_at"),
+    )
 
 
 class TestCoverageEntry(Base):

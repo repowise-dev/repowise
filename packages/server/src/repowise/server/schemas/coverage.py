@@ -61,6 +61,15 @@ class CoverageSummary(_Strict):
     freshness: CoverageSummaryFreshness | None
 
 
+class CoverageHistoryPoint(_Strict):
+    """One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them."""
+
+    ingested_at: str
+    ingested_commit_sha: str | None
+    line_coverage_pct: float
+    branch_coverage_pct: float | None
+
+
 class CoverageResponse(BaseModel):
     """``GET /health/coverage``. ``basis`` is absent when the graph was not consulted."""
 
@@ -70,3 +79,5 @@ class CoverageResponse(BaseModel):
     modules_total: int
     basis: Literal["measured", "inferred", "none"] | None = None
     inferred: dict[str, Any] | None = None
+    #: Retained reports, oldest first, partial ones left out. Measured basis only.
+    history: list[CoverageHistoryPoint] | None = None

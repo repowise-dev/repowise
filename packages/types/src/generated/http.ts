@@ -708,6 +708,14 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+/** One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them. */
+export interface CoverageHistoryPoint {
+  ingested_at: string;
+  ingested_commit_sha: string | null;
+  line_coverage_pct: number;
+  branch_coverage_pct: number | null;
+}
+
 /** How the report's own file entries mapped to the repository at ingest. */
 export interface CoverageReportPaths {
   total: number;
@@ -725,6 +733,7 @@ export interface CoverageResponse {
   modules_total: number;
   basis?: "measured" | "inferred" | "none" | null;
   inferred?: Record<string, unknown> | null;
+  history?: CoverageHistoryPoint[] | null;
 }
 
 /** The repository's stored coverage, aggregated. Zero counts and nulls when none is stored. */

@@ -123,6 +123,15 @@ whether the measurement matches the indexed commit. Stored patch coverage
 reads the same record, so its report path counts are real numbers rather than
 null.
 
+Ingest records are kept as history, not replaced: each one also stores the
+repo-wide line and branch coverage it measured, and the newest 50 are
+retained. REST `/health/coverage` returns them oldest first as `history`, and
+the Coverage tab draws a trend under the headline figure once there are three
+reports. Partial ingests are left out of the trend, since their figure covers
+a fragment of the repository. A local index created before this change keeps
+a single record per repository (its table still carries the old uniqueness
+rule) until it is rebuilt.
+
 A few rules keep that matching honest in monorepos and mixed layouts:
 
 - A match needs more than the basename when the report names a directory:

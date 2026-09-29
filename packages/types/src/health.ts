@@ -16,7 +16,7 @@
  */
 
 import type { C4IoKind } from "./external-systems.js";
-import type { CoverageSummary } from "./generated/http.js";
+import type { CoverageHistoryPoint, CoverageSummary } from "./generated/http.js";
 import type { Paginated } from "./pagination.js";
 import type { StepClassification, ValidationBasis, ValidationVia } from "./refactoring.js";
 
@@ -1042,6 +1042,7 @@ export interface ModuleCoverageRow {
  * ingest that did not record it.
  */
 export type {
+  CoverageHistoryPoint,
   CoverageReportPaths,
   CoverageSummary,
   CoverageSummaryFreshness,
@@ -1153,6 +1154,11 @@ export interface HealthCoverageResponse {
    * the inferred map carries counts only — never a percentage.
    */
   inferred?: InferredTestMap;
+  /**
+   * One point per retained report, oldest first, partial reports left out.
+   * Present on the measured basis only; absent from an older backend.
+   */
+  history?: CoverageHistoryPoint[];
 }
 
 /* ------------------------------------------------------------------ *

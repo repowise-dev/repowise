@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from sqlalchemy import select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import CoverageFile, CoverageIngest, _new_uuid
+from ...models import CoverageFile, CoverageIngest, _new_uuid, _now_utc
 
 if TYPE_CHECKING:
     from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
     from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
     from repowise.core.analysis.health.coverage.model import FileCoverage
 from .._shared import _BATCH_SIZE
+
+#: Ingest rows kept per repo for the coverage trend; older ones are pruned on write.
+COVERAGE_HISTORY_RETENTION: int = 50
 
 
 async def save_coverage_files(
@@ -25,59 +30,139 @@ async def save_coverage_files(
     source_format: str,
     ingested_commit_sha: str | None = None,
     provenance: CoverageProvenance | None = None,
+    ingested_at: datetime | None = None,
 ) -> None:
     """Replace coverage rows for *repository_id* with *files*, and record the ingest.
 
-    Mirrors the delete-then-insert pattern used by the health writers.
+    Mirrors the delete-then-insert pattern used by the health writers for the
+    per-file rows; the ingest row is appended, with the repo-wide figures of
+    *files*, unless the newest one already says exactly that (then it is
+    restamped), and ingests past ``COVERAGE_HISTORY_RETENTION`` are pruned.
     *files* is a list of ``FileCoverage`` dataclasses (or dicts with the
     same shape). *provenance*, from a writer that resolved the report
     itself, supplies the formats, the path counts and ``mapping_partial``
     (fewer than half the report's files mapped to the repo tree, #1746: a
     property of the ingest, stamped on every row). Without it the ingest
     records ``source_format`` alone and its path counts stay unknown.
+    *ingested_at* defaults to now.
     """
     from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
 
     p = provenance or CoverageProvenance()
-    for model in (CoverageFile, CoverageIngest):
-        existing = await session.execute(select(model).where(model.repository_id == repository_id))
-        for row in existing.scalars().all():
-            await session.delete(row)
+    at = ingested_at or _now_utc()
+    existing = await session.execute(
+        select(CoverageFile).where(CoverageFile.repository_id == repository_id)
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+    if await _ingest_is_single_row(session):
+        await session.execute(
+            delete(CoverageIngest).where(CoverageIngest.repository_id == repository_id)
+        )
     await session.flush()
 
-    session.add(
-        CoverageIngest(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            source_formats_json=json.dumps(list(p.source_formats) or [source_format]),
-            report_path_count=p.report_path_count,
-            matched_path_count=p.matched_path_count,
-            unmatched_path_count=p.unmatched_path_count,
-            ambiguous_path_count=p.ambiguous_path_count,
-            unmatched_sample_json=json.dumps(list(p.unmatched_sample)),
-            mapping_partial=p.mapping_partial,
-            ingested_commit_sha=ingested_commit_sha,
+    columns = [_row_columns(f) for f in files]
+    covered, total, line_pct, branch_pct = _aggregate(
+        (
+            c["covered_line_count"],
+            int(c.get("total_coverable_lines") or 0),
+            c.get("branch_coverage_pct"),
         )
+        for c in columns
     )
+    measured = {
+        "source_formats_json": json.dumps(list(p.source_formats) or [source_format]),
+        "report_path_count": p.report_path_count,
+        "matched_path_count": p.matched_path_count,
+        "unmatched_path_count": p.unmatched_path_count,
+        "ambiguous_path_count": p.ambiguous_path_count,
+        "unmatched_sample_json": json.dumps(list(p.unmatched_sample)),
+        "mapping_partial": p.mapping_partial,
+        # No coverable lines is no measurement, which keeps it off the trend.
+        "line_coverage_pct": line_pct if total else None,
+        "branch_coverage_pct": branch_pct,
+        "covered_lines": covered,
+        "total_lines": total,
+    }
+    newest = (
+        await session.execute(
+            select(CoverageIngest)
+            .where(CoverageIngest.repository_id == repository_id)
+            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if newest is not None and all(getattr(newest, k) == v for k, v in measured.items()):
+        # The same report ingested again (an update that re-ingests, a full
+        # re-index) is one measurement, not a new trend point: restamp it.
+        newest.ingested_at = at
+        newest.ingested_commit_sha = ingested_commit_sha
+    else:
+        session.add(
+            CoverageIngest(
+                id=_new_uuid(),
+                repository_id=repository_id,
+                ingested_at=at,
+                ingested_commit_sha=ingested_commit_sha,
+                **measured,
+            )
+        )
 
-    for i in range(0, len(files), _BATCH_SIZE):
-        for f in files[i : i + _BATCH_SIZE]:
+    for i in range(0, len(columns), _BATCH_SIZE):
+        for c in columns[i : i + _BATCH_SIZE]:
             session.add(
                 CoverageFile(
                     id=_new_uuid(),
                     repository_id=repository_id,
                     source_format=source_format,
+                    ingested_at=at,
                     ingested_commit_sha=ingested_commit_sha,
                     mapping_partial=p.mapping_partial,
-                    **_row_columns(f),
+                    **c,
                 )
             )
         await session.flush()
+    await session.flush()  # the ingest row, when *files* is empty
+
+    history = await session.execute(
+        select(CoverageIngest.id)
+        .where(CoverageIngest.repository_id == repository_id)
+        .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+        .offset(COVERAGE_HISTORY_RETENTION)
+    )
+    stale = list(history.scalars().all())
+    if stale:
+        await session.execute(delete(CoverageIngest).where(CoverageIngest.id.in_(stale)))
+
+
+async def _ingest_is_single_row(session: AsyncSession) -> bool:
+    """Whether the live ``coverage_ingests`` still allows one row per repository.
+
+    Local SQLite stores never run Alembic, and the reconciler that upgrades
+    them adds columns and indexes but never drops a constraint, so a store
+    created before migration 0081 keeps the unique ``repository_id``. There
+    the ingest row is replaced rather than appended: the store keeps working
+    with a one-point history. Ceiling: such a store gains history only once
+    the table is rebuilt (deleting ``.repowise`` and re-indexing does it).
+    """
+
+    def _check(sync_session: Any) -> bool:
+        uniques = inspect(sync_session.connection()).get_unique_constraints("coverage_ingests")
+        return any(u["column_names"] == ["repository_id"] for u in uniques)
+
+    return await session.run_sync(_check)
 
 
 #: Columns the ingest sets for every row, so a per-file input never overrides them.
 _INGEST_COLUMNS = frozenset(
-    {"id", "repository_id", "source_format", "ingested_commit_sha", "mapping_partial"}
+    {
+        "id",
+        "repository_id",
+        "source_format",
+        "ingested_at",
+        "ingested_commit_sha",
+        "mapping_partial",
+    }
 )
 
 
@@ -337,6 +422,67 @@ def _source_formats(ingest: CoverageIngest | None, fallback: str | None) -> list
     return [fallback] if fallback else []
 
 
+def _aggregate(
+    parts: Iterable[tuple[int, int, float | None]],
+) -> tuple[int, int, float, float | None]:
+    """Repo-wide ``(covered, total, line %, branch %)`` from per-file figures.
+
+    *parts* is ``(covered lines, coverable lines, branch %)`` per file. Branch
+    coverage is weighted by coverable lines, over the files that report it.
+    """
+    covered = 0
+    total = 0
+    branch_sum = 0.0
+    branch_weight = 0
+    for file_covered, file_total, branch in parts:
+        covered += file_covered
+        total += file_total
+        if branch is not None:
+            weight = max(file_total, 1)
+            branch_sum += branch * weight
+            branch_weight += weight
+    line_pct = round(covered / total * 100.0, 2) if total else 0.0
+    branch_pct = round(branch_sum / branch_weight, 2) if branch_weight else None
+    return covered, total, line_pct, branch_pct
+
+
+async def load_coverage_history(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = COVERAGE_HISTORY_RETENTION,
+) -> list[dict[str, Any]]:
+    """The newest *limit* ingests' repo-wide figures, oldest first, for a trend.
+
+    Rows written before the figures existed are skipped, and so are partial
+    ingests: their figure is a subset's coverage, not the repository's.
+    """
+    result = await session.execute(
+        select(
+            CoverageIngest.ingested_at,
+            CoverageIngest.ingested_commit_sha,
+            CoverageIngest.line_coverage_pct,
+            CoverageIngest.branch_coverage_pct,
+        )
+        .where(
+            CoverageIngest.repository_id == repository_id,
+            CoverageIngest.line_coverage_pct.is_not(None),
+            CoverageIngest.mapping_partial.is_(False),
+        )
+        .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+        .limit(limit)
+    )
+    return [
+        {
+            "ingested_at": row.ingested_at.isoformat(),
+            "ingested_commit_sha": row.ingested_commit_sha,
+            "line_coverage_pct": row.line_coverage_pct,
+            "branch_coverage_pct": row.branch_coverage_pct,
+        }
+        for row in reversed(result.all())
+    ]
+
+
 async def get_coverage_summary(
     session: AsyncSession,
     repository_id: str,
@@ -367,26 +513,15 @@ async def get_coverage_summary(
         return empty_coverage_summary()
     ingest = (
         await session.execute(
-            select(CoverageIngest).where(CoverageIngest.repository_id == repository_id)
+            select(CoverageIngest)
+            .where(CoverageIngest.repository_id == repository_id)
+            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
-    covered = 0
-    total = 0
-    branch_pcts: list[float] = []
-    branch_weights: list[int] = []
-    for r in rows:
-        covered += _covered_count(r)
-        total += r.total_coverable_lines
-        if r.branch_coverage_pct is not None:
-            branch_pcts.append(r.branch_coverage_pct)
-            branch_weights.append(max(r.total_coverable_lines, 1))
-    line_pct = (covered / total * 100.0) if total else 0.0
-    branch_pct: float | None
-    if branch_pcts:
-        wsum = sum(branch_weights)
-        branch_pct = sum(p * w for p, w in zip(branch_pcts, branch_weights, strict=True)) / wsum
-    else:
-        branch_pct = None
+    covered, total, line_pct, branch_pct = _aggregate(
+        (_covered_count(r), r.total_coverable_lines, r.branch_coverage_pct) for r in rows
+    )
     latest = max(rows, key=lambda r: r.ingested_at)
     # A partial ingest is a whole-table property: every row of the latest
     # delete-then-insert batch carries the same flag, so any row reports the
@@ -398,8 +533,8 @@ async def get_coverage_summary(
         "file_count": len(rows),
         "covered_lines": covered,
         "total_lines": total,
-        "line_coverage_pct": round(line_pct, 2),
-        "branch_coverage_pct": round(branch_pct, 2) if branch_pct is not None else None,
+        "line_coverage_pct": line_pct,
+        "branch_coverage_pct": branch_pct,
         "source_format": latest.source_format,
         "source_formats": _source_formats(ingest, latest.source_format),
         "mapping_partial": mapping_partial,

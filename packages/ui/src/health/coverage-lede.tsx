@@ -14,9 +14,14 @@
 
 import { useMemo } from "react";
 import type { ReactNode } from "react";
-import type { CoverageFileRow, CoverageSummary } from "@repowise-dev/types/health";
+import type {
+  CoverageFileRow,
+  CoverageHistoryPoint,
+  CoverageSummary,
+} from "@repowise-dev/types/health";
 
 import { PageLede } from "../shared/page-lede";
+import { Sparkline } from "./sparkline";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatDate, formatDateTime, formatNumber } from "../lib/format";
 import { coverageBand } from "./tokens";
@@ -29,7 +34,11 @@ export interface CoverageLedeProps {
   moduleCount: number;
   /** Rendered under the prose. */
   action?: ReactNode;
+  /** One point per ingested report, oldest first, for the trend under the figure. */
+  history?: CoverageHistoryPoint[] | undefined;
 }
+
+const MIN_TREND_POINTS = 3;
 
 /** Band order for the split bar: worst first, matching how the tables list. */
 const BANDS = [
@@ -44,6 +53,7 @@ export function CoverageLede({
   files,
   moduleCount,
   action,
+  history,
 }: CoverageLedeProps) {
   const pct = summary.line_coverage_pct;
   const band = pct == null ? null : coverageBand(pct);
@@ -70,6 +80,14 @@ export function CoverageLede({
       pct: Math.round(((lines[i] ?? 0) / total) * 1000) / 10,
     })).filter((b) => b.pct > 0);
   }, [files]);
+
+  // Two reports are a comparison, not a trend; the line starts at three. The
+  // history leaves partial reports out, so beside a partial headline it would
+  // end on a different figure than the one it sits under.
+  const trend =
+    !summary.mapping_partial && history && history.length >= MIN_TREND_POINTS
+      ? history.map((p) => p.line_coverage_pct)
+      : null;
 
   const stats: RibbonStat[] = [
     {
@@ -110,7 +128,14 @@ export function CoverageLede({
         unit="of coverable lines"
         layout="beside"
         {...(action ? { action } : {})}
-        figureFooter={split ? <BandSplit split={split} /> : undefined}
+        figureFooter={
+          split || trend ? (
+            <div className="space-y-3">
+              {split ? <BandSplit split={split} /> : null}
+              {trend ? <CoverageTrend values={trend} /> : null}
+            </div>
+          ) : undefined
+        }
       >
         <p>
           Tests reach{" "}
@@ -187,6 +212,33 @@ function StaleNotice({ summary }: { summary: CoverageSummary }) {
       , so its line numbers may describe code that has since moved. Run the
       tests and ingest again to bring it level.
     </p>
+  );
+}
+
+/**
+ * Line coverage across the retained reports, on the full 0 to 100 scale so a
+ * small move reads as small. Neutral ink: a direction is not a verdict, and
+ * the sentence says which way it went.
+ */
+function CoverageTrend({ values }: { values: number[] }) {
+  // Rounded before subtracting, so the delta is the gap between the two
+  // figures the sentence prints.
+  const round = (v: number) => Math.round(v * 10) / 10;
+  const first = round(values[0]!);
+  const last = round(values[values.length - 1]!);
+  const delta = round(last - first);
+  const span = `across the last ${values.length} reports`;
+  const sentence =
+    delta !== 0
+      ? `${delta > 0 ? "Up" : "Down"} ${Math.abs(delta).toFixed(1)} points ${span}, from ${first.toFixed(1)}% to ${last.toFixed(1)}%.`
+      : values.every((v) => round(v) === last)
+        ? `Unchanged at ${last.toFixed(1)}% ${span}.`
+        : `Back at ${last.toFixed(1)}% ${span}.`;
+  return (
+    <div className="flex items-center gap-3 text-[var(--color-text-tertiary)]">
+      <Sparkline values={values} width={96} height={24} domain={[0, 100]} />
+      <p className="text-xs tabular-nums">{sentence}</p>
+    </div>
   );
 }
 

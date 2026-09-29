@@ -103,6 +103,13 @@ async def health_coverage(
     )
     if summary.get("ingested_at") is not None:
         summary = {**summary, "ingested_at": summary["ingested_at"].isoformat()}
+    # One point per ingested report, oldest first; measured basis only, and not
+    # on the one-file or no-module reads (the tab badge), which never draw it.
+    history = (
+        {}
+        if file_path or module_limit == 0
+        else {"history": await crud.load_coverage_history(session, repo_id)}
+    )
 
     if file_path:
         # The one caller that wants the covered-line set, for one file.
@@ -158,6 +165,7 @@ async def health_coverage(
                 "modules": module_rows[:module_limit] if module_limit else [],
                 "modules_total": len(module_rows),
                 "inferred": inferred["inferred"],
+                **history,
             }
 
     return {
@@ -166,6 +174,7 @@ async def health_coverage(
         "files": files,
         "modules": module_rows[:module_limit] if module_limit else [],
         "modules_total": len(module_rows),
+        **history,
     }
 
 
