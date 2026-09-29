@@ -116,22 +116,48 @@ def declared_workspace_members(repo_root: Path) -> dict[str, set[str]]:
     return {name: dirs for name, dirs in found.items() if dirs is not None}
 
 
-def manifest_package_name(manifest: Path) -> str | None:
-    """The package name *manifest* declares, or None when it names none."""
-    name: object = None
+def _manifest_field(manifest: Path, key: str) -> str | None:
+    """A top-level package field (``name``, ``description``) *manifest* declares."""
+    value: object = None
     if manifest.name == "package.json":
         try:
             data = json.loads(manifest.read_text(encoding="utf-8", errors="ignore"))
         except (OSError, ValueError):
             return None
-        name = data.get("name") if isinstance(data, dict) else None
+        value = data.get(key) if isinstance(data, dict) else None
     elif manifest.name in ("pyproject.toml", "Cargo.toml"):
         data = _toml(manifest)
         section = data.get("project") or data.get("package")
-        if not isinstance(section, dict) or not section.get("name"):
+        if not isinstance(section, dict) or not section.get(key):
             tool = data.get("tool")
             section = tool.get("poetry") if isinstance(tool, dict) else None
-        name = section.get("name") if isinstance(section, dict) else None
-    elif manifest.name == "go.mod":
+        value = section.get(key) if isinstance(section, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def manifest_package_name(manifest: Path) -> str | None:
+    """The package name *manifest* declares, or None when it names none."""
+    if manifest.name == "go.mod":
         name = _read_module_directive(manifest)
-    return name.strip() if isinstance(name, str) and name.strip() else None
+        return name.strip() if name and name.strip() else None
+    return _manifest_field(manifest, "name")
+
+
+_ROOT_MANIFESTS = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+
+
+def root_description(repo_root: Path) -> str | None:
+    """The ``description`` the repo's root manifest gives itself, if any."""
+    for filename in _ROOT_MANIFESTS:
+        text = _manifest_field(repo_root / filename, "description")
+        if text:
+            return text
+    return None
+
+
+def first_party_package_names(repo_root: Path) -> set[str]:
+    """Names of the root package and every declared workspace member."""
+    manifests = [repo_root / f for f in _ROOT_MANIFESTS]
+    for filename, dirs in declared_workspace_members(repo_root).items():
+        manifests.extend(repo_root / rel / filename for rel in dirs)
+    return {name for m in manifests if m.is_file() and (name := manifest_package_name(m))}

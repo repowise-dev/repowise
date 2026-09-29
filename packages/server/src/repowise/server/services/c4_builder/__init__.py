@@ -10,7 +10,8 @@ Public API
 
 All three reuse the same persisted graph (``graph_nodes``, ``graph_edges``)
 and the ``external_systems`` table populated during ingestion. No on-disk
-re-scan is performed at request time.
+re-scan is performed at request time; only the L1 system description reads
+the root manifest and README.
 """
 
 from __future__ import annotations
@@ -18,11 +19,13 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import replace
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
+from repowise.core.ingestion.workspace_members import root_description
 from repowise.core.persistence import ExternalSystem, Repository
 from repowise.core.persistence.crud import (
     code_file_rows,
@@ -31,6 +34,8 @@ from repowise.core.persistence.crud import (
     get_kg_tour_steps,
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_related_path
 
 from .actors import derive_actors
 from .components import detect_components, detect_components_for_all
@@ -77,20 +82,36 @@ async def load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
     return result.scalar_one_or_none()
 
 
+#: What a System Context shows: runtime services and frameworks. Libraries
+#: and tools are implementation detail and stay on L2/L3.
+_CONTEXT_CATEGORIES = ("service", "framework")
+
+
 async def _external_views(
-    session: AsyncSession, repo_id: str
+    session: AsyncSession, repo_id: str, *, context_only: bool = False
 ) -> tuple[list[ExternalSystemView], dict[str, str]]:
     """Return the deduplicated list of ExternalSystemView (one per name) and
     a map from each name → ``ext:<name>`` id.
 
     Multi-manifest deps collapse: we pick the highest-category entry
     (framework > service > tool > library) so the UI shows the most
-    interesting label.
+    interesting label. ``context_only`` keeps the non-dev service and
+    framework rows an L1 shows, declared by the system itself rather than
+    its tests, examples or docs site.
     """
-    result = await session.execute(
-        select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
-    )
+    query = select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
+    if context_only:
+        query = query.where(
+            ExternalSystem.is_dev_dep.is_(False),
+            ExternalSystem.category.in_(_CONTEXT_CATEGORIES),
+        )
+    result = await session.execute(query)
     rows = list(result.scalars())
+    if context_only:
+        rows = [
+            r for r in rows
+            if not (is_support_path(r.declared_in) or is_test_related_path(r.declared_in))
+        ]
     priority = {"framework": 3, "service": 2, "tool": 1, "library": 0}
     by_name: dict[str, ExternalSystem] = {}
     for row in rows:
@@ -126,7 +147,29 @@ def _is_external_box(box_id: str) -> bool:
 def _system_for(repo: Repository | None, repo_id: str) -> System:
     if repo is None:
         return System(id=render(SystemId(repo_id)), name=repo_id)
-    return System(id=render(SystemId(repo.id)), name=repo.name, description="")
+    return System(
+        id=render(SystemId(repo.id)),
+        name=repo.name,
+        description=_system_description(repo.local_path),
+    )
+
+
+def _system_description(local_path: str | None) -> str:
+    """The root manifest's description, else the README's first opening paragraph."""
+    if not local_path:
+        return ""
+    root = Path(local_path)
+    text = root_description(root)
+    if text:
+        return text
+    # Lazy: the generation package is heavy to import for one file read.
+    from repowise.core.generation.context.readme_digest import readme_digest
+
+    for block in readme_digest(root).split("\n\n"):
+        _, _, paragraph = block.partition("\n")
+        if paragraph.strip():
+            return paragraph.strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +201,7 @@ async def _actors_for(
 async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
-    externals, _ = await _external_views(session, repo_id)
+    externals, _ = await _external_views(session, repo_id, context_only=True)
 
     people, relations = await _actors_for(session, repo_id, system)
     for ext in externals:
