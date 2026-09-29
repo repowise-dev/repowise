@@ -90,6 +90,15 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
         [3, 3],
         [7, 9],
       ],
+      risk: {
+        fix_pressure: 2,
+        dependents: 5,
+        hotspot: true,
+        bug_magnet: false,
+        basis: "git_and_index",
+        risky: true,
+        reasons: ["hotspot"],
+      },
     },
     {
       file_path: "src/new.ts",
@@ -99,8 +108,17 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
       covered_line_count: 0,
       patch_coverage_pct: null,
       uncovered_ranges: [],
+      risk: null,
     },
   ],
+  risky: {
+    file_count: 1,
+    covered_line_count: 2,
+    coverable_line_count: 3,
+    patch_coverage_pct: 66.66,
+    threshold: null,
+    gate: "not_set",
+  },
   scope: {
     label: "coverage.xml",
     source_formats: ["cobertura"],
@@ -469,7 +487,9 @@ describe("risk App", () => {
     expect(screen.queryByText(/test recommendation/)).toBeNull();
   });
 
-  it("reports patch coverage of the range with a denominator and its gaps", async () => {
+  // The summary's own wording, ordering and risk labels are pinned by its
+  // component test in packages/ui; this only checks the view wires it up.
+  it("shows the range's patch coverage and opens a listed file", async () => {
     const riskRange = vi
       .fn()
       .mockResolvedValue({ ...REPORT, patchCoverage: PATCH_COVERAGE });
@@ -483,7 +503,6 @@ describe("risk App", () => {
       />,
     );
 
-    // The panel renders the shared summary, whose own tests own the wording.
     expect(await screen.findByText("66.6%")).toBeTruthy();
     expect(screen.getByRole("list", { name: "Path-scoped gates" })).toBeTruthy();
 

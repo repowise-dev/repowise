@@ -380,10 +380,19 @@ async def health_coverage_patch(
     coverage has been ingested, which is not the same as 0%. Honours
     ``coverage.ignore`` and judges the path-scoped gates in ``coverage.gates``
     (with ``coverage.min_coverable_lines``) on current coverage and valid
-    config; the whole-change threshold stays with the CLI gate.
+    config; the whole-change threshold stays with the CLI gate. Each file row
+    carries its risk, from the index and the checkout's git history.
     """
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.core.analysis.health.coverage import configured_coverage
-    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+    from repowise.core.analysis.patch_coverage import (
+        assess_risks,
+        attach_risk,
+        read_git_fix_history,
+        read_index_facts,
+        stored_patch_coverage,
+    )
 
     changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
     patch = await stored_patch_coverage(
@@ -394,4 +403,13 @@ async def health_coverage_patch(
         head_commit=head_sha or None,
         config=configured_coverage(repo.local_path),
     )
-    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None
+    if patch is None:
+        return None
+    paths = [f.file_path for f in patch.files]
+    try:
+        index = await read_index_facts(session, repo.id, paths)
+    except SQLAlchemyError:
+        index = {}
+    git = await asyncio.to_thread(read_git_fix_history, repo.local_path, f"{base}...{head}")
+    patch = attach_risk(patch, assess_risks(paths, git, index))
+    return PatchCoverageResponse.model_validate(patch.to_dict())

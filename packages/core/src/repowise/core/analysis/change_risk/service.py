@@ -118,6 +118,26 @@ def range_anchor(repo_path: str, base: str, head: str) -> str:
     return merge_base or base
 
 
+def history_ref(repo_path: str, revspec: str | None, *, working_tree: bool = False) -> str:
+    """The ref a change's fix history is read at: strictly before the change.
+
+    Uncommitted work reads at ``HEAD``; a range at its merge-base, not at
+    ``base``'s tip (with three dots the diff starts there, so base's later
+    commits are not this change's ground); a commit at its parent, so it is
+    never credited with fixes that only landed because of it. A root commit's
+    parent does not resolve, which yields an empty record: the honest answer
+    for the first commit in a repository.
+    """
+    if working_tree:
+        return "HEAD"
+    target = revspec or "HEAD"
+    parts = split_revspec(target)
+    if parts is not None:
+        base, _, head = parts
+        return range_anchor(repo_path, base, head)
+    return f"{target}^"
+
+
 def normalize_extensions(extensions: tuple[str, ...]) -> tuple[str, ...]:
     """Add a leading dot to requested suffixes, matching the CLI contract."""
     return tuple(ext if ext.startswith(".") else f".{ext}" for ext in extensions)
@@ -156,10 +176,8 @@ def score_live_change(
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
     working_tree = uncommitted is not None and uncommitted.nf > 0
-    # Ref whose history the fix record is read from. Strictly *before* the
-    # change being scored, so a commit is never credited with fixes that only
-    # landed because of it.
-    history_ref = "HEAD"
+    # Ref whose history the fix record is read from (see ``history_ref``).
+    history = history_ref(repo_path, target, working_tree=working_tree)
     if working_tree:
         features = uncommitted
         anchor, excluded_ref = "HEAD", ""
@@ -173,23 +191,17 @@ def score_live_change(
             exclude_patterns=effective_excludes,
             sep=sep,
         )
-        # Fix history is read at the fork point, not at ``base``'s tip: with
-        # three-dot syntax the diff starts at the merge-base, so base's later
-        # commits are not part of this change's ground.
-        anchor = range_anchor(repo_path, base, head)
+        # The baseline shares the fix history's anchor: the range's merge-base.
+        anchor = history
         excluded_ref = ""
-        history_ref = anchor
     else:
         features = extract_commit_features(
             repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
         )
         anchor, excluded_ref = _commit_anchor(repo_path, target)
-        # A root commit has no parent; its own ref then yields an empty record,
-        # which is the honest answer for the first commit in a repository.
-        history_ref = f"{target}^"
 
     try:
-        pressure: dict[str, float] | None = fix_pressure(repo_path, history_ref)
+        pressure: dict[str, float] | None = fix_pressure(repo_path, history)
     except FixHistoryUnavailableError:
         pressure = None
 

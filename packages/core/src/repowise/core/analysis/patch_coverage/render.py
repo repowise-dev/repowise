@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
 from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
+from .risk import FileRisk
 
 #: Uncovered ranges shown per file before "+N more".
 RANGE_LIMIT = 8
@@ -56,19 +57,22 @@ def _flat_headline(pc: PatchCoverage, *, markdown: bool) -> str:
         f"{bold}Patch coverage {fmt_pct(pct)}{bold} ({pc.covered_line_count} of "
         f"{pc.coverable_line_count} changed executable lines covered)"
     )
-    gate = pc.flat_gate
+    return text + _gate_suffix(pc.flat_gate, pc.threshold, pc.min_coverable_lines, "gate")
+
+
+def _gate_suffix(gate: str, threshold: float | None, min_lines: int | None, noun: str) -> str:
+    """`` · meets the 80.0% gate`` and its kin, or ``""`` for an unset or unjudged gate."""
     if gate == "fail":
-        text += f" · below the {fmt_pct(pc.threshold)} gate"
-    elif gate == "pass":
-        text += f" · meets the {fmt_pct(pc.threshold)} gate"
-    elif gate == "too_small":
-        n = pc.min_coverable_lines
-        lines = "line" if n == 1 else "lines"
-        text += (
-            f" · below the {fmt_pct(pc.threshold)} gate, not applied: fewer than {n} "
+        return f" · below the {fmt_pct(threshold)} {noun}"
+    if gate == "pass":
+        return f" · meets the {fmt_pct(threshold)} {noun}"
+    if gate == "too_small":
+        lines = "line" if min_lines == 1 else "lines"
+        return (
+            f" · below the {fmt_pct(threshold)} {noun}, not applied: fewer than {min_lines} "
             f"changed executable {lines} (min_coverable_lines)"
         )
-    return text
+    return ""
 
 
 def path_gate_verdict(g: PathGateResult) -> str:
@@ -125,6 +129,80 @@ def _no_data_words(g: PathGateResult) -> str:
     return _PATH_GATE_TEXT["no_data"] + unmeasured
 
 
+def risky_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
+    """The verdict over risky files, or ``""`` when there is nothing to say."""
+    if all(f.risk is None for f in pc.files):
+        return ""
+    bold = "**" if markdown else ""
+    pct = pc.risky_pct
+    if pct is None:
+        if pc.risky_threshold is None:
+            return ""
+        return (
+            "No changed executable line is in a file history marks as risky. "
+            f"The {fmt_pct(pc.risky_threshold)} risky-file gate was not applied."
+        )
+    text = (
+        f"{bold}Risky files {fmt_pct(pct)}{bold} ({pc.risky_covered_line_count} of "
+        f"{pc.risky_coverable_line_count} changed executable lines covered in "
+        f"{plural(len(pc.risky_files), 'risky file')})"
+    )
+    return text + _gate_suffix(
+        pc.risky_gate, pc.risky_threshold, pc.min_coverable_lines, "risky-file gate"
+    )
+
+
+def risk_order_key(f: FilePatchCoverage) -> tuple:
+    """Risky first, then fix pressure, then dependents, then uncovered lines."""
+    risk = f.risk or FileRisk()
+    return (
+        not risk.risky,
+        -(risk.fix_pressure or 0.0),
+        -(risk.dependents or 0),
+        -f.uncovered_line_count,
+        f.file_path,
+    )
+
+
+def risk_words(risk: FileRisk | None) -> str:
+    """``"hotspot, bug-fix weight 3.2, 14 dependents"``, ``"none known"`` or ``"unknown"``."""
+    if risk is None or risk.basis == "unavailable":
+        return "unknown"
+    parts = list(risk.reasons)
+    if risk.fix_pressure:
+        parts.append(f"bug-fix weight {risk.fix_pressure:.1f}")
+    if risk.dependents:
+        parts.append(plural(risk.dependents, "dependent"))
+    return ", ".join(parts) or "none known"
+
+
+def risk_basis_line(pc: PatchCoverage) -> str:
+    """Where the risk came from, when that is not the index for every row; else ``""``."""
+    bases = [f.risk.basis for f in pc.files if f.risk is not None]
+    unknown = bases.count("unavailable")
+    parts = [
+        _git_only_text(bases.count("git"), len(bases)),
+        "git fix history could not be read" if "index" in bases else "",
+        f"risk could not be read for {plural(unknown, 'file')}" if unknown else "",
+    ]
+    return " · ".join(part for part in parts if part)
+
+
+def _git_only_text(git_only: int, total: int) -> str:
+    """The basis clause for rows the index has no data for, or ``""``."""
+    if not git_only:
+        return ""
+    if git_only == total:
+        return (
+            "Risk is from git bug-fix history alone; an index adds hotspot, bug-magnet "
+            "and dependent counts"
+        )
+    return (
+        f"Risk for {git_only} of {plural(total, 'file')} is from git bug-fix "
+        "history alone: the index has no row for them yet"
+    )
+
+
 def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
     """The diff, the reports and how many changed files were measured."""
     scope = pc.scope
@@ -154,75 +232,128 @@ def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
 
 
 def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
-    """Files a reader should look at: uncovered changes first, then unmeasurable ones."""
+    """Files a reader should look at: uncovered changes first, then unmeasurable ones.
+
+    Within each group the riskiest file leads (:func:`risk_order_key`).
+    """
     gaps = sorted(
-        (f for f in pc.with_status("measured") if f.uncovered_line_count),
-        key=lambda f: (-f.uncovered_line_count, f.file_path),
+        (f for f in pc.with_status("measured") if f.uncovered_line_count), key=risk_order_key
     )
-    return gaps + pc.with_status("not_in_report") + pc.with_status("no_line_data")
+    unmeasured = sorted(
+        pc.with_status("not_in_report") + pc.with_status("no_line_data"),
+        key=lambda f: (f.status != "not_in_report", *risk_order_key(f)),
+    )
+    return gaps + unmeasured
 
 
 def render_markdown(pc: PatchCoverage) -> str:
     """Markdown for a CI step summary or PR comment."""
-    out = [headline(pc), "", scope_line(pc)]
-    if pc.path_gates:
-        out += ["", "| Path-scoped gate | Verdict | Covered changed lines | Threshold |"]
-        out += ["|---|---|---|---|"]
-        # Gates failing the change first, so the cap never hides one.
-        for g in sorted(pc.path_gates, key=lambda g: not g.fails_change)[:ROW_LIMIT]:
-            name, verdict, covered, threshold = path_gate_row(g)
-            out.append(f"| `{cell(name)}` | {verdict} | {covered} | {threshold} |")
-        if len(pc.path_gates) > ROW_LIMIT:
-            out += ["", more_line(len(pc.path_gates) - ROW_LIMIT, "path-scoped gates")]
+    out = [headline(pc)]
+    if risky := risky_line(pc):
+        out += ["", risky]
+    out += ["", scope_line(pc)]
+    if basis := risk_basis_line(pc):
+        out += ["", basis + "."]
+    out += _path_gate_table(pc)
+    out += _gap_table(pc)
+    out += _details(pc.with_status("not_in_report"), "not in the coverage report")
+    out += _details(pc.with_status("no_line_data"), "in a report without line data")
+    return "\n".join(out) + "\n"
+
+
+def _path_gate_table(pc: PatchCoverage) -> list[str]:
+    if not pc.path_gates:
+        return []
+    out = ["", "| Path-scoped gate | Verdict | Covered changed lines | Threshold |", "|---|---|---|---|"]
+    # Gates failing the change first, so the cap never hides one.
+    for g in sorted(pc.path_gates, key=lambda g: not g.fails_change)[:ROW_LIMIT]:
+        name, verdict, covered, threshold = path_gate_row(g)
+        out.append(f"| `{cell(name)}` | {verdict} | {covered} | {threshold} |")
+    if len(pc.path_gates) > ROW_LIMIT:
+        out += ["", more_line(len(pc.path_gates) - ROW_LIMIT, "path-scoped gates")]
+    return out
+
+
+def _gap_table(pc: PatchCoverage) -> list[str]:
+    """Files with uncovered changed lines, riskiest first; a Risk column once risk is read."""
     gaps = [f for f in attention_rows(pc) if f.status == "measured"]
-    if gaps:
-        out += ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
+    if not gaps:
+        return []
+    if any(f.risk is not None for f in pc.files):
+        out = ["", "| File | Risk | Uncovered changed lines | Covered |", "|---|---|---|---|"]
+        out += [
+            f"| `{cell(f.file_path)}` | {cell(risk_words(f.risk))} | "
+            f"{format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
+            f"{f.covered_line_count} of {f.coverable_line_count} |"
+            for f in gaps[:ROW_LIMIT]
+        ]
+    else:
+        out = ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
         out += [
             f"| `{cell(f.file_path)}` | {format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
             f"{f.covered_line_count} of {f.coverable_line_count} |"
             for f in gaps[:ROW_LIMIT]
         ]
-        if len(gaps) > ROW_LIMIT:
-            out += ["", more_line(len(gaps) - ROW_LIMIT, "files with uncovered changed lines")]
-    out += _details(pc.with_status("not_in_report"), "not in the coverage report")
-    out += _details(pc.with_status("no_line_data"), "in a report without line data")
-    return "\n".join(out) + "\n"
+    if len(gaps) > ROW_LIMIT:
+        out += ["", more_line(len(gaps) - ROW_LIMIT, "files with uncovered changed lines")]
+    return out
 
 
 def github_annotations(pc: PatchCoverage) -> list[str]:
     """GitHub Actions workflow commands for a change's patch coverage.
 
     A failed gate is an error, and so is each failing path-scoped gate that is
-    not informational; one exempted by the small-change tolerance, and an
-    informational gate below its threshold, is a notice, so neither is silent. The largest uncovered ranges are
-    marked, capped at what GitHub displays, with a notice counting the rest.
+    not informational and a failing risky-file gate; one exempted by the
+    small-change tolerance, and an informational gate below its threshold, is
+    a notice, so neither is silent. Uncovered ranges are marked riskiest file
+    first, then largest range, capped at what GitHub displays, with a notice
+    counting the rest.
     """
     ranges = sorted(
-        ((f.file_path, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
-        key=lambda r: (r[1] - r[2], r[0], r[1]),
+        ((f, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
+        key=lambda r: (*risk_order_key(r[0])[:3], r[1] - r[2], r[0].file_path, r[1]),
     )
-    warnings = [
-        github.annotation(
-            "warning",
-            f"Changed {_span(a, b)} not covered by tests",
-            file=path,
-            line=a,
-            end_line=b,
-            title="Uncovered change",
-        )
-        for path, a, b in ranges
+    warnings = [_range_annotation(f, a, b) for f, a, b in ranges]
+    verdict = [
+        *_gate_annotations(pc.flat_gate, _flat_headline(pc, markdown=False)),
+        *_path_gate_annotations(pc),
+        *_gate_annotations(pc.risky_gate, risky_line(pc, markdown=False)),
     ]
-    verdict = []
-    if pc.flat_gate == "fail":
-        verdict = [github.error(_flat_headline(pc, markdown=False))]
-    elif pc.flat_gate == "too_small":
-        verdict = [github.notice(_flat_headline(pc, markdown=False))]
+    return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
+
+
+def _gate_annotations(gate: str, text: str) -> list[str]:
+    """An error for a failed gate, a notice for one the tolerance exempted."""
+    if gate == "fail":
+        return [github.error(text)]
+    if gate == "too_small":
+        return [github.notice(text)]
+    return []
+
+
+def _path_gate_annotations(pc: PatchCoverage) -> list[str]:
+    out = []
     for g in pc.path_gates:
         if g.fails_change:
-            verdict.append(github.error(f"Fails: {path_gate_verdict(g)}."))
+            out.append(github.error(f"Fails: {path_gate_verdict(g)}."))
         elif g.informational and g.gate == "fail":
-            verdict.append(github.notice(f"Informational: {path_gate_verdict(g)}."))
-    return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
+            out.append(github.notice(f"Informational: {path_gate_verdict(g)}."))
+    return out
+
+
+def _range_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
+    risky = f.risk is not None and f.risk.risky
+    message = f"Changed {_span(a, b)} not covered by tests"
+    if risky:
+        message += f" ({risk_words(f.risk)})"
+    return github.annotation(
+        "warning",
+        message,
+        file=f.file_path,
+        line=a,
+        end_line=b,
+        title="Uncovered change in a risky file" if risky else "Uncovered change",
+    )
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:

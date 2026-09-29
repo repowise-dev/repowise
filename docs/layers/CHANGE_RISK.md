@@ -49,6 +49,50 @@ those patterns apply automatically and are combined with any command-line
 flags. For example, `tests/` excludes that directory recursively, while
 `test_*.py` excludes matching test filenames anywhere in the repository.
 
+## In CI
+
+`--fail-above-percentile P` turns the command into a gate on
+`risk_percentile`: it ranks the diff-shape score against recent commits, and
+the absolute 0-10 value never decides.
+
+```bash
+repowise risk --fail-above-percentile 95 --format github
+repowise risk origin/main...HEAD --fail-above-percentile 95 --format markdown
+```
+
+With the flag, or with `--format markdown` or `github`, and no revspec, the
+subject is the CI change: the pull request's target branch (from the CI's
+variables, else the remote's default branch) `...HEAD`. A CI checkout of a
+pull request is a merge commit, so `HEAD` alone would be the wrong change.
+Otherwise the default stays "uncommitted work, else `HEAD`".
+
+Exit codes are the shared CI ones: `0` at or below the percentile, `1` above
+it, `2` when the gate cannot evaluate. A change with no percentile cannot be
+gated: `--baseline 0` turns ranking off, and a shallow clone with fewer than 8
+recent commits has nothing to rank against, so fetch full history. At a
+percentile P roughly (100 - P)% of changes fail by construction; a failure asks
+for a split or a second reviewer, not a code fix.
+
+The table prints the verdict under the review priority. `json` adds
+`"gate": {"fail_above_percentile": P, "percentile": <unrounded>, "status":
+"pass" | "fail"}`; `percentile` is what the gate compared, since
+`risk_percentile` is rounded. `markdown` leads with the verdict ("**Above the
+95th percentile gate**: larger and more spread out than 97% of recent
+commits"), then the range, the sample, the lines, files and directories, the
+fix-history rank, and the files with bug-fix history. `github` writes an
+`::error::` when the gate fails (a `::notice::` otherwise) plus the markdown in
+the job summary. `markdown` and `github` are not for `--target`, which stays
+`table` or `json`.
+
+A revspec git cannot read (an unknown revision, not a repository, a missing
+merge-base) exits `2` on every revspec run, gated or not. It used to exit `1`,
+which a pipeline would have read as a failed gate.
+
+The GitHub Action runs it as the `risk` check (input
+`risk-fail-above-percentile`; empty reports the rank without gating), and the
+GitLab template as the `repowise-risk` job when
+`REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set. See [CI](../start/CI.md).
+
 ## Fix history: where the change lands
 
 The first block in the result is `fix_history`, and it is the one to act on. It

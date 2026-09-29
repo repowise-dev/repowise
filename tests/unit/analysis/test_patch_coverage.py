@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.core.analysis.changed_lines import line_ranges
 from repowise.core.analysis.health.coverage import PathGate, file_coverage
 from repowise.core.analysis.patch_coverage import (
+    FileRisk,
+    GitFixHistory,
+    IndexFacts,
     PatchScope,
+    assess_risks,
+    attach_risk,
+    attention_rows,
     compute_patch_coverage,
     fmt_pct,
     github_annotations,
     headline,
     render_markdown,
+    risky_line,
 )
 
 
@@ -248,6 +257,194 @@ def test_exact_threshold_passes_and_reads_exactly() -> None:
     assert pc.gate == "pass"
     assert "57.0%" in headline(pc)
     assert pc.to_dict()["patch_coverage_pct"] == 57.0
+
+
+# ---------------------------------------------------------------------------
+# Risk: which files are risky, the order rows read in, the risky-file gate
+# ---------------------------------------------------------------------------
+
+
+def _git_history(pressure: dict[str, float]) -> GitFixHistory:
+    # As read_git_fix_history builds it: the files with any fix history.
+    return GitFixHistory(pressure, tuple(sorted(v for v in pressure.values() if v > 0)))
+
+
+def test_git_only_risk_is_the_top_quartile_of_files_with_fix_history() -> None:
+    # Many files fixed once or twice, one fixed a lot: only that one is risky,
+    # however many never-fixed files the repository also has.
+    pressure = {f"f{i}.py": 1.0 + i / 10 for i in range(8)} | {"hot.py": 6.0}
+    risks = assess_risks(["hot.py", "f0.py", "f7.py", "cold.py"], _git_history(pressure), {})
+
+    assert risks["hot.py"].risky
+    assert risks["hot.py"].reasons == ("top quartile of files with bug-fix history",)
+    # f7 ranks 7 of 8 others (0.875): top quartile. f0 has a fix but ranks last.
+    assert risks["f7.py"].risky
+    assert not risks["f0.py"].risky
+    # Zero pressure is never risky.
+    assert not risks["cold.py"].risky
+    assert {r.basis for r in risks.values()} == {"git"}
+    assert risks["cold.py"].dependents is None and risks["cold.py"].hotspot is None
+
+
+def test_one_file_with_fix_history_ranks_nothing() -> None:
+    risks = assess_risks(["a.py"], _git_history({"a.py": 3.0}), {})
+
+    assert not risks["a.py"].risky
+
+
+def test_history_ref_reads_before_the_change() -> None:
+    from repowise.core.analysis.change_risk.service import history_ref
+
+    assert history_ref(".", "abc123") == "abc123^"
+    assert history_ref(".", None) == "HEAD^"
+    assert history_ref(".", None, working_tree=True) == "HEAD"
+    assert history_ref(".", "main...HEAD", working_tree=True) == "HEAD"
+
+
+def test_index_rows_use_the_index_flags_and_a_new_file_falls_back_to_git() -> None:
+    git = _git_history({"hot.py": 9.0, "a.py": 1.0, "new.py": 0.0})
+    index = {
+        "hot.py": IndexFacts(hotspot=False, bug_magnet=False, dependents=3),
+        "flagged.py": IndexFacts(hotspot=True, bug_magnet=True, dependents=14),
+    }
+    risks = assess_risks(["hot.py", "flagged.py", "new.py"], git, index)
+
+    # With index data the index decides, even against a high git pressure.
+    assert not risks["hot.py"].risky and risks["hot.py"].basis == "git_and_index"
+    assert risks["flagged.py"].reasons == ("hotspot", "bug magnet")
+    assert risks["new.py"].basis == "git"
+    # Git unreadable: index rows keep their flags, the rest are unavailable.
+    no_git = assess_risks(["flagged.py", "new.py"], None, index)
+    assert no_git["flagged.py"].basis == "index" and no_git["flagged.py"].risky
+    assert no_git["new.py"] == FileRisk()
+
+
+def _risk(risky: bool, pressure: float = 0.0, dependents: int | None = None) -> FileRisk:
+    return FileRisk(
+        fix_pressure=pressure,
+        dependents=dependents,
+        basis="git",
+        risky=risky,
+        reasons=("hotspot",) if risky else (),
+    )
+
+
+def _three_files():
+    coverage = {
+        **_cov("big.py", covered=[], coverable=[1, 2, 3, 4, 5]),
+        **_cov("fixed.py", covered=[], coverable=[1, 2]),
+        **_cov("risky.py", covered=[1], coverable=[1, 2]),
+    }
+    changed = {"big.py": {1, 2, 3, 4, 5}, "fixed.py": {1, 2}, "risky.py": {1, 2}}
+    risks = {
+        "big.py": _risk(False),
+        "fixed.py": _risk(False, pressure=2.0),
+        "risky.py": _risk(True, pressure=1.0, dependents=4),
+    }
+    return compute_patch_coverage(changed, coverage), risks
+
+
+def test_rows_and_annotations_read_riskiest_first() -> None:
+    pc, risks = _three_files()
+    pc = attach_risk(pc, risks)
+
+    assert [f.file_path for f in attention_rows(pc)] == ["risky.py", "fixed.py", "big.py"]
+    warnings = [line for line in github_annotations(pc) if line.startswith("::warning")]
+    assert "file=risky.py" in warnings[0]
+    assert "title=Uncovered change in a risky file" in warnings[0]
+    assert "(hotspot, bug-fix weight 1.0, 4 dependents)" in warnings[0]
+    assert "title=Uncovered change::" in warnings[1]
+
+
+def test_markdown_names_each_files_risk_in_words() -> None:
+    pc, risks = _three_files()
+    md = render_markdown(attach_risk(pc, risks))
+
+    assert "| File | Risk | Uncovered changed lines | Covered |" in md
+    assert "| `risky.py` | hotspot, bug-fix weight 1.0, 4 dependents | 2 | 1 of 2 |" in md
+    assert "| `big.py` | none known | 1-5 | 0 of 5 |" in md
+    assert "Risk is from git bug-fix history alone" in md
+
+
+def test_unreadable_risk_reads_unknown_and_the_basis_says_so() -> None:
+    pc, risks = _three_files()
+    md = render_markdown(attach_risk(pc, {**risks, "big.py": FileRisk()}))
+
+    assert "| `big.py` | unknown | 1-5 | 0 of 5 |" in md
+    assert "risk could not be read for 1 file" in md
+
+
+def test_the_risky_gate_fails_on_risky_files_alone() -> None:
+    pc, risks = _three_files()
+    pc = replace(pc, threshold=10)
+
+    strict = attach_risk(pc, risks, risky_threshold=80)
+    assert strict.flat_gate == "pass"  # 1 of 9 lines is 11.1%, above 10%
+    assert strict.risky_gate == "fail"  # 1 of 2 risky lines is 50%
+    assert strict.gate == "fail"
+    assert strict.to_dict()["risky"] == {
+        "file_count": 1,
+        "covered_line_count": 1,
+        "coverable_line_count": 2,
+        "patch_coverage_pct": 50.0,
+        "threshold": 80,
+        "gate": "fail",
+    }
+    assert "meets the 10.0% gate" in headline(strict)
+    assert "below the 80.0% risky-file gate" in risky_line(strict)
+    errors = [line for line in github_annotations(strict) if line.startswith("::error")]
+    assert len(errors) == 1 and "risky-file gate" in errors[0]
+
+    assert attach_risk(pc, risks, risky_threshold=50).gate == "pass"
+    # Only the risky gate set: its verdict is the verdict.
+    assert attach_risk(replace(pc, threshold=None), risks, risky_threshold=50).gate == "pass"
+
+
+def test_no_risky_file_is_no_data_not_a_failure() -> None:
+    pc, risks = _three_files()
+    calm = {path: _risk(False) for path in risks}
+
+    gated = attach_risk(replace(pc, threshold=10), calm, risky_threshold=90)
+    assert gated.risky_gate == "no_data"
+    assert gated.gate == "pass"
+    assert "risky-file gate was not applied" in risky_line(gated)
+
+
+def test_the_risky_gate_joins_path_gates_and_the_small_change_tolerance() -> None:
+    pc, risks = _three_files()  # 9 changed executable lines, 2 of them risky
+    passing_gate = [PathGate("all", ("*.py",), 10)]
+    gated = compute_patch_coverage(
+        {f.file_path: set(range(1, f.coverable_line_count + 1)) for f in pc.files},
+        {
+            **_cov("big.py", covered=[], coverable=[1, 2, 3, 4, 5]),
+            **_cov("fixed.py", covered=[], coverable=[1, 2]),
+            **_cov("risky.py", covered=[1], coverable=[1, 2]),
+        },
+        gates=passing_gate,
+    )
+
+    risky_fail = attach_risk(gated, risks, risky_threshold=80)
+    assert [g.gate for g in risky_fail.path_gates] == ["pass"]
+    assert (risky_fail.flat_gate, risky_fail.risky_gate, risky_fail.gate) == (
+        "not_set",
+        "fail",
+        "fail",
+    )
+    # Under the whole change's tolerance the risky gate is exempt, as path gates are.
+    small = attach_risk(replace(gated, min_coverable_lines=20), risks, risky_threshold=80)
+    assert (small.risky_gate, small.gate) == ("too_small", "too_small")
+    assert "risky-file gate, not applied" in risky_line(small)
+    notices = [line for line in github_annotations(small) if line.startswith("::notice")]
+    assert any("Risky files" in line for line in notices)
+
+
+def test_without_risk_the_flat_gate_and_shape_are_unchanged() -> None:
+    pc, _ = _three_files()
+    d = pc.to_dict()
+
+    assert d["risky"] is None
+    assert all(f["risk"] is None for f in d["files"])
+    assert "| File | Uncovered changed lines | Covered |" in render_markdown(pc)
 
 
 def test_serialized_percentage_is_floored_not_rounded() -> None:

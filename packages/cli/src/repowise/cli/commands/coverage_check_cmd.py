@@ -9,11 +9,12 @@ executable-line data; otherwise it cannot evaluate.
 
 Exit codes and output channels are the shared CI ones (:mod:`repowise.cli.ci`):
 0 when the gate passes or there is nothing to judge, 1 when patch coverage is
-below ``--fail-under`` or a path-scoped gate (``coverage.gates``) that is not
-informational fails, 2 when the check could not run (no report, a
-``--report`` matching no file, unreadable report, unknown revision, missing
-history, bad config). A change under ``--min-coverable-lines`` is reported
-against the threshold but exits 0.
+below ``--fail-under``, a path-scoped gate (``coverage.gates``) that is not
+informational fails, or the risky files' is below ``--fail-under-risky``, 2
+when the check could not run (no report, a ``--report`` matching no file,
+unreadable report, unknown revision, missing history, bad config, risk
+unreadable or a shallow clone under ``--fail-under-risky``). A change under
+``--min-coverable-lines`` is reported against the threshold but exits 0.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from repowise.cli.ci import (
 from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.ci.markdown import plural
 from repowise.core.persistence.database import has_db_store
 
 
@@ -73,6 +75,15 @@ from repowise.core.persistence.database import has_db_store
     "Defaults to coverage.min_coverable_lines in .repowise/config.yaml.",
 )
 @click.option(
+    "--fail-under-risky",
+    type=click.FloatRange(0, 100),
+    default=None,
+    help="Exit 1 when patch coverage of the risky files is below this percentage. "
+    "Risky: hotspots or bug magnets from the index; on git alone, the top quartile "
+    "of files with bug-fix history. No risky file changed: not applied. "
+    "Defaults to coverage.fail_under_risky in .repowise/config.yaml.",
+)
+@click.option(
     "--path",
     "repo",
     default=None,
@@ -89,6 +100,7 @@ def coverage_check(
     report_format: str | None,
     fail_under: float | None,
     min_coverable_lines: int | None,
+    fail_under_risky: float | None,
     repo: str | None,
     fmt: str,
 ) -> None:
@@ -111,12 +123,17 @@ def coverage_check(
         repowise coverage check --report 'artifacts/**/lcov.info' --min-coverable-lines 5
         repowise coverage check --report web/coverage/lcov.info=web
         repowise coverage check HEAD --format json
+
+    Each changed file carries its risk (git bug-fix history, plus hotspot,
+    bug-magnet and dependent counts when an index exists), and the rows read
+    riskiest first. ``--fail-under-risky`` gates the risky files alone.
     """
     notices = ci_notices(fmt)
     try:
         pc = _evaluate(
             revspec, reports, report_format, fail_under, min_coverable_lines, repo, notices
         )
+        pc = _with_risk(repo, pc, fail_under_risky)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
     _emit(pc, fmt)
@@ -261,6 +278,86 @@ async def _stored(
             ) from exc
 
 
+def _with_risk(repo, pc, fail_under_risky):
+    """*pc* with each row's risk and the risky-file gate.
+
+    Git answers alone; an index, when one opens, adds hotspot, bug-magnet and
+    dependent counts. A missing or unreadable index never fails the check. A
+    risky-file gate that cannot trust the risk (a shallow clone's truncated
+    history, or a measured row with no risk at all) cannot evaluate, unless
+    the flat or a path-scoped gate already failed: that verdict stands.
+    """
+    from repowise.core.analysis.patch_coverage import assess_risks, attach_risk
+
+    root = repo_root(repo)
+    threshold = _risky_threshold(root, fail_under_risky)
+    paths = [f.file_path for f in pc.files]
+    git, index = _read_risk(root, pc.scope.label or None, paths)
+    pc = attach_risk(pc, assess_risks(paths, git, index), risky_threshold=threshold)
+    # A failure the flat or a path-scoped gate already found stands and is reported.
+    if threshold is not None and pc.flat_gate != "fail" and not pc.failing_path_gates:
+        _require_trusted_risk(root, pc)
+    return pc
+
+
+def _risky_threshold(root: Path, flag: float | None) -> float | None:
+    """``--fail-under-risky``, else ``coverage.fail_under_risky`` (validated)."""
+    if flag is not None:
+        return flag
+    cfg = _coverage_config(
+        root, validate_threshold=False, validate_min_lines=False, validate_risky=True
+    )
+    return cfg.fail_under_risky
+
+
+def _read_risk(root: Path, revspec: str | None, paths: list[str]):
+    """``(git fix history or None, index facts)``; git first, never under an open store."""
+    from repowise.core.analysis.patch_coverage import read_git_fix_history
+
+    git = read_git_fix_history(str(root), revspec)
+    index = run_async(_index_facts(root, paths)) if paths and has_db_store(root) else {}
+    return git, index
+
+
+def _require_trusted_risk(root: Path, pc) -> None:
+    """Raise when the risky-file gate cannot trust the risk it would read."""
+    from repowise.core import git_refs
+    from repowise.core.analysis.patch_coverage import risk_unreadable
+
+    if git_refs.is_shallow(str(root)):
+        # Fix pressure from a truncated history undercounts every file, and the
+        # top-quartile rule would call risky files calm.
+        raise CannotEvaluateError(
+            "history_shallow",
+            "The risky-file gate reads bug-fix history, and this clone is shallow. "
+            "Fetch full history (fetch-depth: 0, or git fetch --unshallow).",
+        )
+    if unread := risk_unreadable(pc):
+        raise CannotEvaluateError(
+            "risk_unavailable",
+            f"Could not read the risk of {plural(len(unread), 'changed file')}, so the "
+            "risky-file gate cannot run. It needs git history: fetch it (fetch-depth: 0), "
+            "or index the repository with `repowise init`.",
+        )
+
+
+async def _index_facts(root: Path, paths: list[str]) -> dict:
+    """Hotspot, bug-magnet and dependent counts from the index; ``{}`` when it cannot say."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.analysis.patch_coverage import read_index_facts
+
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return {}
+        session, repo_id = opened
+        try:
+            return await read_index_facts(session, repo_id, paths)
+        except (SQLAlchemyError, OSError, LookupError):
+            # An index written by an older version can fail the query itself.
+            return {}
+
+
 def _resolve_reports(root, cfg, report_prefixes, report_format, notices):
     """Parse the reports against the files git tracks, failing when nothing usable remains."""
     from repowise.core import git_refs
@@ -302,7 +399,9 @@ def _resolve_reports(root, cfg, report_prefixes, report_format, notices):
     return resolved
 
 
-def _coverage_config(root: Path, *, validate_threshold: bool, validate_min_lines: bool):
+def _coverage_config(
+    root: Path, *, validate_threshold: bool, validate_min_lines: bool, validate_risky: bool = False
+):
     from repowise.core.analysis.health.coverage import CoverageConfig
     from repowise.core.repo_config import RepoConfigError, load_repo_config
 
@@ -315,11 +414,15 @@ def _coverage_config(root: Path, *, validate_threshold: bool, validate_min_lines
     block = block if isinstance(block, dict) else {}
     # A gate that silently stops gating (or starts failing tiny changes) is
     # worse than no gate, so a value the config cannot use stops the check.
-    if validate_threshold and block.get("fail_under") is not None and cfg.fail_under is None:
-        raise CannotEvaluateError(
-            "config_invalid",
-            f"coverage.fail_under must be a number from 0 to 100, got {block['fail_under']!r}."
-        )
+    for key, parsed, validate in (
+        ("fail_under", cfg.fail_under, validate_threshold),
+        ("fail_under_risky", cfg.fail_under_risky, validate_risky),
+    ):
+        if validate and block.get(key) is not None and parsed is None:
+            raise CannotEvaluateError(
+                "config_invalid",
+                f"coverage.{key} must be a number from 0 to 100, got {block[key]!r}."
+            )
     raw_min = block.get("min_coverable_lines")
     if validate_min_lines and raw_min is not None and cfg.min_coverable_lines is None:
         raise CannotEvaluateError(
@@ -350,10 +453,19 @@ def _emit(pc, fmt: str) -> None:
 
 
 def _print_summary(pc) -> None:
-    from repowise.core.analysis.patch_coverage import headline, scope_line
+    from repowise.core.analysis.patch_coverage import (
+        headline,
+        risk_basis_line,
+        risky_line,
+        scope_line,
+    )
 
     console.print(escape(headline(pc, markdown=False)))
+    if risky := risky_line(pc, markdown=False):
+        console.print(escape(risky))
     console.print(f"[dim]{escape(scope_line(pc, markdown=False))}[/dim]")
+    if basis := risk_basis_line(pc):
+        console.print(f"[dim]{escape(basis)}.[/dim]")
 
 
 def _print_path_gates(pc) -> None:
@@ -381,6 +493,7 @@ def _print_table(pc) -> None:
         STATUS_TEXT,
         attention_rows,
         format_ranges,
+        risk_words,
     )
 
     rows = attention_rows(pc)
@@ -388,6 +501,7 @@ def _print_table(pc) -> None:
         return
     table = Table(show_edge=False, pad_edge=False)
     table.add_column("File")
+    table.add_column("Risk")
     table.add_column("Covered", justify="right")
     table.add_column("Uncovered changed lines")
     for f in rows:
@@ -396,5 +510,5 @@ def _print_table(pc) -> None:
             gaps = format_ranges(f.uncovered_ranges, RANGE_LIMIT)
         else:
             covered, gaps = "", STATUS_TEXT[f.status]
-        table.add_row(escape(f.file_path), covered, gaps)
+        table.add_row(escape(f.file_path), escape(risk_words(f.risk)), covered, gaps)
     console.print(table)

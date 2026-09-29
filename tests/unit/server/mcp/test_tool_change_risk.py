@@ -442,6 +442,46 @@ async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
 
 
 @pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_their_files_risk(monkeypatch, factory, session, tmp_path):
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import (
+        save_coverage_files,
+        upsert_git_metadata,
+        upsert_repository,
+    )
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    await save_coverage_files(
+        session,
+        repo.id,
+        [file_coverage("a.py", [], [1]), file_coverage("hot.py", [], [1])],
+        source_format="lcov",
+        ingested_commit_sha="abc",
+    )
+    await upsert_git_metadata(session, repository_id=repo.id, file_path="hot.py", is_hotspot=True)
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1}, "hot.py": {1}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+
+    # tmp_path is no git repository: the index answers where it has a row.
+    hot, plain = block["files"]
+    assert hot["file_path"] == "hot.py"
+    assert hot["risk"]["basis"] == "index" and hot["risk"]["reasons"] == ["hotspot"]
+    assert plain["risk"]["basis"] == "unavailable"
+    assert block["risky"]["file_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_patch_coverage_is_absent_without_a_readable_change_or_index(
     monkeypatch, factory, tmp_path
 ):

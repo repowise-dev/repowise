@@ -14,19 +14,20 @@ checks=" $names "
 wants() { [[ "$checks" == *" $1 "* ]]; }
 
 if [[ -z "${names// /}" ]]; then
-  echo "::error::No check selected; set checks to coverage, doc-drift or security."
+  echo "::error::No check selected; set checks to coverage, doc-drift, security or risk."
   exit 2
 fi
 for name in $names; do
   case "$name" in
-    coverage | doc-drift | security) ;;
-    *) echo "::error::Unknown check '$name'; use coverage, doc-drift or security." ; exit 2 ;;
+    coverage | doc-drift | security | risk) ;;
+    *) echo "::error::Unknown check '$name'; use coverage, doc-drift, security or risk." ; exit 2 ;;
   esac
 done
 
-# Coverage and security diff the change, so they need its history and the
-# target branch. A shallow clone has neither; fetch them rather than exit 2.
-if wants coverage || wants security; then
+# Coverage, security and risk diff the change, so they need its history and
+# the target branch; risk also ranks it against recent commits. A shallow
+# clone has neither; fetch them rather than exit 2.
+if wants coverage || wants security || wants risk; then
   if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
     git fetch --quiet --no-tags --unshallow origin || true
   fi
@@ -64,6 +65,7 @@ if wants coverage; then
   done <<<"$COVERAGE_REPORT"
   [[ -n "$COVERAGE_FAIL_UNDER" ]] && args+=(--fail-under "$COVERAGE_FAIL_UNDER")
   [[ -n "$COVERAGE_MIN_COVERABLE_LINES" ]] && args+=(--min-coverable-lines "$COVERAGE_MIN_COVERABLE_LINES")
+  [[ -n "$COVERAGE_FAIL_UNDER_RISKY" ]] && args+=(--fail-under-risky "$COVERAGE_FAIL_UNDER_RISKY")
   run coverage repowise "${args[@]}"
 fi
 
@@ -74,6 +76,14 @@ security=(security check ${base[@]+"${base[@]}"} --fail-on "$SECURITY_FAIL_ON")
 
 wants doc-drift && run doc-drift repowise "${drift[@]}" --format github
 wants security && run security repowise "${security[@]}" --format github
+
+if wants risk; then
+  # Without a base, --format github scores the pull request against its target
+  # branch. Without a percentile the rank is reported, not gated.
+  risk=(risk ${base[@]+"${base[@]}"} --format github)
+  [[ -n "$RISK_FAIL_ABOVE_PERCENTILE" ]] && risk+=(--fail-above-percentile "$RISK_FAIL_ABOVE_PERCENTILE")
+  run risk repowise "${risk[@]}"
+fi
 
 # SARIF is a second run in its own format. A gate that could not evaluate
 # writes an empty file, which code scanning would reject, so it is dropped.

@@ -4,15 +4,21 @@
  *
  * A verdict sentence, not a figure with a band. There is no threshold here to
  * colour against, and a gate belongs to CI (`repowise coverage check`), so the
- * only marked state is stale evidence: coverage measured at another commit
- * describes other code, and the line numbers below it may not line up. The
- * exception is path-scoped gates (`coverage.gates`), which carry their own
- * thresholds: each is a dot plus a word.
+ * marked states are few: stale or fragmentary evidence (coverage measured at
+ * another commit describes other code, and the line numbers below it may not
+ * line up), a risky file, whose risk words carry the warning colour, and
+ * path-scoped gates (`coverage.gates`), which carry their own thresholds:
+ * each is a dot plus a word.
+ *
+ * Each file row names its file's risk in words, and the rows read riskiest
+ * first, in the order `repowise coverage check` uses. A line says where the
+ * risk came from when not every file had index data.
  */
 
 import type { ReactNode } from "react";
 import type {
   PatchCoverageFile,
+  PatchCoverageFileRisk,
   PatchCoveragePathGate,
   PatchCoverageResponse,
 } from "@repowise-dev/types/generated/http";
@@ -45,6 +51,56 @@ function plural(n: number, word: string, many?: string): string {
   return `${n} ${n === 1 ? word : (many ?? `${word}s`)}`;
 }
 
+/** A file's risk in words, as the CLI's Risk column reads; `null` when not assessed. */
+export function riskWords(
+  risk: PatchCoverageFileRisk | null | undefined,
+): string | null {
+  if (risk == null) return null;
+  if (risk.basis === "unavailable") return "unknown";
+  const parts = [...risk.reasons];
+  if (risk.fix_pressure) parts.push(`bug-fix weight ${risk.fix_pressure.toFixed(1)}`);
+  if (risk.dependents) parts.push(plural(risk.dependents, "dependent"));
+  return parts.length ? parts.join(", ") : "none known";
+}
+
+/** Where the risk came from, when not every row had index data; the CLI's basis line. */
+export function riskBasisLine(files: PatchCoverageFile[]): string | null {
+  const bases = files.flatMap((f) => (f.risk ? [f.risk.basis] : []));
+  const count = (basis: string) => bases.filter((b) => b === basis).length;
+  const unknown = count("unavailable");
+  const parts = [
+    gitOnlyText(count("git"), bases.length),
+    bases.includes("index") ? "git fix history could not be read" : "",
+    unknown ? `risk could not be read for ${plural(unknown, "file")}` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function gitOnlyText(gitOnly: number, total: number): string {
+  if (!gitOnly) return "";
+  if (gitOnly === total) {
+    return "Risk is from git bug-fix history alone; an index adds hotspot, bug-magnet and dependent counts";
+  }
+  return `Risk for ${gitOnly} of ${plural(total, "file")} is from git bug-fix history alone: the index has no row for them yet`;
+}
+
+/** Risky first, then fix pressure, dependents, uncovered lines: the core's order. */
+export function byRisk(a: PatchCoverageFile, b: PatchCoverageFile): number {
+  const key = (f: PatchCoverageFile): number[] => [
+    f.risk?.risky ? 0 : 1,
+    -(f.risk?.fix_pressure ?? 0),
+    -(f.risk?.dependents ?? 0),
+    -(f.coverable_line_count - f.covered_line_count),
+  ];
+  const ka = key(a);
+  const kb = key(b);
+  for (let i = 0; i < ka.length; i++) {
+    const diff = (ka[i] ?? 0) - (kb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return a.file_path < b.file_path ? -1 : a.file_path > b.file_path ? 1 : 0;
+}
+
 type Tone = "error" | "warning" | "success" | "neutral";
 
 const DOT: Record<Tone, string> = {
@@ -64,90 +120,41 @@ const GATE_STATUS: Record<PatchCoveragePathGate["gate"], { text: string; tone: T
   too_small: { text: "too few changed lines to judge", tone: "neutral" },
 };
 
+type OpenFile = ((path: string) => void) | undefined;
+
 export function PatchCoverageSummary({
   coverage,
   onOpenFile,
 }: PatchCoverageSummaryProps) {
-  const uncovered = coverage.files.filter(
-    (f) => f.status === "measured" && f.uncovered_ranges.length > 0,
-  );
-  const unmeasured = coverage.files.filter(
-    (f) => f.status === "not_in_report" || f.status === "no_line_data",
-  );
-  const measuredAt = coverage.scope.measured_commit?.slice(0, 7) ?? null;
-
   return (
     <div className="flex flex-col gap-1.5">
       <Headline coverage={coverage} />
-
-      {coverage.scope.freshness === "stale" && (
-        <WarningNote>
-          <span className="sr-only">Stale: </span>
-          Coverage was measured at{" "}
-          {measuredAt ? <code className="font-mono">{measuredAt}</code> : "another commit"}
-          , not at this change&apos;s head
-        </WarningNote>
-      )}
-
-      {coverage.scope.mapping_partial && (
-        <WarningNote>
-          Most report paths did not match this repository, so this covers a fragment
-        </WarningNote>
-      )}
-
-      {coverage.scope.ignored_file_count > 0 && (
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          {plural(coverage.scope.ignored_file_count, "changed file")} ignored by{" "}
-          <code className="font-mono">coverage.ignore</code>
-        </p>
-      )}
-
+      <RiskyLine risky={coverage.risky} />
+      <ScopeNotes coverage={coverage} />
       {/* Guarded: a server older than path-scoped gates sends neither field. */}
       <PathGates
         gates={coverage.path_gates ?? []}
         configErrors={coverage.scope.config_errors ?? []}
       />
-
-      {uncovered.length > 0 && (
-        <ul className="mt-1 flex flex-col gap-0.5">
-          {uncovered.slice(0, MAX_FILES).map((f) => (
-            <FileRow
-              key={f.file_path}
-              file={f}
-              trailing={`lines ${formatLineRanges(f.uncovered_ranges)}`}
-              onOpenFile={onOpenFile}
-            />
-          ))}
-          {uncovered.length > MAX_FILES && (
-            <li className="px-1.5 pt-1 text-xs text-[var(--color-text-tertiary)]">
-              and {uncovered.length - MAX_FILES} more
-            </li>
-          )}
-        </ul>
-      )}
-
-      {unmeasured.length > 0 && (
-        <details className="group mt-1">
-          <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)]">
-            {plural(unmeasured.length, "changed file")} the coverage report does
-            not measure
-          </summary>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {unmeasured.map((f) => (
-              <FileRow
-                key={f.file_path}
-                file={f}
-                trailing={
-                  f.status === "not_in_report" ? "not in report" : "no line data"
-                }
-                onOpenFile={onOpenFile}
-              />
-            ))}
-          </ul>
-        </details>
-      )}
+      <UncoveredList files={uncoveredFiles(coverage.files)} onOpenFile={onOpenFile} />
+      <UnmeasuredList files={unmeasuredFiles(coverage.files)} onOpenFile={onOpenFile} />
     </div>
   );
+}
+
+/** Measured files with uncovered changed lines, riskiest first. */
+function uncoveredFiles(files: PatchCoverageFile[]): PatchCoverageFile[] {
+  return files
+    .filter((f) => f.status === "measured" && f.uncovered_ranges.length > 0)
+    .sort(byRisk);
+}
+
+/** Not-in-report files before those without line data, then by risk: the core's order. */
+function unmeasuredFiles(files: PatchCoverageFile[]): PatchCoverageFile[] {
+  const rank = (f: PatchCoverageFile) => Number(f.status !== "not_in_report");
+  return files
+    .filter((f) => f.status === "not_in_report" || f.status === "no_line_data")
+    .sort((a, b) => rank(a) - rank(b) || byRisk(a, b));
 }
 
 function Headline({ coverage }: { coverage: PatchCoverageResponse }) {
@@ -178,6 +185,45 @@ function Headline({ coverage }: { coverage: PatchCoverageResponse }) {
   );
 }
 
+/** Only when a risky file has changed executable lines: nothing else to report. */
+function RiskyLine({ risky }: { risky: PatchCoverageResponse["risky"] | undefined }) {
+  if (risky == null || risky.patch_coverage_pct == null) return null;
+  return (
+    <p className="text-xs tabular-nums text-[var(--color-text-secondary)]">
+      Risky files {floorPct(risky.patch_coverage_pct)}% · {risky.covered_line_count}{" "}
+      of {plural(risky.coverable_line_count, "changed executable line")} covered
+      in {plural(risky.file_count, "risky file")}
+    </p>
+  );
+}
+
+/** What to read the figures with: stale or partial evidence, ignored files, risk basis. */
+function ScopeNotes({ coverage }: { coverage: PatchCoverageResponse }) {
+  const { scope } = coverage;
+  const basis = riskBasisLine(coverage.files);
+  return (
+    <>
+      {scope.freshness === "stale" && (
+        <StaleNote measuredAt={scope.measured_commit?.slice(0, 7) ?? null} />
+      )}
+      {scope.mapping_partial && (
+        <WarningNote>
+          Most report paths did not match this repository, so this covers a fragment
+        </WarningNote>
+      )}
+      {scope.ignored_file_count > 0 && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          {plural(scope.ignored_file_count, "changed file")} ignored by{" "}
+          <code className="font-mono">coverage.ignore</code>
+        </p>
+      )}
+      {basis != null && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">{basis}.</p>
+      )}
+    </>
+  );
+}
+
 /** An amber dot plus a sentence: evidence to read with care. */
 function WarningNote({ children }: { children: ReactNode }) {
   return (
@@ -185,6 +231,17 @@ function WarningNote({ children }: { children: ReactNode }) {
       <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${DOT.warning}`} />
       <span>{children}</span>
     </p>
+  );
+}
+
+function StaleNote({ measuredAt }: { measuredAt: string | null }) {
+  return (
+    <WarningNote>
+      <span className="sr-only">Stale: </span>
+      Coverage was measured at{" "}
+      {measuredAt ? <code className="font-mono">{measuredAt}</code> : "another commit"}
+      , not at this change&apos;s head
+    </WarningNote>
   );
 }
 
@@ -264,6 +321,60 @@ function PathGateRow({ gate }: { gate: PatchCoveragePathGate }) {
   );
 }
 
+function UncoveredList({
+  files,
+  onOpenFile,
+}: {
+  files: PatchCoverageFile[];
+  onOpenFile: OpenFile;
+}) {
+  if (!files.length) return null;
+  return (
+    <ul className="mt-1 flex flex-col gap-0.5">
+      {files.slice(0, MAX_FILES).map((f) => (
+        <FileRow
+          key={f.file_path}
+          file={f}
+          trailing={`lines ${formatLineRanges(f.uncovered_ranges)}`}
+          onOpenFile={onOpenFile}
+        />
+      ))}
+      {files.length > MAX_FILES && (
+        <li className="px-1.5 pt-1 text-xs text-[var(--color-text-tertiary)]">
+          and {files.length - MAX_FILES} more
+        </li>
+      )}
+    </ul>
+  );
+}
+
+function UnmeasuredList({
+  files,
+  onOpenFile,
+}: {
+  files: PatchCoverageFile[];
+  onOpenFile: OpenFile;
+}) {
+  if (!files.length) return null;
+  return (
+    <details className="group mt-1">
+      <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)]">
+        {plural(files.length, "changed file")} the coverage report does not measure
+      </summary>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {files.map((f) => (
+          <FileRow
+            key={f.file_path}
+            file={f}
+            trailing={f.status === "not_in_report" ? "not in report" : "no line data"}
+            onOpenFile={onOpenFile}
+          />
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function FileRow({
   file,
   trailing,
@@ -271,13 +382,14 @@ function FileRow({
 }: {
   file: PatchCoverageFile;
   trailing: string;
-  onOpenFile: ((path: string) => void) | undefined;
+  onOpenFile: OpenFile;
 }) {
   const body = (
     <>
       <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">
         {file.file_path}
       </span>
+      <RiskLabel risk={file.risk} />
       <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
         {trailing}
       </span>
@@ -301,5 +413,19 @@ function FileRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** A row's risk in words; nothing for "none known", which is not worth a label. */
+function RiskLabel({ risk }: { risk: PatchCoverageFile["risk"] | undefined }) {
+  const words = riskWords(risk);
+  if (words == null || words === "none known") return null;
+  const risky = risk?.risky === true;
+  const tone = risky ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]";
+  return (
+    <span className={`shrink-0 text-[10px] ${tone}`}>
+      {risky && <span className="sr-only">Risky: </span>}
+      {words}
+    </span>
   );
 }

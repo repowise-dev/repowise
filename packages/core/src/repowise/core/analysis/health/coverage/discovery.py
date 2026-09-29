@@ -138,6 +138,8 @@ class CoverageConfig:
     # message; read-only surfaces evaluate the valid entries.
     gates: tuple[PathGate, ...] = ()
     gate_errors: tuple[str, ...] = ()
+    # The stricter gate over risky files only (``coverage check --fail-under-risky``).
+    fail_under_risky: float | None = None
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -168,6 +170,7 @@ class CoverageConfig:
             min_coverable_lines=_line_count(block.get("min_coverable_lines")),
             gates=gates,
             gate_errors=gate_errors,
+            fail_under_risky=_percent(block.get("fail_under_risky")),
         )
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:

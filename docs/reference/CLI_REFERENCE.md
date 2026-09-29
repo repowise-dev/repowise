@@ -822,7 +822,8 @@ to the model's baseline commit, not this repo.
 | `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute per-commit model-score band) |
 | `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
 | `--changed-file` | With `--target`: PR mode. Leads with a directive naming what may break, which co-changes and tests are missing, and what to run |
-| `--format` | Output format: `table` (default) or `json` |
+| `--fail-above-percentile` | CI gate (0-100): exit `1` when the change ranks above this percentile of recent commits (`risk_percentile`, never the 0-10 score), `2` when it has no percentile (`--baseline 0`, or fewer than 8 commits to rank against). Without `REVSPEC` it scores the CI change: the target branch `...HEAD` |
+| `--format` | Output format: `table` (default), `json`, `markdown` or `github`. `markdown` and `github` are not for `--target`; without `REVSPEC` they score the CI change. `github` writes an `::error::` when the gate fails (else a `::notice::`) and the markdown to `$GITHUB_STEP_SUMMARY` |
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
 ```bash
@@ -831,7 +832,17 @@ repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring
+repowise risk --fail-above-percentile 95 --format github  # gate the CI change
 ```
+
+With `--fail-above-percentile`, `--format json` adds `"gate":
+{"fail_above_percentile": P, "percentile": <unrounded>, "status": "pass" |
+"fail"}`; `percentile` is what the gate compared, since `risk_percentile` is
+rounded. A revspec git cannot read exits `2` (it used to exit `1`), gated or
+not, with a `{"error", "message"}` document under `--format json`. At a
+percentile P roughly (100 - P)% of changes fail by construction; a failure asks
+for a split or a second reviewer, not a code fix, and there is no baseline to
+accept it with.
 
 **`--target`: what history says about touching some files.** Two questions, one
 command, because they are the same question asked of different subjects. A
@@ -1324,57 +1335,72 @@ are out of scope and only counted.
 | `--report-format` | Force a parser: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
 | `--fail-under` | Exit 1 when patch coverage is below this percentage (0-100). Defaults to `coverage.fail_under` in `.repowise/config.yaml`; with neither set the command reports without gating |
 | `--min-coverable-lines` | Small-change tolerance: a change with fewer changed executable lines than this (counting only lines the report measures, as the percentage does) is reported against the threshold but never fails (`gate` reads `too_small`). Defaults to `coverage.min_coverable_lines` |
+| `--fail-under-risky` | Exit 1 when patch coverage of the risky files alone is below this percentage. Risky: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. Defaults to `coverage.fail_under_risky`. With no risky file changed the gate is not applied (`no_data`, exit `0`) |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, or `github` |
 
-`github` writes up to 10 `::warning` annotations (largest uncovered ranges
-first), a `::notice` counting the rest, an `::error::` when the gate fails, one
-per failing path-scoped gate that is not informational, a `::notice::` per
-informational gate below its threshold, and
-a `::notice::` when the small-change tolerance exempts it, then appends the
-markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json` carries
-`patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
+Each changed file carries its risk: git bug-fix history always, plus hotspot,
+bug-magnet and dependent counts when an index opens (a missing index never
+fails the check). Rows, annotations and the markdown table list risky files
+first, and the table has a "Risk" column in words.
+
+`github` writes up to 10 `::warning` annotations (riskiest file, then largest
+uncovered range, first; titled "Uncovered change in a risky file" for a risky
+one), a `::notice` counting the rest, an `::error::` for each gate that fails
+(the whole change, each path-scoped gate that is not informational, the
+risky-file gate), a `::notice::` per informational gate below its threshold,
+and a `::notice::` when the small-change tolerance exempts a gate, then
+appends the markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json`
+carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 `threshold`, `min_coverable_lines`, `gate` (`pass`, `fail`, `no_data`,
-`not_set`, `too_small`), `file_counts` (`measured`, `not_in_report`,
-`no_line_data`, `no_coverable_changes`, `out_of_scope`), `files[]`
-(`file_path`, `status`, `changed_line_count`, `coverable_line_count`,
-`covered_line_count`, `patch_coverage_pct`, `uncovered_ranges`) and `scope`
-(`label`, `source_formats`, `reports`, `report_path_count`,
-`unmatched_report_path_count`, `ignored_file_count`, `config_errors`) and
+`not_set`, `too_small`; `fail` when any gate fails), `file_counts`
+(`measured`, `not_in_report`, `no_line_data`, `no_coverable_changes`,
+`out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
+`coverable_line_count`, `covered_line_count`, `patch_coverage_pct`,
+`uncovered_ranges`, `risk`: `fix_pressure`, `dependents`, `hotspot`,
+`bug_magnet`, `basis`, `risky`, `reasons`), `scope` (`label`,
+`source_formats`, `reports`, `report_path_count`,
+`unmatched_report_path_count`, `ignored_file_count`, `config_errors`),
 `path_gates[]` (`name`, `paths`, `threshold`, `informational`,
 `measured_file_count`, `unmeasured_file_count`, `covered_line_count`,
-`coverable_line_count`, `patch_coverage_pct`, `gate`).
-Changed files and report
-entries matching `coverage.ignore` (gitignore syntax) are left out and counted
-as ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
+`coverable_line_count`, `patch_coverage_pct`, `gate`) and `risky`
+(`file_count`, `covered_line_count`, `coverable_line_count`,
+`patch_coverage_pct`, `threshold`, `gate`). Changed files and report entries
+matching `coverage.ignore` (gitignore syntax) are left out and counted as
+ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
 that module's directory unless the report has a per-report prefix or
 `coverage.path_prefix` is set. Percentages are shown floored to one decimal
 (79.99% reads 79.9%); the gate compares the unrounded figure.
 
 **Exit codes:** `0` the gate passes or there is nothing to judge (no
 threshold, no measurable changed lines, or a change under the small-change
-tolerance); `1` patch coverage is below `--fail-under`, or a path-scoped gate
-that is not informational fails; `2` the check could not
-run: no report found, a `--report` path or glob matching no file, none
-readable, none matching a repository file, or every entry matching
-`coverage.ignore`; an unknown revision; no merge-base (a shallow clone); a
-single commit at a shallow clone's boundary; bad config or a malformed
-`coverage.fail_under` / `coverage.min_coverable_lines`, or an unusable
-`coverage.gates` entry (named in the message); not a git repository.
+tolerance); `1` patch coverage is below `--fail-under`, a path-scoped gate
+that is not informational fails, or the risky files' is below
+`--fail-under-risky`; `2` the check could not run: no report found, a
+`--report` path or glob matching no file, none readable, none matching a
+repository file, or every entry matching `coverage.ignore`; an unknown
+revision; no merge-base (a shallow clone); a single commit at a shallow
+clone's boundary; bad config or a malformed `coverage.fail_under` /
+`coverage.min_coverable_lines` / `coverage.fail_under_risky`, or an unusable
+`coverage.gates` entry (named in the message); not a git repository;
+`--fail-under-risky` set on a shallow clone, or with a measured file whose
+risk could not be read (unless the flat or a path-scoped gate already failed,
+which exits `1`).
 
 **Path-scoped gates.** Each entry of `coverage.gates` (`name`, `paths` as
 gitignore-style globs relative to the repository root, optional `fail_under`
 0-100, optional `informational`) is judged on the measured changed files its
 globs match, with the same rule as the whole change; a file can count in
 several gates. The small-change tolerance is the whole change's: every gate
-reads `too_small` when the change is under `min_coverable_lines`, never a
-small slice of a big one. Matching changed files the report does not measure
-are counted as `unmeasured_file_count`, outside the percentage. `gate` reads
-`fail` when any gate that is not informational fails, whatever the
-whole-change figure, and the headline then leads with that gate and its
-counts. The table output lists every gate; the markdown lists up to 10,
-failing ones first. See [Path-scoped gates](../start/CI.md#path-scoped-gates)
-and `repowise coverage suggest-gates`.
+(the risky-file gate too) reads `too_small` when the change is under
+`min_coverable_lines`, never a small slice of a big one. Matching changed
+files the report does not measure are counted as `unmeasured_file_count`,
+outside the percentage. `gate` reads `fail` when any gate that is not
+informational fails, whatever the whole-change figure, and the headline then
+leads with that gate and its counts. The table output lists every gate; the
+markdown lists up to 10, failing ones first. See
+[Path-scoped gates](../start/CI.md#path-scoped-gates) and
+`repowise coverage suggest-gates`.
 
 A coverage.py `.coverage` database is not a text report: export it first with
 `coverage lcov` or `coverage xml`. A new file no test loads must still appear

@@ -1,7 +1,7 @@
 name: Repowise CI gates
 description: >-
-  Gate a pull request on patch coverage, documentation drift and new security
-  findings. Needs git and nothing else: no index, no API key.
+  Gate a pull request on patch coverage, documentation drift, new security
+  findings and change risk. Needs git and nothing else: no index, no API key.
 author: repowise-dev
 branding:
   icon: check-circle
@@ -10,9 +10,11 @@ branding:
 inputs:
   checks:
     description: >-
-      Comma-separated gates to run: coverage, doc-drift, security. Coverage
-      needs a report, so it is not on by default. Doc drift checks the whole
-      tree; on a repository that already has drift, commit a baseline first.
+      Comma-separated gates to run: coverage, doc-drift, security, risk.
+      Coverage needs a report, so it is not on by default. Doc drift checks the
+      whole tree; on a repository that already has drift, commit a baseline
+      first. Risk is opt-in too, and gates only when risk-fail-above-percentile
+      is set.
     default: doc-drift,security
   version:
     description: Repowise version to install from PyPI. Empty installs the latest.
@@ -25,8 +27,8 @@ inputs:
     default: "."
   base:
     description: >-
-      Revision range for coverage and security, e.g. origin/main...HEAD. Empty
-      reads the pull request's target branch, else the default branch.
+      Revision range for coverage, security and risk, e.g. origin/main...HEAD.
+      Empty reads the pull request's target branch, else the default branch.
     default: ""
   coverage-report:
     description: >-
@@ -46,6 +48,13 @@ inputs:
       than this is reported but never fails the coverage gate. Empty uses
       coverage.min_coverable_lines from .repowise/config.yaml.
     default: ""
+  coverage-fail-under-risky:
+    description: >-
+      Minimum patch coverage percent over risky files only: hotspots or bug
+      magnets from the index; on git alone, the top quartile of files with
+      bug-fix history. A change with no risky file is not gated. Empty uses
+      coverage.fail_under_risky from .repowise/config.yaml, else no risky gate.
+    default: ""
   doc-drift-baseline:
     description: Committed doc-drift baseline file; only findings it does not list fail.
     default: ""
@@ -54,6 +63,11 @@ inputs:
     default: high
   security-baseline:
     description: Committed security baseline file; only findings it does not list fail.
+    default: ""
+  risk-fail-above-percentile:
+    description: >-
+      Fail when the change ranks above this percentile of the repository's
+      recent commits by size and spread. Empty reports the rank without gating.
     default: ""
   upload-sarif:
     description: >-
@@ -71,6 +85,9 @@ outputs:
   security:
     description: Exit code of the security gate, empty when not run.
     value: ${{ steps.gates.outputs.security }}
+  risk:
+    description: Exit code of the change-risk gate, empty when not run.
+    value: ${{ steps.gates.outputs.risk }}
   sarif-dir:
     description: Directory holding the SARIF files, when upload-sarif is on.
     value: ${{ steps.gates.outputs.sarif-dir }}
@@ -98,9 +115,11 @@ runs:
         COVERAGE_REPORT: ${{ inputs.coverage-report }}
         COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
         COVERAGE_MIN_COVERABLE_LINES: ${{ inputs.coverage-min-coverable-lines }}
+        COVERAGE_FAIL_UNDER_RISKY: ${{ inputs.coverage-fail-under-risky }}
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
         SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
         SECURITY_BASELINE: ${{ inputs.security-baseline }}
+        RISK_FAIL_ABOVE_PERCENTILE: ${{ inputs.risk-fail-above-percentile }}
         SARIF: ${{ inputs.upload-sarif }}
         SARIF_DIR: ${{ runner.temp }}/repowise-sarif
         PYTHONUTF8: "1"

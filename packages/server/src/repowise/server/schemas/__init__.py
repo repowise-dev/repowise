@@ -220,7 +220,9 @@ if TYPE_CHECKING:
     from .patch_coverage import (
         PatchCoverageFile,
         PatchCoverageFileCounts,
+        PatchCoverageFileRisk,
         PatchCoverageResponse,
+        PatchCoverageRisky,
         PatchCoverageScope,
     )
     from .refactoring import (
@@ -497,7 +499,9 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
     "patch_coverage": (
         "PatchCoverageFile",
         "PatchCoverageFileCounts",
+        "PatchCoverageFileRisk",
         "PatchCoverageResponse",
+        "PatchCoverageRisky",
         "PatchCoverageScope",
     ),
     "refactoring": (
@@ -757,7 +761,9 @@ __all__ = [
     "Paginated",
     "PatchCoverageFile",
     "PatchCoverageFileCounts",
+    "PatchCoverageFileRisk",
     "PatchCoverageResponse",
+    "PatchCoverageRisky",
     "PatchCoverageScope",
     "PopulationBreakdown",
     "ProviderEntry",

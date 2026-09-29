@@ -269,6 +269,9 @@ async def test_patch_coverage_reads_stored_coverage(
     assert data["files"][0]["uncovered_ranges"] == [[3, 3]]
     assert data["scope"]["freshness"] == "current"
     assert data["scope"]["label"] == f"{base}...HEAD"
+    # The index has no git row for a file the change adds, so git alone answers.
+    assert data["files"][0]["risk"]["basis"] == "git"
+    assert data["risky"]["file_count"] == 0
     assert (await client.get(url, params={"base": "nope"})).status_code == 400
 
     # The repository's coverage config reaches the stored-coverage surface as
@@ -294,3 +297,38 @@ async def test_patch_coverage_reads_stored_coverage(
     stale = await _with_config(one_gate)
     assert stale["scope"]["freshness"] == "stale"
     assert [g["gate"] for g in stale["path_gates"]] == ["no_data"]
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_index_risk(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files, upsert_git_metadata
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+        source_format="lcov",
+        ingested_commit_sha=head,
+    )
+    await upsert_git_metadata(
+        session, repository_id=repo["id"], file_path="src/a.py", is_hotspot=True
+    )
+    await session.commit()
+
+    data = (
+        await client.get(f"/api/repos/{repo['id']}/health/coverage/patch", params={"base": base})
+    ).json()
+
+    risk = data["files"][0]["risk"]
+    assert risk["basis"] == "git_and_index"
+    assert risk["risky"] is True and risk["reasons"] == ["hotspot"]
+    assert data["risky"]["file_count"] == 1
+    assert data["risky"]["patch_coverage_pct"] == 66.66

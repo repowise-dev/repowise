@@ -1,6 +1,6 @@
 # Repowise in CI
 
-Three gates judge a pull request, each on what the change adds rather than on
+Four gates judge a pull request, each on what the change adds rather than on
 the whole repository's past:
 
 | Gate | Question | Needs | History |
@@ -8,20 +8,23 @@ the whole repository's past:
 | `repowise coverage check` | Did the tests run the lines this change touched? | git and a coverage report | the merge-base with the target branch |
 | `repowise doc-drift --check` | Does the documentation still describe files, links and commands that exist? | git | none (full history only improves rename suggestions) |
 | `repowise security check` | Did this change add a secret or a risky call? | git | every commit of the change |
+| `repowise risk --fail-above-percentile P` | Is this change bigger and more spread out than P% of this repository's recent commits? | git | recent commits to rank against (at least 8) |
 
 None of them needs an index, a database, a model or an API key, and none
 stores anything. They share one set of exit codes, output formats and base
 resolution, described once below. Each layer's own page has the detail:
 [test intelligence](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci),
 [documentation drift](../layers/DOC_DRIFT.md#in-ci),
-[security](../layers/SECURITY.md#in-ci-repowise-security-check).
+[security](../layers/SECURITY.md#in-ci-repowise-security-check),
+[change risk](../layers/CHANGE_RISK.md#in-ci).
 
 ## What every gate does the same way
 
 **Exit codes.** `0` passed, or had nothing to judge. `1` the change failed the
 gate. `2` the gate could not evaluate: not a git repository, an unknown
-revision, no merge-base in a shallow clone, an unreadable report or baseline.
-A setup problem never reads as a pass.
+revision, no merge-base in a shallow clone, an unreadable report or baseline,
+too few recent commits to rank a change against. A setup problem never reads
+as a pass.
 
 **Formats.** `--format table` (the default) for a terminal, `json` for a
 script, `markdown` for a comment or a job artifact, and `github` for GitHub
@@ -33,14 +36,16 @@ When a gate cannot evaluate, `gitlab` still prints a valid list, `[]`, and the
 GitLab template writes `[]` whenever the output does not parse, so the report
 artifact is never an invalid file.
 
-**The change being judged.** Coverage and security take a revision range:
+**The change being judged.** Coverage, security and risk take a revision range:
 `origin/main...HEAD` (three dots: what the branch did since it forked, the
 pull request's view), `base..head`, or one commit. Without one they read the
 target branch from the CI's own variables (`GITHUB_BASE_REF`,
 `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CHANGE_TARGET`,
-`BITBUCKET_PR_DESTINATION_BRANCH`), else the remote's default branch. Doc
-drift has no range: it checks the whole working tree, and a baseline limits
-it to new findings.
+`BITBUCKET_PR_DESTINATION_BRANCH`), else the remote's default branch. `risk`
+does so with `--fail-above-percentile` or `--format markdown` / `github`;
+otherwise an omitted range still means your uncommitted work, else `HEAD`. Doc
+drift has no range: it checks the whole working tree, and a baseline limits it
+to new findings.
 
 **History.** CI checkouts are usually shallow, which leaves no merge-base.
 Fetch full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on
@@ -91,9 +96,10 @@ jobs:
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
       - uses: repowise-dev/repowise@main   # pin a release tag in production
         with:
-          checks: coverage,doc-drift,security
+          checks: coverage,doc-drift,security,risk
           coverage-report: coverage/lcov.info
           coverage-fail-under: 80
+          risk-fail-above-percentile: 95
 ```
 
 Pin a release tag rather than `main`, and set `version:` to pin the Repowise
@@ -101,23 +107,30 @@ release the action installs.
 
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report, so it is opt-in. |
+| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report and risk is a policy choice, so both are opt-in. |
 | `version` | latest | Repowise version to install. |
 | `python-version` | `3.12` | Python to run it with (3.11 or newer). |
 | `working-directory` | `.` | Where to run from. |
-| `base` | from the pull request | Revision range for coverage and security. |
+| `base` | from the pull request | Revision range for coverage, security and risk. |
 | `coverage-report` | config, else discovery | Reports, one per line: a path or a glob (`artifacts/**/lcov.info`), optionally `path=prefix`. |
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
 | `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
+| `coverage-fail-under-risky` | `coverage.fail_under_risky` | Minimum patch coverage percent over risky files only: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. |
 | `doc-drift-baseline` | none | Committed baseline file. |
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
 | `security-baseline` | none | Committed baseline file. |
+| `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
 | `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
 
-Outputs: `coverage`, `doc-drift` and `security` hold each gate's exit code
-(empty when not run), and `sarif-dir` the SARIF directory.
+Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
+code (empty when not run), and `sarif-dir` the SARIF directory.
 
-A shallow checkout still works when coverage or security runs: the action
+The risk gate ranks the change against the repository's own recent commits,
+so at a percentile P roughly (100 - P)% of changes fail it by construction.
+A failure asks for a split or a second reviewer, not a code fix, and there is
+no baseline to accept it with.
+
+A shallow checkout still works when coverage, security or risk runs: the action
 fetches the missing history and the target branch first. Checking out with
 `fetch-depth: 0` skips that step.
 
@@ -134,6 +147,7 @@ there with a warning; the gates still run and still decide the check.
 - run: repowise coverage check --report coverage/lcov.info --fail-under 80 --format github
 - run: repowise doc-drift --check --format github
 - run: repowise security check --format github
+- run: repowise risk --fail-above-percentile 95 --format github
 ```
 
 On a pull request the gates read the target branch from `GITHUB_BASE_REF`
@@ -158,20 +172,22 @@ repowise-coverage:
 ```
 
 It adds one job per gate on merge request pipelines: `repowise-coverage` (only
-when `REPOWISE_COVERAGE_REPORT` is set), `repowise-doc-drift` and
-`repowise-security`. Each prints its markdown report to the log and keeps it as
-an artifact. The doc drift and security jobs also write a Code Quality report
-(`gl-code-quality-doc-drift.json`, `gl-code-quality-security.json`), so their
-findings show in the merge request's Code Quality widget, even when the gate
-fails the job. A fourth job, `repowise-code-quality`, runs on the default
-branch and never fails the pipeline: it publishes the report the widget
-compares a merge request against, so only issues the merge request introduces
-show as new. It publishes doc drift only: security judges only what a change
-adds, and the default branch has no change to judge.
+when `REPOWISE_COVERAGE_REPORT` is set), `repowise-doc-drift`,
+`repowise-security` and `repowise-risk` (only when
+`REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set). Each prints its markdown report
+to the log and keeps it as an artifact. The doc drift and security jobs also
+write a Code Quality report (`gl-code-quality-doc-drift.json`,
+`gl-code-quality-security.json`), so their findings show in the merge
+request's Code Quality widget, even when the gate fails the job. One more job,
+`repowise-code-quality`, runs on the default branch and never fails the
+pipeline: it publishes the report the widget compares a merge request against,
+so only issues the merge request introduces show as new. It publishes doc
+drift only: security judges only what a change adds, and the default branch
+has no change to judge.
 `REPOWISE_COVERAGE_REPORT` is space separated and may hold globs and
 `path=prefix` entries; Repowise expands the globs, not the shell. Other
 variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
-`REPOWISE_DOC_DRIFT_BASELINE`,
+`REPOWISE_COVERAGE_FAIL_UNDER_RISKY`, `REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
 
@@ -238,6 +254,7 @@ coverage:
   paths: [coverage/lcov.info]
   fail_under: 80
   min_coverable_lines: 5   # small-change tolerance
+  fail_under_risky: 90     # optional, see Risk-weighted patch coverage
 ```
 
 With `min_coverable_lines` set, a change touching fewer changed executable
@@ -399,15 +416,40 @@ source in a comment. The block is indented to paste directly below your
 `coverage:` line. It writes nothing and sets no `fail_under`: keep the gates
 you want and choose their thresholds.
 
+### Risk-weighted patch coverage
+
+An uncovered line in a file that keeps breaking matters more than one in a
+file nothing depends on. Every changed file in the coverage report carries its
+risk, and the table, the annotations and the summary list the riskiest files
+first, with a "Risk" column in plain words ("hotspot, bug-fix weight 3.2, 14
+dependents", "none known", or "unknown" when it could not be read). A file is
+risky when the index flags it a hotspot or a bug magnet; without an index, or
+for a file the change adds, when its recency-weighted bug-fix weight from git
+is in the top quartile of the files with bug-fix history. The report says
+which basis each row used when not every file had index data.
+
+`--fail-under-risky` (the action's `coverage-fail-under-risky`) adds one more
+gate, stricter, over the risky files' changed lines alone, and the check fails
+when any gate fails. It follows the same rules as the others, the whole
+change's small-change tolerance included. A change that touches no risky file
+leaves it not applied (`no_data`, exit `0`). With the gate set, a shallow
+clone, or a measured file whose risk could not be read (no git history and no
+index row), exits `2`, unless the whole-change or a path-scoped gate already
+failed: that failure is reported.
+
 ## When a gate exits 2
 
 | Message | Fix |
 |---------|-----|
-| no merge-base, or a commit cut off by a shallow clone | fetch full history |
-| unknown revision `origin/<branch>` | fetch the target branch |
-| no coverage report found | pass `--report`, or set `coverage.paths` |
-| `--report ...`: no coverage report matches | fix the path or glob, or upload the report from the test job |
-| `coverage.gates[N]`: ... | fix that entry of `coverage.gates` |
-| all report entries match coverage.ignore | narrow `coverage.ignore` |
-| report paths match no file in the repository | set `coverage.strip_prefix` or `coverage.path_prefix` |
-| baseline unreadable | commit the file, or drop `--baseline` |
+| "Could not diff ...: ... A shallow CI clone needs the base branch and enough history for a merge-base" | fetch full history |
+| "Could not tell which branch this change targets. Pass REVSPEC, e.g. origin/main...HEAD." | fetch the target branch, or pass the range |
+| "No coverage report found. Pass one with --report ..." | pass `--report`, or set `coverage.paths` |
+| "--report ...: no coverage report matches ..." | fix the path or glob, or upload the report from the test job |
+| "coverage.gates[N] ...: ..." | fix that entry of `coverage.gates` |
+| "All N report entries match coverage.ignore, so nothing is left to measure." | narrow `coverage.ignore` |
+| "No report path matched a file in this repository." | set `coverage.strip_prefix` or `coverage.path_prefix` |
+| "cannot read baseline ..." or "baseline ... is not valid JSON" | commit the file, or drop `--baseline` |
+| "Only N recent commits could be sampled; ranking a change needs at least 8." (risk) | fetch full history |
+| "The change-risk gate ranks the change against recent commits, and --baseline 0 turns that off." | drop `--baseline 0` |
+| "The risky-file gate reads bug-fix history, and this clone is shallow." | fetch full history |
+| "Could not read the risk of N changed files, so the risky-file gate cannot run." | fetch full history, or index the repository |

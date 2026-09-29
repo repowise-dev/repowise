@@ -23,6 +23,7 @@ __all__ = [
     "current_branch",
     "default_base",
     "files_by_ref",
+    "is_shallow",
     "list_branches",
     "refs_containing",
     "refs_merged_into",
@@ -72,6 +73,11 @@ def toplevel(repo_path: str) -> str:
 def tracked_paths(repo_path: str) -> frozenset[str]:
     """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
     return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
+
+
+def is_shallow(repo_path: str) -> bool:
+    """Whether the clone is shallow; ``False`` when git cannot answer."""
+    return _read(repo_path, ["rev-parse", "--is-shallow-repository"]) == "true"
 
 
 def current_branch(repo_path: str) -> str | None:

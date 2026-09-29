@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..health.coverage.freshness import coverage_freshness
 from .compute import PatchCoverage, PatchScope, compute_patch_coverage
+from .risk import IndexFacts
 
 if TYPE_CHECKING:
     from ..health.coverage.discovery import CoverageConfig
@@ -79,3 +80,30 @@ async def stored_patch_coverage(
             config_errors=cfg.gate_errors,
         ),
     )
+
+
+async def read_index_facts(
+    session: AsyncSession, repository_id: str, paths: Iterable[str]
+) -> dict[str, IndexFacts]:
+    """``{path: IndexFacts}`` for the paths the index has a git row for.
+
+    A path with no row (a file the change adds) is absent, so its risk falls
+    back to git.
+    """
+    from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+    from repowise.core.persistence.crud import get_git_metadata_bulk, get_node_degree_counts_bulk
+
+    meta = await get_git_metadata_bulk(session, repository_id, sorted(set(paths)))
+    if not meta:
+        return {}
+    degrees = await get_node_degree_counts_bulk(
+        session, repository_id, list(meta), edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+    )
+    return {
+        path: IndexFacts(
+            hotspot=bool(row.is_hotspot),
+            bug_magnet=bool(row.bug_magnet),
+            dependents=degrees[path]["in_degree"] if path in degrees else None,
+        )
+        for path, row in meta.items()
+    }

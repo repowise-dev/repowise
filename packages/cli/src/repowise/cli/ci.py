@@ -83,17 +83,23 @@ def repo_root(path: str | None) -> Path:
     return Path(root)
 
 
+def ci_revspec(root: str, revspec: str | None) -> str:
+    """*revspec*, else ``<CI target branch>...HEAD``: the change a gate judges."""
+    from repowise.core.ci.base import BaseNotFoundError, default_revspec
+
+    try:
+        return revspec or default_revspec(root)
+    except BaseNotFoundError as exc:
+        raise CannotEvaluateError("base_not_found", str(exc)) from exc
+
+
 def change_lines(root: str, revspec: str | None) -> tuple[dict[str, set[int]], str]:
     """``({file: new-side lines}, label)`` for *revspec*, else the CI's target branch."""
     import subprocess
 
     from repowise.core.analysis.changed_lines import changed_lines
-    from repowise.core.ci.base import BaseNotFoundError, default_revspec
 
-    try:
-        revspec = revspec or default_revspec(root)
-    except BaseNotFoundError as exc:
-        raise CannotEvaluateError("base_not_found", str(exc)) from exc
+    revspec = ci_revspec(root, revspec)
     try:
         return changed_lines(root, revspec)
     except ValueError as exc:

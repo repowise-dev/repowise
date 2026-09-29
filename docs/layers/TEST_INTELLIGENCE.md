@@ -279,12 +279,47 @@ no report found, readable or matching a repository file, an unknown revision,
 no merge-base (a shallow clone), a single commit at a shallow clone's
 boundary, bad config, or not a git repository.
 
-`--format github` writes up to 10 `::warning` annotations (largest uncovered
-ranges first), a notice counting the rest, an `::error::` when the gate fails
-and a notice when the small-change tolerance exempts it, then appends the
-markdown summary to `$GITHUB_STEP_SUMMARY`. `markdown` and `json` suit other CI
-systems. A coverage.py `.coverage` database is not a text report: export it
-with `coverage lcov` or `coverage xml` first.
+`--format github` writes up to 10 `::warning` annotations (riskiest file first,
+then largest uncovered range), a notice counting the rest, an `::error::` for
+each gate that fails and a notice when the small-change tolerance exempts one,
+then appends the markdown summary to `$GITHUB_STEP_SUMMARY`. `markdown` and
+`json` suit other CI systems.
+
+### Risk of each changed file
+
+Every row carries the risk of its file (`risk` on each file in `json`, the REST
+response and `get_change_risk`'s `patch_coverage` block): `fix_pressure` (the
+recency-weighted bug-fix count from git, read at the change's merge-base),
+`dependents` (import fan-in from the index graph), the index's `hotspot` and
+`bug_magnet` flags, `risky`, `reasons`, and `basis`. Risky reuses existing
+rules: with index data for the file, a hotspot or a bug magnet; on git alone
+(no index, or a file the change adds, which the index cannot know), the top
+quartile of files with bug-fix history, by fix pressure. Ranking only among
+files that have been fixed keeps "fixed once" from qualifying in a repository
+where most files never were. `basis` is `git_and_index`, `git`, `index` (the
+git walk failed) or `unavailable`. `coverage check` always reads git and adds
+the index when one opens; a missing or unreadable index never fails it.
+
+Rows, annotations and the markdown table list risky files first, then by fix
+pressure, dependents and uncovered lines. The table gains a "Risk" column in
+words ("hotspot, bug-fix weight 3.2, 14 dependents", "none known", "unknown"),
+and a line states the basis when not every row had index data.
+
+`--fail-under-risky PCT` (or `coverage.fail_under_risky`, validated like
+`fail_under`) adds a stricter gate over the risky files' changed executable
+lines. `risky` in `json` carries its covered and coverable counts, percentage,
+file count and `gate`. It uses the same rule as the other gates, including the
+whole change's small-change tolerance: a small change is exempt (`too_small`),
+a small risky slice of a big one is not. The overall `gate` fails when the flat
+gate, a path-scoped gate that is not informational, or the risky gate fails;
+the flat gate's own rule is unchanged. No risky file with a changed executable
+line leaves the risky gate not applied (`no_data`, exit `0`). With the flag
+set, a shallow clone or a measured row whose risk could not be read exits `2`,
+unless the flat or a path-scoped gate already failed, which is then reported
+as the failure.
+
+A coverage.py `.coverage` database is not a text report: export it with
+`coverage lcov` or `coverage xml` first.
 
 CI checkouts are often shallow, which leaves no merge-base to diff from. Fetch
 full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on GitLab).

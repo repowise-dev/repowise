@@ -22,9 +22,14 @@
 #   REPOWISE_COVERAGE_MIN_COVERABLE_LINES
 #                                   Small-change tolerance: fewer changed executable
 #                                   lines than this never fails the coverage gate.
+#   REPOWISE_COVERAGE_FAIL_UNDER_RISKY
+#                                   Minimum patch coverage percent over risky files only.
 #   REPOWISE_DOC_DRIFT_BASELINE     Committed doc-drift baseline file.
 #   REPOWISE_SECURITY_BASELINE      Committed security baseline file.
 #   REPOWISE_SECURITY_FAIL_ON       Lowest severity that fails: high (default), med, low.
+#   REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
+#                                   Fail when the change ranks above this percentile of
+#                                   recent commits. The risk job runs only when it is set.
 
 .repowise:
   image: python:3.12
@@ -48,6 +53,7 @@ repowise-coverage:
       $(printf -- '--report %s ' $REPOWISE_COVERAGE_REPORT)
       ${REPOWISE_COVERAGE_FAIL_UNDER:+--fail-under "$REPOWISE_COVERAGE_FAIL_UNDER"}
       ${REPOWISE_COVERAGE_MIN_COVERABLE_LINES:+--min-coverable-lines "$REPOWISE_COVERAGE_MIN_COVERABLE_LINES"}
+      ${REPOWISE_COVERAGE_FAIL_UNDER_RISKY:+--fail-under-risky "$REPOWISE_COVERAGE_FAIL_UNDER_RISKY"}
       --format markdown > repowise-coverage.md
   after_script:
     - cat repowise-coverage.md
@@ -130,3 +136,18 @@ repowise-code-quality:
       codequality: gl-code-quality-doc-drift.json
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+repowise-risk:
+  extends: .repowise
+  script:
+    - >
+      repowise risk "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
+      --fail-above-percentile "$REPOWISE_RISK_FAIL_ABOVE_PERCENTILE"
+      --format markdown > repowise-risk.md
+  after_script:
+    - cat repowise-risk.md
+  artifacts:
+    when: always
+    paths: [repowise-risk.md]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_RISK_FAIL_ABOVE_PERCENTILE

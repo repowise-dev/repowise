@@ -679,6 +679,13 @@ reads `fail` when one that is not informational fails). They are judged only
 on coverage measured at the change's head and valid config; otherwise they
 read `no_data`, and `scope.config_errors` names each invalid entry. The block
 is absent when no coverage is stored.
+Each file row carries `risk`: `fix_pressure` (recency-weighted bug-fix weight
+from the checkout's git history), `dependents`, `hotspot` and `bug_magnet`
+(from the index), `risky`, `reasons` and `basis` (`git_and_index`, `git`,
+`index` or `unavailable`). Rows are listed riskiest first, and `risky`
+(`file_count`, `covered_line_count`, `coverable_line_count`,
+`patch_coverage_pct`, `threshold`, `gate`) summarizes coverage over the risky
+files, null when no row's risk was assessed.
 
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,

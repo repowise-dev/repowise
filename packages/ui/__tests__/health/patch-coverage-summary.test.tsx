@@ -8,6 +8,7 @@ import {
   PatchCoverageSummary,
   floorPct,
   formatLineRanges,
+  riskWords,
 } from "../../src/health/patch-coverage-summary.js";
 
 function coverage(fileCount: number): PatchCoverageResponse {
@@ -33,6 +34,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       covered_line_count: 1,
       patch_coverage_pct: 50,
       uncovered_ranges: [[i + 1, i + 1]],
+      risk: null,
     })),
     scope: {
       label: "coverage.xml",
@@ -47,6 +49,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       config_errors: [],
     },
     path_gates: [],
+    risky: null,
   };
 }
 
@@ -69,6 +72,48 @@ function pathGate(
   };
 }
 
+function withRisk(): PatchCoverageResponse {
+  const base = coverage(2);
+  const [plain, hot] = base.files;
+  return {
+    ...base,
+    files: [
+      {
+        ...plain!,
+        risk: {
+          fix_pressure: 0,
+          dependents: null,
+          hotspot: null,
+          bug_magnet: null,
+          basis: "git",
+          risky: false,
+          reasons: [],
+        },
+      },
+      {
+        ...hot!,
+        risk: {
+          fix_pressure: 3.24,
+          dependents: 14,
+          hotspot: true,
+          bug_magnet: false,
+          basis: "git_and_index",
+          risky: true,
+          reasons: ["hotspot"],
+        },
+      },
+    ],
+    risky: {
+      file_count: 1,
+      covered_line_count: 1,
+      coverable_line_count: 2,
+      patch_coverage_pct: 50,
+      threshold: null,
+      gate: "not_set",
+    },
+  };
+}
+
 describe("patch coverage formatting", () => {
   it("floors to one decimal so a near miss never reads as full", () => {
     expect(floorPct(99.99)).toBe("99.9");
@@ -87,15 +132,24 @@ describe("patch coverage formatting", () => {
   });
 });
 
+/** The file paths a rendered list shows, in order. */
+function listedPaths(container: HTMLElement, list = "li"): (string | null)[] {
+  return [...container.querySelectorAll(`${list} .font-mono.flex-1`)].map(
+    (el) => el.textContent,
+  );
+}
+
 describe("PatchCoverageSummary", () => {
   it("lists ten files with gaps and counts the rest", () => {
-    render(<PatchCoverageSummary coverage={coverage(12)} />);
-    expect(screen.getByText("src/f9.ts")).toBeTruthy();
-    expect(screen.queryByText("src/f10.ts")).toBeNull();
+    const { container } = render(<PatchCoverageSummary coverage={coverage(12)} />);
+    // Equal risk and gap size fall back to path order, as the CLI's table does.
+    const paths = listedPaths(container);
+    expect(paths).toContain("src/f10.ts");
+    expect(paths).not.toContain("src/f9.ts");
     expect(screen.getByText("and 2 more")).toBeTruthy();
   });
 
-  it("stays quiet about freshness when coverage is current", () => {
+  it("states the denominator and stays quiet when coverage is current", () => {
     render(<PatchCoverageSummary coverage={coverage(1)} />);
     expect(screen.getByText("1 of 2 changed executable lines covered")).toBeTruthy();
     expect(screen.queryByText(/measured at/)).toBeNull();
@@ -120,6 +174,7 @@ describe("PatchCoverageSummary", () => {
                 [3, 3],
                 [7, 9],
               ],
+              risk: null,
             },
             {
               file_path: "src/new.ts",
@@ -129,6 +184,7 @@ describe("PatchCoverageSummary", () => {
               covered_line_count: 0,
               patch_coverage_pct: null,
               uncovered_ranges: [],
+              risk: null,
             },
           ],
           scope: { ...base.scope, freshness: "stale" },
@@ -203,9 +259,9 @@ describe("PatchCoverageSummary", () => {
     expect(screen.queryByText(/invalid entr/)).toBeNull();
   });
 
-  it("renders a response from a server older than path-scoped gates", () => {
+  it("renders a response from a server older than path-scoped gates and risk", () => {
     const base = coverage(1);
-    const { path_gates: _gates, ...older } = base;
+    const { path_gates: _gates, risky: _risky, ...older } = base;
     const { config_errors: _errors, ...olderScope } = base.scope;
     render(
       <PatchCoverageSummary
@@ -214,5 +270,74 @@ describe("PatchCoverageSummary", () => {
     );
     expect(screen.getByText("1 of 2 changed executable lines covered")).toBeTruthy();
     expect(screen.queryByRole("list", { name: "Path-scoped gates" })).toBeNull();
+  });
+
+  it("lists the risky file first and names its risk in words", () => {
+    const { container } = render(<PatchCoverageSummary coverage={withRisk()} />);
+    expect(listedPaths(container)).toEqual(["src/f1.ts", "src/f0.ts"]);
+    expect(screen.getByText("hotspot, bug-fix weight 3.2, 14 dependents")).toBeTruthy();
+    // "none known" is not worth a label on a row.
+    expect(screen.queryByText("none known")).toBeNull();
+    expect(
+      screen.getByText(/Risky files 50\.0% · 1 of 2 changed executable lines covered/),
+    ).toBeTruthy();
+    // One row had no index data, so the basis is disclosed.
+    expect(
+      screen.getByText(/Risk for 1 of 2 files is from git bug-fix history alone/),
+    ).toBeTruthy();
+  });
+
+  it("orders unmeasured files as the core does: not in report first, then by risk", () => {
+    const base = withRisk();
+    const [plain, hot] = base.files;
+    const unmeasured = (
+      path: string,
+      status: "not_in_report" | "no_line_data",
+      file: typeof plain,
+    ) => ({
+      ...file!,
+      file_path: path,
+      status,
+      coverable_line_count: 0,
+      covered_line_count: 0,
+      patch_coverage_pct: null,
+      uncovered_ranges: [],
+    });
+    const { container } = render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          files: [
+            unmeasured("a_nodata_hot.ts", "no_line_data", hot),
+            unmeasured("b_new_plain.ts", "not_in_report", plain),
+            unmeasured("c_new_hot.ts", "not_in_report", hot),
+          ],
+        }}
+      />,
+    );
+    expect(listedPaths(container, "details li")).toEqual([
+      "c_new_hot.ts",
+      "b_new_plain.ts",
+      "a_nodata_hot.ts",
+    ]);
+    expect(screen.getAllByText("not in report")).toHaveLength(2);
+  });
+});
+
+describe("riskWords", () => {
+  it("reads unassessed risk as nothing, unreadable as unknown, and names the weight", () => {
+    const risk = {
+      fix_pressure: 1,
+      dependents: 1,
+      hotspot: null,
+      bug_magnet: null,
+      basis: "git" as const,
+      risky: false,
+      reasons: [],
+    };
+    expect(riskWords(null)).toBeNull();
+    expect(riskWords({ ...risk, basis: "unavailable" })).toBe("unknown");
+    expect(riskWords(risk)).toBe("bug-fix weight 1.0, 1 dependent");
+    expect(riskWords({ ...risk, fix_pressure: 0, dependents: null })).toBe("none known");
   });
 });

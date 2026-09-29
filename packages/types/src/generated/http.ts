@@ -2200,6 +2200,7 @@ export interface PatchCoverageFile {
   covered_line_count: number;
   patch_coverage_pct: number | null;
   uncovered_ranges: number[][];
+  risk: PatchCoverageFileRisk | null;
 }
 
 export interface PatchCoverageFileCounts {
@@ -2208,6 +2209,16 @@ export interface PatchCoverageFileCounts {
   no_line_data: number;
   no_coverable_changes: number;
   out_of_scope: number;
+}
+
+export interface PatchCoverageFileRisk {
+  fix_pressure: number | null;
+  dependents: number | null;
+  hotspot: boolean | null;
+  bug_magnet: boolean | null;
+  basis: "git" | "index" | "git_and_index" | "unavailable";
+  risky: boolean;
+  reasons: string[];
 }
 
 /** One path-scoped gate from ``coverage.gates``, judged on the change. */
@@ -2235,6 +2246,17 @@ export interface PatchCoverageResponse {
   files: PatchCoverageFile[];
   scope: PatchCoverageScope;
   path_gates: PatchCoveragePathGate[];
+  risky: PatchCoverageRisky | null;
+}
+
+/** Patch coverage over the measured files history marks as risky. */
+export interface PatchCoverageRisky {
+  file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
 }
 
 export interface PatchCoverageScope {

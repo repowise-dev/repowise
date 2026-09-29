@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import threading
 import time
@@ -1113,16 +1114,24 @@ async def _patch_coverage_block(
     The same computation ``repowise coverage check`` gates on, read from the
     coverage the index stores. ``None`` when there is no index, no stored
     coverage, or no readable change: ``impacted_tests`` already says why.
-    ``files`` lists only the files that need attention, capped; the totals and
-    ``file_counts`` still count every file. ``coverage.ignore``,
+    ``files`` lists only the files that need attention, riskiest first, capped;
+    the totals and ``file_counts`` still count every file. ``coverage.ignore``,
     ``coverage.min_coverable_lines`` and the path-scoped ``coverage.gates``
     apply as they do in the CLI gate; path gates read ``no_data`` on stale
-    coverage or invalid config, which ``scope.config_errors`` names.
+    coverage or invalid config, which ``scope.config_errors`` names. Each row
+    carries its file's risk, from the index and the checkout's git history.
     """
     from repowise.core import git_refs
     from repowise.core.analysis.change_risk.features import revspec_head
     from repowise.core.analysis.health.coverage import configured_coverage
-    from repowise.core.analysis.patch_coverage import attention_rows, stored_patch_coverage
+    from repowise.core.analysis.patch_coverage import (
+        assess_risks,
+        attach_risk,
+        attention_rows,
+        read_git_fix_history,
+        read_index_facts,
+        stored_patch_coverage,
+    )
     from repowise.core.persistence.database import get_session
 
     session_factory = getattr(ctx, "session_factory", None)
@@ -1132,20 +1141,33 @@ async def _patch_coverage_block(
     head_commit = None
     if not result.working_tree:
         head_commit = git_refs.resolve(str(ctx.path), revspec_head(revspec)) or None
+    index: dict = {}
     try:
         async with get_session(session_factory) as session:
+            repo_id = (await _get_repo(session)).id
             patch = await stored_patch_coverage(
                 session,
-                (await _get_repo(session)).id,
+                repo_id,
                 changed,
                 label=result.features.ref,
                 head_commit=head_commit,
                 config=configured_coverage(ctx.path),
             )
+            # An unreadable index row leaves risk to git alone.
+            if patch is not None:
+                with contextlib.suppress(SQLAlchemyError):
+                    index = await read_index_facts(
+                        session, repo_id, [f.file_path for f in patch.files]
+                    )
     except (LookupError, SQLAlchemyError):
         return None
     if patch is None:
         return None
+    # Git after the session closes: no subprocess while a connection is held.
+    git = await asyncio.to_thread(
+        read_git_fix_history, str(ctx.path), revspec, working_tree=result.working_tree
+    )
+    patch = attach_risk(patch, assess_risks([f.file_path for f in patch.files], git, index))
     block = patch.to_dict()
     rows = [f.to_dict() for f in attention_rows(patch)]
     if len(rows) > _IMPACTED_TESTS_LIMIT:

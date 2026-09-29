@@ -41,6 +41,7 @@ from ..health.coverage.model import FileCoverage
 
 if TYPE_CHECKING:
     from ..health.coverage.discovery import PathGate, ResolvedCoverage
+    from .risk import FileRisk
 
 FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
 GateStatus = Literal["pass", "fail", "no_data", "not_set", "too_small"]
@@ -57,6 +58,8 @@ class FilePatchCoverage:
     covered_line_count: int = 0
     # Inclusive (start, end) runs of changed, executable, unexecuted lines.
     uncovered_ranges: tuple[tuple[int, int], ...] = ()
+    # What history says about the file (``risk.attach_risk``); ``None`` unread.
+    risk: FileRisk | None = None
 
     @property
     def patch_coverage_pct(self) -> float | None:
@@ -75,6 +78,7 @@ class FilePatchCoverage:
             "covered_line_count": self.covered_line_count,
             "patch_coverage_pct": _round(self.patch_coverage_pct),
             "uncovered_ranges": [list(r) for r in self.uncovered_ranges],
+            "risk": self.risk.to_dict() if self.risk is not None else None,
         }
 
 
@@ -190,6 +194,8 @@ class PatchCoverage:
     # Path-scoped gates, in config order. A failing one that is not
     # informational fails ``gate``; ``flat_gate`` ignores them.
     path_gates: tuple[PathGateResult, ...] = ()
+    # A stricter gate over the risky files only (``risk.attach_risk``).
+    risky_threshold: float | None = None
 
     @property
     def changed_file_count(self) -> int:
@@ -222,15 +228,66 @@ class PatchCoverage:
 
     @property
     def gate(self) -> GateStatus:
-        """``flat_gate``, or ``fail`` when a path-scoped gate fails the change."""
-        return "fail" if self.failing_path_gates else self.flat_gate
+        """``flat_gate``, or ``fail`` when a path-scoped or the risky-file gate fails.
+
+        With no flat threshold the risky-file gate's status is the verdict.
+        """
+        if self.failing_path_gates or self.risky_gate == "fail":
+            return "fail"
+        flat = self.flat_gate
+        return self.risky_gate if flat == "not_set" else flat
 
     @property
     def failing_path_gates(self) -> list[PathGateResult]:
         return [g for g in self.path_gates if g.fails_change]
 
+    @property
+    def risky_files(self) -> list[FilePatchCoverage]:
+        """Measured files whose risk marks them risky."""
+        return [f for f in self.with_status("measured") if f.risk is not None and f.risk.risky]
+
+    @property
+    def risky_covered_line_count(self) -> int:
+        return sum(f.covered_line_count for f in self.risky_files)
+
+    @property
+    def risky_coverable_line_count(self) -> int:
+        return sum(f.coverable_line_count for f in self.risky_files)
+
+    @property
+    def risky_pct(self) -> float | None:
+        return _pct(self.risky_covered_line_count, self.risky_coverable_line_count)
+
+    @property
+    def risky_gate(self) -> GateStatus:
+        """``risky_threshold`` over the risky files' lines, by the one gate rule.
+
+        No risky file is ``no_data``. Like a path gate it takes the whole
+        change's small-change tolerance: a small change is exempt, a small
+        risky slice of a big one is not.
+        """
+        return _gate(
+            self.risky_threshold,
+            self.risky_covered_line_count,
+            self.risky_coverable_line_count,
+            self.small_change,
+        )
+
     def with_status(self, status: FileStatus) -> list[FilePatchCoverage]:
         return [f for f in self.files if f.status == status]
+
+    def _risky_dict(self) -> dict[str, Any] | None:
+        # Null when no row carries risk: "not assessed" is not "nothing risky".
+        if all(f.risk is None for f in self.files):
+            return None
+        return {
+            "file_count": len(self.risky_files),
+            "covered_line_count": self.risky_covered_line_count,
+            "coverable_line_count": self.risky_coverable_line_count,
+            "patch_coverage_pct": _round(self.risky_pct),
+            "threshold": self.risky_threshold,
+            "gate": self.risky_gate,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         counts = {status: len(self.with_status(status)) for status in get_args(FileStatus)}
@@ -246,6 +303,7 @@ class PatchCoverage:
             "files": [f.to_dict() for f in self.files],
             "scope": self.scope.to_dict(),
             "path_gates": [g.to_dict() for g in self.path_gates],
+            "risky": self._risky_dict(),
         }
 
 

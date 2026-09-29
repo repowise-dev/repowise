@@ -323,6 +323,120 @@ def test_coverage_ignore_drops_changed_files_and_report_entries(repo) -> None:
         1,
         0,
     )
+@pytest.fixture
+def fixed_repo(tmp_path):
+    """``main`` fixed src/app.py twice and src/other.py once; ``feat`` edits app lines 2-3."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    for name in ("app", "util", "other"):
+        (tmp_path / "src" / f"{name}.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "init")
+    for value in ("0", "-1"):
+        (tmp_path / "src" / "app.py").write_text(f"a = {value}\nb = 2\nc = 3\n", encoding="utf-8")
+        _git(tmp_path, "commit", "-qam", "fix: crash on start")
+    (tmp_path / "src" / "other.py").write_text("a = 0\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "fix: off by one")
+    _git(tmp_path, "switch", "-qc", "feat")
+    (tmp_path / "src" / "app.py").write_text("a = 0\nb = 22\nc = 33\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "feat: new values")
+    return tmp_path
+
+
+def test_rows_carry_git_risk_without_an_index(fixed_repo) -> None:
+    report = _lcov(fixed_repo, {2: 1, 3: 0})
+    result = _run(fixed_repo, "main...feat", "--report", report, "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    (row,) = data["files"]
+    assert row["risk"]["basis"] == "git"
+    assert row["risk"]["risky"] is True
+    assert row["risk"]["reasons"] == ["top quartile of files with bug-fix history"]
+    assert data["risky"]["patch_coverage_pct"] == 50.0
+    assert data["risky"]["gate"] == "not_set"
+
+
+def test_fail_under_risky_gates_the_risky_files(fixed_repo) -> None:
+    report = _lcov(fixed_repo, {2: 1, 3: 0})
+
+    passed = _run(fixed_repo, "main...feat", "--report", report, "--fail-under-risky", "40")
+    assert passed.exit_code == 0, passed.output
+    failed = _run(fixed_repo, "main...feat", "--report", report, "--fail-under-risky", "80")
+    assert failed.exit_code == 1
+    assert "below the 80.0% risky-file gate" in failed.output
+    # From config too, validated like fail_under.
+    (fixed_repo / ".repowise").mkdir()
+    config = fixed_repo / ".repowise" / "config.yaml"
+    config.write_text("coverage:\n  fail_under_risky: 80\n", encoding="utf-8")
+    assert _run(fixed_repo, "main...feat", "--report", report).exit_code == 1
+    config.write_text("coverage:\n  fail_under_risky: high\n", encoding="utf-8")
+    assert _run(fixed_repo, "main...feat", "--report", report).exit_code == 2
+
+
+def test_fail_under_risky_without_readable_risk_exits_2(fixed_repo, monkeypatch) -> None:
+    import repowise.core.analysis.patch_coverage as pc_module
+
+    monkeypatch.setattr(pc_module, "read_git_fix_history", lambda *_a, **_k: None)
+    report = _lcov(fixed_repo, {2: 1, 3: 0})
+
+    # Without the risky gate an unreadable risk is only a gap in the table.
+    assert _run(fixed_repo, "main...feat", "--report", report).exit_code == 0
+    gated = _run(fixed_repo, "main...feat", "--report", report, "--fail-under-risky", "50")
+    assert gated.exit_code == 2
+    assert "risky-file gate cannot run" in gated.output
+    # A failing flat gate is not hidden behind the risky gate's setup problem.
+    both = _run(
+        fixed_repo, "main...feat", "--report", report,
+        "--fail-under", "80", "--fail-under-risky", "50", "--format", "json",
+    )
+    assert both.exit_code == 1, both.output
+    assert json.loads(both.stdout)["gate"] == "fail"
+
+
+def test_fail_under_risky_on_a_shallow_clone_exits_2(fixed_repo, tmp_path_factory) -> None:
+    shallow = tmp_path_factory.mktemp("shallow") / "repo"
+    _git(
+        fixed_repo.parent, "clone", "-q", "--depth", "2", "--no-single-branch",
+        fixed_repo.as_uri(), str(shallow),
+    )
+    report = _lcov(shallow, {2: 1, 3: 0})
+
+    result = _run(shallow, "origin/main...HEAD", "--report", report, "--fail-under-risky", "50")
+    assert result.exit_code == 2, result.output
+    assert "fetch full history" in result.output.lower()
+
+
+def test_an_unreadable_index_still_gates_on_git_risk(fixed_repo, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.exc import OperationalError
+
+    import repowise.cli.commands.coverage_check_cmd as cmd
+    import repowise.core.analysis.patch_coverage as pc_module
+
+    @asynccontextmanager
+    async def _opened(_root):
+        yield object(), "r"
+
+    async def _raise(*_a, **_k):
+        raise OperationalError("select", {}, Exception("disk I/O error"))
+
+    monkeypatch.setattr(cmd, "has_db_store", lambda _root: True)
+    monkeypatch.setattr(cmd, "repo_index_session", _opened)
+    monkeypatch.setattr(pc_module, "read_index_facts", _raise)
+    report = _lcov(fixed_repo, {2: 1, 3: 0})
+
+    result = _run(
+        fixed_repo, "main...feat", "--report", report, "--fail-under-risky", "80",
+        "--format", "json",
+    )
+    assert result.exit_code == 1, result.output
+    data = json.loads(result.stdout)
+    assert data["files"][0]["risk"]["basis"] == "git"
+    assert data["risky"]["gate"] == "fail"
 
 
 def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
