@@ -1820,7 +1820,7 @@ def init_command(
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
     from repowise.core.generation.selection import count_documentable_files
-    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+    from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
     _scope_embedder = embedder_name_resolved if not effective_index_only else _index_only_embedder
     _unavailable = []
@@ -1836,6 +1836,7 @@ def init_command(
         ],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={
             "configured_cap": max_file_pages,
             **(
