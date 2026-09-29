@@ -9,12 +9,28 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
+export interface ActionCommand {
+  purpose: string;
+  mcp?: string | null;
+  cli?: string | null;
+}
+
 export interface ActionContext {
   production_files: number;
   active_authors_90d: number;
   fix_commits_90d: number;
   busy_threshold: number;
   coverage: "measured" | "stale" | "unknown";
+}
+
+export interface ActionDetail {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
+  marker?: string | null;
+  severity?: string | null;
+  reason?: string;
+  ref?: string | null;
 }
 
 export interface ActionHorizon {
@@ -2083,6 +2099,9 @@ export interface NextAction {
   evidence_total: number;
   includes: string[];
   fingerprint: string;
+  details?: ActionDetail[];
+  details_total?: number;
+  commands?: ActionCommand[];
 }
 
 export interface NodeSearchResult {
@@ -3021,6 +3040,11 @@ export interface WebhookResponse {
   status?: string;
 }
 
+export interface WorkspaceActionsResponse {
+  repos: WorkspaceRepoActions[];
+  cross_repo: WorkspaceCrossRepoAction[];
+}
+
 /** Architecture-complexity metrics over the system graph (Phase 6). */
 export interface WorkspaceArchitectureResponse {
   node_count?: number;
@@ -3198,6 +3222,14 @@ export interface WorkspaceContractsResponse {
   by_type?: Record<string, number>;
 }
 
+export interface WorkspaceCrossRepoAction {
+  kind: "breaking_contract";
+  title: string;
+  impact: string;
+  count: number;
+  repos: string[];
+}
+
 export interface WorkspaceCrossRepoSummary {
   co_change_count?: number;
   package_dep_count?: number;
@@ -3287,6 +3319,14 @@ export interface WorkspaceOrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+}
+
+export interface WorkspaceRepoActions {
+  alias: string;
+  repo_id: string | null;
+  status: "available" | "unavailable";
+  reason?: string;
+  horizons?: Record<string, ActionHorizon>;
 }
 
 export interface WorkspaceRepoDiagnostics {
