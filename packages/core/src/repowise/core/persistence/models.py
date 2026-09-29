@@ -1142,7 +1142,7 @@ class DecisionRecord(Base):
     )
     staleness_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Every file and path the record names is absent at HEAD, renames followed.
-    artifacts_gone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    artifacts_gone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     superseded_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
