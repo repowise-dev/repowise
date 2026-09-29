@@ -64,6 +64,7 @@ def scan_package_roots(
     repo_root: str | os.PathLike[str],
     *,
     is_pruned: Callable[[Path], bool] | None = None,
+    prune_nested_git: bool = True,
 ) -> set[str]:
     """Repo-relative POSIX directories holding a package manifest.
 
@@ -77,14 +78,15 @@ def scan_package_roots(
     beneath it. It defaults to a stock :class:`FileTraverser`'s boundary test;
     pass a configured traverser's :meth:`~FileTraverser.dir_chain_skipped` (or
     use :meth:`FileTraverser.package_root_dirs`) when the repo has submodule
-    or exclude settings.
+    or exclude settings. ``prune_nested_git=False`` descends into nested
+    checkouts, for a traverser opted into indexing them.
     """
     root = Path(repo_root)
     names = package_manifest_names()
     prune = is_pruned if is_pruned is not None else _default_prune(root)
     roots: set[str] = set()
 
-    for dirpath, dirnames, filenames in walk_repo(root):
+    for dirpath, dirnames, filenames in walk_repo(root, prune_nested_git=prune_nested_git):
         rel_dir = Path(dirpath).relative_to(root)
         # Prune in place so the walk never descends — the point of the scan is
         # to be cheap enough to run on every update.

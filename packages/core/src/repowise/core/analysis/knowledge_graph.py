@@ -281,6 +281,10 @@ def build_knowledge_graph_skeleton(
         "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
         "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
         "entry_points": orientation_entry_points(repo_structure),
+        "packages": [
+            {"name": p.name, "path": p.path, "declared": p.declared}
+            for p in getattr(repo_structure, "packages", None) or []
+        ],
         "tech_stack": tech_stack[:20],
     }
 

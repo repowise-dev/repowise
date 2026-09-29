@@ -168,6 +168,8 @@ class PackageInfo:
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
+    # A member of a root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work).
+    declared: bool = False
 
 
 @dataclass

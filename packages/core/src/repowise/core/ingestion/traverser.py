@@ -706,61 +706,80 @@ class FileTraverser:
     # ------------------------------------------------------------------
 
     def _detect_monorepo(self) -> tuple[list[PackageInfo], bool]:
-        """Detect package sub-directories by looking for manifest files.
+        """Packages: manifest directories at any depth, checked against workspaces.
 
-        Candidate dirs the main traversal would never enter (nested git
-        repos, submodules, gitignored/blocked dirs) are rejected up front, so
-        a package the walk skips is neither reported nor scanned.
+        Candidates come from :meth:`package_root_dirs`, so a package the walk
+        skips is neither reported nor scanned. Roots under test or example trees
+        are dropped: a fixture or sample carries a manifest without being one
+        of the repo's packages.
+
+        A root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work) is the
+        authority for its manifest kind: its members are ``declared``, and an
+        undeclared root is dropped when one of its manifests is a declared kind
+        (the package manager does not build it) or when it sits inside a
+        declared member (a template or fixture shipped with that package).
+        Undeclared roots of kinds no declaration covers are kept.
         """
+        from ..support_paths import is_example_path
+        from .workspace_members import declared_workspace_members, manifest_package_name
+
         packages: list[PackageInfo] = []
-        seen_paths: set[str] = set()
+        members = declared_workspace_members(self.repo_root)
+        all_members = set().union(*members.values())
         # Mirrors GraphBuilder._prune_nested_git.
         prune_nested = not (self._include_submodules or self._include_nested_repos)
 
-        for depth in (1, 2):
-            pattern = "/".join(["*"] * depth) + "/*"
-            for candidate in self.repo_root.glob(pattern):
-                if candidate.name not in _MANIFEST_FILES:
-                    continue
-                pkg_dir = candidate.parent
-                rel_pkg_path = pkg_dir.relative_to(self.repo_root)
-                rel_pkg = rel_pkg_path.as_posix()
-                if rel_pkg in seen_paths:
-                    continue
-                if self.dir_chain_skipped(rel_pkg_path):
-                    continue
-                seen_paths.add(rel_pkg)
-                lang, entry_pts = _scan_package_dir(
-                    pkg_dir,
-                    self.repo_root,
-                    prune_nested_git=prune_nested,
-                    is_pruned=self.dir_chain_skipped,
+        for rel_pkg in sorted(self.package_root_dirs()):
+            pkg_dir = self.repo_root / rel_pkg
+            try:
+                manifests = sorted(_MANIFEST_FILES.intersection(os.listdir(pkg_dir)))
+            except OSError:
+                continue
+            if not manifests:
+                continue
+            probe = f"{rel_pkg}/{manifests[0]}"
+            if is_test_related_path(probe) or is_example_path(probe):
+                continue
+            declaring = [m for m in manifests if rel_pkg in members.get(m, ())]
+            if not declaring and (
+                any(m in members for m in manifests)
+                or any(p.as_posix() in all_members for p in Path(rel_pkg).parents)
+            ):
+                continue
+            manifest = (declaring or manifests)[0]
+            lang, entry_pts = _scan_package_dir(
+                pkg_dir,
+                self.repo_root,
+                prune_nested_git=prune_nested,
+                is_pruned=self.dir_chain_skipped,
+            )
+            packages.append(
+                PackageInfo(
+                    name=manifest_package_name(pkg_dir / manifest) or pkg_dir.name,
+                    path=rel_pkg,
+                    language=lang,
+                    entry_points=entry_pts,
+                    manifest_file=manifest,
+                    declared=bool(declaring),
                 )
-                packages.append(
-                    PackageInfo(
-                        name=pkg_dir.name,
-                        path=rel_pkg,
-                        language=lang,
-                        entry_points=entry_pts,
-                        manifest_file=candidate.name,
-                    )
-                )
+            )
 
-        packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
 
     def package_root_dirs(self) -> set[str]:
         """Every directory holding a package manifest, at any depth.
 
         Shares :func:`.package_roots.scan_package_roots` with health's module
-        attribution, and this traverser's own skip semantics, so the two agree
-        on what a package is. Distinct from :meth:`get_repo_structure`'s
-        ``packages``, which stops at depth 2 and pays for language and
-        entry-point detection per package.
+        attribution, and this traverser's own skip semantics (nested-repo
+        opt-ins included), so the two agree on what a package is.
         """
         from .package_roots import scan_package_roots
 
-        return scan_package_roots(self.repo_root, is_pruned=self.dir_chain_skipped)
+        return scan_package_roots(
+            self.repo_root,
+            is_pruned=self.dir_chain_skipped,
+            prune_nested_git=not (self._include_submodules or self._include_nested_repos),
+        )
 
     def dir_chain_skipped(self, rel_dir: Path) -> bool:
         """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
