@@ -58,7 +58,9 @@ git add .doc-drift-baseline.json
 Then pass `--baseline .doc-drift-baseline.json` (or the action's
 `doc-drift-baseline` input). Entries are keyed on the document, the reference
 and its target, so an edit above a finding does not turn it back into a new
-one.
+one. Alternatively, `repowise doc-drift --check --since auto` judges only what
+the change is answerable for (documents it edits, and documents naming files it
+deletes or renames), which needs no baseline but does need `fetch-depth: 0`.
 
 Security has a baseline too, for accepting a finding a change adds on purpose
 (a documented test key, say): `repowise security check --write-baseline
