@@ -71,10 +71,8 @@ def test_the_default_branch_publishes_the_reports_the_widget_compares_against() 
     job = _gitlab_jobs()["repowise-code-quality"]
     assert "extends" not in job and job["allow_failure"] is True
     assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
-    assert job["artifacts"]["reports"]["codequality"] == [
-        "gl-code-quality-doc-drift.json",
-        "gl-code-quality-security.json",
-    ]
+    # One path: the report type takes a single file.
+    assert job["artifacts"]["reports"]["codequality"] == "gl-code-quality-doc-drift.json"
 
 
 _ISSUE = '[{"check_name": "repowise-security/eval_call"}]'
@@ -138,7 +136,7 @@ def test_the_gitlab_job_writes_a_valid_report_and_exits_with_the_gate(
     assert json.loads(artifact.read_text(encoding="utf-8")) == report
 
 
-def test_the_default_branch_job_writes_both_reports(tmp_path, fake_repowise) -> None:
+def test_the_default_branch_job_writes_the_doc_drift_report(tmp_path, fake_repowise) -> None:
     code = _run_gitlab_job(
         tmp_path, fake_repowise, "repowise-code-quality", FAKE_DOC_DRIFT="1",
         FAKE_GITLAB_OUT=_ISSUE,
@@ -148,8 +146,6 @@ def test_the_default_branch_job_writes_both_reports(tmp_path, fake_repowise) -> 
     assert call.startswith("doc-drift --check") and call.endswith("--format gitlab")
     doc_drift = tmp_path / "gl-code-quality-doc-drift.json"
     assert json.loads(doc_drift.read_text(encoding="utf-8")) == json.loads(_ISSUE)
-    security = tmp_path / "gl-code-quality-security.json"
-    assert json.loads(security.read_text(encoding="utf-8")) == []
 
 
 @pytest.fixture

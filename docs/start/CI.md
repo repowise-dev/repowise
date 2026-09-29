@@ -165,8 +165,8 @@ findings show in the merge request's Code Quality widget, even when the gate
 fails the job. A fourth job, `repowise-code-quality`, runs on the default
 branch and never fails the pipeline: it publishes the report the widget
 compares a merge request against, so only issues the merge request introduces
-show as new. Its security report is always `[]`, because security judges only
-what a change adds and the default branch has no change to judge. Other
+show as new. It publishes doc drift only: security judges only what a change
+adds, and the default branch has no change to judge. Other
 variables: `REPOWISE_VERSION`, `REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.

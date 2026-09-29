@@ -102,9 +102,9 @@ repowise-security:
 
 # The Code Quality widget compares a merge request's report with the one from
 # the target branch's latest pipeline, so this job publishes that one on the
-# default branch. It never fails the pipeline. Security judges only what a
-# change adds, and the default branch has no change to judge, so its report is
-# an empty list and every security issue a merge request raises shows as new.
+# default branch. It never fails the pipeline. Only doc drift has a base report:
+# security judges only what a change adds, and the default branch has no change
+# to judge, so every security issue a merge request raises shows as new.
 repowise-code-quality:
   image: python:3.12
   allow_failure: true
@@ -116,10 +116,9 @@ repowise-code-quality:
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-doc-drift.json \
         || echo '[]' > gl-code-quality-doc-drift.json
-      echo '[]' > gl-code-quality-security.json
   artifacts:
     when: always
     reports:
-      codequality: [gl-code-quality-doc-drift.json, gl-code-quality-security.json]
+      codequality: gl-code-quality-doc-drift.json
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
