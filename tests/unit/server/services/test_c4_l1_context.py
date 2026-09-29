@@ -112,8 +112,10 @@ async def test_system_description_falls_back_to_readme(async_session, tmp_path):
     [
         "A tiny web framework.\n\nMore detail.\n",
         "![badge](x.svg)\n\nA tiny web framework.\n\n## Install\n\nUse pip.\n",
+        "# Web\n\n## Contents\n\n- [Install](#install)\n  1. [Usage](#usage)\n\n"
+        "A tiny web framework.\n",
     ],
-    ids=["no-headings", "intro-before-first-heading"],
+    ids=["no-headings", "intro-before-first-heading", "toc-before-intro"],
 )
 async def test_system_description_reads_unheaded_readme_intro(async_session, tmp_path, readme):
     (tmp_path / "README.md").write_text(readme, encoding="utf-8")

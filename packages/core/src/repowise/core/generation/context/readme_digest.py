@@ -60,6 +60,8 @@ _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 #: Named because a backslash cannot appear inside an f-string before 3.12.
 _LINK_TEXT = r"\1"
+#: A list item that is only a link: a table-of-contents entry, not prose.
+_TOC_ENTRY = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[^\]]+\]\([^)]*\)\s*$")
 
 
 def _opening_paragraph(lines: list[str], start: int, *, past_headings: bool = False) -> str:
@@ -67,7 +69,8 @@ def _opening_paragraph(lines: list[str], start: int, *, past_headings: bool = Fa
 
     Skips fenced code, decoration and blank lines. Returns "" when the section
     opens straight onto another heading, which is the common shape of a table
-    of contents, unless *past_headings* lets it read on to the first prose.
+    of contents, unless *past_headings* lets it read on past headings and
+    link-only list items to the first prose.
     """
     i = start
     fenced = False
@@ -90,7 +93,7 @@ def _opening_paragraph(lines: list[str], start: int, *, past_headings: bool = Fa
                 break
             i += 1
             continue
-        if not stripped or _DECORATION.match(line):
+        if not stripped or _DECORATION.match(line) or (past_headings and _TOC_ENTRY.match(line)):
             # Blank lines before the paragraph are skipped; one after it ends
             # the paragraph, so that a section contributes one paragraph.
             if body:
