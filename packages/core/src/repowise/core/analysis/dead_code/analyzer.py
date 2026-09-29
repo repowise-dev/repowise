@@ -42,6 +42,7 @@ from .dynamic_markers import (
     find_dynamic_import_files,
     read_source_text,
 )
+from .entry_shape import clamp_entry_shaped
 from .file_reachability import (
     PackageFileMap,
     ReachabilityRescues,
@@ -894,6 +895,9 @@ class DeadCodeAnalyzer:
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
+        findings = clamp_entry_shaped(
+            findings, self._source_map, self._public_top_level_names(findings)
+        )
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
@@ -1198,6 +1202,29 @@ class DeadCodeAnalyzer:
 
         return findings
 
+    def _defined_symbols(self, node: Any) -> list[tuple[str, dict]]:
+        """``(symbol_id, data)`` for each symbol *node* defines."""
+        return [
+            (succ, self.graph.nodes[succ])
+            for succ in self.graph.successors(node)
+            if self.graph.nodes[succ].get("node_type") == "symbol"
+            and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
+        ]
+
+    def _public_top_level_names(
+        self, findings: list[DeadCodeFindingData]
+    ) -> dict[str, frozenset[str]]:
+        """Top-level public symbol names of each unreachable file in *findings*."""
+        return {
+            f.file_path: frozenset(
+                sym["name"]
+                for _, sym in self._defined_symbols(f.file_path)
+                if sym.get("visibility") == "public" and not sym.get("parent_name")
+            )
+            for f in findings
+            if f.kind is DeadCodeKind.UNREACHABLE_FILE and self.graph.has_node(f.file_path)
+        }
+
     def _export_file_context(self, node: Any, whitelist: set[str]) -> _ExportFile | None:
         """The file-level facts the unused-export pass needs, or None to skip the file."""
         if _is_synthetic_node(str(node)):
@@ -1218,12 +1245,7 @@ class DeadCodeAnalyzer:
         if self._should_never_flag(str(node), whitelist):
             return None
 
-        symbol_pairs = [
-            (succ, self.graph.nodes[succ])
-            for succ in self.graph.successors(node)
-            if self.graph.nodes[succ].get("node_type") == "symbol"
-            and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
-        ]
+        symbol_pairs = self._defined_symbols(node)
         if not symbol_pairs:
             return None
 
