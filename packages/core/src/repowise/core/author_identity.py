@@ -214,7 +214,8 @@ def build_identity_resolver(
       public TLD) joins the single real email of the same 2+ word name.
 
     Guardrails, since a false merge is worse than a split: the same display
-    name alone never joins two real emails; bots take no E3-E5 edge; and an
+    name alone never joins two real emails; a node whose names point E3/E5 at
+    two different real emails takes neither; bots take no E3-E5 edge; and an
     identity that would hold two different noreply logins has its E3-E5 edges
     rolled back. (Numeric ids are not compared on their own: E2 already folds
     one login's re-issued ids, and two logins are caught by login.)
@@ -262,12 +263,16 @@ def build_identity_resolver(
         # E3 (noreply) and E5 (machine-local): the one real email of that
         # name. A one-word name ("Kirill", "Samuel") is shared by too many
         # people to vouch for anyone; a handle-like one is E4's job.
+        by_name: set[str] = set()
         for n in counter:
             if len(n.split()) < 2:
                 continue
             reals = real_by_name.get(n.lower(), set())
             if len(reals) == 1:
-                soft.append((node, next(iter(reals))))
+                by_name |= reals
+        # A shared alias seen under two people's names would bridge them both.
+        if len(by_name) == 1:
+            soft.append((node, next(iter(by_name))))
         # E4: the login is the display name of a few real emails.
         login = logins.get(node, "")
         reals = real_by_name.get(login, set())

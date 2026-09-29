@@ -284,6 +284,21 @@ MERGE_CASES = [
         None,
         id="two-login-conflict-via-handles",
     ),
+    pytest.param(
+        # One shared alias committed under two people's names must not bridge
+        # them: it matches a different real email per name, so it takes neither.
+        [
+            ("Jane Doe", f"41+shared{_NR}"),
+            ("John Smith", f"41+shared{_NR}"),
+            ("Jane Doe", "jane@corp.com"),
+            ("John Smith", "john@corp.com"),
+            ("Jane Doe", "build@ci-box.local"),
+            ("John Smith", "build@ci-box.local"),
+        ],
+        [{f"41+shared{_NR}"}, {"jane@corp.com"}, {"john@corp.com"}, {"build@ci-box.local"}],
+        None,
+        id="shared-alias-two-names-stays-apart",
+    ),
 ]
 
 
