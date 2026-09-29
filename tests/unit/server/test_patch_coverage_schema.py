@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.coverage import file_coverage
+from repowise.core.analysis.health.coverage import PathGate, file_coverage
 from repowise.core.analysis.patch_coverage import PatchScope, compute_patch_coverage
 from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 
@@ -27,6 +27,10 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
         threshold=80,
         min_coverable_lines=5,
         ignore=["gen/"],
+        gates=[
+            PathGate("a", ("a.py",), 80),
+            PathGate("none", ("docs/",), None, informational=True),
+        ],
         scope=PatchScope(
             label="main...HEAD",
             source_formats=("lcov",),
@@ -36,6 +40,7 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
             mapping_partial=True,
             measured_commit="abc",
             freshness="stale",
+            config_errors=("coverage.gates[2]: must be a mapping with name and paths.",),
         ),
     )
     wire = pc.to_dict()
@@ -47,4 +52,5 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
         "not_in_report",
     }
     assert (wire["gate"], wire["scope"]["ignored_file_count"]) == ("too_small", 1)
+    assert [g["gate"] for g in wire["path_gates"]] == ["too_small", "not_set"]
     assert PatchCoverageResponse.model_validate(wire).model_dump() == wire

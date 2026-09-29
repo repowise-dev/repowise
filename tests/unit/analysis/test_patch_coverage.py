@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from repowise.core.analysis.changed_lines import line_ranges
-from repowise.core.analysis.health.coverage import file_coverage
+from repowise.core.analysis.health.coverage import PathGate, file_coverage
 from repowise.core.analysis.patch_coverage import (
     PatchScope,
     compute_patch_coverage,
@@ -256,3 +256,344 @@ def test_serialized_percentage_is_floored_not_rounded() -> None:
         {"a.py": set(coverable)}, _cov("a.py", coverable[:31999], coverable), threshold=80
     )
     assert pc.to_dict()["patch_coverage_pct"] == 79.99
+
+
+# -- path-scoped gates -------------------------------------------------------
+
+
+def _two_packages():
+    """``api`` is 1 of 4 covered, ``web`` 4 of 4: 5 of 8 (62.5%) over the change."""
+    coverage = {
+        **_cov("api/a.py", covered=[1], coverable=[1, 2, 3, 4]),
+        **_cov("web/b.py", covered=[1, 2, 3, 4], coverable=[1, 2, 3, 4]),
+    }
+    return {"api/a.py": {1, 2, 3, 4}, "web/b.py": {1, 2, 3, 4}}, coverage
+
+
+def test_path_gate_judges_only_its_files() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed,
+        coverage,
+        threshold=50,
+        gates=[PathGate("api", ("/api/",), 80), PathGate("web", ("web/**",), 80)],
+    )
+
+    api, web = pc.path_gates
+    assert (api.measured_file_count, api.covered_line_count, api.coverable_line_count) == (1, 1, 4)
+    assert (api.patch_coverage_pct, api.gate) == (25.0, "fail")
+    assert (web.patch_coverage_pct, web.gate) == (100.0, "pass")
+    # The whole change meets its own gate; the failing path gate fails it.
+    assert pc.flat_gate == "pass"
+    assert pc.gate == "fail"
+    assert pc.to_dict()["gate"] == "fail"
+
+
+def test_informational_path_gate_never_fails_the_change() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed, coverage, gates=[PathGate("api", ("/api/",), 80, informational=True)]
+    )
+
+    assert pc.path_gates[0].gate == "fail"
+    assert pc.gate == "not_set"
+    lines = github_annotations(pc)
+    assert not any(line.startswith("::error") for line in lines)
+    # Below its threshold is still said, as a notice.
+    assert lines[0] == (
+        "::notice::Informational: path-scoped gate api 25.0%25 (1 of 4 changed executable "
+        "lines), below its 80.0%25 gate."
+    )
+    assert not headline(pc).startswith("Fails")
+
+
+def test_a_file_can_count_in_several_path_gates() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed,
+        coverage,
+        gates=[PathGate("all", ("*.py",), 50), PathGate("api", ("api/",), 20)],
+    )
+
+    everything, api = pc.path_gates
+    assert everything.measured_file_count == 2
+    assert (everything.covered_line_count, everything.coverable_line_count) == (5, 8)
+    assert api.measured_file_count == 1
+    # Passing path gates fail nothing, and set no whole-change verdict either.
+    assert pc.gate == "not_set"
+
+
+def test_path_gate_without_files_or_threshold() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed,
+        coverage,
+        threshold=10,
+        gates=[PathGate("docs", ("/docs/",), 80), PathGate("api", ("/api/",))],
+    )
+
+    docs, api = pc.path_gates
+    assert docs.measured_file_count == 0
+    assert docs.patch_coverage_pct is None
+    assert docs.gate == "no_data"
+    assert docs.to_dict()["patch_coverage_pct"] is None
+    assert api.gate == "not_set"
+    assert pc.gate == "pass"
+
+
+def test_path_gate_counts_its_unmeasured_files() -> None:
+    coverage = _cov("src/a.py", covered=[1], coverable=[1])
+    pc = compute_patch_coverage(
+        {"src/a.py": {1}, "new/x.py": {1}, "new/y.py": {2}},
+        coverage,
+        gates=[PathGate("new", ("/new/",), 80)],
+    )
+
+    (gate,) = pc.path_gates
+    assert (gate.measured_file_count, gate.unmeasured_file_count, gate.gate) == (0, 2, "no_data")
+    assert "| `new` | no measured changed lines (2 changed files not measured) | n/a | 80.0% |" in (
+        render_markdown(pc)
+    )
+
+
+def test_small_change_tolerance_is_the_whole_changes() -> None:
+    changed, coverage = _two_packages()
+    gates = [PathGate("api", ("/api/",), 80)]
+
+    # A 4-line slice of an 8-line change is not a small change.
+    big = compute_patch_coverage(changed, coverage, min_coverable_lines=5, gates=gates)
+    assert big.path_gates[0].gate == "fail"
+    assert big.gate == "fail"
+    # The whole change under the minimum exempts every gate.
+    small = compute_patch_coverage(changed, coverage, min_coverable_lines=10, gates=gates)
+    assert small.path_gates[0].gate == "too_small"
+    assert small.gate == "not_set"
+
+
+def test_unjudged_path_gates_read_no_data_but_keep_their_counts() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed, coverage, gates=[PathGate("api", ("/api/",), 80)], judge_gates=False
+    )
+
+    (gate,) = pc.path_gates
+    assert (gate.gate, gate.coverable_line_count) == ("no_data", 4)
+    assert pc.gate == "not_set"
+    assert "| `api` | not judged | 1 of 4 (25.0%) | 80.0% |" in render_markdown(pc)
+
+
+def test_path_gate_pct_floors_like_the_whole_change() -> None:
+    coverage = _cov("a.py", covered=[1, 2], coverable=[1, 2, 3])
+    pc = compute_patch_coverage(
+        {"a.py": {1, 2, 3}}, coverage, gates=[PathGate("a", ("a.py",), 66.67)]
+    )
+
+    (gate,) = pc.path_gates
+    # 66.666...% is below 66.67% unrounded, and serialises floored.
+    assert gate.gate == "fail"
+    assert gate.to_dict()["patch_coverage_pct"] == 66.66
+
+
+def test_path_gate_to_dict_shape() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(changed, coverage, gates=[PathGate("api", ("/api/",), 80)])
+
+    assert pc.to_dict()["path_gates"] == [
+        {
+            "name": "api",
+            "paths": ["/api/"],
+            "threshold": 80,
+            "informational": False,
+            "measured_file_count": 1,
+            "unmeasured_file_count": 0,
+            "covered_line_count": 1,
+            "coverable_line_count": 4,
+            "patch_coverage_pct": 25.0,
+            "gate": "fail",
+        }
+    ]
+    assert pc.to_dict()["scope"]["config_errors"] == []
+    assert compute_patch_coverage(changed, coverage).to_dict()["path_gates"] == []
+
+
+def test_failing_path_gate_renders_in_headline_markdown_and_annotations() -> None:
+    changed, coverage = _two_packages()
+    pc = compute_patch_coverage(
+        changed,
+        coverage,
+        threshold=50,
+        gates=[
+            PathGate("api", ("/api/",), 80),
+            PathGate("web", ("/web/",), 80),
+            PathGate("docs", ("/docs/",), 80, informational=True),
+        ],
+    )
+
+    # The failure leads, with its counts; the whole-change verdict follows.
+    assert headline(pc, markdown=False) == (
+        "Fails: path-scoped gate api 25.0% (1 of 4 changed executable lines), below its "
+        "80.0% gate. Patch coverage 62.5% (5 of 8 changed executable lines covered) "
+        "· meets the 50.0% gate"
+    )
+    md = render_markdown(pc)
+    assert "| Path-scoped gate | Verdict | Covered changed lines | Threshold |" in md
+    assert "| `api` | fails | 1 of 4 (25.0%) | 80.0% |" in md
+    assert "| `web` | passes | 4 of 4 (100.0%) | 80.0% |" in md
+    assert "| `docs` | no measured changed lines (informational) | n/a | 80.0% |" in md
+    errors = [line for line in github_annotations(pc) if line.startswith("::error")]
+    assert errors == [
+        "::error::Fails: path-scoped gate api 25.0%25 (1 of 4 changed executable lines), "
+        "below its 80.0%25 gate."
+    ]
+
+
+def test_path_gate_table_is_capped_with_failing_gates_first() -> None:
+    changed, coverage = _two_packages()
+    gates = [PathGate(f"g{i}", ("/api/",)) for i in range(12)]
+    gates.append(PathGate("late", ("/api/",), 80))
+    md = render_markdown(compute_patch_coverage(changed, coverage, gates=gates))
+
+    # The failing gate sits past the cap in config, but leads the table.
+    rows = [line for line in md.splitlines() if line.startswith("| `")]
+    assert rows[0].startswith("| `late` | fails")
+    assert "| `g8` |" in md
+    assert "| `g9` |" not in md
+    assert "and 3 more path-scoped gates." in md
+
+
+def test_no_path_gate_table_without_gates() -> None:
+    changed, coverage = _two_packages()
+    assert "Path-scoped" not in render_markdown(compute_patch_coverage(changed, coverage))
+
+
+# -- suggested gates ---------------------------------------------------------
+
+
+def test_community_gates_name_by_common_directory_and_skip_tiny_ones() -> None:
+    from repowise.core.analysis.patch_coverage.suggest import COMMUNITY_LIMIT, community_gates
+
+    communities = {
+        "svc/api/a.py": 1,
+        "svc/api/deep/b.py": 1,
+        "svc/web/c.py": 1,
+        "svc/web/d.py": 1,
+        "svc/api/test_a.py": 1,  # a test: not a source file
+        "main.py": 2,
+        "lib/x.py": 2,
+        "lib/y.py": 2,
+        "tiny/one.py": 3,
+    }
+    # Enough three-file communities to overflow the limit.
+    for i in range(COMMUNITY_LIMIT):
+        communities.update({f"pkg{i:02}/{n}.py": 100 + i for n in "abc"})
+
+    gates, cut = community_gates(communities)
+
+    by_name = {g.name: g.paths for g in gates}
+    assert len(gates) == COMMUNITY_LIMIT
+    assert cut == 2
+    # Nested directories collapse to the outermost; the name is the common one.
+    assert by_name["svc"] == ("/svc/api/", "/svc/web/")
+    assert "tiny" not in by_name
+
+
+def test_community_gates_keep_repository_root_files() -> None:
+    from repowise.core.analysis.patch_coverage.suggest import community_gates
+
+    gates, _ = community_gates({"main.py": 1, "lib/x.py": 1, "lib/y.py": 1})
+
+    assert [(g.name, g.paths) for g in gates] == [("root", ("/main.py", "/lib/"))]
+
+
+def test_layout_gates_name_clashing_packages_by_their_root() -> None:
+    from repowise.core.analysis.patch_coverage.suggest import layout_gates
+
+    gates = layout_gates(["apps/web/a.ts", "packages/web/b.ts", "packages/core/c.py", "x.py"])
+
+    assert [(g.name, g.paths) for g in gates] == [
+        ("apps-web", ("/apps/web/",)),
+        ("core", ("/packages/core/",)),
+        ("packages-web", ("/packages/web/",)),
+    ]
+
+
+def test_suggested_yaml_pastes_below_the_coverage_line() -> None:
+    import yaml
+
+    from repowise.core.analysis.patch_coverage.suggest import (
+        GateSource,
+        SuggestedGate,
+        render_yaml,
+    )
+
+    empty = render_yaml([GateSource("codeowners", "no CODEOWNERS file")])
+    assert yaml.safe_load("coverage:\n" + empty) == {"coverage": {"gates": []}}
+    assert "    # From CODEOWNERS: no CODEOWNERS file" in empty
+    text = render_yaml([GateSource("layout", "git ls-files", [SuggestedGate("api", ("/api/",))])])
+    assert "directly below your `coverage:` line" in text
+    assert yaml.safe_load("coverage:\n  fail_under: 80\n" + text) == {
+        "coverage": {"fail_under": 80, "gates": [{"name": "api", "paths": ["/api/"]}]}
+    }
+
+
+# -- CODEOWNERS ----------------------------------------------------------------
+
+
+def _owners(text: str) -> dict[str, tuple[str, ...]]:
+    from repowise.core.analysis.patch_coverage.suggest import codeowners_gates
+
+    return {g.name: g.paths for g in codeowners_gates(text)}
+
+
+def test_codeowners_later_narrower_pattern_is_excluded() -> None:
+    assert _owners("/pkg/ @a\n/pkg/web/ @b\n") == {"a": ("/pkg/", "!/pkg/web/"), "b": ("/pkg/web/",)}
+
+
+def test_codeowners_later_broader_pattern_overrides_and_drops_the_gate() -> None:
+    # /pkg/ @b wins every file /pkg/api/ matched, so @a has no gate left.
+    assert _owners("/pkg/api/ @a\n/pkg/ @b\n") == {"b": ("/pkg/",)}
+    # Only partly overridden: the exclusion stays.
+    assert _owners("/pkg/api/ @a\n/lib/ @a\n/pkg/ @b\n") == {
+        "a": ("/pkg/api/", "/lib/", "!/pkg/"),
+        "b": ("/pkg/",),
+    }
+
+
+def test_codeowners_ownerless_line_excludes_without_a_gate() -> None:
+    assert _owners("/pkg/ @a\n/pkg/vendor/\n") == {"a": ("/pkg/", "!/pkg/vendor/")}
+
+
+def test_codeowners_trailing_catch_all_drops_earlier_gates() -> None:
+    assert _owners("/pkg/ @a\n/lib/ @b\n* @c\n/docs/ @d\n") == {"d": ("/docs/",)}
+    # A leading catch-all overrides nothing after it.
+    assert _owners("* @c\n/pkg/ @a\n") == {"a": ("/pkg/",)}
+
+
+def test_codeowners_escaped_spaces_tab_comments_and_emails() -> None:
+    text = "/docs/my\\ file.md\t@a # the doc\n/src/\tdev@example.com\t# tab comment\n"
+    assert _owners(text) == {"a": ("/docs/my\\ file.md",), "dev": ("/src/",)}
+
+
+def test_codeowners_gitlab_section_default_owners() -> None:
+    text = (
+        "[Docs] @org/docs\n/docs/\n/guides/ @org/writers\n"
+        "^[Backend][2] @org/api\n/api/\n[Plain]\n/misc/\n"
+    )
+    assert _owners(text) == {
+        "org-docs": ("/docs/",),
+        "org-writers": ("/guides/",),
+        "org-api": ("/api/",),
+    }
+
+
+def test_may_overlap_is_symmetric_and_errs_towards_yes() -> None:
+    from repowise.core.analysis.patch_coverage.suggest import _may_overlap
+
+    assert _may_overlap("/pkg/", "/pkg/web/")
+    assert _may_overlap("/pkg/web/", "/pkg/")
+    assert _may_overlap("/pkg/", "*.md")  # floats: any depth
+    assert _may_overlap("docs/", "/pkg/")  # floating owned pattern
+    assert _may_overlap("/pkg/*/src/", "/pkg/web/")
+    assert not _may_overlap("/pkg/", "/lib/")
+    assert not _may_overlap("/src/a.py", "/src/b.py")
+    assert not _may_overlap("!/pkg/", "/pkg/web/")

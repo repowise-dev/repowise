@@ -9,7 +9,8 @@ executable-line data; otherwise it cannot evaluate.
 
 Exit codes and output channels are the shared CI ones (:mod:`repowise.cli.ci`):
 0 when the gate passes or there is nothing to judge, 1 when patch coverage is
-below ``--fail-under``, 2 when the check could not run (no report, a
+below ``--fail-under`` or a path-scoped gate (``coverage.gates``) that is not
+informational fails, 2 when the check could not run (no report, a
 ``--report`` matching no file, unreadable report, unknown revision, missing
 history, bad config). A change under ``--min-coverable-lines`` is reported
 against the threshold but exits 0.
@@ -98,6 +99,10 @@ def coverage_check(
     Without it, the base comes from the CI's pull-request variables (GitHub,
     GitLab, Jenkins, Bitbucket), else the remote's default branch.
 
+    Path-scoped gates in coverage.gates (.repowise/config.yaml) are judged
+    too; one that fails and is not informational fails the check. See
+    ``repowise coverage suggest-gates``.
+
     Examples:
 
         repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
@@ -140,7 +145,7 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         if notices is console:
             notices.print("[dim]Reading the coverage stored in the index[/dim]")
         return _gateable(
-            run_async(_stored(root, changed, label, threshold, min_coverable_lines, cfg.ignore))
+            run_async(_stored(root, changed, label, threshold, min_coverable_lines, cfg))
         )
     if notices is console:
         # Machine formats carry the list in ``scope.reports`` instead.
@@ -154,6 +159,7 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         reports=[str(p) for p in report_paths],
         min_coverable_lines=min_coverable_lines,
         ignore=cfg.ignore,
+        gates=cfg.gates,
     )
 
 
@@ -224,7 +230,7 @@ def _gateable(pc):
 
 
 async def _stored(
-    root: Path, changed, label: str, threshold: float | None, min_lines: int | None, ignore
+    root: Path, changed, label: str, threshold: float | None, min_lines: int | None, cfg
 ):
     """Patch coverage from the index's stored coverage, or ``None`` without one."""
     from sqlalchemy.exc import SQLAlchemyError
@@ -246,7 +252,8 @@ async def _stored(
                 head_commit=git_refs.resolve(str(root), revspec_head(label)),
                 threshold=threshold,
                 min_coverable_lines=min_lines,
-                ignore=ignore,
+                ignore=cfg.ignore,
+                gates=cfg.gates,
             )
         except SQLAlchemyError as exc:
             raise CannotEvaluateError(
@@ -319,6 +326,8 @@ def _coverage_config(root: Path, *, validate_threshold: bool, validate_min_lines
             "config_invalid",
             f"coverage.min_coverable_lines must be a whole number of 0 or more, got {raw_min!r}."
         )
+    if cfg.gate_errors:
+        raise CannotEvaluateError("config_invalid", " ".join(cfg.gate_errors))
     return cfg
 
 
@@ -336,6 +345,7 @@ def _emit(pc, fmt: str) -> None:
         _print_summary(pc)
     else:
         _print_summary(pc)
+        _print_path_gates(pc)
         _print_table(pc)
 
 
@@ -344,6 +354,23 @@ def _print_summary(pc) -> None:
 
     console.print(escape(headline(pc, markdown=False)))
     console.print(f"[dim]{escape(scope_line(pc, markdown=False))}[/dim]")
+
+
+def _print_path_gates(pc) -> None:
+    from rich.table import Table
+
+    from repowise.core.analysis.patch_coverage import path_gate_row
+
+    if not pc.path_gates:
+        return
+    table = Table(show_edge=False, pad_edge=False)
+    table.add_column("Path-scoped gate")
+    table.add_column("Verdict")
+    table.add_column("Covered changed lines", justify="right")
+    table.add_column("Threshold", justify="right")
+    for g in pc.path_gates:
+        table.add_row(*(escape(v) for v in path_gate_row(g)))
+    console.print(table)
 
 
 def _print_table(pc) -> None:

@@ -342,3 +342,251 @@ def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
     with pytest.raises(CannotEvaluateError) as missing:
         _gateable(None)
     assert missing.value.code == "no_report"
+
+
+# -- path-scoped gates -------------------------------------------------------
+
+
+def _gates_config(repo, gates: str) -> None:
+    (repo / ".repowise").mkdir(exist_ok=True)
+    (repo / ".repowise" / "config.yaml").write_text(
+        f"coverage:\n  gates:\n{gates}", encoding="utf-8"
+    )
+
+
+def test_a_failing_path_gate_fails_the_check(repo) -> None:
+    _gates_config(repo, "    - {name: src, paths: [src/], fail_under: 80}\n")
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert result.exit_code == 1, result.output
+    data = json.loads(result.stdout)
+    # No whole-change threshold, yet the path gate fails the change.
+    assert data["threshold"] is None
+    assert data["gate"] == "fail"
+    (gate,) = data["path_gates"]
+    assert (gate["name"], gate["gate"], gate["patch_coverage_pct"]) == ("src", "fail", 50.0)
+    # src/new.py changed but the report does not name it.
+    assert gate["unmeasured_file_count"] == 1
+
+    table = _run(repo, "main...feat", "--report", report)
+    assert table.exit_code == 1
+    assert "Fails: path-scoped gate src 50.0% (1 of 2 changed executable lines)" in table.output
+    assert "Path-scoped gate" in table.output and "fails" in table.output
+
+
+def test_an_informational_path_gate_never_fails_the_check(repo) -> None:
+    _gates_config(
+        repo, "    - {name: src, paths: [src/], fail_under: 80, informational: true}\n"
+    )
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["path_gates"][0]["gate"] == "fail"
+
+
+def test_github_format_errors_per_failing_path_gate(repo, tmp_path_factory) -> None:
+    _gates_config(
+        repo,
+        "    - {name: src, paths: [src/], fail_under: 80}\n"
+        "    - {name: docs, paths: [docs/], fail_under: 80}\n",
+    )
+    summary = tmp_path_factory.mktemp("gh") / "summary.md"
+
+    result = _run(
+        repo,
+        "main...feat",
+        "--report",
+        _lcov(repo, {2: 1, 3: 0}),
+        "--format",
+        "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+
+    assert result.exit_code == 1
+    errors = [line for line in result.stdout.splitlines() if line.startswith("::error::")]
+    assert errors == [
+        "::error::Fails: path-scoped gate src 50.0%25 (1 of 2 changed executable lines), "
+        "below its 80.0%25 gate."
+    ]
+    assert "| `docs` | no measured changed lines | n/a | 80.0% |" in summary.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_an_invalid_path_gate_exits_2_naming_it(repo) -> None:
+    _gates_config(repo, "    - {name: src, paths: [src/], fail_under: high}\n")
+
+    result = _run(repo, "main...feat", "--report", _lcov(repo, {2: 1}), "--format", "json")
+    assert result.exit_code == 2
+    data = json.loads(result.stdout)
+    assert data["error"] == "config_invalid"
+    assert data["message"].startswith("coverage.gates[0] ('src'): fail_under must be")
+
+
+def test_stored_coverage_is_judged_by_the_configured_path_gates(monkeypatch, tmp_path) -> None:
+    import contextlib
+
+    from repowise.cli.commands import coverage_check_cmd
+    from repowise.core.analysis import patch_coverage
+    from repowise.core.analysis.health.coverage import CoverageConfig, PathGate
+
+    @contextlib.asynccontextmanager
+    async def _session(root):
+        yield object(), "repo-id"
+
+    seen = {}
+
+    async def _stored(session, repo_id, changed, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(coverage_check_cmd, "repo_index_session", _session)
+    monkeypatch.setattr(patch_coverage, "stored_patch_coverage", _stored)
+    cfg = CoverageConfig(ignore=("gen/",), gates=(PathGate("api", ("api/",), 80),))
+
+    run = coverage_check_cmd._stored(tmp_path, {"a.py": {1}}, "HEAD", None, 3, cfg)
+    coverage_check_cmd.run_async(run)
+    assert seen["gates"] == cfg.gates
+    assert (seen["ignore"], seen["min_coverable_lines"]) == (("gen/",), 3)
+
+
+# -- coverage suggest-gates --------------------------------------------------
+
+
+@pytest.fixture
+def layout_repo(tmp_path):
+    """A monorepo with CODEOWNERS, two packages, tests and docs."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    files = {
+        ".github/CODEOWNERS": (
+            "# owners\n* @org/all\n/packages/api/ @org/backend\n"
+            "/packages/api/web/ @org/frontend\n*.md @org/docs\n"
+        ),
+        "packages/api/src/app.py": "x = 1\n",
+        "packages/api/web/view.ts": "export const x = 1;\n",
+        "packages/ui/src/button.tsx": "export {};\n",
+        "packages/ui/README.md": "docs\n",
+        "tests/test_app.py": "def test(): pass\n",
+        "docs/guide.md": "guide\n",
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    return tmp_path
+
+
+def _suggest(repo, *args: str):
+    return CliRunner().invoke(cli, ["coverage", "suggest-gates", "--path", str(repo), *args])
+
+
+def test_suggest_prints_yaml_from_codeowners_and_packages_without_an_index(layout_repo) -> None:
+    import yaml
+
+    from repowise.core.analysis.health.coverage import CoverageConfig
+
+    result = _suggest(layout_repo)
+
+    assert result.exit_code == 0, result.output
+    text = result.stdout
+    assert "# From CODEOWNERS: .github/CODEOWNERS" in text
+    assert "# From top-level packages: git ls-files" in text
+    assert "# From graph communities: unavailable, no index" in text
+    # Indented to paste directly below the coverage: line.
+    config = yaml.safe_load("coverage:\n" + text)
+    gates = {g["name"]: g for g in config["coverage"]["gates"]}
+    # A later pattern owned by someone else that may reach into a gate's files
+    # is carried as an exclusion (``*.md`` matches at any depth); the leading
+    # catch-all owner gets no gate.
+    assert gates["org-backend"]["paths"] == ["/packages/api/", "!/packages/api/web/", "!*.md"]
+    assert gates["org-frontend"]["paths"] == ["/packages/api/web/", "!*.md"]
+    assert gates["org-docs"]["paths"] == ["*.md"]
+    assert "org-all" not in gates
+    assert gates["api"]["paths"] == ["/packages/api/"]
+    assert gates["ui"]["paths"] == ["/packages/ui/"]
+    # Suggestions pick no threshold, and paste into a valid config.
+    assert all("fail_under" not in g for g in gates.values())
+    cfg = CoverageConfig.from_repo_config(config)
+    assert cfg.gate_errors == ()
+    assert len(cfg.gates) == len(gates)
+
+
+def test_suggest_json_and_the_graph_source(layout_repo, monkeypatch) -> None:
+    from repowise.cli.commands import coverage_suggest_gates_cmd as cmd
+
+    async def _graph(root):
+        return {
+            "packages/api/src/app.py": 1,
+            "packages/api/src/db.py": 1,
+            "packages/api/src/models.py": 1,
+            # Same globs as the ``ui`` package gate: not suggested twice.
+            "packages/ui/a.ts": 2,
+            "packages/ui/b.ts": 2,
+            "packages/ui/c.ts": 2,
+            "packages/ui/src/button.tsx": 3,
+        }, "0123456789abcdef"
+
+    monkeypatch.setattr(cmd, "_read_graph", _graph)
+    result = _suggest(layout_repo, "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    sources = {s["source"]: s for s in json.loads(result.stdout)["sources"]}
+    assert list(sources) == ["codeowners", "layout", "graph"]
+    assert sources["graph"]["detail"] == "the index at 0123456"
+    # Named by its common directory; ``src`` is unique across sources, the
+    # tiny community is skipped and the one repeating a package gate dropped.
+    assert sources["graph"]["gates"] == [{"name": "src", "paths": ["/packages/api/src/"]}]
+
+
+def test_suggest_graph_source_without_communities_or_readable_index(
+    layout_repo, monkeypatch
+) -> None:
+    import contextlib
+
+    from repowise.cli.commands import coverage_suggest_gates_cmd as cmd
+
+    async def _flat(root):
+        return {f"packages/api/src/{n}.py": 0 for n in "abcd"}, None
+
+    monkeypatch.setattr(cmd, "_read_graph", _flat)
+    flat = json.loads(_suggest(layout_repo, "--format", "json").stdout)["sources"][2]
+    assert flat == {"source": "graph", "detail": "the index has no communities computed", "gates": []}
+
+    @contextlib.asynccontextmanager
+    async def _broken(root):
+        yield None
+
+    # A store that exists but cannot be opened is unreadable, not absent.
+    monkeypatch.undo()
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda root: True)
+    monkeypatch.setattr(cmd, "repo_index_session", _broken)
+    broken = json.loads(_suggest(layout_repo, "--format", "json").stdout)["sources"][2]
+    assert broken["detail"] == "index unreadable, so none suggested"
+
+
+def test_suggest_without_codeowners_uses_top_level_directories(tmp_path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    for rel in ("lib/core.py", "scripts/run.sh", "tests/test_core.py", "setup.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+
+    result = _suggest(tmp_path, "--format", "json")
+    sources = {s["source"]: s for s in json.loads(result.stdout)["sources"]}
+    assert sources["codeowners"] == {
+        "source": "codeowners",
+        "detail": "no CODEOWNERS file",
+        "gates": [],
+    }
+    assert sources["layout"]["gates"] == [{"name": "lib", "paths": ["/lib/"]}]
+
+
+def test_suggest_reads_a_gitlab_codeowners(tmp_path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / ".gitlab").mkdir()
+    (tmp_path / ".gitlab" / "CODEOWNERS").write_text("[API] @api\n/api/\n", encoding="utf-8")
+
+    sources = json.loads(_suggest(tmp_path, "--format", "json").stdout)["sources"]
+    assert sources[0]["detail"] == ".gitlab/CODEOWNERS"
+    assert sources[0]["gates"] == [{"name": "api", "paths": ["/api/"]}]

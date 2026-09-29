@@ -17,7 +17,7 @@ from collections.abc import Sequence
 
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line
-from .compute import FilePatchCoverage, PatchCoverage
+from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
 
 #: Uncovered ranges shown per file before "+N more".
 RANGE_LIMIT = 8
@@ -31,7 +31,20 @@ STATUS_TEXT = {
 
 
 def headline(pc: PatchCoverage, *, markdown: bool = True) -> str:
-    """One-sentence verdict. Bold on the figure only in markdown."""
+    """One-sentence verdict. Bold on the figure only in markdown.
+
+    A failing path-scoped gate that is not informational leads, with its
+    counts, since it is why the change fails; the whole-change verdict follows.
+    """
+    text = _flat_headline(pc, markdown=markdown)
+    failing = pc.failing_path_gates
+    if failing:
+        text = f"Fails: {'; '.join(path_gate_verdict(g) for g in failing)}. {text}"
+    return text
+
+
+def _flat_headline(pc: PatchCoverage, *, markdown: bool) -> str:
+    """The whole-change verdict alone, path-scoped gates aside."""
     bold = "**" if markdown else ""
     pct = pc.patch_coverage_pct
     if pct is None:
@@ -43,11 +56,12 @@ def headline(pc: PatchCoverage, *, markdown: bool = True) -> str:
         f"{bold}Patch coverage {fmt_pct(pct)}{bold} ({pc.covered_line_count} of "
         f"{pc.coverable_line_count} changed executable lines covered)"
     )
-    if pc.gate == "fail":
+    gate = pc.flat_gate
+    if gate == "fail":
         text += f" · below the {fmt_pct(pc.threshold)} gate"
-    elif pc.gate == "pass":
+    elif gate == "pass":
         text += f" · meets the {fmt_pct(pc.threshold)} gate"
-    elif pc.gate == "too_small":
+    elif gate == "too_small":
         n = pc.min_coverable_lines
         lines = "line" if n == 1 else "lines"
         text += (
@@ -55,6 +69,50 @@ def headline(pc: PatchCoverage, *, markdown: bool = True) -> str:
             f"changed executable {lines} (min_coverable_lines)"
         )
     return text
+
+
+def path_gate_verdict(g: PathGateResult) -> str:
+    """``path-scoped gate api 60.0% (6 of 10 changed executable lines), below its 85.0% gate``.
+
+    One wording for the headline, the ``::error::`` of a failing gate and the
+    ``::notice::`` of an informational one below its threshold.
+    """
+    return (
+        f"path-scoped gate {g.name} {fmt_pct(g.patch_coverage_pct)} ({g.covered_line_count} "
+        f"of {g.coverable_line_count} changed executable lines), below its "
+        f"{fmt_pct(g.threshold)} gate"
+    )
+
+
+# A path-scoped gate's verdict in words.
+_PATH_GATE_TEXT = {
+    "pass": "passes",
+    "fail": "fails",
+    "no_data": "no measured changed lines",
+    "not_set": "no threshold",
+    "too_small": "too few changed lines to judge",
+}
+
+
+def path_gate_row(g: PathGateResult) -> tuple[str, str, str, str]:
+    """``(name, verdict, covered, threshold)`` for one path-scoped gate, in plain text."""
+    verdict = _PATH_GATE_TEXT[g.gate]
+    if g.gate == "no_data" and g.coverable_line_count:
+        # Counted but not judged: stale coverage or invalid config.
+        verdict = "not judged"
+    elif g.gate == "no_data" and g.unmeasured_file_count:
+        n = g.unmeasured_file_count
+        verdict += f" ({n} changed {'file' if n == 1 else 'files'} not measured)"
+    if g.informational:
+        verdict = f"{'below threshold' if g.gate == 'fail' else verdict} (informational)"
+    covered = "n/a"
+    if g.coverable_line_count:
+        covered = (
+            f"{g.covered_line_count} of {g.coverable_line_count} "
+            f"({fmt_pct(g.patch_coverage_pct)})"
+        )
+    threshold = "none" if g.threshold is None else fmt_pct(g.threshold)
+    return g.name, verdict, covered, threshold
 
 
 def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
@@ -97,6 +155,15 @@ def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
 def render_markdown(pc: PatchCoverage) -> str:
     """Markdown for a CI step summary or PR comment."""
     out = [headline(pc), "", scope_line(pc)]
+    if pc.path_gates:
+        out += ["", "| Path-scoped gate | Verdict | Covered changed lines | Threshold |"]
+        out += ["|---|---|---|---|"]
+        # Gates failing the change first, so the cap never hides one.
+        for g in sorted(pc.path_gates, key=lambda g: not g.fails_change)[:ROW_LIMIT]:
+            name, verdict, covered, threshold = path_gate_row(g)
+            out.append(f"| `{cell(name)}` | {verdict} | {covered} | {threshold} |")
+        if len(pc.path_gates) > ROW_LIMIT:
+            out += ["", more_line(len(pc.path_gates) - ROW_LIMIT, "path-scoped gates")]
     gaps = [f for f in attention_rows(pc) if f.status == "measured"]
     if gaps:
         out += ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
@@ -115,8 +182,9 @@ def render_markdown(pc: PatchCoverage) -> str:
 def github_annotations(pc: PatchCoverage) -> list[str]:
     """GitHub Actions workflow commands for a change's patch coverage.
 
-    A failed gate is an error; one exempted by the small-change tolerance is a
-    notice, so the exemption is visible. The largest uncovered ranges are
+    A failed gate is an error, and so is each failing path-scoped gate that is
+    not informational; one exempted by the small-change tolerance, and an
+    informational gate below its threshold, is a notice, so neither is silent. The largest uncovered ranges are
     marked, capped at what GitHub displays, with a notice counting the rest.
     """
     ranges = sorted(
@@ -135,10 +203,15 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
         for path, a, b in ranges
     ]
     verdict = []
-    if pc.gate == "fail":
-        verdict = [github.error(headline(pc, markdown=False))]
-    elif pc.gate == "too_small":
-        verdict = [github.notice(headline(pc, markdown=False))]
+    if pc.flat_gate == "fail":
+        verdict = [github.error(_flat_headline(pc, markdown=False))]
+    elif pc.flat_gate == "too_small":
+        verdict = [github.notice(_flat_headline(pc, markdown=False))]
+    for g in pc.path_gates:
+        if g.fails_change:
+            verdict.append(github.error(f"Fails: {path_gate_verdict(g)}."))
+        elif g.informational and g.gate == "fail":
+            verdict.append(github.notice(f"Informational: {path_gate_verdict(g)}."))
     return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
 
 

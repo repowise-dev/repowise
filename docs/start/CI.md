@@ -330,6 +330,75 @@ subdirectory (`backend/go.mod` declaring `module example.com/m`), paths under
 checkout, so files in the module's top-level package match with no prefix.
 A per-report prefix or `coverage.path_prefix` turns the mapping off.
 
+### Path-scoped gates
+
+One threshold over the whole change lets a well-tested package carry an
+untested one. `coverage.gates` adds a gate per part of the repository: each is
+judged on the changed files its globs match, with the same rules as the
+whole-change gate. Globs use gitignore syntax, like `coverage.ignore`, and are
+relative to the repository root; a leading `/` anchors one there (`/api/` is
+the top-level `api` directory, `api/` any directory of that name).
+
+```yaml
+# .repowise/config.yaml
+coverage:
+  fail_under: 70                # the whole change, as before
+  gates:
+    - name: api
+      paths: ["/services/api/"]
+      fail_under: 85
+    - name: web
+      paths: ["/apps/web/", "!/apps/web/generated/"]
+      fail_under: 60
+    - name: scripts
+      paths: ["/scripts/"]
+      fail_under: 50
+      informational: true       # reported, never fails
+```
+
+A gate without `fail_under` is reported but judges nothing. A file can match
+several gates; each counts it. The change fails when the whole-change gate
+fails or when any gate that is not `informational` fails. The headline then
+leads with the failing gate and its counts (`Fails: path-scoped gate api 60.0%
+(6 of 10 changed executable lines), below its 85.0% gate.`) before the
+whole-change verdict, the summary adds a table of gates (failing ones first),
+and on GitHub each failing gate is its own `::error::`; an informational gate
+below its threshold is a `::notice::`. The small-change tolerance is the whole
+change's: when the change has fewer changed executable lines than
+`min_coverable_lines`, every gate reads `too_small`, but a small slice of a
+big change is judged. An entry the config cannot use (no name, a repeated
+name, no paths or only `!` exclusions, a `fail_under` outside 0-100, an
+unknown key) makes the check exit `2` naming it.
+
+Like the whole-change figure, a gate counts only changed lines the report
+measures. A changed file it matches that the report does not measure (a new
+file no test loads, a report without line data) is counted apart, as
+`unmeasured_file_count`, and left out of the percentage: a gate over only such
+files reads "no measured changed lines (2 changed files not measured)" and
+fails nothing.
+
+With one report per job, each job would judge the gates on a fragment of the
+change: run `coverage check` once over the combined reports instead, as in
+[Monorepos and matrix jobs](#monorepos-and-matrix-jobs).
+
+The gates live in the committed config, so the Action and the GitLab template
+take no input for them: every job reads the same gates. The editor, REST and
+agent views report the same verdicts when the stored coverage was measured at
+the change's head and the config is valid; on stale coverage, or beside an
+invalid entry (which they list in `scope.config_errors`), their gates read
+`no_data`. To start, let Repowise propose some:
+
+```bash
+repowise coverage suggest-gates                # YAML to paste below coverage:
+repowise coverage suggest-gates --format json
+```
+
+It reads CODEOWNERS (one gate per owner), the top-level packages git tracks,
+and, when the repository is indexed, the graph's communities, labelling each
+source in a comment. The block is indented to paste directly below your
+`coverage:` line. It writes nothing and sets no `fail_under`: keep the gates
+you want and choose their thresholds.
+
 ## When a gate exits 2
 
 | Message | Fix |
@@ -338,6 +407,7 @@ A per-report prefix or `coverage.path_prefix` turns the mapping off.
 | unknown revision `origin/<branch>` | fetch the target branch |
 | no coverage report found | pass `--report`, or set `coverage.paths` |
 | `--report ...`: no coverage report matches | fix the path or glob, or upload the report from the test job |
+| `coverage.gates[N]`: ... | fix that entry of `coverage.gates` |
 | all report entries match coverage.ignore | narrow `coverage.ignore` |
 | report paths match no file in the repository | set `coverage.strip_prefix` or `coverage.path_prefix` |
 | baseline unreadable | commit the file, or drop `--baseline` |

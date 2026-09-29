@@ -5,11 +5,14 @@
  * A verdict sentence, not a figure with a band. There is no threshold here to
  * colour against, and a gate belongs to CI (`repowise coverage check`), so the
  * only marked state is stale evidence: coverage measured at another commit
- * describes other code, and the line numbers below it may not line up.
+ * describes other code, and the line numbers below it may not line up. The
+ * exception is path-scoped gates (`coverage.gates`), which carry their own
+ * thresholds: each is a dot plus a word.
  */
 
 import type {
   PatchCoverageFile,
+  PatchCoveragePathGate,
   PatchCoverageResponse,
 } from "@repowise-dev/types/generated/http";
 
@@ -37,9 +40,18 @@ export function formatLineRanges(ranges: number[][]): string {
     .join(", ");
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
+function plural(n: number, word: string, many?: string): string {
+  return `${n} ${n === 1 ? word : (many ?? `${word}s`)}`;
 }
+
+/** A path-scoped gate's verdict in words, as `coverage check` prints it. */
+const GATE_TEXT: Record<PatchCoveragePathGate["gate"], string> = {
+  pass: "passes",
+  fail: "fails",
+  no_data: "no measured changed lines",
+  not_set: "no threshold",
+  too_small: "too few changed lines to judge",
+};
 
 export function PatchCoverageSummary({
   coverage,
@@ -53,6 +65,9 @@ export function PatchCoverageSummary({
     (f) => f.status === "not_in_report" || f.status === "no_line_data",
   );
   const measuredAt = coverage.scope.measured_commit?.slice(0, 7) ?? null;
+  // Guarded: a server older than path-scoped gates sends neither field.
+  const pathGates = coverage.path_gates ?? [];
+  const configErrors = coverage.scope.config_errors ?? [];
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -119,6 +134,34 @@ export function PatchCoverageSummary({
         </p>
       )}
 
+      {configErrors.length > 0 && (
+        <p className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+          <span
+            aria-hidden
+            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+          />
+          <span>
+            {plural(configErrors.length, "invalid entry", "invalid entries")} in{" "}
+            <code className="font-mono">coverage.gates</code>, so no path-scoped
+            gate is judged
+          </span>
+        </p>
+      )}
+
+      {pathGates.length > 0 && (
+        <div className="mt-1 flex flex-col gap-0.5">
+          {/* The list carries the same name, so the visible label is not read twice. */}
+          <p aria-hidden className="px-1.5 text-xs text-[var(--color-text-tertiary)]">
+            Path-scoped gates
+          </p>
+          <ul aria-label="Path-scoped gates" className="flex flex-col gap-0.5">
+            {pathGates.map((g) => (
+              <PathGateRow key={g.name} gate={g} />
+            ))}
+          </ul>
+        </div>
+      )}
+
       {uncovered.length > 0 && (
         <ul className="mt-1 flex flex-col gap-0.5">
           {uncovered.slice(0, MAX_FILES).map((f) => (
@@ -158,6 +201,49 @@ export function PatchCoverageSummary({
         </details>
       )}
     </div>
+  );
+}
+
+function PathGateRow({ gate }: { gate: PatchCoveragePathGate }) {
+  const failed = gate.gate === "fail";
+  // Red only for a gate that fails the change; an informational miss is amber.
+  const dot = failed
+    ? gate.informational
+      ? "bg-[var(--color-warning)]"
+      : "bg-[var(--color-error)]"
+    : gate.gate === "pass"
+      ? "bg-[var(--color-success)]"
+      : "bg-[var(--color-text-tertiary)]";
+  const unmeasured = gate.unmeasured_file_count ?? 0;
+  let verdict =
+    failed && gate.informational ? "below threshold" : GATE_TEXT[gate.gate];
+  if (gate.gate === "no_data" && gate.coverable_line_count > 0) {
+    // Counted but not judged: stale coverage or invalid config, said above.
+    verdict = "not judged";
+  } else if (gate.gate === "no_data" && unmeasured > 0) {
+    verdict += ` (${plural(unmeasured, "changed file")} not measured)`;
+  }
+  const pct = gate.patch_coverage_pct;
+  return (
+    <li
+      className="flex items-center gap-2 px-1.5 py-0.5 text-xs"
+      title={gate.paths.join(", ")}
+    >
+      <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-primary)]">
+        {gate.name}
+      </span>
+      <span className="shrink-0 text-[var(--color-text-secondary)]">
+        {verdict}
+        {gate.informational ? " (informational)" : ""}
+      </span>
+      <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-tertiary)]">
+        {pct == null
+          ? "n/a"
+          : `${gate.covered_line_count} of ${gate.coverable_line_count} (${floorPct(pct)}%)`}
+        {gate.threshold == null ? "" : ` · gate ${floorPct(gate.threshold)}%`}
+      </span>
+    </li>
   );
 }
 

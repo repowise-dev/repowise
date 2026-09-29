@@ -378,18 +378,24 @@ async def health_coverage_patch(
 
     The computation ``repowise coverage check`` gates on. ``null`` when no
     coverage has been ingested, which is not the same as 0%. Honours
-    ``coverage.ignore``; the small-change tolerance stays with the CLI gate.
+    ``coverage.ignore`` and judges the path-scoped gates in ``coverage.gates``
+    (with ``coverage.min_coverable_lines``) on current coverage and valid
+    config; the whole-change threshold stays with the CLI gate.
     """
-    from repowise.core.analysis.health.coverage import configured_ignore
+    from repowise.core.analysis.health.coverage import configured_coverage
     from repowise.core.analysis.patch_coverage import stored_patch_coverage
 
     changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
+    cfg = configured_coverage(repo.local_path)
     patch = await stored_patch_coverage(
         session,
         repo.id,
         changed,
         label=label,
         head_commit=head_sha or None,
-        ignore=configured_ignore(repo.local_path),
+        min_coverable_lines=cfg.min_coverable_lines,
+        ignore=cfg.ignore,
+        gates=cfg.gates,
+        config_errors=cfg.gate_errors,
     )
     return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None

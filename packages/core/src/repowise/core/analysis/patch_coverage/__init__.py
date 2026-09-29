@@ -8,6 +8,7 @@ from .compute import (
     GateStatus,
     PatchCoverage,
     PatchScope,
+    PathGateResult,
     compute_patch_coverage,
     patch_coverage_from_resolved,
 )
@@ -19,6 +20,8 @@ from .render import (
     format_ranges,
     github_annotations,
     headline,
+    path_gate_row,
+    path_gate_verdict,
     render_markdown,
     scope_line,
 )
@@ -32,6 +35,7 @@ __all__ = [
     "GateStatus",
     "PatchCoverage",
     "PatchScope",
+    "PathGateResult",
     "attention_rows",
     "compute_patch_coverage",
     "fmt_pct",
@@ -39,6 +43,8 @@ __all__ = [
     "github_annotations",
     "headline",
     "patch_coverage_from_resolved",
+    "path_gate_row",
+    "path_gate_verdict",
     "render_markdown",
     "scope_line",
     "stored_patch_coverage",

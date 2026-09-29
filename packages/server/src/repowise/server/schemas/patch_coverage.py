@@ -52,6 +52,29 @@ class PatchCoverageScope(_Strict):
     freshness: FreshnessStatus
     #: Changed files left out by ``coverage.ignore`` before measuring.
     ignored_file_count: int
+    #: Invalid ``coverage.gates`` entries, one message each; while any is
+    #: present no path-scoped gate is judged.
+    config_errors: list[str]
+
+
+class PatchCoveragePathGate(_Strict):
+    """One path-scoped gate from ``coverage.gates``, judged on the change."""
+
+    name: str
+    #: Gitignore-style globs naming the gate's files.
+    paths: list[str]
+    threshold: float | None
+    #: Judged and shown, but never fails the change.
+    informational: bool
+    #: Measured changed files the globs match; a file may count in several gates.
+    measured_file_count: int
+    #: Matching changed files the report does not measure, outside the percentage.
+    unmeasured_file_count: int
+    covered_line_count: int
+    coverable_line_count: int
+    patch_coverage_pct: float | None
+    #: ``no_data`` too when not judged: stale coverage or ``scope.config_errors``.
+    gate: GateStatus
 
 
 class PatchCoverageResponse(_Strict):
@@ -66,3 +89,5 @@ class PatchCoverageResponse(_Strict):
     file_counts: PatchCoverageFileCounts
     files: list[PatchCoverageFile]
     scope: PatchCoverageScope
+    #: ``gate`` reads ``fail`` when any one here fails and is not informational.
+    path_gates: list[PatchCoveragePathGate]

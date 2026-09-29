@@ -2210,6 +2210,20 @@ export interface PatchCoverageFileCounts {
   out_of_scope: number;
 }
 
+/** One path-scoped gate from ``coverage.gates``, judged on the change. */
+export interface PatchCoveragePathGate {
+  name: string;
+  paths: string[];
+  threshold: number | null;
+  informational: boolean;
+  measured_file_count: number;
+  unmeasured_file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
 export interface PatchCoverageResponse {
   patch_coverage_pct: number | null;
   covered_line_count: number;
@@ -2220,6 +2234,7 @@ export interface PatchCoverageResponse {
   file_counts: PatchCoverageFileCounts;
   files: PatchCoverageFile[];
   scope: PatchCoverageScope;
+  path_gates: PatchCoveragePathGate[];
 }
 
 export interface PatchCoverageScope {
@@ -2232,6 +2247,7 @@ export interface PatchCoverageScope {
   measured_commit: string | null;
   freshness: "current" | "stale" | "unknown";
   ignored_file_count: number;
+  config_errors: string[];
 }
 
 /**

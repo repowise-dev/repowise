@@ -11,7 +11,9 @@ from pathlib import Path
 
 from repowise.core.analysis.health.coverage import (
     CoverageConfig,
+    PathGate,
     build_coverage_map,
+    configured_coverage,
     discover_artifacts,
     expand_report_patterns,
     normalize_report_path,
@@ -376,6 +378,76 @@ def test_coverage_config_rejects_a_bad_min_coverable_lines() -> None:
     for bad in (-1, "5", 2.5, True):
         cfg = CoverageConfig.from_repo_config({"coverage": {"min_coverable_lines": bad}})
         assert cfg.min_coverable_lines is None
+
+
+def test_coverage_config_parses_path_gates() -> None:
+    cfg = CoverageConfig.from_repo_config(
+        {
+            "coverage": {
+                "gates": [
+                    {"name": "api", "paths": ["packages/api/", "!**/gen/"], "fail_under": 80},
+                    {"name": "docs", "paths": "docs/", "informational": True},
+                ]
+            }
+        }
+    )
+
+    assert cfg.gates == (
+        PathGate("api", ("packages/api/", "!**/gen/"), 80.0),
+        PathGate("docs", ("docs/",), None, informational=True),
+    )
+    assert cfg.gate_errors == ()
+    assert CoverageConfig().gates == ()
+
+
+def test_coverage_config_names_each_invalid_path_gate() -> None:
+    cfg = CoverageConfig.from_repo_config(
+        {
+            "coverage": {
+                "gates": [
+                    {"name": "ok", "paths": ["a/"]},
+                    {"name": "ok", "paths": ["b/"]},
+                    {"name": "nopaths", "paths": []},
+                    {"name": "high", "paths": ["c/"], "fail_under": 120},
+                    {"name": "typo", "paths": ["d/"], "fail-under": 80},
+                    {"name": "docs", "paths": ["e/"], "informational": "yes"},
+                    {"paths": ["f/"]},
+                    {"name": "none", "paths": ["!g/", "# note"]},
+                    "g/",
+                ]
+            }
+        }
+    )
+
+    assert [g.name for g in cfg.gates] == ["ok"]
+    assert cfg.gate_errors == (
+        "coverage.gates[1] ('ok'): duplicate name; each gate needs its own.",
+        "coverage.gates[2] ('nopaths'): paths must be a non-empty list of globs.",
+        "coverage.gates[3] ('high'): fail_under must be a number from 0 to 100, got 120.",
+        "coverage.gates[4] ('typo'): unknown key fail-under; expected name, paths, "
+        "fail_under, informational.",
+        "coverage.gates[5] ('docs'): informational must be true or false, got 'yes'.",
+        "coverage.gates[6]: name must be a non-empty string.",
+        "coverage.gates[7] ('none'): paths must include a glob that is not a comment or "
+        "a ! exclusion.",
+        "coverage.gates[8]: must be a mapping with name and paths.",
+    )
+    bad_block = CoverageConfig.from_repo_config({"coverage": {"gates": {"api": "x/"}}})
+    assert bad_block.gate_errors == (
+        "coverage.gates must be a list of {name, paths} entries.",
+    )
+
+
+def test_configured_coverage_reads_the_repo_config(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [gen/]\n  gates:\n    - {name: api, paths: [api/], fail_under: 70}\n"
+    )
+
+    cfg = configured_coverage(tmp_path)
+    assert cfg.ignore == ("gen/",)
+    assert cfg.gates == (PathGate("api", ("api/",), 70.0),)
+    assert configured_coverage(tmp_path / "missing").gates == ()
 
 
 def test_expand_report_patterns_sorts_and_dedupes(tmp_path: Path) -> None:

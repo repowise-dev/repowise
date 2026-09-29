@@ -88,8 +88,9 @@ writes paths relative to its own `<source>` root — so we reconcile them.
 - `expand_report_patterns(patterns, base)`: the report files a list of paths
   or globs names, shared by `coverage.paths` and `coverage check --report`;
   `**` goes through the same pruned walk as discovery.
-- `configured_ignore(repo_root)`: `coverage.ignore` for the stored-coverage
-  surfaces (REST, agent tools).
+- `configured_coverage(repo_root)`: the `coverage:` config (defaults when
+  unreadable) for the stored-coverage surfaces (REST, agent tools), so they
+  apply the same `coverage.ignore` and `coverage.gates` as the CLI gate.
 
 ### Config (`.repowise/config.yaml`)
 
@@ -111,9 +112,17 @@ coverage:
   reingest_on_update: false    # re-parse on every update (else reuse DB rows)
   fail_under: 80               # patch-coverage gate for `coverage check`
   min_coverable_lines: 5       # small-change tolerance for that gate
+  gates:                       # path-scoped gates (PathGate); see below
+    - {name: api, paths: ["/services/api/"], fail_under: 85}
 ```
 
 `CoverageConfig.from_repo_config(load_repo_config(repo_path))` parses it.
+Each `gates` entry is `name`, `paths` (gitignore-style globs, at least one
+not a `!` exclusion), optional `fail_under` (0-100) and optional
+`informational`; valid ones land in `CoverageConfig.gates` as `PathGate`, and
+each invalid one leaves a message naming it in `gate_errors`. `coverage check`
+refuses to run on any; the stored-coverage surfaces carry them as
+`scope.config_errors` and judge no path gate.
 
 ## Inputs
 

@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
+import type {
+  PatchCoveragePathGate,
+  PatchCoverageResponse,
+} from "@repowise-dev/types/generated/http";
 import {
   PatchCoverageSummary,
   floorPct,
@@ -41,7 +44,28 @@ function coverage(fileCount: number): PatchCoverageResponse {
       mapping_partial: false,
       freshness: "current",
       ignored_file_count: 0,
+      config_errors: [],
     },
+    path_gates: [],
+  };
+}
+
+function pathGate(
+  name: string,
+  gate: PatchCoveragePathGate["gate"],
+  informational = false,
+): PatchCoveragePathGate {
+  return {
+    name,
+    paths: [`/${name}/`],
+    threshold: 80,
+    informational,
+    measured_file_count: 1,
+    unmeasured_file_count: 0,
+    covered_line_count: 1,
+    coverable_line_count: 2,
+    patch_coverage_pct: 50,
+    gate,
   };
 }
 
@@ -86,5 +110,70 @@ describe("PatchCoverageSummary", () => {
       />,
     );
     expect(screen.getByText(/2 changed files ignored by/)).toBeTruthy();
+  });
+
+  it("lists path-scoped gates with a verdict in words", () => {
+    render(
+      <PatchCoverageSummary
+        coverage={{
+          ...coverage(1),
+          path_gates: [pathGate("api", "fail"), pathGate("docs", "fail", true)],
+        }}
+      />,
+    );
+    const list = screen.getByRole("list", { name: "Path-scoped gates" });
+    expect(list.textContent).toContain("api");
+    expect(screen.getByText("fails")).toBeTruthy();
+    // An informational miss never reads as a failure.
+    expect(screen.getByText("below threshold (informational)")).toBeTruthy();
+    expect(screen.getAllByText("1 of 2 (50.0%) · gate 80.0%")).toHaveLength(2);
+    // A visible label heads the list.
+    expect(screen.getByText("Path-scoped gates")).toBeTruthy();
+  });
+
+  it("says why a gate is not judged and counts unmeasured files", () => {
+    const base = coverage(1);
+    render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          scope: { ...base.scope, config_errors: ["coverage.gates[1]: bad"] },
+          path_gates: [
+            pathGate("api", "no_data"),
+            {
+              ...pathGate("new", "no_data"),
+              covered_line_count: 0,
+              coverable_line_count: 0,
+              patch_coverage_pct: null,
+              unmeasured_file_count: 2,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText(/1 invalid entry in/)).toBeTruthy();
+    expect(screen.getByText("not judged")).toBeTruthy();
+    expect(
+      screen.getByText("no measured changed lines (2 changed files not measured)"),
+    ).toBeTruthy();
+  });
+
+  it("shows no gate list without path-scoped gates", () => {
+    render(<PatchCoverageSummary coverage={coverage(1)} />);
+    expect(screen.queryByRole("list", { name: "Path-scoped gates" })).toBeNull();
+    expect(screen.queryByText(/invalid entr/)).toBeNull();
+  });
+
+  it("renders a response from a server older than path-scoped gates", () => {
+    const base = coverage(1);
+    const { path_gates: _gates, ...older } = base;
+    const { config_errors: _errors, ...olderScope } = base.scope;
+    render(
+      <PatchCoverageSummary
+        coverage={{ ...older, scope: olderScope } as unknown as PatchCoverageResponse}
+      />,
+    );
+    expect(screen.getByText("1 of 2 changed executable lines covered")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Path-scoped gates" })).toBeNull();
   });
 });

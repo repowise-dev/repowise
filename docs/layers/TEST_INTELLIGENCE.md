@@ -261,10 +261,20 @@ measures as the percentage does, is reported against the threshold, but a miss
 reads `too_small` and does not fail. `--report` takes globs and `PATH=PREFIX`,
 `coverage.ignore` leaves generated files out, and Go module paths map to their
 `go.mod` directory; see
-[Monorepos and matrix jobs](../start/CI.md#monorepos-and-matrix-jobs). The
+[Monorepos and matrix jobs](../start/CI.md#monorepos-and-matrix-jobs).
+`coverage.gates` adds path-scoped gates: each judges the changed files its
+globs match with the same rule (the small-change tolerance stays the whole
+change's), a file can count in several, and a path-scoped gate that is not
+informational fails the change when it fails, whatever the whole-change
+figure (`path_gates` in the JSON, REST and agent output; the read-only
+surfaces judge them only on coverage measured at the change's head and valid
+config, see [Path-scoped gates](../start/CI.md#path-scoped-gates)).
+`repowise coverage suggest-gates` proposes gates from CODEOWNERS, the
+top-level packages and, when indexed, the graph's communities. The
 gate compares the unrounded figure; the displayed one is floored to one
 decimal, so 79.99% reads 79.9% and fails an 80% gate. Exit `0` passes (or had
-nothing to judge), `1` is below the gate, `2` means the check could not run:
+nothing to judge), `1` is below the gate or a path-scoped gate fails, `2`
+means the check could not run:
 no report found, readable or matching a repository file, an unknown revision,
 no merge-base (a shallow clone), a single commit at a shallow clone's
 boundary, bad config, or not a git repository.
@@ -544,6 +554,9 @@ coverage:
   reingest_on_update: false
   fail_under: 80                 # patch-coverage gate for `coverage check` (0-100)
   min_coverable_lines: 5         # small-change tolerance for that gate
+  gates:                         # path-scoped gates, judged on the files they match
+    - {name: api, paths: ["/services/api/"], fail_under: 85}
+    - {name: scripts, paths: ["/scripts/"], fail_under: 50, informational: true}
 ```
 
 Coverage is also auto-discovered and ingested during `init` and `update`, and
@@ -558,6 +571,7 @@ Note that `--coverage-report` is test coverage, while `--coverage` controls
 | `repowise coverage add [PATHS...]` | Ingest reports. Auto-discovers when no path is given, merges multiple, builds the per-test map when contexts are present. Flags: `--path`, `--format`, `--verbose` |
 | `repowise coverage status` | Coverage summary plus test-to-code map counts. Flag: `--path` |
 | `repowise coverage check [REVSPEC]` | Patch-coverage gate for CI, no index needed. Flags: `--report`, `--report-format`, `--fail-under`, `--min-coverable-lines`, `--path`, `--format` |
+| `repowise coverage suggest-gates` | Propose path-scoped gates for `coverage.gates` as YAML to paste below `coverage:`; writes nothing. Flags: `--path`, `--format` |
 | `repowise impacted-tests [REVSPEC]` | The tests a change exercises. Flags: `--path`, `--staged`, `--format` |
 
 Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage).

@@ -399,6 +399,47 @@ async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
     assert ignored["scope"]["ignored_file_count"] == 1
     assert ignored["patch_coverage_pct"] is None
 
+    # So do the path-scoped gates in coverage.gates, and a failing one fails the gate.
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: a, paths: [a.py], fail_under: 80}\n",
+        encoding="utf-8",
+    )
+    gated = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    (gate,) = gated["path_gates"]
+    assert (gate["name"], gate["patch_coverage_pct"], gate["gate"]) == ("a", 50.0, "fail")
+    assert gated["gate"] == "fail"
+
+    # Uncommitted or stale coverage is not what the CLI gate judges: no verdict.
+    unjudged = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True), _collector(tmp_path)
+    )
+    assert unjudged["path_gates"][0]["gate"] == "no_data"
+    assert unjudged["gate"] == "not_set"
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "other")
+    stale = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert stale["scope"]["freshness"] == "stale"
+    assert stale["path_gates"][0]["gate"] == "no_data"
+
+    # An invalid entry is carried, and no gate is judged beside it.
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: a, paths: [a.py], fail_under: 80}\n"
+        "    - {name: b, paths: []}\n",
+        encoding="utf-8",
+    )
+    partial = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert partial["scope"]["config_errors"] == [
+        "coverage.gates[1] ('b'): paths must be a non-empty list of globs."
+    ]
+    assert [g["gate"] for g in partial["path_gates"]] == ["no_data"]
+    assert partial["gate"] == "not_set"
+
 
 @pytest.mark.asyncio
 async def test_patch_coverage_is_absent_without_a_readable_change_or_index(

@@ -18,6 +18,10 @@ when it is a test file or a type the report never measures (docs, config).
 Ceiling: a not-in-report file is reported but excluded from the percentage,
 because its executable lines are unknown. A stricter gate can count it once a
 report format carries "file present, nothing executed".
+
+Path-scoped gates (``coverage.gates``) apply the same rule to the measured
+files their globs match. One that fails and is not informational fails the
+change, whatever the whole-change figure says.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from ..health.coverage.freshness import FreshnessStatus
 from ..health.coverage.model import FileCoverage
 
 if TYPE_CHECKING:
-    from ..health.coverage.discovery import ResolvedCoverage
+    from ..health.coverage.discovery import PathGate, ResolvedCoverage
 
 FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
 GateStatus = Literal["pass", "fail", "no_data", "not_set", "too_small"]
@@ -95,6 +99,9 @@ class PatchScope:
     # Changed files left out by ``coverage.ignore`` before anything was
     # measured. Set by :func:`compute_patch_coverage`.
     ignored_file_count: int = 0
+    # Invalid ``coverage.gates`` entries, one message each. The CLI refuses to
+    # run on them; read-only surfaces carry them and judge no path gate.
+    config_errors: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +114,64 @@ class PatchScope:
             "measured_commit": self.measured_commit,
             "freshness": self.freshness,
             "ignored_file_count": self.ignored_file_count,
+            "config_errors": list(self.config_errors),
+        }
+
+
+@dataclass(frozen=True)
+class PathGateResult:
+    """One path-scoped gate (``coverage.gates``) judged on the change.
+
+    Counts cover the measured changed files the gate's globs match, and the
+    verdict follows the whole change's rule. The small-change tolerance
+    exempts a small change, not a small slice of a big one, so *small_change*
+    is the whole change's test. An unjudged gate (stale coverage, invalid
+    config) reads ``no_data`` whatever its counts.
+    """
+
+    name: str
+    paths: tuple[str, ...]
+    threshold: float | None
+    informational: bool
+    measured_file_count: int
+    covered_line_count: int
+    coverable_line_count: int
+    # Matching changed files the report does not measure (``not_in_report``,
+    # ``no_line_data``): outside the percentage, but counted so a gate over
+    # only unmeasured files does not read as empty.
+    unmeasured_file_count: int = 0
+    small_change: bool = False
+    judged: bool = True
+
+    @property
+    def patch_coverage_pct(self) -> float | None:
+        return _pct(self.covered_line_count, self.coverable_line_count)
+
+    @property
+    def gate(self) -> GateStatus:
+        if not self.judged:
+            return "no_data"
+        return _gate(
+            self.threshold, self.covered_line_count, self.coverable_line_count, self.small_change
+        )
+
+    @property
+    def fails_change(self) -> bool:
+        """A failed gate that is not informational fails the whole change."""
+        return self.gate == "fail" and not self.informational
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "paths": list(self.paths),
+            "threshold": self.threshold,
+            "informational": self.informational,
+            "measured_file_count": self.measured_file_count,
+            "unmeasured_file_count": self.unmeasured_file_count,
+            "covered_line_count": self.covered_line_count,
+            "coverable_line_count": self.coverable_line_count,
+            "patch_coverage_pct": _round(self.patch_coverage_pct),
+            "gate": self.gate,
         }
 
 
@@ -122,6 +187,9 @@ class PatchCoverage:
     # Small-change tolerance: a change with fewer changed executable lines
     # than this is reported against the threshold but never fails it.
     min_coverable_lines: int | None = None
+    # Path-scoped gates, in config order. A failing one that is not
+    # informational fails ``gate``; ``flat_gate`` ignores them.
+    path_gates: tuple[PathGateResult, ...] = ()
 
     @property
     def changed_file_count(self) -> int:
@@ -140,19 +208,26 @@ class PatchCoverage:
         return _pct(self.covered_line_count, self.coverable_line_count)
 
     @property
+    def flat_gate(self) -> GateStatus:
+        """The whole change against ``threshold``, path-scoped gates aside."""
+        return _gate(
+            self.threshold, self.covered_line_count, self.coverable_line_count, self.small_change
+        )
+
+    @property
+    def small_change(self) -> bool:
+        """Fewer changed executable lines than ``min_coverable_lines``."""
+        n = self.min_coverable_lines
+        return n is not None and self.coverable_line_count < n
+
+    @property
     def gate(self) -> GateStatus:
-        if self.threshold is None:
-            return "not_set"
-        pct = self.patch_coverage_pct
-        if pct is None:
-            return "no_data"
-        if pct >= self.threshold:
-            return "pass"
-        if self.min_coverable_lines is not None and (
-            self.coverable_line_count < self.min_coverable_lines
-        ):
-            return "too_small"
-        return "fail"
+        """``flat_gate``, or ``fail`` when a path-scoped gate fails the change."""
+        return "fail" if self.failing_path_gates else self.flat_gate
+
+    @property
+    def failing_path_gates(self) -> list[PathGateResult]:
+        return [g for g in self.path_gates if g.fails_change]
 
     def with_status(self, status: FileStatus) -> list[FilePatchCoverage]:
         return [f for f in self.files if f.status == status]
@@ -170,6 +245,7 @@ class PatchCoverage:
             "file_counts": counts,
             "files": [f.to_dict() for f in self.files],
             "scope": self.scope.to_dict(),
+            "path_gates": [g.to_dict() for g in self.path_gates],
         }
 
 
@@ -182,6 +258,8 @@ def compute_patch_coverage(
     report_paths: Iterable[str] | None = None,
     min_coverable_lines: int | None = None,
     ignore: Sequence[str] = (),
+    gates: Sequence[PathGate] = (),
+    judge_gates: bool = True,
 ) -> PatchCoverage:
     """Intersect a change with a coverage report. See the module docstring.
 
@@ -189,7 +267,9 @@ def compute_patch_coverage(
     only the changed files' entries (a stored report read for one change); it
     decides which unlisted files count as ``not_in_report``. Changed files
     matching *ignore* (``coverage.ignore``, gitignore syntax) are dropped
-    before anything is measured and counted in the scope.
+    before anything is measured and counted in the scope. Each of *gates*
+    (``coverage.gates``) is judged on the measured files its globs match;
+    with *judge_gates* false they are counted but read ``no_data``.
     """
     measured_suffixes = {PurePosixPath(p).suffix for p in report_paths or coverage}
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
@@ -205,12 +285,16 @@ def compute_patch_coverage(
             out_of_scope += 1
         else:
             files.append(row)
-    return PatchCoverage(
+    pc = PatchCoverage(
         files=tuple(files),
         threshold=threshold,
         out_of_scope_count=out_of_scope,
         scope=replace(scope or PatchScope(), ignored_file_count=ignored),
         min_coverable_lines=min_coverable_lines,
+    )
+    small = pc.small_change
+    return replace(
+        pc, path_gates=tuple(_path_gate(files, g, small, judge_gates) for g in gates)
     )
 
 
@@ -223,6 +307,7 @@ def patch_coverage_from_resolved(
     reports: Sequence[str] = (),
     min_coverable_lines: int | None = None,
     ignore: Sequence[str] = (),
+    gates: Sequence[PathGate] = (),
 ) -> PatchCoverage:
     """:func:`compute_patch_coverage` over reports already resolved to repo keys."""
     unmatched = len(resolved.unmatched) + len(resolved.ambiguous)
@@ -232,6 +317,7 @@ def patch_coverage_from_resolved(
         threshold=threshold,
         min_coverable_lines=min_coverable_lines,
         ignore=ignore,
+        gates=gates,
         scope=PatchScope(
             label=label,
             source_formats=tuple(resolved.source_formats),
@@ -273,6 +359,42 @@ def _file_patch(path: str, lines: set[int], fc: FileCoverage) -> FilePatchCovera
         covered_line_count=len(covered),
         uncovered_ranges=line_ranges(coverable - covered),
     )
+
+
+def _path_gate(
+    files: Sequence[FilePatchCoverage], gate: PathGate, small_change: bool, judged: bool
+) -> PathGateResult:
+    """*gate* over the changed files its globs match; a file may match several gates."""
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", gate.paths)
+    matched = [f for f in files if spec.match_file(f.file_path)]
+    hits = [f for f in matched if f.status == "measured"]
+    return PathGateResult(
+        name=gate.name,
+        paths=gate.paths,
+        threshold=gate.fail_under,
+        informational=gate.informational,
+        measured_file_count=len(hits),
+        unmeasured_file_count=sum(f.status in _UNMEASURED for f in matched),
+        covered_line_count=sum(f.covered_line_count for f in hits),
+        coverable_line_count=sum(f.coverable_line_count for f in hits),
+        small_change=small_change,
+        judged=judged,
+    )
+
+
+_UNMEASURED = frozenset({"not_in_report", "no_line_data"})
+
+
+def _gate(threshold: float | None, covered: int, coverable: int, small: bool) -> GateStatus:
+    """One rule for the whole change and every path-scoped gate."""
+    if threshold is None:
+        return "not_set"
+    pct = _pct(covered, coverable)
+    if pct is None:
+        return "no_data"
+    if pct >= threshold:
+        return "pass"
+    return "too_small" if small else "fail"
 
 
 def _pct(covered: int, coverable: int) -> float | None:

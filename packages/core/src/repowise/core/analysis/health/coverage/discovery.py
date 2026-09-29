@@ -82,6 +82,24 @@ _PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 _MAX_ARTIFACTS = 50
 
 
+@dataclass(frozen=True)
+class PathGate:
+    """One ``coverage.gates`` entry: a patch-coverage gate over the files its globs match.
+
+    *paths* are gitignore-style globs, like ``coverage.ignore``. Without
+    *fail_under* the gate is reported but judges nothing; an *informational*
+    gate is judged but never fails the change.
+    """
+
+    name: str
+    paths: tuple[str, ...]
+    fail_under: float | None = None
+    informational: bool = False
+
+
+_PATH_GATE_KEYS = ("name", "paths", "fail_under", "informational")
+
+
 @dataclass
 class CoverageConfig:
     """The ``coverage:`` block of ``.repowise/config.yaml``.
@@ -115,6 +133,11 @@ class CoverageConfig:
     # Small-change tolerance: a change with fewer changed executable lines
     # than this never fails the gate.
     min_coverable_lines: int | None = None
+    # Path-scoped gates (``coverage.gates``): the valid entries, and one
+    # message per invalid entry. ``coverage check`` refuses to run on any
+    # message; read-only surfaces evaluate the valid entries.
+    gates: tuple[PathGate, ...] = ()
+    gate_errors: tuple[str, ...] = ()
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -130,6 +153,7 @@ class CoverageConfig:
             return ()
 
         paths, path_prefixes = _report_entries(block.get("paths"))
+        gates, gate_errors = _path_gates(block.get("gates"))
         return cls(
             auto_discover=bool(block.get("auto_discover", True)),
             artifacts=_strs(block.get("artifacts")),
@@ -142,6 +166,8 @@ class CoverageConfig:
             reingest_on_update=bool(block.get("reingest_on_update", False)),
             fail_under=_percent(block.get("fail_under")),
             min_coverable_lines=_line_count(block.get("min_coverable_lines")),
+            gates=gates,
+            gate_errors=gate_errors,
         )
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:
@@ -162,18 +188,75 @@ class CoverageConfig:
         return {}
 
 
-def configured_ignore(repo_root: Path | str) -> tuple[str, ...]:
-    """``coverage.ignore`` from *repo_root*'s config, empty when it cannot be read.
+def configured_coverage(repo_root: Path | str) -> CoverageConfig:
+    """*repo_root*'s ``coverage:`` config, the defaults when it cannot be read.
 
     For the surfaces that read stored coverage (REST, agent tools), so their
-    patch coverage leaves out the same files the CLI gate does.
+    patch coverage leaves out the same files and evaluates the same
+    path-scoped gates the CLI gate does.
     """
     from repowise.core.repo_config import RepoConfigError, load_repo_config
 
     try:
-        return CoverageConfig.from_repo_config(load_repo_config(repo_root)).ignore
+        return CoverageConfig.from_repo_config(load_repo_config(repo_root))
     except (RepoConfigError, OSError):
-        return ()
+        return CoverageConfig()
+
+
+def _path_gates(value: object) -> tuple[tuple[PathGate, ...], tuple[str, ...]]:
+    """``coverage.gates``: the valid entries, and why each invalid one is not."""
+    if value is None:
+        return (), ()
+    if not isinstance(value, list):
+        return (), ("coverage.gates must be a list of {name, paths} entries.",)
+    gates: list[PathGate] = []
+    errors: list[str] = []
+    for i, entry in enumerate(value):
+        gate = _parse_path_gate(entry, {g.name for g in gates})
+        if isinstance(gate, PathGate):
+            gates.append(gate)
+            continue
+        name = entry.get("name") if isinstance(entry, dict) else None
+        where = f"coverage.gates[{i}]" + (f" ({name!r})" if isinstance(name, str) else "")
+        errors.append(f"{where}: {gate}")
+    return tuple(gates), tuple(errors)
+
+
+def _parse_path_gate(entry: object, taken: set[str]) -> PathGate | str:
+    """One ``coverage.gates`` entry, or what is wrong with it."""
+    if not isinstance(entry, dict):
+        return "must be a mapping with name and paths."
+    unknown = sorted(str(k) for k in entry if k not in _PATH_GATE_KEYS)
+    if unknown:
+        return f"unknown key {', '.join(unknown)}; expected {', '.join(_PATH_GATE_KEYS)}."
+    name = entry.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return "name must be a non-empty string."
+    if name in taken:
+        return "duplicate name; each gate needs its own."
+    raw_paths = entry.get("paths")
+    paths = (raw_paths,) if isinstance(raw_paths, str) else raw_paths
+    if (
+        not isinstance(paths, (list, tuple))
+        or not paths
+        or not all(isinstance(p, str) and p.strip() for p in paths)
+    ):
+        return "paths must be a non-empty list of globs."
+    try:
+        spec = pathspec.PathSpec.from_lines("gitwildmatch", paths)
+    except ValueError as exc:
+        return f"invalid glob in paths: {exc}"
+    if not any(p.include for p in spec.patterns):
+        # Only comments or ``!`` exclusions: the gate could never match a file.
+        return "paths must include a glob that is not a comment or a ! exclusion."
+    raw_threshold = entry.get("fail_under")
+    threshold = _percent(raw_threshold)
+    if raw_threshold is not None and threshold is None:
+        return f"fail_under must be a number from 0 to 100, got {raw_threshold!r}."
+    informational = entry.get("informational", False)
+    if not isinstance(informational, bool):
+        return f"informational must be true or false, got {informational!r}."
+    return PathGate(name, tuple(paths), threshold, informational)
 
 
 def _report_entries(value: object) -> tuple[tuple[str, ...], dict[str, str]]:

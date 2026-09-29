@@ -1242,6 +1242,7 @@ their tests live.
 repowise coverage add [PATHS...]        # ingest coverage reports (+ per-test map when contexts are present)
 repowise coverage status                # show ingested coverage + the map
 repowise coverage check [REVSPEC]       # gate a change on its patch coverage (CI)
+repowise coverage suggest-gates         # propose path-scoped gates for coverage.gates
 ```
 
 **`add` options:**
@@ -1327,7 +1328,9 @@ are out of scope and only counted.
 | `--format` | `table` (default), `json`, `markdown`, or `github` |
 
 `github` writes up to 10 `::warning` annotations (largest uncovered ranges
-first), a `::notice` counting the rest, an `::error::` when the gate fails and
+first), a `::notice` counting the rest, an `::error::` when the gate fails, one
+per failing path-scoped gate that is not informational, a `::notice::` per
+informational gate below its threshold, and
 a `::notice::` when the small-change tolerance exempts it, then appends the
 markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json` carries
 `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
@@ -1337,7 +1340,11 @@ markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json` carries
 (`file_path`, `status`, `changed_line_count`, `coverable_line_count`,
 `covered_line_count`, `patch_coverage_pct`, `uncovered_ranges`) and `scope`
 (`label`, `source_formats`, `reports`, `report_path_count`,
-`unmatched_report_path_count`, `ignored_file_count`). Changed files and report
+`unmatched_report_path_count`, `ignored_file_count`, `config_errors`) and
+`path_gates[]` (`name`, `paths`, `threshold`, `informational`,
+`measured_file_count`, `unmeasured_file_count`, `covered_line_count`,
+`coverable_line_count`, `patch_coverage_pct`, `gate`).
+Changed files and report
 entries matching `coverage.ignore` (gitignore syntax) are left out and counted
 as ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
 that module's directory unless the report has a per-report prefix or
@@ -1346,12 +1353,28 @@ that module's directory unless the report has a per-report prefix or
 
 **Exit codes:** `0` the gate passes or there is nothing to judge (no
 threshold, no measurable changed lines, or a change under the small-change
-tolerance); `1` patch coverage is below `--fail-under`; `2` the check could not
+tolerance); `1` patch coverage is below `--fail-under`, or a path-scoped gate
+that is not informational fails; `2` the check could not
 run: no report found, a `--report` path or glob matching no file, none
 readable, none matching a repository file, or every entry matching
 `coverage.ignore`; an unknown revision; no merge-base (a shallow clone); a
 single commit at a shallow clone's boundary; bad config or a malformed
-`coverage.fail_under` / `coverage.min_coverable_lines`; not a git repository.
+`coverage.fail_under` / `coverage.min_coverable_lines`, or an unusable
+`coverage.gates` entry (named in the message); not a git repository.
+
+**Path-scoped gates.** Each entry of `coverage.gates` (`name`, `paths` as
+gitignore-style globs relative to the repository root, optional `fail_under`
+0-100, optional `informational`) is judged on the measured changed files its
+globs match, with the same rule as the whole change; a file can count in
+several gates. The small-change tolerance is the whole change's: every gate
+reads `too_small` when the change is under `min_coverable_lines`, never a
+small slice of a big one. Matching changed files the report does not measure
+are counted as `unmeasured_file_count`, outside the percentage. `gate` reads
+`fail` when any gate that is not informational fails, whatever the
+whole-change figure, and the headline then leads with that gate and its
+counts. The table output lists every gate; the markdown lists up to 10,
+failing ones first. See [Path-scoped gates](../start/CI.md#path-scoped-gates)
+and `repowise coverage suggest-gates`.
 
 A coverage.py `.coverage` database is not a text report: export it first with
 `coverage lcov` or `coverage xml`. A new file no test loads must still appear
@@ -1370,6 +1393,42 @@ repowise coverage check origin/main...HEAD --report web/coverage/lcov.info=web
 CI clones are often shallow, so the merge-base is missing and the check exits 2.
 Fetch full history. The GitHub Action, the GitLab template and recipes for
 other CI systems are in [Repowise in CI](../start/CI.md).
+
+#### `repowise coverage suggest-gates`
+
+Propose path-scoped gates for `coverage.gates`. Sources, in order, each
+labelled in a comment:
+
+- CODEOWNERS: the first of `.github/CODEOWNERS`, `CODEOWNERS`,
+  `docs/CODEOWNERS` and `.gitlab/CODEOWNERS`; one gate per owner. A later
+  pattern that may overlap an owner's paths and is not theirs (owner-less
+  lines included) is carried as a `!` exclusion; a catch-all (`*`) drops the
+  gates before it and is itself none; an owner whose every pattern a later one
+  overrides gets no gate. Escaped spaces, tab-separated comments and GitLab
+  `[Section] @owners` defaults are understood.
+- Top-level packages from `git ls-files`: each directory under `packages/`,
+  `apps/`, `services/` or `libs/` holding a source file that is not a test,
+  else each top-level source directory.
+- Graph communities when the repository is indexed: each with 3 or more
+  source files, over the directories holding them, named by their common
+  directory; the 10 largest, minus any with the same globs as a package gate.
+  The comment names the indexed commit, and says when there is no index, it
+  cannot be read, or it holds no communities.
+
+The first two need no index. Nothing is written and no `fail_under` is set.
+The YAML block is indented to paste directly below your `coverage:` line;
+names repeated across sources get a `-2` suffix, so it is valid config as
+printed.
+
+| Flag | Description |
+|------|-------------|
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `yaml` (default), a block to paste below `coverage:`; or `json`, `{"sources": [{"source", "detail", "gates": [{"name", "paths"}]}]}` |
+
+```bash
+repowise coverage suggest-gates
+repowise coverage suggest-gates --format json
+```
 
 ---
 

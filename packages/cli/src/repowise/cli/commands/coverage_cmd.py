@@ -16,6 +16,7 @@ import click
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands.coverage_check_cmd import coverage_check
+from repowise.cli.commands.coverage_suggest_gates_cmd import coverage_suggest_gates
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -60,6 +61,7 @@ def coverage_group() -> None:
 
 
 coverage_group.add_command(coverage_check)
+coverage_group.add_command(coverage_suggest_gates)
 
 
 @coverage_group.command("add")

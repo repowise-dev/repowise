@@ -673,7 +673,12 @@ computation and JSON shape `repowise coverage check --format json` gates on.
 coverage never names read `not_in_report` rather than 0%, and
 `scope.freshness` is `stale` when the coverage was measured at another commit
 than the change's head (`unknown` for uncommitted work), so its line numbers
-may describe other code. The block is absent when no coverage is stored.
+may describe other code. `path_gates` lists the path-scoped gates in
+`coverage.gates`, each judged on the changed files its globs match (`gate`
+reads `fail` when one that is not informational fails). They are judged only
+on coverage measured at the change's head and valid config; otherwise they
+read `no_data`, and `scope.config_errors` names each invalid entry. The block
+is absent when no coverage is stored.
 
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,

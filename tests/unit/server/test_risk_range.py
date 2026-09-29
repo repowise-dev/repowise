@@ -269,3 +269,55 @@ async def test_patch_coverage_reads_stored_coverage(
     ignored = (await client.get(url, params={"base": base})).json()
     assert ignored["scope"]["ignored_file_count"] == 1
     assert ignored["files"] == []
+    assert ignored["path_gates"] == []
+
+    # So do the path-scoped gates in coverage.gates.
+    (git_repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 50}\n",
+        encoding="utf-8",
+    )
+    gated = (await client.get(url, params={"base": base})).json()
+    assert gated["path_gates"] == [
+        {
+            "name": "src",
+            "paths": ["src/"],
+            "threshold": 50.0,
+            "informational": False,
+            "measured_file_count": 1,
+            "unmeasured_file_count": 0,
+            "covered_line_count": 2,
+            "coverable_line_count": 3,
+            "patch_coverage_pct": 66.66,
+            "gate": "pass",
+        }
+    ]
+    assert gated["gate"] == "not_set"
+
+    # An invalid entry is carried, and no gate is judged beside it.
+    (git_repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 90}\n"
+        "    - {name: src, paths: [lib/]}\n",
+        encoding="utf-8",
+    )
+    partial = (await client.get(url, params={"base": base})).json()
+    assert partial["scope"]["config_errors"] == [
+        "coverage.gates[1] ('src'): duplicate name; each gate needs its own."
+    ]
+    assert [g["gate"] for g in partial["path_gates"]] == ["no_data"]
+
+    # Coverage measured at another commit gets no verdict either.
+    (git_repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 90}\n",
+        encoding="utf-8",
+    )
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+        source_format="lcov",
+        ingested_commit_sha=base,
+    )
+    await session.commit()
+    stale = (await client.get(url, params={"base": base})).json()
+    assert stale["scope"]["freshness"] == "stale"
+    assert [g["gate"] for g in stale["path_gates"]] == ["no_data"]

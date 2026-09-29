@@ -111,7 +111,22 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     mapping_partial: false,
     freshness: "stale",
     ignored_file_count: 0,
+    config_errors: [],
   },
+  path_gates: [
+    {
+      name: "web-app",
+      paths: ["/src/"],
+      threshold: 80,
+      informational: false,
+      measured_file_count: 1,
+      unmeasured_file_count: 0,
+      covered_line_count: 2,
+      coverable_line_count: 3,
+      patch_coverage_pct: 66.66,
+      gate: "fail",
+    },
+  ],
 };
 
 const REPO: RepoInit = {
@@ -477,6 +492,9 @@ describe("risk App", () => {
     expect(screen.getByText(/not at this change's head/)).toBeTruthy();
     expect(screen.getByText("lines 3, 7-9")).toBeTruthy();
     expect(screen.getByText("not in report")).toBeTruthy();
+    // Path-scoped gates reach the editor through the shared summary.
+    expect(screen.getByText("web-app")).toBeTruthy();
+    expect(screen.getByText("fails")).toBeTruthy();
 
     fireEvent.click(screen.getByTitle("Open src/core.ts"));
     expect(openFile).toHaveBeenCalledWith("src/core.ts");
