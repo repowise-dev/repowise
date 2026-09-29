@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import re
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs" / "architecture" / "language-support.md"
@@ -20,7 +20,7 @@ def test_language_support_edge_type_sets_are_real_model_symbols() -> None:
         for node in tree.body
         if isinstance(node, (ast.Assign, ast.AnnAssign))
         for target in (
-            ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)
+            [node.target] if isinstance(node, ast.AnnAssign) else node.targets
         )
         if isinstance(target, ast.Name)
     }
