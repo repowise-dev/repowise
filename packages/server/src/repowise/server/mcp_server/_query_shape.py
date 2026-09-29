@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os.path
 import re
+from collections.abc import Container
 from functools import cache
 
 
@@ -127,24 +128,76 @@ _IDENT_TOKEN_RE = re.compile(
 )
 
 
-def _embedded_identifiers(query: str) -> list[str]:
-    """Identifier-shaped tokens carried inside a natural-language query."""
-    return _IDENT_TOKEN_RE.findall(query)
+# Every word, dotted chains kept whole. Which of them are identifiers is
+# decided against the symbol table (``_embedded_identifiers`` with ``names``),
+# not by shape: shape alone misses ``proxyExecute`` and ``OpenAIProvider`` and
+# takes ``TypeScript``.
+_WORD_CHAIN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-def _identifier_candidates(query: str, mode: str) -> list[str]:
+def _identifier_shaped(token: str) -> bool:
+    """At least 3 chars with a capital, an underscore or a digit. Plain
+    lowercase words (``method``, ``class``) name symbols too broadly to count."""
+    return len(token) >= 3 and ("_" in token or any(ch.isupper() or ch.isdigit() for ch in token))
+
+
+def _folds_case(token: str) -> bool:
+    """Whether a case-insensitive match may stand for ``token``.
+
+    Mixed case past the first letter, or an underscore. A sentence-initial
+    ``Where`` or an all-caps ``API`` would otherwise fold onto a lowercase
+    ``where`` or ``api`` symbol, which the question never named.
+    """
+    body = token.strip("_")
+    return "_" in body or (
+        any(ch.islower() for ch in body) and any(ch.isupper() for ch in body[1:])
+    )
+
+
+def _names_symbol(token: str, names: Container[str]) -> bool:
+    """Case-sensitive first, then case-insensitive where ``_folds_case`` allows;
+    a dotted token also counts when its last part names a symbol."""
+    if token in names or (_folds_case(token) and token.lower() in names):
+        return True
+    return "." in token and _names_symbol(token.rsplit(".", 1)[1], names)
+
+
+def _embedded_identifiers(query: str, names: Container[str] | None = None) -> list[str]:
+    """Identifier tokens carried inside a natural-language query.
+
+    Without ``names``: the shape regex alone. With ``names`` (the indexed
+    symbol names), a token counts only when it names at least one of them, or
+    the last part of a dotted token does: ``executeWithTool`` and
+    ``client.proxyExecute`` count when indexed, ``TypeScript`` does not unless
+    a symbol carries that name. ``names`` is tested for the token, then for
+    its lowered form, so a container that also answers for each name's
+    lowered spelling gets the case-insensitive leg.
+    """
+    if names is None:
+        return _IDENT_TOKEN_RE.findall(query)
+    out = []
+    for token in _WORD_CHAIN_RE.findall(query):
+        if "." not in token and not _identifier_shaped(token):
+            continue
+        if _names_symbol(token, names):
+            out.append(token)
+    return out
+
+
+def _identifier_candidates(query: str, mode: str, names: Container[str] | None = None) -> list[str]:
     """Identifier tokens the query is asking after, for the exact-match signal.
 
     A single-token query IS the identifier (symbol mode); a natural-language
     query carrying identifiers (hybrid mode) exposes them the same way
     ``_resolve_mode`` used to route here. Concept/path queries name none.
+    ``names`` validates the hybrid tokens (see ``_embedded_identifiers``).
     """
     if mode == "symbol":
         q = query.strip()
         canonical = _canonical_symbol_query(q)
         return [q, canonical[1]] if canonical else ([q] if q else [])
     if mode == "hybrid":
-        return _embedded_identifiers(query)
+        return _embedded_identifiers(query, names)
     return []
 
 
@@ -184,14 +237,15 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
 _VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
 
 
-def _resolve_mode(query: str, mode: str | None) -> str:
+def _resolve_mode(query: str, mode: str | None, names: Container[str] | None = None) -> str:
     """Resolve ``mode="auto"`` to a concrete branch from the query shape.
 
     Explicit modes pass through. ``auto`` routes path-shaped queries to path
     search, single identifier-shaped tokens to symbol search, and queries that
     merely *carry* an identifier inside natural language to hybrid; everything
     else stays concept (the original wiki-semantic path). The routing reuses
-    the exact heuristics that previously only emitted a grep_hint.
+    the exact heuristics that previously only emitted a grep_hint. With
+    ``names``, only validated identifiers route to hybrid.
     """
     m = (mode or "auto").lower()
     if m not in _VALID_MODES:
@@ -204,7 +258,7 @@ def _resolve_mode(query: str, mode: str | None) -> str:
         return "path"
     if _looks_like_exact_token(query):
         return "symbol"
-    if _embedded_identifiers(query):
+    if _embedded_identifiers(query, names):
         return "hybrid"
     return "concept"
 
