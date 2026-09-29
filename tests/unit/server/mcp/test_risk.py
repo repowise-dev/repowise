@@ -727,3 +727,32 @@ async def test_get_risk_card_reads_line_coverage_from_the_stored_report(setup_mc
     assert card["line_coverage_pct"] == 61.5
     assert card["branch_coverage_pct"] == 40.0
     assert "coverage_pct" not in card
+
+
+@pytest.mark.asyncio
+async def test_security_signals_are_ranked_high_first(setup_mcp, session):
+    """Severity is ranked, not sorted as text (which would put `high` last)."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    for line, (kind, severity) in enumerate(
+        [("weak_hash", "low"), ("tls_verify_false", "med"), ("pickle_loads", "high")], start=1
+    ):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity=severity,
+                snippet="",
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    assert [s["severity"] for s in signals] == ["high", "med", "low"]

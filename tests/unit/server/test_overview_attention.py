@@ -507,3 +507,45 @@ async def test_health_leads_with_the_worst_file_not_the_worst_finding(
     assert health[1]["severity"] == "low"
     # The count is still findings, so the row can say how much the area holds.
     assert result["by_source"]["health_finding"] == 7
+
+
+@pytest.mark.anyio
+async def test_a_med_security_finding_is_medium_and_ranks_above_low(
+    client: AsyncClient, session_factory
+) -> None:
+    """The scanner writes `med`; the ladder reads `medium`, above a newer `low`."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(session_factory) as session:
+        for kind, severity, day in (("tls_verify_false", "med", 1), ("weak_hash", "low", 2)):
+            session.add(
+                SecurityFinding(
+                    repository_id=repo_id,
+                    file_path="src/net.py",
+                    kind=kind,
+                    severity=severity,
+                    snippet="",
+                    line_number=day,
+                    commit_sha="",
+                    detected_at=datetime(2026, 9, day, tzinfo=UTC),
+                )
+            )
+        await session.commit()
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session,
+            repo_id,
+            decision_health={
+                "stale_decisions": [],
+                "proposed_awaiting_review": [],
+                "ungoverned_hotspots": [],
+            },
+            knowledge_silos=[],
+        )
+
+    security = [i for i in result["items"] if i["type"] == "security_finding"]
+    assert [(i["subtype"], i["severity"]) for i in security] == [
+        ("tls_verify_false", "medium"),
+        ("weak_hash", "low"),
+    ]

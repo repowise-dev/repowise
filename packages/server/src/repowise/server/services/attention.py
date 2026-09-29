@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.attention import (
     PER_SOURCE_CAP,
-    SEVERITY_RANK,
     AttentionSource,
     AttentionView,
     DecisionAttentionInput,
@@ -142,14 +141,17 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
     return items, int(total), ""
 
 
+#: The scanner's severity words on the attention ladder.
+_SECURITY_SEVERITY = {"high": "high", "med": "medium", "low": "low"}
+
+
 async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dict], int, str]:
     """Security findings, high severity first.
 
     ``SecurityFinding`` has no status column: rows are replaced wholesale by
     each scan, so every stored row is open by construction and there is nothing
-    to filter on. It also only ever writes ``high`` or ``low`` — the router's
-    docstring mentions a ``med`` that the scanner never emits — so the two
-    middle bands of the ladder are simply unused here.
+    to filter on. The scanner writes ``high``, ``med`` and ``low``; ``med`` is
+    the security layer's spelling of the ladder's ``medium``.
     """
     rows = (
         (
@@ -157,9 +159,13 @@ async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dic
                 select(SecurityFinding)
                 .where(SecurityFinding.repository_id == repo_id)
                 .order_by(
-                    # `high` before anything else, then newest. Expressed as a
-                    # sort key rather than two queries.
-                    (SecurityFinding.severity != "high"),
+                    # Most severe first, then newest. Expressed as a sort key
+                    # rather than a query per band.
+                    case(
+                        (SecurityFinding.severity == "high", 0),
+                        (SecurityFinding.severity == "med", 1),
+                        else_=2,
+                    ),
                     SecurityFinding.detected_at.desc(),
                 )
                 .limit(PER_SOURCE_CAP)
@@ -197,7 +203,7 @@ async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dic
             "description": (
                 f"{row.kind}{f' in commit {row.commit_sha[:7]}' if row.commit_sha else ''}"
             ),
-            "severity": row.severity if row.severity in SEVERITY_RANK else "medium",
+            "severity": _SECURITY_SEVERITY.get(row.severity, "medium"),
             "target_id": row.file_path,
             "subtype": row.kind,
             # Nothing separates two `high` secrets but recency, and a secret
