@@ -1118,6 +1118,7 @@ async def _patch_coverage_block(
     """
     from repowise.core import git_refs
     from repowise.core.analysis.change_risk.features import revspec_head
+    from repowise.core.analysis.health.coverage import configured_ignore
     from repowise.core.analysis.patch_coverage import attention_rows, stored_patch_coverage
     from repowise.core.persistence.database import get_session
 
@@ -1136,6 +1137,7 @@ async def _patch_coverage_block(
                 changed,
                 label=result.features.ref,
                 head_commit=head_commit,
+                ignore=configured_ignore(ctx.path),
             )
     except (LookupError, SQLAlchemyError):
         return None

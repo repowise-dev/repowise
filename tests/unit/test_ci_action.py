@@ -148,6 +148,13 @@ def test_the_default_branch_job_writes_the_doc_drift_report(tmp_path, fake_repow
     assert json.loads(doc_drift.read_text(encoding="utf-8")) == json.loads(_ISSUE)
 
 
+def test_the_gitlab_coverage_job_leaves_globs_to_repowise() -> None:
+    script = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))["repowise-coverage"]["script"]
+    # Globbing off before the unquoted, space-split report list is expanded.
+    assert script[0] == "set -f"
+    assert "--min-coverable-lines" in script[1]
+
+
 @pytest.fixture
 def fake_repowise(tmp_path: Path) -> Path:
     """A ``repowise`` that logs its arguments and exits with ``$FAKE_<GATE>``.
@@ -207,6 +214,7 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "BASE": "",
         "COVERAGE_REPORT": "",
         "COVERAGE_FAIL_UNDER": "",
+        "COVERAGE_MIN_COVERABLE_LINES": "",
         "DOC_DRIFT_BASELINE": "",
         "SECURITY_FAIL_ON": "high",
         "SECURITY_BASELINE": "",
@@ -240,15 +248,18 @@ def test_inputs_reach_the_commands(tmp_path, fake_repowise) -> None:
         fake_repowise,
         CHECKS="coverage, security",
         BASE="origin/main...HEAD",
-        COVERAGE_REPORT="a.info\nb.xml",
+        COVERAGE_REPORT="a.info\nartifacts/**/lcov.info=web",
         COVERAGE_FAIL_UNDER="80",
+        COVERAGE_MIN_COVERABLE_LINES="5",
         SECURITY_BASELINE=".security-baseline.json",
     )
     assert code == 0
     coverage, security = calls.splitlines()
+    # The glob reaches repowise unexpanded, with its prefix.
     assert coverage == (
         "coverage check origin/main...HEAD --format github "
-        "--report a.info --report b.xml --fail-under 80"
+        "--report a.info --report artifacts/**/lcov.info=web --fail-under 80 "
+        "--min-coverable-lines 5"
     )
     assert security == (
         "security check origin/main...HEAD --fail-on high "

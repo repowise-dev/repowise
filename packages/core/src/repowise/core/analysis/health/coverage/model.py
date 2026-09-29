@@ -112,6 +112,9 @@ class CoverageReport:
     # Repo-relative directory of the report file itself, set by whoever read
     # it from disk; ``None`` when the report did not come from inside the repo.
     origin_dir: str | None = None
+    # Per-report prefix prepended to this report's paths; overrides the
+    # configured ``path_prefix`` for this report only.
+    path_prefix: str | None = None
 
 
 @dataclass

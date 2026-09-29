@@ -47,6 +47,13 @@ def headline(pc: PatchCoverage, *, markdown: bool = True) -> str:
         text += f" · below the {fmt_pct(pc.threshold)} gate"
     elif pc.gate == "pass":
         text += f" · meets the {fmt_pct(pc.threshold)} gate"
+    elif pc.gate == "too_small":
+        n = pc.min_coverable_lines
+        lines = "line" if n == 1 else "lines"
+        text += (
+            f" · below the {fmt_pct(pc.threshold)} gate, not applied: fewer than {n} "
+            f"changed executable {lines} (min_coverable_lines)"
+        )
     return text
 
 
@@ -62,6 +69,8 @@ def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
     files = f"{measured} of {pc.changed_file_count} changed files measured"
     if pc.out_of_scope_count:
         files += f", {pc.out_of_scope_count} out of scope"
+    if scope.ignored_file_count:
+        files += f", {scope.ignored_file_count} ignored by coverage.ignore"
     parts.append(files)
     if scope.freshness == "stale":
         at = f" at {scope.measured_commit[:7]}" if scope.measured_commit else ""
@@ -106,8 +115,9 @@ def render_markdown(pc: PatchCoverage) -> str:
 def github_annotations(pc: PatchCoverage) -> list[str]:
     """GitHub Actions workflow commands for a change's patch coverage.
 
-    A failed gate is an error. The largest uncovered ranges are marked, capped
-    at what GitHub displays, with a notice counting the rest.
+    A failed gate is an error; one exempted by the small-change tolerance is a
+    notice, so the exemption is visible. The largest uncovered ranges are
+    marked, capped at what GitHub displays, with a notice counting the rest.
     """
     ranges = sorted(
         ((f.file_path, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
@@ -124,7 +134,11 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
         )
         for path, a, b in ranges
     ]
-    verdict = [github.error(headline(pc, markdown=False))] if pc.gate == "fail" else []
+    verdict = []
+    if pc.gate == "fail":
+        verdict = [github.error(headline(pc, markdown=False))]
+    elif pc.gate == "too_small":
+        verdict = [github.notice(headline(pc, markdown=False))]
     return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
 
 
@@ -151,6 +165,8 @@ def _details(files: list[FilePatchCoverage], where: str) -> list[str]:
 
 def _no_data_reason(pc: PatchCoverage) -> str:
     if not pc.changed_file_count:
+        if pc.scope.ignored_file_count:
+            return "Every changed file is ignored by coverage.ignore."
         return "The change has no changed lines."
     if pc.with_status("no_line_data"):
         return "The report does not say which lines are executable."

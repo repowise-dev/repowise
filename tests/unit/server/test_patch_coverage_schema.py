@@ -13,11 +13,20 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
         "b.py": file_coverage("b.py", [1], []),
         "c.py": file_coverage("c.py", [1], [1]),
     }
-    changed = {"a.py": {1, 2, 3}, "b.py": {1}, "c.py": {9}, "new.py": {1}, "t/test_x.py": {1}}
+    changed = {
+        "a.py": {1, 2, 3},
+        "b.py": {1},
+        "c.py": {9},
+        "new.py": {1},
+        "t/test_x.py": {1},
+        "gen/out.py": {1},
+    }
     pc = compute_patch_coverage(
         changed,
         coverage,
         threshold=80,
+        min_coverable_lines=5,
+        ignore=["gen/"],
         scope=PatchScope(
             label="main...HEAD",
             source_formats=("lcov",),
@@ -37,4 +46,5 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
         "no_coverable_changes",
         "not_in_report",
     }
+    assert (wire["gate"], wire["scope"]["ignored_file_count"]) == ("too_small", 1)
     assert PatchCoverageResponse.model_validate(wire).model_dump() == wire

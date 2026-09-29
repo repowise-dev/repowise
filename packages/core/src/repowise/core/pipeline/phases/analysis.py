@@ -190,7 +190,8 @@ def _build_pipeline_coverage(
 
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-        report_paths = list(explicit_paths) if explicit_paths else cfg.report_paths(repo_path)
+        reports = dict.fromkeys(explicit_paths) if explicit_paths else cfg.reports(repo_path)
+        report_paths = list(reports)
         if not report_paths:
             return {}, [], None, None
 
@@ -202,6 +203,8 @@ def _build_pipeline_coverage(
             coverage_format=cfg.format,
             strip_prefix=cfg.strip_prefix,
             path_prefix=cfg.path_prefix,
+            report_prefixes=reports,
+            ignore=cfg.ignore,
         )
 
         if progress:

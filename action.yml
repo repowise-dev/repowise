@@ -30,13 +30,21 @@ inputs:
     default: ""
   coverage-report:
     description: >-
-      Coverage report paths, one per line. Empty uses coverage.paths from
-      .repowise/config.yaml, else discovery.
+      Coverage reports, one per line. Each line is a path or a glob such as
+      artifacts/**/lcov.info (Repowise expands it), optionally path=prefix to
+      prepend a directory to that report's paths. Empty uses coverage.paths
+      from .repowise/config.yaml, else discovery.
     default: ""
   coverage-fail-under:
     description: >-
       Minimum patch coverage percent. Empty uses coverage.fail_under from
       .repowise/config.yaml, else reports without gating.
+    default: ""
+  coverage-min-coverable-lines:
+    description: >-
+      Small-change tolerance: a change with fewer changed executable lines
+      than this is reported but never fails the coverage gate. Empty uses
+      coverage.min_coverable_lines from .repowise/config.yaml.
     default: ""
   doc-drift-baseline:
     description: Committed doc-drift baseline file; only findings it does not list fail.
@@ -89,6 +97,7 @@ runs:
         BASE: ${{ inputs.base }}
         COVERAGE_REPORT: ${{ inputs.coverage-report }}
         COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
+        COVERAGE_MIN_COVERABLE_LINES: ${{ inputs.coverage-min-coverable-lines }}
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
         SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
         SECURITY_BASELINE: ${{ inputs.security-baseline }}

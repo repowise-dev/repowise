@@ -138,16 +138,18 @@ async def _coverage_for_rescore(
     # Without paths or discovery there is nothing to re-read, so the stored
     # rows (e.g. from `coverage add`) stay authoritative.
     if cfg.reingest_on_update and (cfg.paths or cfg.auto_discover):
-        report_paths = cfg.report_paths(repo_path)
-        if report_paths:
+        reports = cfg.reports(repo_path)
+        if reports:
             repo_keys = {pf.file_info.path for pf in parsed_files}
             resolved, _errors = build_coverage_map(
                 repo_path,
-                report_paths,
+                list(reports),
                 repo_keys,
                 coverage_format=cfg.format,
                 strip_prefix=cfg.strip_prefix,
                 path_prefix=cfg.path_prefix,
+                report_prefixes=reports,
+                ignore=cfg.ignore,
             )
             if resolved.coverage_map:
                 return RescoreCoverage(

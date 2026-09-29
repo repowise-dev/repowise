@@ -13,6 +13,7 @@ from repowise.core.analysis.health.coverage import (
     CoverageConfig,
     build_coverage_map,
     discover_artifacts,
+    expand_report_patterns,
     normalize_report_path,
     resolve_reports,
 )
@@ -340,6 +341,213 @@ def test_coverage_config_parses_block() -> None:
     assert cfg.paths == ("coverage/lcov.info",)
     assert cfg.strip_prefix == "build"
     assert cfg.reingest_on_update is True
+
+
+def test_coverage_config_paths_take_globs_and_per_report_prefixes(tmp_path: Path) -> None:
+    for rel in ("web/coverage/lcov.info", "api/coverage/lcov.info", "root.lcov"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("")
+    cfg = CoverageConfig.from_repo_config(
+        {
+            "coverage": {
+                "paths": [
+                    {"path": "*/coverage/lcov.info", "path_prefix": "pkg"},
+                    "root.lcov",
+                    "missing.lcov",
+                    {"path_prefix": "no-path"},
+                ],
+                "ignore": ["gen/", "**/*_pb2.py"],
+                "min_coverable_lines": 5,
+            }
+        }
+    )
+
+    assert cfg.paths == ("*/coverage/lcov.info", "root.lcov", "missing.lcov")
+    assert cfg.ignore == ("gen/", "**/*_pb2.py")
+    assert cfg.min_coverable_lines == 5
+    assert cfg.reports(tmp_path) == {
+        tmp_path / "api/coverage/lcov.info": "pkg",
+        tmp_path / "web/coverage/lcov.info": "pkg",
+        tmp_path / "root.lcov": None,
+    }
+
+
+def test_coverage_config_rejects_a_bad_min_coverable_lines() -> None:
+    for bad in (-1, "5", 2.5, True):
+        cfg = CoverageConfig.from_repo_config({"coverage": {"min_coverable_lines": bad}})
+        assert cfg.min_coverable_lines is None
+
+
+def test_expand_report_patterns_sorts_and_dedupes(tmp_path: Path) -> None:
+    for rel in ("b/lcov.info", "a/deep/lcov.info"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("")
+
+    found = expand_report_patterns(["**/lcov.info", "b/lcov.info", "none/*.info"], tmp_path)
+    assert found == [tmp_path / "a/deep/lcov.info", tmp_path / "b/lcov.info"]
+
+
+def test_expand_report_patterns_never_walks_dependency_trees(tmp_path: Path) -> None:
+    for rel in ("web/coverage/lcov.info", "node_modules/x/coverage/lcov.info"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("")
+
+    assert expand_report_patterns(["**/lcov.info"], tmp_path) == [
+        tmp_path / "web/coverage/lcov.info"
+    ]
+    # Leading literal directories, absolute ones too, root the walk.
+    absolute = (tmp_path / "web").as_posix() + "/**/lcov.info"
+    assert expand_report_patterns([absolute], Path()) == [tmp_path / "web/coverage/lcov.info"]
+
+
+def test_an_existing_path_is_taken_literally_before_globbing(tmp_path: Path) -> None:
+    odd = tmp_path / "cov[1].info"
+    odd.write_text("")
+    assert expand_report_patterns(["cov[1].info"], tmp_path) == [odd]
+
+
+# ---------------------------------------------------------------------------
+# Per-report prefix, coverage.ignore, Go modules
+# ---------------------------------------------------------------------------
+
+
+def test_a_reports_own_prefix_wins_over_the_global_one() -> None:
+    keys = {"web/src/a.ts", "api/src/a.ts"}
+    web = CoverageReport(source_format="lcov", files=[_fc("src/a.ts")], path_prefix="web")
+    res = resolve_reports([web, _report([_fc("src/a.ts")])], keys, path_prefix="api")
+    assert sorted(res.coverage_map) == ["api/src/a.ts", "web/src/a.ts"]
+
+
+def test_a_per_report_prefix_skips_the_report_directory_step() -> None:
+    # Under its own directory the report would resolve to pkg/src/a.ts.
+    keys = {"pkg/src/a.ts", "lib/src/a.ts"}
+    report = CoverageReport(
+        source_format="lcov", files=[_fc("src/a.ts")], origin_dir="pkg", path_prefix="lib"
+    )
+    assert list(resolve_reports([report], keys).coverage_map) == ["lib/src/a.ts"]
+
+
+def test_build_coverage_map_applies_report_prefixes(tmp_path: Path) -> None:
+    report_path = tmp_path / "artifacts" / "web.info"
+    report_path.parent.mkdir()
+    report_path.write_text("SF:src/a.ts\nDA:1,1\nend_of_record\n")
+
+    res, errors = build_coverage_map(
+        tmp_path, [report_path], {"web/src/a.ts"}, report_prefixes={report_path: "web"}
+    )
+    assert not errors
+    assert list(res.coverage_map) == ["web/src/a.ts"]
+
+
+def test_ignored_report_entries_are_dropped_and_counted_apart() -> None:
+    keys = {"src/a.py", "src/gen/b_pb2.py", "src/gen/c_pb2.py"}
+    report = _report(
+        [_fc("src/a.py"), _fc("src/gen/b_pb2.py"), _fc("src/gen/c_pb2.py"), _fc("/x/zz.py")]
+    )
+    res = resolve_reports([report], keys, ignore=["*_pb2.py"])
+
+    assert list(res.coverage_map) == ["src/a.py"]
+    assert res.ignored == 2
+    assert res.unmatched == ["/x/zz.py"]
+    # 1 of the 2 entries that were not ignored mapped: not a fragment.
+    assert res.mapping_partial is False
+    assert res.total == 2
+
+
+def test_ignore_also_drops_entries_that_resolve_to_nothing() -> None:
+    # Generated code that is not in the repository at all.
+    report = _report([_fc("src/a.py"), _fc("/ci/build/gen/api_pb2.py"), _fc("/ci/gen/b.py")])
+    res = resolve_reports([report], {"src/a.py"}, ignore=["gen/"])
+
+    assert res.ignored == 2
+    assert res.unmatched == []
+    assert res.mapping_partial is False
+
+
+def test_ignore_drops_per_test_records() -> None:
+    from repowise.core.analysis.health.coverage import resolve_test_reports
+    from repowise.core.analysis.health.coverage.model import (
+        ContextCoverageReport,
+        TestCoverage,
+    )
+
+    report = ContextCoverageReport(
+        source_format="coverage.py",
+        has_contexts=True,
+        records=[
+            TestCoverage("t::a", "src/a.py", [1]),
+            TestCoverage("t::b", "src/gen/b.py", [1]),
+        ],
+    )
+    res = resolve_test_reports(report, {"src/a.py", "src/gen/b.py"}, ignore=["gen/"])
+    assert [r.file_path for r in res.records] == ["src/a.py"]
+    assert res.ignored == 1
+
+
+def _go_repo(tmp_path: Path) -> Path:
+    backend = tmp_path / "backend"
+    (backend / "pkg").mkdir(parents=True)
+    (backend / "go.mod").write_text('module "example.com/m" // the service\n\ngo 1.22\n')
+    (backend / "main.go").write_text("package main\n")
+    (backend / "pkg" / "x.go").write_text("package pkg\n")
+    (tmp_path / "main.go").write_text("package other\n")
+    profile = tmp_path / "coverage.out"
+    profile.write_text(
+        "mode: set\n"
+        "example.com/m/main.go:3.13,5.2 1 1\n"
+        "example.com/m/pkg/x.go:3.13,5.2 1 0\n"
+    )
+    return profile
+
+
+def test_go_module_paths_map_to_the_module_directory(tmp_path: Path) -> None:
+    profile = _go_repo(tmp_path)
+    # Indexed keys hold source files only: go.mod is found on disk.
+    keys = {"backend/main.go", "backend/pkg/x.go", "main.go"}
+
+    res, errors = build_coverage_map(tmp_path, [profile], keys)
+    assert not errors
+    assert sorted(res.coverage_map) == ["backend/main.go", "backend/pkg/x.go"]
+    assert res.matched_exact == 2
+    # An explicit prefix, per report or global, says where the paths live.
+    prefixed, _ = build_coverage_map(
+        tmp_path, [profile], keys, report_prefixes={profile: "elsewhere"}
+    )
+    assert "backend/main.go" not in prefixed.coverage_map
+    global_prefix, _ = build_coverage_map(tmp_path, [profile], keys, path_prefix="elsewhere")
+    assert "backend/main.go" not in global_prefix.coverage_map
+
+
+def test_a_duplicate_go_module_path_resolves_to_the_shallowest(tmp_path: Path) -> None:
+    from repowise.core.analysis.health.coverage.discovery import _go_modules
+
+    _go_repo(tmp_path)
+    for copy in ("examples/deep/copy", "backend/testdata/fixture"):
+        (tmp_path / copy).mkdir(parents=True)
+        (tmp_path / copy / "go.mod").write_text("module example.com/m\n")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "go.mod").write_text("module example.com/m/tools\n")
+
+    assert _go_modules(tmp_path) == [("example.com/m/tools", "tools"), ("example.com/m", "backend")]
+
+
+def test_a_short_go_module_never_rewrites_other_formats(tmp_path: Path) -> None:
+    (tmp_path / "web" / "src").mkdir(parents=True)
+    (tmp_path / "web" / "go.mod").write_text("module web\n")
+    lcov = tmp_path / "lcov.info"
+    lcov.write_text("SF:web/src/x.ts\nDA:1,1\nend_of_record\n")
+
+    res, _ = build_coverage_map(tmp_path, [lcov], {"web/src/x.ts", "web/web/src/x.ts"})
+    assert list(res.coverage_map) == ["web/src/x.ts"]
+
+
+def test_the_longest_go_module_wins() -> None:
+    from repowise.core.analysis.health.coverage.discovery import _in_go_module
+
+    modules = [("example.com/m/tools", "tools"), ("example.com/m", "")]
+    assert _in_go_module("example.com/m/tools/gen.go", modules) == "tools/gen.go"
+    assert _in_go_module("example.com/m/main.go", modules) == "main.go"
+    assert _in_go_module("example.com/mx/main.go", modules) is None
 
 
 # ---------------------------------------------------------------------------

@@ -377,12 +377,19 @@ async def health_coverage_patch(
     """Patch coverage of ``base...head`` from the coverage the index stores.
 
     The computation ``repowise coverage check`` gates on. ``null`` when no
-    coverage has been ingested, which is not the same as 0%.
+    coverage has been ingested, which is not the same as 0%. Honours
+    ``coverage.ignore``; the small-change tolerance stays with the CLI gate.
     """
+    from repowise.core.analysis.health.coverage import configured_ignore
     from repowise.core.analysis.patch_coverage import stored_patch_coverage
 
     changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
     patch = await stored_patch_coverage(
-        session, repo.id, changed, label=label, head_commit=head_sha or None
+        session,
+        repo.id,
+        changed,
+        label=label,
+        head_commit=head_sha or None,
+        ignore=configured_ignore(repo.local_path),
     )
     return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None

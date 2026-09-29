@@ -112,6 +112,13 @@ export function PatchCoverageSummary({
         </p>
       )}
 
+      {coverage.scope.ignored_file_count > 0 && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          {plural(coverage.scope.ignored_file_count, "changed file")} ignored by{" "}
+          <code className="font-mono">coverage.ignore</code>
+        </p>
+      )}
+
       {uncovered.length > 0 && (
         <ul className="mt-1 flex flex-col gap-0.5">
           {uncovered.slice(0, MAX_FILES).map((f) => (

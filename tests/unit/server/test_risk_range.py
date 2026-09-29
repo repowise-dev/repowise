@@ -260,3 +260,12 @@ async def test_patch_coverage_reads_stored_coverage(
     assert data["scope"]["freshness"] == "current"
     assert data["scope"]["label"] == f"{base}...HEAD"
     assert (await client.get(url, params={"base": "nope"})).status_code == 400
+
+    # coverage.ignore reaches the stored-coverage surface as it does the CLI gate.
+    (git_repo / ".repowise").mkdir(exist_ok=True)
+    (git_repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [src/a.py]\n", encoding="utf-8"
+    )
+    ignored = (await client.get(url, params={"base": base})).json()
+    assert ignored["scope"]["ignored_file_count"] == 1
+    assert ignored["files"] == []

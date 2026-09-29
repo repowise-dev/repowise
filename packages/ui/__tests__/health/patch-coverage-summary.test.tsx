@@ -13,6 +13,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
     covered_line_count: fileCount,
     coverable_line_count: fileCount * 2,
     threshold: null,
+    min_coverable_lines: null,
     gate: "not_set",
     file_counts: {
       measured: fileCount,
@@ -39,6 +40,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       measured_commit: "abcdef1234",
       mapping_partial: false,
       freshness: "current",
+      ignored_file_count: 0,
     },
   };
 }
@@ -73,5 +75,16 @@ describe("PatchCoverageSummary", () => {
     render(<PatchCoverageSummary coverage={coverage(1)} />);
     expect(screen.getByText("1 of 2 changed executable lines covered")).toBeTruthy();
     expect(screen.queryByText(/measured at/)).toBeNull();
+    expect(screen.queryByText(/ignored by/)).toBeNull();
+  });
+
+  it("counts changed files coverage.ignore left out", () => {
+    const base = coverage(1);
+    render(
+      <PatchCoverageSummary
+        coverage={{ ...base, scope: { ...base.scope, ignored_file_count: 2 } }}
+      />,
+    );
+    expect(screen.getByText(/2 changed files ignored by/)).toBeTruthy();
   });
 });

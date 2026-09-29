@@ -50,6 +50,8 @@ class PatchCoverageScope(_Strict):
     #: ``stale`` when the coverage was measured at another commit than the
     #: change's head: the figure still computes but describes other code.
     freshness: FreshnessStatus
+    #: Changed files left out by ``coverage.ignore`` before measuring.
+    ignored_file_count: int
 
 
 class PatchCoverageResponse(_Strict):
@@ -57,6 +59,9 @@ class PatchCoverageResponse(_Strict):
     covered_line_count: int
     coverable_line_count: int
     threshold: float | None
+    #: Small-change tolerance: below this many changed executable lines a
+    #: missed threshold reads ``too_small`` and does not fail.
+    min_coverable_lines: int | None
     gate: GateStatus
     file_counts: PatchCoverageFileCounts
     files: list[PatchCoverageFile]

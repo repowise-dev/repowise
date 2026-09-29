@@ -69,6 +69,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
   covered_line_count: 2,
   coverable_line_count: 3,
   threshold: null,
+  min_coverable_lines: null,
   gate: "not_set",
   file_counts: {
     measured: 1,
@@ -109,6 +110,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     measured_commit: "abcdef1234567890",
     mapping_partial: false,
     freshness: "stale",
+    ignored_file_count: 0,
   },
 };
 

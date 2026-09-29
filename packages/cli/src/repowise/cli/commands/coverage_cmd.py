@@ -211,6 +211,7 @@ def coverage_add(
                     coverage_format=coverage_format or cfg.format,
                     strip_prefix=cfg.strip_prefix,
                     path_prefix=cfg.path_prefix,
+                    ignore=cfg.ignore,
                 )
                 for path, err in errors:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
@@ -271,6 +272,7 @@ def coverage_add(
                     repo_keys,
                     strip_prefix=cfg.strip_prefix,
                     path_prefix=cfg.path_prefix,
+                    ignore=cfg.ignore,
                 )
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format

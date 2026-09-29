@@ -7,7 +7,7 @@ REST API, editors) reads what ``coverage add`` or indexing stored. Both end in
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,11 +23,14 @@ async def stored_patch_coverage(
     label: str = "",
     head_commit: str | None = None,
     threshold: float | None = None,
+    min_coverable_lines: int | None = None,
+    ignore: Sequence[str] = (),
 ) -> PatchCoverage | None:
     """Patch coverage of *changed* against stored coverage; ``None`` when none is stored.
 
     *head_commit* is the commit the change ends at; coverage measured anywhere
-    else is marked ``stale`` in the scope.
+    else is marked ``stale`` in the scope. *min_coverable_lines* and *ignore*
+    are the CLI gate's config; agent and REST surfaces leave them unset.
     """
     from repowise.core.persistence.crud import (
         get_coverage_summary,
@@ -48,6 +51,8 @@ async def stored_patch_coverage(
         changed,
         coverage,
         threshold=threshold,
+        min_coverable_lines=min_coverable_lines,
+        ignore=ignore,
         report_paths=measured,
         scope=PatchScope(
             label=label,

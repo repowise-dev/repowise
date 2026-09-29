@@ -191,6 +191,135 @@ def test_flag_overrides_a_bad_config_threshold(repo) -> None:
     assert _run(repo, "main...feat", "--report", report, "--fail-under", "50").exit_code == 0
 
 
+def test_small_change_tolerance_reports_but_does_not_fail(repo) -> None:
+    report = _lcov(repo, {1: 1, 2: 1, 3: 0})  # 1 of 2 changed executable lines
+    args = ("main...feat", "--report", report, "--fail-under", "80")
+
+    small = _run(repo, *args, "--min-coverable-lines", "5")
+    assert small.exit_code == 0, small.output
+    assert "not applied: fewer than 5 changed executable lines" in small.output
+    github = _run(repo, *args, "--min-coverable-lines", "5", "--format", "github")
+    assert github.exit_code == 0
+    assert "::notice::Patch coverage 50.0" in github.stdout
+    assert _run(repo, *args, "--min-coverable-lines", "2").exit_code == 1
+    assert _run(repo, *args, "--min-coverable-lines", "-1").exit_code == 2
+
+
+def test_small_change_tolerance_from_config(repo) -> None:
+    (repo / ".repowise").mkdir()
+    config = repo / ".repowise" / "config.yaml"
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    config.write_text("coverage:\n  fail_under: 80\n  min_coverable_lines: 5\n", encoding="utf-8")
+    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert (data["gate"], data["min_coverable_lines"]) == ("too_small", 5)
+
+    config.write_text("coverage:\n  fail_under: 80\n  min_coverable_lines: few\n", encoding="utf-8")
+    bad = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert bad.exit_code == 2
+    assert json.loads(bad.stdout)["error"] == "config_invalid"
+    # The flag stands in for a config value it cannot use.
+    override = _run(repo, "main...feat", "--report", report, "--min-coverable-lines", "2")
+    assert override.exit_code == 1
+
+
+def test_report_globs_expand_relative_to_cwd(repo, monkeypatch) -> None:
+    from pathlib import Path
+
+    shard = repo / "artifacts" / "unit"
+    shard.mkdir(parents=True)
+    (shard / "lcov.info").write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:2,1\nDA:3,1\nend_of_record\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(repo)
+
+    result = _run(repo, "main...feat", "--report", "artifacts/**/lcov.info", "--format", "json")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["patch_coverage_pct"] == 100.0
+    assert [Path(p) for p in data["scope"]["reports"]] == [Path("artifacts/unit/lcov.info")]
+
+
+def test_a_report_argument_matching_no_file_exits_2(repo) -> None:
+    for arg in (str(repo / "nope" / "**" / "lcov.info"), str(repo / "missing.lcov")):
+        result = _run(repo, "main...feat", "--report", arg, "--format", "json")
+        assert result.exit_code == 2, arg
+        error = json.loads(result.stdout)
+        assert error["error"] == "report_not_found"
+        assert arg in error["message"]
+
+
+def test_report_path_equals_prefix(repo) -> None:
+    report = repo / "web.info"
+    report.write_text("SF:app.py\nDA:2,1\nDA:3,1\nend_of_record\n", encoding="utf-8")
+
+    ok = _run(repo, "main...feat", "--report", f"{report}=src", "--format", "json")
+    assert ok.exit_code == 0, ok.output
+    assert json.loads(ok.stdout)["patch_coverage_pct"] == 100.0
+    # The prefix is applied: a wrong one leaves nothing to match.
+    assert _run(repo, "main...feat", "--report", f"{report}=nowhere").exit_code == 2
+
+
+def test_an_existing_path_holding_equals_is_a_path(repo) -> None:
+    report = repo / "cov=v1.info"
+    report.write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:2,1\nDA:3,1\nend_of_record\n", encoding="utf-8"
+    )
+    result = _run(repo, "main...feat", "--report", str(report), "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["patch_coverage_pct"] == 100.0
+
+
+def test_a_glob_holding_equals_stays_one_pattern(repo, monkeypatch) -> None:
+    shard = repo / "artifacts" / "shard=1"
+    shard.mkdir(parents=True)
+    (shard / "unit.info").write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:2,1\nDA:3,1\nend_of_record\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(repo)
+
+    result = _run(repo, "main...feat", "--report", "artifacts/shard=1/*.info", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["patch_coverage_pct"] == 100.0
+
+
+def test_every_report_entry_ignored_exits_2_with_its_own_message(repo) -> None:
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [src/]\n", encoding="utf-8"
+    )
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == "report_all_ignored"
+
+
+def test_coverage_ignore_drops_changed_files_and_report_entries(repo) -> None:
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [src/new.py]\n", encoding="utf-8"
+    )
+    report = repo / "coverage.lcov"
+    report.write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:2,1\nDA:3,0\nend_of_record\n"
+        f"SF:{repo / 'src' / 'new.py'}\nDA:1,0\nend_of_record\n",
+        encoding="utf-8",
+    )
+    result = _run(repo, "main...feat", "--report", str(report), "--format", "json")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert [f["file_path"] for f in data["files"]] == ["src/app.py"]
+    assert data["scope"]["ignored_file_count"] == 1
+    # The ignored entry is neither a match nor a miss.
+    assert (data["scope"]["report_path_count"], data["scope"]["unmatched_report_path_count"]) == (
+        1,
+        0,
+    )
+
+
 def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
     from repowise.cli.ci import CannotEvaluateError
     from repowise.cli.commands.coverage_check_cmd import _gateable

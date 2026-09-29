@@ -106,8 +106,9 @@ release the action installs.
 | `python-version` | `3.12` | Python to run it with (3.11 or newer). |
 | `working-directory` | `.` | Where to run from. |
 | `base` | from the pull request | Revision range for coverage and security. |
-| `coverage-report` | config, else discovery | Report paths, one per line. |
+| `coverage-report` | config, else discovery | Reports, one per line: a path or a glob (`artifacts/**/lcov.info`), optionally `path=prefix`. |
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
+| `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
 | `doc-drift-baseline` | none | Committed baseline file. |
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
 | `security-baseline` | none | Committed baseline file. |
@@ -166,8 +167,11 @@ fails the job. A fourth job, `repowise-code-quality`, runs on the default
 branch and never fails the pipeline: it publishes the report the widget
 compares a merge request against, so only issues the merge request introduces
 show as new. It publishes doc drift only: security judges only what a change
-adds, and the default branch has no change to judge. Other
-variables: `REPOWISE_VERSION`, `REPOWISE_DOC_DRIFT_BASELINE`,
+adds, and the default branch has no change to judge.
+`REPOWISE_COVERAGE_REPORT` is space separated and may hold globs and
+`path=prefix` entries; Repowise expands the globs, not the shell. Other
+variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
+`REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
 
@@ -233,7 +237,98 @@ The threshold can live in config instead of the workflow:
 coverage:
   paths: [coverage/lcov.info]
   fail_under: 80
+  min_coverable_lines: 5   # small-change tolerance
 ```
+
+With `min_coverable_lines` set, a change touching fewer changed executable
+lines than that is still reported against the threshold, but a miss reads
+"not applied" (a notice on GitHub) and exits `0`: one uncovered line in a
+two-line fix should not block a merge. Like the percentage, the count is of
+lines the report measures; a file the report does not name adds nothing to it.
+
+### Monorepos and matrix jobs
+
+A matrix of test jobs leaves one report per shard. `--report` (and each line
+of `coverage-report`) takes a glob, relative to the working directory, so
+`artifacts/**/lcov.info` reads them all; they merge hit-wins. `**` walks the
+tree the way discovery does, skipping dependency, cache and build directories
+(`node_modules`, `.venv`, `dist`, ...) and nested repositories. A job whose
+reports never arrived exits `2`: a literal path that does not exist, or a
+glob that matches nothing, cannot be evaluated. A glob still matches when one
+shard of several is missing, so to catch that, list each shard's report on
+its own line. `coverage.paths` entries that match nothing are skipped.
+
+On GitHub Actions, each shard uploads its report and the gate job downloads
+them all:
+
+```yaml
+jobs:
+  test:
+    strategy:
+      matrix: {shard: [1, 2, 3]}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest tests/shard${{ matrix.shard }} --cov=src --cov-report=lcov:coverage/lcov.info
+      - uses: actions/upload-artifact@v4
+        with: {name: "coverage-${{ matrix.shard }}", path: coverage/lcov.info}
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/download-artifact@v4
+        with: {pattern: "coverage-*", path: artifacts}
+      - uses: repowise-dev/repowise@main
+        with:
+          checks: coverage
+          coverage-report: artifacts/**/lcov.info
+```
+
+On GitLab, give each parallel shard its own path and let the gate job need
+them:
+
+```yaml
+test:
+  parallel: 3
+  script: pytest tests/shard$CI_NODE_INDEX --cov=src --cov-report=lcov:coverage/$CI_NODE_INDEX/lcov.info
+  artifacts:
+    paths: [coverage/]
+
+variables:
+  REPOWISE_COVERAGE_REPORT: "coverage/**/lcov.info"
+
+repowise-coverage:
+  needs: [test]
+```
+
+When one package's report names paths relative to that package, give it a
+per-report prefix: `--report web/coverage/lcov.info=web`. The whole argument
+is tried as a path or glob first, so `artifacts/shard=1/*.info` stays one;
+only when it matches nothing is it split on the last `=`. In config the same
+is a mapping entry, and `paths` entries may be globs, relative to the
+repository root:
+
+```yaml
+coverage:
+  paths:
+    - {path: "web/coverage/lcov.info", path_prefix: web}
+    - "services/*/coverage.xml"
+  ignore: ["**/*_pb2.py", "gen/"]   # gitignore syntax
+```
+
+`coverage.ignore` leaves generated or vendored files out on both sides:
+changed files it matches are dropped before measuring (the summary counts them
+as ignored, here and in the editor and agent views), and report entries it
+matches are not stored by `repowise coverage add` or indexing. When it leaves
+out every entry of the reports, the gate exits `2` and says so.
+
+Go coverprofiles name files by import path. When a module lives in a
+subdirectory (`backend/go.mod` declaring `module example.com/m`), paths under
+`example.com/m/` are mapped to `backend/` using the `go.mod` files in the
+checkout, so files in the module's top-level package match with no prefix.
+A per-report prefix or `coverage.path_prefix` turns the mapping off.
 
 ## When a gate exits 2
 
@@ -242,5 +337,7 @@ coverage:
 | no merge-base, or a commit cut off by a shallow clone | fetch full history |
 | unknown revision `origin/<branch>` | fetch the target branch |
 | no coverage report found | pass `--report`, or set `coverage.paths` |
+| `--report ...`: no coverage report matches | fix the path or glob, or upload the report from the test job |
+| all report entries match coverage.ignore | narrow `coverage.ignore` |
 | report paths match no file in the repository | set `coverage.strip_prefix` or `coverage.path_prefix` |
 | baseline unreadable | commit the file, or drop `--baseline` |

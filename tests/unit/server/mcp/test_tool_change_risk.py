@@ -388,6 +388,17 @@ async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
     )
     assert dirty["scope"]["freshness"] == "unknown"
 
+    # coverage.ignore reaches the agent surface as it does the CLI gate.
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [a.py]\n", encoding="utf-8"
+    )
+    ignored = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert ignored["scope"]["ignored_file_count"] == 1
+    assert ignored["patch_coverage_pct"] is None
+
 
 @pytest.mark.asyncio
 async def test_patch_coverage_is_absent_without_a_readable_change_or_index(

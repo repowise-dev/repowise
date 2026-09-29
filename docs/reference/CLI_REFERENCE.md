@@ -1319,31 +1319,39 @@ are out of scope and only counted.
 
 | Flag | Description |
 |------|-------------|
-| `--report` | Coverage report to read. Repeatable, merged hit-wins. Defaults to `coverage.paths`, else discovery |
+| `--report` | Coverage report to read: a path or a glob (`artifacts/**/lcov.info`), relative to cwd; `**` skips dependency, cache and build directories. `PATH=PREFIX` prepends `PREFIX` to that report's paths: the whole argument is tried first, and only when it matches nothing is it split on the last `=`. Repeatable, merged hit-wins. Defaults to `coverage.paths`, else discovery |
 | `--report-format` | Force a parser: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
 | `--fail-under` | Exit 1 when patch coverage is below this percentage (0-100). Defaults to `coverage.fail_under` in `.repowise/config.yaml`; with neither set the command reports without gating |
+| `--min-coverable-lines` | Small-change tolerance: a change with fewer changed executable lines than this (counting only lines the report measures, as the percentage does) is reported against the threshold but never fails (`gate` reads `too_small`). Defaults to `coverage.min_coverable_lines` |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, or `github` |
 
 `github` writes up to 10 `::warning` annotations (largest uncovered ranges
-first), a `::notice` counting the rest, and an `::error::` when the gate fails,
-then appends the markdown summary to `$GITHUB_STEP_SUMMARY` when set.
-`json` carries `patch_coverage_pct`, `covered_line_count`,
-`coverable_line_count`, `threshold`, `gate` (`pass`, `fail`, `no_data`,
-`not_set`), `file_counts` (`measured`, `not_in_report`, `no_line_data`,
-`no_coverable_changes`, `out_of_scope`), `files[]` (`file_path`, `status`,
-`changed_line_count`, `coverable_line_count`, `covered_line_count`,
-`patch_coverage_pct`, `uncovered_ranges`) and `scope` (`label`,
-`source_formats`, `reports`, `report_path_count`,
-`unmatched_report_path_count`). Percentages are shown floored to one decimal
+first), a `::notice` counting the rest, an `::error::` when the gate fails and
+a `::notice::` when the small-change tolerance exempts it, then appends the
+markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json` carries
+`patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
+`threshold`, `min_coverable_lines`, `gate` (`pass`, `fail`, `no_data`,
+`not_set`, `too_small`), `file_counts` (`measured`, `not_in_report`,
+`no_line_data`, `no_coverable_changes`, `out_of_scope`), `files[]`
+(`file_path`, `status`, `changed_line_count`, `coverable_line_count`,
+`covered_line_count`, `patch_coverage_pct`, `uncovered_ranges`) and `scope`
+(`label`, `source_formats`, `reports`, `report_path_count`,
+`unmatched_report_path_count`, `ignored_file_count`). Changed files and report
+entries matching `coverage.ignore` (gitignore syntax) are left out and counted
+as ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
+that module's directory unless the report has a per-report prefix or
+`coverage.path_prefix` is set. Percentages are shown floored to one decimal
 (79.99% reads 79.9%); the gate compares the unrounded figure.
 
-**Exit codes:** `0` the gate passes or there is nothing to judge (no threshold,
-or no measurable changed lines); `1` patch coverage is below `--fail-under`;
-`2` the check could not run: no report found, none readable, or none matching a
-repository file; an unknown revision; no merge-base (a shallow clone); a single
-commit at a shallow clone's boundary; bad config or a malformed
-`coverage.fail_under`; not a git repository.
+**Exit codes:** `0` the gate passes or there is nothing to judge (no
+threshold, no measurable changed lines, or a change under the small-change
+tolerance); `1` patch coverage is below `--fail-under`; `2` the check could not
+run: no report found, a `--report` path or glob matching no file, none
+readable, none matching a repository file, or every entry matching
+`coverage.ignore`; an unknown revision; no merge-base (a shallow clone); a
+single commit at a shallow clone's boundary; bad config or a malformed
+`coverage.fail_under` / `coverage.min_coverable_lines`; not a git repository.
 
 A coverage.py `.coverage` database is not a text report: export it first with
 `coverage lcov` or `coverage xml`. A new file no test loads must still appear
@@ -1355,6 +1363,8 @@ commands are in
 repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
 repowise coverage check HEAD --format json      # one commit, machine-readable
 repowise coverage check origin/main...HEAD --report coverage.out --report-format go-coverprofile
+repowise coverage check origin/main...HEAD --report 'artifacts/**/lcov.info' --min-coverable-lines 5
+repowise coverage check origin/main...HEAD --report web/coverage/lcov.info=web
 ```
 
 CI clones are often shallow, so the merge-base is missing and the check exits 2.

@@ -80,7 +80,16 @@ writes paths relative to its own `<source>` root — so we reconcile them.
   `FileCoverage` rows, and `matched` / `unmatched` / `ambiguous`
   diagnostics (surfaced so coverage never silently shows 0%).
 - `build_coverage_map(repo_root, report_paths, repo_keys, ...)` — read +
-  parse + resolve end-to-end.
+  parse + resolve end-to-end. `report_prefixes` gives a report its own
+  prefix, `ignore` drops entries `coverage.ignore` matches, resolved or not
+  (counted in `ResolvedCoverage.ignored`), and a Go coverprofile's import
+  paths under a `go.mod`'s module path (found on disk) are mapped to that
+  module's directory.
+- `expand_report_patterns(patterns, base)`: the report files a list of paths
+  or globs names, shared by `coverage.paths` and `coverage check --report`;
+  `**` goes through the same pruned walk as discovery.
+- `configured_ignore(repo_root)`: `coverage.ignore` for the stored-coverage
+  surfaces (REST, agent tools).
 
 ### Config (`.repowise/config.yaml`)
 
@@ -92,12 +101,16 @@ coverage:
   auto_discover: true          # discover reports during indexing
   artifacts:                   # override the default discovery globs
     - coverage/lcov.info
-  paths:                       # explicit report paths (skip discovery)
+  paths:                       # explicit report paths or globs (skip discovery)
     - build/coverage/lcov.info
+    - {path: "api/**/lcov.info", path_prefix: api}   # per-report prefix
   format: lcov                 # force a parser (else content-sniffed)
   strip_prefix: build          # drop a leading prefix from report paths
   path_prefix: packages/web    # prepend a prefix to report paths
+  ignore: ["gen/"]             # gitignore-style globs coverage leaves out
   reingest_on_update: false    # re-parse on every update (else reuse DB rows)
+  fail_under: 80               # patch-coverage gate for `coverage check`
+  min_coverable_lines: 5       # small-change tolerance for that gate
 ```
 
 `CoverageConfig.from_repo_config(load_repo_config(repo_path))` parses it.

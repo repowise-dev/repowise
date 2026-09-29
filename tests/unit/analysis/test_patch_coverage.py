@@ -66,6 +66,61 @@ def test_gate() -> None:
     assert compute_patch_coverage({"a.py": {9}}, coverage, threshold=90).gate == "no_data"
 
 
+def test_small_change_tolerance() -> None:
+    # 1 of 2 changed executable lines covered: 50%.
+    coverage = _cov("a.py", covered=[1], coverable=[1, 2])
+    changed = {"a.py": {1, 2}}
+
+    def gate(threshold, min_lines):
+        return compute_patch_coverage(
+            changed, coverage, threshold=threshold, min_coverable_lines=min_lines
+        ).gate
+
+    assert gate(80, 5) == "too_small"
+    # At the minimum the change is big enough to judge.
+    assert gate(80, 2) == "fail"
+    assert gate(50, 2) == "pass"
+    # A pass below the minimum stays a pass; no threshold or no data wins first.
+    assert gate(50, 5) == "pass"
+    assert gate(None, 5) == "not_set"
+    assert compute_patch_coverage(
+        {"a.py": {9}}, coverage, threshold=80, min_coverable_lines=5
+    ).gate == "no_data"
+
+
+def test_too_small_headline_says_the_gate_was_not_applied() -> None:
+    coverage = _cov("a.py", covered=[1], coverable=[1, 2])
+    pc = compute_patch_coverage({"a.py": {1, 2}}, coverage, threshold=80, min_coverable_lines=5)
+
+    text = headline(pc, markdown=False)
+    assert text == (
+        "Patch coverage 50.0% (1 of 2 changed executable lines covered) · below the 80.0% "
+        "gate, not applied: fewer than 5 changed executable lines (min_coverable_lines)"
+    )
+    assert pc.to_dict()["min_coverable_lines"] == 5
+    lines = github_annotations(pc)
+    assert not any(line.startswith("::error") for line in lines)
+    # The exemption is visible, not silent.
+    assert lines[0].startswith("::notice::Patch coverage 50.0")
+    assert "min_coverable_lines" in lines[0]
+
+
+def test_ignored_changed_files_are_dropped_and_counted() -> None:
+    coverage = _cov("src/a.py", covered=[1], coverable=[1])
+    pc = compute_patch_coverage(
+        {"src/a.py": {1}, "src/gen/api_pb2.py": {1, 2}, "src/b.py": set()},
+        coverage,
+        ignore=["**/gen/"],
+    )
+
+    assert [f.file_path for f in pc.files] == ["src/a.py"]
+    assert pc.scope.ignored_file_count == 1
+    assert pc.to_dict()["scope"]["ignored_file_count"] == 1
+    assert "1 ignored by coverage.ignore" in render_markdown(pc)
+    only_ignored = compute_patch_coverage({"src/gen/x.py": {1}}, coverage, ignore=["src/gen"])
+    assert "Every changed file is ignored by coverage.ignore" in headline(only_ignored)
+
+
 def test_line_ranges() -> None:
     assert line_ranges([5, 1, 2, 3, 7, 8]) == ((1, 3), (5, 5), (7, 8))
     assert line_ranges([]) == ()

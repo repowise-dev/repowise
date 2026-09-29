@@ -14,10 +14,14 @@
 #
 # Variables (set them in your .gitlab-ci.yml or the project's CI settings):
 #   REPOWISE_VERSION                Version to install; empty installs the latest.
-#   REPOWISE_COVERAGE_REPORT        Coverage report paths, space separated. The coverage
-#                                   job runs only when it is set; add `needs:` on your
-#                                   test job.
+#   REPOWISE_COVERAGE_REPORT        Coverage reports, space separated: paths or globs
+#                                   (artifacts/**/lcov.info, expanded by Repowise), each
+#                                   optionally path=prefix. The coverage job runs only
+#                                   when it is set; add `needs:` on your test job.
 #   REPOWISE_COVERAGE_FAIL_UNDER    Minimum patch coverage percent.
+#   REPOWISE_COVERAGE_MIN_COVERABLE_LINES
+#                                   Small-change tolerance: fewer changed executable
+#                                   lines than this never fails the coverage gate.
 #   REPOWISE_DOC_DRIFT_BASELINE     Committed doc-drift baseline file.
 #   REPOWISE_SECURITY_BASELINE      Committed security baseline file.
 #   REPOWISE_SECURITY_FAIL_ON       Lowest severity that fails: high (default), med, low.
@@ -36,10 +40,14 @@
 repowise-coverage:
   extends: .repowise
   script:
+    # No shell globbing: the report list is split on spaces, and Repowise
+    # expands the globs itself (so a glob matching nothing exits 2).
+    - set -f
     - >
       repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
       $(printf -- '--report %s ' $REPOWISE_COVERAGE_REPORT)
       ${REPOWISE_COVERAGE_FAIL_UNDER:+--fail-under "$REPOWISE_COVERAGE_FAIL_UNDER"}
+      ${REPOWISE_COVERAGE_MIN_COVERABLE_LINES:+--min-coverable-lines "$REPOWISE_COVERAGE_MIN_COVERABLE_LINES"}
       --format markdown > repowise-coverage.md
   after_script:
     - cat repowise-coverage.md

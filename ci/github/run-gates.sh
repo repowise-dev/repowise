@@ -63,6 +63,7 @@ if wants coverage; then
     [[ -n "$report" ]] && args+=(--report "$report")
   done <<<"$COVERAGE_REPORT"
   [[ -n "$COVERAGE_FAIL_UNDER" ]] && args+=(--fail-under "$COVERAGE_FAIL_UNDER")
+  [[ -n "$COVERAGE_MIN_COVERABLE_LINES" ]] && args+=(--min-coverable-lines "$COVERAGE_MIN_COVERABLE_LINES")
   run coverage repowise "${args[@]}"
 fi
 

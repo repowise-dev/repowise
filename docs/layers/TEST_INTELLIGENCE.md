@@ -254,18 +254,27 @@ judge and passes.
 
 The threshold comes from `--fail-under`, else `coverage.fail_under` in
 `.repowise/config.yaml` (read at the repository root, even with `--path`); with
-neither, the check reports without gating. The gate compares the unrounded
-figure; the displayed one is floored to one decimal, so 79.99% reads 79.9% and
-fails an 80% gate. Exit `0` passes (or had nothing to judge), `1` is below the
-gate, `2` means the check could not run: no report found, readable or matching a
-repository file, an unknown revision, no merge-base (a shallow clone), a single
-commit at a shallow clone's boundary, bad config, or not a git repository.
+neither, the check reports without gating. `--min-coverable-lines` (else
+`coverage.min_coverable_lines`) is the small-change tolerance: a change with
+fewer changed executable lines than that, counting only lines the report
+measures as the percentage does, is reported against the threshold, but a miss
+reads `too_small` and does not fail. `--report` takes globs and `PATH=PREFIX`,
+`coverage.ignore` leaves generated files out, and Go module paths map to their
+`go.mod` directory; see
+[Monorepos and matrix jobs](../start/CI.md#monorepos-and-matrix-jobs). The
+gate compares the unrounded figure; the displayed one is floored to one
+decimal, so 79.99% reads 79.9% and fails an 80% gate. Exit `0` passes (or had
+nothing to judge), `1` is below the gate, `2` means the check could not run:
+no report found, readable or matching a repository file, an unknown revision,
+no merge-base (a shallow clone), a single commit at a shallow clone's
+boundary, bad config, or not a git repository.
 
 `--format github` writes up to 10 `::warning` annotations (largest uncovered
-ranges first), a notice counting the rest, and an `::error::` when the gate
-fails, then appends the markdown summary to `$GITHUB_STEP_SUMMARY`. `markdown`
-and `json` suit other CI systems. A coverage.py `.coverage` database is not a
-text report: export it with `coverage lcov` or `coverage xml` first.
+ranges first), a notice counting the rest, an `::error::` when the gate fails
+and a notice when the small-change tolerance exempts it, then appends the
+markdown summary to `$GITHUB_STEP_SUMMARY`. `markdown` and `json` suit other CI
+systems. A coverage.py `.coverage` database is not a text report: export it
+with `coverage lcov` or `coverage xml` first.
 
 CI checkouts are often shallow, which leaves no merge-base to diff from. Fetch
 full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on GitLab).
@@ -526,10 +535,15 @@ coverage:
   auto_discover: true
   artifacts:                     # override the discovery globs
     - "coverage/lcov.info"
+  paths:                         # explicit reports or globs (skip discovery)
+    - "coverage/lcov.info"
+    - {path: "web/coverage/*.info", path_prefix: web}   # per-report prefix
   format: lcov                   # skip format sniffing
   strip_prefix: "/build/src/"    # trim an absolute prefix from report paths
+  ignore: ["**/*_pb2.py"]        # gitignore-style globs coverage leaves out
   reingest_on_update: false
   fail_under: 80                 # patch-coverage gate for `coverage check` (0-100)
+  min_coverable_lines: 5         # small-change tolerance for that gate
 ```
 
 Coverage is also auto-discovered and ingested during `init` and `update`, and
@@ -543,7 +557,7 @@ Note that `--coverage-report` is test coverage, while `--coverage` controls
 |---------|--------------|
 | `repowise coverage add [PATHS...]` | Ingest reports. Auto-discovers when no path is given, merges multiple, builds the per-test map when contexts are present. Flags: `--path`, `--format`, `--verbose` |
 | `repowise coverage status` | Coverage summary plus test-to-code map counts. Flag: `--path` |
-| `repowise coverage check [REVSPEC]` | Patch-coverage gate for CI, no index needed. Flags: `--report`, `--report-format`, `--fail-under`, `--path`, `--format` |
+| `repowise coverage check [REVSPEC]` | Patch-coverage gate for CI, no index needed. Flags: `--report`, `--report-format`, `--fail-under`, `--min-coverable-lines`, `--path`, `--format` |
 | `repowise impacted-tests [REVSPEC]` | The tests a change exercises. Flags: `--path`, `--staged`, `--format` |
 
 Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage).

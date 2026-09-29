@@ -2215,7 +2215,8 @@ export interface PatchCoverageResponse {
   covered_line_count: number;
   coverable_line_count: number;
   threshold: number | null;
-  gate: "pass" | "fail" | "no_data" | "not_set";
+  min_coverable_lines: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
   file_counts: PatchCoverageFileCounts;
   files: PatchCoverageFile[];
   scope: PatchCoverageScope;
@@ -2230,6 +2231,7 @@ export interface PatchCoverageScope {
   mapping_partial: boolean;
   measured_commit: string | null;
   freshness: "current" | "stale" | "unknown";
+  ignored_file_count: number;
 }
 
 /**

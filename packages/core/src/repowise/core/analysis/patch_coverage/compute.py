@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, get_args
+
+import pathspec
 
 from ...test_paths import is_test_related_path
 from ..changed_lines import line_ranges
@@ -37,7 +39,7 @@ if TYPE_CHECKING:
     from ..health.coverage.discovery import ResolvedCoverage
 
 FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
-GateStatus = Literal["pass", "fail", "no_data", "not_set"]
+GateStatus = Literal["pass", "fail", "no_data", "not_set", "too_small"]
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,9 @@ class PatchScope:
     # but its line numbers describe other code, so every renderer says so.
     measured_commit: str | None = None
     freshness: FreshnessStatus = "unknown"
+    # Changed files left out by ``coverage.ignore`` before anything was
+    # measured. Set by :func:`compute_patch_coverage`.
+    ignored_file_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +106,7 @@ class PatchScope:
             "mapping_partial": self.mapping_partial,
             "measured_commit": self.measured_commit,
             "freshness": self.freshness,
+            "ignored_file_count": self.ignored_file_count,
         }
 
 
@@ -113,6 +119,9 @@ class PatchCoverage:
     # Changed files left out because the report does not measure their kind.
     out_of_scope_count: int = 0
     scope: PatchScope = field(default_factory=PatchScope)
+    # Small-change tolerance: a change with fewer changed executable lines
+    # than this is reported against the threshold but never fails it.
+    min_coverable_lines: int | None = None
 
     @property
     def changed_file_count(self) -> int:
@@ -137,7 +146,13 @@ class PatchCoverage:
         pct = self.patch_coverage_pct
         if pct is None:
             return "no_data"
-        return "pass" if pct >= self.threshold else "fail"
+        if pct >= self.threshold:
+            return "pass"
+        if self.min_coverable_lines is not None and (
+            self.coverable_line_count < self.min_coverable_lines
+        ):
+            return "too_small"
+        return "fail"
 
     def with_status(self, status: FileStatus) -> list[FilePatchCoverage]:
         return [f for f in self.files if f.status == status]
@@ -150,6 +165,7 @@ class PatchCoverage:
             "covered_line_count": self.covered_line_count,
             "coverable_line_count": self.coverable_line_count,
             "threshold": self.threshold,
+            "min_coverable_lines": self.min_coverable_lines,
             "gate": self.gate,
             "file_counts": counts,
             "files": [f.to_dict() for f in self.files],
@@ -164,19 +180,27 @@ def compute_patch_coverage(
     threshold: float | None = None,
     scope: PatchScope | None = None,
     report_paths: Iterable[str] | None = None,
+    min_coverable_lines: int | None = None,
+    ignore: Sequence[str] = (),
 ) -> PatchCoverage:
     """Intersect a change with a coverage report. See the module docstring.
 
     *report_paths* is every path the report measures, when *coverage* holds
     only the changed files' entries (a stored report read for one change); it
-    decides which unlisted files count as ``not_in_report``.
+    decides which unlisted files count as ``not_in_report``. Changed files
+    matching *ignore* (``coverage.ignore``, gitignore syntax) are dropped
+    before anything is measured and counted in the scope.
     """
     measured_suffixes = {PurePosixPath(p).suffix for p in report_paths or coverage}
+    ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
     files: list[FilePatchCoverage] = []
-    out_of_scope = 0
+    out_of_scope = ignored = 0
     for path in sorted(changed):
         lines = set(changed[path])
         if not lines:
+            continue
+        if ignore_spec.match_file(path):
+            ignored += 1
             continue
         fc = coverage.get(path)
         if fc is not None:
@@ -189,7 +213,8 @@ def compute_patch_coverage(
         files=tuple(files),
         threshold=threshold,
         out_of_scope_count=out_of_scope,
-        scope=scope or PatchScope(),
+        scope=replace(scope or PatchScope(), ignored_file_count=ignored),
+        min_coverable_lines=min_coverable_lines,
     )
 
 
@@ -200,6 +225,8 @@ def patch_coverage_from_resolved(
     threshold: float | None = None,
     label: str = "",
     reports: Sequence[str] = (),
+    min_coverable_lines: int | None = None,
+    ignore: Sequence[str] = (),
 ) -> PatchCoverage:
     """:func:`compute_patch_coverage` over reports already resolved to repo keys."""
     unmatched = len(resolved.unmatched) + len(resolved.ambiguous)
@@ -207,6 +234,8 @@ def patch_coverage_from_resolved(
         changed,
         {fc.file_path: fc for fc in resolved.files},
         threshold=threshold,
+        min_coverable_lines=min_coverable_lines,
+        ignore=ignore,
         scope=PatchScope(
             label=label,
             source_formats=tuple(resolved.source_formats),
