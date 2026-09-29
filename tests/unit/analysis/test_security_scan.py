@@ -151,9 +151,20 @@ class TestScanFile:
                 'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
                 {"exec_call"},
             ),
-            # Regex parsing in a file that also spawns: the gate is per file, so
-            # this is the residual false positive the gate cannot remove.
-            ('require("child_process");\nconst m = /a/.exec(s);\n', {"exec_call"}),
+            ('import { exec as run } from "child_process";\nrun(cmd);\n', {"exec_call"}),
+            ('const { execSync: sh } = require("child_process");\nsh(cmd);\n', {"exec_call"}),
+            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', {"exec_call"}),
+            ('require("child_process").exec(cmd);\n', {"exec_call"}),
+            # A regex's ``.exec`` in a file that also spawns is not bound to the module.
+            ('require("child_process");\nconst m = /a/.exec(s);\n', set()),
+            # The file's own function named exec, beside an unrelated spawn import.
+            (
+                'import { spawn } from "node:child_process";\n'
+                "function exec(args) { return spawn(bin, args); }\n"
+                "exec(args);\n",
+                set(),
+            ),
+            ('import * as cp from "child_process";\n// cp.exec(cmd)\n', set()),
         ],
     )
     def test_js_exec_is_reported_only_when_child_process_is_present(
@@ -982,3 +993,73 @@ class TestCallKindsIgnoreProseAndText:
     def test_multiline_shell_true_in_a_string_does_not_fire(self) -> None:
         source = 'TEMPLATE = """\nsubprocess.run(\n    x,\n    shell=True,\n)\n"""\n'
         assert self._hits(source) == []
+
+
+class TestSecretPrecision:
+    """A secret kind fires on a credential, never on an example of one."""
+
+    _SECRET: ClassVar[set[str]] = {"hardcoded_secret", "hardcoded_password", "public_env_secret"}
+
+    def _kinds(self, source: str, path: str = "src/app.py") -> set[str]:
+        return {f["kind"] for f in scan_source(path, source) if f["kind"] in self._SECRET}
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("src/app.py", 'emb = get_embedder("openai", api_key="sk-...")\n'),
+            ("README.md", 'export ANTHROPIC_API_KEY="sk-ant-…"\n'),
+            ("README.md", 'export OPENAI_API_KEY="your-key-here"\n'),
+            ("README.md", 'API_KEY="sk-<your key>"\n'),
+            ("README.md", 'SECRET="$(op read op://vault/app/secret)"\n'),
+            ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
+        ],
+    )
+    def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
+        assert self._kinds(source, path) == set()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'client = OpenAI(api_key="ollama")\n',
+            'client = OpenAI(api_key="lmstudio")\n',
+            '<Bar token="--chart-1" />\n',
+        ],
+    )
+    def test_dummy_values_are_not_secrets(self, source: str) -> None:
+        assert self._kinds(source, "src/client.tsx") == set()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'TOKEN = "sk-live-9f8a7b6c5d4e"\n',
+            'API_KEY = "sk-a****"\n',
+            f'API_KEY = "{"q" * 40}"\n',
+        ],
+    )
+    def test_credential_shaped_values_still_fire(self, source: str) -> None:
+        assert self._kinds(source) == {"hardcoded_secret"}
+
+    def test_doctest_example_is_not_a_password(self) -> None:
+        source = (
+            "def mask(line):\n"
+            '    """\n'
+            "    >>> mask(\"password = 'supersecret99'\")\n"
+            '    """\n'
+        )
+        assert self._kinds(source) == set()
+
+    def test_comment_naming_a_public_env_variable_is_not_a_leak(self) -> None:
+        source = "/**\n * Read from NEXT_PUBLIC_REPOWISE_API_KEY on the server.\n */\n"
+        assert self._kinds(source, "web/client.ts") == set()
+
+    def test_code_reading_a_public_env_secret_still_fires(self) -> None:
+        source = 'const k = process.env.NEXT_PUBLIC_API_KEY; // "NEXT_PUBLIC" is public\n'
+        assert self._kinds(source, "web/client.ts") == {"public_env_secret"}
+
+    def test_keyword_secret_after_a_comment_on_the_same_line_is_found_in_code(self) -> None:
+        source = 'password = "Tr0ub4dor&3x"  # password = "example"\n'
+        assert self._kinds(source) == {"hardcoded_password"}
+
+    def test_vendor_key_in_a_comment_still_fires(self) -> None:
+        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}
+        assert kinds == {"aws_access_key"}

@@ -47,6 +47,7 @@ _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
     "your_",
     "your-",
     "...",
+    "\u2026",  # a typographic ellipsis
     "fixture",
 )
 
@@ -68,13 +69,16 @@ _LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
     }
 )
 
+# An angle-bracket slot (``sk-<your key>``) is a template, wherever it sits.
+_ANGLE_SLOT = re.compile(r"<[^<>]*>")
+
 
 def _is_valid_credential_value(val: str) -> bool:
     """True when *val* is at least 8 chars and not a known placeholder."""
     if len(val) < 8:
         return False
     v = val.lower().strip()
-    if v.startswith("<") or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
+    if v.startswith("<") or _ANGLE_SLOT.search(v) or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
         return False
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
@@ -110,11 +114,52 @@ _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 # ``exec_call`` hit outside Python was a regex match and none was a process
 # spawn, so the kind was pure noise on those languages.
 #
-# The dangerous call in JavaScript comes from ``child_process``, so that is what
-# gates it: a file that never names the module cannot spawn one. ``eval`` needs
-# no such gate — it is a genuine global there.
-_CHILD_PROCESS_IMPORT = re.compile(r"child_process|node:child_process")
-_JS_EXEC_CALL = re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec(?:File)?(?:Sync)?\s*\(")
+# The dangerous call in JavaScript comes from ``child_process``, so only a call
+# through a name bound to that module counts: a namespace (``cp.exec(``), a named
+# import (``exec(`` after ``import { exec } from "child_process"``) or the
+# ``require`` result itself. A file's own function named ``exec``, or a regex's
+# ``.exec`` next to an unrelated ``spawn`` import, is not a shell. ``eval`` needs
+# no such gate: it is a genuine global there.
+_CP_MODULE = r"""['"](?:node:)?child_process['"]"""
+_JS_NAME = r"[A-Za-z_$][\w$]*"
+_CP_NAMESPACE = re.compile(
+    rf"import\s+(?:\*\s*as\s+)?({_JS_NAME})\s*(?:,\s*\{{[^}}]*\}}\s*)?from\s*{_CP_MODULE}"
+    rf"|(?:const|let|var)\s+({_JS_NAME})\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
+)
+_CP_NAMED = re.compile(
+    rf"import\s*(?:{_JS_NAME}\s*,\s*)?\{{([^}}]*)\}}\s*from\s*{_CP_MODULE}"
+    rf"|(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
+)
+_CP_REQUIRE_CALL = re.compile(
+    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+)
+_EXEC_EXPORT = re.compile(r"exec(?:File)?(?:Sync)?")
+
+
+def _child_process_exec_calls(source: str, masked: str) -> list[int]:
+    """Offsets of ``child_process`` exec-family calls, found through the file's own bindings.
+
+    Imports are read from raw source because the module name is a string
+    literal, which masking blanks; calls are read from masked source, so a
+    comment or string naming one does not count.
+    """
+    namespaces = {n for m in _CP_NAMESPACE.finditer(source) for n in m.groups() if n}
+    functions: set[str] = set()
+    for m in _CP_NAMED.finditer(source):
+        for item in (m.group(1) or m.group(2)).split(","):
+            # ``exec as run`` (import) and ``exec: run`` (destructuring) rename.
+            parts = re.split(r"\s+as\s+|\s*:\s*", item.strip().removeprefix("type "))
+            if parts[0] and _EXEC_EXPORT.fullmatch(parts[0]):
+                functions.add(parts[-1].strip())
+    offsets = [m.start() for m in _CP_REQUIRE_CALL.finditer(source) if not masked[m.start()].isspace()]
+    names = [re.escape(n) for n in namespaces]
+    if names:
+        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+        offsets += [m.start() for m in re.finditer(receiver, masked)]
+    if functions:
+        bare = rf"(?<![\w$.])(?:{'|'.join(map(re.escape, functions))})\s*\("
+        offsets += [m.start() for m in re.finditer(bare, masked)]
+    return sorted(offsets)
 
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
@@ -125,10 +170,6 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # SCREAMING_CASE constant assigned a quoted literal, and the lowercase-only
     # patterns walked straight past that form. Found by scanning a corpus in
     # which a live n8n key sat unreported under exactly that spelling.
-    #
-    # The wording above avoids spelling the matched form out literally: this
-    # loop runs on raw source, comments included, so an example written out here
-    # would make the file report itself.
     #
     # Case-insensitivity is written as a scoped inline group rather than the
     # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
@@ -298,18 +339,33 @@ SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
 _KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
 
 # A snake_case name is a key's name (a constant holding its own name) and a
-# template placeholder is filled at render time; neither is a credential.
+# template placeholder or shell substitution is filled in when it runs; none of
+# them is a credential.
 _KEY_NAME_VALUE = re.compile(r"[a-z_]*_[a-z_]*")
-_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}")
+_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\)")
 
 
 def _is_secret_value(kind: str, val: str) -> bool:
     """True when *val*, captured by a *kind* pattern, looks like a real credential."""
     if not _is_valid_credential_value(val):
         return False
+    if kind not in _KEYWORD_KINDS:
+        return True
     if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(val):
         return False
-    return not (kind in _KEYWORD_KINDS and _TEMPLATE_VALUE.fullmatch(val.strip()))
+    value = val.strip()
+    # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
+    return not (_TEMPLATE_VALUE.fullmatch(value) or _is_plain_word(value) or value.startswith("--"))
+
+
+def _is_plain_word(value: str) -> bool:
+    """A dictionary-shaped word: the dummy a client insists on (``api_key="lmstudio"``).
+
+    Bounded, because a long run of letters in mixed or single case is as random
+    as any key.
+    """
+    single_case = value.islower() or value.isupper() or value.istitle()
+    return value.isalpha() and single_case and len(value) <= 20
 
 
 def _redaction(val: str) -> str:
@@ -440,9 +496,17 @@ def _snippet(line: str) -> str:
     return text[:cut]
 
 
-def _mask_comments_and_strings(source: str) -> str:
-    """Blank common comments/strings while preserving offsets and newlines."""
+def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
+    """Blank common comments (and strings, unless *strings* is false), keeping offsets.
+
+    Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
+    one does not open a comment.
+    """
     chars = list(source)
+
+    def blank(at: int, width: int = 1) -> None:
+        chars[at : at + width] = [" "] * width
+
     i = 0
     state = "code"
     quote = ""
@@ -453,59 +517,64 @@ def _mask_comments_and_strings(source: str) -> str:
             if source[i] == "\n":
                 state = "code"
             else:
-                chars[i] = " "
+                blank(i)
             i += 1
             continue
         if state == "block_comment":
             if source.startswith("*/", i):
-                chars[i : i + 2] = [" ", " "]
+                blank(i, 2)
                 i += 2
                 state = "code"
             else:
                 if source[i] != "\n":
-                    chars[i] = " "
+                    blank(i)
                 i += 1
             continue
         if state == "string":
             marker = quote * (3 if triple else 1)
             if source.startswith(marker, i):
-                chars[i : i + len(marker)] = [" "] * len(marker)
+                if strings:
+                    blank(i, len(marker))
                 i += len(marker)
                 state = "code"
             elif source[i] == "\\":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 if i + 1 < len(source):
-                    if source[i + 1] != "\n":
-                        chars[i + 1] = " "
+                    if strings and source[i + 1] != "\n":
+                        blank(i + 1)
                     i += 2
                 else:
                     i += 1
             else:
-                if source[i] != "\n":
-                    chars[i] = " "
+                if strings and source[i] != "\n":
+                    blank(i)
                 i += 1
             continue
         if state == "template":
             if source.startswith("${", i):
-                chars[i : i + 2] = [" ", " "]
+                if strings:
+                    blank(i, 2)
                 i += 2
                 template_depth = 1
                 state = "code"
             elif source[i] == "`":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 i += 1
                 state = "code"
             elif source[i] == "\\":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 if i + 1 < len(source):
-                    if source[i + 1] != "\n":
-                        chars[i + 1] = " "
+                    if strings and source[i + 1] != "\n":
+                        blank(i + 1)
                     i += 2
                 else:
                     i += 1
             else:
-                if source[i] != "\n":
-                    chars[i] = " "
+                if strings and source[i] != "\n":
+                    blank(i)
                 i += 1
             continue
 
@@ -513,29 +582,32 @@ def _mask_comments_and_strings(source: str) -> str:
             template_depth += 1
             i += 1
         elif template_depth and source[i] == "}":
-            chars[i] = " "
+            if strings:
+                blank(i)
             template_depth -= 1
             i += 1
             if template_depth == 0:
                 state = "template"
         elif source.startswith("//", i) or source[i] == "#":
             width = 2 if source.startswith("//", i) else 1
-            chars[i : i + width] = [" "] * width
+            blank(i, width)
             i += width
             state = "line_comment"
         elif source.startswith("/*", i):
-            chars[i : i + 2] = [" ", " "]
+            blank(i, 2)
             i += 2
             state = "block_comment"
         elif source[i] == "`":
-            chars[i] = " "
+            if strings:
+                blank(i)
             i += 1
             state = "template"
         elif source[i] in {"'", '"'}:
             quote = source[i]
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
-            chars[i : i + width] = [" "] * width
+            if strings:
+                blank(i, width)
             i += width
             state = "string"
         else:
@@ -603,11 +675,9 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
         for match in pattern.finditer(masked):
             add(kind, severity, match.start())
 
-    # The module name is searched in raw source on purpose: it arrives as a
-    # string literal (``require("child_process")``), which masking blanks.
-    if not is_python and _CHILD_PROCESS_IMPORT.search(source):
-        for match in _JS_EXEC_CALL.finditer(masked):
-            add("exec_call", "high", match.start())
+    if not is_python:
+        for offset in _child_process_exec_calls(source, masked):
+            add("exec_call", "high", offset)
 
     return findings
 
@@ -623,6 +693,15 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return "no such table" in message or "does not exist" in message
 
 
+def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | None:
+    """First match of *pattern* on *line* whose first character survived masking in *kept*."""
+    for match in pattern.finditer(line):
+        start = match.start()
+        if start < len(kept) and not kept[start].isspace():
+            return match
+    return None
+
+
 def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
     """Scan *source* text and symbol names; return finding dicts. No I/O."""
     findings: list[dict] = []
@@ -632,8 +711,13 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     if not is_prose:
         findings.extend(_call_findings(file_path, source))
 
-    masked = "" if is_prose else _mask_comments_and_strings(source)
+    # Prose has no comments or strings to set apart: its text is read as written.
+    masked = source if is_prose else _mask_comments_and_strings(source)
     masked_lines = source_lines(masked)
+    # Comments alone: a public env name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
+    comment_lines = (
+        lines if is_prose else source_lines(_mask_comments_and_strings(source, strings=False))
+    )
 
     # Line-by-line pattern scan
     is_low_sev_file = _is_low_severity_path(file_path)
@@ -641,6 +725,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if not _ANY_PATTERN.search(line):
             continue
         code_line = masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
+        uncommented = comment_lines[lineno - 1] if lineno <= len(comment_lines) else line
         snippet: str | None = None
         keyword_hits: list[tuple[dict, str]] = []
         vendor_values: list[str] = []
@@ -649,7 +734,17 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 continue
             if is_prose and kind not in SECRET_KINDS:
                 continue
-            match = pattern.search(code_line if kind in _MASKED_KINDS else line)
+            if kind in _MASKED_KINDS:
+                match = pattern.search(code_line)
+            elif kind in _KEYWORD_KINDS:
+                # ``password = "..."`` in a comment or docstring is an example.
+                match = _match_starting_in(pattern, line, code_line)
+            elif kind == "public_env_secret":
+                # A comment naming the variable is not code reading it.
+                match = _match_starting_in(pattern, line, uncommented)
+            else:
+                # Vendor key shapes are real wherever they sit, comments included.
+                match = pattern.search(line)
             if match:
                 value = line[slice(*_value_span(kind, match, line))] if match.groups() else ""
                 if kind in SECRET_KINDS:
