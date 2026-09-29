@@ -62,6 +62,12 @@ def _is_module_level_function(symbol: Symbol) -> bool:
     return symbol.kind in _FUNCTION_KINDS and not symbol.parent_name
 
 
+def _enclosing_id(symbol_id: str) -> str:
+    """The id of the symbol enclosing *symbol_id*: a method's class."""
+    # Our own ``path::Class::method`` ID separator, not a type qualifier.
+    return symbol_id.rpartition("::")[0]
+
+
 def _types_by_name(parsed: ParsedFile) -> dict[str, list[str]]:
     """``{name: [type symbol ids]}`` for the types one file declares."""
     by_name: dict[str, list[str]] = {}
@@ -278,7 +284,7 @@ class ReceiverTypingMixin:
         if receiver_name in body_types:
             return body_types[receiver_name], "body"
         if language in IMPLICIT_FIELD_LANGUAGES:
-            class_id = caller_id.rpartition("::")[0]
+            class_id = _enclosing_id(caller_id)
             fields = self._field_types_in(file_path, language).get(class_id, {})
             if receiver_name in fields:
                 return fields[receiver_name], "field"
@@ -341,6 +347,8 @@ class ReceiverTypingMixin:
         field whose type is a union, a builtin, a bare type parameter or
         missing refuses the whole chain.
         """
+        # An instance path, not a type name: the head is a variable and every
+        # later segment a field, so each is walked, none discarded.
         head, *fields = (call.receiver_name or "").split(".")
         if len(fields) > _MAX_CHAIN_FIELDS or not all(fields):
             return None
@@ -365,7 +373,7 @@ class ReceiverTypingMixin:
     ) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for a chain's head name."""
         if head == _CHAIN_SELF[language]:
-            class_id = caller_id.rpartition("::")[0]
+            class_id = _enclosing_id(caller_id)
             symbol = self._symbols_by_id.get(class_id)
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
