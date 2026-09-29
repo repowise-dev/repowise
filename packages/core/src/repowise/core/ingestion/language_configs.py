@@ -658,6 +658,27 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_extraction="none",
         parent_class_types=frozenset(),
     ),
+    "dm": LanguageConfig(
+        symbol_node_types={
+            "proc_definition": "function",
+            "proc_override": "function",
+            "type_proc_definition": "method",
+            "type_proc_override": "method",
+            "operator_override": "function",
+            "type_operator_override": "method",
+            "type_definition": "class",
+            "global_var_definition": "variable",
+            "preproc_def": "constant",
+            "preproc_defproc": "function",
+        },
+        import_node_types=["preproc_include"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        # DM type_definition has no named `name` field, so nesting-based
+        # generic parent discovery cannot identify its member owner yet.
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+    ),
 }
 
 # An SFC's <script> block IS TypeScript, and sfc_source hands the parser a TS

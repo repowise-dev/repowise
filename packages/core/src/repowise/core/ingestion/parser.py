@@ -1218,6 +1218,15 @@ class ASTParser:
                     grammar_tag = "tsx"
                     language = tsx_language
 
+        # tree-sitter-dm is deliberately error-tolerant and legacy projects
+        # can contain thousands of recovery nodes per file. Keeping every
+        # rendered node bloats generation context while downstream graph code
+        # only needs the boolean signal. Preserve a useful sample plus the
+        # omitted count; symbol extraction still runs over the complete AST.
+        if lang == "dm" and len(parse_errors) > 20:
+            omitted = len(parse_errors) - 20
+            parse_errors = [*parse_errors[:20], f"... {omitted} additional DM parse errors"]
+
         query = self._get_query(lang, language, grammar_tag)
 
         # Execute the compiled query ONCE per file. The five extraction

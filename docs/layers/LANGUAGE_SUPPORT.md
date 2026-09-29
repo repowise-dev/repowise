@@ -1,6 +1,6 @@
 # Language Support
 
-**26 languages parsed to a full AST · 40 on the five-rung ladder ·
+**27 languages parsed to a full AST · 41 on the five-rung ladder ·
 framework-aware where an ecosystem handler exists.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
@@ -38,13 +38,14 @@ reference.
   <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
+  <img src="https://img.shields.io/badge/BYOND_DM-447FC0?style=flat-square" alt="BYOND Dream Maker" />
   <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
 </p>
 
 **Contents:** [Tiers](#tiers) ·
 [What the pipeline gives each tier](#what-the-pipeline-gives-each-tier) ·
 [Why these graphs are different](#why-these-graphs-are-different) ·
-[Full tier](#full-tier) · [Good tier](#good-tier) ·
+[Full tier](#full-tier) · [Good tier](#good-tier) · [Partial tier](#partial-tier) ·
 [Beyond code files](#beyond-code-files) ·
 [Code-health coverage](#code-health-coverage) ·
 [Known ceilings](#known-ceilings) · [Roadmap](#roadmap)
@@ -60,13 +61,13 @@ produce meaningful output.
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
 | **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers, and C, F# and Objective-C get the complexity-derived ones; Swift, PHP, COBOL, GDScript, VB.NET and Elixir don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
-| **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
+| **Partial** (3) | Luau / Roblox · Razor / Blazor · BYOND Dream Maker | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet. DM: AST symbols and project-relative `#include` resolution; no call graph or health markers yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-The first three rungs are the **26 languages parsed to a full AST**; all five are
-the **40** on the ladder. Both numbers are worth stating and neither is worth
+The first three rungs are the **27 languages parsed to a full AST**; all five are
+the **41** on the ladder. Both numbers are worth stating and neither is worth
 stating alone, so if you only take one thing from this page, take the rung your
 language sits on rather than either count.
 
@@ -277,6 +278,16 @@ scheduler entry points usually live outside the indexed source graph.
 
 ---
 
+## Partial tier
+
+| Language | Extensions | Import resolution |
+|----------|------------|-------------------|
+| **Luau / Roblox** | `.lua` `.luau` | `require()` resolution with Rojo and `.luaurc` awareness |
+| **Razor / Blazor** | `.razor` `.cshtml` | Component symbols and call edges from C# blocks and component tags; no import resolution yet |
+| **BYOND Dream Maker** | `.dm` `.dme` | `#include` paths from source and project files, including the backslash-separated paths emitted by Dream Maker. Extracts type paths, procs, overrides, globals and macros. `.dmf` interface files are indexed as passthrough configuration. Call edges remain disabled until they have a DM-specific resolver; the grammar is error-tolerant, so unsupported legacy syntax may reduce symbol coverage without dropping the file |
+
+---
+
 ## Beyond code files
 
 ### SQL + dbt
@@ -341,8 +352,8 @@ reachable is not statically decidable.
 
 ### Config and data
 
-OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform and
-Markdown appear in the file tree and the wiki, with special handlers extracting
+OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform,
+BYOND `.dmf` interfaces and Markdown appear in the file tree and the wiki, with special handlers extracting
 endpoints and targets where applicable.
 
 Godot resource files sit here too: `.tscn` / `.tres` / `.escn`,

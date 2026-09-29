@@ -696,6 +696,21 @@ The same steps would fit Astro components; only the locator changes.
 The resolution shapes that are specific to one language and are not derivable
 from the recipe above.
 
+### BYOND Dream Maker
+
+Dream Maker (`.dm`, `.dme`) uses `tree-sitter-dm` and `queries/dm.scm`
+for type paths, procs, overrides, globals, macros, and `#include` directives.
+The DM resolver normalizes Windows separators, tries exact importer-relative
+and repository-relative paths (repository first for `.dme`), then accepts only
+an unambiguous path suffix. Bare filenames never use the suffix fallback.
+`.dme` files are entry points; `.dmf` interfaces are non-code passthrough files.
+
+This is partial support: no call captures, named bindings, heritage extraction,
+member-owner association, or DM-specific health markers. DM dispatch needs a
+type-path-aware resolver before call edges can be emitted reliably. Legacy
+syntax can produce many recovery nodes; the parser retains the first 20 error
+messages plus the omitted count, while extracting symbols from the full AST.
+
 ### Elixir
 
 Elixir is the one language whose grammar gives every construct the same node

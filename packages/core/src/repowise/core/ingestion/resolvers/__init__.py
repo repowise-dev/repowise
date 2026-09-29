@@ -9,6 +9,7 @@ from .context import ResolverContext
 from .cpp import resolve_cpp_import
 from .csharp import resolve_csharp_import
 from .dart import resolve_dart_import
+from .dm import resolve_dm_include
 from .elixir import resolve_elixir_import
 from .erlang import resolve_erlang_import
 from .fsharp import resolve_fsharp_import
@@ -65,6 +66,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     # Lightweight regex-tier resolvers (import_support="partial")
     "elixir": resolve_elixir_import,
     "dart": resolve_dart_import,
+    "dm": resolve_dm_include,
     "clojure": resolve_clojure_import,
     "haskell": resolve_haskell_import,
     "lean": resolve_lean_import,
