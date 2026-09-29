@@ -1054,9 +1054,9 @@ line up.
 | Flag | Description |
 |------|-------------|
 | `--path` | Repo path (defaults to cwd / workspace primary) |
-| `--staged` | Diff the staged changes (`git diff --cached`); the default when no range is given, outside CI (in CI the default is the pull request's change) |
-| `--format` | `table` (default), `json` (full report plus the selection), `list` (test ids one per line, for piping), or `args` (one line of runner arguments, or `:all` when every test must run; reasons on stderr) |
-| `--runner` | Who `--format args` is for: `auto` (default; picked from the selected test files, `files` when mixed), `pytest` (node ids and files), `go` (package directories), `jest` (files), `files` |
+| `--staged` | Diff the staged changes (`git diff --cached`); the default with no range outside CI (in CI: the pull request's change) |
+| `--format` | `table` (default), `json` (full report plus the selection), `list` (test ids one per line), or `args` (one line of runner arguments, or `:all`; reasons on stderr) |
+| `--runner` | For `--format args`: `auto` (default; `files` when mixed), `pytest` (node ids or files), `go` (package dirs), `jest` (files; pass with `--runTestsByPath`), `files` |
 
 ```bash
 repowise impacted-tests                        # staged changes
@@ -1068,20 +1068,13 @@ repowise impacted-tests main...HEAD --format args --runner pytest
 ```
 
 `--format args` exits `0` whether it selects a subset or everything, and `2`
-only when it cannot read the change or `tests.*` in the config. The rules for
-running everything are in [CI](../start/CI.md#selecting-the-tests-a-change-needs).
-
-Behaviour changes that came with `--format args`, for every format:
-
-- `--format list` (and the table) now include more tests: the graph is asked
-  for every changed file, coverage or not, the import walk follows imports
-  through other modules and tests with no depth or count cap, and deleted or
-  removal-only files are looked up too.
-- An unknown revision, missing history or a bad `tests.*` config exits `2`
-  (it was `1`), with the message on stderr.
-- In CI (`CI`, a CI host marker or a pull-request branch variable set), a
-  missing REVSPEC means the pull request's change, as for the gates; outside
-  CI it is still the staged changes.
+when it cannot read the change (unknown revision, missing history) or `tests.*`
+in the config. `--format json` adds `indexed_commit`, `map_current` and a
+per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
+`test-package`, `conftest`, `helper-importers`, `deleted-test`, `coverage`,
+`changed-test`, `call-graph`, `import-graph`, `filename-pattern`, `unknown`,
+or `none` (no index). When it runs everything:
+[CI](../start/CI.md#selecting-the-tests-a-change-needs).
 
 ---
 

@@ -25,10 +25,8 @@ Doc drift's `--check` needs no index. `--kind symbol` adds symbol references
 exits `2` without one. It also reads `git blame`: in a shallow clone every line
 blames to the boundary commit, so give that job `fetch-depth: 0`.
 
-One more command is not a gate but belongs in the same pipeline:
-`repowise impacted-tests --format args` picks the tests a change needs, or
-says to run them all and why. It reads an index; see
-[Selecting the tests a change needs](#selecting-the-tests-a-change-needs).
+Not a gate, but in the same pipeline:
+[selecting the tests a change needs](#selecting-the-tests-a-change-needs).
 
 ## What every gate does the same way
 
@@ -137,13 +135,13 @@ release the action installs.
 | `security-baseline` | none | Committed baseline file. |
 | `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
 | `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
-| `impacted-tests` | `false` | Select the tests the change needs and set the `impacted-tests` and `run-all-tests` outputs. Requires a cached `.repowise` index, which the step updates; see [Selecting the tests a change needs](#selecting-the-tests-a-change-needs). |
-| `impacted-tests-runner` | `auto` | Runner the `tests` output is written for: `auto`, `pytest`, `go`, `jest` or `files`. |
+| `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
+| `impacted-tests-runner` | `auto` | `auto`, `pytest`, `go`, `jest` or `files`. |
 
 Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
-code (empty when not run), and `sarif-dir` the SARIF directory. With
-`impacted-tests`, `impacted-tests` holds the runner arguments (or `:all`) and
-`run-all-tests` is `false` only when that subset is safe to run alone.
+code (empty when not run), and `sarif-dir` the SARIF directory.
+`impacted-tests` holds the runner arguments (or `:all`), and `run-all-tests` is
+`false` only when that subset is safe to run alone.
 
 The risk gate ranks the change against the repository's own recent commits,
 so at a percentile P roughly (100 - P)% of changes fail it by construction.
@@ -247,108 +245,34 @@ variable; `--format markdown` or `json` gives you something to post.
 
 ## Selecting the tests a change needs
 
-`repowise impacted-tests --format args` prints one line of arguments for a
-test runner: the tests that cover or reach what the change touched. It fails
-closed: whenever any part of the answer is not positively known, it prints
-`:all` instead, and the reasons always go to stderr, one per line. pytest and
-go reject `:all` as a path, but jest and vitest treat arguments as patterns
-and would match nothing, so a pipeline must branch on the run-all flag, not on
-the sentinel. Selection is not a gate: it exits `0` whether it picks a subset
-or everything, and `2` only when it cannot read the change (an unknown
-revision, missing history) or the config. Without a range, in CI it reads the
-pull request's change the way the gates do; on a laptop it reads the staged
-changes. A change that touches no file is not "no tests needed": it answers
-`:all`, since there is nothing to select from.
+`repowise impacted-tests --format args` prints one line of arguments for a test
+runner, or `:all` whenever any part of the answer is not known, with the
+reasons on stderr. It needs an index (cached from the default branch, below);
+a per-test coverage map (`repowise coverage add`) makes it more precise.
 
-It requires an index, because the graph is what knows which tests import or
-call a file. Build one on the default branch and cache the `.repowise`
-directory (the jobs below); in the pull request job, restore it and bring it up
-to date with `repowise update --index-only` before selecting, which the action
-and the GitLab job do for you. For the most precise answer, also ingest a
-per-test coverage map with `repowise coverage add` (see
-[test intelligence](../layers/TEST_INTELLIGENCE.md#impacted-tests)). Without an
-index every answer is `:all`, with the reason.
+- It exits `0` for a subset or for everything, and `2` only when it cannot read the change or the `tests.*` config.
+- Branch on the run-all flag, never on `:all`: jest and vitest read it as a pattern and run nothing.
+- It runs everything for: an empty change; a lockfile, manifest, build, test or CI config change; `.repowise/config.yaml`; a production package's `__init__.py`.
+- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports.
+- It also runs everything for: a missing, out-of-date or unreadable index; a per-test map at its row cap; a deleted file no known test used.
+- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped; an empty line means only those changed.
+- A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
+- Without a range, in CI it reads the pull request's change; locally, the staged changes.
+- `tests.full_run_on` (gitignore patterns) adds run-everything paths; `tests.always_run` is appended to every selection as written.
+- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed.
 
-**When it runs everything.** Any one of these is enough:
+**What to expect.** The subset is only as small as the code is loosely coupled.
+On tightly coupled code the graph alone picks most tests (over 80% of test
+files on this repository), because most tests import something that imports
+the changed file. Real savings need a per-test map measured at the change's
+base. `--format json` shows what drove each file's selection in
+`selected.basis`.
 
-| Rule | Example reason |
-|------|----------------|
-| The change touches no file | `No change against origin/main...HEAD; nothing to select from.` |
-| A changed or deleted file can change any test: a dependency lock or manifest, build or test configuration, a production package's `__init__.py`, shared test-support files (factories, fixtures directories) other than `conftest.py`, test data, CI configuration (GitHub workflows, `.gitlab-ci.yml` and `.gitlab/`, `.circleci/`, `Jenkinsfile`, Azure Pipelines, `.buildkite/`, `bitbucket-pipelines.yml`, `.travis.yml`, Drone, Woodpecker, AppVeyor, `.teamcity/`), `.repowise/config.yaml`, or a path in `tests.full_run_on` | `uv.lock changed: dependencies can change any test.` |
-| A changed or deleted file sits in a test tree but is not code (data, a snapshot, a golden file) | `tests/data/users.json is in a test tree but is not code ...` |
-| A changed or deleted helper module (`tests/helpers.py`) that no test imports | `tests/helpers.py is a test helper no test imports; ...` |
-| A changed file the index does not know (a data file, an image or a document outside `docs/`) | `src/pkg/schema.json: no coverage, no test reaching it in the graph, no paired test.` |
-| A changed code file has no known test, or only a filename guess names one | `src/new.py: only a filename guess names a test (tests/test_new.py).` |
-| A route to a changed file passes through a test helper no test imports, so its users (fixtures, plugins) are unknown | `src/a.py is reached through the test helper tests/helpers.py, and no test imports that helper; ...` |
-| There is no index, it was built before other files changed, its recorded commits disagree, or its graph could not be read | `The index predates 3 changed file(s) outside this change (e.g. src/b.py), ...` |
-| The per-test map is at its stored row cap | `The per-test map is at its stored row cap, ...` |
-| A deleted code file has no known test, or a test the index names is not in the checkout | `src/gone.py was deleted and no test is known to have used it.` |
-
-Otherwise it selects the tests recorded coverage says run the changed lines,
-together with every test the graph shows calling into or importing the changed
-files, directly or through other modules and tests (coverage adds to the graph,
-it never replaces it), and the changed tests themselves. A deleted test needs
-no run of its own; the tests importing it do. Only documentation is skipped:
-`docs/` and the root README, CHANGELOG, LICENSE, CONTRIBUTING and similar
-files. A document or image anywhere else may be package data a test reads, so
-it runs everything; a test that reads something under `docs/` needs that path
-in `tests.full_run_on`. When the per-test map was measured at neither end of
-the change, covering tests are matched by file rather than by line, and the
-reasons say so. A test package's `__init__.py` runs for every test under
-its directory, and pytest loads a `conftest.py` for every test at or below its
-directory, so a change to either, or a route through either, selects all of
-those tests (basis `test-package` or `conftest`) rather than everything; a
-production package's `__init__.py` still runs everything. A helper module
-tests import (`tests/helpers.py`) stands for the tests that import it, directly
-or through other helpers, whether it changed or sits on a route (basis
-`helper-importers`); only a helper no test imports runs everything. The graph
-treats only code as test material, so a JSON or golden file is never a route. `--format json` carries the
-decision per file in `selected.basis`: `full-run`, `no-tests-needed`,
-`test-tree`, `test-package`, `conftest`, `helper-importers`, `deleted-test`,
-`coverage`, `changed-test`, `call-graph`, `import-graph`, `filename-pattern`,
-`unknown`, or `none` when nothing was asked (no index), beside
-`indexed_commit` and `map_current`.
-
-**What to expect.** The subset is as small as the code is loosely coupled. On
-tightly coupled code, graph-only selection picks most tests, because most tests
-import something that imports the changed file; on this repository a typical
-change selects over 80% of the test files. Real savings need a per-test map
-(`repowise coverage add` on a report with per-test contexts) measured at the
-change's base, so tests are matched by the lines they ran. Audit what drove a
-selection with `--format json` and `selected.basis`.
-
-**Runners.** `--runner pytest` gets node ids where coverage named the test
-(`tests/test_api.py::test_login`) and files otherwise. `go` gets each selected
-test's package directory once (`./internal/auth`), plus the package of every
-changed non-test `.go` file that has tests of its own, since same-package tests
-import nothing. `jest` (and vitest) and `files` get file paths; pass them with
-`--runTestsByPath` so each is read as a path, not a pattern. The default,
-`auto`, picks the runner every selected test belongs to, and `files` when they
-are mixed. Each runner gets only the tests it can run, so one job per language
-can share the selection. Paths are relative to the repository root. An empty
-line means every changed file is documentation. Ceiling: on the JVM and .NET,
-a test in the same package or namespace as the code needs no import either, and
-only the call graph links them; when a test reaches the code only that way and
-the call is not resolved, it is missed.
-
-**Config.** Two keys in `.repowise/config.yaml` extend the defaults:
+On GitHub Actions, keep the index cached from the default branch and branch
+on the outputs in the pull request job:
 
 ```yaml
-tests:
-  full_run_on: ["schema/**", "docs/api/*.md"]   # gitignore syntax; also run everything
-  always_run: ["tests/test_smoke.py"]           # appended to every selection
-```
-
-`full_run_on` adds to the built-in triggers and never replaces them.
-`always_run` entries are passed to the runner as written, so write them in its
-terms. A key the config cannot use (not a list of non-empty strings, or a
-misspelt key under `tests:`) exits `2`.
-
-On GitHub Actions, a workflow on the default branch keeps the index cached,
-and the pull request job turns on `impacted-tests` and branches on the outputs:
-
-```yaml
-# .github/workflows/repowise-index.yml: keep the cached index current
+# .github/workflows/repowise-index.yml
 on: {push: {branches: [main]}}
 jobs:
   index:
@@ -372,10 +296,7 @@ jobs:
   with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
 - id: select
   uses: repowise-dev/repowise@main
-  with:
-    checks: ""
-    impacted-tests: true
-    impacted-tests-runner: pytest
+  with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
 - if: steps.select.outputs.run-all-tests != 'false'
   run: pytest
 - if: steps.select.outputs.run-all-tests == 'false' && steps.select.outputs.impacted-tests != ''
@@ -383,19 +304,15 @@ jobs:
   run: eval "pytest $TESTS"
 ```
 
-With `checks: ""` the action only selects. Branch on `!= 'false'`: a step that
-was skipped or failed leaves the output empty, which then runs everything.
-When the index cannot be updated or selection cannot run, `run-all-tests` is
-`true` and a warning names why, so a broken setup costs a full run, never a
-skipped test.
+A skipped or failed step leaves `run-all-tests` empty, so `!= 'false'` runs
+everything.
 
 On GitLab, set `REPOWISE_IMPACTED_TESTS: "true"` (and optionally
-`REPOWISE_IMPACTED_TESTS_RUNNER`). The `repowise-impacted-tests` job writes
-the arguments to the `impacted-tests.txt` artifact and only `RUN_ALL_TESTS` to
-a dotenv report; it is `false` only when the subset is safe to run alone:
+`REPOWISE_IMPACTED_TESTS_RUNNER`). The `repowise-impacted-tests` job writes the
+arguments to `impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report:
 
 ```yaml
-repowise-index:   # keeps the cached index current on the default branch
+repowise-index:
   image: python:3.12
   variables: {GIT_DEPTH: "0"}
   script:
@@ -413,14 +330,9 @@ test:
   script:
     - |
       if [ "${RUN_ALL_TESTS:-}" != "false" ]; then pytest
-      elif [ -s impacted-tests.txt ] && [ -n "$(cat impacted-tests.txt)" ]; then eval "pytest $(cat impacted-tests.txt)"
+      elif [ -n "$(cat impacted-tests.txt 2>/dev/null)" ]; then eval "pytest $(cat impacted-tests.txt)"
       fi
 ```
-
-When the cached index cannot be updated or selection cannot run, the job still
-passes and reports `RUN_ALL_TESTS=true`. When it did not run at all,
-`RUN_ALL_TESTS` is unset and the test job runs everything. The arguments are shell-quoted, so `eval` keeps a node id with
-a space in its parameters as one argument.
 
 ## Coverage reports per language
 
