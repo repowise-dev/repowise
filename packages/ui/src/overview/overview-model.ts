@@ -279,7 +279,7 @@ export function buildRibbon(
     },
     {
       label: "Languages",
-      value: formatNumber(summary.languages.length),
+      value: formatNumber(summary.stats.language_count ?? summary.languages.length),
       href: r.languageGraph,
     },
   );

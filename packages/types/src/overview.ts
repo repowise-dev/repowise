@@ -60,6 +60,12 @@ export interface OverviewStats {
   silo_count: number;
   module_count: number;
   /**
+   * Programming languages only — same definition as stats (`code_languages`).
+   * Data and markup formats stay in `languages` for the composition bar.
+   * Optional: a server predating the field omits it; the ribbon falls back.
+   */
+  language_count?: number;
+  /**
    * Total non-comment lines of code, summed from the per-file health metrics.
    * Optional: a server predating the field omits it and the caller then has no
    * lines figure rather than rendering a zero it did not measure.
