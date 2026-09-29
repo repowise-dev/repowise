@@ -345,7 +345,7 @@ export function SymbolDetailBody({
                 <span className="text-[var(--color-text-secondary)]">
                   <span className="font-medium">{f.kind}</span>{" "}
                   <span className="text-[var(--color-text-tertiary)]">
-                    — {f.reason} ({f.lines} lines)
+                    — {f.reason}{f.lines != null && ` (${f.lines} lines)`}
                   </span>
                 </span>
               </li>
