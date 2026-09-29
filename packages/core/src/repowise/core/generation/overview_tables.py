@@ -122,29 +122,35 @@ def select_capabilities(
     more of the same list, so the ranking, the corroboration and the definition
     test are shared rather than derived twice — the front page is the top of
     the glossary by construction, which is also what a reader expects of it.
+
+    Only defined terms: a front-page row reading "—" says nothing, while the
+    glossary still lists them. Filtered before the cap so defined terms fill it.
     """
-    return select_terms(house_terms, module_names, limit=limit)
+    defined = [t for t in select_terms(house_terms, module_names) if t.definition]
+    return defined[:limit]
 
 
 def build_capability_table(capabilities: Sequence[Capability]) -> str | None:
     """Render ``Capability | What it is | Where it is written`` as markdown.
 
-    Returns ``None`` when nothing was selected. A repository whose documents
+    Returns ``None`` when no selected row carries a definition. A repository whose documents
     name nothing its code also spells is a supported and common outcome, and a
     header over an empty table says less than no section at all.
     """
-    if not capabilities:
-        log.info("overview_capability_table_empty")
+    # An undefined row renders as "—" and says nothing; no rows means no table.
+    rows = [cap for cap in capabilities if cap.definition]
+    if not rows:
+        log.info("overview_capability_table_empty", undefined=len(capabilities))
         return None
 
     lines = [
         "| Capability | What it is | Where it is written |",
         "|---|---|---|",
     ]
-    for cap in capabilities:
-        definition = clamp(cap.definition, _MAX_CAPABILITY_DEFINITION) if cap.definition else "—"
+    for cap in rows:
+        definition = clamp(cap.definition, _MAX_CAPABILITY_DEFINITION)
         lines.append(f"| {cell(cap.term)} | {definition} | `{cell(cap.source_path)}` |")
-    log.debug("overview_capability_table_built", rows=len(capabilities))
+    log.debug("overview_capability_table_built", rows=len(rows))
     return "\n".join(lines)
 
 

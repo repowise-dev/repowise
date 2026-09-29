@@ -49,6 +49,13 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Types", frozenset({"types", "interfaces", "schemas", "contracts", "dtos", "typings"})),
 )
 
+# The UI hint names a UI layer only for files that render one: a CLI's `ui/`
+# helpers or a Django `views/` package are not a frontend.
+_UI_LAYER = "UI"
+_UI_EXTENSIONS = frozenset(
+    {".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass", ".less"}
+)
+
 # Layers that observe or support the runtime stack rather than participate in
 # it. Tests import production code and are never imported back, so letting
 # them compete on import direction would crown them the top "consumer" in
@@ -234,12 +241,13 @@ def infer_layer(path: str, language: str | None = None) -> str:
     suffix_hints = _LANG_SUFFIX_HINTS.get(lang)
     root_hints = _LANG_ROOT_HINTS.get(lang)
     original_segments = original_parts[:-1]
+    renders_ui = PurePosixPath(path).suffix.lower() in _UI_EXTENSIONS
 
     # Deepest directory first — the closest folder describes the file best.
     for i in range(len(segments) - 1, -1, -1):
         seg = segments[i]
         for layer_name, tokens in _LAYER_HINTS:
-            if seg in tokens:
+            if seg in tokens and (renders_ui or layer_name != _UI_LAYER):
                 return layer_name
         if token_hints and seg in token_hints:
             return token_hints[seg]

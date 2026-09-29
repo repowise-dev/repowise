@@ -28,6 +28,17 @@ def test_infer_layer_matches_directory_hints():
     assert infer_layer("src/types/dtos.ts") == "Types"
 
 
+def test_ui_layer_requires_ui_language():
+    # A UI-named directory only means UI for files that render one.
+    assert infer_layer("web/ui/Button.tsx") == "UI"
+    assert infer_layer("app/views/home.html") == "UI"
+    assert infer_layer("src/components/Card.vue") == "UI"
+    # A CLI's ui/ helpers keep scanning outward and land on the CLI.
+    assert infer_layer("src/tool/cli/ui/render.py") == "CLI"
+    assert infer_layer("src/tool/ui/progress.py") == DEFAULT_LAYER
+    assert infer_layer("myapp/views/users.py") == DEFAULT_LAYER
+
+
 def test_infer_layer_recognizes_cli_command_surface():
     # Edge case A: a CLI command surface must not fall through to Application.
     assert infer_layer("packages/cli/src/repowise/cli/commands/init_cmd.py") == "CLI"
