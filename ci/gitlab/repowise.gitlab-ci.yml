@@ -1,0 +1,74 @@
+# Repowise CI gates for GitLab merge requests.
+#
+# Include it from your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
+#
+# Each gate is its own job, so one failing does not hide the others. The
+# markdown report is printed to the job log and kept as an artifact. Exit codes
+# are the gates': 1 failed, 2 could not evaluate; both fail the job.
+#
+# Variables (set them in your .gitlab-ci.yml or the project's CI settings):
+#   REPOWISE_VERSION                Version to install; empty installs the latest.
+#   REPOWISE_COVERAGE_REPORT        Coverage report paths, space separated. The coverage
+#                                   job runs only when it is set; add `needs:` on your
+#                                   test job.
+#   REPOWISE_COVERAGE_FAIL_UNDER    Minimum patch coverage percent.
+#   REPOWISE_DOC_DRIFT_BASELINE     Committed doc-drift baseline file.
+#   REPOWISE_SECURITY_BASELINE      Committed security baseline file.
+#   REPOWISE_SECURITY_FAIL_ON       Lowest severity that fails: high (default), med, low.
+
+.repowise:
+  image: python:3.12
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
+    # The gates diff against the target branch, which a merge request clone lacks.
+    - git fetch --quiet --no-tags origin "+refs/heads/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME:refs/remotes/origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+repowise-coverage:
+  extends: .repowise
+  script:
+    - >
+      repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
+      $(printf -- '--report %s ' $REPOWISE_COVERAGE_REPORT)
+      ${REPOWISE_COVERAGE_FAIL_UNDER:+--fail-under "$REPOWISE_COVERAGE_FAIL_UNDER"}
+      --format markdown > repowise-coverage.md
+  after_script:
+    - cat repowise-coverage.md
+  artifacts:
+    when: always
+    paths: [repowise-coverage.md]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_COVERAGE_REPORT
+
+repowise-doc-drift:
+  extends: .repowise
+  script:
+    - >
+      repowise doc-drift --check
+      ${REPOWISE_DOC_DRIFT_BASELINE:+--baseline "$REPOWISE_DOC_DRIFT_BASELINE"}
+      --format markdown > repowise-doc-drift.md
+  after_script:
+    - cat repowise-doc-drift.md
+  artifacts:
+    when: always
+    paths: [repowise-doc-drift.md]
+
+repowise-security:
+  extends: .repowise
+  script:
+    - >
+      repowise security check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
+      --fail-on "${REPOWISE_SECURITY_FAIL_ON:-high}"
+      ${REPOWISE_SECURITY_BASELINE:+--baseline "$REPOWISE_SECURITY_BASELINE"}
+      --format markdown > repowise-security.md
+  after_script:
+    - cat repowise-security.md
+  artifacts:
+    when: always
+    paths: [repowise-security.md]

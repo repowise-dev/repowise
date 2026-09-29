@@ -276,43 +276,11 @@ baseline adds to its entries (and to those of `--baseline`, when given)
 instead of replacing them; remove an entry by deleting it from the file.
 `--format sarif` marks accepted findings as suppressed.
 
-GitHub Actions, with the SARIF uploaded from your own workflow:
-
-```yaml
-on: pull_request
-permissions:
-  contents: read
-  actions: read          # upload-sarif needs it in a private repository
-  security-events: write
-jobs:
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # the gate reads every commit of the change
-      - run: pip install repowise
-      - run: repowise security check --format github --baseline .security-baseline.json
-      - if: always()
-        run: |
-          repowise security check --format sarif --baseline .security-baseline.json > security.sarif || true
-          [ -s security.sarif ] || rm security.sarif
-      - if: always() && hashFiles('security.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: security.sarif
-```
-
-A pull request from a fork runs with a read-only token, so the upload step
-fails there; the gate step itself still runs and still fails the check. When
-the gate cannot evaluate (exit 2) the SARIF file is empty, so it is removed
-and the upload is skipped.
-
-Without a REVSPEC the base comes from the CI's pull-request variables
-(`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Jenkins'
-`CHANGE_TARGET`, Bitbucket's `BITBUCKET_PR_DESTINATION_BRANCH`), else the
-remote's default branch. A shallow checkout cannot be read commit by commit,
-so fetch the full history; the gate exits 2 rather than guess.
+Without a REVSPEC the base comes from the CI's pull-request variables, else
+the remote's default branch. A shallow checkout cannot be read commit by
+commit, so fetch the full history; the gate exits 2 rather than guess. The
+GitHub Action, the GitLab template and the SARIF upload are in
+[Repowise in CI](../start/CI.md).
 
 ## Line verification
 

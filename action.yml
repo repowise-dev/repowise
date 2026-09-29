@@ -1,0 +1,106 @@
+name: Repowise CI gates
+description: >-
+  Gate a pull request on patch coverage, documentation drift and new security
+  findings. Needs git and nothing else: no index, no API key.
+author: repowise-dev
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  checks:
+    description: >-
+      Comma-separated gates to run: coverage, doc-drift, security. Coverage
+      needs a report, so it is not on by default. Doc drift checks the whole
+      tree; on a repository that already has drift, commit a baseline first.
+    default: doc-drift,security
+  version:
+    description: Repowise version to install from PyPI. Empty installs the latest.
+    default: ""
+  python-version:
+    description: Python used to install and run Repowise (3.11 or newer).
+    default: "3.12"
+  working-directory:
+    description: Path inside the repository to run from.
+    default: "."
+  base:
+    description: >-
+      Revision range for coverage and security, e.g. origin/main...HEAD. Empty
+      reads the pull request's target branch, else the default branch.
+    default: ""
+  coverage-report:
+    description: >-
+      Coverage report paths, one per line. Empty uses coverage.paths from
+      .repowise/config.yaml, else discovery.
+    default: ""
+  coverage-fail-under:
+    description: >-
+      Minimum patch coverage percent. Empty uses coverage.fail_under from
+      .repowise/config.yaml, else reports without gating.
+    default: ""
+  doc-drift-baseline:
+    description: Committed doc-drift baseline file; only findings it does not list fail.
+    default: ""
+  security-fail-on:
+    description: Lowest severity that fails the security gate (high, med or low).
+    default: high
+  security-baseline:
+    description: Committed security baseline file; only findings it does not list fail.
+    default: ""
+  upload-sarif:
+    description: >-
+      "true" uploads doc-drift and security findings to GitHub code scanning.
+      The workflow needs the security-events write permission.
+    default: "false"
+
+outputs:
+  coverage:
+    description: Exit code of the coverage gate (0 passed, 1 failed, 2 could not evaluate), empty when not run.
+    value: ${{ steps.gates.outputs.coverage }}
+  doc-drift:
+    description: Exit code of the doc-drift gate, empty when not run.
+    value: ${{ steps.gates.outputs.doc-drift }}
+  security:
+    description: Exit code of the security gate, empty when not run.
+    value: ${{ steps.gates.outputs.security }}
+  sarif-dir:
+    description: Directory holding the SARIF files, when upload-sarif is on.
+    value: ${{ steps.gates.outputs.sarif-dir }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Repowise
+      shell: bash
+      env:
+        REPOWISE_VERSION: ${{ inputs.version }}
+      run: python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
+
+    - name: Run gates
+      id: gates
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CHECKS: ${{ inputs.checks }}
+        BASE: ${{ inputs.base }}
+        COVERAGE_REPORT: ${{ inputs.coverage-report }}
+        COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
+        DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
+        SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
+        SECURITY_BASELINE: ${{ inputs.security-baseline }}
+        SARIF: ${{ inputs.upload-sarif }}
+        SARIF_DIR: ${{ runner.temp }}/repowise-sarif
+        PYTHONUTF8: "1"
+      run: bash "$GITHUB_ACTION_PATH/ci/github/run-gates.sh"
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true' && steps.gates.outputs.sarif-dir != ''
+      # A fork's pull request has a read-only token; the gates decide the check.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.gates.outputs.sarif-dir }}

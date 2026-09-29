@@ -52,6 +52,7 @@ import {
 } from "./ai-prompt-builder";
 import { scoreBadgeClass } from "./tokens";
 import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
@@ -633,6 +634,7 @@ function NoCoverageState() {
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {COVERAGE_REPORT_FORMATS_LABEL}
       </p>
+      <CiHint command="repowise coverage check" checks="the lines each change touched" />
     </div>
   );
 }

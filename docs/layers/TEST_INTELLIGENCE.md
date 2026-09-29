@@ -260,21 +260,10 @@ text report: export it with `coverage lcov` or `coverage xml` first.
 
 CI checkouts are often shallow, which leaves no merge-base to diff from. Fetch
 full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on GitLab).
-Workflow snippets for GitHub Actions, GitLab and Jenkins are in the
-[CLI reference](../reference/CLI_REFERENCE.md#repowise-coverage-check-revspec).
-
-A new file no test loads must still appear in the report, or it reads "not in
-report" and is not counted. Per language:
-
-- **Python:** `pytest --cov=<src> --cov-report=lcov` (prefer lcov: its paths are
-  relative to the working directory).
-- **JavaScript / TypeScript:** `c8 --all --reporter=lcov`, or jest with
-  `collectCoverageFrom` set.
-- **Go:** `go test -coverprofile=coverage.out ./...`; add `-coverpkg=./...` to
-  include packages that have no tests.
-- **Java:** Maven `jacoco:report` (`report-aggregate` for multi-module), or Gradle
-  `jacocoTestReport`.
-- **Rust:** `cargo llvm-cov --lcov --output-path lcov.info`.
+The GitHub Action, the GitLab template and the report command for each language
+are in [Repowise in CI](../start/CI.md). A new file no test loads must still
+appear in the report, or it reads "not in report" and is not counted; the
+per-language commands there make sure it does.
 
 ## Untested hotspots
 

@@ -1344,7 +1344,7 @@ A coverage.py `.coverage` database is not a text report: export it first with
 `coverage lcov` or `coverage xml`. A new file no test loads must still appear
 in the report, or it is "not in report" and not counted; the per-language
 commands are in
-[Patch coverage in CI](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci).
+[Coverage reports per language](../start/CI.md#coverage-reports-per-language).
 
 ```bash
 repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
@@ -1353,49 +1353,8 @@ repowise coverage check origin/main...HEAD --report coverage.out --report-format
 ```
 
 CI clones are often shallow, so the merge-base is missing and the check exits 2.
-Fetch full history.
-
-GitHub Actions (`pull_request` only: `github.base_ref` is empty on `push`, where
-`"${{ github.event.before }}..${{ github.sha }}"` is the range instead):
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-- run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
-- run: pip install repowise
-- run: >
-    repowise coverage check "origin/${{ github.base_ref }}...HEAD"
-    --report coverage/lcov.info --fail-under 80 --format github
-```
-
-A cheaper checkout: `fetch-depth: 2` and `HEAD^1..HEAD`, which on a
-`pull_request` run diffs the merge commit GitHub builds against the base.
-
-GitLab merge request (`markdown` goes to the job log; redirect it to a file to
-post it as a note or keep it as an artifact):
-
-```yaml
-coverage-gate:
-  variables:
-    GIT_DEPTH: 0
-  script:
-    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-    - pytest --cov=src --cov-report=lcov:coverage/lcov.info
-    - pip install repowise
-    - >
-      repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
-      --report coverage/lcov.info --fail-under 80 --format markdown
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-```
-
-Jenkins multibranch pull request:
-
-```bash
-git fetch --no-tags origin "+refs/heads/$CHANGE_TARGET:refs/remotes/origin/$CHANGE_TARGET"
-repowise coverage check "origin/$CHANGE_TARGET...HEAD" --report coverage/lcov.info --fail-under 80
-```
+Fetch full history. The GitHub Action, the GitLab template and recipes for
+other CI systems are in [Repowise in CI](../start/CI.md).
 
 ---
 

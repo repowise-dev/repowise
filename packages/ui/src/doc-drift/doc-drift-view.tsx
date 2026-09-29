@@ -36,6 +36,7 @@ import {
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
+import { CiHint } from "../shared/ci-hint";
 import { OverviewSection } from "../overview/section";
 import { toFriendlyMessage } from "../lib/errors";
 
@@ -174,11 +175,14 @@ export function DocDriftView({
       />
 
       {summary.findings_total === 0 && !filtered ? (
-        <EmptyState
-          icon={<FileCheck2 className="h-6 w-6" />}
-          title="No documentation drift found"
-          description="Every reference this detector could resolve still resolves. It re-checks on each update, so this is worth a second look after a rename or a move."
-        />
+        <div className="flex flex-col items-center gap-2">
+          <EmptyState
+            icon={<FileCheck2 className="h-6 w-6" />}
+            title="No documentation drift found"
+            description="Every reference this detector could resolve still resolves. It re-checks on each update, so this is worth a second look after a rename or a move."
+          />
+          <CiHint command="repowise doc-drift --check" checks="that every reference in the docs still resolves" />
+        </div>
       ) : (
         <OverviewSection
           title="Drifted assertions"

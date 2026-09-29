@@ -92,18 +92,16 @@ index, no model, a few seconds on a large repository. It exits `1` when a
 finding at or above `--fail-on-confidence` (default 0.7) is present, and `2`
 when it cannot evaluate.
 
-```yaml
-# .github/workflows/docs.yml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0          # lets the rename suggestion read history
-- run: pip install repowise
-- run: repowise doc-drift --check --format github
+```bash
+repowise doc-drift --check --format github
 ```
 
 `--format github` annotates each finding on the document line and writes a
 summary to the job page. `--format sarif` produces a file for GitHub code
-scanning; `--format markdown` is for posting a comment yourself.
+scanning; `--format markdown` is for posting a comment yourself. Full history
+(`fetch-depth: 0`) is optional and only improves the rename suggestions. The
+GitHub Action and GitLab template that run it beside the other gates are in
+[Repowise in CI](../start/CI.md).
 
 To adopt the gate on a repository that already has drift, record what is there
 and fail only on new findings:
