@@ -197,6 +197,18 @@ async def test_restored_file_clears_the_mark(async_session, repo_root):
     assert not rec.artifacts_gone
 
 
+async def test_staged_deletion_is_not_gone_until_committed(async_session, repo_root):
+    repo = await insert_repo(async_session)
+    rec = await _record(async_session, repo.id, "Core util", ["core/util.py"])
+    _git(repo_root, "rm", "-q", "core/util.py")
+
+    assert await apply_head_artifact_check(async_session, repo.id, str(repo_root)) == {
+        "gone": 0,
+        "back": 0,
+    }
+    assert not rec.artifacts_gone
+
+
 async def test_no_checkout_changes_nothing(async_session, tmp_path):
     repo = await insert_repo(async_session)
     rec = await _record(async_session, repo.id, "Legacy layer", ["legacy/a.py"])

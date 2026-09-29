@@ -2,7 +2,7 @@
 
 A decision naming only code that no longer exists describes history, not the
 repository. This checks every affected file and every backticked path in the
-record's text against ``git ls-files``, after following renames through
+record's text against the tree at HEAD, after following renames through
 :class:`~repowise.core.ingestion.git_indexer.RenameTrail`. Only when *all* of
 them are absent is ``artifacts_gone`` set, which :func:`.lifecycle.effective_currency`
 reads as ``stale``. It never retires the record: nothing replaced it.
@@ -28,7 +28,7 @@ from repowise.core.analysis.decisions.reverts import _git_out
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DriftKind
 from repowise.core.analysis.doc_drift.resolver import RepoIndex
-from repowise.core.git_refs import is_shallow, tracked_paths
+from repowise.core.git_refs import is_shallow, tracked_paths_at
 from repowise.core.ingestion.git_indexer.records import RenameTrail, name_status_path
 
 logger = structlog.get_logger(__name__)
@@ -130,7 +130,7 @@ def _history_renames(repo_path: str) -> list[tuple[str, str]] | None:
 
 def _head_tree(root: Path, paths: Iterable[list[str]]) -> HeadTree | None:
     """The tree to judge against, or None when git cannot answer in full."""
-    tracked = tracked_paths(str(root))
+    tracked = tracked_paths_at(str(root), "HEAD")  # the commit, not the index
     if not tracked:
         return None  # an empty tree would flag everything
     tree = HeadTree(tracked, root=root)
