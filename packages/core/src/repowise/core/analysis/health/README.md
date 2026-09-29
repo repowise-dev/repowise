@@ -192,8 +192,8 @@ parallel path automatically when `len(parsed_files) >= 500`.
 
 ## Where to look in the codebase
 
-- CLI: `packages/cli/src/repowise/cli/commands/health_cmd.py`,
-  `status_cmd.py`, `update_cmd.py`.
+- CLI: `packages/cli/src/repowise/cli/commands/health_cmd/`,
+  `status_cmd.py`, `update_cmd/`.
 - MCP tools: `packages/server/src/repowise/server/mcp_server/tool_health/`
   + enrichments in `tool_risk.py`, `tool_context.py`, `tool_overview.py`.
 - API: `packages/server/src/repowise/server/routers/code_health.py`.

@@ -17,7 +17,7 @@ repowise health --refactoring-targets --format json
 
 It runs **inside the health pass** (`init` / `update`), reusing data already
 computed with no re-parse, **no LLM, no network**, inside the same <30s budget. The
-LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in-code-generation)).
+LLM layer (code generation) is a separate, strictly opt-in step ([below](#optional-code-generation)).
 
 <div align="center">
 <img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />

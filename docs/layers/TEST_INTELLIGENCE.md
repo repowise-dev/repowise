@@ -58,7 +58,7 @@ for everything below.
 |-----------|-----------------|--------|
 | **Per-file aggregate** | This file is 71% covered, merged across every test. | `untested_hotspot`, `coverage_gap`, `coverage_gradient` in [code health](CODE_HEALTH.md), the coverage dashboard |
 | **Per-test map** | Test `tests/test_auth.py::test_login` covered lines 40-58 of `src/auth/service.py`. | `repowise impacted-tests`, `get_change_risk`'s `impacted_tests`, `get_risk`'s `tests_to_run` |
-| **Inferred map** (no ingest) | `tests/test_round_trips.py` imports `src/auth/service.py`, so it reaches it. | The fallback under every row above, always labelled `inferred` |
+| **Inferred map** (no ingest) | `tests/test_round_trips.py` imports `src/auth/service.py`, so it reaches it. | The fallback under every row above, always labelled `inferred` <!-- repowise-drift-ignore --> |
 
 The aggregate always gets stored. The map is only built when the report carries
 per-test contexts. A report without contexts still ingests fine, it just skips

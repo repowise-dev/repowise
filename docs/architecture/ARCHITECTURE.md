@@ -865,7 +865,7 @@ The `GitIndexer` runs once during `repowise init` (after graph construction, bef
 generation) and incrementally during `repowise update`. All git features degrade
 gracefully when git metadata is unavailable; they simply skip git-enriched context.
 
-### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
+### 7.1 GitIndexer (`packages/core/src/repowise/core/ingestion/git_indexer/`)
 
 The `GitIndexer` class mines git history into the `git_metadata` SQL table. For each
 tracked file, it computes:
@@ -1462,7 +1462,7 @@ in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine dist
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
 gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector.py`
+The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector_store/`
 selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
 
 ### NetworkX + SQLite fallback, not Neo4j

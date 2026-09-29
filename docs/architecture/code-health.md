@@ -251,7 +251,7 @@ The returned report rides on `PipelineResult.health_report`. Then
 trend tracking (rolling 50-row window per repo), and a second
 `{path: total_deduction}` map covering only the files whose score is held at
 the floor. Both maps come from `trends.snapshot_file_maps`, which the other two
-snapshot writers (`repowise health` and `repowise upgrade`) also call — a repo
+snapshot writers (`repowise health` and `repowise update --full`) also call — a repo
 whose writers disagreed would get a history whose depth changed depending on
 which command last wrote it.
 
@@ -707,7 +707,7 @@ flag the exact uncovered surface, not just the percent.
 
 ## 11. CLI surface
 
-`packages/cli/src/repowise/cli/commands/health_cmd.py`. Mirrors the
+`packages/cli/src/repowise/cli/commands/health_cmd/`. Mirrors the
 dead-code command's Click structure.
 
 ```bash
@@ -989,7 +989,7 @@ phases may revisit; the constraints kept v1 shippable.
 | Add a new MCP `include` flag | `tool_health/`: name it in `request.py`, read it in `loading.py`, render it in `blocks.py` beside the existing `"coverage"` / `"refactoring"` blocks |
 | Add a new REST route | `routers/code_health.py`: auth is wired at the router level |
 | Add a new dashboard view | new file under `packages/web/src/app/repos/[id]/health/`, primitives under `packages/ui/src/health/` |
-| Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd.py` |
+| Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd/` |
 | Wire the analyzer into a new entry point | call `HealthAnalyzer.analyze()` directly; persist via the upsert variants if your caller is incremental |
 
 ---
