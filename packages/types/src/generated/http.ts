@@ -2201,6 +2201,7 @@ export interface PatchCoverageFile {
   patch_coverage_pct: number | null;
   uncovered_ranges: number[][];
   risk: PatchCoverageFileRisk | null;
+  hints: PatchCoverageTestHint[] | null;
 }
 
 export interface PatchCoverageFileCounts {
@@ -2270,6 +2271,15 @@ export interface PatchCoverageScope {
   freshness: "current" | "stale" | "unknown";
   ignored_file_count: number;
   config_errors: string[];
+}
+
+/** Where to extend the tests for one uncovered range. */
+export interface PatchCoverageTestHint {
+  range: number[];
+  symbol: string | null;
+  tests: string[];
+  basis: "per_test" | "call_graph" | "import_graph" | "none";
+  total: number;
 }
 
 /**

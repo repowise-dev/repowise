@@ -224,6 +224,7 @@ if TYPE_CHECKING:
         PatchCoverageResponse,
         PatchCoverageRisky,
         PatchCoverageScope,
+        PatchCoverageTestHint,
     )
     from .refactoring import (
         RefactoringOpportunitiesResponse,
@@ -503,6 +504,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "PatchCoverageResponse",
         "PatchCoverageRisky",
         "PatchCoverageScope",
+        "PatchCoverageTestHint",
     ),
     "refactoring": (
         "RefactoringOpportunitiesResponse",
@@ -765,6 +767,7 @@ __all__ = [
     "PatchCoverageResponse",
     "PatchCoverageRisky",
     "PatchCoverageScope",
+    "PatchCoverageTestHint",
     "PopulationBreakdown",
     "ProviderEntry",
     "ProviderStatusResponse",

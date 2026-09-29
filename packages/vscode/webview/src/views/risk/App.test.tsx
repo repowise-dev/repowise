@@ -99,6 +99,15 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
         risky: true,
         reasons: ["hotspot"],
       },
+      hints: [
+        {
+          range: [3, 3],
+          symbol: "boot",
+          tests: ["src/core.test.ts"],
+          basis: "per_test",
+          total: 1,
+        },
+      ],
     },
     {
       file_path: "src/new.ts",
@@ -109,6 +118,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
       patch_coverage_pct: null,
       uncovered_ranges: [],
       risk: null,
+      hints: null,
     },
   ],
   risky: {
@@ -503,8 +513,10 @@ describe("risk App", () => {
       />,
     );
 
-    expect(await screen.findByText("66.6%")).toBeTruthy();
-    expect(screen.getByRole("list", { name: "Path-scoped gates" })).toBeTruthy();
+    // Each throws when absent: the figure, the path-scoped gates, the hint naming the test to extend.
+    await screen.findByText("66.6%");
+    screen.getByRole("list", { name: "Path-scoped gates" });
+    screen.getByText("src/core.test.ts");
 
     fireEvent.click(screen.getByTitle("Open src/core.ts"));
     expect(openFile).toHaveBeenCalledWith("src/core.ts");

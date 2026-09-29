@@ -672,8 +672,9 @@ computation and JSON shape `repowise coverage check --format json` gates on.
 `patch_coverage_pct` is null when no changed line is executable, files the
 coverage never names read `not_in_report` rather than 0%, and
 `scope.freshness` is `stale` when the coverage was measured at another commit
-than the change's head (`unknown` for uncommitted work), so its line numbers
-may describe other code. `path_gates` lists the path-scoped gates in
+than the change's head (for uncommitted work: ingested before the newest
+edit), so its line numbers may describe other code. `path_gates` lists the
+path-scoped gates in
 `coverage.gates`, each judged on the changed files its globs match (`gate`
 reads `fail` when one that is not informational fails). They are judged only
 on coverage measured at the change's head and valid config; otherwise they
@@ -686,6 +687,24 @@ from the checkout's git history), `dependents`, `hotspot` and `bug_magnet`
 (`file_count`, `covered_line_count`, `coverable_line_count`,
 `patch_coverage_pct`, `threshold`, `gate`) summarizes coverage over the risky
 files, null when no row's risk was assessed.
+Each measured row also carries `hints`, one per uncovered range (the first
+eight): `range`, `symbol` (the innermost indexed symbol, null outside any),
+`tests` (up to three test files to extend, best first), `basis` (`per_test`,
+`call_graph`, `import_graph` or `none`) and `total` (how many qualified before
+the cap). `per_test` is measured (per-test coverage ran nearby lines);
+`call_graph` and `import_graph` are inferred from the graph. `hints` is null
+when the index could not be read. When changed lines are uncovered,
+`directive.next_actions` gains one line naming the scope and the tests to
+extend, or, when the coverage is stale, saying to re-run the tests first.
+
+Without a `revspec`, `patch_coverage` covers everything a push would bring,
+diffed from the merge-base with the CI or default base branch: `scope.label`
+`origin/main...working tree` on a dirty tree (untracked files included),
+`origin/main...HEAD` on a clean one, plain `working tree` when no base
+resolves. For uncommitted work freshness is by time: `current` when the last
+coverage ingest came after the newest edit to the changed files, else
+`stale`. After a full test run the augment hook re-ingests a fresh report in
+the background, and `get_change_risk` reads it once the ingest finishes.
 
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
@@ -1457,7 +1476,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
-- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
+- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, git operations can trigger stale-wiki notices, and a full test run that wrote a fresh coverage report re-ingests it in the background, so `patch_coverage` reads the new run once the ingest finishes (off with `hooks.coverage_reingest: false`).
 - **Codex SessionStart**: Codex receives concise repowise MCP workflow guidance when a session starts.
 - **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 

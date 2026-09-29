@@ -6,6 +6,8 @@ from repowise.core.analysis.health.coverage import PathGate, file_coverage
 from repowise.core.analysis.patch_coverage import (
     FileRisk,
     PatchScope,
+    TestHint,
+    attach_hints,
     attach_risk,
     compute_patch_coverage,
 )
@@ -70,3 +72,10 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
     assert risked["risky"]["gate"] == "too_small"
     assert risked["files"][0]["risk"]["basis"] == "git_and_index"
     assert PatchCoverageResponse.model_validate(risked).model_dump() == risked
+
+    # With hints attached: a measured row carries them, the others stay null.
+    hint = TestHint((2, 3), "Auth.login", ("tests/test_a.py",), "per_test", 2)
+    hinted = attach_hints(pc, {"a.py": (hint,)}).to_dict()
+    assert hinted["files"][0]["hints"][0]["basis"] == "per_test"
+    assert {f["file_path"] for f in hinted["files"] if f["hints"] is not None} == {"a.py"}
+    assert PatchCoverageResponse.model_validate(hinted).model_dump() == hinted

@@ -132,6 +132,49 @@ def test_changed_lines_three_dot_diffs_from_merge_base(git_repo) -> None:
     assert changed_lines(str(git_repo), "main..feat")[0] == {"mod.py": {2, 3}}
 
 
+def test_working_tree_from_a_base_is_everything_a_push_brings(git_repo) -> None:
+    # The branch committed line 2 and left line 4 uncommitted; base moved line 3.
+    _git(git_repo, "branch", "-M", "main")
+    _git(git_repo, "switch", "-qc", "feat")
+    (git_repo / "mod.py").write_text("a = 1\nb = 22\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "feat edit")
+    _git(git_repo, "switch", "-q", "main")
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 33\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "base edit")
+    _git(git_repo, "switch", "-q", "feat")
+    (git_repo / "mod.py").write_text("a = 1\nb = 22\nc = 3\nd = 4\n", encoding="utf-8")
+
+    (git_repo / "new.py").write_text("x = 1\ny = 2", encoding="utf-8")  # untracked
+
+    changed, label = changed_lines(str(git_repo), working_tree=True, base="main")
+    assert label == "main...working tree"
+    # An untracked file is new code the push brings: every line changed.
+    assert changed == {"mod.py": {2, 4}, "new.py": {1, 2}}
+    # Without a base it stays the uncommitted edit alone.
+    assert changed_lines(str(git_repo), working_tree=True) == ({"mod.py": {4}}, "working tree")
+    # A base that does not resolve falls back to that, label and all.
+    assert changed_lines(str(git_repo), working_tree=True, base="nope") == (
+        {"mod.py": {4}},
+        "working tree",
+    )
+
+
+def test_map_old_line_follows_insertions_deletions_and_rewrites() -> None:
+    from repowise.core.analysis.changed_lines import map_old_line, parse_unified_diff
+
+    diff = (
+        "--- a/m.py\n+++ b/m.py\n"
+        "@@ -0,0 +1,2 @@\n+n1\n+n2\n"  # two lines inserted at the top
+        "@@ -5,2 +7,0 @@\n-x\n-y\n"  # lines 5-6 deleted
+        "@@ -10 +10,3 @@\n-z\n+a\n+b\n+c\n"  # line 10 rewritten as three
+    )
+    hunks = parse_unified_diff(diff)["m.py"].hunks
+    assert map_old_line(hunks, 3) == 5
+    assert map_old_line(hunks, 8) == 8
+    assert (map_old_line(hunks, 10), map_old_line(hunks, 10, end=True)) == (10, 12)
+    assert map_old_line(hunks, 20) == 22
+
+
 def test_single_commit_at_a_shallow_boundary_raises(git_repo, tmp_path_factory) -> None:
     # Its parents are cut off, so git would diff against the empty tree and
     # report every line as changed.

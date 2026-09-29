@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..health.coverage.freshness import coverage_freshness
+from ..health.coverage.freshness import coverage_freshness, working_tree_freshness
 from .compute import PatchCoverage, PatchScope, compute_patch_coverage
 from .risk import IndexFacts
 
@@ -29,6 +29,7 @@ async def stored_patch_coverage(
     head_commit: str | None = None,
     threshold: float | None = None,
     config: CoverageConfig | None = None,
+    working_tree_mtime: float | None = None,
 ) -> PatchCoverage | None:
     """Patch coverage of *changed* against stored coverage; ``None`` when none is stored.
 
@@ -40,6 +41,10 @@ async def stored_patch_coverage(
     head and with no ``gate_errors`` (invalid ``coverage.gates`` entries), the
     only coverage and config the CLI gate itself judges; otherwise they read
     ``no_data`` and the scope carries the errors.
+    For a change that ends in the working tree, pass *working_tree_mtime* (the
+    newest modification time of the changed files) instead of *head_commit*: no
+    commit names that code, so freshness is whether the last ingest came after
+    it (``working_tree_freshness``).
     """
     from repowise.core.persistence.crud import (
         get_coverage_summary,
@@ -58,7 +63,10 @@ async def stored_patch_coverage(
     coverage = await load_file_coverage(session, repository_id, file_paths=wanted) if wanted else {}
     commit = summary["ingested_commit_sha"]
     paths = summary["report_paths"]
-    freshness = coverage_freshness(commit, head_commit)
+    if working_tree_mtime is not None:
+        freshness = working_tree_freshness(summary["ingested_at"], working_tree_mtime)
+    else:
+        freshness = coverage_freshness(commit, head_commit)
     cfg = config or CoverageConfig()
     return compute_patch_coverage(
         changed,

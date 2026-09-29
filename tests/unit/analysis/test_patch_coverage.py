@@ -12,15 +12,20 @@ from repowise.core.analysis.patch_coverage import (
     IndexFacts,
     PatchScope,
     assess_risks,
+    attach_hints,
     attach_risk,
     attention_rows,
+    build_hints,
     compute_patch_coverage,
     fmt_pct,
     github_annotations,
     headline,
+    hint_phrase,
     render_markdown,
     risky_line,
 )
+from repowise.core.analysis.patch_coverage.hints import SymbolSpan, TestHint, translate_spans
+from repowise.core.analysis.test_reachability import ReachedBy
 
 
 def _cov(path: str, covered: list[int], coverable: list[int]):
@@ -834,3 +839,149 @@ def test_may_overlap_is_symmetric_and_errs_towards_yes() -> None:
     assert not _may_overlap("/pkg/", "/lib/")
     assert not _may_overlap("/src/a.py", "/src/b.py")
     assert not _may_overlap("!/pkg/", "/pkg/web/")
+# ---------------------------------------------------------------------------
+# hints: where to add a test for each uncovered range
+# ---------------------------------------------------------------------------
+
+
+def _gappy(ranges_lines: set[int], path: str = "src/auth.py"):
+    """One measured file whose changed lines *ranges_lines* are all uncovered."""
+    pc = compute_patch_coverage(
+        {path: ranges_lines}, _cov(path, covered=[], coverable=sorted(ranges_lines))
+    )
+    return pc, pc.files[0]
+
+
+_SPANS = [
+    SymbolSpan("src/auth.py::Auth", "Auth", 1, 40),
+    SymbolSpan("src/auth.py::Auth.login", "Auth.login", 10, 20),
+    SymbolSpan("src/auth.py::Auth.logout", "Auth.logout", 22, 30),
+]
+
+
+def _reached(tests: list[str], via: str = "call-graph", total: int | None = None) -> ReachedBy:
+    return ReachedBy(tests, via, len(tests) if total is None else total)
+
+
+def test_a_hint_names_the_innermost_symbol_and_nothing_outside_one() -> None:
+    _pc, f = _gappy({12, 35, 50})
+    hints = build_hints(f, _SPANS, [], {})
+
+    assert [h.symbol for h in hints] == ["Auth.login", "Auth", None]
+    assert all(h.basis == "none" and h.tests == () and h.total == 0 for h in hints)
+
+
+def test_per_test_coverage_beats_the_graph() -> None:
+    _pc, f = _gappy({12})
+    rows = [
+        {"test_id": "tests/test_auth.py::test_ok", "test_file": "tests/test_auth.py",
+         "covered_lines": [11, 13, 14]},
+        # Lines of another symbol only: not evidence for login.
+        {"test_id": "tests/test_out.py::t", "test_file": "tests/test_out.py",
+         "covered_lines": [25]},
+        {"test_id": "tests/test_more.py::t", "test_file": None, "covered_lines": [15]},
+    ]
+    reached = {"src/auth.py::Auth.login": _reached(["tests/test_graph.py"])}
+    (hint,) = build_hints(f, _SPANS, rows, reached)
+
+    assert hint.basis == "per_test"
+    # Most lines of the symbol first; a row without a file is named by its id.
+    assert hint.tests == ("tests/test_auth.py", "tests/test_more.py")
+    assert hint.total == 2
+
+
+def test_outside_a_symbol_per_test_uses_a_window_around_the_range() -> None:
+    _pc, f = _gappy({50})
+    near = [{"test_id": "t::a", "test_file": "tests/test_near.py", "covered_lines": [53]}]
+    far = [{"test_id": "t::b", "test_file": "tests/test_far.py", "covered_lines": [60]}]
+
+    assert build_hints(f, _SPANS, near, {})[0].tests == ("tests/test_near.py",)
+    assert build_hints(f, _SPANS, far, {})[0].basis == "none"
+
+
+def test_the_call_graph_answers_for_the_symbol_then_imports_for_the_file() -> None:
+    _pc, f = _gappy({12, 24})
+    reached = {
+        "src/auth.py::Auth.login": _reached(["tests/test_login.py"]),
+        "src/auth.py": _reached(["tests/test_imports.py"], via="import-graph"),
+    }
+    login, logout = build_hints(f, _SPANS, [], reached)
+
+    assert (login.basis, login.tests) == ("call_graph", ("tests/test_login.py",))
+    # No test reaches logout, so the file's importers answer.
+    assert (logout.basis, logout.tests) == ("import_graph", ("tests/test_imports.py",))
+
+
+def test_tests_are_capped_at_three_and_total_stays_honest() -> None:
+    _pc, f = _gappy({12})
+    many = [f"tests/test_{i}.py" for i in range(5)]
+    (hint,) = build_hints(f, _SPANS, [], {"src/auth.py::Auth.login": _reached(many, total=7)})
+
+    assert hint.tests == tuple(many[:3])
+    assert hint.total == 7
+
+
+def test_hints_ride_on_the_row_and_every_rendering() -> None:
+    pc, f = _gappy({12, 13})
+    hints = build_hints(f, _SPANS, [], {"src/auth.py::Auth.login": _reached(["tests/test_auth.py"])})
+    pc = attach_hints(pc, {f.file_path: hints})
+
+    (row,) = pc.to_dict()["files"]
+    assert row["hints"] == [
+        {"range": [12, 13], "symbol": "Auth.login", "tests": ["tests/test_auth.py"],
+         "basis": "call_graph", "total": 1}
+    ]
+    assert hint_phrase(hints[0]) == "extend tests/test_auth.py (inferred: calls reach `Auth.login`)"
+    markdown = render_markdown(pc)
+    assert "| File | Uncovered changed lines | Covered | Extend |" in markdown
+    assert "extend tests/test_auth.py (inferred: calls reach `Auth.login`)" in markdown
+    (annotation,) = github_annotations(pc)
+    assert "Extend tests/test_auth.py (inferred: calls reach `Auth.login`)" in annotation
+
+
+def test_each_basis_says_measured_or_inferred() -> None:
+    def phrase(basis, symbol="login", tests=("t.py",)):
+        return hint_phrase(TestHint((1, 1), symbol, tests, basis, len(tests)))
+
+    assert phrase("per_test") == "extend t.py (measured: runs other lines of `login`)"
+    assert phrase("per_test", symbol=None) == "extend t.py (measured: runs nearby lines)"
+    assert phrase("import_graph") == "extend t.py (inferred: imports this file)"
+    assert phrase("none", tests=()) == "no test reaches this; add one"
+
+
+def test_a_tier_the_hints_do_not_know_is_no_evidence() -> None:
+    _pc, f = _gappy({12})
+    reached = {"src/auth.py": _reached(["tests/test_auth.py"], via="name-match")}
+    (hint,) = build_hints(f, _SPANS, [], reached)
+    assert (hint.basis, hint.tests, hint.total) == ("none", (), 0)
+
+
+def test_spans_move_with_the_code_since_the_index() -> None:
+    # Five lines inserted at the top shift every symbol down by five.
+    shifted = translate_spans(_SPANS, [(0, 0, 1, 5)])
+    assert [(s.start_line, s.end_line) for s in shifted] == [(6, 45), (15, 25), (27, 35)]
+
+    # A new top-level function inserted above Auth (new lines 1-8): its range
+    # lies in no span, so it has no symbol; the old method keeps its own.
+    moved = translate_spans(_SPANS, [(0, 0, 1, 8)])
+    _pc, f = _gappy({3, 19})
+    new, old = build_hints(f, moved, [], {})
+    assert new.symbol is None
+    assert old.symbol == "Auth.login"
+
+    # A symbol the diff deleted outright is dropped.
+    assert translate_spans([SymbolSpan("a::gone", "gone", 5, 6)], [(5, 2, 4, 0)]) == []
+
+
+def test_without_an_index_hints_are_null_and_nothing_changes() -> None:
+    pc, _f = _gappy({12})
+    assert pc.to_dict()["files"][0]["hints"] is None
+    assert "Extend" not in render_markdown(pc)
+    # An index that found nothing is an empty list, not null.
+    empty = attach_hints(pc, {})
+    assert empty.to_dict()["files"][0]["hints"] == []
+    assert "Extend" not in github_annotations(empty)[0]
+    # An index that found no test says so in words.
+    none = attach_hints(pc, {"src/auth.py": (TestHint((12, 12), None, (), "none", 0),)})
+    assert "no test reaches this; add one" in render_markdown(none)
+    assert "No test reaches this; add one" in github_annotations(none)[0]

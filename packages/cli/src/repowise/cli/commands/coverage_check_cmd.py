@@ -126,7 +126,8 @@ def coverage_check(
 
     Each changed file carries its risk (git bug-fix history, plus hotspot,
     bug-magnet and dependent counts when an index exists), and the rows read
-    riskiest first. ``--fail-under-risky`` gates the risky files alone.
+    riskiest first. ``--fail-under-risky`` gates the risky files alone. With an
+    index, each uncovered range also names the test file to extend.
     """
     notices = ci_notices(fmt)
     try:
@@ -134,6 +135,7 @@ def coverage_check(
             revspec, reports, report_format, fail_under, min_coverable_lines, repo, notices
         )
         pc = _with_risk(repo, pc, fail_under_risky)
+        pc = _with_hints(repo, pc)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
     _emit(pc, fmt)
@@ -358,6 +360,40 @@ async def _index_facts(root: Path, paths: list[str]) -> dict:
             return {}
 
 
+def _with_hints(repo, pc):
+    """*pc* with the test to extend per uncovered range, when an index opens.
+
+    Hints are advice, never part of the verdict, so a missing or unreadable
+    index leaves the rows without them (``hints`` null) and the gate as it was.
+    """
+    from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import revspec_head
+    from repowise.core.analysis.patch_coverage import attach_hints
+
+    root = repo_root(repo)
+    if not has_db_store(root):
+        return pc
+    head = git_refs.resolve(str(root), revspec_head(pc.scope.label or None)) or None
+    try:
+        hints = run_async(_read_hints(root, pc, head))
+    except Exception:
+        # Advice only: whatever an old or damaged index does to the read, the
+        # gate's verdict must not change because of it.
+        hints = None
+    return pc if hints is None else attach_hints(pc, hints)
+
+
+async def _read_hints(root: Path, pc, head: str | None):
+    """``{path: hints}`` from the index; ``None`` when it cannot say."""
+    from repowise.core.analysis.patch_coverage import read_test_hints
+
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        return await read_test_hints(session, repo_id, pc, repo_path=str(root), head_commit=head)
+
+
 def _resolve_reports(root, cfg, report_prefixes, report_format, notices):
     """Parse the reports against the files git tracks, failing when nothing usable remains."""
     from repowise.core import git_refs
@@ -492,23 +528,32 @@ def _print_table(pc) -> None:
         RANGE_LIMIT,
         STATUS_TEXT,
         attention_rows,
+        first_hint,
         format_ranges,
+        hint_phrase,
         risk_words,
     )
 
     rows = attention_rows(pc)
     if not rows:
         return
+    with_hint = any(f.hints for f in rows)
     table = Table(show_edge=False, pad_edge=False)
     table.add_column("File")
     table.add_column("Risk")
     table.add_column("Covered", justify="right")
     table.add_column("Uncovered changed lines")
+    if with_hint:
+        table.add_column("Extend")
     for f in rows:
         if f.status == "measured":
             covered = f"{f.covered_line_count} of {f.coverable_line_count}"
             gaps = format_ranges(f.uncovered_ranges, RANGE_LIMIT)
         else:
             covered, gaps = "", STATUS_TEXT[f.status]
-        table.add_row(escape(f.file_path), escape(risk_words(f.risk)), covered, gaps)
+        cells = [escape(f.file_path), escape(risk_words(f.risk)), covered, gaps]
+        if with_hint:
+            hint = first_hint(f)
+            cells.append(escape(hint_phrase(hint)) if hint else "")
+        table.add_row(*cells)
     console.print(table)

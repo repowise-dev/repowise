@@ -1342,7 +1342,13 @@ are out of scope and only counted.
 Each changed file carries its risk: git bug-fix history always, plus hotspot,
 bug-magnet and dependent counts when an index opens (a missing index never
 fails the check). Rows, annotations and the markdown table list risky files
-first, and the table has a "Risk" column in words.
+first, and the table has a "Risk" column in words. With an index, each
+uncovered range also names the test file to extend when one is found: an
+"Extend" column in the table and markdown ("extend tests/test_auth.py
+(inferred: calls reach `login`)", "(measured: runs other lines of `login`)",
+"(inferred: imports this file)", or "no test reaches this; add one"), the same
+phrase at the end of each annotation, and `hints` in `json`. Hints never
+change the verdict.
 
 `github` writes up to 10 `::warning` annotations (riskiest file, then largest
 uncovered range, first; titled "Uncovered change in a risky file" for a risky
@@ -1358,7 +1364,9 @@ carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 `out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
 `coverable_line_count`, `covered_line_count`, `patch_coverage_pct`,
 `uncovered_ranges`, `risk`: `fix_pressure`, `dependents`, `hotspot`,
-`bug_magnet`, `basis`, `risky`, `reasons`), `scope` (`label`,
+`bug_magnet`, `basis`, `risky`, `reasons`; `hints`, null without an index, one
+per uncovered range: `range`, `symbol`, `tests`, `basis` (`per_test`,
+`call_graph`, `import_graph`, `none`), `total`), `scope` (`label`,
 `source_formats`, `reports`, `report_path_count`,
 `unmatched_report_path_count`, `ignored_file_count`, `config_errors`),
 `path_gates[]` (`name`, `paths`, `threshold`, `informational`,

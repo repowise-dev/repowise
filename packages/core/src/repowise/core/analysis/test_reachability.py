@@ -419,8 +419,13 @@ async def tests_reaching_by_tier(
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
+    test_files: set[str] | None = None,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *test_files* is :func:`load_test_files`'s answer, for a caller that walks
+    more than once and need not read it twice. A target may be a symbol id
+    (``path::name``); its tests are ranked against the file part.
 
     *symbol_seeds* narrows the call walk for the targets it names: the walk
     enters at exactly those symbol ids instead of at every symbol the file
@@ -444,7 +449,8 @@ async def tests_reaching_by_tier(
     if not seeds:
         return {}
 
-    test_files = await load_test_files(session, repo_id)
+    if test_files is None:
+        test_files = await load_test_files(session, repo_id)
     if not test_files:
         return {}
 
@@ -454,7 +460,7 @@ async def tests_reaching_by_tier(
             session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
         )
         for seed, tests in found.items():
-            ordered = tuple(rank_tests(seed, tests))
+            ordered = tuple(rank_tests(seed.split("::", 1)[0], tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
             )
@@ -463,7 +469,7 @@ async def tests_reaching_by_tier(
     if unanswered and import_depth >= 1:
         found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
         for seed, tests in found.items():
-            ordered = tuple(rank_tests(seed, tests))
+            ordered = tuple(rank_tests(seed.split("::", 1)[0], tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
             )

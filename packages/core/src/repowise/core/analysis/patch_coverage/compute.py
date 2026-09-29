@@ -41,6 +41,7 @@ from ..health.coverage.model import FileCoverage
 
 if TYPE_CHECKING:
     from ..health.coverage.discovery import PathGate, ResolvedCoverage
+    from .hints import TestHint
     from .risk import FileRisk
 
 FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
@@ -60,6 +61,9 @@ class FilePatchCoverage:
     uncovered_ranges: tuple[tuple[int, int], ...] = ()
     # What history says about the file (``risk.attach_risk``); ``None`` unread.
     risk: FileRisk | None = None
+    # Where to add a test per uncovered range (``hints.attach_hints``); ``None``
+    # without an index, empty when there is nothing to hint.
+    hints: tuple[TestHint, ...] | None = None
 
     @property
     def patch_coverage_pct(self) -> float | None:
@@ -79,6 +83,7 @@ class FilePatchCoverage:
             "patch_coverage_pct": _round(self.patch_coverage_pct),
             "uncovered_ranges": [list(r) for r in self.uncovered_ranges],
             "risk": self.risk.to_dict() if self.risk is not None else None,
+            "hints": None if self.hints is None else [h.to_dict() for h in self.hints],
         }
 
 

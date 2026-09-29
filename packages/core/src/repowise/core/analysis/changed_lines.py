@@ -49,6 +49,8 @@ class FileDiff:
     nothing it replaced); it records its *insert_anchors* instead - the old-side
     line the new lines went in after, which is the only handle SZZ has on code
     that was added rather than rewritten. 0 means "inserted at the top".
+    *hunks* keeps each hunk's ``(old_start, old_count, new_start, new_count)``,
+    what :func:`map_old_line` needs to move an old line number to the new side.
     """
 
     path: str
@@ -57,6 +59,36 @@ class FileDiff:
     insert_anchors: list[int] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
+    hunks: list[tuple[int, int, int, int]] = field(default_factory=list)
+
+
+def map_old_line(hunks: Iterable[tuple[int, int, int, int]], line: int, *, end: bool = False) -> int:
+    """Where old-side *line* sits on the new side of a diff with these *hunks*.
+
+    A line outside every hunk moves by what the hunks above it added or
+    removed. A line inside a rewritten hunk maps to the hunk's new first line,
+    or its new last line with *end*, so a span keeps covering its rewrite.
+    """
+    delta = 0
+    for old_start, old_count, new_start, new_count in sorted(hunks):
+        if not old_count:
+            # A pure insertion after ``old_start``: moves only the lines below it.
+            delta += new_count if line > old_start else 0
+        elif line >= old_start + old_count:
+            delta += new_count - old_count
+        elif line >= old_start:
+            return _inside_hunk(new_start, new_count, end=end)
+        else:
+            break  # hunks are sorted, so none further up can move this line
+    return line + delta
+
+
+def _inside_hunk(new_start: int, new_count: int, *, end: bool) -> int:
+    """Where a line a hunk rewrote lands: its new first line, or last with *end*."""
+    if new_count == 0:
+        # Deleted outright: git names the new-side line the block sat after.
+        return new_start if end else new_start + 1
+    return new_start + new_count - 1 if end else new_start
 
 
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13}
@@ -128,6 +160,7 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
                 old_count = int(m.group(2)) if m.group(2) is not None else 1
                 new_start = int(m.group(3))
                 new_count = int(m.group(4)) if m.group(4) is not None else 1
+                current.hunks.append((old_start, old_count, new_start, new_count))
                 if old_count > 0:
                     current.old_ranges.append((old_start, old_start + old_count - 1))
                 elif new_count > 0:
@@ -175,12 +208,18 @@ def _verify_ref(repo_path: str, ref: str) -> None:
         raise ValueError(f"unknown revision {ref!r}")
 
 
+def working_tree_label(base: str | None = None) -> str:
+    """How :func:`changed_lines` names a working-tree diff from *base*."""
+    return f"{base}...working tree" if base and base != "HEAD" else "working tree"
+
+
 def changed_lines(
     repo_path: str,
     revspec: str | None = None,
     *,
     staged: bool = False,
     working_tree: bool = False,
+    base: str | None = None,
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
@@ -188,16 +227,17 @@ def changed_lines(
     ``base...head`` the change since the two forked, a bare ref a single commit. With no *revspec* (or *staged*), the staged diff
     (``git diff --cached``) is used - the "what will I commit" case.
     *working_tree* widens that to everything ``HEAD`` does not have, staged or
-    not, matching what change risk counts for an uncommitted change. *label*
-    is a human string naming what was diffed. Raises ``ValueError`` on an
-    unknown revision so the caller can fail loudly rather than silently
+    not, matching what change risk counts for an uncommitted change. With
+    *base* as well, it diffs the working tree from the merge-base of *base*
+    and ``HEAD``, untracked files included (every line changed): everything a
+    push of this branch would bring. A *base* that does not resolve, or shares
+    no merge-base, falls back to the plain working-tree diff and its label.
+    *label* is a human string naming what was diffed. Raises ``ValueError`` on
+    an unknown revision so the caller can fail loudly rather than silently
     reporting "no changes".
     """
     if working_tree:
-        # Untracked files are absent by design: they are new, so neither caller
-        # (prior fixes, per-test coverage) has a row to find for them anyway.
-        diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, "HEAD"], repo_path)
-        return _parse_unified_diff(diff), "working tree"
+        return _working_tree_lines(repo_path, base)
 
     if staged or not revspec:
         diff = _git(["diff", "--cached", "--unified=0", *DIFF_PREFIXES], repo_path)
@@ -223,6 +263,58 @@ def changed_lines(
     # git's combined diff emits nothing at all and a merged PR reads as empty.
     args = ["show", "--unified=0", *DIFF_PREFIXES, "--format=", "-m", "--first-parent", revspec]
     return _parse_unified_diff(_diff(repo_path, args)), revspec
+
+
+def _working_tree_lines(repo_path: str, base: str | None) -> tuple[dict[str, set[int]], str]:
+    """The working-tree half of :func:`changed_lines`: from *base*'s merge-base, else ``HEAD``."""
+    start = _merge_base_or_empty(repo_path, base) if base and base != "HEAD" else ""
+    if start:
+        diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, start], repo_path)
+        changed = _parse_unified_diff(diff)
+        changed.update(_untracked_lines(repo_path))
+        return changed, working_tree_label(base)
+    # Untracked files are absent here by design: this is what the commit
+    # would change, and neither caller (prior fixes, per-test coverage)
+    # has a row to find for a new file anyway.
+    diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, "HEAD"], repo_path)
+    return _parse_unified_diff(diff), working_tree_label()
+
+
+def _merge_base_or_empty(repo_path: str, base: str) -> str:
+    """The merge-base of *base* and ``HEAD``; ``""`` when *base* is unknown or unrelated."""
+    try:
+        _verify_ref(repo_path, base)
+        return _diff(repo_path, ["merge-base", base, "HEAD"]).strip()
+    except ValueError:
+        return ""
+
+
+def _untracked_lines(repo_path: str) -> dict[str, set[int]]:
+    """Every line of each untracked, not-ignored file: new code a push would add."""
+    out: dict[str, set[int]] = {}
+    listing = _git(["ls-files", "--others", "--exclude-standard", "-z"], repo_path)
+    for path in filter(None, listing.split("\0")):
+        try:
+            data = (Path(repo_path) / path).read_bytes()
+        except OSError:
+            continue
+        count = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+        if count:
+            out[path] = set(range(1, count + 1))
+    return out
+
+
+def diff_since(
+    repo_path: str, since: str, until: str | None, paths: Iterable[str]
+) -> dict[str, FileDiff]:
+    """Per-file diff of *paths* from *since* to *until* (the working tree when ``None``).
+
+    What moves a line number read at one commit (an index's symbol spans) to
+    the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
+    """
+    tail = [until] if until else []
+    args = ["diff", "--unified=0", *DIFF_PREFIXES, since, *tail, "--", *paths]
+    return parse_unified_diff(_diff(repo_path, args))
 
 
 def _diff(repo_path: str, args: list[str]) -> str:

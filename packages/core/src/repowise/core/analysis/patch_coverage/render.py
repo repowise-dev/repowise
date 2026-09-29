@@ -4,7 +4,8 @@ Markdown is what a CI step summary or a pull-request comment shows, so it is
 written to be read once and acted on: the verdict in words on the first line
 with its denominator, the diff, report and file counts on the second, and
 detail only for what needs attention. A passing change with no gaps is two
-lines. A file the report never named reads "not in report", never 0%.
+lines. A file the report never named reads "not in report", never 0%. With
+an index, each gap names the test to extend (``hints``).
 
 Workflow-command and markdown mechanics (escaping, caps, collapsed lists)
 come from :mod:`repowise.core.ci`, shared with every other CI gate.
@@ -18,10 +19,8 @@ from collections.abc import Sequence
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
 from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
+from .hints import RANGE_LIMIT, TestHint, first_hint, hint_phrase
 from .risk import FileRisk
-
-#: Uncovered ranges shown per file before "+N more".
-RANGE_LIMIT = 8
 
 #: How a file that could not be measured reads, wherever it is listed.
 STATUS_TEXT = {
@@ -279,24 +278,32 @@ def _gap_table(pc: PatchCoverage) -> list[str]:
     gaps = [f for f in attention_rows(pc) if f.status == "measured"]
     if not gaps:
         return []
-    if any(f.risk is not None for f in pc.files):
-        out = ["", "| File | Risk | Uncovered changed lines | Covered |", "|---|---|---|---|"]
-        out += [
-            f"| `{cell(f.file_path)}` | {cell(risk_words(f.risk))} | "
-            f"{format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
-            f"{f.covered_line_count} of {f.coverable_line_count} |"
-            for f in gaps[:ROW_LIMIT]
-        ]
-    else:
-        out = ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
-        out += [
-            f"| `{cell(f.file_path)}` | {format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
-            f"{f.covered_line_count} of {f.coverable_line_count} |"
-            for f in gaps[:ROW_LIMIT]
-        ]
+    out = ["", *_gap_rows(pc, gaps[:ROW_LIMIT])]
     if len(gaps) > ROW_LIMIT:
         out += ["", more_line(len(gaps) - ROW_LIMIT, "files with uncovered changed lines")]
     return out
+
+
+def _gap_rows(pc: PatchCoverage, rows: list[FilePatchCoverage]) -> list[str]:
+    """The uncovered-lines table; Risk and Extend columns only when something fills them."""
+    with_risk = any(f.risk is not None for f in pc.files)
+    with_hint = any(f.hints for f in rows)
+    head = ["File", *(["Risk"] if with_risk else []), "Uncovered changed lines", "Covered"]
+    head += ["Extend"] if with_hint else []
+    lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for f in rows:
+        cells = [f"`{cell(f.file_path)}`"]
+        cells += [cell(risk_words(f.risk))] if with_risk else []
+        cells += [
+            format_ranges(f.uncovered_ranges, RANGE_LIMIT),
+            f"{f.covered_line_count} of {f.coverable_line_count}",
+        ]
+        if with_hint:
+            hint = first_hint(f)
+            # The phrase's backticks are code spans; everything between is escaped.
+            cells.append("`".join(cell(p) for p in hint_phrase(hint).split("`")) if hint else "")
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
 
 
 def github_annotations(pc: PatchCoverage) -> list[str]:
@@ -346,6 +353,9 @@ def _range_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
     message = f"Changed {_span(a, b)} not covered by tests"
     if risky:
         message += f" ({risk_words(f.risk)})"
+    if hint := _hint_for(f, a, b):
+        phrase = hint_phrase(hint)
+        message += f". {phrase[:1].upper()}{phrase[1:]}"
     return github.annotation(
         "warning",
         message,
@@ -354,6 +364,11 @@ def _range_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
         end_line=b,
         title="Uncovered change in a risky file" if risky else "Uncovered change",
     )
+
+
+def _hint_for(f: FilePatchCoverage, a: int, b: int) -> TestHint | None:
+    """The hint for range ``(a, b)``, when the index gave one."""
+    return next((h for h in f.hints or () if h.range == (a, b)), None)
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:

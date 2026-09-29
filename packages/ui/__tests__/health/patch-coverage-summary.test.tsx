@@ -8,6 +8,7 @@ import {
   PatchCoverageSummary,
   floorPct,
   formatLineRanges,
+  hintReason,
   riskWords,
 } from "../../src/health/patch-coverage-summary.js";
 
@@ -35,6 +36,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       patch_coverage_pct: 50,
       uncovered_ranges: [[i + 1, i + 1]],
       risk: null,
+      hints: null,
     })),
     scope: {
       label: "coverage.xml",
@@ -175,6 +177,7 @@ describe("PatchCoverageSummary", () => {
                 [7, 9],
               ],
               risk: null,
+              hints: null,
             },
             {
               file_path: "src/new.ts",
@@ -185,6 +188,7 @@ describe("PatchCoverageSummary", () => {
               patch_coverage_pct: null,
               uncovered_ranges: [],
               risk: null,
+              hints: null,
             },
           ],
           scope: { ...base.scope, freshness: "stale" },
@@ -321,6 +325,79 @@ describe("PatchCoverageSummary", () => {
       "a_nodata_hot.ts",
     ]);
     expect(screen.getAllByText("not in report")).toHaveLength(2);
+  });
+
+  it("names the test to extend from the file's first hint that has one", () => {
+    const base = coverage(2);
+    const [withHint, without] = base.files;
+    render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          files: [
+            {
+              ...withHint!,
+              hints: [
+                { range: [1, 1], symbol: null, tests: [], basis: "none", total: 0 },
+                {
+                  range: [4, 5],
+                  symbol: "login",
+                  tests: ["tests/test_auth.py", "tests/test_session.py"],
+                  basis: "call_graph",
+                  total: 2,
+                },
+              ],
+            },
+            // An index with nothing to suggest shows no line at all.
+            { ...without!, hints: [] },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("tests/test_auth.py")).toBeTruthy();
+    const line = screen.getByTitle(
+      "extend tests/test_auth.py (inferred: calls reach login)",
+    );
+    expect(line.className).toContain("text-xs");
+    expect(screen.queryByText("tests/test_session.py")).toBeNull();
+    expect(screen.getAllByText(/^extend/)).toHaveLength(1);
+  });
+
+  it("says so when the index names no test", () => {
+    const base = coverage(1);
+    render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          files: [
+            {
+              ...base.files[0]!,
+              hints: [{ range: [1, 1], symbol: null, tests: [], basis: "none", total: 0 }],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("no test reaches this; add one")).toBeTruthy();
+  });
+});
+
+describe("hintReason", () => {
+  it("says which evidence named the test, measured or inferred", () => {
+    const hint = { range: [1, 2], symbol: "run", tests: ["t.py"], total: 1 };
+    expect(hintReason({ ...hint, basis: "per_test" })).toBe(
+      "measured: runs other lines of run",
+    );
+    expect(hintReason({ ...hint, symbol: null, basis: "per_test" })).toBe(
+      "measured: runs nearby lines",
+    );
+    expect(hintReason({ ...hint, basis: "call_graph" })).toBe("inferred: calls reach run");
+    expect(hintReason({ ...hint, basis: "import_graph" })).toBe(
+      "inferred: imports this file",
+    );
+    expect(hintReason({ ...hint, tests: [], basis: "none" })).toBe(
+      "no test reaches this; add one",
+    );
   });
 });
 

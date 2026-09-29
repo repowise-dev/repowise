@@ -27,12 +27,12 @@ import atexit
 import contextlib
 import json
 import os
-import subprocess
 import sys
 
 from repowise.cli.platform import identity, settings
 from repowise.cli.platform.telemetry import environment, spool
 from repowise.cli.platform.telemetry.events import TelemetryEvent
+from repowise.cli.spawn import spawn_detached
 
 #: Module the detached flusher runs as.
 _FLUSHER_MODULE = "repowise.cli.platform.telemetry.flusher"
@@ -106,20 +106,7 @@ def _spawn_flusher() -> bool:
     """
     if not sys.executable:
         return False
-    kwargs: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-        "cwd": os.getcwd(),
-    }
-    if os.name == "nt":
-        # DETACHED_PROCESS | CREATE_NO_WINDOW: no console window flashes up
-        # in front of the user between commands.
-        kwargs["creationflags"] = 0x00000008 | 0x08000000
-    else:
-        kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    spawn_detached([sys.executable, "-m", _FLUSHER_MODULE], os.getcwd())
     return True
 
 

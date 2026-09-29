@@ -12,7 +12,8 @@
  *
  * Each file row names its file's risk in words, and the rows read riskiest
  * first, in the order `repowise coverage check` uses. A line says where the
- * risk came from when not every file had index data.
+ * risk came from when not every file had index data. With an index, a file
+ * with uncovered lines also names the test file to extend.
  */
 
 import type { ReactNode } from "react";
@@ -21,6 +22,7 @@ import type {
   PatchCoverageFileRisk,
   PatchCoveragePathGate,
   PatchCoverageResponse,
+  PatchCoverageTestHint,
 } from "@repowise-dev/types/generated/http";
 
 export interface PatchCoverageSummaryProps {
@@ -82,6 +84,42 @@ function gitOnlyText(gitOnly: number, total: number): string {
     return "Risk is from git bug-fix history alone; an index adds hotspot, bug-magnet and dependent counts";
   }
   return `Risk for ${gitOnly} of ${plural(total, "file")} is from git bug-fix history alone: the index has no row for them yet`;
+}
+
+/** The file's first hint that names a test, else its first hint; `null` without an index. */
+export function firstHint(file: PatchCoverageFile): PatchCoverageTestHint | null {
+  const hints = file.hints ?? [];
+  return hints.find((h) => h.tests.length > 0) ?? hints[0] ?? null;
+}
+
+/**
+ * Why the hint's test is the one to extend, measured or inferred. The source
+ * of truth is the core's `hint_phrase` (patch_coverage/hints.py); keep the two
+ * worded alike.
+ */
+export function hintReason(hint: PatchCoverageTestHint): string {
+  switch (hint.basis) {
+    case "per_test":
+      return hint.symbol
+        ? `measured: runs other lines of ${hint.symbol}`
+        : "measured: runs nearby lines";
+    case "call_graph":
+      return `inferred: calls reach ${hint.symbol ?? "this code"}`;
+    case "import_graph":
+      return "inferred: imports this file";
+    case "none":
+      return "no test reaches this; add one";
+    default: {
+      const unknown: never = hint.basis;
+      return unknown;
+    }
+  }
+}
+
+/** The whole hint as one sentence, the core's `hint_phrase` without code spans. */
+export function hintText(hint: PatchCoverageTestHint): string {
+  const test = hint.tests[0];
+  return test ? `extend ${test} (${hintReason(hint)})` : hintReason(hint);
 }
 
 /** Risky first, then fix pressure, dependents, uncovered lines: the core's order. */
@@ -336,6 +374,7 @@ function UncoveredList({
           key={f.file_path}
           file={f}
           trailing={`lines ${formatLineRanges(f.uncovered_ranges)}`}
+          hint={firstHint(f)}
           onOpenFile={onOpenFile}
         />
       ))}
@@ -378,10 +417,12 @@ function UnmeasuredList({
 function FileRow({
   file,
   trailing,
+  hint = null,
   onOpenFile,
 }: {
   file: PatchCoverageFile;
   trailing: string;
+  hint?: PatchCoverageTestHint | null;
   onOpenFile: OpenFile;
 }) {
   const body = (
@@ -412,7 +453,27 @@ function FileRow({
           {body}
         </div>
       )}
+      {hint && <HintLine hint={hint} />}
     </li>
+  );
+}
+
+/** Where to add the missing test: the file's first hint, one line under its row. */
+function HintLine({ hint }: { hint: PatchCoverageTestHint }) {
+  const test = hint.tests[0];
+  return (
+    <p
+      title={hintText(hint)}
+      className="truncate px-1.5 pb-1 text-xs text-[var(--color-text-tertiary)]"
+    >
+      {test ? (
+        <>
+          extend <span className="font-mono">{test}</span> · {hintReason(hint)}
+        </>
+      ) : (
+        hintReason(hint)
+      )}
+    </p>
   );
 }
 

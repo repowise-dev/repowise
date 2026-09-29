@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 from repowise.core.analysis.patch_coverage.compute import FileStatus, GateStatus
+from repowise.core.analysis.patch_coverage.hints import HintBasis
 from repowise.core.analysis.patch_coverage.risk import RiskBasis
 
 
@@ -33,6 +34,23 @@ class PatchCoverageFileRisk(_Strict):
     reasons: list[str]
 
 
+class PatchCoverageTestHint(_Strict):
+    """Where to extend the tests for one uncovered range."""
+
+    #: Inclusive ``[start, end]``, one of the row's ``uncovered_ranges``.
+    range: list[int]
+    #: Innermost indexed symbol containing the range start; null outside any.
+    symbol: str | None
+    #: Up to three test files, best first.
+    tests: list[str]
+    #: ``per_test`` (measured per-test coverage of the same symbol or nearby
+    #: lines) beats ``call_graph`` (tests reaching the symbol), which beats
+    #: ``import_graph`` (tests importing the file); ``none`` names no test.
+    basis: HintBasis
+    #: How many test files qualified before the cap.
+    total: int
+
+
 class PatchCoverageFile(_Strict):
     file_path: str
     status: FileStatus
@@ -45,6 +63,8 @@ class PatchCoverageFile(_Strict):
     uncovered_ranges: list[list[int]]
     #: Null when the file's risk was not assessed.
     risk: PatchCoverageFileRisk | None
+    #: One per uncovered range (the first eight); null without an index.
+    hints: list[PatchCoverageTestHint] | None
 
 
 class PatchCoverageFileCounts(_Strict):

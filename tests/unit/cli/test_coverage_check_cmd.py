@@ -71,6 +71,8 @@ def test_json_reports_patch_coverage_without_an_index(repo) -> None:
     assert data["file_counts"]["out_of_scope"] == 1
     assert data["scope"]["label"] == "main...feat"
     assert data["scope"]["reports"] == [report]
+    # No index, no hints: null, never an empty "nothing to suggest".
+    assert all(f["hints"] is None for f in data["files"])
 
 
 def test_gate_fails_below_threshold(repo) -> None:
@@ -437,6 +439,72 @@ def test_an_unreadable_index_still_gates_on_git_risk(fixed_repo, monkeypatch) ->
     data = json.loads(result.stdout)
     assert data["files"][0]["risk"]["basis"] == "git"
     assert data["risky"]["gate"] == "fail"
+
+
+def _with_index(monkeypatch, read_hints) -> None:
+    from contextlib import asynccontextmanager
+
+    import repowise.cli.commands.coverage_check_cmd as cmd
+    import repowise.core.analysis.patch_coverage as pc_module
+
+    @asynccontextmanager
+    async def _opened(_root):
+        yield object(), "r"
+
+    async def _no_facts(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(cmd, "has_db_store", lambda _root: True)
+    monkeypatch.setattr(cmd, "repo_index_session", _opened)
+    monkeypatch.setattr(pc_module, "read_index_facts", _no_facts)
+    monkeypatch.setattr(pc_module, "read_test_hints", read_hints)
+
+
+def test_an_index_names_the_test_to_extend(repo, monkeypatch, tmp_path_factory) -> None:
+    from repowise.core.analysis.patch_coverage import TestHint
+
+    async def _hints(_session, _repo_id, _pc, **kwargs):
+        # The checkout and head go along so stored spans can be moved to them.
+        assert kwargs["repo_path"] and kwargs["head_commit"]
+        return {
+            "src/app.py": (
+                TestHint((3, 3), "main", ("tests/test_app.py",), "call_graph", 1),
+            )
+        }
+
+    _with_index(monkeypatch, _hints)
+    report = _lcov(repo, {2: 1, 3: 0})
+    summary = tmp_path_factory.mktemp("gh") / "summary.md"
+
+    data = json.loads(_run(repo, "main...feat", "--report", report, "--format", "json").stdout)
+    app = next(f for f in data["files"] if f["file_path"] == "src/app.py")
+    assert app["hints"][0]["tests"] == ["tests/test_app.py"]
+    github = _run(
+        repo, "main...feat", "--report", report, "--format", "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert "not covered by tests. Extend tests/test_app.py (inferred: calls reach `main`)" in (
+        github.stdout
+    )
+    assert "extend tests/test_app.py (inferred: calls reach `main`)" in summary.read_text(
+        encoding="utf-8"
+    )
+    table = _run(repo, "main...feat", "--report", report)
+    assert "tests/test_app.py" in table.output
+
+
+def test_an_unreadable_index_leaves_hints_null_and_the_gate_alone(repo, monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    async def _raise(*_a, **_k):
+        raise OperationalError("select", {}, Exception("no such table: wiki_symbols"))
+
+    _with_index(monkeypatch, _raise)
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    result = _run(repo, "main...feat", "--report", report, "--fail-under", "80", "--format", "json")
+    assert result.exit_code == 1, result.output
+    assert all(f["hints"] is None for f in json.loads(result.stdout)["files"])
 
 
 def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:

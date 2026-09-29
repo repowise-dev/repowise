@@ -85,6 +85,47 @@ def _render_action(action: ReviewAction, inspected: int) -> str | None:
     return action.explanation
 
 
+def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
+    """The next action for uncovered changed lines, or ``None`` when there are none.
+
+    Names the scope and the tests to extend from the rows' hints, riskiest
+    file first, so the agent writes the missing test where the suite already
+    exercises the code. Stale coverage leads instead: its gaps are not real yet.
+    """
+    uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
+    if uncovered <= 0:
+        return None
+    lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
+    lines += _scope_words(block["scope"].get("label") or "")
+    if block["scope"]["freshness"] == "stale":
+        # Stale line numbers describe other code: the fix is a fresh run first.
+        return (
+            "Stored coverage predates this change: re-run the tests with coverage, then "
+            "`repowise coverage add` (the hook does it automatically) and call again "
+            f"({lines} read as uncovered until then)"
+        )
+    tests = _hinted_tests(block["files"])
+    text = f"{lines} {'is' if uncovered == 1 else 'are'} uncovered; "
+    if tests:
+        return text + f"extend {', '.join(tests[:_TESTS_SHOWN])}"
+    return text + "add tests for them (patch_coverage.files)"
+
+
+def _hinted_tests(rows: list[dict[str, Any]]) -> list[str]:
+    """Each hint's first test, in row order (riskiest file first), once each."""
+    firsts = (hint["tests"][0] for row in rows for hint in row.get("hints") or () if hint["tests"])
+    return list(dict.fromkeys(firsts))
+
+
+def _scope_words(label: str) -> str:
+    """``" since origin/main"`` for a branch diff, ``" in <label>"`` otherwise."""
+    if "..." in label:
+        return f" since {label.split('...', 1)[0]}"
+    if label == "working tree":
+        return " in the working tree"
+    return f" in {label}" if label else ""
+
+
 def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict[str, Any]:
     """The compact delta: what got worse, how much was compared, and how sure."""
     emitted = delta.findings[:TOP_FINDINGS_LIMIT]

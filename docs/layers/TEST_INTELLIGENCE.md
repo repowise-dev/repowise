@@ -318,6 +318,38 @@ set, a shallow clone or a measured row whose risk could not be read exits `2`,
 unless the flat or a path-scoped gate already failed, which is then reported
 as the failure.
 
+### Where to add the test
+
+With an index, each uncovered range also says where its test belongs, naming
+the test file to extend when one is found (`hints` on each measured row in
+`json`, the REST response and `get_change_risk`). `hints` is `null` without an
+index or when it could not be read; a measured row with no uncovered range has
+an empty list; every uncovered range the index was asked about has a hint, with
+basis `none` when nothing names a test. A hint names the innermost indexed
+symbol containing the range (`null` outside any), up to three test files (best
+first), the `basis` that found them and `total`, how many qualified before the
+cap. Evidence is tried strongest first:
+
+| `basis` | The test files are | Evidence |
+|---|---|---|
+| `per_test` | tests the per-test map says ran other lines of that symbol, or lines within 5 of a range outside any symbol; only when the coverage is `current` for the change | measured |
+| `call_graph` | tests whose calls reach that symbol | inferred, symbol-precise |
+| `import_graph` | tests that import the file | inferred, file-level |
+| `none` | nothing names a test | the range needs a new one |
+
+The index stores symbol lines at the commit it was built from. When the change
+ends somewhere else (always, for uncommitted work), each file's symbols are
+moved through the diff from that commit, so a range in a function added since
+the index has no symbol and falls to file-level evidence.
+
+Hints cover the first 8 ranges of each file, the ones every rendering lists.
+The markdown table gains an "Extend" column ("extend tests/test_auth.py
+(inferred: calls reach `login`)", "(measured: runs other lines of `login`)",
+"(inferred: imports this file)", or "no test reaches this; add one"), the
+terminal table the same, and each GitHub annotation ends with the same phrase.
+Hints are advice: a missing or unreadable index leaves them `null` and never
+changes the verdict.
+
 A coverage.py `.coverage` database is not a text report: export it with
 `coverage lcov` or `coverage xml` first.
 
@@ -406,6 +438,52 @@ map.
 `get_change_risk` deliberately omits the CLI's filename-pattern guess. An agent
 cannot tell a guess from real coverage, and `no_coverage_data` already reports
 those files honestly.
+
+### Self-checking before a push
+
+`get_change_risk` without a `revspec` measures its `patch_coverage` block over
+everything a push would bring, diffed from the merge-base with the branch CI
+would compare against (the CI base variables, else the default branch). On a
+dirty tree that is the working tree, untracked files included, labelled e.g.
+`origin/main...working tree`; on a clean one it is `origin/main...HEAD`, so the
+check does not shrink to the last commit once the work is committed. With no
+base to find, it falls back to the plain working-tree diff (`working tree`) or
+the commit scored. No commit names uncommitted code, so its freshness is by
+time: `current` when the last coverage ingest came after the newest
+modification of the changed files on disk, else `stale`. Ceiling: an old
+report ingested after the last edit also reads current, because the report's
+own run time is not stored; the hook below only ingests reports newer than the
+last ingest, which keeps that case rare. Committed changes keep the commit
+rule above. When changed lines are uncovered, the directive gains one
+`next_actions` line: "N changed executable lines since origin/main are
+uncovered; extend <the hinted tests>", or, when the coverage is stale, a line
+saying to re-run the tests with coverage first.
+
+The loop closes itself in Claude Code and Codex. After a Bash command that
+runs a whole test suite, such as `pytest`, `python -m pytest`,
+`coverage run -m pytest`, `go test ./...`, `npm test`, `npx vitest run`,
+`jest`, `cargo test`, `cargo llvm-cov`, `mvn test` or `./gradlew test`, the
+augment hook checks the aggregate reports (`coverage.paths`, else the fixed
+default locations such as `coverage/lcov.info`, `coverage.xml` and
+`coverage.out`). When some are newer than the index's last coverage ingest, it
+starts `repowise coverage add` on exactly those reports in the background and
+adds one line to the transcript: "Re-ingesting coverage from
+coverage/lcov.info in the background (log: .repowise/.coverage.log);
+get_change_risk reads it once the ingest finishes."
+
+The ingest replaces the stored coverage, so the hook is conservative. It acts
+only in a repository that has ingested coverage before, only on a run that
+does not target some tests (a path, a `::` node id, `-k`, `-run`, `-t`,
+`--testNamePattern` or `--filter` makes a run partial, and a partial report
+must not replace full-suite coverage), never on a coverage.py `.coverage`
+database alone, and not when discovery is customised (`auto_discover: false`
+without `paths`, or custom `artifacts` globs). A `.repowise/.coverage.queued`
+marker keeps a second test run from spawning over an ingest already running
+for the same reports. It costs a few file stats and one SQLite read, only
+after a test command, and reads only a repo-local index. A report that only a
+`**` discovery pattern finds is not watched: name it in `coverage.paths`. Turn
+it off with `hooks.coverage_reingest: false` in `.repowise/config.yaml`
+(`REPOWISE_HOOK_COVERAGE_REINGEST=0` for one session).
 
 ## The inferred tier: no coverage report needed
 

@@ -426,7 +426,9 @@ dependents", "none known", or "unknown" when it could not be read). A file is
 risky when the index flags it a hotspot or a bug magnet; without an index, or
 for a file the change adds, when its recency-weighted bug-fix weight from git
 is in the top quartile of the files with bug-fix history. The report says
-which basis each row used when not every file had index data.
+which basis each row used when not every file had index data. When an index is
+present, each annotation also names the test file to extend when one is found
+("Extend tests/test_auth.py (inferred: calls reach `login`)").
 
 `--fail-under-risky` (the action's `coverage-fail-under-risky`) adds one more
 gate, stricter, over the risky files' changed lines alone, and the check fails

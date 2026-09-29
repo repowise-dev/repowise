@@ -526,3 +526,233 @@ async def test_patch_coverage_files_are_capped_to_what_needs_attention(
     # Totals still count every file, the fully covered one included.
     assert block["file_counts"]["measured"] == 16
     assert block["coverable_line_count"] == 16
+
+
+async def _stored_repo(monkeypatch, session, tmp_path, **save_kwargs):
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files, upsert_repository
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    await save_coverage_files(
+        session,
+        repo.id,
+        [file_coverage("a.py", [1], [1, 2])],
+        source_format="lcov",
+        ingested_commit_sha="abc",
+        **save_kwargs,
+    )
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_the_test_to_extend(
+    monkeypatch, factory, session, tmp_path
+):
+    import repowise.core.analysis.patch_coverage as pc_module
+    from repowise.core import git_refs
+    from repowise.core.analysis.patch_coverage import TestHint
+
+    await _stored_repo(monkeypatch, session, tmp_path)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    seen: dict = {}
+
+    async def _hints(_session, _repo_id, _pc, **kwargs):
+        seen.update(kwargs)
+        return {"a.py": (TestHint((2, 2), "run", ("tests/test_a.py",), "call_graph", 4),)}
+
+    monkeypatch.setattr(pc_module, "read_test_hints", _hints)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+    assert block["files"][0]["hints"] == [
+        {"range": [2, 2], "symbol": "run", "tests": ["tests/test_a.py"],
+         "basis": "call_graph", "total": 4}
+    ]
+    # The checkout goes along so spans stored at the indexed commit can move.
+    assert seen == {"repo_path": str(tmp_path), "head_commit": "abc", "working_tree": False}
+
+    async def _unreadable(*_a, **_k):
+        return None  # read_test_hints logs its own failure and answers None
+
+    # An index that cannot answer leaves hints null and the figure intact.
+    monkeypatch.setattr(pc_module, "read_test_hints", _unreadable)
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+    assert block["patch_coverage_pct"] == 50.0
+    assert block["files"][0]["hints"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_hint_read_is_logged_and_reads_as_none(monkeypatch):
+    import repowise.core.analysis.patch_coverage.hints as hints_module
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import compute_patch_coverage, read_test_hints
+
+    async def _raise(*_a, **_k):
+        raise OperationalError("select", {}, Exception("no such table: wiki_symbols"))
+
+    monkeypatch.setattr(hints_module, "_read_test_hints", _raise)
+    # Record the call itself: whether a log record reaches caplog depends on how
+    # earlier tests configured logging, which a full run changes.
+    warned: list[str] = []
+    monkeypatch.setattr(hints_module.log, "warning", lambda event, **_k: warned.append(event))
+    pc = compute_patch_coverage({"a.py": {1}}, {"a.py": file_coverage("a.py", [], [1])})
+    assert await read_test_hints(object(), "r", pc) is None
+    assert warned == ["patch_coverage_hints_failed"]
+
+
+@pytest.mark.asyncio
+async def test_working_tree_coverage_is_current_only_when_ingested_after_the_last_edit(
+    monkeypatch, factory, session, tmp_path
+):
+    import os
+    from datetime import UTC, datetime
+
+    ingested = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    await _stored_repo(monkeypatch, session, tmp_path, ingested_at=ingested)
+    source = tmp_path / "a.py"
+    source.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    async def _block():
+        return await tool._patch_coverage_block(
+            ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True),
+            _collector(tmp_path), label="origin/main...working tree",
+        )
+
+    os.utime(source, (ingested.timestamp() - 60,) * 2)
+    before = await _block()
+    assert before["scope"]["label"] == "origin/main...working tree"
+    assert before["scope"]["freshness"] == "current"
+    os.utime(source, (ingested.timestamp() + 60,) * 2)
+    assert (await _block())["scope"]["freshness"] == "stale"
+
+
+def test_push_base_is_the_ci_base_else_head(monkeypatch):
+    import repowise.core.ci.base as ci_base
+
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "origin/main...HEAD")
+    assert tool._push_base("/repo") == "origin/main"
+
+    def _none(_root):
+        raise ci_base.BaseNotFoundError("no base")
+
+    monkeypatch.setattr(ci_base, "default_revspec", _none)
+    assert tool._push_base("/repo") == "HEAD"
+
+
+def _patch_block(
+    covered: int, coverable: int, hints=None, freshness="current", label="origin/main...HEAD"
+) -> dict:
+    return {
+        "covered_line_count": covered,
+        "coverable_line_count": coverable,
+        "scope": {"freshness": freshness, "label": label},
+        "files": [{"hints": hints}],
+    }
+
+
+def test_the_directive_names_the_scope_and_the_tests_to_extend():
+    from repowise.server.mcp_server._change_health import patch_coverage_action
+
+    assert patch_coverage_action(None) is None
+    assert patch_coverage_action(_patch_block(3, 3)) is None
+    hints = [
+        {"tests": ["tests/test_a.py", "tests/test_b.py"]},
+        {"tests": ["tests/test_a.py"]},
+        {"tests": ["tests/test_c.py"]},
+    ]
+    assert patch_coverage_action(_patch_block(1, 3, hints)) == (
+        "2 changed executable lines since origin/main are uncovered; "
+        "extend tests/test_a.py, tests/test_c.py"
+    )
+    assert patch_coverage_action(_patch_block(0, 1, label="working tree")) == (
+        "1 changed executable line in the working tree is uncovered; "
+        "add tests for them (patch_coverage.files)"
+    )
+    # Stale coverage leads: its gaps are not real until the tests run again.
+    assert patch_coverage_action(_patch_block(0, 1, hints, freshness="stale")).startswith(
+        "Stored coverage predates this change: re-run the tests with coverage, then "
+        "`repowise coverage add`"
+    )
+
+
+def _git(cwd, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def branch_repo(tmp_path, monkeypatch):
+    """``main`` has a.py; branch ``feat`` committed line 2; the push base is main."""
+    import repowise.core.ci.base as ci_base
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "a.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "init")
+    _git(tmp_path, "switch", "-qc", "feat")
+    (tmp_path / "a.py").write_text("a = 1\nb = 22\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "feat")
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "main...HEAD")
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_no_revspec_measures_everything_the_push_brings(branch_repo):
+    scored = ({"a.py": {9}}, None)  # what the score read; not what the push brings
+
+    # Clean tree: the branch since main, not just the last commit.
+    clean = await tool._push_change(str(branch_repo), None, False, (), (), scored)
+    assert clean == ({"a.py": {2}}, None, "main...HEAD", "main...HEAD")
+
+    # Dirty tree: committed and uncommitted together.
+    (branch_repo / "a.py").write_text("a = 1\nb = 22\nc = 33\n", encoding="utf-8")
+    dirty = await tool._push_change(str(branch_repo), None, True, (), (), scored)
+    assert dirty[:3] == ({"a.py": {2, 3}}, None, "main...working tree")
+
+    # An explicit revspec is measured as given.
+    assert await tool._push_change(str(branch_repo), "HEAD", False, (), (), scored) == (
+        *scored, None, "HEAD",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_push_base_falls_back(branch_repo, monkeypatch):
+    import repowise.core.ci.base as ci_base
+
+    (branch_repo / "a.py").write_text("a = 1\nb = 22\nc = 33\n", encoding="utf-8")
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "gone...HEAD")
+    scored = ({"a.py": {3}}, None)
+
+    # Dirty: the plain working-tree diff, labelled as such.
+    dirty = await tool._push_change(str(branch_repo), None, True, (), (), scored)
+    assert dirty[:3] == ({"a.py": {3}}, None, "working tree")
+    # Clean: what was scored.
+    _git(branch_repo, "commit", "-qam", "more")
+    assert await tool._push_change(str(branch_repo), None, False, (), (), scored) == (
+        *scored, None, None,
+    )
+
+
+def test_the_patch_coverage_action_joins_the_directive(monkeypatch):
+    def _broken(_path):
+        raise RuntimeError("no comparison")
+
+    monkeypatch.setattr(tool, "_delta_service", _broken)
+    delta = tool._compare_health("/repo", None, (), ())
+    payload = {"patch_coverage": _patch_block(1, 2, [{"tests": ["tests/test_a.py"]}])}
+
+    tool._attach_health(payload, delta, None, expand=False)
+    assert payload["directive"]["next_actions"][-1] == (
+        "1 changed executable line since origin/main is uncovered; extend tests/test_a.py"
+    )

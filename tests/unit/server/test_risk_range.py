@@ -272,6 +272,10 @@ async def test_patch_coverage_reads_stored_coverage(
     # The index has no git row for a file the change adds, so git alone answers.
     assert data["files"][0]["risk"]["basis"] == "git"
     assert data["risky"]["file_count"] == 0
+    # The index knows no symbol or test here: a hint that honestly names none.
+    assert data["files"][0]["hints"] == [
+        {"range": [3, 3], "symbol": None, "tests": [], "basis": "none", "total": 0}
+    ]
     assert (await client.get(url, params={"base": "nope"})).status_code == 400
 
     # The repository's coverage config reaches the stored-coverage surface as
