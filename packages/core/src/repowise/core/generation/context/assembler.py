@@ -452,11 +452,8 @@ class ContextAssembler:
     ) -> SymbolSpotlightContext:
         """Assemble context for the symbol_spotlight template."""
         path = parsed.file_info.path
-        # Callers = files that import the containing file (in-edges)
-        if path in graph:
-            callers = [e for e in graph.predecessors(path) if not is_external(e)]
-        else:
-            callers = []
+        # The file page's own importer list, so the two pages report one count.
+        callers = file_dependency_neighbors(graph, path, incoming=True)
 
         call_sites = _resolved_call_sites(symbol, graph)
 

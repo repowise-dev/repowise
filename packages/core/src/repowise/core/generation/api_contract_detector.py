@@ -1,13 +1,13 @@
 """Cross-language API-contract detection for ParsedFile objects.
 
-Traverser sets ``FileInfo.is_api_contract = True`` for OpenAPI/Swagger/proto/
-GraphQL files purely from filename/extension. That misses framework-defined
+Traverser sets ``FileInfo.is_api_contract = True`` for non-test OpenAPI/Swagger/
+proto/GraphQL spec files from extension and filename. That misses framework-defined
 HTTP surfaces (FastAPI routers, ASP.NET controllers, etc.) where the contract
 is expressed in code, not in a schema file.
 
 This module runs after parsing and flips ``is_api_contract`` for those code
-files based on small per-language heuristics that read only the parsed
-``Symbol``/``Import`` data — no source re-read, no LLM call.
+non-test files that declare at least one operation, using small per-language
+heuristics that read only the parsed ``Symbol``/``Import``/heritage data — no source re-read, no LLM call.
 
 Adding a new framework: write a ``Detector`` callable and register it in
 ``_DETECTORS`` keyed by ``LanguageTag``. Keep the heuristic conservative —
@@ -24,6 +24,14 @@ from repowise.core.ingestion.models import ParsedFile
 Detector = Callable[[ParsedFile], bool]
 
 
+_HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "api_route"})
+
+
+def _decorator_name(dec: str) -> str:
+    """``@router.get('/x')`` -> ``router.get``; ``[HttpGet("x")]`` -> ``HttpGet``."""
+    return dec.lstrip("@[").split("(", 1)[0].rstrip("]")
+
+
 def _python_is_fastapi_router(parsed: ParsedFile) -> bool:
     # The parser sometimes resolves "from fastapi import APIRouter" with
     # module_path = "fastapi" and imported_names = ["APIRouter"], and
@@ -35,38 +43,42 @@ def _python_is_fastapi_router(parsed: ParsedFile) -> bool:
     )
     if not imports_fastapi:
         return False
-    fastapi_names = {"APIRouter", "FastAPI"}
-    for imp in parsed.imports:
-        if set(imp.imported_names) & fastapi_names:
-            return True
-    # Decorator form: any symbol decorated with @router.get / @app.post / etc.
+    # The contract is the operations: a file that only builds the app or mounts
+    # routers declares none (``@router.get`` / ``@app.post`` and friends).
     for sym in parsed.symbols:
         for dec in sym.decorators:
-            head = dec.lstrip("@").split("(", 1)[0]
-            if "." in head and head.rsplit(".", 1)[1] in {
-                "get", "post", "put", "patch", "delete", "head", "options",
-            }:
+            head = _decorator_name(dec)
+            if "." in head and head.rsplit(".", 1)[1] in _HTTP_VERBS:
                 return True
     return False
 
 
-_ASPNET_CONTROLLER_BASES = frozenset({"ControllerBase", "Controller", "ApiController"})
-_ASPNET_ATTRIBUTES = frozenset({"ApiController", "Route", "HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpPatch"})
+_ASPNET_CONTROLLER_BASES = frozenset({"ControllerBase", "Controller"})
+_ASPNET_CLASS_ATTRIBUTES = frozenset({"ApiController", "Route"})
+_ASPNET_ACTION_ATTRIBUTES = frozenset(
+    {"HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpPatch", "HttpHead", "HttpOptions"}
+)
 
 
 def _csharp_is_aspnet_controller(parsed: ParsedFile) -> bool:
-    for sym in parsed.symbols:
-        if sym.kind != "class":
-            continue
-        # Inheritance encoded in signature as ": Base" / ", Interface" in C#.
-        sig = sym.signature or ""
-        if any(base in sig for base in _ASPNET_CONTROLLER_BASES):
-            return True
-        for dec in sym.decorators:
-            attr = dec.lstrip("@").lstrip("[").split("(", 1)[0].rstrip("]")
-            if attr in _ASPNET_ATTRIBUTES:
-                return True
-    return False
+    controllers = {
+        h.child_name for h in parsed.heritage if h.parent_name in _ASPNET_CONTROLLER_BASES
+    }
+    controllers.update(
+        sym.name
+        for sym in parsed.symbols
+        if sym.kind == "class"
+        and any(_decorator_name(d) in _ASPNET_CLASS_ATTRIBUTES for d in sym.decorators)
+    )
+    # An operation: a verb-attributed method, or a public action on a controller.
+    return any(
+        sym.kind == "method"
+        and (
+            any(_decorator_name(d) in _ASPNET_ACTION_ATTRIBUTES for d in sym.decorators)
+            or (sym.visibility == "public" and sym.parent_name in controllers)
+        )
+        for sym in parsed.symbols
+    )
 
 
 _DETECTORS: dict[str, Detector] = {
@@ -83,7 +95,8 @@ def detect_code_api_contracts(parsed_files: list[ParsedFile]) -> int:
     """
     flipped = 0
     for pf in parsed_files:
-        if pf.file_info.is_api_contract:
+        # A test that calls an API is not its contract.
+        if pf.file_info.is_api_contract or pf.file_info.is_test:
             continue
         detector = _DETECTORS.get(pf.file_info.language)
         if detector is None:

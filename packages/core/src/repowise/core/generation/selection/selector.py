@@ -16,7 +16,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
-from repowise.core.ingestion.package_roots import package_roots_from_paths
+from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
@@ -45,9 +45,8 @@ _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 # Top-level directories whose contents document or illustrate the repository
 # rather than being it. Matched as a whole first path segment only. See
 # ``_is_support_file`` for why the anchoring is the point.
-_SUPPORT_ROOT_DIRS = frozenset(
-    {"docs", "doc", "documentation", "docs_src", "examples", "example", "samples", "sample"}
-)
+_DOC_ROOT_DIRS = frozenset({"docs", "doc", "documentation"})
+_SUPPORT_ROOT_DIRS = _DOC_ROOT_DIRS | {"docs_src", "examples", "example", "samples", "sample"}
 
 
 # ---------------------------------------------------------------------------
@@ -280,13 +279,11 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(
-        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
-    )
+    return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
 
 
-def _passes_importance_floor(path: str) -> bool:
-    """Whether *path* is worth a file page at all.
+def _passes_importance_floor(parsed: Any) -> bool:
+    """Whether *parsed* is worth a file page at all.
 
     Two exclusions, both measured rather than assumed: test files and pure
     ``__init__.py`` re-export files. Pages for either only dilute retrieval
@@ -298,11 +295,14 @@ def _passes_importance_floor(path: str) -> bool:
     more because every file that clears this floor gets a page, so the floor is
     now simply what file-page selection means. The rule is unchanged; only the
     set it applies to grew from the remainder to the whole.
+
+    Tests are read off ``FileInfo.is_test``, the flag ingestion stamps once, so
+    ``e2e-tests/`` and ``foo.spec.ts`` are caught exactly as everywhere else.
     """
-    norm = path.replace("\\", "/")
-    if norm.startswith("tests/") or "/tests/" in norm:
+    fi = parsed.file_info
+    if fi.is_test:
         return False
-    return norm.rsplit("/", 1)[-1] != "__init__.py"
+    return fi.path.replace("\\", "/").rsplit("/", 1)[-1] != "__init__.py"
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +323,9 @@ def _build_file_candidates(
     for p in inputs.parsed_files:
         if not _is_code_file(p):
             continue
-        path = p.file_info.path
-        if not _passes_importance_floor(path):
+        if not _passes_importance_floor(p):
             continue
+        path = p.file_info.path
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(
             p,
@@ -365,6 +365,7 @@ def _build_symbol_candidates(
 ) -> list[tuple[float, tuple[str, str]]]:
     """Return ``[(score, (file_path, symbol_name)), ...]`` descending."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
+    test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
@@ -400,11 +401,11 @@ def _build_symbol_candidates(
     pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
     if pct <= 0:
         return []
-    if pct >= 1.0:
-        return deduped
     # At least one, so a repo with few public symbols still gets a spotlight.
-    keep = max(1, int(len(deduped) * pct))
-    return deduped[:keep]
+    keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
+    # Sized on the whole pool so production never loses a slot it had; tests only
+    # hand theirs to the next production symbol.
+    return [c for c in deduped if c[1][0] not in test_paths][:keep]
 
 
 def _layer_map_from_kg(
@@ -432,7 +433,24 @@ def _layer_map_from_kg(
     return layer_of_file, labels
 
 
-def _is_support_file(path: str) -> bool:
+def _doc_app_roots(parsed_files: list[Any]) -> frozenset[str]:
+    """Top-level doc directories that hold their own package manifest.
+
+    A ``docs/package.json`` makes ``docs/`` a separately built app (a docs
+    site), which is part of the subject. Read from the parsed file list, so a
+    manifest the traverser drops (``go.mod``, ``Gemfile``) is not seen here;
+    a docs app is in practice an npm or Python package.
+    """
+    names = package_manifest_names()
+    roots: set[str] = set()
+    for p in parsed_files:
+        head, sep, rest = p.file_info.path.partition("/")
+        if sep and rest in names and head.lower() in _DOC_ROOT_DIRS:
+            roots.add(head.lower())
+    return frozenset(roots)
+
+
+def _is_support_file(path: str, doc_app_roots: frozenset[str]) -> bool:
     """Whether *path* is documentation or example source rather than the subject.
 
     Anchored at the repository root and matched on whole path segments, which
@@ -447,10 +465,11 @@ def _is_support_file(path: str) -> bool:
     concept query on vocabulary without answering how the system works, and a
     wiki that documents its subject's documentation has said nothing about the
     subject. They keep their deterministic file pages, so nothing becomes
-    unreachable.
+    unreachable. A doc directory in *doc_app_roots* is an app, not prose, and
+    stays in (see :func:`_doc_app_roots`).
     """
     head = path.split("/", 1)[0].lower()
-    return head in _SUPPORT_ROOT_DIRS
+    return head in _SUPPORT_ROOT_DIRS and head not in doc_app_roots
 
 
 def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
@@ -479,7 +498,8 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         for p in inputs.parsed_files
         if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
     ]
-    files = [p for p in production if not _is_support_file(p)]
+    doc_apps = _doc_app_roots(inputs.parsed_files)
+    files = [p for p in production if not _is_support_file(p, doc_apps)]
     if not files:
         # A repository whose production code is entirely under one of those
         # roots. Documenting the docs is a bad wiki; having no wiki at all is

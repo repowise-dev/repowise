@@ -1490,3 +1490,45 @@ class TestPackageScanPruning:
         tv = FileTraverser(tmp_path)
         language, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
         assert language == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# API contract flag
+# ---------------------------------------------------------------------------
+
+_YAML_SPEC = "openapi: 3.0.0\ninfo:\n  title: t\npaths: {}\n"
+_JSON_SPEC = '{"swagger": "2.0", "paths": {}}\n'
+_PROTO = "syntax = 'proto3';\n"
+
+
+class TestApiContractFlag:
+    @pytest.mark.parametrize(
+        ("path", "content", "expected"),
+        [
+            ("api/openapi.yaml", _YAML_SPEC, True),
+            ("public/openapi-webhooks.json", _JSON_SPEC, True),
+            ("gen/echo.swagger.json", '{\n  "swagger": "2.0",\n  "info": {}\n}\n', True),
+            ("api.json", _JSON_SPEC, True),
+            ("proto/service.proto", _PROTO, True),
+            ("schema/schema.graphql", "type Query { a: Int }\n", True),
+            # Named after the format, but a generator config rather than a spec.
+            ("proto/openapi_merge.buf.gen.yaml", "plugins:\n  - local: protoc-gen-openapiv2\n", False),
+            ("swagger-config.yaml", "url: /openapi.json\n", False),
+            # Code named after a spec reads or builds one; it is not the spec.
+            ("lib/openapi.ts", "export {}\n", False),
+            ("scripts/fetch-openapi.mjs", "export {}\n", False),
+            ("pkg/utils/openapi.py", "x = 1\n", False),
+            # Whole words: a config variant is not a spec.
+            ("tsconfig.api.json", _JSON_SPEC, False),
+            # A test that exercises a spec is not the spec.
+            ("tests/test_openapi.py", "x = 1\n", False),
+            ("tests/api/openapi.yaml", _YAML_SPEC, False),
+            ("src/test/protobuf/bag.proto", _PROTO, False),
+        ],
+    )
+    def test_flag(self, tmp_path: Path, path: str, content: str, expected: bool) -> None:
+        f = tmp_path / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        by_path = {fi.path: fi for fi in FileTraverser(tmp_path).traverse()}
+        assert by_path[path].is_api_contract is expected

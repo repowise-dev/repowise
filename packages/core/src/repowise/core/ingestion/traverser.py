@@ -793,6 +793,7 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
+        is_test = is_test_related_path(rel_str, language)
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -800,9 +801,9 @@ class FileTraverser:
             size_bytes=size_bytes,
             git_hash="",
             last_modified=datetime.fromtimestamp(stat.st_mtime),
-            is_test=is_test_related_path(rel_str, language),
+            is_test=is_test,
             is_config=_is_config_file(language),
-            is_api_contract=_is_api_contract(abs_path, language),
+            is_api_contract=not is_test and _is_api_contract(abs_path, language),
             is_entry_point=_is_entry_point(rel_str, abs_path, language) or manifest_entry,
             is_manifest_entry=manifest_entry,
         )
@@ -1107,14 +1108,30 @@ def _is_config_file(language: LanguageTag) -> bool:
     return language in ("yaml", "toml", "json", "dockerfile", "makefile")
 
 
+# A spec named in its filename is a data file; ``openapi.ts`` is code that reads
+# one, and a code file earns the flag only from its routes (api_contract_detector).
+_API_SPEC_LANGUAGES: frozenset[str] = frozenset({"yaml", "json"})
+_API_SPEC_NAME_WORDS: frozenset[str] = frozenset({"openapi", "swagger"})
+# The version key every OpenAPI/Swagger document carries (``openapi: 3.1.0``,
+# ``"swagger": "2.0"``); generator configs named after the format lack it.
+_API_SPEC_VERSION_KEY = re.compile(
+    rb"""^\s*\{?\s*["']?(?:openapi|swagger)["']?\s*:\s*["']?\d""", re.M
+)
+
+
 def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool:
     if language in ("proto", "graphql"):
         return True
-    name_lower = abs_path.name.lower()
-    return any(
-        marker in name_lower
-        for marker in ("openapi", "swagger", "schema.graphql", "api.yaml", "api.json")
-    )
+    if language not in _API_SPEC_LANGUAGES:
+        return False
+    stem = abs_path.name.lower().rsplit(".", 1)[0]
+    # Whole words only: ``tsconfig.api.json`` is not an API spec, ``api.yaml`` may be.
+    if stem != "api" and _API_SPEC_NAME_WORDS.isdisjoint(re.split(r"[-_.]+", stem)):
+        return False
+    try:
+        return _API_SPEC_VERSION_KEY.search(abs_path.read_bytes()) is not None
+    except OSError:
+        return False
 
 
 def _stem_is_entry_point(abs_path: Path) -> bool:
