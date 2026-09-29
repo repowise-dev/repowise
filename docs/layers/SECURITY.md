@@ -51,21 +51,21 @@ Findings also appear on the Security tab of the code-health page, and at
 
 Twenty-two patterns plus a symbol-name scan, giving twenty-three kinds across
 three severities. Severity is a fixed property of the pattern, with one
-exception: a secret kind found in test material, or under a directory named
+exception: any finding in test material, or under a directory named
 `test`, `tests`, `__tests__`, `__test__`, `fixtures`, `__fixtures__`, `spec`,
 `specs`, `mock`, `mocks`, `__mocks__`, `example` or `examples`, is recorded at
-`low`, since those are mostly fake keys but a real one is still
-worth seeing. Nothing is scored, ranked, or aggregated.
+`low`. Keys there are mostly fake and calls there do not ship, but a real one
+is still worth seeing. Nothing is scored, ranked, or aggregated.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`, `foo.bar.eval(`) |
-| `exec_call` | high | `exec(...)`, same receiver handling. Outside Python only in a file that names `child_process`, and there also `execFile` / `execSync` |
+| `exec_call` | high | `exec(...)`, same receiver handling. Outside Python only a call through a name bound to `child_process` (a namespace, a named import, or the `require` result), covering `execFile` / `execSync` too |
 | `pickle_loads` | high | `pickle.loads` |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, including across physical lines |
 | `os_system` | high | `os.system` |
-| `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case |
-| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key`. A snake_case value (a constant holding a key's name) or a template placeholder (`{{ ... }}`, `${...}`) is skipped, and a value one of the vendor kinds below already reports is not reported twice |
+| `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case, where the name is code (not inside a comment, docstring or string) |
+| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key`. A snake_case value (a constant holding a key's name) or a template placeholder (`{{ ... }}`, `${...}`, `$(...)`) is skipped, and a value one of the vendor kinds below already reports is not reported twice |
 | `aws_access_key` | high | an AWS access key ID (`AKIA`/`ASIA` + 16 chars), regardless of variable name |
 | `github_token` | high | a GitHub PAT, OAuth, app, or refresh token (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), regardless of variable name |
 | `slack_token` | high | a Slack token (`xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`), regardless of variable name |
@@ -78,7 +78,7 @@ worth seeing. Nothing is scored, ranked, or aggregated.
 | `weak_hash` | low | the words `md5` or `sha1` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML` shape) assigned a non-literal value |
 | `template_literal_sql` | med | a JS/TS template literal containing `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `public_env_secret` | high | a secret-shaped name (`API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`) behind a `NEXT_PUBLIC_` or `VITE_` prefix, excluding `..._ANON_...` |
+| `public_env_secret` | high | a secret-shaped name (`API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`) behind a `NEXT_PUBLIC_` or `VITE_` prefix, excluding `..._ANON_...`, outside comments |
 | `new_function_call` | high | `new Function(...)` |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `security_sensitive_symbol` | low | a symbol whose name contains `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
@@ -93,10 +93,25 @@ they are found by walking the AST, so a match is a real call rather than a
 substring, with a bounded lexical fallback when the file does not parse. Other
 languages get the lexical path, over source with comments and string literals
 masked out, so an `eval(` inside a comment does not fire. Outside Python
-`exec_call` carries one more condition: the file has to name `child_process`,
-searched in raw source because the module usually arrives as a string literal
-that masking would blank. Every other pattern in the table is a plain regex over
-one line of raw source, comments included.
+`exec_call` carries one more condition: the call has to go through a name the
+file binds to `child_process`. The imports are read from raw source because the
+module arrives as a string literal that masking would blank.
+
+**Text that describes code is not code.** `pickle_loads`, `os_system`,
+`subprocess_shell_true` and `new_function_call` match over the same masked source, so a docstring or a
+comment naming the call does not fire. The two keyword secret kinds need their
+name to be code, so `password = "..."` in a doctest is an example, not a
+password, and `public_env_secret` ignores a comment naming the variable. The
+vendor key shapes (`aws_access_key` and the rest) still match anywhere,
+comments included, because a real key pasted into a comment is still a leak.
+Prose files (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for secret
+kinds only.
+
+**Examples of a credential are not one.** A keyword value that is elided or
+templated (`...`, a typographic ellipsis, `<your key>`, `your-`, `xxx`,
+`example`, `placeholder`, `dummy`, `fake`, `changeme`), shorter than eight
+characters, a short single-case word (`api_key="lmstudio"`, the dummy a local
+server's client requires), or a CSS custom property (`--chart-1`) is skipped.
 
 **Two patterns see across lines.** `private_key_pem` needs the body line after
 its header, and `subprocess.run(` opening on one line with
@@ -138,27 +153,24 @@ trufflehog; history mode below is complementary to those, not a replacement.
 **Dependencies.** No CVE lookup, no advisory feed, no SBOM. Nothing here looks
 outside your source.
 
-**False positives are expected.** `weak_hash` fires on the word `md5` anywhere,
-including in a comment explaining why md5 was removed. `hardcoded_password`
-fires on test fixtures and on empty placeholder credentials. The layer reports
-signals for a human to read, and it is tuned to say too much rather than too
-little.
+**False positives are still possible.** `weak_hash` fires on the word `md5`
+anywhere, including in a comment explaining why md5 was removed. The high
+kinds are tuned the other way: a `high` should be something to act on, so a
+match that is only probably real is dropped.
 
 **Two of them are worth knowing before you read a report.**
 
 `exec` is not a global in JavaScript; the name belongs to `RegExp.prototype.exec`,
 so the receiver-chain prefix in the pattern would otherwise match
-`re.exec(expr)`, `/x/.exec(s)` and `cellPattern.exec(xml)` — ordinary parsing
-code — at `high`. Outside Python the kind is gated on the file naming
-`child_process`, which is where the dangerous call comes from. The gate is per
-file rather than per call, so a file that both spawns a process and parses text
-with regexes still reports every `exec(` in it. That residual is deliberate,
-and covered by a test rather than left implicit.
+`re.exec(expr)`, `/x/.exec(s)` and `cellPattern.exec(xml)` (ordinary parsing
+code) at `high`. Outside Python the kind is resolved through the file's own
+`child_process` bindings, which is where the dangerous call comes from: a
+file's own function named `exec`, or a regex `.exec` beside a `spawn` import,
+does not fire.
 
-The per-line patterns run on raw source, comments included. A comment that
-spells out a credential assignment reports itself as a `hardcoded_secret`, and
-`weak_hash` fires on a comment explaining why md5 was removed. Only the
-`eval`/`exec` path masks comments and string literals; nothing else does.
+The remaining per-line patterns (`weak_hash`, the SQL kinds, the TLS kinds,
+`unsafe_inner_html`) run on raw source, comments included,
+so `weak_hash` still fires on a comment explaining why md5 was removed.
 
 **Five patterns for JavaScript and TypeScript, measured the same way as the
 `exec_call` and secret-case fixes above** — a 17-repository, 1109-file corpus,
@@ -248,7 +260,7 @@ It judges what the change adds, not the repository:
   change. A code smell added and removed inside the change does not count.
 
 `--fail-on` names the lowest severity that fails (`high` by default, then
-`med`, `low`). A secret under a test, fixture, spec, mock or example path is
+`med`, `low`). A finding under a test, fixture, spec, mock or example path is
 `low` (see above), so under the default it shows as a warning and does not
 fail; pass `--fail-on low` to fail on those too. Exit codes are the ones every
 repowise CI gate uses: `0` passed,
@@ -323,7 +335,7 @@ One table, `security_findings`, written by both scan paths:
 |---|---|
 | `file_path` | Repo-relative |
 | `kind` | One of the kinds in the table above |
-| `severity` | `high`, `med`, `low`: fixed per pattern, except a secret kind in test material is `low` |
+| `severity` | `high`, `med`, `low`: fixed per pattern, except a finding in test material is `low`. The Overview reads `med` as `medium` |
 | `snippet` | Matched line, trimmed to 120 characters, credential values masked (`AKIA****`); a symbol name for `security_sensitive_symbol`. The raw value is never stored |
 | `line_number` | As of scan time; verified at serve time |
 | `commit_sha` | Empty for working-tree rows, the introducing commit for history rows |

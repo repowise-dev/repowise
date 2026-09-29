@@ -51,6 +51,10 @@ _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
     "fixture",
 )
 
+# Broader than ``is_test_related_path`` on purpose. That one asks whether a file
+# is a test and keeps bare ``fixtures/``, ``mocks/`` and ``spec/`` as production
+# outside a test tree; this asks whether a match there is probably fake, and a
+# ``high`` that is only probably real is not one to raise.
 _LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
     {
         "test",
@@ -303,7 +307,9 @@ _SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", r
 # Kinds that name a dangerous call. They are matched against source with
 # comments and string literals blanked, so a docstring, a comment or a regex
 # literal that merely mentions the call does not fire.
-_MASKED_KINDS = frozenset({"pickle_loads", "subprocess_shell_true", "os_system"})
+_MASKED_KINDS = frozenset(
+    {"pickle_loads", "subprocess_shell_true", "os_system", "new_function_call"}
+)
 
 # Prose is documentation, not executable code. Only secret kinds scan it,
 # because a key pasted into a README is still a leak.

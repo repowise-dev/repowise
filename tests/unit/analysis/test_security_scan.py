@@ -470,6 +470,8 @@ class TestScanFile:
             ("const f = new Function(body);\n", True),
             ("const f = someFunction(a, b);\n", False),
             ("class Function extends Base {}\n", False),
+            ("// never use new Function(body) here\n", False),
+            ('const doc = "new Function(body)";\n', False),
         ],
     )
     def test_new_function_call(self, source: str, expected: bool) -> None:
