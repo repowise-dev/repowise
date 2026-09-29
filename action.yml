@@ -55,6 +55,15 @@ inputs:
       bug-fix history. A change with no risky file is not gated. Empty uses
       coverage.fail_under_risky from .repowise/config.yaml, else no risky gate.
     default: ""
+  coverage-fail-under-branches:
+    description: >-
+      Minimum percent of branches taken on changed lines, judged beside patch
+      coverage and never blended into it. A change with no branching line is
+      not gated; a report without per-line branch data fails the step as
+      cannot evaluate (exit 2). Empty uses coverage.fail_under_branches from
+      .repowise/config.yaml (where missing branch data is only a note), else
+      no branch gate.
+    default: ""
   coverage-base-report:
     description: >-
       Coverage reports measured at the change's base commit (the merge-base
@@ -130,6 +139,7 @@ runs:
         COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
         COVERAGE_MIN_COVERABLE_LINES: ${{ inputs.coverage-min-coverable-lines }}
         COVERAGE_FAIL_UNDER_RISKY: ${{ inputs.coverage-fail-under-risky }}
+        COVERAGE_FAIL_UNDER_BRANCHES: ${{ inputs.coverage-fail-under-branches }}
         COVERAGE_BASE_REPORT: ${{ inputs.coverage-base-report }}
         COVERAGE_MAX_DROP: ${{ inputs.coverage-max-drop }}
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}

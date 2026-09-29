@@ -22,6 +22,16 @@ report format carries "file present, nothing executed".
 Path-scoped gates (``coverage.gates``) apply the same rule to the measured
 files their globs match. One that fails and is not informational fails the
 change, whatever the whole-change figure says.
+
+Branch coverage on changed lines is reported beside the line figure, never
+blended into it: a changed ``if`` whose other way never ran is covered as a
+line and "partly taken" as a branch. The share counts the branches on every
+changed executable line the report gives branch counts for, executed or not,
+and every line that lowers it is shown: a line that never ran is uncovered, a
+line that ran with fewer branches taken than it has is partly taken. With no
+such line it is not measured (``None``), never 0%. ``scope.branch_data`` says
+whether that is because the coverage carries no per-line branch data at all
+(a setup problem) or because no changed line branches.
 """
 
 from __future__ import annotations
@@ -46,6 +56,10 @@ if TYPE_CHECKING:
     from .risk import FileRisk
 
 FileStatus = Literal["measured", "not_in_report", "no_line_data", "no_coverable_changes"]
+#: Whether the coverage read carries per-line branch counts: ``per_line`` it
+#: does, ``none`` the report has none, ``stored_before`` the stored rows were
+#: written before per-line branches were kept.
+BranchData = Literal["per_line", "none", "stored_before"]
 GateStatus = Literal["pass", "fail", "no_data", "not_set", "too_small"]
 
 
@@ -60,6 +74,11 @@ class FilePatchCoverage:
     covered_line_count: int = 0
     # Inclusive (start, end) runs of changed, executable, unexecuted lines.
     uncovered_ranges: tuple[tuple[int, int], ...] = ()
+    # Branches on the changed executable lines the report gives branch counts for.
+    branch_taken: int = 0
+    branch_total: int = 0
+    # Inclusive runs of changed lines that ran with fewer branches taken than they have.
+    partial_ranges: tuple[tuple[int, int], ...] = ()
     # What history says about the file (``risk.attach_risk``); ``None`` unread.
     risk: FileRisk | None = None
     # Where to add a test per uncovered range (``hints.attach_hints``); ``None``
@@ -83,6 +102,9 @@ class FilePatchCoverage:
             "covered_line_count": self.covered_line_count,
             "patch_coverage_pct": _round(self.patch_coverage_pct),
             "uncovered_ranges": [list(r) for r in self.uncovered_ranges],
+            "branch_taken": self.branch_taken,
+            "branch_total": self.branch_total,
+            "partial_ranges": [list(r) for r in self.partial_ranges],
             "risk": self.risk.to_dict() if self.risk is not None else None,
             "hints": None if self.hints is None else [h.to_dict() for h in self.hints],
         }
@@ -112,6 +134,8 @@ class PatchScope:
     # Invalid ``coverage.gates`` entries, one message each. The CLI refuses to
     # run on them; read-only surfaces carry them and judge no path gate.
     config_errors: tuple[str, ...] = ()
+    # Derived from the coverage by :func:`compute_patch_coverage` when unset.
+    branch_data: BranchData | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +149,7 @@ class PatchScope:
             "freshness": self.freshness,
             "ignored_file_count": self.ignored_file_count,
             "config_errors": list(self.config_errors),
+            "branch_data": self.branch_data,
         }
 
 
@@ -204,6 +229,8 @@ class PatchCoverage:
     risky_threshold: float | None = None
     # Project coverage at the change's base against its head (``delta``).
     project: ProjectDelta | None = None
+    # The gate over branches on changed lines, judged apart from the line gates.
+    branch_threshold: float | None = None
 
     @property
     def changed_file_count(self) -> int:
@@ -236,18 +263,21 @@ class PatchCoverage:
 
     @property
     def gate(self) -> GateStatus:
-        """``flat_gate``, or ``fail`` when a path-scoped, the risky-file or the project gate fails.
+        """``flat_gate``, or ``fail`` when a path-scoped, the risky-file, the branch or the
+        project gate fails.
 
-        With no flat threshold the risky-file gate's status is the verdict, and
-        with neither, the project gate's.
+        With no flat threshold the risky-file gate's status is the verdict, then
+        the branch gate's, then the project gate's.
         """
         project = self.project.gate if self.project is not None else "not_set"
-        if self.failing_path_gates or "fail" in (self.risky_gate, project):
+        # In precedence order; the first gate with a verdict decides.
+        verdicts = [self.flat_gate, self.risky_gate, self.branch_gate, project]
+        if self.failing_path_gates or "fail" in verdicts:
             return "fail"
-        for status in (self.flat_gate, self.risky_gate):
-            if status != "not_set":
-                return status
-        return project
+        # An unapplied branch gate gives way to a project verdict.
+        if project != "not_set" and verdicts[2] == "no_data":
+            verdicts[2] = "not_set"
+        return next((v for v in verdicts if v != "not_set"), "not_set")
 
     @property
     def failing_path_gates(self) -> list[PathGateResult]:
@@ -285,6 +315,34 @@ class PatchCoverage:
             self.small_change,
         )
 
+    @property
+    def branch_taken(self) -> int:
+        return sum(f.branch_taken for f in self.with_status("measured"))
+
+    @property
+    def branch_total(self) -> int:
+        return sum(f.branch_total for f in self.with_status("measured"))
+
+    @property
+    def branch_pct(self) -> float | None:
+        """Taken share of the branches on changed lines; ``None`` when none carries any."""
+        return _pct(self.branch_taken, self.branch_total)
+
+    @property
+    def branch_gate(self) -> GateStatus:
+        """``branch_threshold`` over branches on changed lines, by the one gate rule.
+
+        Not measured is ``no_data``, never a failure. The whole change's
+        small-change tolerance applies, as it does to the line gate.
+        """
+        return _gate(
+            self.branch_threshold, self.branch_taken, self.branch_total, self.small_change
+        )
+
+    @property
+    def partial_line_count(self) -> int:
+        return sum(b - a + 1 for f in self.files for a, b in f.partial_ranges)
+
     def with_status(self, status: FileStatus) -> list[FilePatchCoverage]:
         return [f for f in self.files if f.status == status]
 
@@ -299,6 +357,19 @@ class PatchCoverage:
             "patch_coverage_pct": _round(self.risky_pct),
             "threshold": self.risky_threshold,
             "gate": self.risky_gate,
+        }
+
+    def _branches_dict(self) -> dict[str, Any] | None:
+        # Null when no changed line carries branch data and no branch gate asked.
+        if not self.branch_total and self.branch_threshold is None:
+            return None
+        return {
+            "branch_taken": self.branch_taken,
+            "branch_total": self.branch_total,
+            "branch_coverage_pct": _round(self.branch_pct),
+            "partial_line_count": self.partial_line_count,
+            "threshold": self.branch_threshold,
+            "gate": self.branch_gate,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -317,6 +388,7 @@ class PatchCoverage:
             "path_gates": [g.to_dict() for g in self.path_gates],
             "risky": self._risky_dict(),
             "project": self.project.to_dict() if self.project is not None else None,
+            "branches": self._branches_dict(),
         }
 
 
@@ -344,6 +416,7 @@ def compute_patch_coverage(
     """
     measured_suffixes = {PurePosixPath(p).suffix for p in report_paths or coverage}
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
+    scope = _with_branch_data(scope or PatchScope(), coverage)
     files: list[FilePatchCoverage] = []
     out_of_scope = ignored = 0
     for path in sorted(changed):
@@ -360,13 +433,21 @@ def compute_patch_coverage(
         files=tuple(files),
         threshold=threshold,
         out_of_scope_count=out_of_scope,
-        scope=replace(scope or PatchScope(), ignored_file_count=ignored),
+        scope=replace(scope, ignored_file_count=ignored),
         min_coverable_lines=min_coverable_lines,
     )
     small = pc.small_change
     return replace(
         pc, path_gates=tuple(_path_gate(files, g, small, judge_gates) for g in gates)
     )
+
+
+def _with_branch_data(scope: PatchScope, coverage: Mapping[str, FileCoverage]) -> PatchScope:
+    """*scope* with ``branch_data`` derived from *coverage* when the caller left it unset."""
+    if scope.branch_data is not None:
+        return scope
+    per_line = any(fc.branch_lines for fc in coverage.values())
+    return replace(scope, branch_data="per_line" if per_line else "none")
 
 
 def patch_coverage_from_resolved(
@@ -422,6 +503,8 @@ def _file_patch(path: str, lines: set[int], fc: FileCoverage) -> FilePatchCovera
     if not coverable:
         return FilePatchCoverage(path, "no_coverable_changes", len(lines))
     covered = coverable.intersection(fc.covered_lines)
+    branched = {n: fc.branch_lines[n] for n in coverable if n in fc.branch_lines}
+    partial = (n for n, (taken, total) in branched.items() if n in covered and taken < total)
     return FilePatchCoverage(
         path,
         "measured",
@@ -429,6 +512,9 @@ def _file_patch(path: str, lines: set[int], fc: FileCoverage) -> FilePatchCovera
         coverable_line_count=len(coverable),
         covered_line_count=len(covered),
         uncovered_ranges=line_ranges(coverable - covered),
+        branch_taken=sum(taken for taken, _ in branched.values()),
+        branch_total=sum(total for _, total in branched.values()),
+        partial_ranges=line_ranges(partial),
     )
 
 

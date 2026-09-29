@@ -26,6 +26,10 @@ class FileCoverage:
     ``covered_line_count`` is the numerator of ``line_coverage_pct``, kept so
     aggregates never derive it back from the rounded percentage. ``None``
     when the source stated a percentage rather than a count.
+
+    ``branch_lines`` maps a line to ``(taken, total)`` branches on it. Empty
+    means the report carried no per-line branch data, not that no line
+    branches; ``branch_coverage_pct`` stays the file-level figure.
     """
 
     file_path: str
@@ -35,6 +39,7 @@ class FileCoverage:
     total_coverable_lines: int = 0
     coverable_lines: list[int] = field(default_factory=list)
     covered_line_count: int | None = None
+    branch_lines: dict[int, tuple[int, int]] = field(default_factory=dict)
 
 
 def file_coverage(
@@ -46,6 +51,7 @@ def file_coverage(
     branches_hit: int = 0,
     total: int | None = None,
     hit: int | None = None,
+    branch_lines: dict[int, tuple[int, int]] | None = None,
 ) -> FileCoverage:
     """Build a :class:`FileCoverage` from line sets, the one place percentages are derived.
 
@@ -67,6 +73,7 @@ def file_coverage(
         total_coverable_lines=n_total,
         coverable_lines=sorted(coverable_set),
         covered_line_count=n_hit,
+        branch_lines=dict(sorted((branch_lines or {}).items())),
     )
 
 

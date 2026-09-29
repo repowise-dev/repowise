@@ -18,10 +18,16 @@
  * When coverage was also stored at the change's base commit, one line under
  * the headline compares project coverage there with the head, or says in muted
  * text why the two measurements cannot be compared.
+ *
+ * When the report carries per-line branch data, one line gives the share of
+ * branches taken on changed lines, beside the line figure and never blended
+ * into it, and a file row also names its "partly taken" lines: changed lines
+ * that ran with some branch never taken. Those rows follow the uncovered ones.
  */
 
 import type { ReactNode } from "react";
 import type {
+  PatchCoverageBranches,
   PatchCoverageFile,
   PatchCoverageFileRisk,
   PatchCoveragePathGate,
@@ -175,6 +181,8 @@ export function PatchCoverageSummary({
       {/* Guarded: a server older than the project delta sends no field. */}
       <ProjectLine project={coverage.project ?? null} />
       <RiskyLine risky={coverage.risky} />
+      {/* Guarded: a server older than branch coverage sends no field. */}
+      <BranchLine branches={coverage.branches ?? null} />
       <ScopeNotes coverage={coverage} />
       {/* Guarded: a server older than path-scoped gates sends neither field. */}
       <PathGates
@@ -187,11 +195,31 @@ export function PatchCoverageSummary({
   );
 }
 
-/** Measured files with uncovered changed lines, riskiest first. */
+/** A server older than branch coverage sends no `partial_ranges`. */
+function partialRanges(file: PatchCoverageFile): number[][] {
+  return file.partial_ranges ?? [];
+}
+
+/** Measured files with uncovered lines, then those whose only gap is a partly
+ *  taken branch, each riskiest first: the core's order. */
 function uncoveredFiles(files: PatchCoverageFile[]): PatchCoverageFile[] {
+  const rank = (f: PatchCoverageFile) => Number(f.uncovered_ranges.length === 0);
   return files
-    .filter((f) => f.status === "measured" && f.uncovered_ranges.length > 0)
-    .sort(byRisk);
+    .filter(
+      (f) =>
+        f.status === "measured" &&
+        (f.uncovered_ranges.length > 0 || partialRanges(f).length > 0),
+    )
+    .sort((a, b) => rank(a) - rank(b) || byRisk(a, b));
+}
+
+/** `lines 3, 7-9 · partly taken 12`: the uncovered runs, then the partly taken ones. */
+function gapText(file: PatchCoverageFile): string {
+  const parts = [];
+  if (file.uncovered_ranges.length) parts.push(`lines ${formatLineRanges(file.uncovered_ranges)}`);
+  const partial = partialRanges(file);
+  if (partial.length) parts.push(`partly taken ${formatLineRanges(partial)}`);
+  return parts.join(" · ");
 }
 
 /** Not-in-report files before those without line data, then by risk: the core's order. */
@@ -289,6 +317,22 @@ function RiskyLine({ risky }: { risky: PatchCoverageResponse["risky"] | undefine
       in {plural(risky.file_count, "risky file")}
     </p>
   );
+}
+
+/** Only when a changed line has branch data: not measured is no line, never 0%. */
+export function branchText(branches: PatchCoverageBranches): string | null {
+  const pct = branches.branch_coverage_pct;
+  if (pct == null) return null;
+  const partial = branches.partial_line_count
+    ? ` · ${plural(branches.partial_line_count, "line")} partly taken`
+    : "";
+  return `Branches on changed lines ${floorPct(pct)}% · ${branches.branch_taken} of ${branches.branch_total} taken${partial}`;
+}
+
+function BranchLine({ branches }: { branches: PatchCoverageBranches | null }) {
+  const text = branches == null ? null : branchText(branches);
+  if (text == null) return null;
+  return <p className="text-xs tabular-nums text-[var(--color-text-secondary)]">{text}</p>;
 }
 
 /** What to read the figures with: stale or partial evidence, ignored files, risk basis. */
@@ -429,7 +473,7 @@ function UncoveredList({
         <FileRow
           key={f.file_path}
           file={f}
-          trailing={`lines ${formatLineRanges(f.uncovered_ranges)}`}
+          trailing={gapText(f)}
           hint={firstHint(f)}
           onOpenFile={onOpenFile}
         />

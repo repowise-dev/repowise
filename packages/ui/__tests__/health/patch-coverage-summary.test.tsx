@@ -7,6 +7,7 @@ import type {
 } from "@repowise-dev/types/generated/http";
 import {
   PatchCoverageSummary,
+  branchText,
   floorPct,
   formatLineRanges,
   hintReason,
@@ -37,6 +38,9 @@ function coverage(fileCount: number): PatchCoverageResponse {
       covered_line_count: 1,
       patch_coverage_pct: 50,
       uncovered_ranges: [[i + 1, i + 1]],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
       risk: null,
       hints: null,
     })),
@@ -51,10 +55,12 @@ function coverage(fileCount: number): PatchCoverageResponse {
       freshness: "current",
       ignored_file_count: 0,
       config_errors: [],
+      branch_data: "none",
     },
     path_gates: [],
     risky: null,
     project: null,
+    branches: null,
   };
 }
 
@@ -193,6 +199,46 @@ describe("PatchCoverageSummary", () => {
     expect(screen.getByText("and 2 more")).toBeTruthy();
   });
 
+  it("reports branches on changed lines and lists partly taken files after uncovered ones", () => {
+    const base = coverage(2);
+    const [uncovered, file] = base.files;
+    const branches = {
+      branch_taken: 3,
+      branch_total: 4,
+      branch_coverage_pct: 75,
+      partial_line_count: 1,
+      threshold: null,
+      gate: "not_set" as const,
+    };
+    const { container } = render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          files: [
+            uncovered!,
+            {
+              ...file!,
+              // Sorts first by path, but a partly taken branch comes after an uncovered line.
+              file_path: "src/a.ts",
+              uncovered_ranges: [],
+              branch_taken: 3,
+              branch_total: 4,
+              partial_ranges: [[12, 12]],
+            },
+          ],
+          branches,
+        }}
+      />,
+    );
+    expect(
+      screen.getByText("Branches on changed lines 75.0% · 3 of 4 taken · 1 line partly taken"),
+    ).toBeTruthy();
+    expect(listedPaths(container)).toEqual(["src/f0.ts", "src/a.ts"]);
+    expect(screen.getByText("partly taken 12")).toBeTruthy();
+    // Not measured is no line at all, never 0%.
+    expect(branchText({ ...branches, branch_coverage_pct: null })).toBeNull();
+  });
+
   it("states the denominator and stays quiet when coverage is current", () => {
     render(<PatchCoverageSummary coverage={coverage(1)} />);
     expect(screen.getByText("1 of 2 changed executable lines covered")).toBeTruthy();
@@ -218,6 +264,9 @@ describe("PatchCoverageSummary", () => {
                 [3, 3],
                 [7, 9],
               ],
+              branch_taken: 0,
+              branch_total: 0,
+              partial_ranges: [],
               risk: null,
               hints: null,
             },
@@ -229,6 +278,9 @@ describe("PatchCoverageSummary", () => {
               covered_line_count: 0,
               patch_coverage_pct: null,
               uncovered_ranges: [],
+              branch_taken: 0,
+              branch_total: 0,
+              partial_ranges: [],
               risk: null,
               hints: null,
             },

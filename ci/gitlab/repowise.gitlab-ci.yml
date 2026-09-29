@@ -24,6 +24,8 @@
 #                                   lines than this never fails the coverage gate.
 #   REPOWISE_COVERAGE_FAIL_UNDER_RISKY
 #                                   Minimum patch coverage percent over risky files only.
+#   REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES
+#                                   Minimum percent of branches taken on changed lines.
 #   REPOWISE_COVERAGE_BASE_REPORT   Coverage reports measured at the merge request's base
 #                                   commit, space separated like REPOWISE_COVERAGE_REPORT:
 #                                   project coverage and coverage outside the change.
@@ -58,6 +60,7 @@ repowise-coverage:
       ${REPOWISE_COVERAGE_FAIL_UNDER:+--fail-under "$REPOWISE_COVERAGE_FAIL_UNDER"}
       ${REPOWISE_COVERAGE_MIN_COVERABLE_LINES:+--min-coverable-lines "$REPOWISE_COVERAGE_MIN_COVERABLE_LINES"}
       ${REPOWISE_COVERAGE_FAIL_UNDER_RISKY:+--fail-under-risky "$REPOWISE_COVERAGE_FAIL_UNDER_RISKY"}
+      ${REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES:+--fail-under-branches "$REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES"}
       ${REPOWISE_COVERAGE_BASE_REPORT:+$(printf -- '--base-report %s ' $REPOWISE_COVERAGE_BASE_REPORT)}
       ${REPOWISE_COVERAGE_MAX_DROP:+--max-drop "$REPOWISE_COVERAGE_MAX_DROP"}
       --format markdown > repowise-coverage.md

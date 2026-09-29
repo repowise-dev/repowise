@@ -86,7 +86,7 @@ def _render_action(action: ReviewAction, inspected: int) -> str | None:
 
 
 def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
-    """The next action for uncovered changed lines, or ``None`` when there are none.
+    """The next action for uncovered changed lines (else partly taken ones), ``None`` without.
 
     Names the scope and the tests to extend from the rows' hints, riskiest
     file first, so the agent writes the missing test where the suite already
@@ -94,7 +94,7 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
     """
     uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
     if uncovered <= 0:
-        return None
+        return _partial_action(block)
     lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
     if block["scope"]["freshness"] == "stale":
@@ -109,6 +109,24 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
     if tests:
         return text + f"extend {', '.join(tests[:_TESTS_SHOWN])}"
     return text + "add tests for them (patch_coverage.files)"
+
+
+def _partial_action(block: dict[str, Any] | None) -> str | None:
+    """The next action when every changed line ran but some took only part of their branches."""
+    partial = _partial_line_count(block)
+    if not partial or block["scope"]["freshness"] == "stale":
+        return None
+    lines = f"{partial} changed line{'' if partial == 1 else 's'}"
+    lines += _scope_words(block["scope"].get("label") or "")
+    return (
+        f"{lines} ran with a branch no test took; add tests for the other way through "
+        "(patch_coverage.files[].partial_ranges)"
+    )
+
+
+def _partial_line_count(block: dict[str, Any] | None) -> int:
+    branches = (block or {}).get("branches") or {}
+    return branches.get("partial_line_count") or 0
 
 
 def _hinted_tests(rows: list[dict[str, Any]]) -> list[str]:

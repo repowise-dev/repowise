@@ -2215,6 +2215,9 @@ class CoverageFile(Base):
     # tell an uncovered changed line from a changed comment. "[]" means the
     # report did not say (or the row predates the column), never "none".
     coverable_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Branches per line, ``{"line": [taken, total]}``. NULL when the report
+    # carried no per-line branch data (or the row predates the column).
+    branch_lines_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # True when the ingest that wrote these rows mapped fewer than half of the
     # report's files to the repo tree (severe path-mapping loss). The rows are
     # still written — a partial report is better than none — but consumers

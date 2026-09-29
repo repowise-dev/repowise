@@ -737,6 +737,17 @@ def test_the_directive_names_the_scope_and_the_tests_to_extend():
     )
 
 
+def test_the_directive_names_partly_taken_lines_when_every_changed_line_ran():
+    from repowise.server.mcp_server._change_health import patch_coverage_action
+
+    block = {**_patch_block(3, 3), "branches": {"partial_line_count": 2}}
+    assert patch_coverage_action(block) == (
+        "2 changed lines since origin/main ran with a branch no test took; add tests "
+        "for the other way through (patch_coverage.files[].partial_ranges)"
+    )
+    assert patch_coverage_action({**block, "branches": None}) is None
+
+
 def _git(cwd, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 

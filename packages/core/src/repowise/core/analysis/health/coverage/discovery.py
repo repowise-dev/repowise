@@ -144,6 +144,8 @@ class CoverageConfig:
     # Most project coverage may fall from the change's base, in percentage
     # points (``coverage check --max-drop``).
     max_drop: float | None = None
+    # Least share of branches taken on changed lines (``--fail-under-branches``).
+    fail_under_branches: float | None = None
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -176,6 +178,7 @@ class CoverageConfig:
             gate_errors=gate_errors,
             fail_under_risky=_percent(block.get("fail_under_risky")),
             max_drop=_percent(block.get("max_drop")),
+            fail_under_branches=_percent(block.get("fail_under_branches")),
         )
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:
@@ -869,6 +872,11 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
             if dst.branch_coverage_pct is None
             else max(dst.branch_coverage_pct, src.branch_coverage_pct)
         )
+    # Branches are not identified across reports, so the per-line max is a lower bound.
+    for line, (taken, total) in src.branch_lines.items():
+        prev_taken, prev_total = dst.branch_lines.get(line, (0, 0))
+        dst.branch_lines[line] = (max(prev_taken, taken), max(prev_total, total))
+    dst.branch_lines = dict(sorted(dst.branch_lines.items()))
 
 
 def _note_format(result: ResolvedCoverage, source_format: str | None) -> None:
@@ -891,6 +899,7 @@ def _merge_keyed(by_key: dict[str, FileCoverage], key: str, fc: FileCoverage) ->
         total_coverable_lines=fc.total_coverable_lines,
         coverable_lines=list(fc.coverable_lines),
         covered_line_count=fc.covered_line_count,
+        branch_lines=dict(fc.branch_lines),
     )
     if key in by_key:
         _merge_into(by_key[key], resolved_fc)

@@ -66,6 +66,7 @@ if wants coverage; then
   [[ -n "$COVERAGE_FAIL_UNDER" ]] && args+=(--fail-under "$COVERAGE_FAIL_UNDER")
   [[ -n "$COVERAGE_MIN_COVERABLE_LINES" ]] && args+=(--min-coverable-lines "$COVERAGE_MIN_COVERABLE_LINES")
   [[ -n "$COVERAGE_FAIL_UNDER_RISKY" ]] && args+=(--fail-under-risky "$COVERAGE_FAIL_UNDER_RISKY")
+  [[ -n "$COVERAGE_FAIL_UNDER_BRANCHES" ]] && args+=(--fail-under-branches "$COVERAGE_FAIL_UNDER_BRANCHES")
   while IFS= read -r report; do
     [[ -n "$report" ]] && args+=(--base-report "$report")
   done <<<"$COVERAGE_BASE_REPORT"

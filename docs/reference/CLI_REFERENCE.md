@@ -1367,6 +1367,7 @@ are out of scope and only counted.
 | `--fail-under` | Exit 1 when patch coverage is below this percentage (0-100). Defaults to `coverage.fail_under` in `.repowise/config.yaml`; with neither set the command reports without gating |
 | `--min-coverable-lines` | Small-change tolerance: a change with fewer changed executable lines than this (counting only lines the report measures, as the percentage does) is reported against the threshold but never fails (`gate` reads `too_small`). Defaults to `coverage.min_coverable_lines` |
 | `--fail-under-risky` | Exit 1 when patch coverage of the risky files alone is below this percentage. Risky: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. Defaults to `coverage.fail_under_risky`. With no risky file changed the gate is not applied (`no_data`, exit `0`) |
+| `--fail-under-branches` | Exit 1 when the share of branches taken on changed lines is below this percentage (0-100), never blended with patch coverage. Defaults to `coverage.fail_under_branches`. No changed branching line: not applied (`no_data`, exit `0`) |
 | `--base-report` | Report measured at the change's base commit (the merge-base for `A...B`), read like `--report`, repeatable. Adds `project` |
 | `--max-drop` | Exit 1 when project coverage falls more than this many points from the base (0-100). Defaults to `coverage.max_drop`. Needs `--base-report` or an index's ingest at the base commit |
 | `--path` | A path inside the repository (defaults to cwd) |
@@ -1387,8 +1388,10 @@ change the verdict.
 uncovered range, first; titled "Uncovered change in a risky file" for a risky
 one), a `::notice` counting the rest, an `::error::` for each gate that fails
 (the whole change, each path-scoped gate that is not informational, the
-risky-file gate), a `::notice::` per informational gate below its threshold,
-and a `::notice::` when the small-change tolerance exempts a gate, then
+risky-file gate, the branch gate), a `::notice::` per informational gate below
+its threshold, a `::notice::` when the small-change tolerance exempts a gate or
+a branch gate was set but not applied, a `::warning` titled "Partly taken
+branch" per partly taken range (sharing the cap), then
 appends the markdown summary to `$GITHUB_STEP_SUMMARY` when set. `json`
 carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 `threshold`, `min_coverable_lines`, `gate` (`pass`, `fail`, `no_data`,
@@ -1396,12 +1399,14 @@ carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 (`measured`, `not_in_report`, `no_line_data`, `no_coverable_changes`,
 `out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
 `coverable_line_count`, `covered_line_count`, `patch_coverage_pct`,
-`uncovered_ranges`, `risk`: `fix_pressure`, `dependents`, `hotspot`,
+`uncovered_ranges`, `branch_taken`, `branch_total`, `partial_ranges` (0 and
+empty without branch data), `risk`: `fix_pressure`, `dependents`, `hotspot`,
 `bug_magnet`, `basis`, `risky`, `reasons`; `hints`, null without an index, one
 per uncovered range: `range`, `symbol`, `tests`, `basis` (`per_test`,
 `call_graph`, `import_graph`, `none`), `total`), `scope` (`label`,
 `source_formats`, `reports`, `report_path_count`,
-`unmatched_report_path_count`, `ignored_file_count`, `config_errors`),
+`unmatched_report_path_count`, `ignored_file_count`, `config_errors`,
+`branch_data`: `per_line`, `none` or `stored_before`),
 `path_gates[]` (`name`, `paths`, `threshold`, `informational`,
 `measured_file_count`, `unmeasured_file_count`, `covered_line_count`,
 `coverable_line_count`, `patch_coverage_pct`, `gate`), `risky`
@@ -1416,8 +1421,11 @@ null on the history basis or when most files did not line up:
 `newly_uncovered_ranges`, `newly_uncovered_line_count`,
 `newly_covered_line_count`, `base_pct`, `head_pct`, `causes`: `kind`
 (`test_deleted`, `test_modified`, `dependent_changed`), `path`, `basis`
-(`per_test`, `graph`, `name`)). The markdown and `github` formats also list
-files that lost coverage outside the change. Changed files and report entries
+(`per_test`, `graph`, `name`)), and `branches`, null when no changed line has
+branch data and no branch gate was set (`branch_taken`, `branch_total`,
+`branch_coverage_pct`, `partial_line_count`, `threshold`, `gate`). The
+markdown and `github` formats also list files that lost coverage outside the
+change. Changed files and report entries
 matching `coverage.ignore` (gitignore syntax) are left out and counted as
 ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
 that module's directory unless the report has a per-report prefix or
@@ -1428,19 +1436,23 @@ that module's directory unless the report has a per-report prefix or
 threshold, no measurable changed lines, or a change under the small-change
 tolerance); `1` patch coverage is below `--fail-under`, a path-scoped gate
 that is not informational fails, the risky files' is below
-`--fail-under-risky`, or project coverage fell more than `--max-drop` points;
+`--fail-under-risky`, the branches taken on changed lines are below
+`--fail-under-branches`, or project coverage fell more than `--max-drop` points;
 `2` the check could not run: no report found, a
 `--report` path or glob matching no file, none readable, none matching a
 repository file, or every entry matching `coverage.ignore`; an unknown
 revision; no merge-base (a shallow clone); a single commit at a shallow
 clone's boundary; bad config or a malformed `coverage.fail_under` /
-`coverage.min_coverable_lines` / `coverage.fail_under_risky`, or an unusable
+`coverage.min_coverable_lines` / `coverage.fail_under_risky` /
+`coverage.fail_under_branches`, or an unusable
 `coverage.gates` entry (named in the message); not a git repository;
 `--fail-under-risky` set on a shallow clone, or with a measured file whose
-risk could not be read (unless the flat or a path-scoped gate already failed,
-which exits `1`); under the `--max-drop` or `--base-report` flag, a base
-that is missing, not comparable with the head, or has no coverable line on a
-side (same exception; from `coverage.max_drop` alone it is a note, exit `0`).
+risk could not be read (unless the flat, a path-scoped or the branch gate
+already failed, which exits `1`); `--fail-under-branches` over coverage with
+no per-line branch data (`no_branch_data`; from `coverage.fail_under_branches`
+alone it is a note, exit `0`); under the `--max-drop` or `--base-report` flag,
+a base that is missing, not comparable with the head, or has no coverable line
+on a side (same exception; from `coverage.max_drop` alone it is a note, exit `0`).
 
 **Path-scoped gates.** Each entry of `coverage.gates` (`name`, `paths` as
 gitignore-style globs relative to the repository root, optional `fail_under`

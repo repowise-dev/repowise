@@ -9,7 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
-from repowise.core.analysis.patch_coverage.compute import FileStatus, GateStatus
+from repowise.core.analysis.patch_coverage.compute import BranchData, FileStatus, GateStatus
 from repowise.core.analysis.patch_coverage.delta import (
     CauseBasis,
     CauseKind,
@@ -67,6 +67,13 @@ class PatchCoverageFile(_Strict):
     patch_coverage_pct: float | None
     #: Inclusive ``[start, end]`` runs of changed, executable, unexecuted lines.
     uncovered_ranges: list[list[int]]
+    #: Branches on the changed executable lines the report gives branch counts
+    #: for; both 0 without branch data.
+    branch_taken: int
+    branch_total: int
+    #: Inclusive ``[start, end]`` runs of changed lines that ran with fewer
+    #: branches taken than they have; empty without branch data.
+    partial_ranges: list[list[int]]
     #: Null when the file's risk was not assessed.
     risk: PatchCoverageFileRisk | None
     #: One per uncovered range (the first eight); null without an index.
@@ -99,6 +106,9 @@ class PatchCoverageScope(_Strict):
     #: Invalid ``coverage.gates`` entries, one message each; while any is
     #: present no path-scoped gate is judged.
     config_errors: list[str]
+    #: ``per_line`` when the coverage carries per-line branch counts; ``none``
+    #: or ``stored_before`` (stored rows predate them) when it does not.
+    branch_data: BranchData | None
 
 
 class PatchCoveragePathGate(_Strict):
@@ -131,6 +141,21 @@ class PatchCoverageRisky(_Strict):
     threshold: float | None
     #: ``no_data`` when no risky file has a changed executable line;
     #: ``too_small`` under the whole change's small-change tolerance.
+    gate: GateStatus
+
+
+class PatchCoverageBranches(_Strict):
+    """Branches on changed lines, reported beside patch coverage, never blended into it."""
+
+    branch_taken: int
+    branch_total: int
+    #: 0-100, floored to two decimals; null when no changed line has branch data.
+    branch_coverage_pct: float | None
+    #: Changed lines that ran with fewer branches taken than they have.
+    partial_line_count: int
+    threshold: float | None
+    #: ``no_data`` when no changed line has branch data; ``too_small`` under the
+    #: whole change's small-change tolerance.
     gate: GateStatus
 
 
@@ -200,7 +225,7 @@ class PatchCoverageResponse(_Strict):
     #: missed threshold reads ``too_small`` and does not fail.
     min_coverable_lines: int | None
     #: Fails when the flat gate, a path-scoped gate that is not informational,
-    #: or the risky-file gate fails.
+    #: the risky-file, the branch or the max-drop gate fails.
     gate: GateStatus
     file_counts: PatchCoverageFileCounts
     files: list[PatchCoverageFile]
@@ -211,3 +236,5 @@ class PatchCoverageResponse(_Strict):
     risky: PatchCoverageRisky | None
     #: Null when no ingest was measured at the change's base.
     project: PatchCoverageProject | None
+    #: Null when no changed line has per-line branch data and no branch gate was set.
+    branches: PatchCoverageBranches | None

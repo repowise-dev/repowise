@@ -10,11 +10,13 @@ executable-line data; otherwise it cannot evaluate.
 Exit codes and output channels are the shared CI ones (:mod:`repowise.cli.ci`):
 0 when the gate passes or there is nothing to judge, 1 when patch coverage is
 below ``--fail-under``, a path-scoped gate (``coverage.gates``) that is not
-informational fails, the risky files' is below ``--fail-under-risky``, or
+informational fails, the risky files' is below ``--fail-under-risky``, the
+share of branches taken on changed lines is below ``--fail-under-branches``, or
 project coverage fell more than ``--max-drop`` points from the change's base,
 2 when the check could not run (no report, a ``--report`` matching no file,
 unreadable report, unknown revision, missing history, bad config, risk
-unreadable or a shallow clone under ``--fail-under-risky``, no base
+unreadable or a shallow clone under ``--fail-under-risky``, coverage with no
+per-line branch data under ``--fail-under-branches``, no base
 measurement under ``--max-drop``, or a base that measured something else). A
 change under ``--min-coverable-lines`` is reported against the threshold but
 exits 0.
@@ -93,6 +95,16 @@ from repowise.core.persistence.database import has_db_store
     "Defaults to coverage.fail_under_risky in .repowise/config.yaml.",
 )
 @click.option(
+    "--fail-under-branches",
+    type=click.FloatRange(0, 100),
+    default=None,
+    help="Exit 1 when the share of branches taken on changed lines is below this "
+    "percentage. Reported beside patch coverage, never blended into it. A change with "
+    "no branching line is not gated; a report with no per-line branch data exits 2. "
+    "Defaults to coverage.fail_under_branches in .repowise/config.yaml (from config "
+    "alone, a report without branch data is a note).",
+)
+@click.option(
     "--base-report",
     "base_reports",
     multiple=True,
@@ -125,6 +137,7 @@ def coverage_check(
     fail_under: float | None,
     min_coverable_lines: int | None,
     fail_under_risky: float | None,
+    fail_under_branches: float | None,
     base_reports: tuple[str, ...],
     max_drop: float | None,
     repo: str | None,
@@ -164,12 +177,20 @@ def coverage_check(
     notices = ci_notices(fmt)
     try:
         pc, head, head_reports = _evaluate(
-            revspec, reports, report_format, fail_under, min_coverable_lines, repo, notices
+            revspec,
+            reports,
+            report_format,
+            fail_under,
+            min_coverable_lines,
+            fail_under_branches,
+            repo,
+            notices,
         )
         pc = _with_risk(repo, pc, fail_under_risky)
         pc = _with_hints(repo, pc)
         ask = _project_ask(pc, head, head_reports, base_reports, max_drop, notices)
         pc = _with_project(pc, ask) if ask is not None else pc
+        _require_branch_data(pc, strict=fail_under_branches is not None)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
     _emit(pc, fmt)
@@ -177,7 +198,16 @@ def coverage_check(
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
 
-def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, repo, notices):
+def _evaluate(
+    revspec,
+    reports,
+    report_format,
+    fail_under,
+    min_coverable_lines,
+    fail_under_branches,
+    repo,
+    notices,
+):
     """``(patch coverage, the head's resolved reports, how they were read)``.
 
     The resolved reports are ``None`` when the coverage was read from the
@@ -190,10 +220,12 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         root,
         validate_threshold=fail_under is None,
         validate_min_lines=min_coverable_lines is None,
+        validate_branches=fail_under_branches is None,
     )
     # A flag overrides its config key.
     threshold = _first_set(fail_under, cfg.fail_under)
     min_coverable_lines = _first_set(min_coverable_lines, cfg.min_coverable_lines)
+    branch_threshold = _first_set(fail_under_branches, cfg.fail_under_branches)
     report_prefixes = _cli_reports(reports) if reports else cfg.reports(root)
     report_paths = list(report_prefixes)
     if not report_paths and not has_db_store(root):
@@ -204,7 +236,8 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         if notices is console:
             notices.print("[dim]Reading the coverage stored in the index[/dim]")
         stored = run_async(_stored(root, changed, label, threshold, min_coverable_lines, cfg))
-        return _gateable(stored), None, _Reports(root, cfg, {}, report_format)
+        pc = replace(_gateable(stored), branch_threshold=branch_threshold)
+        return pc, None, _Reports(root, cfg, {}, report_format)
     if notices is console:
         # Machine formats carry the list in ``scope.reports`` instead.
         notices.print(f"[dim]Reading {', '.join(escape(str(p)) for p in report_paths)}[/dim]")
@@ -221,7 +254,7 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         ignore=cfg.ignore,
         gates=cfg.gates,
     )
-    return pc, resolved, head_reports
+    return replace(pc, branch_threshold=branch_threshold), resolved, head_reports
 
 
 def _first_set(flag, configured):
@@ -339,9 +372,38 @@ def _with_risk(repo, pc, fail_under_risky):
     git, index = _read_risk(root, pc.scope.label or None, paths)
     pc = attach_risk(pc, assess_risks(paths, git, index), risky_threshold=threshold)
     # A failure the flat or a path-scoped gate already found stands and is reported.
-    if threshold is not None and pc.flat_gate != "fail" and not pc.failing_path_gates:
+    if (
+        threshold is not None
+        and "fail" not in (pc.flat_gate, pc.branch_gate)
+        and not pc.failing_path_gates
+    ):
         _require_trusted_risk(root, pc)
     return pc
+
+
+def _require_branch_data(pc, *, strict: bool) -> None:
+    """Raise when ``--fail-under-branches`` asked for a gate the coverage cannot judge.
+
+    Coverage with no per-line branch data at all is a setup problem: exit 2 when
+    the flag asked, unless another gate already failed (that verdict stands).
+    From config alone the branch line says the gate was not applied. A change
+    with no branching line has nothing to judge and passes.
+    """
+    data = pc.scope.branch_data
+    if not strict or data == "per_line" or pc.gate == "fail":
+        return
+    if data == "stored_before":
+        raise CannotEvaluateError(
+            "no_branch_data",
+            "The stored coverage predates per-line branch data, so --fail-under-branches "
+            "cannot be judged. Re-run `repowise coverage add` with the report, or pass it "
+            "with --report.",
+        )
+    raise CannotEvaluateError(
+        "no_branch_data",
+        "The coverage report has no per-line branch data, so --fail-under-branches cannot "
+        "be judged. Produce the report with branch coverage turned on.",
+    )
 
 
 def _risky_threshold(root: Path, flag: float | None) -> float | None:
@@ -505,6 +567,7 @@ def _coverage_config(
     validate_min_lines: bool,
     validate_risky: bool = False,
     validate_max_drop: bool = False,
+    validate_branches: bool = False,
 ):
     from repowise.core.analysis.health.coverage import CoverageConfig
     from repowise.core.repo_config import RepoConfigError, load_repo_config
@@ -522,6 +585,7 @@ def _coverage_config(
         ("fail_under", cfg.fail_under, validate_threshold),
         ("fail_under_risky", cfg.fail_under_risky, validate_risky),
         ("max_drop", cfg.max_drop, validate_max_drop),
+        ("fail_under_branches", cfg.fail_under_branches, validate_branches),
     ):
         if validate and block.get(key) is not None and parsed is None:
             raise CannotEvaluateError(
@@ -560,6 +624,7 @@ def _emit(pc, fmt: str) -> None:
 
 def _print_summary(pc) -> None:
     from repowise.core.analysis.patch_coverage import (
+        branch_line,
         headline,
         project_line,
         risk_basis_line,
@@ -572,6 +637,8 @@ def _print_summary(pc) -> None:
         console.print(escape(project))
     if risky := risky_line(pc, markdown=False):
         console.print(escape(risky))
+    if branches := branch_line(pc, markdown=False):
+        console.print(escape(branches))
     console.print(f"[dim]{escape(scope_line(pc, markdown=False))}[/dim]")
     if basis := risk_basis_line(pc):
         console.print(f"[dim]{escape(basis)}.[/dim]")
@@ -597,39 +664,58 @@ def _print_path_gates(pc) -> None:
 def _print_table(pc) -> None:
     from rich.table import Table
 
-    from repowise.core.analysis.patch_coverage import (
-        RANGE_LIMIT,
-        STATUS_TEXT,
-        attention_rows,
-        first_hint,
-        format_ranges,
-        hint_phrase,
-        risk_words,
-    )
+    from repowise.core.analysis.patch_coverage import attention_rows
 
     rows = attention_rows(pc)
     if not rows:
         return
-    with_hint = any(f.hints for f in rows)
+    columns = _table_columns(pc, rows)
     table = Table(show_edge=False, pad_edge=False)
-    table.add_column("File")
-    table.add_column("Risk")
-    table.add_column("Covered", justify="right")
-    table.add_column("Uncovered changed lines")
-    if with_hint:
-        table.add_column("Extend")
+    for name, justify, _ in columns:
+        table.add_column(name, justify=justify)
     for f in rows:
-        if f.status == "measured":
-            covered = f"{f.covered_line_count} of {f.coverable_line_count}"
-            gaps = format_ranges(f.uncovered_ranges, RANGE_LIMIT)
-        else:
-            covered, gaps = "", STATUS_TEXT[f.status]
-        cells = [escape(f.file_path), escape(risk_words(f.risk)), covered, gaps]
-        if with_hint:
-            hint = first_hint(f)
-            cells.append(escape(hint_phrase(hint)) if hint else "")
-        table.add_row(*cells)
+        table.add_row(*(fill(f) for _, _, fill in columns))
     console.print(table)
+
+
+def _table_columns(pc, rows) -> list:
+    """``(header, justify, cell)`` per column; Partly taken and Extend only when filled."""
+    from repowise.core.analysis.patch_coverage import RANGE_LIMIT, format_ranges, risk_words
+
+    columns = [
+        ("File", "left", lambda f: escape(f.file_path)),
+        ("Risk", "left", lambda f: escape(risk_words(f.risk))),
+        ("Covered", "right", _covered_cell),
+        ("Uncovered changed lines", "left", _gaps_cell),
+    ]
+    if pc.partial_line_count > 0:
+        columns.append(
+            ("Partly taken", "left", lambda f: format_ranges(f.partial_ranges, RANGE_LIMIT))
+        )
+    if any(f.hints for f in rows):
+        columns.append(("Extend", "left", _extend_cell))
+    return columns
+
+
+def _covered_cell(f) -> str:
+    if f.status != "measured":
+        return ""
+    return f"{f.covered_line_count} of {f.coverable_line_count}"
+
+
+def _gaps_cell(f) -> str:
+    from repowise.core.analysis.patch_coverage import RANGE_LIMIT, STATUS_TEXT, format_ranges
+
+    if f.status != "measured":
+        return STATUS_TEXT[f.status]
+    return format_ranges(f.uncovered_ranges, RANGE_LIMIT)
+
+
+def _extend_cell(f) -> str:
+    from repowise.core.analysis.patch_coverage import first_hint, hint_phrase
+
+    hint = first_hint(f)
+    return escape(hint_phrase(hint)) if hint else ""
 
 
 def _print_outside_change(pc) -> None:

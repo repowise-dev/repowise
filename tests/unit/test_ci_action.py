@@ -61,6 +61,7 @@ def test_the_gitlab_template_parses() -> None:
     assert "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE" in jobs["repowise-risk"]["rules"][0]["if"]
     coverage = " ".join(jobs["repowise-coverage"]["script"])
     assert "--fail-under-risky" in coverage
+    assert "--fail-under-branches" in coverage
     assert "--base-report" in coverage and "--max-drop" in coverage
 
 
@@ -251,6 +252,7 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "COVERAGE_FAIL_UNDER": "",
         "COVERAGE_MIN_COVERABLE_LINES": "",
         "COVERAGE_FAIL_UNDER_RISKY": "",
+        "COVERAGE_FAIL_UNDER_BRANCHES": "",
         "COVERAGE_BASE_REPORT": "",
         "COVERAGE_MAX_DROP": "",
         "DOC_DRIFT_BASELINE": "",
@@ -320,6 +322,14 @@ def test_base_report_inputs_reach_the_coverage_command(tmp_path, fake_repowise) 
         "coverage check --format github --report lcov.info "
         "--base-report base/lcov.info --base-report base/web/**/lcov.info=web --max-drop 0.5"
     )
+
+
+def test_branch_input_reaches_the_coverage_command(tmp_path, fake_repowise) -> None:
+    code, _, calls = _run(
+        tmp_path, fake_repowise, CHECKS="coverage", COVERAGE_FAIL_UNDER_BRANCHES="70"
+    )
+    assert code == 0
+    assert calls.strip() == "coverage check --format github --fail-under-branches 70"
 
 
 def test_risk_inputs_reach_the_commands(tmp_path, fake_repowise) -> None:

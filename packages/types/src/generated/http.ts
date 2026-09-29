@@ -2294,6 +2294,16 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/** Branches on changed lines, reported beside patch coverage, never blended into it. */
+export interface PatchCoverageBranches {
+  branch_taken: number;
+  branch_total: number;
+  branch_coverage_pct: number | null;
+  partial_line_count: number;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
 export interface PatchCoverageFile {
   file_path: string;
   status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
@@ -2302,6 +2312,9 @@ export interface PatchCoverageFile {
   covered_line_count: number;
   patch_coverage_pct: number | null;
   uncovered_ranges: number[][];
+  branch_taken: number;
+  branch_total: number;
+  partial_ranges: number[][];
   risk: PatchCoverageFileRisk | null;
   hints: PatchCoverageTestHint[] | null;
 }
@@ -2391,6 +2404,7 @@ export interface PatchCoverageResponse {
   path_gates: PatchCoveragePathGate[];
   risky: PatchCoverageRisky | null;
   project: PatchCoverageProject | null;
+  branches: PatchCoverageBranches | null;
 }
 
 /** Patch coverage over the measured files history marks as risky. */
@@ -2414,6 +2428,7 @@ export interface PatchCoverageScope {
   freshness: "current" | "stale" | "unknown";
   ignored_file_count: number;
   config_errors: string[];
+  branch_data: "per_line" | "none" | "stored_before" | null;
 }
 
 /** Where to extend the tests for one uncovered range. */

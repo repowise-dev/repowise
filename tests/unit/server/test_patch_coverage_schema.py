@@ -111,3 +111,13 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
     assert projected["project"]["gate"] == "fail"
     assert PatchCoverageResponse.model_validate(projected).model_dump() == projected
     assert wire["project"] is None
+
+
+def test_branches_on_changed_lines_round_trip_through_the_response_model() -> None:
+    coverage = {"a.py": file_coverage("a.py", [1, 2], [1, 2], branch_lines={2: (1, 2)})}
+    pc = replace(compute_patch_coverage({"a.py": {1, 2}}, coverage), branch_threshold=80)
+    wire = pc.to_dict()
+
+    assert wire["branches"]["gate"] == "fail"
+    assert wire["files"][0]["partial_ranges"] == [[2, 2]]
+    assert PatchCoverageResponse.model_validate(wire).model_dump() == wire

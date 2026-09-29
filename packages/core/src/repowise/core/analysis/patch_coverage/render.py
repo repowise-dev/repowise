@@ -5,7 +5,9 @@ written to be read once and acted on: the verdict in words on the first line
 with its denominator, the diff, report and file counts on the second, and
 detail only for what needs attention. A passing change with no gaps is two
 lines. A file the report never named reads "not in report", never 0%. With
-an index, each gap names the test to extend (``hints``).
+an index, each gap names the test to extend (``hints``). Branches on changed
+lines get their own line, and a "Partly taken" column lists changed lines
+that ran with a branch never taken, only when there is one.
 
 Workflow-command and markdown mechanics (escaping, caps, collapsed lists)
 come from :mod:`repowise.core.ci`, shared with every other CI gate.
@@ -14,7 +16,7 @@ come from :mod:`repowise.core.ci`, shared with every other CI gate.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
@@ -152,6 +154,44 @@ def risky_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
     )
 
 
+def branch_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
+    """Branches on changed lines, or ``""`` when not measured and no branch gate asked.
+
+    Unmeasured, it says why: coverage with no per-line branch data (a setup
+    problem), or a change with no branching line (nothing to judge).
+    """
+    pct = pc.branch_pct
+    if pct is None:
+        if pc.branch_threshold is None:
+            return ""
+        reason = _BRANCH_UNMEASURED[pc.scope.branch_data or "none"]
+        return (
+            f"Branches on changed lines: {reason}. The "
+            f"{fmt_pct(pc.branch_threshold)} branch gate was not applied."
+        )
+    bold = "**" if markdown else ""
+    text = (
+        f"{bold}Branches on changed lines {fmt_pct(pct)}{bold} ({pc.branch_taken} of "
+        f"{pc.branch_total} taken"
+    )
+    if n := pc.partial_line_count:
+        text += f"; {plural(n, 'line')} partly taken"
+    return text + ")" + _gate_suffix(
+        pc.branch_gate, pc.branch_threshold, pc.min_coverable_lines, "branch gate"
+    )
+
+
+#: Why no changed line has a branch figure, by ``scope.branch_data``.
+_BRANCH_UNMEASURED = {
+    "none": "not measured (the coverage report has no per-line branch data)",
+    "stored_before": (
+        "not measured (the stored coverage predates per-line branch data; "
+        "re-run `repowise coverage add`)"
+    ),
+    "per_line": "no changed executable line has branches",
+}
+
+
 def risk_order_key(f: FilePatchCoverage) -> tuple:
     """Risky first, then fix pressure, then dependents, then uncovered lines."""
     risk = f.risk or FileRisk()
@@ -232,12 +272,17 @@ def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
 
 
 def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
-    """Files a reader should look at: uncovered changes first, then unmeasurable ones.
+    """Files a reader should look at: uncovered changes first, then files whose only
+    gap is a partly taken branch, then unmeasurable ones.
 
-    Within each group the riskiest file leads (:func:`risk_order_key`).
+    Within each group the riskiest file leads (:func:`risk_order_key`), the
+    order the annotations use.
     """
-    gaps = sorted(
-        (f for f in pc.with_status("measured") if f.uncovered_line_count), key=risk_order_key
+    measured = pc.with_status("measured")
+    gaps = sorted((f for f in measured if f.uncovered_line_count), key=risk_order_key)
+    gaps += sorted(
+        (f for f in measured if f.partial_ranges and not f.uncovered_line_count),
+        key=risk_order_key,
     )
     unmeasured = sorted(
         pc.with_status("not_in_report") + pc.with_status("no_line_data"),
@@ -253,6 +298,8 @@ def render_markdown(pc: PatchCoverage) -> str:
         out += ["", project]
     if risky := risky_line(pc):
         out += ["", risky]
+    if branches := branch_line(pc):
+        out += ["", branches]
     out += ["", scope_line(pc)]
     if basis := risk_basis_line(pc):
         out += ["", basis + "."]
@@ -278,7 +325,8 @@ def _path_gate_table(pc: PatchCoverage) -> list[str]:
 
 
 def _gap_table(pc: PatchCoverage) -> list[str]:
-    """Files with uncovered changed lines, riskiest first; a Risk column once risk is read."""
+    """Files with uncovered or partly taken changed lines, riskiest first; a Risk column
+    once risk is read."""
     gaps = [f for f in attention_rows(pc) if f.status == "measured"]
     if not gaps:
         return []
@@ -289,25 +337,42 @@ def _gap_table(pc: PatchCoverage) -> list[str]:
 
 
 def _gap_rows(pc: PatchCoverage, rows: list[FilePatchCoverage]) -> list[str]:
-    """The uncovered-lines table; Risk and Extend columns only when something fills them."""
-    with_risk = any(f.risk is not None for f in pc.files)
-    with_hint = any(f.hints for f in rows)
-    head = ["File", *(["Risk"] if with_risk else []), "Uncovered changed lines", "Covered"]
-    head += ["Extend"] if with_hint else []
-    lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    """The uncovered-lines table, one column per :func:`_gap_columns` entry."""
+    columns = _gap_columns(pc, rows)
+    lines = [
+        "| " + " | ".join(name for name, _ in columns) + " |",
+        "|" + "---|" * len(columns),
+    ]
     for f in rows:
-        cells = [f"`{cell(f.file_path)}`"]
-        cells += [cell(risk_words(f.risk))] if with_risk else []
-        cells += [
-            format_ranges(f.uncovered_ranges, RANGE_LIMIT),
-            f"{f.covered_line_count} of {f.coverable_line_count}",
-        ]
-        if with_hint:
-            hint = first_hint(f)
-            # The phrase's backticks are code spans; everything between is escaped.
-            cells.append("`".join(cell(p) for p in hint_phrase(hint).split("`")) if hint else "")
-        lines.append("| " + " | ".join(cells) + " |")
+        lines.append("| " + " | ".join(fill(f) for _, fill in columns) + " |")
     return lines
+
+
+_GapColumn = tuple[str, Callable[[FilePatchCoverage], str]]
+
+
+def _gap_columns(pc: PatchCoverage, rows: list[FilePatchCoverage]) -> list[_GapColumn]:
+    """``(header, cell)`` per column; Risk, Partly taken and Extend only when filled."""
+    columns: list[_GapColumn] = [("File", lambda f: f"`{cell(f.file_path)}`")]
+    if any(f.risk is not None for f in pc.files):
+        columns.append(("Risk", lambda f: cell(risk_words(f.risk))))
+    columns.append(
+        ("Uncovered changed lines", lambda f: format_ranges(f.uncovered_ranges, RANGE_LIMIT))
+    )
+    if pc.partial_line_count > 0:
+        columns.append(("Partly taken", lambda f: format_ranges(f.partial_ranges, RANGE_LIMIT)))
+    columns.append(("Covered", lambda f: f"{f.covered_line_count} of {f.coverable_line_count}"))
+    if any(f.hints for f in rows):
+        columns.append(("Extend", _extend_cell))
+    return columns
+
+
+def _extend_cell(f: FilePatchCoverage) -> str:
+    hint = first_hint(f)
+    if hint is None:
+        return ""
+    # The phrase's backticks are code spans; everything between is escaped.
+    return "`".join(cell(p) for p in hint_phrase(hint).split("`"))
 
 
 #: Warning slots kept for coverage lost outside the change; unused ones go to ranges.
@@ -320,8 +385,10 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
     A failed gate is an error, and so is each failing path-scoped gate that is
     not informational and a failing risky-file gate; one exempted by the
     small-change tolerance, and an informational gate below its threshold, is
-    a notice, so neither is silent. Uncovered ranges are marked riskiest file
-    first, then largest range, sharing what GitHub displays with a warning per
+    a notice, so neither is silent; the branch gate reads the same way, and a
+    branch gate that was set but not applied is a notice too.
+    Uncovered ranges are marked riskiest file first, then largest range, then
+    each partly taken branch range, sharing what GitHub displays with a warning per
     file that lost coverage outside the change (:data:`OUTSIDE_RESERVE`),
     with one notice counting the rest.
     """
@@ -330,11 +397,20 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
         key=lambda r: (*risk_order_key(r[0])[:3], r[1] - r[2], r[0].file_path, r[1]),
     )
     warnings = [_range_annotation(f, a, b) for f, a, b in ranges]
+    # Partly taken branches after every uncovered range: a line that never ran is worse.
+    warnings += [
+        _partial_annotation(f, a, b)
+        for f in sorted(pc.with_status("measured"), key=risk_order_key)
+        for a, b in f.partial_ranges
+    ]
     verdict = [
         *_gate_annotations(pc.flat_gate, _flat_headline(pc, markdown=False)),
         *_path_gate_annotations(pc),
         *_gate_annotations(pc.risky_gate, risky_line(pc, markdown=False)),
+        *_gate_annotations(pc.branch_gate, branch_line(pc, markdown=False)),
     ]
+    if pc.branch_threshold is not None and pc.branch_gate == "no_data":
+        verdict.append(github.notice(branch_line(pc, markdown=False)))
     if pc.project is not None:
         verdict += _gate_annotations(pc.project.gate, project_line(pc, markdown=False))
     outside = [_outside_annotation(c) for c in _lost_outside(pc)]
@@ -377,6 +453,17 @@ def _range_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
         line=a,
         end_line=b,
         title="Uncovered change in a risky file" if risky else "Uncovered change",
+    )
+
+
+def _partial_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
+    return github.annotation(
+        "warning",
+        f"Changed {_span(a, b)} ran, but not every branch was taken by tests",
+        file=f.file_path,
+        line=a,
+        end_line=b,
+        title="Partly taken branch",
     )
 
 

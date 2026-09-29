@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..health.coverage.discovery import CoverageScope
 from ..health.coverage.freshness import coverage_freshness, working_tree_freshness
-from .compute import PatchCoverage, PatchScope, compute_patch_coverage
+from .compute import BranchData, PatchCoverage, PatchScope, compute_patch_coverage
 from .delta import ProjectDelta, ProjectTotals, incomparable_reasons
 from .risk import IndexFacts
 
@@ -91,8 +91,25 @@ async def stored_patch_coverage(
             measured_commit=commit,
             freshness=freshness,
             config_errors=cfg.gate_errors,
+            branch_data=await _stored_branch_data(session, repository_id, rows),
         ),
     )
+
+
+async def _stored_branch_data(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> BranchData:
+    """Whether the stored rows keep per-line branch counts, and if not, why.
+
+    Rows with a file-level branch figure but no per-line counts predate them.
+    Ceiling: a report that states only file-level figures reads the same way.
+    """
+    from repowise.core.persistence.crud import has_branch_lines
+
+    if await has_branch_lines(session, repository_id):
+        return "per_line"
+    legacy = any(row.branch_coverage_pct is not None for row in rows)
+    return "stored_before" if legacy else "none"
 
 
 async def attach_history_delta(

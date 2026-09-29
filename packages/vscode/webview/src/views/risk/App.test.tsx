@@ -90,6 +90,9 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
         [3, 3],
         [7, 9],
       ],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
       risk: {
         fix_pressure: 2,
         dependents: 5,
@@ -117,6 +120,9 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
       covered_line_count: 0,
       patch_coverage_pct: null,
       uncovered_ranges: [],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
       risk: null,
       hints: null,
     },
@@ -130,6 +136,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     gate: "not_set",
   },
   project: null,
+  branches: null,
   scope: {
     label: "coverage.xml",
     source_formats: ["cobertura"],
@@ -141,6 +148,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     freshness: "stale",
     ignored_file_count: 0,
     config_errors: [],
+    branch_data: "none",
   },
   path_gates: [
     {

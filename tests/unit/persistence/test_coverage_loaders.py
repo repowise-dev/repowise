@@ -46,6 +46,50 @@ async def test_executable_lines_survive_a_round_trip(async_session, repo) -> Non
     assert loaded == {"src/a.py": fc}
 
 
+async def test_branch_lines_survive_a_round_trip(async_session, repo) -> None:
+    fc = file_coverage(
+        "src/a.py", [1, 4], [1, 3, 4], branches_found=4, branches_hit=3,
+        branch_lines={1: (1, 2), 4: (2, 2)},
+    )
+    await save_coverage_files(async_session, repo.id, [fc], source_format="lcov")
+
+    (row,) = await load_coverage_for_repo(async_session, repo.id)
+    assert row.branch_lines_json == '{"1":[1,2],"4":[2,2]}'
+    assert await load_file_coverage(async_session, repo.id) == {"src/a.py": fc}
+
+
+async def test_stored_patch_coverage_carries_the_branches(async_session, repo) -> None:
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    fc = file_coverage("src/a.py", [1, 2], [1, 2], branch_lines={2: (1, 2)})
+    await save_coverage_files(
+        async_session, repo.id, [fc], source_format="lcov", ingested_commit_sha="abc"
+    )
+    stored = await stored_patch_coverage(
+        async_session, repo.id, {"src/a.py": {1, 2}}, head_commit="abc"
+    )
+
+    assert stored is not None
+    assert stored.files[0].partial_ranges == ((2, 2),)
+    assert stored.to_dict()["branches"]["branch_coverage_pct"] == 50.0
+    assert stored.scope.branch_data == "per_line"
+
+
+@pytest.mark.parametrize(("branches_found", "expected"), [(2, "stored_before"), (0, "none")])
+async def test_stored_rows_without_per_line_branches_say_why(
+    async_session, repo, branches_found, expected
+) -> None:
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    # A file-level branch figure with no per-line counts: written before they were kept.
+    fc = file_coverage("src/a.py", [1], [1], branches_found=branches_found, branches_hit=1)
+    await save_coverage_files(async_session, repo.id, [fc], source_format="lcov")
+    stored = await stored_patch_coverage(async_session, repo.id, {"src/a.py": {1}})
+
+    assert stored is not None
+    assert stored.scope.branch_data == expected
+
+
 async def test_stored_map_matches_the_resolved_map(async_session, repo) -> None:
     resolved = resolve_reports([parse_lcov(_LCOV)], {"src/a.py"})
     await save_coverage_files(

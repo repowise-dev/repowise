@@ -6,6 +6,7 @@ the whole repository's past:
 | Gate | Question | Needs | History |
 |------|----------|-------|---------|
 | `repowise coverage check` | Did the tests run the lines this change touched? | git and a coverage report | the merge-base with the target branch |
+| `repowise coverage check --fail-under-branches P` | Did the tests take the branches of the lines this change touched? | git and a report with per-line branch data | the merge-base with the target branch |
 | `repowise coverage check --max-drop P` | Did this change lower project coverage by more than P points? | git, a coverage report, and one measured at the change's base | the merge-base with the target branch |
 | `repowise doc-drift --check` | Does the documentation still describe files, links and commands that exist? | git | none (full history only improves rename suggestions) |
 | `repowise security check` | Did this change add a secret or a risky call? | git | every commit of the change |
@@ -123,6 +124,7 @@ release the action installs.
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
 | `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
 | `coverage-fail-under-risky` | `coverage.fail_under_risky` | Minimum patch coverage percent over risky files only: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. |
+| `coverage-fail-under-branches` | `coverage.fail_under_branches` | Minimum percent of branches taken on changed lines. |
 | `coverage-base-report` | none | Reports measured at the change's base commit, one per line. See [Project coverage](#project-coverage-and-coverage-outside-the-change). |
 | `coverage-max-drop` | `coverage.max_drop` | Most project coverage may fall from the base, in percentage points. |
 | `doc-drift-baseline` | none | Committed baseline file. |
@@ -266,6 +268,7 @@ coverage:
   fail_under: 80
   min_coverable_lines: 5   # small-change tolerance
   fail_under_risky: 90     # optional, see Risk-weighted patch coverage
+  fail_under_branches: 70  # optional, see Branches on changed lines
 ```
 
 With `min_coverable_lines` set, a change touching fewer changed executable
@@ -447,8 +450,29 @@ when any gate fails. It follows the same rules as the others, the whole
 change's small-change tolerance included. A change that touches no risky file
 leaves it not applied (`no_data`, exit `0`). With the gate set, a shallow
 clone, or a measured file whose risk could not be read (no git history and no
-index row), exits `2`, unless the whole-change or a path-scoped gate already
-failed: that failure is reported.
+index row), exits `2`, unless the whole-change, a path-scoped or the branch
+gate already failed: that failure is reported.
+
+### Branches on changed lines
+
+When the report has per-line branch data (lcov `BRDA`, Cobertura
+`condition-coverage`, JaCoCo branch counters, Clover `cond`), the check also
+reports "Branches on changed lines 70.0% (7 of 10 taken; 2 lines partly
+taken)". A partly taken line ran with a branch never taken: it gets a "Partly
+taken" column and, on GitHub, a "Partly taken branch" warning.
+`--fail-under-branches P` (`coverage-fail-under-branches`,
+`coverage.fail_under_branches`) gates the share.
+
+- Line and branch coverage are reported side by side, never blended.
+- The small-change tolerance applies, and counts changed lines, not branches.
+- No changed line with branches: "not measured", never 0%, and the gate is not
+  applied (exit `0`).
+- Coverage with no per-line branch data (a Go coverprofile, coverage.py without
+  `--branch`, stored coverage ingested before branches were kept) exits `2`
+  under the flag, unless another gate already failed, and is a note with exit
+  `0` from the config key alone.
+- Several reports merge per line by the most branches taken and seen, so the
+  share is a lower bound.
 
 ### Project coverage and coverage outside the change
 
@@ -541,6 +565,8 @@ repowise-coverage:
 | "The change-risk gate ranks the change against recent commits, and --baseline 0 turns that off." | drop `--baseline 0` |
 | "The risky-file gate reads bug-fix history, and this clone is shallow." | fetch full history |
 | "Could not read the risk of N changed files, so the risky-file gate cannot run." | fetch full history, or index the repository |
+| "The coverage report has no per-line branch data, so --fail-under-branches cannot be judged." | turn on branch coverage in the test run, or drop the flag |
+| "The stored coverage predates per-line branch data ..." | re-run `repowise coverage add` with the report |
 | "The max-drop gate needs coverage measured at the change's base ..." | pass `--base-report`, or ingest a report at the base commit |
 | "Project coverage cannot be compared ..." | measure the base and the head the same way (same full reports, same `coverage.ignore`) |
 | "Base report: No report path matched a file in this repository." | the base report must name files the base commit tracked; check its prefix |

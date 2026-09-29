@@ -34,10 +34,12 @@ def parse_lcov(text: str) -> CoverageReport:
     branches_hit = 0
     explicit_lf: int | None = None
     explicit_lh: int | None = None
+    # line -> (taken, total) from BRDA records; ``-`` (never evaluated) is not taken.
+    branch_lines: dict[int, tuple[int, int]] = {}
 
     def flush() -> None:
         nonlocal current_path, covered_lines, total_lines
-        nonlocal branches_found, branches_hit, explicit_lf, explicit_lh
+        nonlocal branches_found, branches_hit, explicit_lf, explicit_lh, branch_lines
         if current_path is None:
             return
         files.append(
@@ -49,6 +51,7 @@ def parse_lcov(text: str) -> CoverageReport:
                 branches_hit=branches_hit,
                 total=explicit_lf,
                 hit=explicit_lh,
+                branch_lines=branch_lines,
             )
         )
         current_path = None
@@ -58,6 +61,7 @@ def parse_lcov(text: str) -> CoverageReport:
         branches_hit = 0
         explicit_lf = None
         explicit_lh = None
+        branch_lines = {}
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -85,9 +89,13 @@ def parse_lcov(text: str) -> CoverageReport:
         elif tag == "BRDA":
             parts = rest.split(",")
             if len(parts) == 4:
+                taken = parts[3] not in ("-", "0")
                 branches_found += 1
-                if parts[3] not in ("-", "0"):
-                    branches_hit += 1
+                branches_hit += taken
+                with contextlib.suppress(ValueError):
+                    line_no = int(parts[0])
+                    prev_taken, prev_total = branch_lines.get(line_no, (0, 0))
+                    branch_lines[line_no] = (prev_taken + taken, prev_total + 1)
         elif tag == "LF":
             with contextlib.suppress(ValueError):
                 explicit_lf = int(rest)

@@ -802,6 +802,142 @@ def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
     assert missing.value.code == "no_report"
 
 
+# -- branches on changed lines ----------------------------------------------
+
+
+def _branch_lcov(repo) -> str:
+    """Every changed line of src/app.py ran; line 2 took one of its two branches."""
+    path = repo / "coverage.lcov"
+    path.write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:1,1\nDA:2,1\nDA:3,1\n"
+        "BRDA:2,0,0,1\nBRDA:2,0,1,0\nBRDA:3,0,0,1\nBRDA:3,0,1,1\nend_of_record\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_branches_on_changed_lines_are_reported_beside_patch_coverage(repo) -> None:
+    report = _branch_lcov(repo)
+    data = _check_json(repo, report)
+
+    assert data["patch_coverage_pct"] == 100.0
+    assert data["branches"] == {
+        "branch_taken": 3,
+        "branch_total": 4,
+        "branch_coverage_pct": 75.0,
+        "partial_line_count": 1,
+        "threshold": None,
+        "gate": "not_set",
+    }
+    assert data["scope"]["branch_data"] == "per_line"
+    (app,) = [f for f in data["files"] if f["file_path"] == "src/app.py"]
+    assert app["partial_ranges"] == [[2, 2]]
+
+    table = _run(repo, "main...feat", "--report", report)
+    assert "Branches on changed lines 75.0% (3 of 4 taken; 1 line partly taken)" in table.output
+    assert "Partly taken" in table.output
+
+
+def test_fail_under_branches_gates_the_branch_share(repo) -> None:
+    report = _branch_lcov(repo)
+
+    passed = _run(repo, "main...feat", "--report", report, "--fail-under-branches", "75")
+    assert passed.exit_code == 0
+    failed = _run(repo, "main...feat", "--report", report, "--fail-under-branches", "80")
+    assert failed.exit_code == 1
+    assert "below the 80.0% branch gate" in failed.output
+
+
+def test_fail_under_branches_defaults_to_config_and_a_bad_value_exits_2(repo) -> None:
+    config = repo / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("coverage:\n  fail_under_branches: 80\n", encoding="utf-8")
+    report = _branch_lcov(repo)
+    assert _run(repo, "main...feat", "--report", report).exit_code == 1
+
+    config.write_text("coverage:\n  fail_under_branches: lots\n", encoding="utf-8")
+    bad = _run(repo, "main...feat", "--report", report)
+    assert bad.exit_code == 2
+    assert "coverage.fail_under_branches must be a number" in bad.output
+    # The flag overrides the unusable config value.
+    flagged = _run(repo, "main...feat", "--report", report, "--fail-under-branches", "50")
+    assert flagged.exit_code == 0
+
+
+def test_the_branch_flag_over_a_report_without_branch_data_exits_2(repo) -> None:
+    report = _lcov(repo, {1: 1, 2: 1, 3: 1})
+    result = _run(repo, "main...feat", "--report", report, "--fail-under-branches", "80")
+
+    assert result.exit_code == 2
+    assert "no per-line branch data" in result.output
+    assert _check_json(repo, report)["branches"] is None
+
+
+def test_the_branch_flag_does_not_hide_a_failure_already_found(repo) -> None:
+    report = _lcov(repo, {1: 1, 2: 1, 3: 0})
+    args = ("--fail-under", "90", "--fail-under-branches", "80")
+    assert _run(repo, "main...feat", "--report", report, *args).exit_code == 1
+
+
+def test_a_config_branch_gate_over_a_report_without_branch_data_is_a_note(
+    repo, tmp_path_factory
+) -> None:
+    config = repo / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("coverage:\n  fail_under_branches: 80\n", encoding="utf-8")
+    report = _lcov(repo, {1: 1, 2: 1, 3: 1})
+
+    table = _run(repo, "main...feat", "--report", report)
+    assert table.exit_code == 0
+    assert "Branches on changed lines: not measured" in table.output
+
+    summary = tmp_path_factory.mktemp("gh") / "summary.md"
+    github = _run(
+        repo,
+        "main...feat",
+        "--report",
+        report,
+        "--format",
+        "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert github.exit_code == 0
+    assert "::notice::Branches on changed lines: not measured" in github.stdout
+
+
+def _stored_branchy(monkeypatch, branch_data: str | None) -> None:
+    """Stored coverage, current at the head: src/app.py line 2 took 1 of 2 branches."""
+    from repowise.cli.commands import coverage_check_cmd
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import PatchScope, compute_patch_coverage
+
+    lines = {2: (1, 2)} if branch_data is None else {}
+    cov = {"src/app.py": file_coverage("src/app.py", [2, 3], [2, 3], branch_lines=lines)}
+    scope = PatchScope(label="main...feat", freshness="current", branch_data=branch_data)
+
+    async def _stored(root, changed, label, threshold, min_lines, cfg):
+        return compute_patch_coverage(changed, cov, threshold=threshold, scope=scope)
+
+    monkeypatch.setattr(coverage_check_cmd, "has_db_store", lambda root: True)
+    monkeypatch.setattr(coverage_check_cmd, "_stored", _stored)
+
+
+def test_stored_coverage_takes_the_branch_flag(repo, monkeypatch) -> None:
+    _stored_branchy(monkeypatch, None)
+
+    result = _run(repo, "main...feat", "--fail-under-branches", "80")
+    assert result.exit_code == 1, result.output
+    assert "below the 80.0% branch gate" in result.output
+
+
+def test_stored_coverage_from_before_per_line_branches_exits_2(repo, monkeypatch) -> None:
+    _stored_branchy(monkeypatch, "stored_before")
+
+    result = _run(repo, "main...feat", "--fail-under-branches", "80")
+    assert result.exit_code == 2
+    assert "Re-run `repowise coverage add`" in result.output
+
+
 # -- path-scoped gates -------------------------------------------------------
 
 

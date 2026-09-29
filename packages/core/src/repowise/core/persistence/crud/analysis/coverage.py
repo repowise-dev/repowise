@@ -241,11 +241,14 @@ def _row_columns(f: Any) -> dict[str, Any]:
             "total_coverable_lines": int(f.total_coverable_lines or 0),
             "covered_line_count": _covered_count(f),
             "coverable_lines_json": json.dumps(list(getattr(f, "coverable_lines", None) or [])),
+            "branch_lines_json": _branch_json(getattr(f, "branch_lines", None)),
         }
     data = dict(f)
     for key in ("covered_lines", "coverable_lines"):
         if key in data:
             data[f"{key}_json"] = json.dumps(list(data.pop(key) or []))
+    if "branch_lines" in data:
+        data["branch_lines_json"] = _branch_json(data.pop("branch_lines"))
     columns = {
         k: v for k, v in data.items() if k not in _INGEST_COLUMNS and hasattr(CoverageFile, k)
     }
@@ -256,8 +259,8 @@ def _row_columns(f: Any) -> dict[str, Any]:
     return columns
 
 
-#: Every column of ``CoverageFile`` except the two line-set blobs
-#: (``covered_lines_json``, ``coverable_lines_json``). They dominate the table:
+#: Every column of ``CoverageFile`` except the per-line blobs (``covered_lines_json``,
+#: ``coverable_lines_json``, ``branch_lines_json``). They dominate the table:
 #: the covered set alone was 467 KB of the 549 KB stored for this repo's 1,401
 #: rows, and only line-level readers need them.
 _COVERAGE_SCALAR_COLUMNS = (
@@ -303,10 +306,10 @@ async def load_coverage_for_repo(
     """Coverage rows for a repo, optionally scoped to *file_paths*.
 
     ``include_covered_lines=False`` returns ``Row`` objects carrying every
-    column except the two line-set blobs. They are attribute-accessed exactly
-    like the ORM entities, so a caller that reads named fields needs no change
-    — but a caller that touches ``covered_lines_json`` or
-    ``coverable_lines_json`` must ask for them.
+    column except the per-line blobs. They are attribute-accessed exactly
+    like the ORM entities, so a caller that reads named fields needs no change,
+    but a caller that touches ``covered_lines_json``,
+    ``coverable_lines_json`` or ``branch_lines_json`` must ask for them.
     """
     q = (
         select(CoverageFile)
@@ -319,6 +322,21 @@ async def load_coverage_for_repo(
     if include_covered_lines:
         return list(result.scalars().all())
     return list(result.all())
+
+
+def _branch_json(lines: dict | None) -> str | None:
+    """``{"line": [taken, total]}`` compact, ``None`` when there is no per-line branch data."""
+    if not lines:
+        return None
+    return json.dumps({str(k): list(v) for k, v in lines.items()}, separators=(",", ":"))
+
+
+def _branch_lines(raw: str | None) -> dict[int, tuple[int, int]]:
+    try:
+        data = json.loads(raw) if raw else {}
+        return {int(k): (int(v[0]), int(v[1])) for k, v in data.items()}
+    except (ValueError, TypeError, AttributeError, IndexError):
+        return {}
 
 
 def _line_list(raw: str | None) -> list[int]:
@@ -407,6 +425,7 @@ def file_coverage_from_row(row: Any) -> FileCoverage:
         total_coverable_lines=row.total_coverable_lines or 0,
         coverable_lines=_line_list(getattr(row, "coverable_lines_json", None)),
         covered_line_count=getattr(row, "covered_line_count", None),
+        branch_lines=_branch_lines(getattr(row, "branch_lines_json", None)),
     )
 
 
@@ -419,6 +438,19 @@ async def load_file_coverage(
     """Stored coverage as ``{path: FileCoverage}``, line sets included."""
     rows = await load_coverage_for_repo(session, repository_id, file_paths=file_paths)
     return {row.file_path: file_coverage_from_row(row) for row in rows}
+
+
+async def has_branch_lines(session: AsyncSession, repository_id: str) -> bool:
+    """Whether any stored row keeps per-line branch counts."""
+    found = await session.scalar(
+        select(CoverageFile.id)
+        .where(
+            CoverageFile.repository_id == repository_id,
+            CoverageFile.branch_lines_json.is_not(None),
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def load_coverage_map(session: AsyncSession, repository_id: str) -> dict[str, dict]:

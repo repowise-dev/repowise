@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .causes import apply_causes, name_causes, needs_causes, read_indirect_causes
 from .compute import (
+    BranchData,
     FilePatchCoverage,
     FileStatus,
     GateStatus,
@@ -35,6 +36,7 @@ from .render import (
     RANGE_LIMIT,
     STATUS_TEXT,
     attention_rows,
+    branch_line,
     cause_words,
     fmt_pct,
     format_ranges,
@@ -72,6 +74,7 @@ from .stored import (
 __all__ = [
     "RANGE_LIMIT",
     "STATUS_TEXT",
+    "BranchData",
     "FilePatchCoverage",
     "FileRisk",
     "FileStatus",
@@ -93,6 +96,7 @@ __all__ = [
     "attach_history_delta",
     "attach_risk",
     "attention_rows",
+    "branch_line",
     "build_hints",
     "cause_words",
     "compute_patch_coverage",
