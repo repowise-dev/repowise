@@ -338,7 +338,7 @@ def change_diff(
     reads, whatever the user's ``diff.renames``.
     """
     diffs = parse_unified_diff(
-        _diff(repo_path, ["diff", "--unified=0", "-M", *DIFF_PREFIXES, base, head])
+        _diff(repo_path, ["diff", "--unified=0", "-M", *DIFF_ARGS, base, head])
     )
     fields = _diff(repo_path, ["diff", "--name-status", "-z", "-M", base, head]).split("\0")
     renames: dict[str, str] = {}
