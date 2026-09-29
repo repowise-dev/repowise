@@ -47,7 +47,11 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
-from .name_occurrences import IDENTIFIER_RE, clamp_unverified_absence
+from .name_occurrences import (
+    IDENTIFIER_RE,
+    clamp_unverified_absence,
+    drop_internals_used_in_own_file,
+)
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
@@ -855,6 +859,7 @@ class DeadCodeAnalyzer:
         # version of the same question — not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
         findings = clamp_unverified_absence(findings, self._source_map)
+        findings = drop_internals_used_in_own_file(findings, self._source_map)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)

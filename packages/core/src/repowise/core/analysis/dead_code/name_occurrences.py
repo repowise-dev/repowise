@@ -65,6 +65,12 @@ IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 #: treated as a question we cannot ask rather than as an answer.
 MIN_ANSWERABLE_NAME_LEN = 3
 
+#: Where an unused internal lands when its own file could not be searched for
+#: it: the declaration's extent is unknown, or the name is one the scan cannot
+#: see. Below :data:`RISK_CAP_CONFIDENCE`, so the default report hides it rather
+#: than showing a finding nothing has checked.
+UNVERIFIED_INTERNAL_CONFIDENCE = 0.3
+
 
 class _Answer(Enum):
     """What the search actually established. Four outcomes, kept apart.
@@ -266,11 +272,12 @@ def clamp_unverified_absence(
     the analyzer. Never raises a confidence and never drops a finding.
 
     Scoped to unused *exports*, the one pass that promotes on import absence.
-    Unused internals already sit below the threshold and never claim to be
-    safe, and a whole-file finding would have to match on the path stem — the
-    broad-word shape ("index", "main", "utils") that the unindexed clamp and
-    the risk-factor token lists both refuse for being unable to tell a mention
-    from a coincidence.
+    Unused internals are settled by :func:`drop_internals_used_in_own_file`,
+    which can drop rather than cap because a private name has only its own file
+    to be used in. A whole-file finding would have to match on the path stem —
+    the broad-word shape ("index", "main", "utils") that the unindexed clamp
+    and the risk-factor token lists both refuse for being unable to tell a
+    mention from a coincidence.
 
     With no source access there is no knowledge to add, so the pass declines
     rather than guessing in either direction.
@@ -320,3 +327,56 @@ def clamp_unverified_absence(
             f"'{name}' {detail}, so the absence of an import does not establish disuse"
         )
     return findings
+
+
+def drop_internals_used_in_own_file(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """Drop unused internals their own file names outside their declaration.
+
+    The graph carries calls and a few reference kinds, but not every way a
+    private name is used: a module constant read in a function below it, a
+    handler passed as a value (``target=fn``, ``re.sub(pattern, fn, s)``), a
+    type named in an annotation, a component written as JSX or as object
+    shorthand. Each of those reached this pass as "not used anywhere". A
+    private name can only be used in its own file, so a mention there outside
+    the symbol's own span is a use and the finding is dropped, not capped.
+
+    A recursive call sits inside the span and does not count, so a function
+    only calling itself stays reported. A mention in a comment does count:
+    that is this module's textual ceiling, and it only ever costs recall.
+
+    When the file was read but the question could not be asked (no span, or a
+    name the identifier scan cannot see), the finding stays but falls to
+    :data:`UNVERIFIED_INTERNAL_CONFIDENCE`. A file with no source at all is
+    left as it was: nothing was established either way.
+    """
+    by_file: dict[str, list[DeadCodeFindingData]] = {}
+    for finding in findings:
+        if (
+            finding.kind is DeadCodeKind.UNUSED_INTERNAL
+            and finding.symbol_name
+            and finding.file_path in source_map
+        ):
+            by_file.setdefault(finding.file_path, []).append(finding)
+    if not by_file:
+        return findings
+
+    verdicts: dict[int, _Verdict] = {}
+    for path, pending in by_file.items():
+        verdicts.update(_uses_in_own_file(source_map, path, pending))
+
+    kept: list[DeadCodeFindingData] = []
+    for finding in findings:
+        verdict = verdicts.get(id(finding))
+        if verdict is not None:
+            if verdict.answer is _Answer.USED:
+                continue
+            if verdict.answer is _Answer.SPAN_UNKNOWN or not _token(finding.symbol_name):
+                finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
+                finding.evidence.append(
+                    f"'{finding.symbol_name}' could not be checked against the rest of "
+                    "its own file, so its disuse is unverified"
+                )
+        kept.append(finding)
+    return kept
