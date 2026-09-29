@@ -1120,6 +1120,8 @@ export interface DocDriftFindingResponse {
   fingerprint: string;
   suggestion?: string | null;
   suggestion_basis?: string | null;
+  first_seen_at?: string | null;
+  is_new?: boolean;
 }
 
 /**
@@ -1168,6 +1170,7 @@ export interface DocDriftSummaryResponse {
   confidence: Record<string, number>;
   by_kind: Record<string, number>;
   findings_basis: string;
+  new_since_last_update?: number | null;
 }
 
 export interface EgoGraphResponse {
@@ -1720,6 +1723,7 @@ export interface HealthTrendKpiRow {
   structure_average?: number | null;
   history_average?: number | null;
   maintainability_average?: number | null;
+  doc_drift_count?: number | null;
 }
 
 export interface HealthTrendResponse {

@@ -958,6 +958,8 @@ export interface HealthTrendResponse {
     structure_average?: number | null;
     history_average?: number | null;
     maintainability_average?: number | null;
+    /** Stored documentation drift findings at this snapshot; `null` before recorded. */
+    doc_drift_count?: number | null;
   }>;
   summary: {
     /** `null` under a narrowed scope: only the average covers both populations. */

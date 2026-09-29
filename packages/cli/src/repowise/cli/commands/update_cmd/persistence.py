@@ -1140,6 +1140,22 @@ async def _persist_full_update_async(
                 if timings is not None:
                     timings.stop("persist.governance")
 
+            # Scoped to the documents the pass actually read, so one this run
+            # could not open keeps its rows in both drift tables. Before health:
+            # the snapshot it takes records the stored drift count.
+            if doc_drift_report is not None:
+                try:
+                    from repowise.core.persistence.crud import (
+                        replace_doc_drift_guarded,
+                    )
+
+                    with timed(timings, "persist.doc_drift"):
+                        await replace_doc_drift_guarded(
+                            session, repo_id, doc_drift_report
+                        )
+                except Exception as exc:
+                    _skip("Doc-drift persist", exc)
+
             # Code-health findings + metrics (partial — upsert only).
             if partial_health_report is not None:
                 try:
@@ -1170,21 +1186,6 @@ async def _persist_full_update_async(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
-
-            # Scoped to the documents the pass actually read, so one this run
-            # could not open keeps its rows in both drift tables.
-            if doc_drift_report is not None:
-                try:
-                    from repowise.core.persistence.crud import (
-                        replace_doc_drift_guarded,
-                    )
-
-                    with timed(timings, "persist.doc_drift"):
-                        await replace_doc_drift_guarded(
-                            session, repo_id, doc_drift_report
-                        )
-                except Exception as exc:
-                    _skip("Doc-drift persist", exc)
 
             # Re-persist graph_nodes so symbol-level PageRank / betweenness /
             # community ids reflect the current build.

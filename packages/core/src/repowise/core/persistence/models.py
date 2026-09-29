@@ -1701,6 +1701,9 @@ class DocDriftFinding(Base):
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+    #: When this (document, kind, target) was first found, carried across
+    #: rewrites. Null when it was already present at the first check.
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class HealthFinding(Base):
@@ -2186,6 +2189,8 @@ class HealthSnapshot(Base):
     # the trend can draw the number a refactor is meant to move beside the one
     # history drags on. NULL on snapshots taken before it was recorded.
     maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Stored documentation drift findings at this instant. NULL before recorded.
+    doc_drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class CoverageFile(Base):

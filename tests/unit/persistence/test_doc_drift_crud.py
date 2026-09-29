@@ -10,8 +10,11 @@ from sqlalchemy import select
 
 from repowise.core.analysis.doc_drift.models import DocDriftFindingData, DriftKind
 from repowise.core.persistence.crud import (
+    doc_drift_last_written,
     get_doc_drift_findings,
+    is_new_doc_drift_row,
     replace_doc_drift_findings,
+    save_health_snapshot,
 )
 from repowise.core.persistence.crud.analysis.doc_drift import summarize_confidence_rows
 from repowise.core.persistence.models import DocDriftFinding
@@ -269,3 +272,65 @@ async def test_unreadable_evidence_degrades_to_none_rather_than_raising():
 
     for blob in ("{not json", '{"a": 1}', "", None):
         assert serialize_doc_drift_row(_row(blob))["evidence"] == []
+
+
+async def test_the_first_check_marks_nothing_new(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding()])
+    await async_session.commit()
+
+    (row,) = await _rows(async_session, repo.id)
+    assert row.first_seen_at is None
+    last = await doc_drift_last_written(async_session, repo.id)
+    assert not is_new_doc_drift_row(row, last)
+
+
+async def test_a_finding_keeps_its_age_when_its_line_moves(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(target="src/x.py")])
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/x.py"), _finding(line=20)]
+    )
+    (first,) = [r for r in await _rows(async_session, repo.id) if r.line_number == 20]
+    seen = first.first_seen_at
+    assert seen is not None
+
+    # The same finding, pushed down by an edit above it: same age, no longer new.
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/x.py"), _finding(line=25)]
+    )
+    await async_session.commit()
+    rows = {r.line_number: r for r in await _rows(async_session, repo.id)}
+    assert rows[25].first_seen_at == seen
+    last = await doc_drift_last_written(async_session, repo.id)
+    assert not is_new_doc_drift_row(rows[25], last)
+    assert rows[10].first_seen_at is None
+
+
+async def test_only_the_latest_writes_arrivals_read_as_new(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(target="src/a.py")])
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/a.py"), _finding(target="src/b.py")]
+    )
+    await async_session.commit()
+
+    last = await doc_drift_last_written(async_session, repo.id)
+    new = {r.target: is_new_doc_drift_row(r, last) for r in await _rows(async_session, repo.id)}
+    assert new == {"src/a.py": False, "src/b.py": True}
+
+
+async def test_a_snapshot_records_the_stored_drift_count(async_session):
+    repo = await insert_repo(async_session)
+    kwargs = dict(
+        hotspot_health=8.0,
+        average_health=8.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+    )
+    never = await save_health_snapshot(async_session, repo.id, **kwargs)
+    assert never.doc_drift_count is None
+
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(), _finding(line=2)])
+    counted = await save_health_snapshot(async_session, repo.id, **kwargs)
+    assert counted.doc_drift_count == 2

@@ -113,6 +113,21 @@ function renderView(node: ReactElement) {
 }
 
 describe("DocDriftView", () => {
+  it("marks findings new since the last update and counts them in the lede", async () => {
+    const [first, second] = FINDINGS;
+    const listFindings = vi.fn(async () =>
+      response({
+        findings: [{ ...first!, is_new: true }, second!],
+        summary: { ...response().summary!, new_since_last_update: 1 },
+      }),
+    );
+    renderView(<DocDriftView adapter={makeAdapter({ listFindings })} />);
+
+    const table = await screen.findByRole("table", TABLE);
+    expect(within(table).getAllByText("new")).toHaveLength(1);
+    expect(screen.getByText(/1 appeared in the last update/)).toBeTruthy();
+  });
+
   it("leads with the count and names the documents to edit", async () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.doc_drift.constants import bucket_confidences
@@ -75,6 +76,7 @@ async def _replace_scoped(
     items: list[Any],
     *,
     scoped: frozenset[str] | None,
+    stamp: Callable[[dict], None] | None = None,
 ) -> int:
     """Delete-then-insert one drift table, converging on re-run.
 
@@ -117,6 +119,8 @@ async def _replace_scoped(
         if key in seen:
             continue
         seen.add(key)
+        if stamp is not None:
+            stamp(kwargs)
         rows.append(kwargs)
 
     for i in range(0, len(rows), _BATCH_SIZE):
@@ -162,14 +166,91 @@ async def replace_doc_drift_findings(
     other three hundred it never looked at. ``None`` means the run was
     repo-wide and every row is replaceable.
 
+    Each row's ``first_seen_at`` is carried from the row it replaces, matched
+    on (document, kind, target) so an edit that moves a line keeps its age.
+    Ceiling: a renamed document's findings start a new age, as the key holds
+    the path; carrying them needs the rename map the incremental pass has.
     Returns the number of rows inserted.
     """
+    scoped = frozenset(scope) if scope is not None else None
+    written_at = datetime.now(UTC)
+    prior = await _first_seen_before(session, repository_id, scoped)
+
+    def stamp(row: dict) -> None:
+        row["detected_at"] = written_at
+        if prior is None:
+            # First check of this repository: nothing is new, only present.
+            row["first_seen_at"] = None
+        else:
+            row["first_seen_at"] = prior.get(_age_key(row), written_at)
+
     return await _replace_scoped(
-        session,
-        _FINDINGS_TABLE,
-        repository_id,
-        findings,
-        scoped=frozenset(scope) if scope is not None else None,
+        session, _FINDINGS_TABLE, repository_id, findings, scoped=scoped, stamp=stamp
+    )
+
+
+def _age_key(row: Any) -> tuple[str, str, str]:
+    return (row["file_path"], row["kind"], row["target"])
+
+
+async def _first_seen_before(
+    session: AsyncSession, repository_id: str, scoped: frozenset[str] | None
+) -> dict[tuple[str, str, str], datetime | None] | None:
+    """Earliest ``first_seen_at`` per key among the rows about to be replaced.
+
+    ``None`` when the repository has no drift rows at all, which is a first
+    check rather than a clean previous one.
+    """
+    if not await doc_drift_pass_ran(session, repository_id):
+        return None
+    cols = (
+        DocDriftFinding.file_path,
+        DocDriftFinding.kind,
+        DocDriftFinding.target,
+        DocDriftFinding.first_seen_at,
+    )
+    base = select(*cols).where(DocDriftFinding.repository_id == repository_id)
+    if scoped is None:
+        results = [(await session.execute(base)).all()]
+    else:
+        paths = sorted(scoped)
+        results = [
+            (
+                await session.execute(
+                    base.where(DocDriftFinding.file_path.in_(paths[i : i + _IN_CLAUSE_CHUNK]))
+                )
+            ).all()
+            for i in range(0, len(paths), _IN_CLAUSE_CHUNK)
+        ]
+    ages: dict[tuple[str, str, str], datetime | None] = {}
+    for result in results:
+        for row in result:
+            key = _age_key(row._mapping)
+            seen = row.first_seen_at
+            # A null (present at the first check) is the oldest age there is.
+            if key not in ages or seen is None or (ages[key] is not None and seen < ages[key]):
+                ages[key] = seen
+    return ages
+
+
+async def doc_drift_last_written(session: AsyncSession, repository_id: str) -> datetime | None:
+    """When the most recent drift write that stored a finding ran."""
+    stmt = select(func.max(DocDriftFinding.detected_at)).where(
+        DocDriftFinding.repository_id == repository_id
+    )
+    return await session.scalar(stmt)
+
+
+def is_new_doc_drift_row(row: DocDriftFinding, last_written: datetime | None) -> bool:
+    """Whether *row* first appeared in the latest write.
+
+    Ceiling: a later write that stores no finding leaves the previous write as
+    "latest", so its findings still read as new until one does.
+    """
+    return (
+        row.first_seen_at is not None
+        and last_written is not None
+        and row.first_seen_at >= last_written
     )
 
 
@@ -341,6 +422,13 @@ async def doc_drift_findings_stored(session: AsyncSession, repository_id: str) -
         DocDriftFinding.repository_id == repository_id
     )
     return (await session.execute(stmt.limit(1))).scalar_one_or_none() is not None
+
+
+async def doc_drift_pass_ran(session: AsyncSession, repository_id: str) -> bool:
+    """Whether the drift pass has ever stored anything here: either table counts."""
+    return await doc_drift_findings_stored(
+        session, repository_id
+    ) or await doc_drift_references_stored(session, repository_id)
 
 
 def serialize_doc_drift_reference_row(row: DocDriftReference) -> dict:

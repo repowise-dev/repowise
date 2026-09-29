@@ -99,6 +99,8 @@ class HealthTrendKpiRow(BaseModel):
     structure_average: float | None = None
     history_average: float | None = None
     maintainability_average: float | None = None
+    #: Stored documentation drift findings at this snapshot; ``None`` before recorded.
+    doc_drift_count: int | None = None
 
 
 class HealthTrendSummary(BaseModel):

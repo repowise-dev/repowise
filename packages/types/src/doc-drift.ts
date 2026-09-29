@@ -135,6 +135,13 @@ export interface DocDriftFinding {
   suggestion?: string | null;
   /** Key of `SUGGESTION_BASIS_LABELS` naming how `suggestion` was found. */
   suggestion_basis?: string | null;
+  /**
+   * When first found, carried across updates. `null` when it was present at
+   * the first check, or when the store keeps no history.
+   */
+  first_seen_at?: string | null;
+  /** First found by the latest update that stored a finding. */
+  is_new?: boolean;
 }
 
 /**
@@ -155,6 +162,8 @@ export interface DocDriftSummary {
    * uncheckable by design, so no surface may show the counts without it.
    */
   findings_basis: string;
+  /** Of `findings_total`, how many are new since the last update; `null` without history. */
+  new_since_last_update?: number | null;
 }
 
 export interface DocDriftResponse {

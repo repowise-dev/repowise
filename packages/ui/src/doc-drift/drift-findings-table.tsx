@@ -15,6 +15,7 @@
  */
 
 import { FileText } from "lucide-react";
+import { Badge } from "../ui/badge";
 import {
   docDriftConfidenceTier,
   docDriftKindLabel,
@@ -79,6 +80,11 @@ export function DriftFindingsTable({
           >
             {f.file_path}
             <span className="text-[var(--color-text-tertiary)]">:{f.line_number}</span>
+            {f.is_new ? (
+              <Badge variant="accent" className="ml-1.5 h-4 px-1 text-[10px]">
+                new
+              </Badge>
+            ) : null}
           </span>
           <span
             className="truncate text-xs text-[var(--color-text-tertiary)]"
