@@ -111,6 +111,20 @@ class TestHistory:
         assert "12 of those commits fixed a bug." in page
         assert "change hotspots" in page
 
+    def test_a_blame_owner_is_credited_with_lines_not_commits(self, generator):
+        git = {**GIT, "primary_owner_commit_pct": 0.25, "primary_owner_line_pct": 0.7}
+        page = render(generator, _context(git_metadata=git))
+
+        assert "**Ada Lovelace** wrote 70% of its current lines (25% of commits)." in page
+        assert "70% of commits" not in page
+
+    def test_a_blame_owner_with_no_indexed_commits_gets_the_line_share_alone(self, generator):
+        git = {**GIT, "primary_owner_commit_pct": None, "primary_owner_line_pct": 0.7}
+        page = render(generator, _context(git_metadata=git))
+
+        assert "**Ada Lovelace** wrote 70% of its current lines." in page
+        assert "of commits" not in page
+
     def test_the_date_is_absolute_so_the_page_does_not_move_on_its_own(self, generator):
         # The rendered bytes are this page's reuse key. "three days ago" would
         # restate every page in the wiki every day.

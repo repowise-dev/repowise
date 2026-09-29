@@ -97,7 +97,11 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "last_commit_at": None,
         "primary_owner_name": None,
         "primary_owner_email": None,
+        # The primary owner's share of the file's commits, and (FULL tier) of
+        # its current lines by blame. The owner is the blame owner when blame
+        # ran, so the two can rank different people first.
         "primary_owner_commit_pct": None,
+        "primary_owner_line_pct": None,
         "top_authors_json": "[]",
         "significant_commits_json": "[]",
         "co_change_partners_json": "[]",
@@ -354,7 +358,7 @@ def index_file(
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
         _add_ownership(meta, authors)
         if include_blame:
-            _add_blame_ownership(meta, repo, repo_path, now)
+            _add_blame_ownership(meta, repo, repo_path, now, authors)
         _add_commit_messages(meta, commits)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
@@ -518,8 +522,15 @@ def _bus_factor(author_counts: Counter[str], total_commits: int) -> int:
     return bus
 
 
-def _add_blame_ownership(meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime) -> None:
+def _add_blame_ownership(
+    meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime, authors: _Authors
+) -> None:
     """Blame ownership plus the per-line ``BlameIndex`` (FULL tier), best effort.
+
+    The blame owner becomes the primary owner; ``primary_owner_line_pct`` is
+    their share of current lines and ``primary_owner_commit_pct`` their own
+    share of the file's commits (``None`` when they made none of the indexed
+    commits, e.g. every commit of theirs is older than the walked depth).
 
     One ``git blame --line-porcelain`` pass serves both the primary-owner
     signal and the index ``function_hotspot`` / ``code_age_volatility`` read.
@@ -540,7 +551,12 @@ def _add_blame_ownership(meta: dict[str, Any], repo: Any, repo_path: Path, now: 
         if blame_name:
             meta["primary_owner_name"] = blame_name
             meta["primary_owner_email"] = blame_email
-            meta["primary_owner_commit_pct"] = blame_pct
+            meta["primary_owner_line_pct"] = blame_pct
+            total_commits = sum(authors.counts.values())
+            own_commits = authors.counts.get(blame_name, 0)
+            meta["primary_owner_commit_pct"] = (
+                own_commits / total_commits if own_commits and total_commits else None
+            )
     except Exception:
         pass  # blame is best-effort
 

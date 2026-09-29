@@ -45,7 +45,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "2"
+STRUCTURAL_GENERATION_VERSION = "3"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.

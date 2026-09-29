@@ -1604,6 +1604,7 @@ export interface GitMetadataResponse {
   primary_owner_name: string | null;
   primary_owner_email: string | null;
   primary_owner_commit_pct: number | null;
+  primary_owner_line_pct?: number | null;
   recent_owner_name: string | null;
   recent_owner_commit_pct: number | null;
   top_authors: Record<string, unknown>[];

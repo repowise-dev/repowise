@@ -81,7 +81,12 @@ ENGLISH_LABELS: dict[str, str] = {
     "history": "History",
     "history_commits": "{total} {commit_word} in its history, {recent} in the last 90 days.",
     "history_last_commit": "The last landed on {date}.",
+    # ``history_owner`` when only commit shares are known (no blame);
+    # ``history_owner_lines`` when blame chose the owner, naming both shares
+    # because the top blame author need not be the top committer.
     "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
+    "history_owner_lines": "**{owner}** wrote {line}% of its current lines ({commit}% of commits).",
+    "history_owner_lines_only": "**{owner}** wrote {line}% of its current lines.",
     "history_fixes": "{count} of those commits fixed a bug.",
     "history_hotspot": "It is one of the repository's change hotspots.",
     "history_stable": "It has been stable: nothing has changed it lately.",
@@ -225,6 +230,10 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         ),
         "history_last_commit": "Der letzte stammt vom {date}.",
         "history_owner": "**{owner}** betreut sie hauptsächlich, mit {pct}% der Commits.",
+        "history_owner_lines": (
+            "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben ({commit}% der Commits)."
+        ),
+        "history_owner_lines_only": "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben.",
         "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
         "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
         "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",

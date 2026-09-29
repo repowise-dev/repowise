@@ -22,6 +22,8 @@ class GitMetadataResponse(BaseModel):
     primary_owner_name: str | None
     primary_owner_email: str | None
     primary_owner_commit_pct: float | None
+    # The primary (blame) owner's share of current lines; None without blame.
+    primary_owner_line_pct: float | None = None
     recent_owner_name: str | None
     recent_owner_commit_pct: float | None
     top_authors: list[dict]
@@ -76,6 +78,7 @@ class GitMetadataResponse(BaseModel):
             primary_owner_name=obj.primary_owner_name,  # type: ignore[attr-defined]
             primary_owner_email=obj.primary_owner_email,  # type: ignore[attr-defined]
             primary_owner_commit_pct=obj.primary_owner_commit_pct,  # type: ignore[attr-defined]
+            primary_owner_line_pct=getattr(obj, "primary_owner_line_pct", None),
             recent_owner_name=obj.recent_owner_name,  # type: ignore[attr-defined]
             recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
             top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]

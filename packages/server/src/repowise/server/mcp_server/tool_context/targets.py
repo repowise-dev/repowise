@@ -905,7 +905,10 @@ async def _resolve_one_target(
             meta = res.scalar_one_or_none()
             if meta:
                 ownership["primary_owner"] = meta.primary_owner_name
+                # owner_pct is the owner's share of commits; owner_line_pct
+                # their share of current lines by blame (None without blame).
                 ownership["owner_pct"] = meta.primary_owner_commit_pct
+                ownership["owner_line_pct"] = getattr(meta, "primary_owner_line_pct", None)
                 ownership["contributor_count"] = getattr(meta, "contributor_count", 0) or len(
                     json.loads(meta.top_authors_json)
                 )

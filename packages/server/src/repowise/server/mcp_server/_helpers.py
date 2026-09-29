@@ -429,6 +429,7 @@ def _build_origin_story(
         "available": True,
         "primary_author": primary,
         "author_commit_pct": git_meta.primary_owner_commit_pct,
+        "author_line_pct": getattr(git_meta, "primary_owner_line_pct", None),
         "contributors": authors,
         "total_commits": total,
         "first_commit": first_date,

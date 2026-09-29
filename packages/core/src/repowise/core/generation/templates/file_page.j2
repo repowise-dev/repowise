@@ -56,8 +56,16 @@
 {#- The column is written on either scale depending on the producer, the
     same normalisation ``health/biomarkers/developer_congestion.py`` applies.
     Unnormalised, a 0-100 source renders "at 8500% of commits". -#}
-{%- if git.get("primary_owner_name") and git.get("primary_owner_commit_pct") -%}
+{#- With blame the owner is the top author of current lines, so the line share
+    leads and the commit share is named as such; without blame both the owner
+    and the share come from commits. -#}
 {%- set owner_pct = git.get("primary_owner_commit_pct") -%}
+{%- set line_pct = git.get("primary_owner_line_pct") -%}
+{%- if git.get("primary_owner_name") and line_pct and owner_pct -%}
+{%- set _ = history.append(labels.history_owner_lines.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int, commit=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and line_pct -%}
+{%- set _ = history.append(labels.history_owner_lines_only.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and owner_pct -%}
 {%- set _ = history.append(labels.history_owner.format(owner=git.get("primary_owner_name"), pct=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
 {%- endif -%}
 {#- Suppressed when it exceeds the commit total: the two are counted over

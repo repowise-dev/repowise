@@ -713,6 +713,7 @@ async def _assess_one_target(
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
+    line_pct = getattr(meta, "primary_owner_line_pct", None)
 
     # --- Risk velocity (trend) ---
     trend = _compute_trend(meta)
@@ -753,6 +754,7 @@ async def _assess_one_target(
     }
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["owner_line_pct"] = line_pct
     result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
     result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
     result_data["bus_factor"] = bus_factor
@@ -798,8 +800,20 @@ async def _assess_one_target(
         f"{target} — {_fix_clause(defect_profile)}"
         f"hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
-        f"{co_changes_total} co-change partners, owned {pct:.0%} by {owner}"
+        f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
         f"{bus_note}{capped_note}"
     )
 
     return result_data
+
+
+def _owner_clause(owner: str, commit_pct: float, line_pct: float | None) -> str:
+    """Name the owner with the share each figure actually measures.
+
+    With blame, the owner is the top author of current lines, which need not
+    be the top committer, so both shares are stated and neither is called the
+    other.
+    """
+    if line_pct is None:
+        return f"primary owner {owner} ({commit_pct:.0%} of commits)"
+    return f"{owner} wrote {line_pct:.0%} of current lines ({commit_pct:.0%} of commits)"

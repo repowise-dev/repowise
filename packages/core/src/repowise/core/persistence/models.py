@@ -580,7 +580,11 @@ class GitMetadata(Base):
     # Ownership
     primary_owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     primary_owner_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The primary owner is the blame owner when blame ran. commit_pct is their
+    # share of the file's commits, line_pct their share of current lines (NULL
+    # without blame); the two can rank different people first.
     primary_owner_commit_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_owner_line_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # JSON fields (stored as Text, parsed/serialized in CRUD layer)
     top_authors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
