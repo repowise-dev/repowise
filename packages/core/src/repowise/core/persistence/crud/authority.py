@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTANCE_ACTIONS,
     ACCEPTER_SESSION_MAX,
+    HISTORY_CURRENCIES,
     NO_SCOPE_BLOCKER,
     STORED_CURRENCIES,
     AcceptanceRequirement,
@@ -221,13 +222,19 @@ async def decision_currencies(
         currency = stored.get(record.id)
         if currency is None:
             continue
-        out[record.id] = effective_currency(
-            currency,
-            has_scope=bool(_record_scope(record)),
-            staleness=record.staleness_score,
-            repo_wide=_is_repo_wide(record),
-        )
+        out[record.id] = _record_currency(currency, record)
     return out
+
+
+def _record_currency(stored: str, record: DecisionRecord) -> str:
+    """:func:`effective_currency` for an ORM *record* stored at *stored*."""
+    return effective_currency(
+        stored,
+        has_scope=bool(_record_scope(record)),
+        staleness=record.staleness_score,
+        repo_wide=_is_repo_wide(record),
+        artifacts_gone=bool(record.artifacts_gone),
+    )
 
 
 def _latest_acceptance_join(repository_id: str) -> tuple[Any, Any]:
@@ -314,6 +321,7 @@ async def count_decisions_by_lane(
                 DecisionRecord.affected_modules_json,
                 DecisionRecord.staleness_score,
                 DecisionRecord.kind,
+                DecisionRecord.artifacts_gone,
             ).where(
                 DecisionRecord.repository_id == repository_id,
                 # Tombstoned candidates are excluded; a decision that was
@@ -361,7 +369,7 @@ async def count_decisions_by_lane(
         "governing": 0,
         "total": len(rows),
     }
-    for did, files_json, modules_json, staleness, kind in rows:
+    for did, files_json, modules_json, staleness, kind, gone in rows:
         acceptance = stored.get(did)
         if acceptance is None:
             counts["candidates"] += 1
@@ -376,8 +384,9 @@ async def count_decisions_by_lane(
             has_scope=bool(record_scope(fields)),
             staleness=staleness or 0.0,
             repo_wide=is_repo_wide(fields),
+            artifacts_gone=bool(gone),
         )
-        counts["history" if currency in ("superseded", "dismissed") else currency] += 1
+        counts["history" if currency in HISTORY_CURRENCIES else currency] += 1
         if is_governing(currency):
             counts["governing"] += 1
     return counts
@@ -388,13 +397,7 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
     acceptance = await latest_acceptance(session, record.id)
     if acceptance is None:
         return None
-    has_scope = bool(_record_scope(record))
-    return effective_currency(
-        acceptance.currency,
-        has_scope=has_scope,
-        staleness=record.staleness_score,
-        repo_wide=_is_repo_wide(record),
-    )
+    return _record_currency(acceptance.currency, record)
 
 
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:

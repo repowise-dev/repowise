@@ -1121,6 +1121,14 @@ async def _persist_full_update_async(
                 await apply_revert_supersession(session, repo_id, repo_path)
             except Exception as exc:
                 _skip("Revert supersession", exc)
+            try:
+                from repowise.core.analysis.decisions.head_artifacts import (
+                    apply_head_artifact_check,
+                )
+
+                await apply_head_artifact_check(session, repo_id, repo_path)
+            except Exception as exc:
+                _skip("Decision HEAD artifact check", exc)
 
             # Governance findings pass: runs after decisions + staleness.
             if timings is not None:

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import status_rank
+from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, status_rank
 from repowise.core.analysis.decisions.scope import binds_to_paths
 
 from ..models import DecisionRecord, GitMetadata
@@ -84,6 +84,8 @@ class _Lanes:
             # identically to a record whose code genuinely has not moved, so
             # they are counted separately rather than banked as fresh.
             "unscoped": 0,
+            # Accepted records whose named files are all gone at HEAD.
+            "historical": 0,
         }
     )
     stale: list[DecisionRecord] = field(default_factory=list)
@@ -113,8 +115,9 @@ class _Lanes:
                 self.counts["proposed"] += 1
                 self.proposed.append(d)
             return
-        if currency in ("superseded", "dismissed"):
-            self.counts[currency] += 1
+        if currency in HISTORY_CURRENCIES:
+            # ``stale`` counts apart: that key already means needs_review here.
+            self.counts["historical" if currency == "stale" else currency] += 1
             self.retired.append((currency, d))
             return
         self.counts["active"] += 1

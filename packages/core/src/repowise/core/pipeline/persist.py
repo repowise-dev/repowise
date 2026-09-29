@@ -2136,6 +2136,12 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         await apply_revert_supersession(session, repo_id, getattr(result, "repo_path", None))
     except Exception as _revert_err:
         logger.debug("revert_supersession_skipped", error=str(_revert_err))
+    try:
+        from repowise.core.analysis.decisions.head_artifacts import apply_head_artifact_check
+
+        await apply_head_artifact_check(session, repo_id, getattr(result, "repo_path", None))
+    except Exception as _artifact_err:
+        logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
 
     # ---- Governance findings (additive pass, after decisions are persisted) ----
     # Runs after bulk_upsert_decisions + detect_supersessions_and_conflicts so

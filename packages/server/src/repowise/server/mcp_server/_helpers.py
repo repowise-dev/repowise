@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.models import (
     Repository,
@@ -570,7 +570,7 @@ def _compute_alignment(
     deprecated = [
         d
         for d in governing
-        if currencies.get(d["id"]) in ("superseded", "dismissed")
+        if currencies.get(d["id"]) in HISTORY_CURRENCIES
     ]
     # Repository-wide, not scoped to the matched records: the sibling
     # denominator is drawn from decisions naming *other* files in the same
