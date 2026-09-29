@@ -924,6 +924,39 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".inclusion_tag",
 )
 
+# A dotted decorator (``@recv.attr`` or ``@recv.attr(...)``) is read as a
+# registration: ``@nox.session``, ``@mcp.tool()``, ``@sub.handle(...)`` hand the
+# function to an object that calls it later, and no list of receivers can keep
+# up with every framework. The exceptions are decorators that only wrap the
+# function and hand it back, so the decorated name still needs a caller.
+# Matched on the first path segment (the module) ...
+_PURE_WRAPPER_DECORATOR_MODULES: frozenset[str] = frozenset(
+    {
+        "functools",
+        "typing",
+        "typing_extensions",
+        "contextlib",
+        "abc",
+        "dataclasses",
+        "mock",
+        "unittest",
+    }
+)
+# ... or on the last one (``@prop.setter``, ``@functools.cached_property``).
+_PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
+    {
+        "setter",
+        "getter",
+        "deleter",
+        "property",
+        "staticmethod",
+        "classmethod",
+        "cached_property",
+        "override",
+        "deprecated",
+    }
+)
+
 # Languages whose idiom is a static holder class the call site never names,
 # because it names only the member (C# extension methods). A set so widening it
 # is a deliberate act.
