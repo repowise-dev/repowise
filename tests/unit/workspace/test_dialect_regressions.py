@@ -100,7 +100,7 @@ class TestExtractorSelfExclusion:
     SELF_PATHS = (
         "packages/core/src/repowise/core/workspace/extractors/http/fastapi.py",
         "packages/core/src/repowise/core/workspace/extractors/http/mounts.py",
-        "packages/core/src/repowise/core/workspace/extractors/topic_extractor.py",
+        "packages/core/src/repowise/core/workspace/extractors/topic/rabbitmq.py",
         "packages/core/src/repowise/core/workspace/extractors/grpc/python.py",
         "packages/core/src/repowise/core/workspace/extractors/data/sql_strings.py",
     )

@@ -17,13 +17,13 @@ from textwrap import dedent
 import pytest
 
 from repowise.core import fs_walk
-from repowise.core.workspace.cross_repo import (
-    _index_csproj_files,
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import HttpExtractor
+from repowise.core.workspace.manifests import (
+    _index_manifests,
     _scan_csproj,
     detect_package_dependencies,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 # ---------------------------------------------------------------------------
 # HTTP — ASP.NET
@@ -271,7 +271,7 @@ class TestScanCsproj:
             _csproj(assembly_name="Acme.Cached", packages=["Acme.Common"])
         )
 
-        index = _index_csproj_files(repos)
+        index = _index_manifests(repos)
         deps = detect_package_dependencies(repos)
 
         assert all("packages" not in path.parts for path in index.by_repo["api"])
@@ -289,7 +289,7 @@ class TestScanCsproj:
 
         standalone = _scan_csproj(repos["api"], repos, alias="api")
         shared = _scan_csproj(
-            repos["api"], repos, alias="api", csproj_index=_index_csproj_files(repos)
+            repos["api"], repos, alias="api", csproj_index=_index_manifests(repos)
         )
 
         assert standalone == shared
@@ -325,6 +325,6 @@ class TestScanCsproj:
         (other / "src" / "Api").mkdir(parents=True)
         (other / "src" / "Api" / "Other.csproj").write_text(_csproj(packages=["Acme.Common"]))
         # repo_paths["api"] holds no .csproj at all; the scanned tree does.
-        deps = _scan_csproj(other, repos, alias="api", csproj_index=_index_csproj_files(repos))
+        deps = _scan_csproj(other, repos, alias="api", csproj_index=_index_manifests(repos))
         assert [d.target_repo for d in deps] == ["shared"]
         assert deps[0].source_manifest == "src/Api/Other.csproj"

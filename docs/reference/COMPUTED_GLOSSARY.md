@@ -13,7 +13,7 @@ workspace overlays, MCP responses, and CLI output.
 | --- | --- | --- |
 | Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser.py`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
 | Graph construction | `packages/core/src/repowise/core/ingestion/graph.py`, `call_resolver.py`, `heritage_resolver.py`, `framework_edges.py`, `dynamic_hints/` | File and symbol nodes, import/call/heritage/framework/dynamic/co-change edges, centrality, SCCs, communities, execution flows |
-| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer.py` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
+| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer/` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
 | Analysis | `packages/core/src/repowise/core/analysis/` | Dead-code findings, decision records, decision staleness, security findings, PR blast radius, execution flows, communities |
 | Generation | `packages/core/src/repowise/core/generation/` | Wiki page contexts, page types, source hashes, summaries, freshness, confidence decay, RAG context, job checkpoints, reports, costs |
 | Workspace intelligence | `packages/core/src/repowise/core/workspace/` | Workspace repo scan, cross-repo co-changes, package dependencies, API contracts, contract links, workspace CLAUDE.md data |
@@ -303,7 +303,7 @@ workspace overlays, MCP responses, and CLI output.
 | Session cost | Cumulative USD for one tracker instance. | `CostTracker.session_cost` | `2.37` |
 | Session tokens | Cumulative input plus output tokens. | `CostTracker.session_tokens` | `845000` |
 | Cost totals | DB aggregate grouped by operation, model, or day. | `CostTracker.totals()` | `{group: "file_page", calls: 42, cost_usd: 1.12}` |
-| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator.py` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
+| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator/` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
 
 ## Workspace Intelligence
 

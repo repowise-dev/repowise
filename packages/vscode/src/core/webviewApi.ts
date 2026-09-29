@@ -29,7 +29,7 @@ import {
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
-import { getRiskRange } from "@repowise-dev/api-client/risk";
+import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
 import {
   buildRefactoringOpportunityPrompt,
   buildRefactoringPlanPrompt,
@@ -60,6 +60,8 @@ const SETTING_DEFAULTS: SettingsValues = {
   "diagnostics.enabled": true,
   "diagnostics.minSeverity": "high",
   "diagnostics.dimensions": ["defect", "maintainability", "performance"],
+  "docDrift.diagnostics.enabled": true,
+  "docDrift.diagnostics.minConfidence": 0.7,
   "gutterHeat.enabled": true,
   "fileDecorations.enabled": true,
   "fileDecorations.maxScore": 4,
@@ -88,6 +90,8 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "diagnostics.enabled": expectBoolean,
   "diagnostics.minSeverity": (v) => expectEnum(v, SEVERITIES),
   "diagnostics.dimensions": (v) => expectStringSubset(v, DIMENSIONS),
+  "docDrift.diagnostics.enabled": expectBoolean,
+  "docDrift.diagnostics.minConfidence": (v) => expectNumberInRange(v, 0, 1),
   "gutterHeat.enabled": expectBoolean,
   "fileDecorations.enabled": expectBoolean,
   "fileDecorations.maxScore": (v) => expectNumberInRange(v, 0, 10),
@@ -347,9 +351,13 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
         .get<string>("risk.baseBranch", "")
         .trim();
       const base = configured || ctx.repo?.default_branch || "main";
-      const result = await getRiskRange(id, { base, head: "HEAD" });
+      const range = { base, head: "HEAD" };
+      const [result, patchCoverage] = await Promise.all([
+        getRiskRange(id, range),
+        getPatchCoverage(id, range).catch(() => null),
+      ]);
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result };
+      return { base, branch, result, patchCoverage };
     },
 
     // Change impact: reads the working tree, so it tracks the live change set

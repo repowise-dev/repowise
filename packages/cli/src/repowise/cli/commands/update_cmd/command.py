@@ -1445,13 +1445,15 @@ def run_update(
         affected.regenerate = [pf.file_info.path for pf in parsed_files]
 
     if affected.stale_due_to_budget > 0:
-        console.print(
-            f"\n[yellow]⚠ Cascade budget of {cascade_budget} pages was reached. "
-            f"{affected.stale_due_to_budget} dependent pages were skipped and marked stale.[/yellow]"
-        )
-        console.print(
-            f"[yellow]  Pass `--cascade-budget {cascade_budget + affected.stale_due_to_budget}` "
-            f"to regenerate them all.[/yellow]\n"
+        from .deterministic import load_cascade_overflow_split
+        from .reporting import render_cascade_budget_warning
+
+        # The detector puts the budget overflow first in decay_only.
+        skipped = affected.decay_only[: affected.stale_due_to_budget]
+        render_cascade_budget_warning(
+            cascade_budget,
+            affected.stale_due_to_budget,
+            load_cascade_overflow_split(repo_path, skipped),
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -1491,7 +1493,9 @@ def run_update(
         repo_function_mod_p80=repo_function_mod_p80,
         timings=timings,
     )
-    doc_drift_report = _run_doc_drift_partial(graph_builder, source_map, timings=timings)
+    doc_drift_report = _run_doc_drift_partial(
+        graph_builder, source_map, repo_path=repo_path, timings=timings
+    )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,

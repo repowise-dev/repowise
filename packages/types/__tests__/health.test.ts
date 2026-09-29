@@ -20,6 +20,7 @@ import {
   NEEDS_WORK_MIN,
   PERF_BOUNDARY_LABEL,
   bandForScore,
+  formatScore,
 } from "../src/health.js";
 import { C4_IO_KINDS } from "../src/external-systems.js";
 
@@ -69,5 +70,18 @@ describe("bandForScore", () => {
     expect(bandForScore(4.0)).toBe("needs_work");
     expect(bandForScore(3.99)).toBe("at_risk");
     expect(bandForScore(1.0)).toBe("at_risk");
+  });
+});
+
+describe("formatScore", () => {
+  it("never rounds a score across a band edge", () => {
+    // 6.98 rounds to "7.0" but bands Fair; the shown figure must band the same.
+    for (const score of [6.98, 6.95, 8.49, 5.46, 3.999, 6.9999999]) {
+      expect(bandForScore(Number(formatScore(score)))).toBe(bandForScore(score));
+    }
+    expect(formatScore(6.98)).toBe("6.9");
+    expect(formatScore(7.0)).toBe("7.0");
+    expect(formatScore(5.6)).toBe("5.6");
+    expect(formatScore(10.0)).toBe("10.0");
   });
 });

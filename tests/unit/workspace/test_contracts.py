@@ -1,4 +1,4 @@
-"""Tests for contract extraction — HTTP, gRPC, topic extractors, matching, persistence."""
+"""Tests for contract extraction — HTTP, gRPC, socket extractors, matching, persistence."""
 
 from __future__ import annotations
 
@@ -9,14 +9,12 @@ from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
     ContractStore,
-    annotate_consumer_targets,
     load_contract_store,
-    match_contracts,
     normalize_contract_id,
     save_contract_store,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import (
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import (
     HttpExtractor,
     normalize_http_path,
 )
@@ -25,8 +23,8 @@ from repowise.core.workspace.extractors.service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
-from repowise.core.workspace.extractors.socket_extractor import SocketExtractor
-from repowise.core.workspace.extractors.topic_extractor import TopicExtractor
+from repowise.core.workspace.extractors.socket import SocketExtractor
+from repowise.core.workspace.matching import annotate_consumer_targets, match_contracts
 
 # ---------------------------------------------------------------------------
 # normalize_http_path
@@ -288,6 +286,16 @@ class TestHttpExtractor:
         # The unresolved base placeholder is stripped, not turned into {param}.
         assert consumers[0].contract_id == "http::GET::/api/users"
         assert consumers[0].meta.get("base_stripped") is True
+
+    def test_fetch_consumer_folds_a_const_base(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            const API = 'http://ticketing:8000/api';
+            const users = await fetch(`${API}/users`);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "frontend")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert [c.contract_id for c in consumers] == ["http::GET::/api/users"]
+        assert "base_stripped" not in consumers[0].meta
 
     def test_fetch_consumer_keeps_interior_param(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
@@ -665,87 +673,6 @@ class TestGrpcExtractor:
 
 
 # ---------------------------------------------------------------------------
-# TopicExtractor
-# ---------------------------------------------------------------------------
-
-
-class TestTopicExtractor:
-    def _write_file(self, repo: Path, rel: str, content: str) -> None:
-        fpath = repo / rel
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(content, encoding="utf-8")
-
-    def test_kafka_listener_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Consumer.java", """
-            @KafkaListener(topics = "orders")
-            public void listen(String message) {}
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "worker")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::orders"
-        assert consumers[0].meta["broker"] == "kafka"
-
-    def test_kafka_template_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Publisher.java", """
-            kafkaTemplate.send("orders", payload);
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "api")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::orders"
-
-    def test_kafka_node_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "producer.js", """
-            await producer.send({ topic: 'payments', messages });
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::payments"
-
-    def test_rabbitmq_listener_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Worker.java", """
-            @RabbitListener(queues = "jobs")
-            public void process(Message msg) {}
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "worker")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::jobs"
-        assert consumers[0].meta["broker"] == "rabbitmq"
-
-    def test_nats_subscribe_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "listener.go", """
-            nc.Subscribe("events.created", handler)
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::events.created"
-        assert consumers[0].meta["broker"] == "nats"
-
-    def test_nats_publish_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "notifier.go", """
-            nc.Publish("events.created", data)
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "notifier")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::events.created"
-
-    def test_dedup_same_pattern_in_file(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "multi.java", """
-            kafkaTemplate.send("orders", payload1);
-            kafkaTemplate.send("orders", payload2);
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        # Same topic, same role, same file → deduplicated
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-
-
-# ---------------------------------------------------------------------------
 # ServiceBoundary
 # ---------------------------------------------------------------------------
 
@@ -1067,6 +994,39 @@ class TestCandidateMatching:
         assert links[0].match_type == "candidate"
         # Candidate confidence is strictly lower than an exact min() would give.
         assert links[0].confidence < 0.75
+
+    def test_a_link_names_each_end_by_its_own_id(self) -> None:
+        # The provider's page reads its links by contract_id and the consumer's
+        # by consumer_contract_id or contract_id, so each must find this one.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource/search"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/resource/search",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.contract_id == "http::GET::/resource/search"
+        assert link.consumer_contract_id == "http::GET::/api/resource/search"
+
+    def test_an_exact_match_spelled_differently_keeps_both_ids(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/Users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/users",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.match_type == "exact"
+        assert link.contract_id == "http::GET::/Users"
+        assert link.consumer_contract_id == "http::GET::/users"
+
+    def test_a_link_spelled_alike_carries_no_consumer_id(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/users",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.consumer_contract_id is None
+        assert "consumer_contract_id" not in link.to_dict()
 
     def test_version_prefix_with_base_param(self) -> None:
         # Provider /v1/resource; consumer base resolved to a leading {param}.

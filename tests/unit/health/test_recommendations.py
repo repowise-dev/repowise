@@ -187,6 +187,13 @@ def test_capped_test_list_keeps_true_total_and_stable_order() -> None:
     assert validation.targets[0].total == 9
 
 
+def test_the_test_named_for_the_file_survives_the_cap() -> None:
+    plan = _plan("named")
+    reached = ReachedBy(["tests/a/test_other.py", "tests/unit/test_core.py"], "import-graph", 2)
+    validation = build_validation_plan(plan, {}, {"src/core.py": reached}, test_limit=1)
+    assert validation.tests == ["tests/unit/test_core.py"]
+
+
 def test_aggregate_validation_total_deduplicates_tests_across_targets() -> None:
     plan = _plan("shared", file_path="src/a.py")
     plan.blast_radius = {"files": ["src/b.py"]}

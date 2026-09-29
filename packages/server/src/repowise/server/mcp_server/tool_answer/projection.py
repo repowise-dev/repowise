@@ -273,12 +273,8 @@ def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
 
 
 def _default_shape(payload: dict[str, Any], question: str) -> None:
-    # A degraded payload keeps the fullest evidence shape whatever it graded.
-    # The trimming above is keyed on prose REPLACING evidence: a high-confidence
-    # answer makes the ranked list redundant, so it goes. There is no answer on
-    # this path - the evidence IS the product - and its ``confidence`` now rates
-    # that evidence rather than prose, so reading the two on one scale would cut
-    # a body and a hit from exactly the caller who has nothing else to read.
+    # A degraded payload keeps the fullest shape whatever it graded: trimming is
+    # keyed on prose replacing evidence, and there the evidence IS the product.
     confidence = "low" if payload.get("degraded") else payload.get("confidence", "low")
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":

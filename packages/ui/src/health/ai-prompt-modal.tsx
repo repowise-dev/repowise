@@ -54,14 +54,19 @@ function loadStoredFlavor(): AiPromptFlavor {
   return "generic";
 }
 
-export function AiPromptModal({
-  open,
-  onOpenChange,
+/**
+ * The prompt itself: which agent it is written for, the text, and a copy
+ * button. Shared by the modal and by drawers that show the prompt inline, so
+ * the chosen agent persists across both.
+ */
+export function AiPromptBlock({
   getPrompt,
-  filePath,
-  title = "AI fix prompt",
-  description = "A ready-to-paste prompt that gives your AI coding agent every detail needed to make this change in one focused pass.",
-}: AiPromptModalProps) {
+  bleed = "px-6",
+}: {
+  getPrompt: ((flavor: AiPromptFlavor) => string) | null;
+  /** Horizontal padding that matches the host's own, so the hairlines run edge to edge. */
+  bleed?: string;
+}) {
   const [flavor, setFlavorState] = useState<AiPromptFlavor>(loadStoredFlavor);
   const [copied, setCopied] = useState(false);
 
@@ -74,14 +79,9 @@ export function AiPromptModal({
     }
   };
 
-  const prompt = useMemo(
-    () => (getPrompt ? getPrompt(flavor) : ""),
-    [getPrompt, flavor],
-  );
+  const prompt = useMemo(() => (getPrompt ? getPrompt(flavor) : ""), [getPrompt, flavor]);
 
-  useEffect(() => {
-    if (!open) setCopied(false);
-  }, [open]);
+  useEffect(() => setCopied(false), [prompt]);
 
   const handleCopy = async () => {
     try {
@@ -93,6 +93,74 @@ export function AiPromptModal({
     }
   };
 
+  return (
+    <div className="min-w-0 space-y-4">
+      {/* Full-bleed hairlines rather than a bordered, filled well. The
+          prompt is the thing you opened this to read, not an object you
+          can select or act on, so it does not earn a container. */}
+      <div className="min-w-0 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+        <div className={`min-w-0 space-y-2 py-4 ${bleed}`}>
+          <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            Target agent
+          </p>
+          <div className="max-w-full overflow-x-auto">
+            <ViewToggle
+              value={flavor}
+              options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
+              onChange={setFlavor}
+            />
+          </div>
+          <p className="text-xs leading-snug text-[var(--color-text-tertiary)]">
+            {FLAVORS.find((f) => f.value === flavor)?.hint}
+          </p>
+        </div>
+
+        <div className={`min-w-0 max-w-full max-h-[420px] overflow-x-hidden overflow-y-auto py-4 ${bleed}`}>
+          <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
+            {prompt}
+          </pre>
+        </div>
+      </div>
+
+      <div className={`flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)] ${bleed}`}>
+        <span className="min-w-0 tabular-nums">
+          {prompt.length.toLocaleString()} chars, approx{" "}
+          {Math.round(prompt.length / 4).toLocaleString()} tokens
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          disabled={!prompt}
+          className={
+            "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
+            (copied
+              ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
+              : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
+          }
+        >
+          {copied ? (
+            <>
+              <Check className="h-3.5 w-3.5" /> Copied
+            </>
+          ) : (
+            <>
+              <Copy className="h-3.5 w-3.5" /> Copy prompt
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function AiPromptModal({
+  open,
+  onOpenChange,
+  getPrompt,
+  filePath,
+  title = "AI fix prompt",
+  description = "A ready-to-paste prompt that gives your AI coding agent every detail needed to make this change in one focused pass.",
+}: AiPromptModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="min-w-0 w-[calc(100vw-2rem)] max-w-3xl overflow-hidden">
@@ -108,66 +176,9 @@ export function AiPromptModal({
           </DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-
-        <div className="min-w-0 space-y-4">
-          {/* Full-bleed hairlines rather than a bordered, filled well. The
-              prompt is the thing you opened this to read, not an object you
-              can select or act on, so it does not earn a container — and a
-              second plane inside a floating panel is one plane too many. The
-              rules run to the modal's edge (`-mx-6` against its `p-6`) so they
-              read as the page's section dividers do, rather than as a box that
-              happens to have lost its sides. */}
-          <div className="-mx-6 min-w-0 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-            <div className="min-w-0 space-y-2 px-6 py-4">
-              <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                Target agent
-              </p>
-              <div className="max-w-full overflow-x-auto">
-                <ViewToggle
-                  value={flavor}
-                  options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
-                  onChange={setFlavor}
-                />
-              </div>
-              <p className="text-xs leading-snug text-[var(--color-text-tertiary)]">
-                {FLAVORS.find((f) => f.value === flavor)?.hint}
-              </p>
-            </div>
-
-            <div className="min-w-0 max-w-full max-h-[420px] overflow-x-hidden overflow-y-auto px-6 py-4">
-              <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
-                {prompt}
-              </pre>
-            </div>
-          </div>
-
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
-            <span className="min-w-0 tabular-nums">
-              {prompt.length.toLocaleString()} chars, approx{" "}
-              {Math.round(prompt.length / 4).toLocaleString()} tokens
-            </span>
-            <button
-              type="button"
-              onClick={handleCopy}
-              disabled={!prompt}
-              className={
-                "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
-                (copied
-                  ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
-                  : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
-              }
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5" /> Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3.5 w-3.5" /> Copy prompt
-                </>
-              )}
-            </button>
-          </div>
+        {/* The block's hairlines run to the modal's edge (`-mx-6` against its `p-6`). */}
+        <div className="-mx-6 min-w-0">
+          {open ? <AiPromptBlock getPrompt={getPrompt} /> : null}
         </div>
       </DialogContent>
     </Dialog>

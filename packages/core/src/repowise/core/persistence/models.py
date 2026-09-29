@@ -1694,9 +1694,16 @@ class DocDriftFinding(Base):
     #: The reference exactly as written, and the line it was written on.
     raw: Mapped[str] = mapped_column(Text, nullable=False, default="")
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: The likely replacement for a missing target, and the ``SUGGESTION_BASIS``
+    #: that produced it. Null when none was found; never changes the verdict.
+    suggestion: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    suggestion_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+    #: When this (document, kind, target) was first found, carried across
+    #: rewrites. Null when it was already present at the first check.
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class HealthFinding(Base):
@@ -2182,6 +2189,8 @@ class HealthSnapshot(Base):
     # the trend can draw the number a refactor is meant to move beside the one
     # history drags on. NULL on snapshots taken before it was recorded.
     maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Stored documentation drift findings at this instant. NULL before recorded.
+    doc_drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class CoverageFile(Base):
@@ -2199,6 +2208,13 @@ class CoverageFile(Base):
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # How many lines ``covered_lines_json`` names, so aggregates count covered
+    # lines without reading the blob. NULL on rows written before the column.
+    covered_line_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Lines the report calls executable, hit or not. Patch coverage needs it to
+    # tell an uncovered changed line from a changed comment. "[]" means the
+    # report did not say (or the row predates the column), never "none".
+    coverable_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # True when the ingest that wrote these rows mapped fewer than half of the
     # report's files to the repo tree (severe path-mapping loss). The rows are
     # still written — a partial report is better than none — but consumers
@@ -2210,6 +2226,77 @@ class CoverageFile(Base):
     ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     __table_args__ = (UniqueConstraint("repository_id", "file_path", name="uq_coverage_files"),)
+
+
+class CoverageIngest(Base):
+    """Where the stored ``coverage_files`` rows came from: one row per ingest.
+
+    Kept as history: the newest row describes the stored coverage rows, and
+    older ones (pruned past ``COVERAGE_HISTORY_RETENTION``) keep the repo-wide
+    figures of earlier reports for the trend. The path counts are over the
+    report's own file entries, matched or not, which the coverage rows cannot
+    say (they keep only matches). NULL counts mean the writer did not know
+    them; NULL figures mean the row predates them.
+    """
+
+    __tablename__ = "coverage_ingests"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # Every distinct report format merged, in report order.
+    source_formats_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    report_path_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    matched_path_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unmatched_path_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ambiguous_path_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A capped sample of the report paths that did not map, for the diagnostic.
+    unmatched_sample_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    mapping_partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # The repo-wide figures this ingest wrote, aggregated the way the summary
+    # aggregates the stored rows, so the trend reads one row per report.
+    line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    covered_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_coverage_ingests_repo_ingested", "repository_id", "ingested_at"),
+    )
+
+
+class ActionState(Base):
+    """A person's answer to one next action: dismissed, snoozed, or done.
+
+    Actions themselves are computed on read (``analysis.actions``), so this is
+    the only stored half. ``action_id`` is stable across re-index because it is
+    derived from the rule and its target. ``fingerprint`` is the one the action
+    carried when the person acted; a dismissal holds only while it still
+    matches, so an action whose facts changed materially comes back.
+    """
+
+    __tablename__ = "action_states"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    action_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "action_id", name="uq_action_states"),
+    )
 
 
 class TestCoverageEntry(Base):

@@ -8,7 +8,7 @@ import { formatAgeDays, formatNumber, parseDate } from "../lib/format";
  *  it locally would show two different birthdays to two people looking at the
  *  same repo (and slip a day for anyone far enough east or west). */
 function foundingDate(iso: string): string {
-  return parseDate(iso).toLocaleDateString(undefined, {
+  return parseDate(iso).toLocaleDateString("en-US", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -20,7 +20,7 @@ function foundingDate(iso: string): string {
  * The repo's opening line, set as a commit rather than a statistic.
  *
  * Every other date on this page is a measurement; this one is the project's
- * origin story, so it gets the page's only quotation treatment — an amber rule,
+ * origin story, so it gets the page's only quotation treatment: a heavier rule,
  * the subject in mono at display size, and the prose underneath doing the work
  * that a "Project age: 1,232 days" tile never could.
  *
@@ -37,9 +37,9 @@ export function OriginBlock({ data }: { data: StatsOrigin }) {
   return (
     <section
       aria-label="Project origin"
-      className="border-l-2 border-[var(--color-accent-primary)] pl-5"
+      className="border-l-2 border-[var(--color-border-hover)] pl-5"
     >
-      <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         Root commit · {foundingDate(data.first_commit_at)}
       </p>
 
@@ -49,7 +49,7 @@ export function OriginBlock({ data }: { data: StatsOrigin }) {
         </p>
       )}
 
-      <p className="mt-2.5 text-sm text-[var(--color-text-secondary)]">
+      <p className="mt-2.5 text-[15px] text-[var(--color-text-secondary)]">
         {age ? (
           <>
             It started{" "}

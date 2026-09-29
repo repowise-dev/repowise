@@ -30,6 +30,7 @@ from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
 from ....test_paths import is_test_related_path
 from ...models import (
+    DocDriftFinding,
     GraphNode,
     HealthFileMetric,
     HealthFinding,
@@ -771,6 +772,20 @@ HEALTH_SNAPSHOT_RETENTION: int = 50
 FILE_TREND_SNAPSHOT_WINDOW: int = 20
 
 
+async def _doc_drift_count(session: AsyncSession, repository_id: str) -> int | None:
+    """Stored drift findings; ``None`` when the drift pass has never run here."""
+    from .doc_drift import doc_drift_pass_ran
+
+    count = await session.scalar(
+        select(func.count(DocDriftFinding.id)).where(
+            DocDriftFinding.repository_id == repository_id
+        )
+    )
+    if not count and not await doc_drift_pass_ran(session, repository_id):
+        return None
+    return int(count or 0)
+
+
 async def save_health_snapshot(
     session: AsyncSession,
     repository_id: str,
@@ -801,6 +816,9 @@ async def save_health_snapshot(
 
     ``structure_average`` / ``history_average`` are ``average_health``'s two
     halves in deduction points, so a later trend can name which one moved.
+
+    The stored doc drift count is read here rather than passed in, so every
+    writer records it without a new argument; write drift before calling this.
     """
     snap = HealthSnapshot(
         id=_new_uuid(),
@@ -818,6 +836,7 @@ async def save_health_snapshot(
         history_average=history_average,
         production_average=production_average,
         maintainability_average=maintainability_average,
+        doc_drift_count=await _doc_drift_count(session, repository_id),
     )
     session.add(snap)
     await session.flush()

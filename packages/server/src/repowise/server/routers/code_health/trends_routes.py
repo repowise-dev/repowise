@@ -94,9 +94,9 @@ async def health_trend(
 
     return {
         "history": (
-            drop_unscoped_fields(recent_kpis(snapshots, limit=limit))
+            drop_unscoped_fields(recent_kpis(snapshots, limit=limit, doc_drift=True))
             if narrowed
-            else recent_kpis(snapshots, limit=limit)
+            else recent_kpis(snapshots, limit=limit, doc_drift=True)
         ),
         "summary": {
             "current_hotspot_health": None if narrowed else summary.current_hotspot_health,

@@ -194,7 +194,7 @@ your own repo six months later. This keeps it in the codebase.
 ## Code Health Intelligence
 
 repowise scores **every file 1–10** on three co-equal signals (defect risk,
-maintainability, and performance risk) from a roster of **49 deterministic
+maintainability, and performance risk) from a roster of **51 deterministic
 detectors**, of which only **26 are permitted to move the defect number**. Pure
 static analysis over tree-sitter and git data, budgeted (and CI-tested) to
 finish in **under 30 seconds on a 3,000-file repo**.
@@ -219,6 +219,11 @@ repowise health                       # KPIs + lowest-scoring files
 repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # snapshots + declining-health alerts
 ```
+
+The same layer also checks **documentation drift**: the claims your markdown
+makes about the tree (a path, a link, a heading, a command), resolved against
+the graph, with the refuted ones reported. No model, and it runs on every
+update. [`DOC_DRIFT.md`](DOC_DRIFT.md).
 
 Full guide, the calibration story and the head-to-head against CodeScene:
 [`CODE_HEALTH.md`](CODE_HEALTH.md).
@@ -248,8 +253,9 @@ Reference: [`CHANGE_RISK.md`](CHANGE_RISK.md).
 
 Which tests actually exercise the code you changed, which changed files have no
 guarding test at all, and per-file coverage merged across every test that touches
-it. Coverage ingests from LCOV, Cobertura, Clover or normalized JSON and feeds the
-code-health coverage markers.
+it. Coverage ingests from LCOV, Cobertura, Clover, JaCoCo, Go coverprofile or
+normalized JSON and feeds the code-health coverage markers. The same report gates
+a pull request on its patch coverage with `repowise coverage check`.
 
 **It answers with or without that ingest.** Most repositories never produce a
 report, so where one is missing the layer walks the call graph instead: a test

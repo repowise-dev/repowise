@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.security_scan import source_lines
 from repowise.core.persistence.models import Repository, SecurityFinding
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import SecurityFindingResponse
@@ -126,6 +127,8 @@ def _read_guarded(repo_root: Path, file_path: str) -> list[str] | None:
         target = (repo_root / file_path).resolve()
         if not target.is_relative_to(repo_root):
             return None
-        return target.read_text(encoding="utf-8", errors="replace").splitlines()
+        # Split as the scanner numbered the lines (where git splits), so a form
+        # feed or a lone carriage return does not move a verified line.
+        return source_lines(target.read_bytes().decode("utf-8", errors="replace"))
     except (OSError, ValueError):
         return None

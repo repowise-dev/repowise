@@ -539,7 +539,8 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
     a path that also does everything else. The record ranked first is the one
     a reader acts on; the rest keep the stored proportion, which cost nothing.
     """
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     calls: list[tuple] = []
 
@@ -547,7 +548,7 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
         calls.append((root, tuple(nodes)))
         return "nothing in the 1 file it governs has changed since 2026-01-01"
 
-    monkeypatch.setattr(tool_why, "describe_decision_currency", _fake)
+    monkeypatch.setattr(path_mode, "describe_decision_currency", _fake)
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
     result = await get_why("src/auth/service.py")
@@ -559,10 +560,11 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
 
 @pytest.mark.asyncio
 async def test_get_why_stays_silent_when_git_cannot_decide(session, setup_mcp, monkeypatch):
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     monkeypatch.setattr(
-        tool_why, "describe_decision_currency", lambda root, **kw: None
+        path_mode, "describe_decision_currency", lambda root, **kw: None
     )
 
     result = await get_why("src/auth/service.py")
@@ -681,3 +683,32 @@ async def test_get_why_path_fits_on_an_ungoverned_file(session, setup_mcp, monke
     # The fallback really was over the line — otherwise this test proves nothing.
     assert result["truncated"] is True
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+def _meta_with(path: str, *messages: str):
+    import json as _json
+    from types import SimpleNamespace
+
+    commits = [
+        {"sha": f"s{i}", "message": m, "author": "a", "date": f"2026-01-0{i + 1}"}
+        for i, m in enumerate(messages)
+    ]
+    return SimpleNamespace(file_path=path, significant_commits_json=_json.dumps(commits))
+
+
+def test_cross_references_match_whole_tokens_not_substrings():
+    """``auth`` inside ``author`` is not a mention of an auth file."""
+    from repowise.server.mcp_server.tool_why.archaeology import _cross_references, _search_terms
+
+    path = "src/auth_cache.py"
+    basename, _stem, terms = _search_terms(path)
+    other = _meta_with(
+        "src/other.py",
+        "Credit the author in the cache docs",  # "auth" only inside "author"
+        "Invalidate auth cache on logout",  # both stem tokens as words
+    )
+
+    refs = _cross_references(path, basename, terms, [other])
+
+    assert [r["message"] for r in refs] == ["Invalidate auth cache on logout"]
+    assert refs[0]["matched_terms"] == ["auth", "cache"]

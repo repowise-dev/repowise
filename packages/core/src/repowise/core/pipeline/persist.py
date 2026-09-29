@@ -958,18 +958,9 @@ def _git_tracked_paths(root: Path) -> frozenset[str]:
     witness has nothing to say, and the caller treats silence as "no opinion"
     rather than as "nothing is tracked".
     """
-    import subprocess
+    from repowise.core.git_refs import tracked_paths
 
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True,
-            timeout=60,
-            check=True,
-        ).stdout
-    except Exception:
-        return frozenset()
-    return frozenset(p for p in out.decode("utf-8", "replace").split("\0") if p)
+    return tracked_paths(str(root))
 
 
 class _FileLiveness:
@@ -1613,24 +1604,11 @@ async def persist_security_findings(result: Any, session: Any, repo_id: str) -> 
     it off ``file_info`` yields empty text and a scan that can never fire.
     Resume views without a ``source_map`` degrade to the symbol-name scan.
     """
-    from repowise.core.analysis.security_scan import SecurityScanner
+    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
 
-    scanner = SecurityScanner(session, repo_id)
     source_map = getattr(result, "source_map", None) or {}
-    findings_by_file: dict[str, list[dict]] = {}
-    scanned_paths: list[str] = []
-    for pf in result.parsed_files:
-        path = pf.file_info.path
-        raw = source_map.get(path, b"")
-        if isinstance(raw, (bytes, bytearray)):
-            source_text = raw.decode("utf-8", errors="replace")
-        else:
-            source_text = raw or ""
-        scanned_paths.append(path)
-        findings = await scanner.scan_file(path, source_text, pf.symbols)
-        if findings:
-            findings_by_file[path] = findings
-    await scanner.replace_findings(findings_by_file, scanned_paths)
+    findings_by_file, scanned_paths = scan_source_map(result.parsed_files, source_map)
+    await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)
 
 
 async def persist_git(result: Any, session: Any, repo_id: str) -> None:
@@ -1980,7 +1958,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
                 ingested_commit_sha=head_sha,
-                mapping_partial=bool(getattr(hr, "coverage_mapping_partial", False)),
+                provenance=getattr(hr, "coverage_provenance", None),
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)

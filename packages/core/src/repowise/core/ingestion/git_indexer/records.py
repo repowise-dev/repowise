@@ -17,12 +17,14 @@ __all__ = [
     "_RECORD_SEP",
     "GitHistoryCoverage",
     "GitIndexSummary",
+    "RenameTrail",
     "RepoTotals",
     "_CommitRec",
     "_extract_rename_paths",
     "_parse_commit_record",
     "_should_skip_index",
     "capture_repo_totals",
+    "name_status_path",
 ]
 
 # Git log record/field separators (NUL byte + US 0x1f) — chosen so they can't
@@ -246,6 +248,7 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
         10\t5\tsrc/{ => newdir}/shared_suffix
+        10\t5\told.py => pkg/new.py
 
     The third form has an EMPTY side: a directory inserted into (or removed
     from) the middle of a path. Expanding the empty side leaves a doubled
@@ -264,7 +267,51 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
         known_paths.add(old_path)
         known_paths.add(new_path)
         return old_path, new_path
+    # Paths sharing no leading or trailing component get no braces: ``a.py => src/b.py``.
+    old_path, sep, new_path = stat_path.partition(" => ")
+    if sep and old_path and new_path:
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+        return old_path, new_path
     return None, None
+
+
+class RenameTrail:
+    """Maps a path as it was at some commit to the path that file has at HEAD.
+
+    Every history walk runs newest first, so a rename is seen before any commit
+    older than it. Resolving each path through the renames seen so far carries
+    a file's pre-rename commits over to its current name, and a path reused by
+    a different file after the rename keeps its own history, because commits
+    to the reused path are all newer than the rename.
+
+    Record a commit's renames only after resolving that commit's own paths: a
+    commit that moves ``a`` to ``b`` and creates a new ``a`` must not hand the
+    new ``a`` to ``b``.
+    """
+
+    __slots__ = ("_current",)
+
+    def __init__(self) -> None:
+        self._current: dict[str, str] = {}
+
+    def resolve(self, path: str) -> str:
+        return self._current.get(path, path)
+
+    def record(self, old_path: str, new_path: str) -> None:
+        current = self.resolve(new_path)
+        if old_path == current:
+            self._current.pop(old_path, None)
+        else:
+            self._current[old_path] = current
+
+
+def name_status_path(line: str) -> tuple[str, str | None]:
+    """``(path, renamed_from)`` for one ``--name-status`` (or ``--name-only``) line."""
+    parts = line.strip().split("\t")
+    if len(parts) >= 3 and parts[0].startswith("R"):
+        return parts[2], parts[1]
+    return parts[-1], None
 
 
 @dataclass

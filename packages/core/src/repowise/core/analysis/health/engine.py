@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -37,8 +35,9 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ...test_paths import paired_test_names
 from ..graph_view import HasEdge, ImportEdgeView
-from ..test_reachability import files_reached_by_tests
+from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
@@ -47,6 +46,7 @@ from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
+from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
@@ -58,6 +58,8 @@ from .perf import (
     collect_crossfn_io_in_loop,
     link_performance_findings,
 )
+from .perf.lazy_load import collect_lazy_loads
+from .perf.unbounded_reduction import collect_unbounded_reductions
 from .refactoring import (
     PerformancePlanPolicy,
     RefactoringContext,
@@ -109,6 +111,85 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v35: the update's full re-score reads every stored git column, so the
+# percentile gates of ``prior_defect`` and ``co_change_scatter`` see their
+# inputs, and it keeps the stored blame-marker findings it cannot recompute.
+# A store an older re-score wrote is missing those findings.
+#
+# v34: ``hidden_coupling`` is advisory: still detected and stored, it no longer
+# deducts from the defect score, so every stored score that carried one moves.
+#
+# v33: git history windows are measured from the indexed commit's committer
+# date instead of wall-clock time, by default. ``code_age_volatility`` and the
+# per-function blame rollup read line ages from the same anchor, so a store
+# scored against wall-clock time holds different windowed findings for any repo
+# whose last commit is not today.
+#
+# v32: the history (organizational) cap follows the file's structure half,
+# ``history_cap(structure)`` in scoring.py, so every stored score that carries
+# a history deduction, and the refactoring impact figures, move.
+#
+# v31: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
+# ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
+# broad tier) and DUnitX's ``Assert.*`` plus the RTL's own ``Assert(cond, msg)``
+# (narrow tier, no row needed -- ``Assert`` itself is an assert-prefixed
+# identifier). A new ``expr_stmt_kinds`` field tells the walker that a call in
+# flat statement position sits under a node named ``statement``, not the
+# hardcoded ``expression_statement`` every other mapped grammar uses.
+# ``block_kinds`` also gains ``statements`` (plural) -- a ``try``'s guarded
+# body and its ``except``/``finally`` clauses use that distinct container, not
+# ``block``, so every assertion inside a ``try ... finally Free; end`` (close
+# to universal in Delphi tests) was invisible before this: measured on a real
+# ~150-file Delphi codebase's Test*.dpr suite, assertion coverage moved from
+# 66/120 files (1844 assertions) to 86/120 (2873). ``large_assertion_block`` /
+# ``duplicated_assertion_block`` now fire for Pascal; ``assertion_free_test``
+# deliberately does not -- it gates on a ``SHIPPING_LANGUAGES`` allowlist that
+# needs its own measured-precision pass before Pascal joins it.
+#
+# v30: a Pascal call to a zero-argument procedure may omit its parentheses
+# entirely (``Q.Open;``), which produces no ``exprCall`` node at all -- just a
+# bare ``identifier`` / ``exprDot`` under a ``statement`` wrapper, invisible to
+# the whole performance pass regardless of sink kind. The new
+# ``bare_call_wrapper_kinds`` / ``PerfDialect.bare_statement_call`` hook (a
+# no-op for every language that does not map it) tells that shape apart from
+# the wrapper's other tenants (``Exit;`` / ``inherited;``), so ``Q.Open;`` now
+# finds the same ``io_in_loop`` as ``Q.Open();`` already did.
+#
+# v29: Pascal's ``uses`` clause now feeds ``io_boundaries.collect_io_names``
+# (``FireDAC`` / ``ADODB`` -> db, ``IdHTTP`` / ``System.Net.HttpClient`` ->
+# network), and the Pascal ``PerfDialect`` gates ``TDataSet.Open`` /
+# ``.ExecSQL`` / ``.Post`` and an HTTP client's ``.Get`` / ``.Post`` on that
+# evidence -- a loop calling one of these now produces a ``db`` / ``network``
+# ``io_in_loop`` where before it stayed silent (filesystem/subprocess only).
+#
+# v28: Pascal's ``foreach`` (``for x in collection do``) was absent from its
+# ``loop_kinds``, so a for-in loop contributed no CCN and opened no nesting
+# level -- stored complexity / nesting for any Pascal function using one
+# understates both. Pascal also gained a ``PerfDialect`` (filesystem /
+# subprocess sinks by RTL/VCL/FPC name), so ``io_in_loop`` / ``hot_path_sync_io``
+# now fire for it instead of the pass silently skipping every Pascal file.
+#
+# v27: a new marker, ``lazy_load_in_loop`` (a lazy relationship read on each
+# iteration of a loop over its rows); and ``unbounded_read_reduced_in_memory`` now
+# runs on ``init`` too, where it never ran before. A v26 store built by ``init`` has
+# neither marker; one built by ``update`` has the second.
+#
+# v26: ``.all()`` on an imported or module-global name (a plugin registry) is not a
+# db sink, a SQL string saying ``LIMIT n`` caps a read, and a batched read is never
+# proven for ``session.get`` or beside a call made for its effect; a v25 store differs.
+#
+# v25: repetition with nothing to change (a filesystem or subprocess boundary, or
+# a loop already walking chunks) is stored as ``expected``; a v24 store says investigate.
+#
+# v24: ``session.get(Model, key)`` is a db sink, an awaited TS limiter closure runs
+# in its loop, and Go/Java loops report chunking; a v23 store has none of them.
+#
+# v23: loop-shaped perf findings carry the loop's magnitude, the bulk form of a
+# per-key sink and any concurrency bound around it; a v22 store has none.
+#
+# v22: perf findings in a chunked loop carry ``chunked_iteration``, and
+# ``unbounded_read_reduced_in_memory`` is a new marker; a v21 store has neither.
 #
 # v21 moves two stored counts, both of which were order-dependent in the same
 # way. ``assertion_count`` rises on such a header. ``mock_setup_count`` falls on
@@ -240,7 +321,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 21
+HEALTH_ANALYZER_VERSION = 35
 
 
 def walked_functions(
@@ -417,48 +498,9 @@ def _path_basenames(all_paths: set[str]) -> set[str]:
     return {p.rsplit("/", 1)[-1] for p in all_paths}
 
 
-_PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
-
-
 def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
-    """Heuristic: does any other file look like a test for *rel_path*?
-
-    Cheap and conservative — looks for common test-file naming
-    conventions paired with the same basename. *path_basenames* is the
-    precomputed ``_path_basenames`` set for the analyzed file list.
-    """
-    p = Path(rel_path)
-    stem = p.stem
-    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
-    candidates = {
-        f"test_{stem}{test_suffix}",
-        f"{stem}_test{test_suffix}",
-        f"{stem}_spec{test_suffix}",
-        f"{stem}.test.ts",
-        f"{stem}.test.tsx",
-        f"{stem}.test.js",
-        f"{stem}.test.mts",
-        f"{stem}.test.cts",
-        f"{stem}.spec.ts",
-        f"{stem}.spec.js",
-        f"{stem}.spec.mts",
-        f"{stem}.spec.cts",
-    }
-    if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
-        # Delphi/FPC's lowercase "u" unit-name prefix (uFoo.pas) has no
-        # test-file convention of its own; real-world projects pair it with
-        # a standalone console test program named Test<Foo>.dpr (the "u" is
-        # dropped, the extension is .dpr since a runnable test program is a
-        # project file, not a unit). Only a lowercase "u" is stripped -- a
-        # stem that merely starts with capital "U" (Utils.pas) is a
-        # different word, not this naming convention. Confirmed against a
-        # real ~150-file Delphi codebase: uKeymap.pas <-> TestKeymap.dpr,
-        # uANSIParser.pas <-> TestANSIParser.dpr, uConsoleBuffer.pas <->
-        # TestConsoleBuffer.dpr, etc. -- src/tools/Test*.dpr, not next to
-        # the unit.
-        pascal_stem = stem[1:] if stem[:1] == "u" else stem
-        candidates.add(f"Test{pascal_stem}.dpr")
-    return not candidates.isdisjoint(path_basenames)
+    """Whether any analyzed file is named like a test for *rel_path*."""
+    return not paired_test_names(rel_path).isdisjoint(path_basenames)
 
 
 class HealthAnalyzer:
@@ -474,6 +516,7 @@ class HealthAnalyzer:
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
         source_reader: SourceReader | None = None,
+        stored_blame_findings: dict[str, list[Any]] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -507,6 +550,10 @@ class HealthAnalyzer:
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
+        # Stored ``BLAME_MARKERS`` findings by path, replayed for a file scored
+        # without a blame index (a re-score from stored git metadata) so the
+        # pass does not delete what it cannot recompute.
+        self.stored_blame_findings = stored_blame_findings or {}
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
@@ -535,6 +582,21 @@ class HealthAnalyzer:
             index = self._execution_graph()
             self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
         return self._tests_reach_cache
+
+    def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
+        """Analyzed files a test is paired with; see ``files_with_paired_tests``.
+
+        Test files come from the graph as well as this pass, so an incremental
+        run that re-parses only the changed files still sees every test.
+        """
+        test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
+        if self.graph is not None:
+            test_files.update(
+                node
+                for node, data in self.graph.nodes(data=True)
+                if data.get("is_test") and data.get("node_type") != "symbol"
+            )
+        return files_with_paired_tests(self.graph, analyzed_paths, test_files)
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -617,7 +679,7 @@ class HealthAnalyzer:
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        path_basenames = _path_basenames(analyzed_paths)
+        paired_tests = self._paired_tests(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -697,9 +759,6 @@ class HealthAnalyzer:
             repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
             repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         with timed(timings, "analysis.health.oracle_reach"):
             self._apply_cross_file_oracles(walked)
@@ -707,11 +766,7 @@ class HealthAnalyzer:
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (runs after the graph passes so the
-        # centrality-gated nested-loop hits are present to promote).
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow_cache)
+        self._augment_perf_hits(walked, dataflow_cache, timings)
 
         timings_evaluate = timed(timings, "analysis.health.evaluate")
         timings_evaluate.__enter__()
@@ -732,7 +787,7 @@ class HealthAnalyzer:
             file_metric, file_findings, file_suggestions = self._evaluate_file(
                 pf,
                 fcx,
-                path_basenames,
+                paired_tests,
                 package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
@@ -774,7 +829,6 @@ class HealthAnalyzer:
             suggestions.extend(
                 performance_fix_suggestions(
                     opportunities,
-                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
                     min_confidence=refactoring_min_confidence,
                 )
             )
@@ -834,7 +888,7 @@ class HealthAnalyzer:
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        path_basenames = _path_basenames(analyzed_paths)
+        paired_tests = self._paired_tests(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -915,16 +969,12 @@ class HealthAnalyzer:
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
-        self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         self._apply_cross_file_oracles(walked)
         # One shared dataflow service per pass (see the sync path above).
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (after the graph passes populate the hits).
-        apply_perf_promotions(walked, dataflow=dataflow_cache)
+        self._augment_perf_hits(walked, dataflow_cache, timings=None)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
         refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
@@ -947,7 +997,7 @@ class HealthAnalyzer:
             file_metric, file_findings, file_suggestions = self._evaluate_file(
                 pf,
                 fcx,
-                path_basenames,
+                paired_tests,
                 package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
@@ -982,7 +1032,6 @@ class HealthAnalyzer:
             suggestions.extend(
                 performance_fix_suggestions(
                     opportunities,
-                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
                     min_confidence=refactoring_min_confidence,
                 )
             )
@@ -1047,6 +1096,26 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
             return
+
+    def _augment_perf_hits(
+        self,
+        walked: list[tuple[Any, FileComplexity]],
+        dataflow: FileDataflowCache,
+        timings: Any | None,
+    ) -> None:
+        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
+        the two paths cannot drift apart again. Promotions read the crossfn hits,
+        so crossfn runs first."""
+        from repowise.core.pipeline.phase_timing import timed
+
+        with timed(timings, "analysis.health.crossfn"):
+            self._apply_crossfn_perf(walked)
+        with timed(timings, "analysis.health.promotions"):
+            apply_perf_promotions(walked, dataflow=dataflow)
+        with timed(timings, "analysis.health.unbounded_reduction"):
+            collect_unbounded_reductions(walked, read_source=self.read_source)
+        with timed(timings, "analysis.health.lazy_load"):
+            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.
@@ -1123,9 +1192,7 @@ class HealthAnalyzer:
         try:
             from .function_blame_rollup import build_function_blame_rows
 
-            return build_function_blame_rows(
-                list(walked), self.git_meta_map, now_ts=int(time.time())
-            )
+            return build_function_blame_rows(list(walked), self.git_meta_map)
         except Exception as exc:
             log.debug("function_blame_rollup_failed", error=str(exc))
             return []
@@ -1210,7 +1277,7 @@ class HealthAnalyzer:
         self,
         pf: Any,
         fcx: FileComplexity,
-        path_basenames: set[str],
+        paired_tests: set[str],
         package_roots: set[str],
         *,
         disabled: list[str],
@@ -1270,12 +1337,12 @@ class HealthAnalyzer:
             # re-derive from the path string (#1103). The coverage check stays
             # because it also sniffs framework imports out of the source, which
             # a path cannot tell you.
-            has_test_file=_has_paired_test_file(file_path, path_basenames)
+            has_test_file=file_path in paired_tests
             or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
             or fcx.has_inline_tests,
             # Kept separate from ``has_test_file`` on purpose. That flag means
-            # "a file named like this one's test exists"; this one means "the
+            # "a test imports this file, or is named for it"; this one means "the
             # call graph records a test reaching this file". They disagree
             # often, and collapsing them would leave no way to say which signal
             # answered, or that one of them over-claims.
@@ -1304,6 +1371,11 @@ class HealthAnalyzer:
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
+        if blame_index is None:
+            for stored in self.stored_blame_findings.get(file_path, ()):
+                replayed = as_biomarker_result(stored)
+                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
+                    biomarker_results.append(replayed)
         biomarker_results = remap_severities(biomarker_results, severity_overrides)
         scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)

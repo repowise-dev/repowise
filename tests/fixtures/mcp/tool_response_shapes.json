@@ -1444,7 +1444,7 @@
         "co_change_partners_truncated": null,
         "commit_count_capped": null,
         "contributor_count": null,
-        "coverage_pct": null,
+        "line_coverage_pct": null,
         "defect_profile": {
           "bug_magnet": null,
           "fix_count": null,

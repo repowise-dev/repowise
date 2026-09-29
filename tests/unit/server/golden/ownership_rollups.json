@@ -1,0 +1,693 @@
+{
+  "owners": {
+    "items": [
+      {
+        "key": "alice@example.com",
+        "name": "Alice",
+        "email": "alice@example.com",
+        "files_owned": 2,
+        "hotspots_owned": 1,
+        "silo_modules": 0,
+        "dead_code_files_owned": 1,
+        "dead_code_lines_owned": 12,
+        "commit_count_90d": 25,
+        "last_commit_at": "2026-07-01T00:00:00Z",
+        "bus_factor_risk_files": 1
+      },
+      {
+        "key": "bob@example.com",
+        "name": "Bob",
+        "email": "bob@example.com",
+        "files_owned": 2,
+        "hotspots_owned": 1,
+        "silo_modules": 0,
+        "dead_code_files_owned": 0,
+        "dead_code_lines_owned": 0,
+        "commit_count_90d": 18,
+        "last_commit_at": "2026-08-01T12:00:00Z",
+        "bus_factor_risk_files": 1
+      },
+      {
+        "key": "name:Carol",
+        "name": "Carol",
+        "email": null,
+        "files_owned": 1,
+        "hotspots_owned": 0,
+        "silo_modules": 0,
+        "dead_code_files_owned": 1,
+        "dead_code_lines_owned": 30,
+        "commit_count_90d": 5,
+        "last_commit_at": "2026-08-01T12:00:00Z",
+        "bus_factor_risk_files": 1
+      }
+    ],
+    "total": 3,
+    "has_more": false,
+    "next_offset": null
+  },
+  "owners_by_commits": {
+    "items": [
+      {
+        "key": "alice@example.com",
+        "name": "Alice",
+        "email": "alice@example.com",
+        "files_owned": 2,
+        "hotspots_owned": 1,
+        "silo_modules": 0,
+        "dead_code_files_owned": 1,
+        "dead_code_lines_owned": 12,
+        "commit_count_90d": 25,
+        "last_commit_at": "2026-07-01T00:00:00Z",
+        "bus_factor_risk_files": 1
+      },
+      {
+        "key": "bob@example.com",
+        "name": "Bob",
+        "email": "bob@example.com",
+        "files_owned": 2,
+        "hotspots_owned": 1,
+        "silo_modules": 0,
+        "dead_code_files_owned": 0,
+        "dead_code_lines_owned": 0,
+        "commit_count_90d": 18,
+        "last_commit_at": "2026-08-01T12:00:00Z",
+        "bus_factor_risk_files": 1
+      },
+      {
+        "key": "name:Carol",
+        "name": "Carol",
+        "email": null,
+        "files_owned": 1,
+        "hotspots_owned": 0,
+        "silo_modules": 0,
+        "dead_code_files_owned": 1,
+        "dead_code_lines_owned": 30,
+        "commit_count_90d": 5,
+        "last_commit_at": "2026-08-01T12:00:00Z",
+        "bus_factor_risk_files": 1
+      }
+    ],
+    "total": 3,
+    "has_more": false,
+    "next_offset": null
+  },
+  "owner_profiles": {
+    "alice@example.com": {
+      "key": "alice@example.com",
+      "name": "Alice",
+      "email": "alice@example.com",
+      "files_owned": 2,
+      "hotspots_owned": 1,
+      "silo_modules": 0,
+      "dead_code_files_owned": 1,
+      "dead_code_lines_owned": 12,
+      "commit_count_90d": 25,
+      "last_commit_at": "2026-07-01T00:00:00Z",
+      "first_commit_at": "2025-01-02T03:04:05Z",
+      "bus_factor_risk_files": 1,
+      "lines_added_90d_est": 218,
+      "lines_deleted_90d_est": 70,
+      "modules": [
+        {
+          "module_path": "src",
+          "file_count": 1,
+          "hotspot_count": 1,
+          "dominant_pct": 0.3333333333333333
+        },
+        {
+          "module_path": "lib",
+          "file_count": 1,
+          "hotspot_count": 0,
+          "dominant_pct": 0.5
+        }
+      ],
+      "top_files": [
+        {
+          "file_path": "src/core.py",
+          "commit_count_90d": 35,
+          "churn_percentile": 95.0,
+          "bus_factor": 1,
+          "is_hotspot": true,
+          "last_commit_at": "2026-08-01T12:00:00",
+          "primary_owner_commit_pct": 0.7
+        },
+        {
+          "file_path": "lib/util.py",
+          "commit_count_90d": 4,
+          "churn_percentile": 40.0,
+          "bus_factor": 2,
+          "is_hotspot": false,
+          "last_commit_at": null,
+          "primary_owner_commit_pct": 0.6
+        },
+        {
+          "file_path": "src/api.py",
+          "commit_count_90d": 2,
+          "churn_percentile": 60.0,
+          "bus_factor": 1,
+          "is_hotspot": true,
+          "last_commit_at": "2026-07-01T00:00:00",
+          "primary_owner_commit_pct": 0.9
+        }
+      ],
+      "files_touched_total": 3,
+      "co_authors": [
+        {
+          "name": "Bob",
+          "email": "bob@example.com",
+          "shared_files": 3,
+          "co_change_strength": 1.0
+        },
+        {
+          "name": "Carol",
+          "email": null,
+          "shared_files": 1,
+          "co_change_strength": 0.3333333333333333
+        }
+      ],
+      "co_authors_total": 2,
+      "commit_categories": {
+        "fix": 2,
+        "feature": 4
+      },
+      "agent_collab": {
+        "files_with_agent_commits": 1,
+        "agent_commit_count": 10,
+        "agent_share_pct": 20.0,
+        "tier_counts": {
+          "confirmed": 6,
+          "likely": 4
+        }
+      }
+    },
+    "bob@example.com": {
+      "key": "bob@example.com",
+      "name": "Bob",
+      "email": "bob@example.com",
+      "files_owned": 2,
+      "hotspots_owned": 1,
+      "silo_modules": 0,
+      "dead_code_files_owned": 0,
+      "dead_code_lines_owned": 0,
+      "commit_count_90d": 18,
+      "last_commit_at": "2026-08-01T12:00:00Z",
+      "first_commit_at": "2025-01-02T03:04:05Z",
+      "bus_factor_risk_files": 1,
+      "lines_added_90d_est": 132,
+      "lines_deleted_90d_est": 20,
+      "modules": [
+        {
+          "module_path": "src",
+          "file_count": 1,
+          "hotspot_count": 1,
+          "dominant_pct": 0.3333333333333333
+        },
+        {
+          "module_path": "lib",
+          "file_count": 1,
+          "hotspot_count": 0,
+          "dominant_pct": 0.5
+        }
+      ],
+      "top_files": [
+        {
+          "file_path": "src/api.py",
+          "commit_count_90d": 18,
+          "churn_percentile": 60.0,
+          "bus_factor": 1,
+          "is_hotspot": true,
+          "last_commit_at": "2026-07-01T00:00:00",
+          "primary_owner_commit_pct": 0.9
+        },
+        {
+          "file_path": "src/core.py",
+          "commit_count_90d": 10,
+          "churn_percentile": 95.0,
+          "bus_factor": 1,
+          "is_hotspot": true,
+          "last_commit_at": "2026-08-01T12:00:00",
+          "primary_owner_commit_pct": 0.7
+        },
+        {
+          "file_path": "lib/util.py",
+          "commit_count_90d": 6,
+          "churn_percentile": 40.0,
+          "bus_factor": 2,
+          "is_hotspot": false,
+          "last_commit_at": null,
+          "primary_owner_commit_pct": 0.6
+        }
+      ],
+      "files_touched_total": 3,
+      "co_authors": [
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "shared_files": 3,
+          "co_change_strength": 1.0
+        },
+        {
+          "name": "Carol",
+          "email": null,
+          "shared_files": 1,
+          "co_change_strength": 0.3333333333333333
+        }
+      ],
+      "co_authors_total": 2,
+      "commit_categories": {
+        "fix": 0,
+        "feature": 1
+      },
+      "agent_collab": {
+        "files_with_agent_commits": 0,
+        "agent_commit_count": 0,
+        "agent_share_pct": 0.0,
+        "tier_counts": {}
+      }
+    },
+    "name:Carol": {
+      "key": "name:Carol",
+      "name": "Carol",
+      "email": null,
+      "files_owned": 1,
+      "hotspots_owned": 0,
+      "silo_modules": 0,
+      "dead_code_files_owned": 1,
+      "dead_code_lines_owned": 30,
+      "commit_count_90d": 5,
+      "last_commit_at": "2026-08-01T12:00:00Z",
+      "first_commit_at": "2019-03-03T00:00:00Z",
+      "bus_factor_risk_files": 1,
+      "lines_added_90d_est": 30,
+      "lines_deleted_90d_est": 10,
+      "modules": [
+        {
+          "module_path": "src",
+          "file_count": 1,
+          "hotspot_count": 0,
+          "dominant_pct": 0.3333333333333333
+        }
+      ],
+      "top_files": [
+        {
+          "file_path": "src/legacy.py",
+          "commit_count_90d": 7,
+          "churn_percentile": 10.0,
+          "bus_factor": 1,
+          "is_hotspot": false,
+          "last_commit_at": "2020-03-03T00:00:00",
+          "primary_owner_commit_pct": 1.0
+        },
+        {
+          "file_path": "src/core.py",
+          "commit_count_90d": 5,
+          "churn_percentile": 95.0,
+          "bus_factor": 1,
+          "is_hotspot": true,
+          "last_commit_at": "2026-08-01T12:00:00",
+          "primary_owner_commit_pct": 0.7
+        }
+      ],
+      "files_touched_total": 2,
+      "co_authors": [
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "shared_files": 1,
+          "co_change_strength": 0.5
+        },
+        {
+          "name": "Bob",
+          "email": "bob@example.com",
+          "shared_files": 1,
+          "co_change_strength": 0.5
+        }
+      ],
+      "co_authors_total": 2,
+      "commit_categories": {
+        "fix": 0,
+        "feature": 0
+      },
+      "agent_collab": null
+    }
+  },
+  "modules": {
+    "items": [
+      {
+        "module_path": "src",
+        "file_count": 3,
+        "symbol_count": 3,
+        "hotspot_count": 2,
+        "dead_code_count": 2,
+        "dead_code_lines": 42,
+        "avg_churn_percentile": 54.99999999999999,
+        "median_bus_factor": 1.0,
+        "min_bus_factor": 1,
+        "primary_owner": "Bob",
+        "primary_owner_pct": 0.3333333333333333,
+        "is_silo": false,
+        "decision_count": 2,
+        "doc_coverage_pct": 33.33333333333333,
+        "health_score": 56.75
+      },
+      {
+        "module_path": "root",
+        "file_count": 1,
+        "symbol_count": 0,
+        "hotspot_count": 0,
+        "dead_code_count": 0,
+        "dead_code_lines": 0,
+        "avg_churn_percentile": 0.0,
+        "median_bus_factor": 0.0,
+        "min_bus_factor": 0,
+        "primary_owner": null,
+        "primary_owner_pct": 0.0,
+        "is_silo": false,
+        "decision_count": 0,
+        "doc_coverage_pct": 0.0,
+        "health_score": 90.0
+      },
+      {
+        "module_path": "lib",
+        "file_count": 2,
+        "symbol_count": 1,
+        "hotspot_count": 0,
+        "dead_code_count": 1,
+        "dead_code_lines": 0,
+        "avg_churn_percentile": 30.000000000000004,
+        "median_bus_factor": 2.5,
+        "min_bus_factor": 2,
+        "primary_owner": "Alice",
+        "primary_owner_pct": 0.5,
+        "is_silo": false,
+        "decision_count": 1,
+        "doc_coverage_pct": 100.0,
+        "health_score": 100.0
+      }
+    ],
+    "total": 3,
+    "has_more": false,
+    "next_offset": null
+  },
+  "module_details": {
+    "src": {
+      "module_path": "src",
+      "file_count": 3,
+      "symbol_count": 3,
+      "hotspot_count": 2,
+      "dead_code_count": 2,
+      "dead_code_lines": 42,
+      "avg_churn_percentile": 54.99999999999999,
+      "median_bus_factor": 1.0,
+      "min_bus_factor": 1,
+      "primary_owner": "Bob",
+      "primary_owner_pct": 0.3333333333333333,
+      "is_silo": false,
+      "decision_count": 2,
+      "doc_coverage_pct": 33.33333333333333,
+      "health_score": 56.75,
+      "owners": [
+        {
+          "name": "Bob",
+          "email": "4242+bob@users.noreply.github.com",
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        },
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        },
+        {
+          "name": "Carol",
+          "email": null,
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        }
+      ],
+      "top_hotspots": [
+        "src/core.py",
+        "src/api.py"
+      ],
+      "governing_decisions": [
+        {
+          "id": "dec-src",
+          "title": "Keep src flat",
+          "status": "active"
+        },
+        {
+          "id": "dec-both",
+          "title": "Share one util",
+          "status": "active"
+        }
+      ],
+      "contributor_count": 3
+    },
+    "lib": {
+      "module_path": "lib",
+      "file_count": 2,
+      "symbol_count": 1,
+      "hotspot_count": 0,
+      "dead_code_count": 1,
+      "dead_code_lines": 0,
+      "avg_churn_percentile": 30.000000000000004,
+      "median_bus_factor": 2.5,
+      "min_bus_factor": 2,
+      "primary_owner": "Alice",
+      "primary_owner_pct": 0.5,
+      "is_silo": false,
+      "decision_count": 1,
+      "doc_coverage_pct": 100.0,
+      "health_score": 100.0,
+      "owners": [
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "file_count": 1,
+          "pct": 0.5
+        },
+        {
+          "name": "Bob",
+          "email": "bob@example.com",
+          "file_count": 1,
+          "pct": 0.5
+        }
+      ],
+      "top_hotspots": [],
+      "governing_decisions": [
+        {
+          "id": "dec-both",
+          "title": "Share one util",
+          "status": "active"
+        }
+      ],
+      "contributor_count": 2
+    },
+    "root": {
+      "module_path": "root",
+      "file_count": 1,
+      "symbol_count": 0,
+      "hotspot_count": 0,
+      "dead_code_count": 0,
+      "dead_code_lines": 0,
+      "avg_churn_percentile": 0.0,
+      "median_bus_factor": 0.0,
+      "min_bus_factor": 0,
+      "primary_owner": null,
+      "primary_owner_pct": 0.0,
+      "is_silo": false,
+      "decision_count": 0,
+      "doc_coverage_pct": 0.0,
+      "health_score": 90.0,
+      "owners": [],
+      "top_hotspots": [],
+      "governing_decisions": [],
+      "contributor_count": 0
+    },
+    "src/api.py": {
+      "module_path": "src/api.py",
+      "file_count": 1,
+      "symbol_count": 1,
+      "hotspot_count": 1,
+      "dead_code_count": 0,
+      "dead_code_lines": 0,
+      "avg_churn_percentile": 60.0,
+      "median_bus_factor": 1.0,
+      "min_bus_factor": 1,
+      "primary_owner": "Bob",
+      "primary_owner_pct": 0.9,
+      "is_silo": true,
+      "decision_count": 0,
+      "doc_coverage_pct": 0.0,
+      "health_score": 36.0,
+      "owners": [
+        {
+          "name": "Bob",
+          "email": "4242+bob@users.noreply.github.com",
+          "file_count": 1,
+          "pct": 0.9
+        },
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "file_count": 1,
+          "pct": 0.0
+        }
+      ],
+      "top_hotspots": [
+        "src/api.py"
+      ],
+      "governing_decisions": [],
+      "contributor_count": 2
+    },
+    "src/nested/missing.py": {
+      "module_path": "src",
+      "file_count": 3,
+      "symbol_count": 3,
+      "hotspot_count": 2,
+      "dead_code_count": 2,
+      "dead_code_lines": 42,
+      "avg_churn_percentile": 54.99999999999999,
+      "median_bus_factor": 1.0,
+      "min_bus_factor": 1,
+      "primary_owner": "Bob",
+      "primary_owner_pct": 0.3333333333333333,
+      "is_silo": false,
+      "decision_count": 2,
+      "doc_coverage_pct": 33.33333333333333,
+      "health_score": 56.75,
+      "owners": [
+        {
+          "name": "Bob",
+          "email": "4242+bob@users.noreply.github.com",
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        },
+        {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        },
+        {
+          "name": "Carol",
+          "email": null,
+          "file_count": 1,
+          "pct": 0.3333333333333333
+        }
+      ],
+      "top_hotspots": [
+        "src/core.py",
+        "src/api.py"
+      ],
+      "governing_decisions": [
+        {
+          "id": "dec-src",
+          "title": "Keep src flat",
+          "status": "active"
+        },
+        {
+          "id": "dec-both",
+          "title": "Share one util",
+          "status": "active"
+        }
+      ],
+      "contributor_count": 3
+    }
+  },
+  "reviewers": {
+    "paths": [
+      "src/core.py",
+      "src/api.py"
+    ],
+    "suggestions": [
+      {
+        "name": "Bob",
+        "email": "4242+bob@users.noreply.github.com",
+        "score": 1.99,
+        "recent_commits": 8,
+        "owned_paths": [
+          "src/api.py"
+        ],
+        "co_change_paths": [
+          "src/api.py"
+        ],
+        "reasons": [
+          "co-change history",
+          "touched"
+        ]
+      },
+      {
+        "name": "Alice",
+        "email": "alice@example.com",
+        "score": 1.4633,
+        "recent_commits": 15,
+        "owned_paths": [
+          "src/api.py",
+          "src/core.py"
+        ],
+        "co_change_paths": [
+          "lib/util.py",
+          "src/api.py"
+        ],
+        "reasons": [
+          "co-change history",
+          "touched"
+        ]
+      },
+      {
+        "name": "Bob",
+        "email": "bob@example.com",
+        "score": 0.7133,
+        "recent_commits": 5,
+        "owned_paths": [
+          "src/core.py"
+        ],
+        "co_change_paths": [
+          "lib/util.py"
+        ],
+        "reasons": [
+          "co-change history",
+          "touched"
+        ]
+      },
+      {
+        "name": "Carol",
+        "email": null,
+        "score": 0.14,
+        "recent_commits": 2,
+        "owned_paths": [
+          "src/core.py"
+        ],
+        "co_change_paths": [],
+        "reasons": [
+          "touched"
+        ]
+      }
+    ]
+  },
+  "reviewers_limited": {
+    "paths": [
+      "lib/util.py"
+    ],
+    "suggestions": [
+      {
+        "name": "Alice",
+        "email": "alice@example.com",
+        "score": 1.1633,
+        "recent_commits": 15,
+        "owned_paths": [
+          "lib/util.py"
+        ],
+        "co_change_paths": [
+          "src/core.py"
+        ],
+        "reasons": [
+          "co-change history",
+          "touched"
+        ]
+      }
+    ]
+  }
+}

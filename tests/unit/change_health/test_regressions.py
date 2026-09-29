@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from repowise.core.analysis.change_health.analyzer import MAX_FILE_BYTES
 from repowise.core.analysis.change_health.identity import change_finding_id, finding_key
 from repowise.core.analysis.change_health.matcher import FindingMatcher
 from repowise.core.analysis.change_health.models import FindingKey
-from repowise.core.analysis.change_health.service import ChangeHealthDeltaService, DeltaRequest
+from repowise.core.analysis.change_health.service import (
+    ChangeHealthDeltaService,
+    DeltaRequest,
+    _suggestion,
+)
 from repowise.core.analysis.change_health.sources import GitRevisionSource
 from repowise.core.analysis.health import HealthFindingData, Severity
 from repowise.core.analysis.health.scoring import score_file
@@ -190,8 +196,11 @@ def test_deleting_one_finding_does_not_report_its_neighbours_as_worsened():
     head = _scored(specs[1:])
 
     # The premise: the cap binds on both sides and the survivors' impacts rise.
-    assert sum(f.health_impact for f in base) == pytest.approx(3.5)
-    assert sum(f.health_impact for f in head) == pytest.approx(3.5)
+    # History-only findings, so the cap is the structure-conditioned one at 0.
+    from repowise.core.analysis.health.scoring import history_cap
+
+    assert sum(f.health_impact for f in base) == pytest.approx(history_cap(0.0))
+    assert sum(f.health_impact for f in head) == pytest.approx(history_cap(0.0))
     assert head[0].health_impact > base[1].health_impact
 
     result = FindingMatcher().match(base, head)
@@ -227,3 +236,12 @@ def test_a_continuous_marker_still_worsens_when_its_own_deduction_grows():
 
     better = FindingMatcher().match([gradient(0.6)], [gradient(0.2)]).matched
     assert [m.kind for m in better] == ["unchanged"]
+
+
+def test_an_expected_cause_says_there_is_nothing_to_change():
+    perf = SimpleNamespace(
+        actionability_state="expected",
+        actionability_reason="inherent_to_boundary",
+        intervention_symbol=None,
+    )
+    assert "inherent_to_boundary" not in _suggestion(SimpleNamespace(), perf)

@@ -8,6 +8,11 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.knowledge_map import (
+    SILO_OWNER_PCT,
+    onboarding_targets,
+    rank_silos,
+)
 from repowise.core.persistence.models import GitMetadata, GraphNode, Page
 
 
@@ -20,7 +25,7 @@ async def compute_knowledge_silos(session: AsyncSession, repo_id: str) -> list[d
     blob columns) and loads the full ``content`` of every file page to count
     words for a top-10 onboarding list Overview never reads.
 
-    Three columns, one query, no entity hydration.
+    Five columns, one query, no entity hydration; ranked by :func:`rank_silos`.
     """
     rows = await session.execute(
         select(
@@ -29,32 +34,12 @@ async def compute_knowledge_silos(session: AsyncSession, repo_id: str) -> list[d
             GitMetadata.primary_owner_commit_pct,
             GitMetadata.commit_count_90d,
             GitMetadata.is_hotspot,
-        )
-        .where(
+        ).where(
             GitMetadata.repository_id == repo_id,
-            GitMetadata.primary_owner_commit_pct > 0.8,
-        )
-        # Activity first, concentration second. Sole ownership of a file nobody
-        # has touched in a year is a fact, not a risk: the bus factor only
-        # costs anything on code that still changes. Ordered here so every
-        # caller previewing a few of these gets the ones that matter rather
-        # than whatever the table returned first.
-        .order_by(
-            GitMetadata.is_hotspot.desc(),
-            GitMetadata.commit_count_90d.desc().nulls_last(),
-            GitMetadata.primary_owner_commit_pct.desc(),
+            GitMetadata.primary_owner_commit_pct > SILO_OWNER_PCT,
         )
     )
-    return [
-        {
-            "file_path": file_path,
-            "owner_email": owner_email or "",
-            "owner_pct": round(float(owner_pct or 0.0), 3),
-            "commit_count_90d": int(commits or 0),
-            "is_hotspot": bool(is_hotspot),
-        }
-        for file_path, owner_email, owner_pct, commits, is_hotspot in rows
-    ]
+    return rank_silos(rows)
 
 
 async def compute_onboarding_targets(
@@ -67,7 +52,7 @@ async def compute_onboarding_targets(
     feeds the first-index experience. Overview used to reach it through
     :func:`compute_knowledge_map` and pay for the owner aggregation as well.
     """
-    # `pagerank > 0` in SQL, not in the comprehension below: the filter
+    # `pagerank > 0` in SQL too, though the fold repeats it: the filter
     # discards most rows and there is no reason to ship them.
     node_result = await session.execute(
         select(GraphNode.node_id, GraphNode.pagerank).where(
@@ -93,21 +78,11 @@ async def compute_onboarding_targets(
         )
     )
     doc_chars: dict[str, int] = {path: int(n or 0) for path, n in size_result}
-
-    candidates = [
-        {
-            "path": node_id,
-            "pagerank": pagerank,
-            "doc_chars": doc_chars.get(node_id, 0),
-        }
-        for node_id, pagerank in all_nodes
-    ]
-    candidates.sort(key=lambda x: (x["doc_chars"], -x["pagerank"]))
-    shortlist = candidates[:10]
+    shortlist = onboarding_targets(all_nodes, doc_chars)
 
     # Exact words for the ten rows that are actually returned. Most of them are
     # undocumented files with no page at all, so this usually fetches nothing.
-    documented = [c["path"] for c in shortlist if c["doc_chars"] > 0]
+    documented = [c["path"] for c in shortlist if c["doc_words"] > 0]
     exact_words: dict[str, int] = {}
     if documented:
         word_rows = await session.execute(
@@ -119,16 +94,7 @@ async def compute_onboarding_targets(
         )
         exact_words = {path: len((content or "").split()) for path, content in word_rows}
 
-    onboarding_targets = [
-        {
-            "path": c["path"],
-            "pagerank": c["pagerank"],
-            "doc_words": exact_words.get(c["path"], 0),
-        }
-        for c in shortlist
-    ]
-
-    return onboarding_targets
+    return [{**c, "doc_words": exact_words.get(c["path"], 0)} for c in shortlist]
 
 
 async def compute_knowledge_map(session: AsyncSession, repo_id: str) -> dict[str, Any]:
@@ -191,13 +157,11 @@ async def compute_knowledge_map(session: AsyncSession, repo_id: str) -> dict[str
             "owner_pct": round(float(pct or 0.0), 3),
         }
         for file_path, owner_email, _owner_name, pct in all_git
-        if (pct or 0.0) > 0.8
+        if (pct or 0.0) > SILO_OWNER_PCT
     ]
-
-    onboarding_targets = await compute_onboarding_targets(session, repo_id)
 
     return {
         "top_owners": top_owners,
         "knowledge_silos": knowledge_silos,
-        "onboarding_targets": onboarding_targets,
+        "onboarding_targets": await compute_onboarding_targets(session, repo_id),
     }

@@ -28,6 +28,7 @@ import { FindingOpportunityLink } from "./file-opportunity";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
+import { ACTIONABILITY_LABEL } from "./performance/presentation";
 import {
   SEVERITY_CHIP,
   SEVERITY_LABEL,
@@ -39,7 +40,7 @@ import {
 // The shared bands, never a local threshold: this pill sits beside marks that
 // all derive from `bandForScore`, and two of them disagreeing about where a
 // band starts describes one file two ways in one viewport.
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type {
   FileHealthTrend,
   FileSignals,
@@ -457,7 +458,7 @@ export function HealthFileDrawer({
                       className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
                       style={{ color: healthBandColor(bandForScore(metric.score)) }}
                     >
-                      {metric.score.toFixed(1)}
+                      {formatScore(metric.score)}
                     </span>
                     <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
                   </div>
@@ -912,7 +913,7 @@ function PillarScore({ v }: { v: number | null }) {
       className="text-lg font-semibold tabular-nums"
       style={{ color: healthBandColor(bandForScore(v)) }}
     >
-      {v.toFixed(1)}
+      {formatScore(v)}
       <span className="text-xs font-normal text-[var(--color-text-tertiary)]">/10</span>
     </span>
   );
@@ -1015,7 +1016,7 @@ function CauseRow({
           {biomarkerLabel(o.biomarker_type)}
         </span>
         <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
-          {ACTIONABILITY_WORD[o.actionability_state] ?? o.actionability_state}
+          {ACTIONABILITY_LABEL[o.actionability_state]}
         </span>
       </span>
       {location ? (
@@ -1047,8 +1048,3 @@ function CauseRow({
   );
 }
 
-const ACTIONABILITY_WORD: Record<string, string> = {
-  plan_ready: "Plan ready",
-  advisory: "Advisory",
-  investigate: "Investigate",
-};

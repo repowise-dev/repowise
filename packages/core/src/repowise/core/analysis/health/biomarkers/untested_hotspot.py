@@ -70,8 +70,8 @@ class UntestedHotspotDetector:
             # ``reached_by_tests`` is the graph one, and it is what stops the
             # long-standing false positive: a suite that names its tests for
             # behaviour rather than for the file under test satisfies no naming
-            # convention, so ``has_test_file`` was False and this fired on files
-            # the graph records several test files importing.
+            # convention, so name-only pairing left ``has_test_file`` False and
+            # this fired on files the graph records several test files importing.
             if ctx.has_test_file or ctx.reached_by_tests:
                 return []
             cov_for_severity = 0.0

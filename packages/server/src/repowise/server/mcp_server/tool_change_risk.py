@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import threading
 import time
@@ -46,6 +47,9 @@ from repowise.server.mcp_server._change_health import (
 )
 from repowise.server.mcp_server._change_health import (
     health_delta_block as _health_delta_block,
+)
+from repowise.server.mcp_server._change_health import (
+    patch_coverage_action as _patch_coverage_action,
 )
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -148,6 +152,8 @@ async def get_change_risk(
     change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``patch_coverage`` is the share of changed executable lines stored coverage
+    ran (no revspec: from the merge-base); ``hints`` name tests to extend.
     ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
     fixes on these exact lines. ``branch_overlap`` names other branches editing
     them. ``diff_shape`` is one line on size, not a danger verdict. An empty
@@ -228,6 +234,19 @@ async def get_change_risk(
         payload["impacted_tests"] = await _impacted_tests_block(
             ctx, changed, changed_error, collector
         )
+        patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
+            str(ctx.path),
+            revspec,
+            result.working_tree,
+            normalize_extensions(tuple(extensions or ())),
+            result.riskignore_excludes + result.request_excludes,
+            (changed, changed_error),
+        )
+        patch = await _patch_coverage_block(
+            ctx, patch_changed, patch_error, patch_revspec, result, collector, label=patch_label
+        )
+        if patch is not None:
+            payload["patch_coverage"] = patch
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
             # One fix record, not two. The blocks answered the same question
@@ -363,7 +382,8 @@ async def _attach_health_references(ctx: Any, delta: Any) -> None:
                 .scalars()
                 .all()
             )
-    except SQLAlchemyError:
+    except (LookupError, SQLAlchemyError):
+        # No repository row is "no index", as in the sibling enrichments.
         return
     if not rows:
         return
@@ -402,8 +422,11 @@ def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bo
         block["findings_emitted"] = len(delta.findings)
         block.pop("findings_reduced_reason", None)
         block.pop("all_findings_via", None)
+    directive = _directive(delta, payload.get("impacted_tests"))
+    if action := _patch_coverage_action(payload.get("patch_coverage")):
+        directive["next_actions"].append(action)
     ordered = {
-        "directive": _directive(delta, payload.get("impacted_tests")),
+        "directive": directive,
         "health_delta": block,
     }
     for key, value in payload.items():
@@ -483,22 +506,6 @@ async def _repository(ctx: Any) -> Any | None:
             return await _get_repo(session)
     except (LookupError, SQLAlchemyError):
         return None
-
-
-def _normalize_revspec(revspec: str | None) -> str:
-    """Mirror ``score_live_change``'s three-dot handling for ``changed_lines``.
-
-    ``changed_lines`` verifies each side of a ``base..head`` range as a ref, so a
-    three-dot ``base...head`` (whose head parses as ``.head``) would fail its
-    ref check. Strip the extra dot to the two-dot form the scorer already uses.
-    """
-    if revspec is None:
-        return "HEAD"
-    if ".." in revspec:
-        base, _, head = revspec.partition("..")
-        head = head.lstrip(".") or "HEAD"
-        return f"{base}..{head}"
-    return revspec
 
 
 def _filter_changed(
@@ -704,11 +711,18 @@ def _cross_repo_block(
 
 
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
-    """Uniform impacted-tests block for the degraded (no tests to name) paths."""
+    """Uniform impacted-tests block for the degraded (no tests to name) paths.
+
+    ``basis`` says which signal named the tests (``none`` here) and
+    ``tests_to_run_kind`` what each entry is: a coverage-map ``test_id`` on
+    the measured basis, a ``test_file`` on the inferred one.
+    """
     return {
         "status": status,
+        "basis": "none",
         "map_present": False,
         "tests_to_run": [],
+        "tests_to_run_kind": None,
         "total": 0,
         "truncated": False,
         "line_coverage": {
@@ -761,26 +775,49 @@ async def _changed_in_scope(
     without each re-reading git. Shared because ``changed_lines`` shells out and
     two blocks want the same answer.
     """
+    changed, error, _label = await _changed_with_label(
+        repo_path, revspec, extensions, exclude_patterns, working_tree=working_tree
+    )
+    return changed, error
+
+
+async def _changed_with_label(
+    repo_path: str,
+    revspec: str | None,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    *,
+    working_tree: bool = False,
+    base: str | None = None,
+) -> tuple[dict[str, set[int]], tuple[str, str] | None, str | None]:
+    """:func:`_changed_in_scope` plus the label ``changed_lines`` gave what it read.
+
+    *base* widens a working-tree read to the merge-base with it, untracked
+    files included, and falls back to the plain working tree (label and all)
+    when the base does not resolve.
+    """
     from repowise.core.analysis.changed_lines import changed_lines
 
+    label = None
     try:
-        changed, _label = await asyncio.to_thread(
+        changed, label = await asyncio.to_thread(
             partial(
                 changed_lines,
                 repo_path,
-                _normalize_revspec(revspec),
+                revspec or "HEAD",
                 working_tree=working_tree,
+                base=base,
             )
         )
     except ValueError as exc:
-        return {}, ("unknown", f"Could not read changed lines: {exc}")
+        return {}, ("unknown", f"Could not read changed lines: {exc}"), label
     except (subprocess.SubprocessError, OSError):
-        return {}, ("unknown", "Could not read changed lines from git.")
+        return {}, ("unknown", "Could not read changed lines from git."), label
 
     changed = _filter_changed(changed, extensions, exclude_patterns)
     if not changed:
-        return {}, ("no_source_line_changes", "No changed source lines to map to tests.")
-    return changed, None
+        return {}, ("no_source_line_changes", "No changed source lines to map to tests."), label
+    return changed, None, label
 
 
 async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str, Any] | None:
@@ -940,7 +977,7 @@ async def _independent_changes_block(
         return None
     # Returns [] without a git call for anything that is not a range, so the
     # range test lives in one place rather than here as well.
-    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), _normalize_revspec(revspec))
+    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), revspec)
     try:
         async with get_session(session_factory) as session:
             repo_id = (await _get_repo(session)).id
@@ -1084,6 +1121,7 @@ async def _inferred_impacted(
         {
             "basis": "inferred",
             "tests_to_run": _cap_tests(tests, collector, "inferred"),
+            "tests_to_run_kind": "test_file",
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
@@ -1098,6 +1136,158 @@ async def _inferred_impacted(
             ),
         }
     )
+    return block
+
+
+async def _push_change(
+    repo_path: str,
+    revspec: str | None,
+    working_tree: bool,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    scored: tuple[dict[str, set[int]], tuple[str, str] | None],
+) -> tuple[dict[str, set[int]], tuple[str, str] | None, str | None, str | None]:
+    """``(changed, error, label, revspec)`` the patch-coverage block measures.
+
+    An explicit *revspec* is measured as given (*scored*, the lines the score
+    read). Without one an agent is checking its work before a push, so the
+    patch is everything the push brings, the branch's commits and any
+    uncommitted edits, and the self-check does not shrink to the last commit
+    once it lands: ``<base>...working tree`` when dirty, ``<base>...HEAD``
+    when clean. No resolvable base keeps what was scored.
+    """
+    changed, error = scored
+    if revspec is not None:
+        return changed, error, None, revspec
+    base = await asyncio.to_thread(_push_base, repo_path)
+    if not working_tree and base == "HEAD":
+        return changed, error, None, revspec
+    branch = None if working_tree else f"{base}...HEAD"
+    found, found_error, label = await _changed_with_label(
+        repo_path, branch, extensions, exclude_patterns, working_tree=working_tree, base=base
+    )
+    if found_error is not None and branch is not None:
+        # No merge-base with the base (a shallow clone): measure the commit as scored.
+        return changed, error, None, revspec
+    return found, found_error, label, branch
+
+
+def _push_base(repo_path: str) -> str:
+    """The branch a push of this checkout is reviewed against, else ``HEAD``.
+
+    The base ``repowise coverage check`` would diff from in CI, so an agent's
+    self-check and the pull request's gate measure the same lines.
+    """
+    from repowise.core.analysis.change_risk.features import split_revspec
+    from repowise.core.ci.base import BaseNotFoundError, default_revspec
+
+    try:
+        parts = split_revspec(default_revspec(repo_path))
+    except (BaseNotFoundError, subprocess.SubprocessError, OSError):
+        return "HEAD"
+    return parts[0] if parts else "HEAD"
+
+
+async def _patch_coverage_block(
+    ctx: Any,
+    changed: dict[str, set[int]],
+    changed_error: tuple[str, str] | None,
+    revspec: str | None,
+    result: Any,
+    collector: OmissionCollector,
+    *,
+    label: str | None = None,
+) -> dict[str, Any] | None:
+    """Share of the change's executable lines the stored coverage ran, or ``None``.
+
+    The same computation ``repowise coverage check`` gates on, read from the
+    coverage the index stores. ``None`` when there is no index, no stored
+    coverage, or no readable change: ``impacted_tests`` already says why.
+    ``files`` lists only the files that need attention, riskiest first, capped;
+    the totals and ``file_counts`` still count every file. ``coverage.ignore``,
+    ``coverage.min_coverable_lines`` and the path-scoped ``coverage.gates``
+    apply as they do in the CLI gate; path gates read ``no_data`` on stale
+    coverage or invalid config, which ``scope.config_errors`` names. Each row
+    carries its file's risk, from the index and the checkout's git history, and
+    ``hints``: the test file to extend per uncovered range.
+
+    With no revspec, *changed* is what a push would bring (the caller diffs
+    from the merge-base with the push base, *label* names it). For uncommitted
+    work no commit names that code, so freshness is by time: ``current`` when
+    the last coverage ingest came after the newest edit to the changed files.
+    """
+    from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import revspec_head
+    from repowise.core.analysis.health.coverage import configured_coverage
+    from repowise.core.analysis.health.coverage.freshness import newest_mtime
+    from repowise.core.analysis.patch_coverage import (
+        assess_risks,
+        attach_hints,
+        attach_risk,
+        attention_rows,
+        read_git_fix_history,
+        read_index_facts,
+        read_test_hints,
+        stored_patch_coverage,
+    )
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or changed_error is not None or not changed:
+        return None
+    head_commit = mtime = None
+    if result.working_tree:
+        mtime = await asyncio.to_thread(newest_mtime, ctx.path, changed)
+    else:
+        head_commit = git_refs.resolve(str(ctx.path), revspec_head(revspec)) or None
+    index: dict = {}
+    try:
+        async with get_session(session_factory) as session:
+            repo_id = (await _get_repo(session)).id
+            patch = await stored_patch_coverage(
+                session,
+                repo_id,
+                changed,
+                label=label or result.features.ref,
+                head_commit=head_commit,
+                config=configured_coverage(ctx.path),
+                working_tree_mtime=mtime,
+            )
+            # An unreadable index row leaves risk to git alone and hints null.
+            if patch is not None:
+                with contextlib.suppress(SQLAlchemyError):
+                    index = await read_index_facts(
+                        session, repo_id, [f.file_path for f in patch.files]
+                    )
+                # Advice: read_test_hints logs any failure and returns None.
+                hints = await read_test_hints(
+                    session,
+                    repo_id,
+                    patch,
+                    repo_path=str(ctx.path),
+                    head_commit=head_commit,
+                    working_tree=result.working_tree,
+                )
+                if hints is not None:
+                    patch = attach_hints(patch, hints)
+    except (LookupError, SQLAlchemyError):
+        return None
+    if patch is None:
+        return None
+    # Git after the session closes: no subprocess while a connection is held.
+    git = await asyncio.to_thread(
+        read_git_fix_history, str(ctx.path), revspec, working_tree=result.working_tree
+    )
+    patch = attach_risk(patch, assess_risks([f.file_path for f in patch.files], git, index))
+    block = patch.to_dict()
+    rows = [f.to_dict() for f in attention_rows(patch)]
+    if len(rows) > _IMPACTED_TESTS_LIMIT:
+        collector.add(
+            f"patch_coverage.files beyond cap={_IMPACTED_TESTS_LIMIT} "
+            f"({len(rows) - _IMPACTED_TESTS_LIMIT} dropped)",
+            [row["file_path"] for row in rows[_IMPACTED_TESTS_LIMIT:]],
+        )
+    block["files"] = rows[:_IMPACTED_TESTS_LIMIT]
     return block
 
 
@@ -1153,6 +1343,7 @@ async def _impacted_tests_block(
         "basis": "measured",
         "map_present": True,
         "tests_to_run": _cap_tests(tests, collector, "measured"),
+        "tests_to_run_kind": "test_id",
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
         "line_coverage": _serialize_missing(report),

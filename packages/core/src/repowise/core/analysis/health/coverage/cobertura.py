@@ -27,38 +27,27 @@ same file (one per top-level class).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
-from .model import CoverageReport, FileCoverage
+from .model import CoverageReport, file_coverage, parse_xml
 
 _CONDITION_RE = re.compile(r"\((\d+)\s*/\s*(\d+)\)")
 
 
 def parse_cobertura(text: str) -> CoverageReport:
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
+    root = parse_xml(text)
+    if root is None:
         return CoverageReport(source_format="cobertura", files=[])
 
-    # Aggregate by filename.
-    per_file: dict[str, dict[str, object]] = {}
+    # Aggregate by filename: several <class> rows can share one file.
+    per_file: dict[str, _FileLines] = {}
 
     for cls in root.iter("class"):
         filename = cls.get("filename") or ""
         if not filename:
             continue
-        norm = Path(filename).as_posix()
-        bucket = per_file.setdefault(
-            norm,
-            {
-                "covered_lines": set(),
-                "total_lines": set(),
-                "branches_found": 0,
-                "branches_hit": 0,
-                "has_branches": False,
-            },
-        )
+        bucket = per_file.setdefault(Path(filename).as_posix(), _FileLines())
         for line in cls.iter("line"):
             try:
                 line_no = int(line.get("number", "0"))
@@ -67,45 +56,39 @@ def parse_cobertura(text: str) -> CoverageReport:
                 continue
             if line_no <= 0:
                 continue
-            assert isinstance(bucket["total_lines"], set)
-            assert isinstance(bucket["covered_lines"], set)
-            bucket["total_lines"].add(line_no)
+            bucket.coverable.add(line_no)
             if hits > 0:
-                bucket["covered_lines"].add(line_no)
+                bucket.covered.add(line_no)
 
             if line.get("branch") == "true":
-                bucket["has_branches"] = True
-                cc = line.get("condition-coverage", "")
-                m = _CONDITION_RE.search(cc)
+                m = _CONDITION_RE.search(line.get("condition-coverage", ""))
                 if m:
-                    hit, total = int(m.group(1)), int(m.group(2))
-                    bucket["branches_found"] = int(bucket["branches_found"]) + total
-                    bucket["branches_hit"] = int(bucket["branches_hit"]) + hit
+                    bucket.branches_hit += int(m.group(1))
+                    bucket.branches_found += int(m.group(2))
                 else:
-                    bucket["branches_found"] = int(bucket["branches_found"]) + 2
-                    bucket["branches_hit"] = int(bucket["branches_hit"]) + (2 if hits > 0 else 0)
+                    bucket.branches_found += 2
+                    bucket.branches_hit += 2 if hits > 0 else 0
 
-    files: list[FileCoverage] = []
-    for path, bucket in per_file.items():
-        covered = bucket["covered_lines"]
-        total_set = bucket["total_lines"]
-        assert isinstance(covered, set)
-        assert isinstance(total_set, set)
-        total = len(total_set)
-        hit = len(covered)
-        line_pct = (hit / total * 100.0) if total else 0.0
-        branch_pct: float | None
-        bf = int(bucket["branches_found"])
-        bh = int(bucket["branches_hit"])
-        branch_pct = bh / bf * 100.0 if bucket["has_branches"] and bf else None
-        files.append(
-            FileCoverage(
-                file_path=path,
-                line_coverage_pct=round(line_pct, 2),
-                branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
-                covered_lines=sorted(covered),
-                total_coverable_lines=total,
-            )
+    # Filenames are relative to one of these; the resolver tries each.
+    roots = tuple(
+        dict.fromkeys(s.text.strip() for s in root.iter("source") if s.text and s.text.strip())
+    )
+    files = [
+        file_coverage(
+            path,
+            b.covered,
+            b.coverable,
+            branches_found=b.branches_found,
+            branches_hit=b.branches_hit,
         )
+        for path, b in per_file.items()
+    ]
+    return CoverageReport(source_format="cobertura", files=files, source_roots=roots)
 
-    return CoverageReport(source_format="cobertura", files=files)
+
+@dataclass
+class _FileLines:
+    covered: set[int] = field(default_factory=set)
+    coverable: set[int] = field(default_factory=set)
+    branches_found: int = 0
+    branches_hit: int = 0

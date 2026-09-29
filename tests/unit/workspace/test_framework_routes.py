@@ -32,8 +32,8 @@ from repowise.core.ingestion.models import FileInfo, Symbol
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.workspace.contracts import bind_symbol_ids
+from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.mounts import group_prefixes
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 from ._repo_index import make_repo_index
 
@@ -433,11 +433,14 @@ class TestGoRecognition:
 
 class TestLaravelRecognition:
     def test_all_three_handler_spellings(self) -> None:
-        routes = [(r.verb, r.path, r.handler) for r in laravel_routes(ROUTES_PHP)]
+        routes = [
+            (r.verb, r.path, r.handler)
+            for r in laravel_routes(ROUTES_PHP)
+            if "photos" not in (r.path or "")
+        ]
         assert routes == [
             ("GET", "/orders/{id}", "OrderController"),
             ("POST", "/orders", "OrderController"),
-            ("RESOURCE", "photos", "PhotoController"),
             ("GET", "/ping", None),
         ]
 
@@ -474,10 +477,22 @@ class TestLaravelRecognition:
         (route,) = list(laravel_routes("Route::put($uri, [EditController::class, 'e']);"))
         assert (route.path, route.handler) == (None, "EditController")
 
-    def test_resource_reaches_the_graph_consumer_with_its_controller(self) -> None:
-        # It stands for a set of routes, so only the graph consumer can use it.
-        (resource,) = [r for r in laravel_routes(ROUTES_PHP) if r.verb == "RESOURCE"]
-        assert resource.handler == "PhotoController"
+    def test_a_resource_expands_to_its_routes_with_its_controller(self) -> None:
+        photos = [
+            (r.verb, r.path, r.handler)
+            for r in laravel_routes(ROUTES_PHP)
+            if "photos" in (r.path or "")
+        ]
+        assert photos == [
+            ("GET", "/photos", "PhotoController"),
+            ("GET", "/photos/create", "PhotoController"),
+            ("POST", "/photos", "PhotoController"),
+            ("GET", "/photos/{photo}", "PhotoController"),
+            ("GET", "/photos/{photo}/edit", "PhotoController"),
+            ("PUT", "/photos/{photo}", "PhotoController"),
+            ("PATCH", "/photos/{photo}", "PhotoController"),
+            ("DELETE", "/photos/{photo}", "PhotoController"),
+        ]
 
 
 class TestAxumRecognition:
@@ -572,14 +587,24 @@ class TestLaravelConsumers:
         # that the one shared alternation now covers.
         assert graph.has_edge("routes/api.php", "app/Http/Controllers/PhotoController.php")
 
-    def test_contracts_cover_the_verbs_and_nothing_else(self, tmp_path: Path) -> None:
+    def test_contracts_are_served_under_api_with_resources_expanded(
+        self, tmp_path: Path
+    ) -> None:
+        # routes/api.php is served under /api when nothing declares otherwise.
         self._write(tmp_path)
-        ids = set(_providers(tmp_path))
-        assert "http::GET::/orders/{param}" in ids
-        assert "http::POST::/orders" in ids
-        assert "http::GET::/ping" in ids
-        # `resource` stands for a set of routes, so it is not one contract.
-        assert not [i for i in ids if "photos" in i]
+        assert set(_providers(tmp_path)) == {
+            "http::GET::/api/orders/{param}",
+            "http::POST::/api/orders",
+            "http::GET::/api/ping",
+            "http::GET::/api/photos",
+            "http::GET::/api/photos/create",
+            "http::POST::/api/photos",
+            "http::GET::/api/photos/{param}",
+            "http::GET::/api/photos/{param}/edit",
+            "http::PUT::/api/photos/{param}",
+            "http::PATCH::/api/photos/{param}",
+            "http::DELETE::/api/photos/{param}",
+        }
 
 
 class TestAxumConsumers:

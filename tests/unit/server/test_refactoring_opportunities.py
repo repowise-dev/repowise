@@ -56,12 +56,14 @@ def _plan(path: str, symbol: str, **over: Any) -> dict[str, Any]:
     return plan
 
 
-def _finding(path: str, biomarker: str = "complex_method", impact: float = 3.0) -> dict[str, Any]:
+def _finding(
+    path: str, biomarker: str = "complex_method", impact: float = 3.0, function_name: str = "f"
+) -> dict[str, Any]:
     return {
         "file_path": path,
         "biomarker_type": biomarker,
         "severity": "high",
-        "function_name": "f",
+        "function_name": function_name,
         "line_start": 10,
         "line_end": 30,
         "details": {},
@@ -76,7 +78,11 @@ async def _seed(client: AsyncClient, app, *, files: int = 8) -> str:
     repo_id = await _repo(client)
     paths = [f"pkg{i % 3}/mod{i}.py" for i in range(files)]
     async with app.state.session_factory() as session:
-        await crud.save_health_findings(session, repo_id, [_finding(p) for p in paths])
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(p, function_name=f"sym{i}") for i, p in enumerate(paths)],
+        )
         await crud.save_refactoring_suggestions(
             session,
             repo_id,

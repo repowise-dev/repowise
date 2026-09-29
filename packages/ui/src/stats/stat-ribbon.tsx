@@ -42,6 +42,25 @@ export interface RibbonStat {
  * Rendered as a `<dl>` because that is what it is — labelled values, not a
  * layout grid.
  */
+// Column counts follow the number of cells, so four figures fill the row
+// instead of leaving a blank fifth column. Static class names for Tailwind.
+const BASE_COLS = ["", "grid-cols-1", "grid-cols-2"];
+const SM_COLS = ["", "sm:grid-cols-1", "sm:grid-cols-2", "sm:grid-cols-3"];
+const LG_COLS = ["", "lg:grid-cols-1", "lg:grid-cols-2", "lg:grid-cols-3", "lg:grid-cols-4", "lg:grid-cols-5"];
+
+/** Hairlines between cells only; the outer edges come from the wrapper's border-y. */
+function hairlines(i: number, n: number): string {
+  const [base, sm, lg] = [Math.min(n, 2), Math.min(n, 3), Math.min(n, 5)];
+  return [
+    i % base ? "border-l" : "border-l-0",
+    i >= base ? "border-t" : "border-t-0",
+    i % sm ? "sm:border-l" : "sm:border-l-0",
+    i >= sm ? "sm:border-t" : "sm:border-t-0",
+    i % lg ? "lg:border-l" : "lg:border-l-0",
+    i >= lg ? "lg:border-t" : "lg:border-t-0",
+  ].join(" ");
+}
+
 export function StatRibbon({
   stats,
   LinkComponent,
@@ -53,27 +72,18 @@ export function StatRibbon({
   const shown = stats.filter((s) => s.value);
   if (shown.length === 0) return null;
   const A = LinkComponent ?? "a";
+  const n = shown.length;
 
   return (
-    <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)] sm:grid-cols-3 lg:grid-cols-5">
+    <dl
+      className={`grid border-y border-[var(--color-border-default)] ${BASE_COLS[Math.min(n, 2)]} ${
+        SM_COLS[Math.min(n, 3)]
+      } ${LG_COLS[Math.min(n, 5)]}`}
+    >
       {shown.map((s, i) => (
         <div
           key={s.label}
-          className={[
-            s.href ? "" : "px-4 py-3.5",
-            // Hairlines between cells only — the outer edges come from the
-            // wrapper's border-y, so cells never double up on the boundary.
-            "border-[var(--color-border-default)]",
-            i % 2 === 1 ? "border-l" : "",
-            i >= 2 ? "border-t" : "",
-            "sm:border-l sm:border-t-0",
-            i % 3 === 0 ? "sm:border-l-0" : "",
-            i >= 3 ? "sm:border-t" : "",
-            "lg:border-l lg:border-t-0",
-            i % 5 === 0 ? "lg:border-l-0" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
+          className={`${s.href ? "" : "px-4 py-3.5"} border-[var(--color-border-default)] ${hairlines(i, n)}`}
         >
           {s.href ? (
             // The link wraps the whole cell rather than the value, so the
@@ -96,6 +106,11 @@ export function StatRibbon({
               >
                 {s.value}
               </dd>
+              {s.sub && (
+                <dd className="mt-0.5 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+                  {s.sub}
+                </dd>
+              )}
             </A>
           ) : (
             <>

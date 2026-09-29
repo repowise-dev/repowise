@@ -6,19 +6,40 @@ import {
   agentHandoffCall,
   boundaryLabel,
   facetValueLabel,
+  humanizeToken,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
+  siblingFixLabel,
   whyRankedLabel,
+  whyRankedPhrase,
 } from "../../src/health/performance/presentation";
 import { contiguousSections } from "../../src/health/performance/queue";
 import { opportunity } from "./fixtures/performance";
 
 describe("performance presentation", () => {
-  it("titles a cause in words and keeps the sink out of the title", () => {
+  it("titles a cause in words, then names where by its short symbol", () => {
     const title = opportunityTitle(opportunity());
-    expect(title).toBe("Database call inside a loop");
+    expect(title).toBe("Database call inside a loop in load");
     expect(title).not.toContain("::");
+    expect(opportunityTitle(opportunity({ intervention_symbol: null }))).toBe(
+      "Database call inside a loop in run",
+    );
+  });
+
+  it("reads rank factors as reasons, not points", () => {
+    expect(whyRankedPhrase({ factor: "affected_call_sites", value: 8, points: 6 })).toBe(
+      "8 call sites",
+    );
+    expect(whyRankedPhrase({ factor: "boundary_kind", value: "db", points: 4 })).toBe(
+      "a database call",
+    );
+    expect(whyRankedPhrase({ factor: "multiplier_shape", value: "io_in_loop", points: 4 })).toBe(
+      "runs once per loop iteration",
+    );
+    expect(whyRankedPhrase({ factor: "entry_reachability", value: true, points: 3 })).toBe(
+      "reachable from an entry point",
+    );
   });
 
   it("gives every performance marker a non-empty title", () => {
@@ -94,6 +115,33 @@ describe("performance presentation", () => {
 
   it("quotes the opportunity id in the agent drill-down", () => {
     expect(agentHandoffCall("perf2_abc")).toBe('get_health(opportunity_id="perf2_abc")');
+  });
+
+  it("prefers a sibling's strategy over its biomarker for the fix label", () => {
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: "batch_or_prefetch_io",
+        relation: "preferred",
+      }),
+    ).toBe("Batch or prefetch io");
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: null,
+        relation: "same_site",
+      }),
+    ).toBe("Nested loop with io");
+  });
+
+  it("reads a new actionability reason and prerequisite tokens honestly", () => {
+    expect(humanizeToken("loop_already_chunked")).toBe("Loop already chunked");
+    expect(humanizeToken("bounded_concurrency")).toBe("Bounded concurrency");
+    expect(humanizeToken("query_supports_group_selection")).toBe(
+      "Query supports group selection",
+    );
   });
 });
 

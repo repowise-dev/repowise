@@ -301,7 +301,11 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
+# Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
+# test_wire_vocabulary_parity pins the difference.
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin", "derive"]
+
+HERITAGE_KIND_VALUES: frozenset[str] = frozenset(get_args(HeritageKind))
 
 
 @dataclass

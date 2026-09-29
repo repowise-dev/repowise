@@ -7,6 +7,12 @@ stood before the split. ``test_defect_dimension_matches_legacy_golden`` asserts
 ``score_file(...)["defect"]`` equals that frozen reference across a broad fixture
 set. If it ever drifts, the split has corrupted the calibrated, surfaced score
 and the change is wrong - do NOT update the golden to match; fix the regression.
+
+One deliberate revision since the split: the history (organizational) category
+is capped at ``min(3.5, 1.0 + structure)`` rather than a flat 3.5, where
+``structure`` is the file's capped deduction from every other category. The
+frozen reference carries that rule with its own frozen constants, so the gate
+still pins the whole algorithm.
 """
 
 from __future__ import annotations
@@ -36,6 +42,10 @@ _LEGACY_CATEGORY_CAPS = {
     "test_quality": 0.5,
     "error_handling": 0.5,
 }
+
+# The structure-conditioned history cap, frozen here.
+_HISTORY_CAP_BASE = 1.0
+_HISTORY_CAP_PER_STRUCTURE = 1.0
 
 _LEGACY_SEVERITY_DEDUCTION = {
     Severity.LOW: 0.3,
@@ -117,9 +127,16 @@ def _legacy_score_file(results: list[BiomarkerResult]) -> float:
         weighted = base * _LEGACY_WEIGHT_MULTIPLIER.get(r.biomarker_type, 1.0)
         raw[cat] = raw.get(cat, 0.0) + weighted
 
+    structure = sum(
+        min(cat_sum, _LEGACY_CATEGORY_CAPS.get(cat, 1.0))
+        for cat, cat_sum in raw.items()
+        if cat != "organizational"
+    )
     total = 0.0
     for cat, cat_sum in raw.items():
         cap = _LEGACY_CATEGORY_CAPS.get(cat, 1.0)
+        if cat == "organizational":
+            cap = min(cap, _HISTORY_CAP_BASE + _HISTORY_CAP_PER_STRUCTURE * structure)
         total += min(cat_sum, cap)
     return max(1.0, min(10.0, 10.0 - total))
 

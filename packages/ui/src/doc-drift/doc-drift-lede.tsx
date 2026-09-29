@@ -128,6 +128,13 @@ export function DocDriftLede({
                 </>
               ) : null}
               . Each one names the document to edit, not the file it points at.
+              {summary.new_since_last_update ? (
+                <>
+                  {" "}
+                  {formatNumber(summary.new_since_last_update)} appeared in the last
+                  update.
+                </>
+              ) : null}
             </p>
             <p className="mt-2.5">{summary.findings_basis}</p>
             <p className="mt-2.5">

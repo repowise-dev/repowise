@@ -87,6 +87,19 @@ export function docDriftKindLabel(kind: string): string {
   return DOC_DRIFT_KIND_LABELS[kind as DocDriftKind] ?? kind;
 }
 
+/**
+ * How a finding's suggested replacement was found, in a reader's words.
+ *
+ * Keys mirror `SuggestionBasis` in `core/analysis/doc_drift/constants.py`,
+ * pinned by `tests/unit/doc_drift/test_ts_contract_parity.py`.
+ */
+export const SUGGESTION_BASIS_LABELS: Readonly<Record<string, string>> = {
+  package_split: "Became a package",
+  git_rename: "Renamed in git",
+  similar_heading: "Similar heading",
+  similar_target: "Similar target",
+};
+
 export interface DocDriftFinding {
   /**
    * Stable across stores and rebuilds, derived from
@@ -116,6 +129,19 @@ export interface DocDriftFinding {
   context: string;
   /** Lines a reader can check for themselves. */
   evidence: string[];
+  /** Line-independent key a CI baseline holds; survives edits above the finding. */
+  fingerprint: string;
+  /** What the missing target is likely called now. Evidence, never a verdict. */
+  suggestion?: string | null;
+  /** Key of `SUGGESTION_BASIS_LABELS` naming how `suggestion` was found. */
+  suggestion_basis?: string | null;
+  /**
+   * When first found, carried across updates. `null` when it was present at
+   * the first check, or when the store keeps no history.
+   */
+  first_seen_at?: string | null;
+  /** First found by the latest update that stored a finding. */
+  is_new?: boolean;
 }
 
 /**
@@ -136,6 +162,8 @@ export interface DocDriftSummary {
    * uncheckable by design, so no surface may show the counts without it.
    */
   findings_basis: string;
+  /** Of `findings_total`, how many are new since the last update; `null` without history. */
+  new_since_last_update?: number | null;
 }
 
 export interface DocDriftResponse {

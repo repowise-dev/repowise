@@ -19,7 +19,6 @@ from .incremental import (
 )
 from .mode import _resolve_index_only_mode
 from .persistence import (
-    _git_metadata_to_dict,
     _persist_incremental_commits,
     _persist_index_only_update,
     _persist_partial_health,
@@ -32,7 +31,6 @@ __all__ = [
     "_build_filtered_changed_paths",
     "_build_repo_graph",
     "_build_update_vector_store",
-    "_git_metadata_to_dict",
     "_persist_incremental_commits",
     "_persist_index_only_update",
     "_persist_partial_health",

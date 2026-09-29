@@ -480,9 +480,12 @@ def _event_kind(entry_kind: str | None, payload_kind: str | None, payload: dict[
                 return "assistant"
             if role == "developer":
                 return "system"
-        if payload_kind == "custom_tool_call":
-            return "assistant"
-        if payload_kind == "custom_tool_call_output":
+        if payload_kind in (
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "function_call",
+            "function_call_output",
+        ):
             return "assistant"
         return payload_kind or "assistant"
     if entry_kind == "event_msg":

@@ -21,9 +21,14 @@ export function parseDate(date: Timestamp): Date {
   return new Date(date);
 }
 
-/** Format a number with commas: 1234567 → "1,234,567" */
+const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
+
+/** Format a number with commas: 1234567 → "1,234,567".
+ *  Pinned to en-US like `formatDate`: the runtime default differs between the
+ *  server and the browser (en-IN groups 1261599 as 12,61,599), which broke
+ *  hydration on every server-rendered figure over 99,999. */
 export function formatNumber(n: number): string {
-  return new Intl.NumberFormat().format(n);
+  return NUMBER_FORMAT.format(n);
 }
 
 /** Format large counts compactly: 1234567 → "1.2M", 98432 → "98.4K", 999 → "999" */

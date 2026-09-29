@@ -252,6 +252,8 @@ async def test_no_report_falls_back_to_the_graph(client, session, tmp_path):
     body = await _get(client, repo["id"])
 
     assert body["basis"] == "inferred"
+    # A report trend is a measured fact; the inferred shape never carries one.
+    assert "history" not in body
     reached = {f["file_path"]: f["reached"] for f in body["inferred"]["files"]}
     assert reached == {"src/a.py": True, "src/b.py": False}
     assert body["inferred"]["files_reached"] == 1

@@ -25,6 +25,7 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export * from "./ci-hint";
 export {
   DismissibleNotice,
   type DismissibleNoticeProps,

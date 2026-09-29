@@ -88,6 +88,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("agents", "agents_cmd:agents_group"),
     ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
+    ("next", "next_cmd:next_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("watch", "watch_cmd:watch_command"),
     ("serve", "serve_cmd:serve_command"),

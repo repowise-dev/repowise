@@ -42,6 +42,10 @@ registers it any more — see :mod:`.codex`.)
       the wiki HEAD has drifted from .repowise/state.json's last sync
       commit AND no `repowise update` is in flight AND we haven't
       already warned for this HEAD, emit a one-line stale-wiki notice.
+    * After a full test run (pytest, go test, npm test, cargo test, ...),
+      when aggregate coverage reports are newer than the index's last
+      coverage ingest, start ``repowise coverage add`` on them in the
+      background and say so in one line (``hooks.coverage_reingest``).
 
   PostToolUse → Read
     * Skeleton replacement: an unbounded Read of a large indexed file is
@@ -99,6 +103,7 @@ from repowise.cli.agent_adapters import adapter_for
 from ._shared import HookResult, as_result, join_notices
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
+from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
@@ -394,6 +399,7 @@ def _handle_post_tool_use(
             join_notices(
                 _handle_bash_post(tool_input, tool_output, cwd),
                 commit_capture_notice(tool_input, tool_output, cwd, session_id),
+                coverage_reingest_notice(tool_input, cwd),
             )
         )
     if tool_name in adapter.search_tool_names:

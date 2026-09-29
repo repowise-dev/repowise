@@ -224,7 +224,7 @@ Architecture summary, module map, and entry points.
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 | `include` | list[string] | No | Opt-in blocks, any combination of `"content"`, `"outline"`, `"tour"`, `"decisions"`, `"graph"`, `"ownership"` (see below) |
 
-**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names, file counts, layer order), `code_health`, `git_health`, `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
+**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names, file counts, layer order), `code_health`, `git_health`, `next_actions` (per horizon, week and quarter: the first three stored actions as `id`, `tier`, `title`, `impact`, `done_when`, `target`, with `total` and `by_tier`; `unavailable` names stores the index predates; replaced by `next_actions_reason` when they cannot be read), `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
 
 **Opt-in blocks** — omitted unless named in `include`, and not computed at all when they are not:
 
@@ -235,7 +235,7 @@ Architecture summary, module map, and entry points.
 | `"tour"` | `guided_tour` and `reading_order` — onboarding walks |
 | `"decisions"` | `key_decisions`. `get_why` is the richer route |
 | `"graph"` | `community_summary` — code-community clusters |
-| `"ownership"` | `knowledge_map` — top owners and knowledge silos |
+| `"ownership"` | `knowledge_map` — top 3 owners by files owned |
 
 **When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
 
@@ -328,7 +328,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. Symbol ids take the same `"path/to/file.py::Name"` form `get_symbol` accepts, with the same `::` / `.` / `/` separator normalisation, so an id from either tool works in the other. |
 | `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens), `"health"` (code-health score and biomarkers), `"doc_drift"` (the documents that name this file, and whether those documents carry drift of their own). An empty `callers`, `callees` or `used_by` list sits beside a `*_basis` object: the language, how many call edges the index resolved for it, the share of those that are guesses, and a note that unbound call sites are not counted, so an empty list means no resolved edge, not proof of none |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
+| `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
 
 **Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
 
@@ -494,7 +494,8 @@ matches or resolving a `symbol_id`, read `results`.
 
 Tombstoned and `exclude_patterns`-excluded results are filtered. In workspace
 mode, structural and concept searches both federate across repos and merge
-(this is the one tool where `repo="all"` is fully supported).
+(with `get_overview`, `get_dead_code` and `get_why` with a query, one of the
+four tools that accept `repo="all"`).
 
 **When to use:** Locating a function/class/method by name, resolving a
 path-shaped query, or discovering pages by topic: the symbol/file shapes pipe
@@ -589,7 +590,7 @@ compares the two revisions directly and needs no index refresh.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
+| `revspec` | string | No | Commit, `base..head` range, or `base...head` (diffed from the merge-base) to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
@@ -658,9 +659,52 @@ change is never reported as untested: `status` becomes `inferred` when the
 import graph can name test files reaching the change (candidates, file-level, no
 line attribution, and `line_coverage` stays empty because reaching cannot speak
 to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
-the same distinction in one word: `measured`, `inferred`, or absent. Build the
+the same distinction in one word, always present: `measured`, `inferred`, or
+`none`. `tests_to_run_kind` says what each entry is: `test_id` (a coverage-map
+test id, measured) or `test_file` (inferred), null when `basis` is `none`;
+`get_risk`'s directive carries the same field beside `tests_to_run_basis`. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
+
+When the index stores coverage, the response also carries `patch_coverage`:
+the share of the change's executable lines the stored coverage ran, the same
+computation and JSON shape `repowise coverage check --format json` gates on.
+`patch_coverage_pct` is null when no changed line is executable, files the
+coverage never names read `not_in_report` rather than 0%, and
+`scope.freshness` is `stale` when the coverage was measured at another commit
+than the change's head (for uncommitted work: ingested before the newest
+edit), so its line numbers may describe other code. `path_gates` lists the
+path-scoped gates in
+`coverage.gates`, each judged on the changed files its globs match (`gate`
+reads `fail` when one that is not informational fails). They are judged only
+on coverage measured at the change's head and valid config; otherwise they
+read `no_data`, and `scope.config_errors` names each invalid entry. The block
+is absent when no coverage is stored.
+Each file row carries `risk`: `fix_pressure` (recency-weighted bug-fix weight
+from the checkout's git history), `dependents`, `hotspot` and `bug_magnet`
+(from the index), `risky`, `reasons` and `basis` (`git_and_index`, `git`,
+`index` or `unavailable`). Rows are listed riskiest first, and `risky`
+(`file_count`, `covered_line_count`, `coverable_line_count`,
+`patch_coverage_pct`, `threshold`, `gate`) summarizes coverage over the risky
+files, null when no row's risk was assessed.
+Each measured row also carries `hints`, one per uncovered range (the first
+eight): `range`, `symbol` (the innermost indexed symbol, null outside any),
+`tests` (up to three test files to extend, best first), `basis` (`per_test`,
+`call_graph`, `import_graph` or `none`) and `total` (how many qualified before
+the cap). `per_test` is measured (per-test coverage ran nearby lines);
+`call_graph` and `import_graph` are inferred from the graph. `hints` is null
+when the index could not be read. When changed lines are uncovered,
+`directive.next_actions` gains one line naming the scope and the tests to
+extend, or, when the coverage is stale, saying to re-run the tests first.
+
+Without a `revspec`, `patch_coverage` covers everything a push would bring,
+diffed from the merge-base with the CI or default base branch: `scope.label`
+`origin/main...working tree` on a dirty tree (untracked files included),
+`origin/main...HEAD` on a clean one, plain `working tree` when no base
+resolves. For uncommitted work freshness is by time: `current` when the last
+coverage ingest came after the newest edit to the changed files, else
+`stale`. After a full test run the augment hook re-ingests a fresh report in
+the background, and `get_change_risk` reads it once the ingest finishes.
 
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
@@ -927,6 +971,7 @@ representations of the same work in one response. The `include` **dimension** na
 | `performance_context` | string | No | `production` (default) / `tooling` / `test` / `unknown` / `all`. The summary block is scoped to the same context as the queue; `repository_total` stays the count over every context. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
+| `performance_actionability` | string | No | `plan_ready` / `advisory` / `investigate` / `expected`. Unset means all but `expected` (real repetition with nothing to change), which is still counted in the facet and `repository_total`. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
 | `scope` | string | No | Which files every figure describes: `all` (default) or `production`. Narrowing drops test files from the headline, the distribution and every ranked list. Tests score higher than production code, so `production` lowers the number without a defect having been found. |
 | `counts` | string | No | What the score counts: `everything` (default, the calibrated number) or `code_shape`, which removes the git-derived half. Change history rises as a file is worked on, so it answers what a repository has been through rather than what its code is like — `code_shape` is the reading that answers "is this code getting better". Files with no stored split are reported in `unscored_files` rather than counted. Findings from history are dropped, not re-scored. |
@@ -1075,7 +1120,8 @@ The opt-in enrichments:
   imputed zero).
 - **`doc_drift`** returns a `doc_drift` block: `findings` (each naming the
   **document** to edit, its line, the `target` it wrongly claims exists, a
-  `reason` sentence, `kind`, `origin` and `confidence`), plus `findings_total`,
+  `reason` sentence, `kind`, `origin` and `confidence`, plus `suggestion` and
+  `suggestion_basis` only when a likely replacement was found), plus `findings_total`,
   `documents` and the high/medium/low `confidence` split. Its `basis` field is
   load-bearing: the detector checks only references it can resolve, most
   references in a typical repository are uncheckable by design, and a finding is
@@ -1187,12 +1233,35 @@ get_health(only=["top_findings"])                     # + top_findings_total, au
 get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
 
+### Coverage: the stored report and how far to trust it
+
+`include=["coverage"]` returns the stored per-file rows and a repo-wide
+`summary`. Every row carries `covered_line_count` beside
+`total_coverable_lines`; targeted mode adds the `covered_lines` array. The
+summary's `freshness.status` is `current` when the report was measured at the
+indexed commit, `stale` when at another one (its line numbers may describe
+code that has moved), and `unknown` when either commit is missing.
+`report_paths` says how the report's own file entries mapped at ingest
+(`total`, `matched`, `unmatched`, `ambiguous`, and a short `unmatched_sample`);
+it is null for coverage stored before that record existed. `source_formats`
+lists every report format merged.
+
+In targeted mode each row also carries a `decay` block: how many of the
+report's covered lines are unchanged since it ran (`confirmed_lines`) and how
+many have moved since (`invalidated_lines`, now unknown rather than uncovered).
+`decay.drifted` is true once a fifth of a file's measurement has moved. It is a
+per-file statement about lines, separate from the summary's commit-level
+`freshness`.
+
 ### Performance: one lead, then drill down
 
 A bare `get_health()` carries `performance_directive`: one bounded lead with
 its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
 up to three `why_ranked` facets, the exact plan state, and a structured
-`next_action`. Performance findings carry `health_impact: 0` by construction, so
+`next_action`, and, when a plan is stored, its `validation` basis. An opportunity
+by id adds `plan_steps`, `validation` (tests and commands) and `siblings`: other
+causes observed on the same lines. A rejected filter value is echoed with its
+accepted values in `ignored_arguments`. Performance findings carry `health_impact: 0` by construction, so
 they never competed for the main `directive` and the dashboard used to report
 counts and nothing to act on. `clear` means no supported pattern surfaced, which
 is not a claim about how the code runs; `unavailable` means this index has not
@@ -1407,7 +1476,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
-- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
+- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, git operations can trigger stale-wiki notices, and a full test run that wrote a fresh coverage report re-ingests it in the background, so `patch_coverage` reads the new run once the ingest finishes (off with `hooks.coverage_reingest: false`).
 - **Codex SessionStart**: Codex receives concise repowise MCP workflow guidance when a session starts.
 - **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 

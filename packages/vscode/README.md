@@ -107,6 +107,7 @@ The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly pan
 | `repowise.changeIntel.cochangeNudge` | `true` | The quiet "usually change together" status-bar hint |
 | `repowise.changeIntel.cochangeMinScore` | `4` | How strong the history has to be before a related file is suggested |
 | `repowise.diagnostics.enabled` | `false` | Also publish high-severity findings to the Problems panel |
+| `repowise.docDrift.diagnostics.enabled` | `true` | Flag lines in visible markdown files whose paths, links, anchors or commands no longer exist |
 
 ## Privacy
 

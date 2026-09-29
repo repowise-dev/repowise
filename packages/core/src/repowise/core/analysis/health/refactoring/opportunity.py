@@ -27,6 +27,13 @@ across files *and* co-changed. The rest still appears, attached to the file's
 opportunity as the supporting evidence it always was, never as an instruction.
 Nothing is deleted: the plans remain plans, addressable by id.
 
+**A finding is recovered once.** A step names the findings its own target
+answers: the source biomarker's findings whose span it covers, and for a
+named finding only the one on the same symbol. Two steps answering one
+finding (a file-level clone finding several blocks overlap) are credited
+once, at the larger claim, in both ``recoverable_health`` and the rank's
+benefit.
+
 ``performance_fix`` is excluded. Those rows belong to the performance layer,
 which composes and ranks its own opportunities and owns their lifecycle; folding
 them in here would publish the same work twice under two ids.
@@ -38,6 +45,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
 from .identity import REFACTORING_MODEL_VERSION, assign_public_ids, stable_id
 from .models import RefactoringSuggestion
@@ -116,6 +124,10 @@ class OpportunityStep:
     # another file, so this one's location must be re-derived before it is
     # applied. ``None`` when nothing ahead of it relocates anything.
     relocated_by: str | None
+    # Public ids of the findings this step's target answers. ``None`` when no
+    # findings were supplied or none in this file is addressable by id, which
+    # is "unknown", not "this cause produced no finding".
+    finding_ids: tuple[str, ...] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +143,7 @@ class OpportunityStep:
             "source_biomarker": self.source_biomarker,
             "relocated_by": self.relocated_by,
             "applicability": self.applicability.as_dict(),
+            **({"finding_ids": list(self.finding_ids)} if self.finding_ids is not None else {}),
         }
 
 
@@ -289,9 +302,69 @@ def opportunity_public_id(step_plan_ids: Sequence[str], file_path: str) -> str:
     )
 
 
+def step_answers(suggestion: RefactoringSuggestion, finding: Any) -> bool:
+    """Whether *finding* is one *suggestion*'s target answers.
+
+    Same biomarker, same symbol when the finding names one, and an overlapping
+    span when both carry lines. A file-level finding (no lines) is answered by
+    any step on its biomarker, as the detectors credit it.
+    """
+    if not suggestion.source_biomarker:
+        return False
+    if field(finding, "biomarker_type") != suggestion.source_biomarker:
+        return False
+    name = field(finding, "function_name")
+    if name and name != suggestion.target_symbol:
+        return False
+    start = field(finding, "line_start")
+    if start is None or suggestion.line_start is None or suggestion.line_end is None:
+        return True
+    end = field(finding, "line_end") or start
+    return start <= suggestion.line_end and end >= suggestion.line_start
+
+
+def _finding_key(finding: Any) -> Any:
+    return field(finding, "public_id") or (
+        field(finding, "biomarker_type"),
+        field(finding, "function_name"),
+        field(finding, "line_start"),
+    )
+
+
+def _credited(
+    step_rows: Sequence[tuple[RefactoringSuggestion, str]],
+    findings: Sequence[Any] | None,
+) -> set[str]:
+    """Plan ids whose gain counts toward the set: largest claim first, and a
+    step answering a finding an earlier one already recovered adds nothing."""
+    if findings is None:
+        return {plan_id for _, plan_id in step_rows}
+    claimed: set[Any] = set()
+    credited: set[str] = set()
+    for suggestion, plan_id in sorted(
+        step_rows, key=lambda row: -float(row[0].impact_delta or 0.0)
+    ):
+        keys = {_finding_key(f) for f in findings if step_answers(suggestion, f)}
+        if keys & claimed:
+            continue
+        claimed |= keys
+        credited.add(plan_id)
+    return credited
+
+
 def _step_of(
-    suggestion: RefactoringSuggestion, plan_id: str, relocated_by: str | None
+    suggestion: RefactoringSuggestion,
+    plan_id: str,
+    relocated_by: str | None,
+    findings: Sequence[Any] | None,
 ) -> OpportunityStep:
+    finding_ids = None
+    if findings is not None and any(field(f, "public_id") for f in findings):
+        finding_ids = tuple(
+            field(f, "public_id")
+            for f in findings
+            if field(f, "public_id") and step_answers(suggestion, f)
+        )
     return OpportunityStep(
         plan_id=plan_id,
         refactoring_type=suggestion.refactoring_type,
@@ -305,6 +378,7 @@ def _step_of(
         source_biomarker=suggestion.source_biomarker,
         relocated_by=relocated_by,
         applicability=classify_step(suggestion),
+        finding_ids=finding_ids,
     )
 
 
@@ -324,6 +398,7 @@ def _evidence_of(suggestion: RefactoringSuggestion, plan_id: str) -> Opportunity
 
 def _sequence(
     step_rows: Sequence[tuple[RefactoringSuggestion, str]],
+    findings: Sequence[Any] | None,
 ) -> list[OpportunityStep]:
     """Build the steps in execution order, marking the ones a move displaces.
 
@@ -336,7 +411,7 @@ def _sequence(
     steps: list[OpportunityStep] = []
     relocated_by: str | None = None
     for suggestion, plan_id in step_rows:
-        steps.append(_step_of(suggestion, plan_id, relocated_by))
+        steps.append(_step_of(suggestion, plan_id, relocated_by, findings))
         if suggestion.refactoring_type in _RELOCATING_TYPES:
             relocated_by = plan_id
     return steps
@@ -346,6 +421,7 @@ def _compose_one(
     file_path: str,
     members: Sequence[tuple[RefactoringSuggestion, str]],
     primary_biomarker: str | None,
+    findings: Sequence[Any] | None,
 ) -> RefactoringOpportunity | None:
     ordered = sorted(members, key=_member_sort_key)
     step_rows = [row for row in ordered if _is_step(row[0])]
@@ -354,7 +430,7 @@ def _compose_one(
         # own; there is simply no composed refactoring to publish for this file.
         return None
 
-    steps = tuple(_sequence(step_rows))
+    steps = tuple(_sequence(step_rows, findings))
     evidence = tuple(
         _evidence_of(suggestion, plan_id)
         for suggestion, plan_id in ordered
@@ -362,11 +438,14 @@ def _compose_one(
     )
 
     step_suggestions = [suggestion for suggestion, _ in step_rows]
+    credited = _credited(step_rows, findings)
     touched = sorted({path for item in step_suggestions for path in affected_files(item)})
     biomarker, lead_type, addresses = _lead(steps, primary_biomarker)
     mechanical = sum(1 for step in steps if step.applicability.mechanical)
     factors = rank_factors(
-        benefit=opportunity_benefit(step_suggestions),
+        benefit=opportunity_benefit(
+            [suggestion for suggestion, plan_id in step_rows if plan_id in credited]
+        ),
         addresses_primary_problem=addresses is True,
         mechanical_share=mechanical / len(steps),
         cost=step_cost(step_suggestions),
@@ -381,7 +460,7 @@ def _compose_one(
         addresses_primary_problem=addresses,
         steps=steps,
         evidence=evidence,
-        recoverable_health=sum(step.impact_delta for step in steps),
+        recoverable_health=sum(step.impact_delta for step in steps if step.plan_id in credited),
         mechanical_steps=mechanical,
         judgment_steps=len(steps) - mechanical,
         affected_files=tuple(touched),
@@ -397,6 +476,7 @@ def compose_opportunities(
     rows: Iterable[Any],
     *,
     primary_biomarker_by_file: Mapping[str, str] | None = None,
+    findings: Iterable[Any] | None = None,
 ) -> list[RefactoringOpportunity]:
     """Fold plans into one ranked opportunity per file.
 
@@ -409,8 +489,18 @@ def compose_opportunities(
     (:func:`..models.primary_biomarker_by_file`). Supplying it is what makes
     ``addresses_primary_problem`` a real question; omitting it leaves the answer
     explicitly unknown rather than assumed.
+
+    *findings* are the repository's health findings. Supplying them is what
+    attaches each step's ``finding_ids`` and credits a finding once when
+    several steps answer it; omitting them leaves both unknown and sums every
+    step's own impact.
     """
     leads = primary_biomarker_by_file or {}
+    findings_by_file: dict[str, list[Any]] | None = None
+    if findings is not None:
+        findings_by_file = {}
+        for finding in findings:
+            findings_by_file.setdefault(field(finding, "file_path"), []).append(finding)
     suggestions = [
         suggestion
         for suggestion in (rehydrate_suggestion(row) for row in rows)
@@ -425,7 +515,12 @@ def compose_opportunities(
         opportunity
         for file_path in sorted(by_file)
         if (
-            opportunity := _compose_one(file_path, by_file[file_path], leads.get(file_path))
+            opportunity := _compose_one(
+                file_path,
+                by_file[file_path],
+                leads.get(file_path),
+                None if findings_by_file is None else findings_by_file.get(file_path, []),
+            )
         )
         is not None
     ]
@@ -480,4 +575,5 @@ __all__ = [
     "opportunity_public_id",
     "opportunity_status",
     "roll_up_status",
+    "step_answers",
 ]

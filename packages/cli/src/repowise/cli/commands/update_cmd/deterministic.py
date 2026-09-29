@@ -527,3 +527,73 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         return {}
     finally:
         await engine.dispose()
+
+
+# Repo-wide pages the cascade marks stale on any decay. Both are model-written.
+_REPO_WIDE_MODEL_TYPES = ("repo_overview", "onboarding")
+
+
+def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[int, int]:
+    """``(model_pages, structural_pages)`` that budget-skipped files decay.
+
+    ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
+    ``none`` cascade the persist step applies: each file's page, the module and
+    SCC pages that cover it, and the repo-wide pages.
+    """
+    import json
+
+    skipped = set(skipped_paths)
+    model = structural = 0
+    for page_type, target_path, meta_json in rows:
+        if page_type in _REPO_WIDE_MODEL_TYPES:
+            model += 1
+        elif page_type == "file_page":
+            structural += target_path in skipped
+        else:
+            try:
+                meta = json.loads(meta_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            members = meta.get("file_paths") or meta.get("files") or []
+            if skipped.intersection(members):
+                if page_type == "module_page":
+                    model += 1
+                else:
+                    structural += 1
+    return model, structural
+
+
+def load_cascade_overflow_split(
+    repo_path: Path, skipped_paths: list[str]
+) -> tuple[int, int] | None:
+    """:func:`split_cascade_overflow` over the store; ``None`` when unreadable."""
+    return run_async(_load_cascade_overflow_split(repo_path, skipped_paths))
+
+
+async def _load_cascade_overflow_split(
+    repo_path: Path, skipped_paths: list[str]
+) -> tuple[int, int] | None:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
+                    Page.page_type.in_(
+                        ["file_page", "module_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                    ),
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            return split_cascade_overflow(list(rows), skipped_paths)
+    except Exception:
+        # The caller falls back to the unsplit warning.
+        return None
+    finally:
+        await engine.dispose()

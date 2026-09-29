@@ -339,7 +339,8 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             text(
                 "SELECT kind, severity, snippet FROM security_findings "
                 "WHERE repository_id = :repo_id AND file_path = :fp "
-                "ORDER BY severity DESC, kind"
+                # Ranked, not alphabetical: text order puts ``high`` last.
+                "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, kind"
             ),
             {"repo_id": repo_id, "fp": target},
         )

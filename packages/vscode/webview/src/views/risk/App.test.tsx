@@ -61,6 +61,100 @@ const REPORT: RiskRangeReport = {
       },
     ],
   },
+  patchCoverage: null,
+};
+
+const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
+  patch_coverage_pct: 66.66,
+  covered_line_count: 2,
+  coverable_line_count: 3,
+  threshold: null,
+  min_coverable_lines: null,
+  gate: "not_set",
+  file_counts: {
+    measured: 1,
+    not_in_report: 1,
+    no_line_data: 0,
+    no_coverable_changes: 0,
+    out_of_scope: 0,
+  },
+  files: [
+    {
+      file_path: "src/core.ts",
+      status: "measured",
+      changed_line_count: 5,
+      coverable_line_count: 3,
+      covered_line_count: 2,
+      patch_coverage_pct: 66.66,
+      uncovered_ranges: [
+        [3, 3],
+        [7, 9],
+      ],
+      risk: {
+        fix_pressure: 2,
+        dependents: 5,
+        hotspot: true,
+        bug_magnet: false,
+        basis: "git_and_index",
+        risky: true,
+        reasons: ["hotspot"],
+      },
+      hints: [
+        {
+          range: [3, 3],
+          symbol: "boot",
+          tests: ["src/core.test.ts"],
+          basis: "per_test",
+          total: 1,
+        },
+      ],
+    },
+    {
+      file_path: "src/new.ts",
+      status: "not_in_report",
+      changed_line_count: 4,
+      coverable_line_count: 0,
+      covered_line_count: 0,
+      patch_coverage_pct: null,
+      uncovered_ranges: [],
+      risk: null,
+      hints: null,
+    },
+  ],
+  risky: {
+    file_count: 1,
+    covered_line_count: 2,
+    coverable_line_count: 3,
+    patch_coverage_pct: 66.66,
+    threshold: null,
+    gate: "not_set",
+  },
+  scope: {
+    label: "coverage.xml",
+    source_formats: ["cobertura"],
+    reports: ["coverage.xml"],
+    report_path_count: 10,
+    unmatched_report_path_count: 0,
+    measured_commit: "abcdef1234567890",
+    mapping_partial: false,
+    freshness: "stale",
+    ignored_file_count: 0,
+    config_errors: [],
+  },
+  path_gates: [
+    {
+      name: "web-app",
+      paths: ["/src/"],
+      threshold: 80,
+      informational: false,
+      measured_file_count: 1,
+      unmeasured_file_count: 0,
+      covered_line_count: 2,
+      coverable_line_count: 3,
+      patch_coverage_pct: 66.66,
+      gate: "fail",
+    },
+  ],
 };
 
 const REPO: RepoInit = {
@@ -401,6 +495,74 @@ describe("risk App", () => {
     expect(screen.queryByText(/downstream file/)).toBeNull();
     expect(screen.queryByText(/untouched/)).toBeNull();
     expect(screen.queryByText(/test recommendation/)).toBeNull();
+  });
+
+  // The summary's own wording, ordering and risk labels are pinned by its
+  // component test in packages/ui; this only checks the view wires it up.
+  it("shows the range's patch coverage and opens a listed file", async () => {
+    const riskRange = vi
+      .fn()
+      .mockResolvedValue({ ...REPORT, patchCoverage: PATCH_COVERAGE });
+    const openFile = vi.fn();
+    render(
+      <App
+        host={makeHost(riskRange, undefined, { openFile })}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    // Each throws when absent: the figure, the path-scoped gates, the hint naming the test to extend.
+    await screen.findByText("66.6%");
+    screen.getByRole("list", { name: "Path-scoped gates" });
+    screen.getByText("src/core.test.ts");
+
+    fireEvent.click(screen.getByTitle("Open src/core.ts"));
+    expect(openFile).toHaveBeenCalledWith("src/core.ts");
+  });
+
+  it("shows no patch coverage when none was ingested", async () => {
+    const riskRange = vi.fn().mockResolvedValue(REPORT);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    await screen.findByText("Elevated");
+    expect(screen.queryByText(/Patch coverage/)).toBeNull();
+  });
+
+  it("says unknown patch coverage in words, never 0%", async () => {
+    const riskRange = vi.fn().mockResolvedValue({
+      ...REPORT,
+      patchCoverage: {
+        ...PATCH_COVERAGE,
+        patch_coverage_pct: null,
+        covered_line_count: 0,
+        coverable_line_count: 0,
+        files: [PATCH_COVERAGE.files[1]],
+        scope: { ...PATCH_COVERAGE.scope, freshness: "current" },
+      },
+    });
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Patch coverage not measured"),
+    ).toBeTruthy();
+    expect(screen.queryByText("0.0%")).toBeNull();
+    expect(screen.queryByText(/not at this change's head/)).toBeNull();
   });
 
   it("shows a clean-tree empty state when nothing changed", async () => {

@@ -14,7 +14,7 @@ export type RefactoringType =
 export type EffortBucket = "S" | "M" | "L" | "XL";
 export type Confidence = "low" | "medium" | "high";
 export type ValidationBasis = "measured" | "inferred" | "mixed" | "unknown";
-export type ValidationVia = "coverage" | "call-graph" | "import-graph" | "mixed";
+export type ValidationVia = "coverage" | "call-graph" | "import-graph" | "name-match" | "mixed";
 
 export interface RecommendationValidationTarget {
   file_path: string;

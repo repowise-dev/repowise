@@ -31,7 +31,7 @@ from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.workspace.contracts import bind_symbol_ids
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
+from repowise.core.workspace.extractors.http import HttpExtractor
 
 from ._repo_index import make_repo_index
 

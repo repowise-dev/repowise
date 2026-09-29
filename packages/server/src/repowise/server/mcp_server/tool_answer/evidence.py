@@ -54,20 +54,10 @@ def _is_readable_path(target: str) -> bool:
 async def _first_resolvable_id(ids: list[str], ctx, repository, exclude_spec) -> str | None:
     """The first id ``get_symbol`` would actually answer, or None if none would.
 
-    Notes and ``next_action_hint``s interpolate a ``symbol_id`` straight out of
-    the scanner. The scanner is a regex over source lines, so it can name
-    something that is not a symbol, and an answer must never advertise a next
-    action that dead-ends.
-
-    ``get_symbol`` has THREE outcomes and only one of them is a failure: an
-    indexed row, a live-grep fallback when the name is in the file but not the
-    index, and nothing at all. Treating the live-grep case as unresolvable is a
-    mistake already made once while measuring this, so it counts as resolved.
-
-    Deliberately conservative in the other direction: an id whose file cannot be
-    read is KEPT, because an unreadable file is absence of evidence, not
-    evidence the id is fabricated. Only a positive read that does not contain
-    the name, with no index row either, disqualifies one.
+    The regex scanner can name a non-symbol, and a next action must never
+    dead-end. ``get_symbol`` answers from an indexed row or a live grep of the
+    file, so either counts as resolved. An unreadable file is KEPT (absence of
+    evidence); only a read lacking the name, with no index row, disqualifies.
     """
     repo_root = _repo_root(ctx)
     for sid in ids:
@@ -92,12 +82,9 @@ async def _first_resolvable_id(ids: list[str], ctx, repository, exclude_spec) ->
 def _rationale_anchors(h: dict) -> list[tuple[str, int | None]]:
     """One ``(path, near-line)`` pair per reason this hit is worth scanning.
 
-    A concept-anchored file leads: it was selected precisely because its comment
-    explains the question, and the grep match line is the best near-line boost
-    available. Each anchored or question-matched symbol then contributes the
-    same path again at its own definition line, so a file with several matches
-    is repeated as many times as it has reasons, which is the weighting the
-    scan orders on.
+    A concept-anchored file leads, at its grep match line. Each anchored or
+    matched symbol repeats the path at its definition line, so a file appears
+    once per reason: the weighting the scan orders on.
     """
     path = h.get("target_path")
     if not path:
@@ -115,16 +102,10 @@ def _rationale_anchors(h: dict) -> list[tuple[str, int | None]]:
 async def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
     """Mine in-code rationale comments for a low-confidence answer.
 
-    The wiki/decision corpus failed to ground the question; the "why" may be a
-    plain code comment instead. Scan the already-relevant files — anchored /
-    matched-symbol files lead, with a near-line boost on their definition, then
-    fallback_targets fill the rest — for comment blocks carrying a rationale
-    marker overlapping the question. Best-effort: returns [] on any failure,
-    never raises into the tool path.
-
-    Off the loop, like the sibling live-source miner on the value fast path:
-    it is small per call, and every concurrent request pays it if it runs where
-    the loop can feel it.
+    The "why" may be a plain code comment the wiki missed. Scans anchored and
+    matched files first, then fallback_targets, for rationale comments
+    overlapping the question. Best-effort ([] on failure) and off the event
+    loop, so concurrent requests do not pay for it.
     """
     repo_root = getattr(ctx, "path", None)
     if not repo_root:
@@ -149,11 +130,8 @@ async def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[s
 def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list[dict]:
     """Drop mined rationale comments already shown elsewhere in the response.
 
-    The same comment can reach the payload twice — once as material already in
-    the response (a ``symbol_bodies`` block whose body contains it, a quote, a
-    line-ranged citation, or a legacy ``code_comment`` decision) and once as a
-    live-mined ``code_rationale`` entry. Drop any mined comment whose
-    ``(path, line-range)`` overlaps an entry already surfaced. Entries without a
+    Drops any mined comment whose ``(path, line-range)`` overlaps a surfaced
+    entry (a body, quote or line-ranged citation). Entries without a
     ``(path, lines)`` pair are ignored.
     """
     occupied = [span for entries in surfaced for span in map(_line_span, entries or []) if span]

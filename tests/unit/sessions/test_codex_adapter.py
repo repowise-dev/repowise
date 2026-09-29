@@ -194,15 +194,82 @@ def test_normalize_handles_mcp_function_call_and_output(adapter: CodexAdapter) -
     output_event = adapter.normalize(tool_output)
 
     assert call_event is not None
+    assert call_event.kind == "assistant"
     assert call_event.tool_uses[0].id == "call_mcp_1"
     assert call_event.tool_uses[0].name == "search_codebase"
     assert call_event.tool_uses[0].input["query"] == "signup"
     assert call_event.tool_uses[0].input["path"] == "app.py"
     assert output_event is not None
+    assert output_event.kind == "assistant"
     assert output_event.tool_results[0].tool_use_id == "call_mcp_1"
 
     # The output should bind the returned file to the original tool call.
     assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_function_call_decision_gets_file_attribution(adapter: CodexAdapter) -> None:
+    """A `function_call` tool use must reach the decision miner like `custom_tool_call` does.
+
+    Regression for #2622: the adapter used to label `function_call` /
+    `function_call_output` events with the raw payload type instead of
+    `"assistant"`, so the decision miner's `kind == "assistant"` gate skipped
+    them outright and a decision right after the call got no file context.
+    """
+    session_meta = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:00.000Z",
+            "type": "session_meta",
+            "payload": {"id": "s1", "session_id": "s1", "cwd": r"C:\work\repo"},
+        }
+    )
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "get_context",
+                "call_id": "c1",
+                "arguments": json.dumps({"path": "app.py"}),
+            },
+        }
+    )
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:02.000Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+        }
+    )
+    choice = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:03.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "We chose Flask because it is lightweight and keeps "
+                            "SQLite integration straightforward."
+                        ),
+                    }
+                ],
+            },
+        }
+    )
+
+    events = [adapter.normalize(line) for line in (session_meta, tool_call, tool_output, choice)]
+
+    assert [e.kind for e in events] == ["session_meta", "assistant", "assistant", "assistant"]
+
+    decisions = mine_events(events, r"c:\work\repo")
+
+    assert len(decisions) == 1
+    assert decisions[0].kind == "explicit_choice"
+    assert decisions[0].files == ["app.py"]
 
 
 def _search_then_output(output: object) -> str:

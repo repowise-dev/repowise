@@ -104,6 +104,28 @@ jobs:
         run: uv run ruff check .
 
   # ---------------------------------------------------------------------------
+  # Documentation drift over the checkout, no index; the baseline says what it holds.
+  # ---------------------------------------------------------------------------
+  doc-drift:
+    name: Documentation drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Check documentation drift
+        run: uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json --format github
+
+  # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
   test-integration:

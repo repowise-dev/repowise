@@ -12,7 +12,7 @@ import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .analysis.change_risk.features import _git
+from .analysis.change_risk.features import _git, split_revspec
 
 __all__ = [
     "BranchRef",
@@ -23,11 +23,13 @@ __all__ = [
     "current_branch",
     "default_base",
     "files_by_ref",
+    "is_shallow",
     "list_branches",
     "refs_containing",
     "refs_merged_into",
     "resolve",
     "toplevel",
+    "tracked_paths",
 ]
 
 #: Subprocess failures that mean "no answer", not "bug": a wedged or missing
@@ -66,6 +68,16 @@ def toplevel(repo_path: str) -> str:
     to resolve it before it can match a path against an index.
     """
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
+
+
+def tracked_paths(repo_path: str) -> frozenset[str]:
+    """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
+    return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
+
+
+def is_shallow(repo_path: str) -> bool:
+    """Whether the clone is shallow; ``False`` when git cannot answer."""
+    return _read(repo_path, ["rev-parse", "--is-shallow-repository"]) == "true"
 
 
 def current_branch(repo_path: str) -> str | None:
@@ -218,14 +230,12 @@ def commit_file_sets(repo_path: str, revspec: str | None) -> list[frozenset[str]
     Only a range carries the information: a single revision names one commit,
     and one commit says nothing about what moves with what.
     """
-    if not revspec:
+    parts = split_revspec(revspec) if revspec else None
+    if parts is None:
         return []
     # The commits of "a...b" are "a..b"; three dots is diff syntax, not a range.
-    if "..." in revspec:
-        revspec = revspec.replace("...", "..")
-    elif ".." not in revspec:
-        return []
-    out = _read(repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", revspec])
+    base, _sep, head = parts
+    out = _read(repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", f"{base}..{head}"])
     sets: list[frozenset[str]] = []
     for block in out.split("\x00"):
         paths = {line.strip() for line in block.splitlines()[1:] if line.strip()}

@@ -5,7 +5,7 @@ authentication, secret handling, raw SQL, dangerous deserialization, etc.
 
 Two scan surfaces share the same pattern registry and persistence layer:
 
-* working-tree scans (during indexing) — ``SecurityScanner.scan_file`` +
+* working-tree scans (during indexing) — ``scan_source`` / ``scan_source_map`` +
   ``replace_findings`` with no commit provenance;
 * full-history scans (``repowise security scan --history``) — iterate every
   tracked revision of every source file and persist hits tagged with the
@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -28,6 +29,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.support_paths import DOC_EXTENSIONS
 from repowise.core.test_paths import is_test_related_path
 
 logger = logging.getLogger(__name__)
@@ -45,9 +47,14 @@ _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
     "your_",
     "your-",
     "...",
+    "\u2026",  # a typographic ellipsis
     "fixture",
 )
 
+# Broader than ``is_test_related_path`` on purpose. That one asks whether a file
+# is a test and keeps bare ``fixtures/``, ``mocks/`` and ``spec/`` as production
+# outside a test tree; this asks whether a match there is probably fake, and a
+# ``high`` that is only probably real is not one to raise.
 _LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
     {
         "test",
@@ -66,13 +73,16 @@ _LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
     }
 )
 
+# An angle-bracket slot (``sk-<your key>``) is a template, wherever it sits.
+_ANGLE_SLOT = re.compile(r"<[^<>]*>")
+
 
 def _is_valid_credential_value(val: str) -> bool:
     """True when *val* is at least 8 chars and not a known placeholder."""
     if len(val) < 8:
         return False
     v = val.lower().strip()
-    if v.startswith("<") or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
+    if v.startswith("<") or _ANGLE_SLOT.search(v) or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
         return False
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
@@ -108,11 +118,52 @@ _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 # ``exec_call`` hit outside Python was a regex match and none was a process
 # spawn, so the kind was pure noise on those languages.
 #
-# The dangerous call in JavaScript comes from ``child_process``, so that is what
-# gates it: a file that never names the module cannot spawn one. ``eval`` needs
-# no such gate — it is a genuine global there.
-_CHILD_PROCESS_IMPORT = re.compile(r"child_process|node:child_process")
-_JS_EXEC_CALL = re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec(?:File)?(?:Sync)?\s*\(")
+# The dangerous call in JavaScript comes from ``child_process``, so only a call
+# through a name bound to that module counts: a namespace (``cp.exec(``), a named
+# import (``exec(`` after ``import { exec } from "child_process"``) or the
+# ``require`` result itself. A file's own function named ``exec``, or a regex's
+# ``.exec`` next to an unrelated ``spawn`` import, is not a shell. ``eval`` needs
+# no such gate: it is a genuine global there.
+_CP_MODULE = r"""['"](?:node:)?child_process['"]"""
+_JS_NAME = r"[A-Za-z_$][\w$]*"
+_CP_NAMESPACE = re.compile(
+    rf"import\s+(?:\*\s*as\s+)?({_JS_NAME})\s*(?:,\s*\{{[^}}]*\}}\s*)?from\s*{_CP_MODULE}"
+    rf"|(?:const|let|var)\s+({_JS_NAME})\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
+)
+_CP_NAMED = re.compile(
+    rf"import\s*(?:{_JS_NAME}\s*,\s*)?\{{([^}}]*)\}}\s*from\s*{_CP_MODULE}"
+    rf"|(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*require\(\s*{_CP_MODULE}\s*\)"
+)
+_CP_REQUIRE_CALL = re.compile(
+    rf"require\(\s*{_CP_MODULE}\s*\)\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+)
+_EXEC_EXPORT = re.compile(r"exec(?:File)?(?:Sync)?")
+
+
+def _child_process_exec_calls(source: str, masked: str) -> list[int]:
+    """Offsets of ``child_process`` exec-family calls, found through the file's own bindings.
+
+    Imports are read from raw source because the module name is a string
+    literal, which masking blanks; calls are read from masked source, so a
+    comment or string naming one does not count.
+    """
+    namespaces = {n for m in _CP_NAMESPACE.finditer(source) for n in m.groups() if n}
+    functions: set[str] = set()
+    for m in _CP_NAMED.finditer(source):
+        for item in (m.group(1) or m.group(2)).split(","):
+            # ``exec as run`` (import) and ``exec: run`` (destructuring) rename.
+            parts = re.split(r"\s+as\s+|\s*:\s*", item.strip().removeprefix("type "))
+            if parts[0] and _EXEC_EXPORT.fullmatch(parts[0]):
+                functions.add(parts[-1].strip())
+    offsets = [m.start() for m in _CP_REQUIRE_CALL.finditer(source) if not masked[m.start()].isspace()]
+    names = [re.escape(n) for n in namespaces]
+    if names:
+        receiver = rf"(?<![\w$.])(?:{'|'.join(names)})\s*\.\s*exec(?:File)?(?:Sync)?\s*\("
+        offsets += [m.start() for m in re.finditer(receiver, masked)]
+    if functions:
+        bare = rf"(?<![\w$.])(?:{'|'.join(map(re.escape, functions))})\s*\("
+        offsets += [m.start() for m in re.finditer(bare, masked)]
+    return sorted(offsets)
 
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
@@ -124,17 +175,44 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # patterns walked straight past that form. Found by scanning a corpus in
     # which a live n8n key sat unreported under exactly that spelling.
     #
-    # The wording above avoids spelling the matched form out literally: this
-    # loop runs on raw source, comments included, so an example written out here
-    # would make the file report itself.
-    #
     # Case-insensitivity is written as a scoped inline group rather than the
     # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
     # concatenating these patterns' *source text*, which drops per-pattern
     # flags. A flag here would leave the prefilter case-sensitive and it would
     # reject the line before the pattern ever ran.
     (re.compile(r"(?i:password)\s*=\s*['\"]([^'\"]*)"), "hardcoded_password", "high"),
-    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]([^'\"]*)"), "hardcoded_secret", "high"),
+    (
+        re.compile(r"(?i:api_?key|secret|token|access_?key)\s*=\s*['\"]([^'\"]*)"),
+        "hardcoded_secret",
+        "high",
+    ),
+    # Value-shape patterns for common vendor credential formats (gitleaks'
+    # rule set, MIT-licensed, is the reference for these shapes). These fire
+    # regardless of the variable name a key is assigned to, so a vendor key
+    # bound to an unlisted name (``client_id``) or passed inline is still
+    # caught. Each carries a capture group around the credential value itself
+    # so the ``SECRET_KINDS`` gate below (length + placeholder check) applies
+    # to it the same as the keyword patterns above.
+    (re.compile(r"\b((?:AKIA|ASIA)[A-Z2-7]{16})\b"), "aws_access_key", "high"),
+    (
+        re.compile(r"\b(gh[oprsu]_[0-9A-Za-z]{36}|github_pat_\w{82})\b"),
+        "github_token",
+        "high",
+    ),
+    (re.compile(r"(?i:(xox[baprs]-[0-9a-zA-Z-]{10,72}))"), "slack_token", "high"),
+    # Bounded by lookarounds, not ``\b``: a key can end in ``-``, and a base64 run
+    # (a lockfile ``sha512-`` integrity hash) must not yield one from its middle.
+    (
+        re.compile(r"(?<![0-9A-Za-z+/_-])(AIza[0-9A-Za-z_-]{35})(?![0-9A-Za-z_-])"),
+        "google_api_key",
+        "high",
+    ),
+    # Secret and restricted keys only: a publishable ``pk_`` key is public by design.
+    (
+        re.compile(r"\b((?:sk|rk)_(?:live|test|prod)_[0-9A-Za-z]{10,99})\b"),
+        "stripe_key",
+        "high",
+    ),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
@@ -207,10 +285,35 @@ _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "subprocess_shell_true",
         "high",
     ),
+    # A PEM header alone is not a leak: code that assembles PEM text
+    # (``"-----BEGIN " + kind + " PRIVATE KEY-----"``) contains the header
+    # string without ever holding key material. Requiring a base64-looking
+    # body line right after the header is what tells the two apart, and the
+    # capture group around that body line is the value the SECRET_KINDS gate
+    # below checks (length + placeholder), same as every other secret kind.
+    # The break may be an escaped ``\n``: JSON and .env files hold the key on one line.
+    (
+        re.compile(
+            r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\r?\n|\\n)([A-Za-z0-9+/=]{20,})"
+        ),
+        "private_key_pem",
+        "high",
+    ),
 ]
 
 # Symbol names that are informational security hotspots
 _SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
+
+# Kinds that name a dangerous call. They are matched against source with
+# comments and string literals blanked, so a docstring, a comment or a regex
+# literal that merely mentions the call does not fire.
+_MASKED_KINDS = frozenset(
+    {"pickle_loads", "subprocess_shell_true", "os_system", "new_function_call"}
+)
+
+# Prose is documentation, not executable code. Only secret kinds scan it,
+# because a key pasted into a README is still a leak.
+_PROSE_EXTENSIONS = tuple(DOC_EXTENSIONS)
 
 # Patterns whose matches are genuine leaked credentials (as opposed to the
 # broader "code smell" patterns like os.system/eval). Full-history scans
@@ -218,7 +321,18 @@ _SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", r
 # mostly noise, whereas a committed secret is actionable and persists in
 # history. This positions history mode as complementary to gitleaks /
 # trufflehog rather than a noisy replacement.
-SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
+SECRET_KINDS: frozenset[str] = frozenset(
+    {
+        "hardcoded_password",
+        "hardcoded_secret",
+        "aws_access_key",
+        "github_token",
+        "slack_token",
+        "google_api_key",
+        "stripe_key",
+        "private_key_pem",
+    }
+)
 
 # Kinds whose ``snippet`` is a symbol *name* rather than the text of the line
 # it sits on (see the symbol-name scan below). Serve-time line verification
@@ -228,49 +342,177 @@ SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secre
 SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
 
 
-def _mask_secret_snippet(snippet: str, val: str) -> str:
-    """Replace the first occurrence of *val* inside *snippet* with a redacted form.
+_KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
 
-    Keeps the variable name and surrounding text intact so the finding remains
-    locatable in the source file.  The replacement is ``val[:4] + '****'``
-    (first four characters visible, everything else hidden).  If the value is
-    shorter than four characters, the whole value is replaced with ``'****'``.
+# A snake_case name is a key's name (a constant holding its own name) and a
+# template placeholder or shell substitution is filled in when it runs; none of
+# them is a credential.
+_KEY_NAME_VALUE = re.compile(r"[a-z_]*_[a-z_]*")
+_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\)")
 
-    Examples
-    --------
-    >>> _mask_secret_snippet("password = 'super_secret_pass_99'", "super_secret_pass_99")
-    "password = 'supe****'"
+
+def _is_secret_value(kind: str, val: str) -> bool:
+    """True when *val*, captured by a *kind* pattern, looks like a real credential."""
+    if not _is_valid_credential_value(val):
+        return False
+    if kind not in _KEYWORD_KINDS:
+        return True
+    if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(val):
+        return False
+    value = val.strip()
+    # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
+    return not (_TEMPLATE_VALUE.fullmatch(value) or _is_plain_word(value) or value.startswith("--"))
+
+
+def _is_plain_word(value: str) -> bool:
+    """A dictionary-shaped word: the dummy a client insists on (``api_key="lmstudio"``).
+
+    Bounded, because a long run of letters in mixed or single case is as random
+    as any key.
     """
-    if not val:
-        return snippet
-    redacted = (val[:4] + "****") if len(val) >= 4 else "****"
-    return snippet.replace(val, redacted, 1)
+    single_case = value.islower() or value.isupper() or value.istitle()
+    return value.isalpha() and single_case and len(value) <= 20
 
 
-def _mask_findings(findings: list[dict]) -> None:
-    """Redact the captured secret value from every credential finding's snippet.
+def _redaction(val: str) -> str:
+    return (val[:4] + "****") if len(val) >= 4 else "****"
 
-    Operates in-place on *findings*.  Only kinds listed in ``SECRET_KINDS`` are
-    touched; every other kind (code-smell patterns, symbol names, spanning
-    patterns not in SECRET_KINDS) is left unchanged.
 
-    This is called as a final post-pass inside ``scan_file`` before returning,
-    so it covers the per-line loop, the spanning-pattern loop, and the
-    ``HistorySecurityScanner`` path in one place.
+# ``public_env_secret`` has no capture group, so its value is found here. In
+# ``SECRET_KINDS`` the empty capture would fail validation and drop the finding.
+# After the name: the name's own closing quote or bracket, then an operator
+# (``=``, ``:``, ``=>``, ``??``, ``||``) or plain whitespace (a Dockerfile
+# ``ENV NAME value``), then the value, quoted or not.
+_PUBLIC_VALUE = re.compile(r"""\A['"\]]*(?:\s*[:=>?|]+\s*|\s+)(['"`]?)(?=[^\s;,)])""")
+
+_SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
+_PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
+# A PEM body written on its header's line (escaped ``\n`` breaks, or spaces when
+# an environment variable flattened it), up to ``-----END``.
+_PEM_INLINE_BODY = re.compile(
+    r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\\[rn])*"
+    r"((?:[A-Za-z0-9+/=]|\\[rn]|[ \t])+)"
+)
+# A header that ends its line: the body follows on the next lines.
+_PEM_HEADER_LINE = re.compile(r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)['\"]?\s*\Z")
+# A line of key body: one base64 run, however indented.
+_PEM_BODY_LINE = re.compile(r"\A\s*[A-Za-z0-9+/=]{16,}\s*\Z")
+_SECRET_PREFILTER = re.compile(
+    "|".join(
+        f"(?:{p.pattern})"
+        for p in [*(p for p, _ in _SECRET_PATTERNS), _PUBLIC_ENV_PATTERN, _PEM_INLINE_BODY]
+    )
+)
+
+_SNIPPET_MAX = 120
+_MARKER = "****"
+
+
+def _string_end(line: str, start: int) -> int:
+    """Where the string literal holding *start* closes, else the end of *line*.
+
+    The keyword captures stop at the first quote of either kind, so a value
+    holding the other quote would otherwise be masked only up to it.
     """
-    for finding in findings:
-        if finding.get("kind") not in SECRET_KINDS:
+    quote = line[start - 1] if start > 0 else ""
+    i = start
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+        elif line[i] == quote:
+            return i
+        else:
+            i += 1
+    return len(line)
+
+
+def _value_span(kind: str, match: re.Match, line: str) -> tuple[int, int]:
+    """The captured credential's span; a keyword value runs to its closing quote."""
+    start, end = match.span(1)
+    return (start, _string_end(line, start)) if kind in _KEYWORD_KINDS else (start, end)
+
+
+def _public_env_value(line: str, name_end: int) -> tuple[int, int] | None:
+    """The value assigned to a public env name ending at *name_end*, if any."""
+    value = _PUBLIC_VALUE.search(line[name_end:])
+    if value is None:
+        return None
+    start = name_end + value.end()
+    if value.group(1):
+        return start, _string_end(line, start)
+    stop = next((i for i in range(start, len(line)) if line[i].isspace()), len(line))
+    return start, stop
+
+
+def _secret_spans(line: str) -> list[tuple[int, int]]:
+    """Every credential value on *line*, including repeats of one elsewhere on it."""
+    spans: list[tuple[int, int]] = []
+    for pattern, kind in _SECRET_PATTERNS:
+        for match in pattern.finditer(line):
+            start, end = _value_span(kind, match, line)
+            if _is_secret_value(kind, line[start:end]):
+                spans.append((start, end))
+    for match in _PEM_INLINE_BODY.finditer(line):
+        if _is_valid_credential_value(match.group(1)):
+            spans.append(match.span(1))
+    for match in _PUBLIC_ENV_PATTERN.finditer(line):
+        if (span := _public_env_value(line, match.end())) is not None:
+            spans.append(span)
+    for val in {line[start:end] for start, end in spans}:
+        if len(val) < 4:
             continue
-        val: str = finding.get("_secret_val", "")
-        if val:
-            finding["snippet"] = _mask_secret_snippet(finding.get("snippet", ""), val)
-            # Remove the internal key — it must never leave this module.
-            del finding["_secret_val"]
+        at = line.find(val)
+        while at != -1:
+            spans.append((at, at + len(val)))
+            at = line.find(val, at + 1)
+    return spans
 
 
-def _mask_comments_and_strings(source: str) -> str:
-    """Blank common comments/strings while preserving offsets and newlines."""
+def _mask_line(line: str) -> str:
+    if not _SECRET_PREFILTER.search(line):
+        return line
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(_secret_spans(line)):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    out: list[str] = []
+    pos = 0
+    for start, end in merged:
+        out.append(line[pos:start])
+        out.append(_redaction(line[start:end]))
+        pos = end
+    out.append(line[pos:])
+    return "".join(out)
+
+
+def _snippet(line: str) -> str:
+    """*line* as stored: every secret on it masked, then stripped and trimmed.
+
+    Masking comes first because a value cut by the trim no longer matches.
+    """
+    text = _mask_line(line).strip()
+    cut = _SNIPPET_MAX
+    if len(text) > cut:
+        # Never end inside a marker: a bare ``*`` run defeats line verification.
+        marker = text.rfind(_MARKER, 0, cut + len(_MARKER) - 1)
+        if marker != -1 and marker < cut < marker + len(_MARKER):
+            cut = marker
+    return text[:cut]
+
+
+def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
+    """Blank common comments (and strings, unless *strings* is false), keeping offsets.
+
+    Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
+    one does not open a comment.
+    """
     chars = list(source)
+
+    def blank(at: int, width: int = 1) -> None:
+        chars[at : at + width] = [" "] * width
+
     i = 0
     state = "code"
     quote = ""
@@ -281,59 +523,64 @@ def _mask_comments_and_strings(source: str) -> str:
             if source[i] == "\n":
                 state = "code"
             else:
-                chars[i] = " "
+                blank(i)
             i += 1
             continue
         if state == "block_comment":
             if source.startswith("*/", i):
-                chars[i : i + 2] = [" ", " "]
+                blank(i, 2)
                 i += 2
                 state = "code"
             else:
                 if source[i] != "\n":
-                    chars[i] = " "
+                    blank(i)
                 i += 1
             continue
         if state == "string":
             marker = quote * (3 if triple else 1)
             if source.startswith(marker, i):
-                chars[i : i + len(marker)] = [" "] * len(marker)
+                if strings:
+                    blank(i, len(marker))
                 i += len(marker)
                 state = "code"
             elif source[i] == "\\":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 if i + 1 < len(source):
-                    if source[i + 1] != "\n":
-                        chars[i + 1] = " "
+                    if strings and source[i + 1] != "\n":
+                        blank(i + 1)
                     i += 2
                 else:
                     i += 1
             else:
-                if source[i] != "\n":
-                    chars[i] = " "
+                if strings and source[i] != "\n":
+                    blank(i)
                 i += 1
             continue
         if state == "template":
             if source.startswith("${", i):
-                chars[i : i + 2] = [" ", " "]
+                if strings:
+                    blank(i, 2)
                 i += 2
                 template_depth = 1
                 state = "code"
             elif source[i] == "`":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 i += 1
                 state = "code"
             elif source[i] == "\\":
-                chars[i] = " "
+                if strings:
+                    blank(i)
                 if i + 1 < len(source):
-                    if source[i + 1] != "\n":
-                        chars[i + 1] = " "
+                    if strings and source[i + 1] != "\n":
+                        blank(i + 1)
                     i += 2
                 else:
                     i += 1
             else:
-                if source[i] != "\n":
-                    chars[i] = " "
+                if strings and source[i] != "\n":
+                    blank(i)
                 i += 1
             continue
 
@@ -341,34 +588,46 @@ def _mask_comments_and_strings(source: str) -> str:
             template_depth += 1
             i += 1
         elif template_depth and source[i] == "}":
-            chars[i] = " "
+            if strings:
+                blank(i)
             template_depth -= 1
             i += 1
             if template_depth == 0:
                 state = "template"
         elif source.startswith("//", i) or source[i] == "#":
             width = 2 if source.startswith("//", i) else 1
-            chars[i : i + width] = [" "] * width
+            blank(i, width)
             i += width
             state = "line_comment"
         elif source.startswith("/*", i):
-            chars[i : i + 2] = [" ", " "]
+            blank(i, 2)
             i += 2
             state = "block_comment"
         elif source[i] == "`":
-            chars[i] = " "
+            if strings:
+                blank(i)
             i += 1
             state = "template"
         elif source[i] in {"'", '"'}:
             quote = source[i]
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
-            chars[i : i + width] = [" "] * width
+            if strings:
+                blank(i, width)
             i += width
             state = "string"
         else:
             i += 1
     return "".join(chars)
+
+
+def source_lines(source: str) -> list[str]:
+    """*source* split where git splits it, so line numbers agree with a diff.
+
+    ``str.splitlines`` also breaks on form feeds and Unicode separators, which
+    numbered every later finding past git's line for it.
+    """
+    return [line.removesuffix("\r") for line in source.split("\n")]
 
 
 def _call_findings(file_path: str, source: str) -> list[dict]:
@@ -379,6 +638,7 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
         except SyntaxError:
             pass
         else:
+            lines = source_lines(source)
             findings = []
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -391,24 +651,27 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
                     continue
                 if call_name not in {"eval", "exec"}:
                     continue
-                line = source.splitlines()[node.lineno - 1].strip()[:120]
                 findings.append(
                     {
                         "kind": f"{call_name}_call",
                         "severity": "high",
-                        "snippet": line,
+                        # ast also breaks lines on a lone ``\r``, which git does
+                        # not; such a line number can outrun the split.
+                        "snippet": _snippet(lines[node.lineno - 1])
+                        if node.lineno <= len(lines)
+                        else "",
                         "line": node.lineno,
                     }
                 )
             return findings
 
     masked = _mask_comments_and_strings(source)
-    lines = source.splitlines()
+    lines = source_lines(source)
     findings = []
 
     def add(kind: str, severity: str, offset: int) -> None:
         lineno = source.count("\n", 0, offset) + 1
-        snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
+        snippet = _snippet(lines[lineno - 1]) if lineno <= len(lines) else ""
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
     is_python = file_path.lower().endswith((".py", ".pyi"))
@@ -418,11 +681,9 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
         for match in pattern.finditer(masked):
             add(kind, severity, match.start())
 
-    # The module name is searched in raw source on purpose: it arrives as a
-    # string literal (``require("child_process")``), which masking blanks.
-    if not is_python and _CHILD_PROCESS_IMPORT.search(source):
-        for match in _JS_EXEC_CALL.finditer(masked):
-            add("exec_call", "high", match.start())
+    if not is_python:
+        for offset in _child_process_exec_calls(source, masked):
+            add("exec_call", "high", offset)
 
     return findings
 
@@ -438,6 +699,183 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return "no such table" in message or "does not exist" in message
 
 
+def _match_starting_in(pattern: re.Pattern, line: str, kept: str) -> re.Match | None:
+    """First match of *pattern* on *line* whose first character survived masking in *kept*."""
+    for match in pattern.finditer(line):
+        start = match.start()
+        if start < len(kept) and not kept[start].isspace():
+            return match
+    return None
+
+
+def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
+    """Scan *source* text and symbol names; return finding dicts. No I/O."""
+    findings: list[dict] = []
+    lines = source_lines(source)
+    is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
+
+    if not is_prose:
+        findings.extend(_call_findings(file_path, source))
+
+    # Prose has no comments or strings to set apart: its text is read as written.
+    masked = source if is_prose else _mask_comments_and_strings(source)
+    masked_lines = source_lines(masked)
+    # Comments alone: a public env name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
+    comment_lines = (
+        lines if is_prose else source_lines(_mask_comments_and_strings(source, strings=False))
+    )
+
+    # Line-by-line pattern scan
+    is_low_sev_file = _is_low_severity_path(file_path)
+    for lineno, line in enumerate(lines, start=1):
+        if not _ANY_PATTERN.search(line):
+            continue
+        code_line = masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
+        uncommented = comment_lines[lineno - 1] if lineno <= len(comment_lines) else line
+        snippet: str | None = None
+        keyword_hits: list[tuple[dict, str]] = []
+        vendor_values: list[str] = []
+        for pattern, kind, severity in _PATTERNS:
+            if kind in _CALL_KINDS:
+                continue
+            if is_prose and kind not in SECRET_KINDS:
+                continue
+            if kind in _MASKED_KINDS:
+                match = pattern.search(code_line)
+            elif kind in _KEYWORD_KINDS:
+                # ``password = "..."`` in a comment or docstring is an example.
+                match = _match_starting_in(pattern, line, code_line)
+            elif kind == "public_env_secret":
+                # A comment naming the variable is not code reading it.
+                match = _match_starting_in(pattern, line, uncommented)
+            else:
+                # Vendor key shapes are real wherever they sit, comments included.
+                match = pattern.search(line)
+            if match:
+                value = line[slice(*_value_span(kind, match, line))] if match.groups() else ""
+                if kind in SECRET_KINDS:
+                    if not _is_secret_value(kind, value):
+                        continue
+                    if is_low_sev_file:
+                        severity = "low"
+                if snippet is None:
+                    snippet = _snippet(line)
+                finding = {
+                    "kind": kind,
+                    "severity": severity,
+                    "snippet": snippet,
+                    "line": lineno,
+                }
+                findings.append(finding)
+                if kind in _KEYWORD_KINDS:
+                    keyword_hits.append((finding, value))
+                elif kind in SECRET_KINDS:
+                    vendor_values.append(value)
+        # One secret, one finding: the vendor shape already names what the keyword saw.
+        for finding, value in keyword_hits:
+            if any(vendor in value for vendor in vendor_values):
+                findings.remove(finding)
+
+    # Calls that open on one line and set ``shell=True`` on a later one; reported
+    # on the opening line, unless the per-line pass already did.
+    pem_body_lines: set[int] = set()
+    for pattern, kind, severity in _SPANNING_PATTERNS:
+        if is_prose and kind not in SECRET_KINDS:
+            continue
+        for match in pattern.finditer(masked if kind in _MASKED_KINDS else source):
+            if kind in SECRET_KINDS:
+                val = match.group(1) if match.groups() else ""
+                if not _is_secret_value(kind, val):
+                    continue
+                if is_low_sev_file:
+                    severity = "low"
+            start_line = source.count("\n", 0, match.start()) + 1
+            end_line = source.count("\n", 0, match.end()) + 1
+            if kind == "private_key_pem":
+                end = source.find("-----END", match.end())
+                end_line = source.count("\n", 0, end if end != -1 else match.end()) + 1
+                pem_body_lines.update(range(start_line + 1, end_line + (end == -1)))
+            if any(f["kind"] == kind and f["line"] == start_line for f in findings):
+                continue
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            line_end = source.find("\n", match.start())
+            if line_end == -1:
+                line_end = len(source)
+            findings.append(
+                {
+                    "kind": kind,
+                    "severity": severity,
+                    "snippet": _snippet(source[line_start:line_end]),
+                    "line": start_line,
+                    # The last line the match spans, so a diff-scoped reader
+                    # counts an edit anywhere inside the call or key.
+                    "end_line": end_line,
+                }
+            )
+
+    # The base64 lines after a header that ends its line are body whether or not
+    # the key validated: an indented YAML block or a key with no END line never
+    # matches the pattern above, and its body lines would otherwise reach another
+    # kind's snippet. The run stops at the first line that is not base64, so a
+    # header constant in code that assembles PEM text marks nothing after it.
+    in_body = False
+    for lineno, line in enumerate(lines, start=1):
+        if in_body and _PEM_BODY_LINE.search(line):
+            pem_body_lines.add(lineno)
+        else:
+            in_body = bool(_PEM_HEADER_LINE.search(line))
+
+    # A key body line matches nothing of its own, so a hit there is stray and its
+    # snippet would carry key material: mask the whole line.
+    for finding in findings:
+        if finding["line"] in pem_body_lines:
+            finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
+
+    # Test and fixture material never carries a shipped sink, whatever the kind.
+    if is_low_sev_file:
+        for finding in findings:
+            finding["severity"] = "low"
+
+    # Symbol-name scan (informational / low)
+    for sym in symbols:
+        name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
+        if name and _SYMBOL_KEYWORDS.search(name):
+            findings.append(
+                {
+                    "kind": "security_sensitive_symbol",
+                    "severity": "low",
+                    "snippet": name,
+                    "line": getattr(sym, "start_line", 0) or 0,
+                }
+            )
+
+    return findings
+
+
+def scan_source_map(
+    parsed_files: Iterable[Any],
+    source_map: Mapping[str, bytes | str],
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """Return ``(findings_by_file, scanned_paths)`` for ``replace_findings``.
+
+    A path missing from *source_map* still gets the symbol-name scan.
+    """
+    findings_by_file: dict[str, list[dict]] = {}
+    scanned_paths: list[str] = []
+    for pf in parsed_files:
+        path = pf.file_info.path
+        raw = source_map.get(path, b"")
+        if isinstance(raw, (bytes, bytearray)):
+            source_text = raw.decode("utf-8", errors="replace")
+        else:
+            source_text = raw or ""
+        scanned_paths.append(path)
+        findings = scan_source(path, source_text, pf.symbols)
+        if findings:
+            findings_by_file[path] = findings
+    return findings_by_file, scanned_paths
+
+
 class SecurityScanner:
     """Scan a single file for security signals and persist to the database."""
 
@@ -451,107 +889,8 @@ class SecurityScanner:
         source: str,
         symbols: list[Any],
     ) -> list[dict]:
-        """Scan *source* text and symbol names; return list of finding dicts.
-
-        Parameters
-        ----------
-        file_path:
-            Relative path of the file (for reference only; not used in scan).
-        source:
-            Full text content of the file.
-        symbols:
-            List of symbol objects that have a ``name`` attribute (or similar).
-        """
-        findings: list[dict] = []
-        lines = source.splitlines()
-
-        findings.extend(_call_findings(file_path, source))
-
-        # Line-by-line pattern scan
-        is_low_sev_file = _is_low_severity_path(file_path)
-        for lineno, line in enumerate(lines, start=1):
-            if not _ANY_PATTERN.search(line):
-                continue
-            for pattern, kind, severity in _PATTERNS:
-                if kind in _CALL_KINDS:
-                    continue
-                match = pattern.search(line)
-                if match:
-                    if kind in SECRET_KINDS:
-                        val = match.group(1) if match.groups() else ""
-                        if not _is_valid_credential_value(val):
-                            continue
-                        if is_low_sev_file:
-                            severity = "low"
-                        # Trim snippet to keep it concise
-                        snippet = line.strip()[:120]
-                        findings.append(
-                            {
-                                "kind": kind,
-                                "severity": severity,
-                                "snippet": snippet,
-                                "line": lineno,
-                                # Internal: consumed by _mask_findings, never persisted.
-                                "_secret_val": val,
-                            }
-                        )
-                        continue
-                    # Trim snippet to keep it concise
-                    snippet = line.strip()[:120]
-                    findings.append(
-                        {
-                            "kind": kind,
-                            "severity": severity,
-                            "snippet": snippet,
-                            "line": lineno,
-                        }
-                    )
-
-        # Whole-source pass for patterns that span physical lines
-        # (``subprocess.run(\n    ...,\n    shell=True,\n)``). The per-line
-        # loop above can never see the sink when the call opens on one line
-        # and ``shell=`` lands on another, so scan the full source once. The
-        # finding is reported on the line where the call starts, and a match
-        # the per-line pass already caught on that line is not duplicated.
-        for pattern, kind, severity in _SPANNING_PATTERNS:
-            for match in pattern.finditer(source):
-                start_line = source.count("\n", 0, match.start()) + 1
-                if any(f["kind"] == kind and f["line"] == start_line for f in findings):
-                    continue
-                line_start = source.rfind("\n", 0, match.start()) + 1
-                line_end = source.find("\n", match.start())
-                if line_end == -1:
-                    line_end = len(source)
-                snippet = source[line_start:line_end].strip()[:120]
-                findings.append(
-                    {
-                        "kind": kind,
-                        "severity": severity,
-                        "snippet": snippet,
-                        "line": start_line,
-                    }
-                )
-
-        # Symbol-name scan (informational / low)
-        for sym in symbols:
-            name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
-            if name and _SYMBOL_KEYWORDS.search(name):
-                findings.append(
-                    {
-                        "kind": "security_sensitive_symbol",
-                        "severity": "low",
-                        "snippet": name,
-                        "line": getattr(sym, "start_line", 0) or 0,
-                    }
-                )
-
-        # Mask secret values before any finding leaves this function.
-        # A single post-pass keyed on SECRET_KINDS covers the per-line loop,
-        # the spanning-pattern loop above, and HistorySecurityScanner (which
-        # calls this same method), so every present and future snippet site is
-        # covered by construction.
-        _mask_findings(findings)
-        return findings
+        """Async wrapper over :func:`scan_source`."""
+        return scan_source(file_path, source, symbols)
 
     def _uses_sqlite(self) -> bool:
         """True when the bound session talks to SQLite (local/dev backend)."""

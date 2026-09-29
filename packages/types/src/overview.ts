@@ -127,7 +127,7 @@ export interface OverviewAttentionItem {
    * levels this used to declare. Sources that publish their own severity are
    * passed through unchanged; the two that genuinely have none (dead code and
    * documentation drift carry a confidence float instead) are bucketed onto it
-   * server-side. See `server/services/attention.py`.
+   * server-side. See `core/analysis/attention/compose.py`.
    */
   severity: HealthSeverity;
   /** Decision id, file path, … — what the item points at. */

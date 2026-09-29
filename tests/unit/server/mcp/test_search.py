@@ -640,6 +640,14 @@ class TestSymbolSearch:
         assert "src/auth/service.py::login" in ids
 
     @pytest.mark.asyncio
+    async def test_importable_module_path_finds_its_symbols(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("auth.service.AuthService.login", mode="symbol")
+        assert result["results"][0]["symbol_id"] == "src/auth/service.py::login"
+        assert result["results"][0]["qualified_name"] == "auth.service.AuthService.login"
+
+    @pytest.mark.asyncio
     async def test_symbol_kind_filter(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 

@@ -227,8 +227,10 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.database import has_db_store
 
-    if not (root / REPOWISE_DIR / "wiki.db").is_file():
+    # The configured store, which may live outside the repo (REPOWISE_DB_URL).
+    if not has_db_store(root):
         yield None
         return
     # The stack keeps the session open across the yield and disposes the engine
@@ -236,7 +238,9 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     async with contextlib.AsyncExitStack() as stack:
         opened: tuple[AsyncSession, str] | None = None
         try:
-            engine = create_engine(get_db_url_for_repo(root))
+            url = get_db_url_for_repo(root)
+            await reconcile_schema_best_effort(url)
+            engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
@@ -630,8 +634,8 @@ def head_commit_ts(repo_path: Path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    rather than wall clock, the same anchor the git history windows use, so
+    the cadence is deterministic and correct for historical checkouts.
 
     Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
     the same units the gate reads it back in.
@@ -938,8 +942,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -965,6 +969,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):

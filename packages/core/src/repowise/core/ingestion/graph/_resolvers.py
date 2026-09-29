@@ -461,6 +461,34 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
     def _resolve_fsharp_compile_order(self, ctx: Any, progress: Any | None = None) -> None:
         """Emit fsproj compile-order ``imports`` hint edges for F# files.
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.server.routers.stats import _is_bot
+from repowise.core.stats_highlights import is_bot as _is_bot
 
 AGENTS = [
     # Coding agents, recognised via the ingestion layer's provenance registry.
