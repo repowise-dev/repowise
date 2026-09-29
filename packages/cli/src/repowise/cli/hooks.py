@@ -147,6 +147,41 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     return root / ".git" / "hooks"
 
 
+def removal_blocked_reason(repo_path: Path, hooks_dir: Path) -> str | None:
+    """Why the hook at *hooks_dir* must not be removed from *repo_path*, or ``None``.
+
+    Two shapes, both about a hooks directory that outlives this one repo.
+
+    A linked git worktree stores no hooks of its own: ``_hooks_dir`` follows
+    ``--git-path``, which resolves through the worktree's common dir straight
+    to the main checkout's ``.git/hooks``. Removing the hook from a worktree
+    would remove the one hook every other worktree (including the main
+    checkout) also runs on their own commits.
+
+    A global ``core.hooksPath`` (husky, lefthook, a user dotfile) is the same
+    problem at machine scope: the directory is shared across every repo that
+    points at it, and ``uninstall`` is deliberately scoped to one repo (unlike
+    ``repowise hook uninstall``, whose whole job is the hooks command).
+    """
+    from repowise.cli.worktree import detect_worktree_base
+
+    base = detect_worktree_base(repo_path)
+    if base is not None:
+        return f"this is a worktree; the hook lives in the main checkout at {base}"
+
+    root = _git_root(repo_path)
+    if root is not None:
+        try:
+            hooks_dir.resolve().relative_to(root.resolve())
+            return None
+        except (OSError, ValueError):
+            pass
+    return (
+        "core.hooksPath points outside this repo; removing the hook here "
+        "would remove it for every repo that shares it"
+    )
+
+
 def _is_shell_hook(content: str) -> bool:
     """Whether an existing hook file can take an appended POSIX sh block.
 
@@ -372,7 +407,10 @@ def uninstall(repo_path: Path) -> str:
     if not hook_path.exists():
         return "no post-commit hook found"
 
-    content = hook_path.read_text(encoding="utf-8")
+    try:
+        content = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"could not read post-commit hook: {exc}"
     if _HOOK_MARKER not in content:
         return "repowise hook not found in post-commit"
 
@@ -404,7 +442,10 @@ def status(repo_path: Path) -> str:
     if not hook_path.exists():
         return "not installed"
 
-    content = hook_path.read_text(encoding="utf-8")
+    try:
+        content = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unreadable"
     if _HOOK_MARKER in content:
         pending = husky_pending_reason(hook_path.parent)
         return f"installed ({pending})" if pending else "installed"
