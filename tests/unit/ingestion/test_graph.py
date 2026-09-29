@@ -307,18 +307,19 @@ class TestStemDisambiguation:
         target_b = build_with_order(list(reversed(files)))
         assert target_a == target_b == "src/widget.py"
 
-    def test_parent_dir_match_beats_shorter_path(self) -> None:
-        """A nested file whose parent directory matches the stem beats a
-        shallower file whose parent doesn't — canonical package layout
-        is the strongest signal."""
+    def test_a_bare_name_is_not_guessed_from_a_nested_stem(self) -> None:
+        """``import util`` from the repo root names a top-level module. Neither
+        ``vendor/util.py`` nor ``src/util/util.py`` is importable as ``util``,
+        so it stays external rather than picking one by stem."""
         b = GraphBuilder()
-        # Shallower path, parent dir doesn't match stem
         b.add_file(_parsed("vendor/util.py"))
-        # Deeper path, but parent dir == stem (canonical layout)
         b.add_file(_parsed("src/util/util.py"))
         b.add_file(_parsed("main.py", imports=[_imp("util")]))
         b.build()
-        assert b.graph().has_edge("main.py", "src/util/util.py")
+        g = b.graph()
+        assert not g.has_edge("main.py", "src/util/util.py")
+        assert not g.has_edge("main.py", "vendor/util.py")
+        assert g.has_edge("main.py", "external:util")
 
     def test_src_layout_direct_match(self) -> None:
         """`from flask.app import X` finds src/flask/app.py via the new

@@ -415,3 +415,29 @@ class TestFixtureIsNotDeadCode:
             graph[pred][target].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
             for pred in graph.predecessors(target)
         )
+
+
+def test_conftest_edge_is_marked_as_a_convention_not_an_import() -> None:
+    """Collection loads a conftest for the tests below it; no import says so."""
+    from repowise.core.ingestion.framework_edges.pytest_edges import (
+        CONFTEST_HINT,
+        _add_conftest_edges,
+    )
+
+    graph = nx.DiGraph()
+    graph.add_node("tests/conftest.py", is_test=True)
+    graph.add_node("tests/test_api.py", is_test=True)
+    graph.add_node("tests/test_db.py", is_test=True)
+    graph.add_node("app.py", is_test=False)
+    # A real import of the conftest keeps its own, unhinted edge.
+    graph.add_edge("tests/test_db.py", "tests/conftest.py", edge_type="imports")
+
+    _add_conftest_edges(graph, set(graph.nodes))
+
+    assert graph["tests/test_api.py"]["tests/conftest.py"] == {
+        "edge_type": "framework",
+        "imported_names": [],
+        "hint_source": CONFTEST_HINT,
+    }
+    assert "hint_source" not in graph["tests/test_db.py"]["tests/conftest.py"]
+    assert not graph.has_edge("app.py", "tests/conftest.py")

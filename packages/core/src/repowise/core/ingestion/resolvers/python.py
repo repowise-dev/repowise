@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..languages.python_modules import build_python_module_index
+from ..languages.python_modules import (
+    _index_priority,
+    _is_package_dir,
+    build_python_module_index,
+)
 from .context import ResolverContext
 
 if TYPE_CHECKING:
@@ -36,8 +40,37 @@ def _module_index(ctx: ResolverContext) -> dict[str, str]:
     return idx
 
 
+def _module_file(stem: str, path_set: frozenset[str] | set[str]) -> str | None:
+    """``<stem>.py`` or ``<stem>/__init__.py``, whichever the repo has."""
+    for c in (f"{stem}.py", f"{stem}/__init__.py"):
+        if c in path_set:
+            return c
+    return None
+
+
 def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a Python import to a repo-relative file path."""
+    hit = _resolve_file(module_path, importer_path, ctx)
+    if hit:
+        # A module naming itself is no dependency.
+        return None if hit == importer_path else hit
+    return _external(module_path, ctx)
+
+
+def _external(module_path: str, ctx: ResolverContext) -> str | None:
+    """The ``external:`` node for an absolute import no repo file defines."""
+    if module_path.startswith("."):
+        return None
+    # Nothing in the repo defines this module, so register it the way every
+    # other language resolver does: the packages tab and the import counts can
+    # only see a third-party or stdlib dependency if the miss becomes a node.
+    # Stdlib is included on purpose, as Go and TypeScript already do, and
+    # io_kind.py seeds stdlib names for exactly this consumer.
+    return ctx.add_external_node(module_path)
+
+
+def _resolve_file(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    """The repo file *module_path* names from *importer_path*, or None."""
     importer_dir = Path(importer_path).parent
 
     # Relative import: ".sibling" or "..parent.module"
@@ -47,63 +80,58 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
         base = importer_dir
         for _ in range(dots - 1):
             base = base.parent
-        candidates = [
-            (base / rest).with_suffix(".py").as_posix() if rest else None,
-            (base / rest / "__init__.py").as_posix() if rest else None,
-        ]
-        for c in candidates:
-            if c and c in ctx.path_set:
-                return c
-        return None
+        return _module_file((base / rest).as_posix(), ctx.path_set) if rest else None
 
-    # Absolute import: resolve via the source-root-aware module index first.
-    # This maps the fully-qualified dotted name to its defining file no
-    # matter how deeply the source root is nested (``src/``,
-    # ``packages/*/src/``, …) — the case the naive layout probes below miss,
-    # and the reason cross-package imports such as
-    # ``from repowise.core.persistence.models import SecurityFinding`` used
-    # to fall through to an ambiguous stem match.
+    # Absolute import. A script (a file whose directory is not a package) has
+    # its own directory first on sys.path, so its siblings shadow everything,
+    # the stdlib included. A package member has no such entry: since Python 3
+    # an absolute ``import types`` inside ``pkg/`` is the stdlib, never
+    # ``pkg/types.py``.
+    dotted = module_path.replace(".", "/")
+    if not _is_package_dir(importer_dir.as_posix(), ctx.path_set):
+        base = "" if importer_dir.as_posix() == "." else f"{importer_dir.as_posix()}/"
+        hit = _module_file(f"{base}{dotted}", ctx.path_set)
+        if hit:
+            return hit
+    return _resolve_in_repo(module_path, dotted, ctx)
+
+
+def _resolve_in_repo(module_path: str, dotted: str, ctx: ResolverContext) -> str | None:
+    """The repo file importable as *module_path* from a repo import root, or None."""
+    # The source-root-aware module index maps the fully-qualified dotted name
+    # to its defining file however deeply the source root is nested (``src/``,
+    # ``packages/*/src/``, …).
     hit = _module_index(ctx).get(module_path)
     if hit:
         return hit
 
-    # Fallback: obvious flat / single-``src`` filesystem layouts. Kept as a
-    # belt-and-suspenders path for PEP 420 namespace packages (no
-    # ``__init__.py``) that the index cannot derive a dotted name for.
-    dotted = module_path.replace(".", "/")
-    candidates = [
-        f"{dotted}.py",
-        f"{dotted}/__init__.py",
-        f"src/{dotted}.py",
-        f"src/{dotted}/__init__.py",
-    ]
-    for c in candidates:
-        if c in ctx.path_set:
-            return c
+    # The repo root and a single ``src`` are import roots even for a loose
+    # module the index cannot name.
+    return (
+        _module_file(dotted, ctx.path_set)
+        or _module_file(f"src/{dotted}", ctx.path_set)
+        or _suffix_match(module_path, dotted, ctx)
+    )
 
-    # Stem-only fallback, Python files only. The stem map holds every indexed
-    # file, so without the suffix guard ``import httpx`` resolved to a
-    # ``baselines/httpx.json`` fixture; Ruby and PHP guard theirs the same way.
-    # Stdlib names skip it: a nested ``specs/json.py`` is not what ``import
-    # json`` loads, and that one stem drew 527 false edges on this repo. A
-    # sibling of the importer still wins, as it does for a script run from
-    # its own directory.
-    stem = module_path.split(".")[-1].lower()
-    if module_path.split(".")[0] in _STDLIB_NAMES:
-        sibling = (importer_dir / f"{module_path.replace('.', '/')}.py").as_posix()
-        if sibling in ctx.path_set:
-            return sibling
-    else:
-        for candidate in ctx.stem_map.get(stem, ()):
-            if candidate.endswith((".py", ".pyi")):
-                return candidate
 
-    # Nothing in the repo defines this module, so register it the way every
-    # other language resolver does: the packages tab and the import counts can
-    # only see a third-party or stdlib dependency if the miss becomes a node.
-    # Stdlib is included on purpose, as Go and TypeScript already do, and
-    # io_kind.py seeds stdlib names for exactly this consumer.
-    return ctx.add_external_node(module_path)
+def _suffix_match(module_path: str, dotted: str, ctx: ResolverContext) -> str | None:
+    """The best file whose path ends with the whole dotted path, or None."""
+    # A dotted path the index cannot name, typically a PEP 420 namespace
+    # package (``ns/pkg/mod.py`` with no ``ns/__init__.py``) under a nested
+    # root: accept a file whose path *ends* with the whole dotted path, below a
+    # directory that is not itself a package (so it can be a sys.path entry).
+    # A bare top-level name is never matched this way: ``import pydantic`` is
+    # not ``utils/pydantic.py``, and matching one component is a guess. Nor is
+    # a stdlib name, which precedes every root but a script's own directory:
+    # ``os.path`` is not ``compat/os/path.py``.
+    if "." not in module_path or module_path.split(".")[0] in _STDLIB_NAMES:
+        return None
+    matches = []
+    for c in ctx.stem_map.get(module_path.rsplit(".", 1)[-1].lower(), ()):
+        for suffix in (f"/{dotted}.py", f"/{dotted}/__init__.py"):
+            if c.endswith(suffix) and not _is_package_dir(c[: -len(suffix)], ctx.path_set):
+                matches.append(c)
+    return min(matches, key=_index_priority) if matches else None
 
 
 def resolve_python_import_all(
@@ -116,21 +144,30 @@ def resolve_python_import_all(
     inbound edge and the dead-code analyzer reports it unreachable (#666) —
     FastAPI apps wiring routers through their package are the canonical hit.
     Probe every imported name against the package directory and emit the
-    submodule targets alongside the package itself. The bare-relative form
+    submodule targets, plus the package itself unless every name was a
+    submodule. The bare-relative form
     (``from . import a, b``) is already split upstream by
     ``expand_bare_relative_imports``; this covers the named-package forms,
     both absolute and relative.
     """
-    base = resolve_python_import(imp.module_path, importer_path, ctx)
+    # A package ``__init__.py`` importing its own submodules (``from pkg import
+    # a`` inside ``pkg/__init__.py``) still fans out; only the self edge goes.
+    base = _resolve_file(imp.module_path, importer_path, ctx)
     if base is None:
-        return ()
+        external = _external(imp.module_path, ctx)
+        return (external,) if external else ()
     targets = [base]
     names = imp.imported_names or []
+    # Whether some imported name is not a submodule, so it is read from the
+    # package ``__init__.py`` itself.
+    needs_base = True
     if base.endswith("__init__.py") and names and names != ["*"]:
+        needs_base = False
         index = _module_index(ctx)
         base_dir = Path(base).parent.as_posix()
         for name in names:
             if not name or name == "*" or "." in name:
+                needs_base = True
                 continue
             # Source-root-aware index first (absolute imports), then direct
             # sibling probes, which also cover the relative form.
@@ -138,11 +175,10 @@ def resolve_python_import_all(
             if not imp.is_relative:
                 hit = index.get(f"{imp.module_path}.{name}")
             if hit is None:
-                for candidate in (f"{base_dir}/{name}.py", f"{base_dir}/{name}/__init__.py"):
-                    if candidate in ctx.path_set:
-                        hit = candidate
-                        break
-            if hit and hit != base:
+                hit = _module_file(f"{base_dir}/{name}", ctx.path_set)
+            if hit is None or hit == base:
+                needs_base = True
+            else:
                 targets.append(hit)
                 # Point the binding for this name at the submodule file, not
                 # the package ``__init__.py``. ``from pkg import submodule``
@@ -154,4 +190,9 @@ def resolve_python_import_all(
                     if (binding.exported_name or binding.local_name) == name:
                         binding.source_file = hit
                         break
-    return tuple(dict.fromkeys(targets))
+    # ``from pkg import a, b`` where both are submodules reads nothing from
+    # ``pkg/__init__.py``; an edge there would claim a dependency no name
+    # carries, just as ``from pkg.a import x`` draws none to the package.
+    if not needs_base and len(targets) > 1:
+        targets.remove(base)
+    return tuple(t for t in dict.fromkeys(targets) if t != importer_path)

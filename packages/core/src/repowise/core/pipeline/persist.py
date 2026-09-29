@@ -674,14 +674,14 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     The signal is the store's own content rather than a version marker: a
     routine update deliberately clamps ``store_format_version`` below the first
     reindex gate, so a version comparison would refire on every run. Here, a
-    repo whose graph now has cohesion edges but whose table has no
+    repo whose graph now has cohesion edges but whose table has no cohesion
     ``hint_source`` anywhere is exactly a pre-cohesion store. Rewriting it
     stamps those rows, so this answers False from then on and the full
     reconcile happens once.
     """
     from sqlalchemy import select
 
-    from repowise.core.ingestion.cohesion import is_cohesion_edge
+    from repowise.core.ingestion.cohesion import COHESION_HINTS, is_cohesion_edge
     from repowise.core.persistence.models import GraphEdge
 
     try:
@@ -694,7 +694,12 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     row = (
         await session.execute(
             select(GraphEdge.id)
-            .where(GraphEdge.repository_id == repo_id, GraphEdge.hint_source.is_not(None))
+            .where(
+                GraphEdge.repository_id == repo_id,
+                # Cohesion hints only: other passes (pytest conftest) stamp a
+                # hint too, and one of theirs is not a cohesion stamp.
+                GraphEdge.hint_source.in_(COHESION_HINTS),
+            )
             .limit(1)
         )
     ).first()
