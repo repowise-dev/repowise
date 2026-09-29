@@ -127,9 +127,9 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         validate_threshold=fail_under is None,
         validate_min_lines=min_coverable_lines is None,
     )
-    threshold = fail_under if fail_under is not None else cfg.fail_under
-    if min_coverable_lines is None:
-        min_coverable_lines = cfg.min_coverable_lines
+    # A flag overrides its config key.
+    threshold = _first_set(fail_under, cfg.fail_under)
+    min_coverable_lines = _first_set(min_coverable_lines, cfg.min_coverable_lines)
     report_prefixes = _cli_reports(reports) if reports else cfg.reports(root)
     report_paths = list(report_prefixes)
     if not report_paths and not has_db_store(root):
@@ -155,6 +155,11 @@ def _evaluate(revspec, reports, report_format, fail_under, min_coverable_lines, 
         min_coverable_lines=min_coverable_lines,
         ignore=cfg.ignore,
     )
+
+
+def _first_set(flag, configured):
+    """The flag's value, else the config's: ``0`` is a value, not unset."""
+    return configured if flag is None else flag
 
 
 def _cli_reports(args: tuple[str, ...]) -> dict[Path, str | None]:

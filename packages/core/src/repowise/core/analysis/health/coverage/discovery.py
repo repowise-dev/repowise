@@ -365,43 +365,57 @@ def _expand_pattern(
         if direct.is_file():
             yield direct
         return
-    if "**" not in pattern:
-        # Single-level wildcards cannot recurse; a plain glob is bounded.
-        matches: Iterable[Path] = root.glob(pattern)
+    if "**" in pattern:
+        matches = _recursive_matches(root, pattern, snapshots)
     else:
-        # Recursive pattern: split at the first ``**`` into a fixed (or
-        # shallow-globbed) root and a tail served from the shared snapshot.
-        prefix, _, tail = pattern.partition("**")
-        prefix = prefix.rstrip("/")
-        tail = tail.lstrip("/") or "*"
-        if _has_magic(prefix):
-            roots = [d for d in root.glob(prefix) if d.is_dir()]
-        else:
-            roots = [root / prefix]
-        if not _has_magic(prefix) and any(part in _PRUNE_DIRS for part in Path(prefix).parts):
-            # The snapshot never enters a pruned dir, so a root spelled under
-            # one is walked live (still pruning below it).
-            matches = iter_glob(roots[0], tail, prune_dirs=_PRUNE_DIRS)
-        else:
-            if root not in snapshots:
-                snapshots[root] = WalkSnapshot(root, prune_dirs=_PRUNE_DIRS)
-            snap = snapshots[root]
-            matches = chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
-    literal = 0
+        # Single-level wildcards cannot recurse; a plain glob is bounded.
+        matches = root.glob(pattern)
+    literal = _literal_depth(pattern)
+    for match in matches:
+        # Safety net for the plain-glob paths, which do not prune.
+        if match.is_file() and not _under_pruned(match, root, literal):
+            yield match
+
+
+def _recursive_matches(
+    root: Path, pattern: str, snapshots: dict[Path, WalkSnapshot]
+) -> Iterable[Path]:
+    """A ``**`` pattern split at its first ``**``: a fixed (or shallow-globbed)
+    root, and a tail served from the shared snapshot."""
+    prefix, _, tail = pattern.partition("**")
+    prefix = prefix.rstrip("/")
+    tail = tail.lstrip("/") or "*"
+    if _has_magic(prefix):
+        roots = [d for d in root.glob(prefix) if d.is_dir()]
+    elif any(part in _PRUNE_DIRS for part in Path(prefix).parts):
+        # The snapshot never enters a pruned dir, so a root spelled under
+        # one is walked live (still pruning below it).
+        return iter_glob(root / prefix, tail, prune_dirs=_PRUNE_DIRS)
+    else:
+        roots = [root / prefix]
+    if root not in snapshots:
+        snapshots[root] = WalkSnapshot(root, prune_dirs=_PRUNE_DIRS)
+    snap = snapshots[root]
+    return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
+
+
+def _literal_depth(pattern: str) -> int:
+    """How many leading directory segments of *pattern* are spelled literally."""
+    depth = 0
     for seg in pattern.split("/")[:-1]:
         if _has_magic(seg):
             break
-        literal += 1
-    for match in matches:
-        if not match.is_file():
-            continue
-        try:
-            rel_parts = match.relative_to(root).parts
-        except ValueError:
-            rel_parts = match.parts
-        # Safety net for the plain-glob paths, which do not prune.
-        if not any(part in _PRUNE_DIRS for part in rel_parts[literal:-1]):
-            yield match
+        depth += 1
+    return depth
+
+
+def _under_pruned(match: Path, root: Path, literal: int) -> bool:
+    """Whether *match* sits in a pruned dir below its pattern's literal part."""
+    try:
+        rel_parts = match.relative_to(root).parts
+    except ValueError:
+        rel_parts = match.parts
+    return any(part in _PRUNE_DIRS for part in rel_parts[literal:-1])
 
 
 def normalize_report_path(
@@ -685,6 +699,33 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
         )
 
 
+def _note_format(result: ResolvedCoverage, source_format: str | None) -> None:
+    """Record a report's format: the first as ``source_format``, every one once."""
+    if source_format in (None, "unknown"):
+        return
+    if result.source_format is None:
+        result.source_format = source_format
+    if source_format not in result.source_formats:
+        result.source_formats.append(source_format)
+
+
+def _merge_keyed(by_key: dict[str, FileCoverage], key: str, fc: FileCoverage) -> None:
+    """Add a copy of *fc* under *key*, merged hit-wins with what is there."""
+    resolved_fc = FileCoverage(
+        file_path=key,
+        line_coverage_pct=fc.line_coverage_pct,
+        branch_coverage_pct=fc.branch_coverage_pct,
+        covered_lines=list(fc.covered_lines),
+        total_coverable_lines=fc.total_coverable_lines,
+        coverable_lines=list(fc.coverable_lines),
+        covered_line_count=fc.covered_line_count,
+    )
+    if key in by_key:
+        _merge_into(by_key[key], resolved_fc)
+    else:
+        by_key[key] = resolved_fc
+
+
 def resolve_reports(
     reports: list[CoverageReport],
     repo_keys: set[str],
@@ -716,11 +757,7 @@ def resolve_reports(
         # Only a coverprofile names files by import path; ``module web`` must
         # not rewrite an lcov report's ``web/src/x.ts``.
         modules = go_modules if report.source_format == "go-coverprofile" else ()
-        if report.source_format not in (None, "unknown"):
-            if result.source_format is None:
-                result.source_format = report.source_format
-            if report.source_format not in result.source_formats:
-                result.source_formats.append(report.source_format)
+        _note_format(result, report.source_format)
         for fc in report.files:
             report_file_count += 1
             key, ambiguous, exact = _resolve_path(
@@ -732,37 +769,19 @@ def resolve_reports(
                 path_prefix=prefix,
                 go_modules=modules,
             )
-            if key is None:
-                norm = normalize_report_path(
-                    fc.file_path, strip_prefix=strip_prefix, path_prefix=prefix
-                )
-                if ignore_spec.match_file(norm):
-                    result.ignored += 1
-                elif ambiguous:
-                    result.ambiguous.append(fc.file_path)
-                else:
-                    result.unmatched.append(fc.file_path)
-                continue
-            if ignore_spec.match_file(key):
-                result.ignored += 1
-                continue
-            if exact:
-                result.matched_exact += 1
-            else:
-                result.matched_suffix += 1
-            resolved_fc = FileCoverage(
-                file_path=key,
-                line_coverage_pct=fc.line_coverage_pct,
-                branch_coverage_pct=fc.branch_coverage_pct,
-                covered_lines=list(fc.covered_lines),
-                total_coverable_lines=fc.total_coverable_lines,
-                coverable_lines=list(fc.coverable_lines),
-                covered_line_count=fc.covered_line_count,
+            # An entry that resolves is ignored by its key; one that does not,
+            # by the path the report wrote.
+            where = key or normalize_report_path(
+                fc.file_path, strip_prefix=strip_prefix, path_prefix=prefix
             )
-            if key in by_key:
-                _merge_into(by_key[key], resolved_fc)
+            if ignore_spec.match_file(where):
+                result.ignored += 1
+            elif key is None:
+                (result.ambiguous if ambiguous else result.unmatched).append(fc.file_path)
             else:
-                by_key[key] = resolved_fc
+                result.matched_exact += exact
+                result.matched_suffix += not exact
+                _merge_keyed(by_key, key, fc)
 
     # Severe mapping loss is a property of the *report*, not of the matched
     # subset: a 200-file report that mapped 20 files is a fragment no matter

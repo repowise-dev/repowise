@@ -201,14 +201,10 @@ def compute_patch_coverage(
             continue
         if ignore_spec.match_file(path):
             ignored += 1
-            continue
-        fc = coverage.get(path)
-        if fc is not None:
-            files.append(_file_patch(path, lines, fc))
-        elif is_test_related_path(path) or PurePosixPath(path).suffix not in measured_suffixes:
+        elif (row := _changed_file(path, lines, coverage, measured_suffixes)) is None:
             out_of_scope += 1
         else:
-            files.append(FilePatchCoverage(path, "not_in_report", len(lines)))
+            files.append(row)
     return PatchCoverage(
         files=tuple(files),
         threshold=threshold,
@@ -245,6 +241,21 @@ def patch_coverage_from_resolved(
             mapping_partial=resolved.mapping_partial,
         ),
     )
+
+
+def _changed_file(
+    path: str,
+    lines: set[int],
+    coverage: Mapping[str, FileCoverage],
+    measured_suffixes: set[str],
+) -> FilePatchCoverage | None:
+    """One changed file's row, or ``None`` when it is out of the report's scope."""
+    fc = coverage.get(path)
+    if fc is not None:
+        return _file_patch(path, lines, fc)
+    if is_test_related_path(path) or PurePosixPath(path).suffix not in measured_suffixes:
+        return None
+    return FilePatchCoverage(path, "not_in_report", len(lines))
 
 
 def _file_patch(path: str, lines: set[int], fc: FileCoverage) -> FilePatchCoverage:
