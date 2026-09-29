@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -569,6 +570,84 @@ class TestNestedGitignore:
         assert any("comp.tsx" in p for p in paths)
         assert not any("bundles" in p for p in paths)
         assert not any("comp.snap" in p for p in paths)
+
+
+class TestTrackedFilesNeverGitignored:
+    """Git never ignores a tracked file, so a ``.gitignore`` rule here can't either.
+
+    The shape that dropped a real doc: a root ``logs`` rule, and a nested
+    ``.gitignore`` re-including one file with ``!`` that git then tracks.
+    """
+
+    @staticmethod
+    def _git_add(root: Path, *paths: str) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-f", *paths], cwd=root, check=True)
+
+    def _repo(self, root: Path) -> None:
+        (root / ".gitignore").write_text("logs\n")
+        docs = root / "docs"
+        (docs / "logs").mkdir(parents=True)
+        (docs / ".gitignore").write_text("!logs/\n!logs/overview.py\n")
+        (docs / "logs" / "overview.py").write_text("x = 1\n")
+        (docs / "logs" / "scratch.py").write_text("y = 2\n")
+        (root / "app.py").write_text("pass\n")
+
+    def test_tracked_file_under_ignored_dir_indexed(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        tv = FileTraverser(tmp_path)
+        paths = {f.path for f in tv.traverse()}
+        assert "docs/logs/overview.py" in paths
+        assert not tv.dir_chain_skipped(Path("docs/logs"))
+
+    def test_untracked_ignored_still_skipped(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "run.py").write_text("pass\n")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/scratch.py" not in paths
+        assert "logs/run.py" not in paths
+        assert "app.py" in paths
+
+    def test_nested_gitignore_yields_to_tracked_file(self, tmp_path: Path) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / ".gitignore").write_text("gen_*.py\n")
+        (tmp_path / "pkg" / "gen_kept.py").write_text("pass\n")
+        (tmp_path / "pkg" / "gen_scratch.py").write_text("pass\n")
+        self._git_add(tmp_path, "pkg/gen_kept.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "pkg/gen_kept.py" in paths
+        assert "pkg/gen_scratch.py" not in paths
+
+    def test_untracked_beside_tracked_keep_file_in_nested_ignored_dir_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        web = tmp_path / "web"
+        (web / "gen" / "assets").mkdir(parents=True)
+        (web / ".gitignore").write_text("gen/\n")
+        (web / "gen" / "keep.py").write_text("pass\n")
+        (web / "gen" / "bundle.py").write_text("pass\n")
+        (web / "gen" / "assets" / "chunk.py").write_text("pass\n")
+        self._git_add(tmp_path, "web/gen/keep.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == {"web/gen/keep.py"}
+
+    def test_repowise_ignore_and_excludes_still_drop_tracked_files(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "lib.py").write_text("pass\n")
+        (tmp_path / ".repowiseIgnore").write_text("docs/\n")
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py", "vendor/lib.py")
+        tv = FileTraverser(tmp_path, extra_exclude_patterns=["vendor/"])
+        assert {f.path for f in tv.traverse()} == {"app.py"}
+
+    def test_non_git_checkout_keeps_gitignore_rules(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/overview.py" not in paths
+        assert "app.py" in paths
 
 
 # ---------------------------------------------------------------------------

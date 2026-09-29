@@ -75,6 +75,25 @@ class SkippedSourceFile(NamedTuple):
     reason: str  # "over_max_size" | "minified"
 
 
+class _DirIgnore(NamedTuple):
+    """One directory's nested ignore rules, matched against a child's name.
+
+    Kept apart because they differ in authority: git never ignores a tracked
+    file, so a ``.gitignore`` rule yields to the tracked set while a
+    ``.repowiseIgnore`` rule is the user's own exclusion and always applies.
+    """
+
+    gitignore: pathspec.PathSpec
+    extra: pathspec.PathSpec
+
+
+class _TrackedPaths(NamedTuple):
+    """What git tracks under the root: files, and every directory holding one."""
+
+    files: frozenset[str]
+    dirs: frozenset[str]
+
+
 @dataclass
 class TraversalStats:
     """Counts collected during file traversal, broken down by skip reason."""
@@ -368,9 +387,16 @@ class FileTraverser:
         self._extra_exclude = _compile_gitignore(patterns)
         # Absolute dir path -> that directory's nested ignore spec. The root is
         # pre-seeded because its files are already loaded above.
-        self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
-            str(self.repo_root): self._extra_ignore,
+        self._dir_ignore_cache: dict[str, _DirIgnore] = {
+            str(self.repo_root): _DirIgnore(_compile_gitignore([]), self._extra_ignore),
         }
+        # Lazy: read only once a .gitignore rule matches something.
+        self._tracked: _TrackedPaths | None = None
+        self._tracked_lock = threading.Lock()
+        # Gitignored dirs walked only for the tracked files they hold. A nested
+        # rule is matched against the child name alone, so without this the
+        # untracked files beside a tracked `.gitkeep` would slip in.
+        self._ignored_tracked_dirs: set[str] = set()
         # Parsed even when submodules are included: the set exempts them from
         # the nested-repo skip, since an initialized submodule has a `.git` file.
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
@@ -505,12 +531,12 @@ class FileTraverser:
                 self.stats.total_paths_walked += 1
                 yield dirpath_obj / filename
 
-    def _get_dir_ignore(self, dirpath: Path) -> pathspec.PathSpec:
-        """Return the per-directory ignore spec, loading and caching on first access.
+    def _get_dir_ignore(self, dirpath: Path) -> _DirIgnore:
+        """Return the per-directory ignore specs, loading and caching on first access.
 
-        Merges the directory's nested ``.gitignore`` and ``.repowiseIgnore``
-        (in that order), as git applies a ``.gitignore`` to its own directory.
-        Patterns are matched against the immediate child name.
+        The directory's nested ``.gitignore`` and ``.repowiseIgnore``, as git
+        applies a ``.gitignore`` to its own directory. Patterns are matched
+        against the immediate child name.
 
         Read outside the lock and written under it, like
         :meth:`_console_script_tables`, since the callers are per-path workers.
@@ -518,24 +544,48 @@ class FileTraverser:
         key = str(dirpath)
         spec = self._dir_ignore_cache.get(key)
         if spec is None:
-            lines: list[str] = []
-            for name in (".gitignore", self._extra_ignore_filename):
-                ignore_file = dirpath / name
-                if ignore_file.exists():
-                    lines.extend(
-                        ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    )
-            spec = _compile_gitignore(lines)
+            spec = _DirIgnore(
+                load_extra_ignore_spec(dirpath, ".gitignore"),
+                load_extra_ignore_spec(dirpath, self._extra_ignore_filename),
+            )
             with self._dir_ignore_lock:
                 # Keep the first published spec so every caller shares one object.
                 spec = self._dir_ignore_cache.setdefault(key, spec)
         return spec
 
+    def _tracked_paths(self) -> _TrackedPaths:
+        """Git's tracked files under the root, read once; empty outside a repo.
+
+        Double-checked locking as in :meth:`_console_script_tables`: the first
+        caller may be a per-path worker, and each duplicate is a git call.
+        """
+        if self._tracked is None:
+            with self._tracked_lock:
+                if self._tracked is None:
+                    # Deferred: git_refs reaches analysis modules that import ingestion.
+                    from ..git_refs import tracked_paths
+
+                    files = tracked_paths(str(self.repo_root))
+                    dirs = {p.as_posix() for f in files for p in Path(f).parents}
+                    dirs.discard(".")
+                    self._tracked = _TrackedPaths(files, frozenset(dirs))
+        return self._tracked
+
+    def _is_tracked(self, rel_str: str, *, is_dir: bool = False) -> bool:
+        """Whether git tracks the file, or for a directory any file under it.
+
+        Git ignores only untracked paths, so a ``.gitignore`` match yields to
+        this: a broad rule such as ``logs`` cannot drop a file a nested
+        ``.gitignore`` re-included with ``!`` and git tracks.
+        """
+        tracked = self._tracked_paths()
+        return rel_str in (tracked.dirs if is_dir else tracked.files)
+
     def _should_skip_dir(
         self,
         dirname: str,
         rel_path: Path,
-        dir_ignore: pathspec.PathSpec | None = None,
+        dir_ignore: _DirIgnore | None = None,
     ) -> bool:
         if dirname in _BLOCKED_DIRS:
             return True
@@ -543,14 +593,34 @@ class FileTraverser:
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True
         dir_pattern = rel_str + "/"
-        if (
-            self._gitignore.match_file(dir_pattern)
-            or self._extra_ignore.match_file(dir_pattern)
-            or self._extra_exclude.match_file(dir_pattern)
+        if self._extra_ignore.match_file(dir_pattern) or self._extra_exclude.match_file(
+            dir_pattern
         ):
             return True
         # Per-directory ignore: pattern is relative to the parent directory.
-        return dir_ignore is not None and dir_ignore.match_file(dirname + "/")
+        if dir_ignore is not None and dir_ignore.extra.match_file(dirname + "/"):
+            return True
+        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dirname + "/")
+        return self._dir_gitignored(rel_str, nested)
+
+    def _dir_gitignored(self, rel_str: str, nested_match: bool) -> bool:
+        """Whether ``.gitignore`` prunes the directory, which it may not if git tracks a file in it."""
+        if not (
+            nested_match
+            or self._gitignore.match_file(rel_str + "/")
+            or self._in_ignored_tracked_dir(rel_str)
+        ):
+            return False
+        if not self._is_tracked(rel_str, is_dir=True):
+            return True
+        self._ignored_tracked_dirs.add(rel_str)
+        return False
+
+    def _in_ignored_tracked_dir(self, rel_str: str) -> bool:
+        """Whether a gitignored directory kept for its tracked files holds *rel_str*."""
+        return bool(self._ignored_tracked_dirs) and any(
+            p.as_posix() in self._ignored_tracked_dirs for p in Path(rel_str).parents
+        )
 
     def _is_repo_boundary(self, rel_str: str, abs_path: Path) -> bool:
         """True (and counted) for an excluded submodule or a nested git repo."""
@@ -622,18 +692,30 @@ class FileTraverser:
         """The stats counter of the first path rule that excludes this file, if any."""
         if abs_path.suffix.lower() in _BLOCKED_EXTENSIONS:
             return "skipped_blocked_extension"
-        if self._gitignore.match_file(rel_str):
+        if self._root_gitignored(rel_str):
             return "skipped_gitignore"
         if self._extra_ignore.match_file(rel_str):
             return "skipped_extra_ignore"
         if self._extra_exclude.match_file(rel_str):
             return "skipped_extra_exclude"
-        # Per-directory .repowiseIgnore: check filename against the parent dir's spec.
-        if self._get_dir_ignore(abs_path.parent).match_file(abs_path.name):
+        if self._dir_ignore_drops(abs_path, rel_str):
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
         return None
+
+    def _root_gitignored(self, rel_str: str) -> bool:
+        """Whether the root ``.gitignore`` (or a kept ignored dir) drops an untracked file."""
+        return (
+            self._gitignore.match_file(rel_str) or self._in_ignored_tracked_dir(rel_str)
+        ) and not self._is_tracked(rel_str)
+
+    def _dir_ignore_drops(self, abs_path: Path, rel_str: str) -> bool:
+        """Whether the parent directory's own ignore files drop the file, by name."""
+        dir_ignore = self._get_dir_ignore(abs_path.parent)
+        if dir_ignore.extra.match_file(abs_path.name):
+            return True
+        return dir_ignore.gitignore.match_file(abs_path.name) and not self._is_tracked(rel_str)
 
     def _resolve_language(
         self, abs_path: Path, rel_str: str, size_bytes: int
