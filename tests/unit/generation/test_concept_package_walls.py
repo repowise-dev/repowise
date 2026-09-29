@@ -256,3 +256,21 @@ def test_top_level_thin_packages_roll_up_at_the_root():
     rollup = next(g for g in groups if g.packages)
     assert rollup.target_path == "root"
     assert deterministic_title(rollup) == "Root Packages: Alpha, Bravo"
+
+
+def test_a_package_with_a_nested_manifest_is_sized_by_its_subtree():
+    """``pkg/package.json`` over ``pkg/src/package.json``: the outer root owns one
+    file directly but its code sits under the inner root, so it is not thin."""
+    files = [f"packages/{n}/src/f{i}.ts" for n in ("alpha", "bravo") for i in range(2)]
+    files += ["packages/vue/index.ts"]
+    files += [f"packages/vue/src/{d}/f{i}.ts" for d in ("a", "b") for i in range(4)]
+    roots = {"packages/alpha", "packages/bravo", "packages/vue", "packages/vue/src"}
+    groups = group_files(files, params=PARAMS, package_roots=roots)
+    rollup = next(g for g in groups if g.packages)
+    assert rollup.packages == ("packages/alpha", "packages/bravo")
+    assert not any(m.startswith("packages/vue/") for m in rollup.members)
+    assert package_file_counts(files, ["packages/vue", *rollup.packages]) == [
+        ("packages/alpha", 2),
+        ("packages/bravo", 2),
+        ("packages/vue", 9),
+    ]

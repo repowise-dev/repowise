@@ -264,6 +264,12 @@ def _package_of(path: str, roots: set[str]) -> str:
     return owner if owner in roots else ""
 
 
+def _roots_holding(path: str, roots: set[str]) -> list[str]:
+    """Every root in *roots* that *path* sits under, outermost first."""
+    parts = path.split("/")
+    return [d for d in ("/".join(parts[:i]) for i in range(1, len(parts))) if d in roots]
+
+
 def package_file_counts(members: Sequence[str], packages: Sequence[str]) -> list[tuple[str, int]]:
     """``(package root, files)`` for each package a roll-up covers, in path order."""
     return [(p, sum(1 for m in members if m.startswith(p + "/"))) for p in sorted(packages)]
@@ -296,16 +302,25 @@ class _Partitioner:
         roll-up whose page lists them one row each. A thin package with no thin
         sibling stays in the partition as its own small page.
         """
-        sizes = Counter(o for o in (self.package_of.get(f, "") for f in files) if o)
+        # Sized by whole subtree: a root whose code sits under a nested manifest
+        # owns few files directly but is not thin.
+        owners = {o for o in self.package_of.values() if o}
+        sizes = Counter(r for f in files for r in _roots_holding(f, owners))
+        thin = {r for r, n in sizes.items() if n < self.params.thin_package_files}
         by_parent: dict[str, list[str]] = {}
-        for root in sorted(r for r, n in sizes.items() if n < self.params.thin_package_files):
+        for root in sorted(thin):
+            # A thin root inside another thin root rides along with its ancestor.
+            if any(root.startswith(t + "/") for t in thin):
+                continue
             by_parent.setdefault("/".join(root.split("/")[:-1]), []).append(root)
         runs = [tuple(roots) for _parent, roots in sorted(by_parent.items()) if len(roots) > 1]
+        rolled: set[str] = set()
         for run in runs:
-            members = [f for f in files if self.package_of.get(f, "") in run]
+            held = set(run)
+            members = [f for f in files if _roots_holding(f, held)]
             self.groups.append(self.make(members, packages=run))
-        rolled = {root for run in runs for root in run}
-        return [f for f in files if self.package_of.get(f, "") not in rolled]
+            rolled.update(members)
+        return [f for f in files if f not in rolled]
 
     def make(self, members: Sequence[str], packages: tuple[str, ...] = ()) -> ConceptGroup:
         ordered = sorted(members)
