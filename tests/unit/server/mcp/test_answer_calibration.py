@@ -44,6 +44,11 @@ class TestHedgeMarkers:
         long_preamble = "The module handles ingestion. " * 40
         assert _answer_is_hedged(long_preamble + "However, the excerpts do not include the value.")
 
+    def test_evidence_that_names_no_answer_detected(self) -> None:
+        assert _answer_is_hedged("The evidence does not identify which caller sets it.")
+        assert _answer_is_hedged("The material does not show the retry count.")
+        assert _answer_is_hedged("The evidence does not specify which default ports it drops.")
+
     def test_direct_answer_not_hedged(self) -> None:
         assert not _answer_is_hedged("The default is 2, set in git_indexer/_constants.py.")
 
