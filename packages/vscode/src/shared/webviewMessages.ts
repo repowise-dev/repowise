@@ -83,6 +83,8 @@ export const SETTING_KEYS = [
   "diagnostics.enabled",
   "diagnostics.minSeverity",
   "diagnostics.dimensions",
+  "docDrift.diagnostics.enabled",
+  "docDrift.diagnostics.minConfidence",
   "gutterHeat.enabled",
   "fileDecorations.enabled",
   "fileDecorations.maxScore",
