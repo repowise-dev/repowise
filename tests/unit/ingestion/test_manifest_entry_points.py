@@ -151,6 +151,11 @@ def test_exports_conditions_object_is_the_root_export() -> None:
     assert manifest_entry_paths(".", data, {"src/main.ts"}) == {"src/main.ts"}
 
 
+def test_declaration_main_is_not_an_entry() -> None:
+    data = {"main": "./dist/index.d.ts", "bin": "./dist/cli.d.mts"}
+    assert manifest_entry_paths(".", data, {"src/index.ts", "src/cli.ts"}) == set()
+
+
 def test_pyproject_scripts_and_dist_init(tmp_path: Path) -> None:
     repo = _write(
         tmp_path,

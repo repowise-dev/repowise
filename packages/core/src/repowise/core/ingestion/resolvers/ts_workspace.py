@@ -34,6 +34,7 @@ import json
 import posixpath
 import re
 import subprocess
+from collections.abc import Container
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -635,6 +636,16 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
                 return resolved
         return None
 
+    def built_export_source() -> str | None:
+        # Last, so it only fills a specifier nothing else bound: every
+        # candidate names build output absent from the checkout.
+        checked_in = get_checked_in_builds(ctx)
+        for target in targets or ():
+            resolved = _built_source(dir_posix, target, ctx.path_set, checked_in)
+            if resolved is not None:
+                return resolved
+        return None
+
     # 1) ``exports`` field — the package's authoritative subpath map.
     if targets:
         resolved = probe_target(targets[0])
@@ -660,7 +671,7 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
             cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
                 return cand
-        return None
+        return built_export_source()
 
     # 3) Subpath fallback — packages without ``exports`` (plain monorepo
     #    layouts): try ``<pkg>/<sub>`` directly, then under common source
@@ -673,7 +684,7 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    cand = spare_export_target()
+    cand = spare_export_target() or built_export_source()
     if cand is not None:
         return cand
 
@@ -749,8 +760,10 @@ def _expand_exports_wildcard(
 
 
 # Build output a package.json may point at, and the source extensions tsc
-# compiles to it. Only the unambiguous ``X.js`` ← ``X.ts`` shape is mapped.
-_BUILD_OUTPUT_JS = re.compile(r"^(?:dist|build|lib|out)/(.+)\.[mc]?js$")
+# compiles to it. Only the unambiguous ``X.js``/``X.d.ts`` ← ``X.ts`` shape is
+# mapped. Shortcut: the build dir is the conventional one, not the tsconfig
+# ``outDir``/``rootDir``; reading those means a JSONC ``extends`` walk.
+_BUILD_OUTPUT_JS = re.compile(r"^(?:dist|build|lib|out)/(.+?)(?:\.[mc]?js|\.d\.[mc]?ts)$")
 _BUILD_SOURCE_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".mts", ".js")
 
 
@@ -787,11 +800,12 @@ def _built_output(pkg_dir: str, target: str) -> tuple[str, re.Match[str]] | None
 
 
 def _named_build_outputs(manifests: list[tuple[str, dict]]) -> set[str]:
-    """Every in-repo build-output path the manifests' targets name."""
+    """Every in-repo build-output path the manifests' targets name, subpath exports included."""
     named: set[str] = set()
     for pkg_dir, data in manifests:
         starts, exports = _manifest_targets(data)
-        for target in (*starts, *exports):
+        subpaths = (t for targets in _build_exports_map(data).values() for t in targets)
+        for target in (*starts, *exports, *subpaths):
             built = _built_output(pkg_dir, target)
             if built is not None:
                 named.add(built[0])
@@ -810,11 +824,12 @@ def checked_in_builds(
     """
     if repo_path is None:
         return frozenset()
-    on_disk = {
-        path
-        for path in _named_build_outputs(manifests)
-        if path not in path_set and (repo_path / path).is_file()
-    }
+    return _git_checked_in(repo_path, _named_build_outputs(manifests) - path_set)
+
+
+def _git_checked_in(repo_path: Path, paths: set[str]) -> frozenset[str]:
+    """The *paths* that exist on disk and are not gitignored, in one git call."""
+    on_disk = {path for path in paths if (repo_path / path).is_file()}
     if not on_disk:
         return frozenset()
     try:
@@ -834,31 +849,72 @@ def checked_in_builds(
     return frozenset(on_disk - ignored)
 
 
+@dataclass
+class _CheckedInBuilds:
+    """``path in self``: is this build output part of the checkout?
+
+    Seeded with the manifest-named outputs the batched check found checked in;
+    any other path (a wildcard export's concrete output) is asked on first use,
+    which costs a git call only when that file exists on disk.
+    """
+
+    repo_path: Path | None
+    verdict: dict[str, bool]
+
+    def __contains__(self, path: object) -> bool:
+        if not isinstance(path, str):
+            return False
+        if path not in self.verdict:
+            self.verdict[path] = self.repo_path is not None and bool(
+                _git_checked_in(self.repo_path, {path})
+            )
+        return self.verdict[path]
+
+
+def get_checked_in_builds(ctx: ResolverContext) -> _CheckedInBuilds:
+    """Memoized per resolver context, shared by the entry index and the resolver."""
+    cached = getattr(ctx, "_ts_checked_in_builds", None)
+    if cached is not None:
+        return cached
+    checked = checked_in_builds(ctx.repo_path, _parsed_package_jsons(ctx), ctx.path_set)
+    builds = _CheckedInBuilds(ctx.repo_path, dict.fromkeys(checked, True))
+    ctx._ts_checked_in_builds = builds  # type: ignore[attr-defined]
+    return builds
+
+
+def _built_source(
+    pkg_dir: str, target: str, path_set: set[str], checked_in: Container[str]
+) -> str | None:
+    """The source a build-output *target* was compiled from, when that output is not checked in.
+
+    ``dist|build|lib|out/X.(m|c)js`` (or ``X.d.(m|c)ts``) maps to
+    ``src/X.(ts|tsx|mts|js)``. A committed build is the file itself, and
+    remapping it would name a file the package does not run. Exact hits only,
+    so an ambiguous source never stands in for the build.
+    """
+    built = _built_output(pkg_dir, target)
+    if built is None:
+        return None
+    base = _normalize_repo_rel(f"{pkg_dir}/src/{built[1].group(1)}")
+    hit = next((base + ext for ext in _BUILD_SOURCE_EXTENSIONS if base + ext in path_set), None)
+    return hit if hit is not None and built[0] not in checked_in else None
+
+
 def probe_manifest_target(
-    pkg_dir: str, target: str, path_set: set[str], checked_in: frozenset[str]
+    pkg_dir: str, target: str, path_set: set[str], checked_in: Container[str]
 ) -> str | None:
     """The indexed file a ``package.json`` target names, reading built output as its source.
 
-    ``dist|build|lib|out/X.(m|c)js`` maps to ``src/X.(ts|tsx|mts|js)``, but only
-    when the built file is not in the checkout (*checked_in*, from
-    :func:`checked_in_builds`): a committed build is the entry itself, and
-    remapping it would name a file the package does not run.
-    Exact hits only, so an ambiguous source never stands in for the build.
+    *checked_in* comes from :func:`checked_in_builds` / :func:`get_checked_in_builds`.
     """
     if target.endswith(_DECLARATION_SUFFIXES):
         return None  # a declaration never starts a package, committed or not
     hit = _probe_path(f"{pkg_dir}/{target.removeprefix('./')}", path_set)
-    if hit is not None:
-        return hit
-    built = _built_output(pkg_dir, target)
-    if built is None or built[0] in checked_in:
-        return None
-    base = _normalize_repo_rel(f"{pkg_dir}/src/{built[1].group(1)}")
-    return next((base + ext for ext in _BUILD_SOURCE_EXTENSIONS if base + ext in path_set), None)
+    return hit if hit is not None else _built_source(pkg_dir, target, path_set, checked_in)
 
 
 def manifest_entry_paths(
-    pkg_dir: str, pkg_data: dict, path_set: set[str], checked_in: frozenset[str] = frozenset()
+    pkg_dir: str, pkg_data: dict, path_set: set[str], checked_in: Container[str] = frozenset()
 ) -> set[str]:
     """Files one ``package.json`` declares as where it starts.
 
@@ -908,10 +964,9 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
             resolved = _probe_path(f"{dir_posix}/{main.lstrip('./')}", path_set)
             if resolved is not None:
                 entries.add(resolved)
-    manifests = _parsed_package_jsons(ctx)
-    checked_in = checked_in_builds(ctx.repo_path, manifests, path_set)
+    checked_in = get_checked_in_builds(ctx)
     declared: set[str] = set()
-    for pkg_dir, data in manifests:
+    for pkg_dir, data in _parsed_package_jsons(ctx):
         declared |= manifest_entry_paths(pkg_dir, data, path_set, checked_in)
     return TsWorkspaceIndex(
         packages=packages, exports_entry_paths=entries, manifest_entry_paths=declared
