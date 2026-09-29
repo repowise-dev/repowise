@@ -274,7 +274,7 @@ index every answer is `:all`, with the reason.
 | Rule | Example reason |
 |------|----------------|
 | The change touches no file | `No change against origin/main...HEAD; nothing to select from.` |
-| A changed or deleted file can change any test: a dependency lock or manifest, build or test configuration, a production package's `__init__.py`, shared test-support files (factories, fixtures directories) other than `conftest.py`, test data, CI configuration, `.repowise/config.yaml`, or a path in `tests.full_run_on` | `uv.lock changed: dependencies can change any test.` |
+| A changed or deleted file can change any test: a dependency lock or manifest, build or test configuration, a production package's `__init__.py`, shared test-support files (factories, fixtures directories) other than `conftest.py`, test data, CI configuration (GitHub workflows, `.gitlab-ci.yml` and `.gitlab/`, `.circleci/`, `Jenkinsfile`, Azure Pipelines, `.buildkite/`, `bitbucket-pipelines.yml`, `.travis.yml`, Drone, Woodpecker, AppVeyor, `.teamcity/`), `.repowise/config.yaml`, or a path in `tests.full_run_on` | `uv.lock changed: dependencies can change any test.` |
 | A changed or deleted file sits in a test tree but is not code (data, a snapshot, a golden file) | `tests/data/users.json is in a test tree but is not code ...` |
 | A changed or deleted helper module (`tests/helpers.py`) that no test imports | `tests/helpers.py is a test helper no test imports; ...` |
 | A changed file the index does not know (a data file, an image or a document outside `docs/`) | `src/pkg/schema.json: no coverage, no test reaching it in the graph, no paired test.` |

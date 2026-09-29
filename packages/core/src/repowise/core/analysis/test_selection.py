@@ -105,7 +105,27 @@ _FULL_RUN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("shared test data can change any test", ("**/testdata/**", "**/fixtures/**")),
-    ("CI configuration changed", (".github/workflows/**", ".gitlab-ci.yml")),
+    (
+        "CI configuration changed",
+        (
+            ".github/workflows/**",
+            ".gitlab-ci.yml",
+            "**/.gitlab-ci.yml",
+            ".gitlab/**",
+            ".circleci/**",
+            "Jenkinsfile*",
+            "azure-pipelines*.y*ml",
+            ".azure-pipelines/**",
+            ".buildkite/**",
+            "bitbucket-pipelines.yml",
+            ".travis.yml",
+            ".drone.y*ml",
+            ".woodpecker/**",
+            ".woodpecker.y*ml",
+            "appveyor.y*ml",
+            ".teamcity/**",
+        ),
+    ),
     ("Repowise's configuration changed", (".repowise/config.yaml",)),
 )
 
