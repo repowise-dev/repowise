@@ -961,8 +961,10 @@ class TestInlineTestHintDoesNotMarkFileAsTest:
         gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
         assert gb._graph.nodes["src/lib.rs"]["is_test"] is False
 
-    def test_the_hint_is_still_recorded_on_the_edge(self):
+    def test_the_hint_adds_no_file_self_loop(self):
+        # The marker names the file itself, so it is not a dependency: a
+        # self-loop would only feed the file's own PageRank back to it.
         gb = GraphBuilder("/tmp/fake")
         gb._graph.add_node("src/lib.rs", is_test=False)
         gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
-        assert gb._graph.edges["src/lib.rs", "src/lib.rs"]["hint_source"] == "rust:test"
+        assert not gb._graph.has_edge("src/lib.rs", "src/lib.rs")

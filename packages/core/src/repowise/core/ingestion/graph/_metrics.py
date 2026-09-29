@@ -113,10 +113,12 @@ class MetricsMixin:
                 if d.get("node_type", "file") in ("file", "external")
             ]
             sub = g.subgraph(file_nodes).copy()
+            # A file never depends on itself; a self-loop only feeds PageRank
+            # the node's own rank back to it.
             edges_to_remove = [
                 (u, v)
                 for u, v, d in sub.edges(data=True)
-                if d.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if u == v or d.get("edge_type") in TEMPORAL_EDGE_TYPES
             ]
             sub.remove_edges_from(edges_to_remove)
             self._file_subgraph_cache = sub
