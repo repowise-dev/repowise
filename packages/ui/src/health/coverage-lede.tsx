@@ -59,65 +59,9 @@ export function CoverageLede({
   const band = pct == null ? null : coverageBand(pct);
   const uncovered = Math.max(0, summary.total_lines - summary.covered_lines);
 
-  // Weighted by coverable lines rather than by file count, for the same reason
-  // the health distribution weights by NLOC: one large untested module must not
-  // hide behind a hundred fully covered one-line shims.
-  const split = useMemo(() => {
-    const lines = BANDS.map(() => 0);
-    let total = 0;
-    for (const f of files) {
-      // A file with no coverable lines has no percentage to band. Counting it
-      // as 0% would invent a thin slice out of empty `__init__` files.
-      if (f.total_coverable_lines <= 0 || f.line_coverage_pct == null) continue;
-      const i = BANDS.findIndex((b) => f.line_coverage_pct! < b.max);
-      const at = i === -1 ? BANDS.length - 1 : i;
-      lines[at] = (lines[at] ?? 0) + f.total_coverable_lines;
-      total += f.total_coverable_lines;
-    }
-    if (total === 0) return null;
-    return BANDS.map((b, i) => ({
-      ...b,
-      pct: Math.round(((lines[i] ?? 0) / total) * 1000) / 10,
-    })).filter((b) => b.pct > 0);
-  }, [files]);
-
-  // Two reports are a comparison, not a trend; the line starts at three. The
-  // history leaves partial reports out, so beside a partial headline it would
-  // end on a different figure than the one it sits under.
-  const trend =
-    !summary.mapping_partial && history && history.length >= MIN_TREND_POINTS
-      ? history.map((p) => p.line_coverage_pct)
-      : null;
-
-  const stats: RibbonStat[] = [
-    {
-      label: "Files instrumented",
-      value: formatNumber(summary.file_count),
-      ...(moduleCount > 0
-        ? { sub: `across ${formatNumber(moduleCount)} directories` }
-        : {}),
-    },
-    {
-      label: "Uncovered lines",
-      value: formatNumber(uncovered),
-      sub: `of ${formatNumber(summary.total_lines)} coverable`,
-    },
-    {
-      label: "Branch coverage",
-      value:
-        summary.branch_coverage_pct == null
-          ? ""
-          : `${summary.branch_coverage_pct.toFixed(1)}%`,
-      hint: "Share of conditional branches a test takes both ways. Many runners emit no branch data at all, in which case this cell is absent rather than zero.",
-    },
-    {
-      label: "Report format",
-      value: (summary.source_format ?? "").toUpperCase(),
-      ...(summary.ingested_at
-        ? { sub: `ingested ${formatDate(summary.ingested_at)}` }
-        : {}),
-    },
-  ];
+  const split = useMemo(() => bandSplit(files), [files]);
+  const trend = trendValues(summary, history);
+  const stats = ledeStats(summary, moduleCount, uncovered);
 
   return (
     <div className="flex flex-col gap-6">
@@ -161,31 +105,96 @@ export function CoverageLede({
           weekly is where defects arrive.
         </p>
 
-        {summary.source_format && (
-          <p className="mt-2.5">
-            Read from{" "}
-            <span className="font-mono text-[var(--color-text-primary)]">
-              {summary.source_format}
-            </span>{" "}
-            output
-            {summary.ingested_at
-              ? `, ingested ${formatDateTime(summary.ingested_at)}`
-              : ""}
-            {summary.ingested_commit_sha
-              ? ` at ${summary.ingested_commit_sha.slice(0, 8)}`
-              : ""}
-            . Re-ingest after a test run to move these figures;{" "}
-            {summary.branch_coverage_pct == null
-              ? "this report carries no branch data, so branch coverage is absent rather than zero."
-              : "branch coverage rides on the same report."}
-          </p>
-        )}
+        <SourceNote summary={summary} />
 
         <StaleNotice summary={summary} />
       </PageLede>
 
       <StatRibbon stats={stats} />
     </div>
+  );
+}
+
+/** Weighted by coverable lines rather than by file count, for the same reason
+ * the health distribution weights by NLOC: one large untested module must not
+ * hide behind a hundred fully covered one-line shims. */
+function bandSplit(files: CoverageFileRow[]) {
+  const lines = BANDS.map(() => 0);
+  let total = 0;
+  for (const f of files) {
+    // A file with no coverable lines has no percentage to band. Counting it
+    // as 0% would invent a thin slice out of empty `__init__` files.
+    if (f.total_coverable_lines <= 0 || f.line_coverage_pct == null) continue;
+    const i = BANDS.findIndex((b) => f.line_coverage_pct! < b.max);
+    const at = i === -1 ? BANDS.length - 1 : i;
+    lines[at] = (lines[at] ?? 0) + f.total_coverable_lines;
+    total += f.total_coverable_lines;
+  }
+  if (total === 0) return null;
+  return BANDS.map((b, i) => ({
+    ...b,
+    pct: Math.round(((lines[i] ?? 0) / total) * 1000) / 10,
+  })).filter((b) => b.pct > 0);
+}
+
+/** Two reports are a comparison, not a trend; the line starts at three. The
+ * history leaves partial reports out, so beside a partial headline it would
+ * end on a different figure than the one it sits under. */
+function trendValues(
+  summary: CoverageSummary,
+  history: CoverageLedeProps["history"],
+): number[] | null {
+  if (summary.mapping_partial || !history || history.length < MIN_TREND_POINTS) return null;
+  return history.map((p) => p.line_coverage_pct);
+}
+
+function ledeStats(
+  summary: CoverageSummary,
+  moduleCount: number,
+  uncovered: number,
+): RibbonStat[] {
+  return [
+    {
+      label: "Files instrumented",
+      value: formatNumber(summary.file_count),
+      ...(moduleCount > 0 ? { sub: `across ${formatNumber(moduleCount)} directories` } : {}),
+    },
+    {
+      label: "Uncovered lines",
+      value: formatNumber(uncovered),
+      sub: `of ${formatNumber(summary.total_lines)} coverable`,
+    },
+    {
+      label: "Branch coverage",
+      value:
+        summary.branch_coverage_pct == null ? "" : `${summary.branch_coverage_pct.toFixed(1)}%`,
+      hint: "Share of conditional branches a test takes both ways. Many runners emit no branch data at all, in which case this cell is absent rather than zero.",
+    },
+    {
+      label: "Report format",
+      value: (summary.source_format ?? "").toUpperCase(),
+      ...(summary.ingested_at ? { sub: `ingested ${formatDate(summary.ingested_at)}` } : {}),
+    },
+  ];
+}
+
+/** Where the figures came from, and how to move them. */
+function SourceNote({ summary }: { summary: CoverageSummary }) {
+  if (!summary.source_format) return null;
+  return (
+    <p className="mt-2.5">
+      Read from{" "}
+      <span className="font-mono text-[var(--color-text-primary)]">
+        {summary.source_format}
+      </span>{" "}
+      output
+      {summary.ingested_at ? `, ingested ${formatDateTime(summary.ingested_at)}` : ""}
+      {summary.ingested_commit_sha ? ` at ${summary.ingested_commit_sha.slice(0, 8)}` : ""}
+      . Re-ingest after a test run to move these figures;{" "}
+      {summary.branch_coverage_pct == null
+        ? "this report carries no branch data, so branch coverage is absent rather than zero."
+        : "branch coverage rides on the same report."}
+    </p>
   );
 }
 

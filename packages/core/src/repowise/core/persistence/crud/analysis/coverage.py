@@ -62,51 +62,13 @@ async def save_coverage_files(
     await session.flush()
 
     columns = [_row_columns(f) for f in files]
-    covered, total, line_pct, branch_pct = _aggregate(
-        (
-            c["covered_line_count"],
-            int(c.get("total_coverable_lines") or 0),
-            c.get("branch_coverage_pct"),
-        )
-        for c in columns
+    await _record_ingest(
+        session,
+        repository_id,
+        _ingest_figures(columns, p, source_format),
+        at=at,
+        commit=ingested_commit_sha,
     )
-    measured = {
-        "source_formats_json": json.dumps(list(p.source_formats) or [source_format]),
-        "report_path_count": p.report_path_count,
-        "matched_path_count": p.matched_path_count,
-        "unmatched_path_count": p.unmatched_path_count,
-        "ambiguous_path_count": p.ambiguous_path_count,
-        "unmatched_sample_json": json.dumps(list(p.unmatched_sample)),
-        "mapping_partial": p.mapping_partial,
-        # No coverable lines is no measurement, which keeps it off the trend.
-        "line_coverage_pct": line_pct if total else None,
-        "branch_coverage_pct": branch_pct,
-        "covered_lines": covered,
-        "total_lines": total,
-    }
-    newest = (
-        await session.execute(
-            select(CoverageIngest)
-            .where(CoverageIngest.repository_id == repository_id)
-            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if newest is not None and all(getattr(newest, k) == v for k, v in measured.items()):
-        # The same report ingested again (an update that re-ingests, a full
-        # re-index) is one measurement, not a new trend point: restamp it.
-        newest.ingested_at = at
-        newest.ingested_commit_sha = ingested_commit_sha
-    else:
-        session.add(
-            CoverageIngest(
-                id=_new_uuid(),
-                repository_id=repository_id,
-                ingested_at=at,
-                ingested_commit_sha=ingested_commit_sha,
-                **measured,
-            )
-        )
 
     for i in range(0, len(columns), _BATCH_SIZE):
         for c in columns[i : i + _BATCH_SIZE]:
@@ -123,7 +85,79 @@ async def save_coverage_files(
             )
         await session.flush()
     await session.flush()  # the ingest row, when *files* is empty
+    await _prune_history(session, repository_id)
 
+
+def _ingest_figures(
+    columns: list[dict[str, Any]], p: CoverageProvenance, source_format: str
+) -> dict[str, Any]:
+    """The ingest row's measured columns: its provenance and repo-wide figures."""
+    covered, total, line_pct, branch_pct = _aggregate(
+        (
+            c["covered_line_count"],
+            int(c.get("total_coverable_lines") or 0),
+            c.get("branch_coverage_pct"),
+        )
+        for c in columns
+    )
+    return {
+        "source_formats_json": json.dumps(list(p.source_formats) or [source_format]),
+        "report_path_count": p.report_path_count,
+        "matched_path_count": p.matched_path_count,
+        "unmatched_path_count": p.unmatched_path_count,
+        "ambiguous_path_count": p.ambiguous_path_count,
+        "unmatched_sample_json": json.dumps(list(p.unmatched_sample)),
+        "mapping_partial": p.mapping_partial,
+        # No coverable lines is no measurement, which keeps it off the trend.
+        "line_coverage_pct": line_pct if total else None,
+        "branch_coverage_pct": branch_pct,
+        "covered_lines": covered,
+        "total_lines": total,
+    }
+
+
+async def _newest_ingest(session: AsyncSession, repository_id: str) -> CoverageIngest | None:
+    return (
+        await session.execute(
+            select(CoverageIngest)
+            .where(CoverageIngest.repository_id == repository_id)
+            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _record_ingest(
+    session: AsyncSession,
+    repository_id: str,
+    measured: dict[str, Any],
+    *,
+    at: datetime,
+    commit: str | None,
+) -> None:
+    """Append the ingest, or restamp the newest when it measured exactly this.
+
+    The same report ingested again (an update that re-ingests, a full
+    re-index) is one measurement, not a new trend point.
+    """
+    newest = await _newest_ingest(session, repository_id)
+    if newest is not None and all(getattr(newest, k) == v for k, v in measured.items()):
+        newest.ingested_at = at
+        newest.ingested_commit_sha = commit
+        return
+    session.add(
+        CoverageIngest(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            ingested_at=at,
+            ingested_commit_sha=commit,
+            **measured,
+        )
+    )
+
+
+async def _prune_history(session: AsyncSession, repository_id: str) -> None:
+    """Drop ingests past ``COVERAGE_HISTORY_RETENTION``, oldest first."""
     history = await session.execute(
         select(CoverageIngest.id)
         .where(CoverageIngest.repository_id == repository_id)
@@ -511,14 +545,7 @@ async def get_coverage_summary(
         )
     if not rows:
         return empty_coverage_summary()
-    ingest = (
-        await session.execute(
-            select(CoverageIngest)
-            .where(CoverageIngest.repository_id == repository_id)
-            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    ingest = await _newest_ingest(session, repository_id)
     covered, total, line_pct, branch_pct = _aggregate(
         (_covered_count(r), r.total_coverable_lines, r.branch_coverage_pct) for r in rows
     )
