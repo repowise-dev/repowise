@@ -794,6 +794,7 @@ class FileTraverser:
             or rel_str in self._distribution_inits
         )
         is_test = is_test_related_path(rel_str, language)
+        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -804,8 +805,9 @@ class FileTraverser:
             is_test=is_test,
             is_config=_is_config_file(language),
             is_api_contract=not is_test and _is_api_contract(abs_path, language),
-            is_entry_point=_is_entry_point(rel_str, abs_path, language) or manifest_entry,
+            is_entry_point=entry,
             is_manifest_entry=manifest_entry,
+            is_reachability_root=entry,
         )
 
     # ------------------------------------------------------------------

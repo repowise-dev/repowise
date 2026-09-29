@@ -22,6 +22,7 @@ from typing import Any
 
 import structlog
 
+from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
@@ -1242,10 +1243,10 @@ class DeadCodeAnalyzer:
         node_data = self.graph.nodes[node]
         if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return None
-        # Entry points include framework-instantiated files the runtime constructs.
+        # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        if node_data.get("is_entry_point", False):
+        if is_reachability_root(node_data):
             return None
         if node_data.get("is_test", False):
             return None

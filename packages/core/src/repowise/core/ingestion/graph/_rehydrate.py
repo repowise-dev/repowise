@@ -36,6 +36,7 @@ _NODE_ATTR_KEYS = (
     "has_error",
     "is_test",
     "is_entry_point",
+    "is_reachability_root",
     "kind",
     "name",
     "qualified_name",

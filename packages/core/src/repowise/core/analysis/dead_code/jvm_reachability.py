@@ -30,6 +30,8 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...entry_candidacy import is_reachability_root
+
 # Class-level annotation names (without the leading ``@``) that mark the
 # bearing class as runtime-instantiated. Kept compact; full Spring
 # stereotype recognition + meta-annotation resolution lands in Phase 4
@@ -168,7 +170,7 @@ def is_jvm_file_reachable(
         sib_data = graph.nodes.get(sibling, {})
         if graph.in_degree(sibling) > 0:
             return True
-        if sib_data.get("is_entry_point", False):
+        if is_reachability_root(sib_data):
             return True
         if _file_defines_entry_class(graph, sibling):
             return True

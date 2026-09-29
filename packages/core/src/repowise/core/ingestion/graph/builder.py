@@ -231,6 +231,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
+            is_reachability_root=parsed.file_info.is_reachability_root,
             docstring=parsed.docstring,
             # Same-file references (Python): names used intra-module in a
             # non-call/non-import position. Rescues them in the unused-export

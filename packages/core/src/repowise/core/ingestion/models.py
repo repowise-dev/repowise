@@ -161,6 +161,9 @@ class FileInfo:
     # pyproject scripts, a distribution's package ``__init__``): the strongest
     # entry evidence, ranked above every filename guess.
     is_manifest_entry: bool = False
+    # Reached from outside the import graph (a runner or loader starts it), so
+    # dead-code analysis never flags it. Read through ``is_reachability_root``.
+    is_reachability_root: bool = False
 
 
 @dataclass

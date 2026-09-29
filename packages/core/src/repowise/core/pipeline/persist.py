@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.generation.models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -457,6 +458,7 @@ async def persist_graph_nodes(
             "has_error": data.get("has_error", False),
             "is_test": data.get("is_test", False),
             "is_entry_point": data.get("is_entry_point", False),
+            "is_reachability_root": is_reachability_root(data),
             # Files draw from the file-level metric tables; symbols fall
             # back to the symbol subgraph (calls + heritage) so that the
             # per-symbol UI panel shows real centrality instead of 0.
