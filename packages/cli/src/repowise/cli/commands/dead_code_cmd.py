@@ -293,7 +293,7 @@ def dead_code_command(
             name,
             f"{f.confidence:.0%}",
             safe,
-            str(f.lines),
+            "—" if f.lines is None else str(f.lines),
             f.reason[:60],
         )
 

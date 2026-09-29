@@ -111,21 +111,21 @@ def test_report_deletable_lines_sum():
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 10,  # lines = 10 * 10 = 100
+                "symbol_count": 10,
                 "symbols": [],
             },
             "pkg/dead2.py": {
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 20,  # lines = 20 * 10 = 200
+                "symbol_count": 20,
                 "symbols": [],
             },
             "pkg/alive.py": {
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 15,  # lines = 15 * 10 = 150, but NOT safe
+                "symbol_count": 15,  # NOT safe
                 "symbols": [],
             },
         },
@@ -150,7 +150,13 @@ def test_report_deletable_lines_sum():
         },
     }
 
-    analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
+    # Line counts come from the source, not from symbol_count.
+    source_map = {
+        "pkg/dead1.py": b"x = 1\n" * 100,
+        "pkg/dead2.py": b"x = 1\n" * 200,
+        "pkg/alive.py": b"x = 1\n" * 150,
+    }
+    analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta, source_map=source_map)
     report = analyzer.analyze(
         {
             "detect_unused_exports": False,

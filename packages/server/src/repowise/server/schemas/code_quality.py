@@ -21,7 +21,7 @@ class DeadCodeFindingResponse(BaseModel):
     symbol_kind: str | None
     confidence: float
     reason: str
-    lines: int
+    lines: int | None
     start_line: int | None
     end_line: int | None
     # Effective deletion-readiness — re-derived from confidence + path risk

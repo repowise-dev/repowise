@@ -361,7 +361,8 @@ async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[di
             "id": f"dead-{row.id}",
             "type": "dead_code",
             "title": row.symbol_name or row.file_path,
-            "description": f"Unreachable {row.symbol_kind or 'symbol'} ({row.lines} lines)",
+            "description": f"Unreachable {row.symbol_kind or 'symbol'}"
+            + (f" ({row.lines} lines)" if row.lines is not None else ""),
             "severity": "low",
             "target_id": row.file_path,
             "subtype": row.kind,

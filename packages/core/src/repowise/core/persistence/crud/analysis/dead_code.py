@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.risk_factors import (
@@ -57,6 +57,34 @@ def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
     }
 
 
+async def _lines_column_rejects_null(session: AsyncSession) -> bool:
+    """True for a SQLite store created before ``lines`` became nullable.
+
+    Local SQLite stores never run Alembic and the schema reconciler is
+    additive-only, so such a store keeps ``lines NOT NULL``. Inserting an
+    unknown (NULL) count there would fail the whole findings write.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "sqlite":
+        return False
+    rows = await session.execute(text("PRAGMA table_info(dead_code_findings)"))
+    return any(row[1] == "lines" and row[3] for row in rows)
+
+
+def _new_rows(findings: list[Any], repository_id: str, *, null_lines_as_zero: bool) -> list:
+    rows = []
+    for finding in findings:
+        kwargs = _dead_code_row_kwargs(finding, repository_id)
+        # Deliberate shortcut: a legacy NOT NULL store can't hold "unknown",
+        # so an unreadable file's count is stored as 0 there rather than the
+        # write failing. Ceiling: that store shows 0 lines for such files
+        # until its table is rebuilt (a fresh store gets the nullable column).
+        if null_lines_as_zero and kwargs.get("lines") is None:
+            kwargs["lines"] = 0
+        rows.append(DeadCodeFinding(**kwargs))
+    return rows
+
+
 async def save_dead_code_findings(
     session: AsyncSession,
     repository_id: str,
@@ -73,10 +101,10 @@ async def save_dead_code_findings(
     for row in existing.scalars().all():
         await session.delete(row)
 
+    null_lines_as_zero = await _lines_column_rejects_null(session)
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
-        for finding in batch:
-            session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
+        session.add_all(_new_rows(batch, repository_id, null_lines_as_zero=null_lines_as_zero))
         await session.flush()
 
 
@@ -146,13 +174,16 @@ async def replace_dead_code_findings(
             acted_on.add((row.file_path, row.kind, row.symbol_name))
     await session.flush()
 
-    writable = [f for f in findings if scope is None or _finding_file_path(f) in scope]
+    writable = [
+        f
+        for f in findings
+        if (scope is None or _finding_file_path(f) in scope)
+        and _finding_identity(f) not in acted_on
+    ]
+    null_lines_as_zero = await _lines_column_rejects_null(session)
     for i in range(0, len(writable), _BATCH_SIZE):
         batch = writable[i : i + _BATCH_SIZE]
-        for finding in batch:
-            if _finding_identity(finding) in acted_on:
-                continue
-            session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
+        session.add_all(_new_rows(batch, repository_id, null_lines_as_zero=null_lines_as_zero))
         await session.flush()
 
 
@@ -227,15 +258,16 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
             summary["medium"] += 1
         else:
             summary["low"] += 1
-        total_lines += f.lines
+        total_lines += f.lines or 0
         by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
 
     # Re-derive effective safety from confidence + path risk factors rather
     # than trusting the persisted boolean alone, so findings written before the
     # risk-factor logic existed (or in a config/bootstrap/database/environment
     # file the allowlist missed) are not counted as deletion-ready.
+    # Totals sum the known counts; an unknown (NULL) count adds nothing.
     deletable_lines = sum(
-        f.lines
+        f.lines or 0
         for f in findings
         if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
     )

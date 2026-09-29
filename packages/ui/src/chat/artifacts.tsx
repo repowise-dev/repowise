@@ -936,7 +936,7 @@ function DeadCodeRow({
     kind: string;
     confidence: number;
     reason: string;
-    lines?: number;
+    lines?: number | null;
     safe_to_delete?: boolean;
   };
   showLines?: boolean;

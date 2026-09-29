@@ -1569,7 +1569,8 @@ class DeadCodeFinding(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     last_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL when the analyzer could not count the lines (never an estimate).
+    lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # ``package`` dropped: it was ``Path(file_path).parts[0]``, equal to the

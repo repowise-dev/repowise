@@ -130,13 +130,13 @@ async def _get_dead_code_all_repos(
 
         # Accumulate summary stats from unfiltered findings
         total_all += len(repo_findings)
-        total_deletable += sum(f.lines for f in repo_findings if _effective_safe(f))
+        total_deletable += sum(f.lines or 0 for f in repo_findings if _effective_safe(f))
         total_safe += sum(1 for f in repo_findings if _effective_safe(f))
         for f in repo_findings:
             merged_by_kind[f.kind] = merged_by_kind.get(f.kind, 0) + 1
 
     # Sort merged findings by confidence descending
-    merged_findings.sort(key=lambda d: (-d["confidence"], -d["lines"]))
+    merged_findings.sort(key=lambda d: (-d["confidence"], -(d["lines"] or 0)))
 
     summary = {
         "total_findings": total_all,
@@ -188,7 +188,7 @@ def _build_tiers_from_dicts(
         return {
             "description": desc,
             "count": len(items),
-            "lines": sum(f["lines"] for f in items),
+            "lines": sum(f["lines"] or 0 for f in items),
             "safe_count": sum(1 for f in items if f["safe_to_delete"]),
             "findings": items[:limit],
             "truncated": len(items) > limit,
@@ -426,7 +426,7 @@ async def get_dead_code(
     summary: dict[str, Any] = {
         "total_findings": len(all_findings),
         "filtered_findings": len(filtered),
-        "deletable_lines": sum(f.lines for f in all_findings if _effective_safe(f)),
+        "deletable_lines": sum(f.lines or 0 for f in all_findings if _effective_safe(f)),
         "safe_to_delete_count": sum(1 for f in all_findings if _effective_safe(f)),
         "by_kind": by_kind,
     }
@@ -596,15 +596,15 @@ def _build_tiers(
     hi, med = _TIER_FLOORS["high"], _TIER_FLOORS["medium"]
     high = sorted(
         [f for f in findings if f.confidence >= hi],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
     medium = sorted(
         [f for f in findings if med <= f.confidence < hi],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
     low = sorted(
         [f for f in findings if f.confidence < med],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
 
     def _tier_block(name: str, items: list, description: str) -> dict:
@@ -623,7 +623,7 @@ def _build_tiers(
         return {
             "description": description,
             "count": len(items),
-            "lines": sum(f.lines for f in items),
+            "lines": sum(f.lines or 0 for f in items),
             "safe_count": sum(1 for f in items if _effective_safe(f)),
             "findings": [
                 _serialize_finding(f, git_meta_map, repository=repository)
@@ -652,7 +652,7 @@ def _rollup_by_directory(findings: list) -> list[dict]:
         if dir_key not in dirs:
             dirs[dir_key] = {"directory": dir_key, "count": 0, "lines": 0, "safe_count": 0}
         dirs[dir_key]["count"] += 1
-        dirs[dir_key]["lines"] += f.lines
+        dirs[dir_key]["lines"] += f.lines or 0
         if _effective_safe(f):
             dirs[dir_key]["safe_count"] += 1
 
@@ -667,7 +667,7 @@ def _rollup_by_owner(findings: list) -> list[dict]:
         if name not in owners:
             owners[name] = {"owner": name, "count": 0, "lines": 0, "safe_count": 0}
         owners[name]["count"] += 1
-        owners[name]["lines"] += f.lines
+        owners[name]["lines"] += f.lines or 0
         if _effective_safe(f):
             owners[name]["safe_count"] += 1
 
@@ -683,7 +683,7 @@ def _compute_impact(tiers: dict) -> dict:
         # Approximate safe lines from findings in the tier
         for f in tier_data["findings"]:
             if f["safe_to_delete"]:
-                safe_lines += f["lines"]
+                safe_lines += f["lines"] or 0
 
     return {
         "total_lines_reclaimable": total_lines,

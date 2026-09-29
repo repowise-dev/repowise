@@ -699,16 +699,21 @@ def _is_declaration_only(sym: dict) -> bool:
     )
 
 
+# Evidence line for a finding whose ``lines`` is ``None``: the count is
+# omitted rather than estimated.
+_LINES_UNKNOWN = "Line count unavailable: source was not read"
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
-    Both-or-neither: a half-known span is worse than none.
+    Both-or-neither: a half-known span is worse than none. Spans are
+    inclusive, so a one-line symbol is 1 line; an unknown span is ``None``.
     """
-    return {
-        "lines": data.get("end_line", 0) - data.get("start_line", 0),
-        "start_line": (data.get("start_line") or None) if data.get("end_line") else None,
-        "end_line": (data.get("end_line") or None) if data.get("start_line") else None,
-    }
+    start, end = data.get("start_line") or None, data.get("end_line") or None
+    if start is None or end is None or end < start:
+        return {"lines": None, "start_line": None, "end_line": None}
+    return {"lines": end - start + 1, "start_line": start, "end_line": end}
 
 
 class DeadCodeAnalyzer:
@@ -861,7 +866,8 @@ class DeadCodeAnalyzer:
         findings = [f for f in findings if f.confidence >= min_conf]
 
         now = datetime.now(UTC)
-        deletable = sum(f.lines for f in findings if f.safe_to_delete)
+        # Sum of the known counts: a lower bound when any count is unknown.
+        deletable = sum(f.lines or 0 for f in findings if f.safe_to_delete)
 
         high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
         medium = sum(
@@ -1081,6 +1087,9 @@ class DeadCodeAnalyzer:
         risk_line = risk_evidence(risk_factors)
         if risk_line:
             evidence.append(risk_line)
+        lines = self._file_line_count(node)
+        if lines is None:
+            evidence.append(_LINES_UNKNOWN)
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,
@@ -1091,7 +1100,7 @@ class DeadCodeAnalyzer:
             reason="File has no importers (in_degree=0)",
             last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
             commit_count_90d=commit_90d,
-            lines=node_data.get("symbol_count", 0) * 10,  # rough estimate
+            lines=lines,
             evidence=evidence,
             safe_to_delete=safe,
             primary_owner=primary_owner,
@@ -1516,6 +1525,22 @@ class DeadCodeAnalyzer:
 
         return None
 
+    def _file_line_count(self, file_path: str) -> int | None:
+        """Physical line count of an indexed file, or ``None`` when unread.
+
+        Prefers ingestion's bytes; falls back to disk only under a known repo
+        root, so a missing source is reported as unknown rather than guessed.
+        """
+        data = self._source_map.get(file_path)
+        if data is None and self._repo_root is not None:
+            try:
+                data = (Path(self._repo_root) / file_path).read_bytes()
+            except OSError:
+                return None
+        if data is None:
+            return None
+        return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
     def _read_file_text(self, file_path: str) -> str | None:
         """Safely read the content of a file, using source_map if available."""
         try:
@@ -1703,11 +1728,17 @@ class DeadCodeAnalyzer:
             if self._has_cross_package_importer(pkg, files):
                 continue
 
-            total_lines = sum(
-                self.graph.nodes[f].get("symbol_count", 0) * 10
+            # A package total is only as known as its least-known file.
+            counts = [
+                self._file_line_count(f)
                 for f in files
-                if f in self.graph
-            )
+                if self.graph.nodes[f].get("node_type") != "symbol"
+            ]
+            known = [c for c in counts if c is not None]
+            total_lines = sum(known) if len(known) == len(counts) else None
+            evidence = [f"No inter-package imports into '{pkg}'"]
+            if total_lines is None:
+                evidence.append(_LINES_UNKNOWN)
             activity = self._package_git_activity(files)
             findings.append(
                 DeadCodeFindingData(
@@ -1718,7 +1749,7 @@ class DeadCodeAnalyzer:
                     confidence=0.5,
                     reason=f"Package '{pkg}' has no importers from other packages",
                     lines=total_lines,
-                    evidence=[f"No inter-package imports into '{pkg}'"],
+                    evidence=evidence,
                     safe_to_delete=False,
                     risk_factors=list(path_risk_factors(pkg)),
                     **activity,
