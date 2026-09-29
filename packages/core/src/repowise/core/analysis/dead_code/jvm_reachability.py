@@ -20,9 +20,9 @@ JVM source that view misses three real shapes:
 
 META-INF/services, JPMS ``provides ... with``, and Spring Boot autoconfig
 imports are *not* re-checked here — those are stamped as
-``is_entry_point`` on the file node during the JVM warmup (see
-:mod:`graph_warmups`), and the analyzer's existing entry-point skip
-honours them before reaching this hook.
+``is_reachability_root`` on the file node during the JVM warmup (see
+:mod:`graph_warmups`), and the analyzer's root skip honours them before
+reaching this hook.
 """
 
 from __future__ import annotations

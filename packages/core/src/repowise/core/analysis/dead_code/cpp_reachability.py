@@ -29,7 +29,7 @@ file-level import graph cannot see:
 The helper derives directories from the graph itself; the
 :class:`CppWorkspaceIndex` populated during ingestion is not threaded
 into the analyzer. Workspace-discovered conditional sources surface
-through the warmup as ``is_never_flag`` / ``is_entry_point`` graph
+through the warmup as ``is_never_flag`` / ``is_reachability_root`` graph
 attributes instead.
 """
 

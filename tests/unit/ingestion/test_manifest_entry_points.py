@@ -20,6 +20,7 @@ import pytest
 from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
 from repowise.core.analysis.kg_curation import curate_knowledge_graph
 from repowise.core.analysis.knowledge_graph import build_knowledge_graph_skeleton
+from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.ts_workspace import (
@@ -229,7 +230,10 @@ def test_build_target_escaping_the_repo_is_ignored(tmp_path: Path) -> None:
 
 
 def test_fixture_pkg_under_tests(tmp_path: Path) -> None:
-    """Test and example packages' bins stay dead-code exempt but are never surfaced."""
+    """Test and example packages' bins stay dead-code exempt but are never surfaced.
+
+    A test fixture's bin is a reachability root, not an entry point.
+    """
     repo = _write(
         tmp_path,
         {
@@ -243,8 +247,11 @@ def test_fixture_pkg_under_tests(tmp_path: Path) -> None:
     idx = _index(repo)
     for hidden in ("tests/e2e/pkg/tool.js", "examples/demo/start.js"):
         assert idx.info[hidden].is_manifest_entry
-        assert idx.graph.nodes[hidden]["is_entry_point"]
+        assert is_reachability_root(idx.graph.nodes[hidden])
         assert hidden not in idx.project["entry_candidates"]
+    assert not idx.info["tests/e2e/pkg/tool.js"].is_entry_point
+    assert not idx.graph.nodes["tests/e2e/pkg/tool.js"].get("is_entry_point")
+    assert idx.graph.nodes["examples/demo/start.js"]["is_entry_point"]
     assert idx.project["entry_points"] == ["src/main.py"]
 
 
@@ -267,3 +274,22 @@ def test_bin_source_is_reachable_for_dead_code(tmp_path: Path) -> None:
     idx = _index(repo)
     assert is_file_reachable("src/cli.ts", idx.graph)
     assert not is_file_reachable("src/old.ts", idx.graph)
+
+
+def test_exports_subpath_is_a_root_not_an_entry(tmp_path: Path) -> None:
+    """Only ``exports["."]`` is a front door; other subpaths just keep code alive."""
+    repo = _write(
+        tmp_path,
+        {
+            "package.json": json.dumps({"workspaces": ["packages/*"]}),
+            "packages/lib/package.json": json.dumps(
+                {"name": "lib", "exports": {".": "./src/index.ts", "./util": "./src/util.ts"}}
+            ),
+            "packages/lib/src/index.ts": "export const a = 1;\n",
+            "packages/lib/src/util.ts": "export const b = 2;\n",
+        },
+    )
+    idx = _index(repo)
+    assert idx.graph.nodes["packages/lib/src/index.ts"]["is_entry_point"]
+    util = idx.graph.nodes["packages/lib/src/util.ts"]
+    assert util.get("is_reachability_root") and not util.get("is_entry_point")

@@ -805,7 +805,8 @@ class FileTraverser:
             is_test=is_test,
             is_config=_is_config_file(language),
             is_api_contract=not is_test and _is_api_contract(abs_path, language),
-            is_entry_point=entry,
+            # A runner loads a test file, but no reader enters the system there.
+            is_entry_point=entry and not is_test,
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
         )

@@ -997,6 +997,17 @@ class TestEntryPointFlag:
         flagged = self._flagged(tmp_path)
         assert flagged == set(files), flagged
 
+    def test_test_file_is_a_root_not_an_entry_point(self, tmp_path: Path) -> None:
+        for rel in ("tests/app.py", "src/main.py"):
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("print('x')")
+        info = {f.path: f for f in FileTraverser(tmp_path).traverse()}
+        assert info["tests/app.py"].is_reachability_root
+        assert not info["tests/app.py"].is_entry_point
+        assert info["src/main.py"].is_reachability_root
+        assert info["src/main.py"].is_entry_point
+
     def test_historical_stem_parity_and_non_entries(self, tmp_path: Path) -> None:
         files = {
             "run.py": "print('x')",  # covered by the run stem (dropped pattern)
