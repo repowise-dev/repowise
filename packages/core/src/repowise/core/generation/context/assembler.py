@@ -56,6 +56,8 @@ log = structlog.get_logger(__name__)
 
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
+# Tokens of code excerpts a module page prompt carries; the Public API claims them first.
+_MODULE_EXCERPT_BUDGET = 10_000
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
 
@@ -503,8 +505,13 @@ class ContextAssembler:
         is_rollup: bool = False,
         child_pages: list[dict] | None = None,
         packages: list[dict] | None = None,
+        public_api: list[dict] | None = None,
     ) -> ModulePageContext:
-        """Assemble context for the module_page template."""
+        """Assemble context for the module_page template.
+
+        *public_api* (see :func:`~.public_api.compute_public_api`) has first
+        claim on the excerpt budget; entries past it keep only their name.
+        """
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
             sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
@@ -646,6 +653,7 @@ class ContextAssembler:
             is_rollup=is_rollup,
             child_pages=child_pages or [],
             packages=packages or [],
+            public_api=self._excerpt_public_api(public_api or []),
             hotspot_count=hotspot_count,
             stable_count=stable_count,
             single_owner_files=single_owner_files,
@@ -653,6 +661,12 @@ class ContextAssembler:
             bugfix_total=bugfix_total,
             most_fixed_file=most_fixed_file,
         )
+
+    def _excerpt_public_api(self, api: list[dict]) -> list[dict]:
+        """Every entry, excerpted (signature + doc line) in order while the budget lasts."""
+        cost = lambda e: self._estimate_tokens(f"{e['signature']} {e['doc']}")  # noqa: E731
+        kept, _ = items_within_budget(api, 0, _MODULE_EXCERPT_BUDGET, cost)
+        return kept + [{**e, "signature": "", "doc": ""} for e in api[len(kept) :]]
 
     def _package_boundaries(self, known_paths: set[str]) -> set[str]:
         """Package roots for this repo, resolved once.

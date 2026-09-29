@@ -9,6 +9,7 @@ emitted.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -538,7 +539,7 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
     # Which directories head a subsystem. Computed before the groups are built
     # so a directory that is both a chapter and a leaf becomes one page rather
     # than colliding with itself on ``module_page:{dir}``.
-    chapters = _chapter_members(groups, files)
+    chapters = _chapter_members(groups, files, package_roots)
 
     scored: list[tuple[float, ModuleGroup]] = []
     for group, title in zip(groups, titles, strict=True):
@@ -608,7 +609,9 @@ def _chapter_scope(parent: str, *, owns: bool) -> str:
     return f"{lead}; the detail lives on those child pages, not here."
 
 
-def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, list[str]]:
+def _chapter_members(
+    groups: list[ConceptGroup], files: list[str], package_roots: Iterable[str] = ()
+) -> dict[str, list[str]]:
     """Directories that head a subsystem → every production file beneath them.
 
     The partition splits a large subsystem into path-local leaves, so a
@@ -637,6 +640,12 @@ def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, 
     loose files and heads its children; see ``ModuleGroup.context_paths`` for how
     ownership stays disjoint while the prose still covers the subsystem.
 
+    A package root whose files span two or more groups is always a chapter,
+    whatever its depth or size: a package is what a consumer installs, so it
+    gets one page covering all of it (and its Public API) even when that is
+    most of the repository. A package in one group already has that page, and
+    a roll-up of thin packages is their shared page.
+
     All paths here are POSIX-normalised upstream (the grouper lowercases
     separators), so the ``/`` splits below are safe.
     """
@@ -655,6 +664,11 @@ def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, 
         if not members or (total and len(members) > _ROLLUP_MAX_MEMBER_FRACTION * total):
             continue
         out[parent] = members
+    for root in sorted(package_roots):
+        members = sorted(f for f in files if f.startswith(root + "/"))
+        spanned = sum(1 for g in groups if any(m.startswith(root + "/") for m in g.members))
+        if spanned > 1:
+            out[root] = members
     return out
 
 

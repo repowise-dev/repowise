@@ -31,6 +31,14 @@ Name each in backticks by its path so it resolves to a wiki link; explain in one
 {% endfor %}
 {% endif %}
 
+{% if ctx.public_api %}
+### Public API (computed from the package manifests and re-exports; what a consumer imports)
+Name the central ones in backticks exactly as written and say what each is for; do not invent members beyond these.
+{% for e in ctx.public_api %}
+- `{{ e.name }}` ({{ e.kind }}, `{{ e.file }}`){% if e.alias_of %}, another name for `{{ e.alias_of }}`{% endif %}{% if e.signature %}: `` {{ e.signature }} ``{% endif %}{% if e.doc %}: {{ e.doc }}{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if ctx.entry_points %}
 ### Entry points
 {% for ep in ctx.entry_points %}

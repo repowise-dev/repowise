@@ -210,6 +210,7 @@ class PerTypeGenerationMixin:
         child_pages: list[dict] | None = None,
         owns_files: bool = True,
         packages: list[dict] | None = None,
+        public_api: list[dict] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -227,6 +228,7 @@ class PerTypeGenerationMixin:
             is_rollup=is_rollup,
             child_pages=child_pages,
             packages=packages,
+            public_api=public_api,
         )
         module_git_summary = None
         if git_meta_map:

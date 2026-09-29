@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from repowise.core.ids import is_external
+from repowise.core.ingestion.package_roots import package_roots_from_paths
 
 from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
+from ..context.public_api import compute_public_api
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from .helpers import _is_infra_file, decisions_for_files, rank_decisions
@@ -233,21 +235,25 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
-    """The pages a rollup links down to: its *immediate* children only.
+    """The pages a rollup links down to: those it is the nearest chapter of.
 
-    A page is an immediate child when the rollup's key is exactly the parent
-    directory of the page's key. Immediate rather than recursive so a nested
-    overview links to the next level down (a sub-overview or a leaf), not to
-    every descendant leaf — otherwise ``a/b`` and ``a/b/c`` would both list the
-    same leaves under ``a/b/c``. A sub-rollup is a legitimate child and is kept;
-    the rollup itself is excluded. Titles are read after naming, so they match
-    what the tree shows.
+    The same rule ``assign_page_tree`` nests by, so the links match the tree:
+    a nested overview links to the next level down (a sub-overview or a leaf),
+    not to every descendant leaf, and a leaf several directories below a
+    package chapter with no chapter in between is still linked. The rollup
+    itself is excluded. Titles are read after naming, so they match what the
+    tree shows.
     """
-    children = [
-        g
-        for g in groups
-        if g.key != rollup.key and "/" in g.key and g.key.rsplit("/", 1)[0] == rollup.key
-    ]
+    chapters = {g.key for g in groups if getattr(g, "is_rollup", False)}
+
+    def nearest_chapter(key: str) -> str | None:
+        while "/" in key:
+            key = key.rsplit("/", 1)[0]
+            if key in chapters:
+                return key
+        return None
+
+    children = [g for g in groups if g.key != rollup.key and nearest_chapter(g.key) == rollup.key]
     children.sort(key=lambda g: g.key)
     return [{"title": g.display, "path": g.key} for g in children]
 
@@ -256,6 +262,11 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
+    # The whole indexed set, not this run's slice: re-exports reach unchanged files.
+    parsed_by_path = getattr(run.graph_builder, "_parsed_files", None)
+    if not isinstance(parsed_by_path, dict) or not parsed_by_path:
+        parsed_by_path = {p.file_info.path: p for p in run.parsed_files}
+    package_roots = package_roots_from_paths(set(parsed_by_path))
     for mg in run.sel_module_groups:
         # Read from the wider set: a chapter's prose is about its whole
         # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
@@ -319,6 +330,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                         {"path": path, "files": count}
                         for path, count in package_file_counts(mg.file_paths, mg.packages)
                     ],
+                    public_api=compute_public_api(material, parsed_by_path, package_roots),
                 ),
             )
         )
