@@ -1,4 +1,4 @@
-"""CI renderings: markdown summary, GitHub annotations, SARIF."""
+"""CI renderings: markdown summary, GitHub annotations, SARIF, GitLab Code Quality."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from repowise.core.analysis.doc_drift.gate import evaluate_gate
 from repowise.core.analysis.doc_drift.render import (
     SARIF_FINGERPRINT_KEY,
     render_github_annotations,
+    render_gitlab,
     render_markdown,
     render_sarif,
 )
@@ -186,3 +187,39 @@ def test_sarif_is_deterministic():
         for r in render_sarif(findings, tool_version="x")["runs"][0]["results"]
     ]
     assert uris == [("docs/a.md", 1), ("docs/a.md", 3), ("docs/z.md", 3)]
+
+
+# -- GitLab Code Quality ------------------------------------------------------
+
+
+def test_gitlab_severity_follows_the_gate_and_drops_the_baseline():
+    accepted = _f("gone.py")
+    findings = [_f("a.py", suggestion="pkg/a/"), _f("R.md#x", 0.5, kind="anchor"), accepted]
+    fp = derive_doc_drift_fingerprint("docs/a.md", "path", "gone.py")
+    issues = render_gitlab(findings, accepted=frozenset({fp}))
+    assert issues == [
+        {
+            "description": "Document names R.md#x, which no longer exists.",
+            "check_name": "repowise-doc-drift/anchor",
+            "fingerprint": derive_doc_drift_fingerprint("docs/a.md", "anchor", "R.md#x"),
+            "severity": "minor",
+            "location": {"path": "docs/a.md", "lines": {"begin": 3}},
+        },
+        {
+            "description": "Document names a.py, which no longer exists. Likely now: pkg/a/.",
+            "check_name": "repowise-doc-drift/path",
+            "fingerprint": derive_doc_drift_fingerprint("docs/a.md", "path", "a.py"),
+            "severity": "major",
+            "location": {"path": "docs/a.md", "lines": {"begin": 3}},
+        },
+    ]
+    (lowered,) = render_gitlab([_f("R.md#x", 0.5, kind="anchor")], fail_on=0.4)
+    assert lowered["severity"] == "major"
+
+
+def test_gitlab_is_deterministic_and_unique():
+    findings = [_f("b.py", doc="docs/z.md"), _f("a.py"), _f("a.py", line=9)]
+    one = render_gitlab(findings)
+    assert one == render_gitlab(list(reversed(findings)))
+    fps = [i["fingerprint"] for i in one]
+    assert len(set(fps)) == 3 and fps[1] == fps[0] + ":2"

@@ -43,7 +43,7 @@ from repowise.cli.output import emit_json, format_option, notice_console
 if TYPE_CHECKING:
     from repowise.core.analysis.security_gate import ChangeScan, GateResult
 
-_CHECK_FORMATS = (*CI_FORMATS, "sarif")
+_CHECK_FORMATS = (*CI_FORMATS, "sarif", "gitlab")
 
 
 @click.group("security")
@@ -246,7 +246,7 @@ def security_scan(
     choices=_CHECK_FORMATS,
     help="Output format. ``github`` writes annotations to stdout and the "
     "markdown summary to $GITHUB_STEP_SUMMARY when set; ``sarif`` is for "
-    "code-scanning upload.",
+    "code-scanning upload; ``gitlab`` is a GitLab Code Quality report.",
 )
 def security_check(
     revspec: str | None,
@@ -272,6 +272,7 @@ def security_check(
         repowise security check origin/main...HEAD
         repowise security check --format github --baseline .security-baseline.json
         repowise security check --format sarif > security.sarif
+        repowise security check --format gitlab > gl-code-quality-security.json
     """
     from repowise.core.analysis.security_gate import evaluate
 
@@ -381,6 +382,10 @@ def _emit_check(
                 fail_on=gate.fail_on,
                 accepted=accepted,
             )
+        )
+    elif fmt == "gitlab":
+        emit_json(
+            security_gate.render_gitlab(scan.findings, fail_on=gate.fail_on, accepted=accepted)
         )
     elif fmt in ("markdown", "github"):
         markdown = security_gate.render_markdown(

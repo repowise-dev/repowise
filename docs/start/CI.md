@@ -27,7 +27,11 @@ A setup problem never reads as a pass.
 script, `markdown` for a comment or a job artifact, and `github` for GitHub
 Actions: up to ten annotations on the changed lines, a notice counting the
 rest, and the markdown report appended to the job summary. Doc drift and
-security also write `sarif` for code scanning.
+security also write `sarif` for code scanning and `gitlab`, a GitLab Code
+Quality report (a JSON issue list; findings a baseline accepted are left out).
+When a gate cannot evaluate, `gitlab` still prints a valid list, `[]`, and the
+GitLab template writes `[]` whenever the output does not parse, so the report
+artifact is never an invalid file.
 
 **The change being judged.** Coverage and security take a revision range:
 `origin/main...HEAD` (three dots: what the branch did since it forked, the
@@ -155,9 +159,33 @@ repowise-coverage:
 It adds one job per gate on merge request pipelines: `repowise-coverage` (only
 when `REPOWISE_COVERAGE_REPORT` is set), `repowise-doc-drift` and
 `repowise-security`. Each prints its markdown report to the log and keeps it as
-an artifact. Other variables: `REPOWISE_VERSION`, `REPOWISE_DOC_DRIFT_BASELINE`,
+an artifact. The doc drift and security jobs also write a Code Quality report
+(`gl-code-quality-doc-drift.json`, `gl-code-quality-security.json`), so their
+findings show in the merge request's Code Quality widget, even when the gate
+fails the job. A fourth job, `repowise-code-quality`, runs on the default
+branch and never fails the pipeline: it publishes the report the widget
+compares a merge request against, so only issues the merge request introduces
+show as new. Its security report is always `[]`, because security judges only
+what a change adds and the default branch has no change to judge. Other
+variables: `REPOWISE_VERSION`, `REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
+
+GitLab can also draw line coverage in the merge request diff. That comes from
+your own test job, not from Repowise: have your test runner write a Cobertura
+report (for example with pytest-cov) and declare it there. The same
+`coverage.xml` can be your `REPOWISE_COVERAGE_REPORT`.
+
+```yaml
+test:
+  script:
+    - pytest --cov --cov-report=xml:coverage.xml
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+```
 
 ## Other CI systems
 

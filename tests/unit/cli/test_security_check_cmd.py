@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands.security_cmd import security_command
+from tests.unit.cli.test_format_json_rollout import _split_runner
 
 KEY = "AKIA" + "QZXNRTVYWMPKLBHG"
 
@@ -137,3 +138,40 @@ def test_sarif_suppresses_baselined_findings_below_the_threshold(repo, tmp_path)
     result = _check(repo, "--baseline", str(baseline), "--format", "sarif")
     (res,) = json.loads(result.stdout)["runs"][0]["results"]
     assert res["ruleId"] == "weak_hash" and res["suppressions"] == [{"kind": "external"}]
+
+
+def test_gitlab_format_is_one_issue_list(repo):
+    _commit(repo, "run.py", "import os\nos.system(cmd)\n")
+    result = _check(repo, "--format", "gitlab")
+    assert result.exit_code == 1
+    (issue,) = json.loads(result.stdout)
+    assert issue["check_name"] == "repowise-security/os_system"
+    assert issue["severity"] == "critical"
+    assert issue["location"] == {"path": "run.py", "lines": {"begin": 2}}
+
+
+def test_gitlab_severity_follows_a_non_default_fail_on(repo):
+    _commit(repo, "h.py", "import hashlib\nhashlib.md5(b'')\n")
+    (default,) = json.loads(_check(repo, "--format", "gitlab").stdout)
+    assert default["severity"] == "minor"
+    result = _check(repo, "--fail-on", "low", "--format", "gitlab")
+    assert result.exit_code == 1
+    (issue,) = json.loads(result.stdout)
+    assert issue["severity"] == "major"
+
+
+def test_gitlab_leaves_baselined_findings_out(repo, tmp_path):
+    _commit(repo, "h.py", "import hashlib\nhashlib.md5(b'')\n")
+    baseline = tmp_path / "b.json"
+    assert _check(repo, "--write-baseline", str(baseline)).exit_code == 0
+    result = _check(repo, "--baseline", str(baseline), "--format", "gitlab")
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == []
+
+
+def test_gitlab_prints_an_empty_list_when_it_cannot_evaluate(tmp_path):
+    result = _split_runner().invoke(
+        security_command, ["check", "--path", str(tmp_path), "--format", "gitlab"]
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.stdout) == []

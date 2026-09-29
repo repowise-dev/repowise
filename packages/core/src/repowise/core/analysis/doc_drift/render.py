@@ -1,4 +1,5 @@
-"""CI renderings of documentation drift: markdown, GitHub annotations, SARIF.
+"""CI renderings of documentation drift: markdown, GitHub annotations, SARIF,
+GitLab Code Quality.
 
 Pure functions over finding dicts and a :class:`~.gate.GateResult`, so the CLI,
 the hosted platform and the PR bot print the same thing. Two honesty rules hold
@@ -15,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from repowise.core.ci import github, sarif
+from repowise.core.ci import github, gitlab, sarif
 from repowise.core.ci.markdown import ROW_LIMIT, cell, more_line, plural
 
 from .constants import DETECTION_BASIS, HIGH_CONFIDENCE_THRESHOLD
@@ -250,3 +251,36 @@ def render_sarif(
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)
+
+
+# ---------------------------------------------------------------------------
+# GitLab Code Quality
+# ---------------------------------------------------------------------------
+
+
+def render_gitlab(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    fail_on: float = HIGH_CONFIDENCE_THRESHOLD,
+    accepted: frozenset[str] = frozenset(),
+) -> list[dict]:
+    """GitLab Code Quality issues: ``major`` at or above *fail_on*, ``minor`` below.
+
+    The same line :func:`render_sarif` draws between ``error`` and ``warning``.
+    *accepted* (the baseline) is applied by :func:`~repowise.core.ci.gitlab.report`.
+    """
+    return gitlab.report(
+        SARIF_TOOL_NAME,
+        (
+            gitlab.issue(
+                str(f["kind"]),
+                "major" if float(f["confidence"]) >= fail_on else "minor",
+                _message(f),
+                str(f["file_path"]),
+                int(f["line_number"]),
+                fingerprint_of(f),
+            )
+            for f in _order(findings)
+        ),
+        accepted=accepted,
+    )

@@ -764,7 +764,7 @@ with a close match. It is a suggestion to check, never applied.
 | `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
 | `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, and commands whose manifest it edits. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
-| `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif` |
+| `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
 
@@ -777,6 +777,7 @@ repowise doc-drift --format json
 repowise doc-drift --check                               # CI gate, no index needed
 repowise doc-drift --check --format github               # annotations + step summary
 repowise doc-drift --check --format sarif > drift.sarif  # code scanning upload
+repowise doc-drift --check --format gitlab > gl-code-quality-doc-drift.json  # merge request widget
 repowise doc-drift --check --write-baseline .doc-drift-baseline.json
 repowise doc-drift --check --baseline .doc-drift-baseline.json
 repowise doc-drift --check --since auto                  # only drift this PR is answerable for
@@ -959,12 +960,13 @@ default branch.
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
 | `--path` | A path inside the repository (defaults to cwd) |
-| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif` |
+| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 
 ```bash
 repowise security check origin/main...HEAD
 repowise security check --format github --baseline .security-baseline.json
 repowise security check --format sarif > security.sarif
+repowise security check --format gitlab > gl-code-quality-security.json
 repowise security check --write-baseline .security-baseline.json
 ```
 

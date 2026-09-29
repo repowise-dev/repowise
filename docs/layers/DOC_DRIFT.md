@@ -98,7 +98,10 @@ repowise doc-drift --check --format github
 
 `--format github` annotates each finding on the document line and writes a
 summary to the job page. `--format sarif` produces a file for GitHub code
-scanning; `--format markdown` is for posting a comment yourself. Full history
+scanning, `--format gitlab` a GitLab Code Quality report for the merge request
+widget (baselined findings left out), and `--format markdown` is for posting a
+comment yourself. In the Code Quality report a finding at or above
+`--fail-on-confidence` is `major` and one below it `minor`. Full history
 (`fetch-depth: 0`) is optional and only improves the rename suggestions. The
 GitHub Action and GitLab template that run it beside the other gates are in
 [Repowise in CI](../start/CI.md).

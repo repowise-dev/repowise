@@ -8,11 +8,13 @@ run here against a stand-in ``repowise`` to pin its exit-code rules.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,15 +53,122 @@ def test_the_gitlab_template_parses() -> None:
     assert {"repowise-coverage", "repowise-doc-drift", "repowise-security"} <= set(jobs)
 
 
+def _gitlab_jobs() -> dict:
+    return yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("gate", ["doc-drift", "security"])
+def test_the_gitlab_code_quality_report_is_the_file_the_job_writes(gate) -> None:
+    job = _gitlab_jobs()[f"repowise-{gate}"]
+    report = f"gl-code-quality-{gate}.json"
+    assert job["artifacts"]["reports"]["codequality"] == report
+    assert f"repowise-{gate}.md" in job["artifacts"]["paths"]
+    (block,) = job["script"]
+    assert f"mv gl.tmp {report}" in block and f"echo '[]' > {report}" in block
+
+
+def test_the_default_branch_publishes_the_reports_the_widget_compares_against() -> None:
+    job = _gitlab_jobs()["repowise-code-quality"]
+    assert "extends" not in job and job["allow_failure"] is True
+    assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
+    assert job["artifacts"]["reports"]["codequality"] == [
+        "gl-code-quality-doc-drift.json",
+        "gl-code-quality-security.json",
+    ]
+
+
+_ISSUE = '[{"check_name": "repowise-security/eval_call"}]'
+
+
+def _run_gitlab_job(tmp_path: Path, bin_dir: Path, job_name: str, **env: str) -> int:
+    """Run a job's script the way GitLab does: one shell under ``set -eo pipefail``."""
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is not available")
+    # Out of the install line only: the fake stands in for the installed CLI.
+    lines = [
+        line
+        for block in _gitlab_jobs()[job_name]["script"]
+        for line in block.splitlines()
+        if "pip install" not in line
+    ]
+    python_dir = str(Path(sys.executable).parent)
+    full = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(bin_dir), python_dir, os.environ["PATH"]]),
+        "FAKE_LOG": str(tmp_path / "log"),
+        "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "main",
+        **env,
+    }
+    script = "\n".join(["set -eo pipefail", *lines]) + "\n"
+    proc = subprocess.run([bash, "-c", script], cwd=tmp_path, env=full, capture_output=True)
+    return proc.returncode
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # (gate, markdown run's exit, gitlab run's exit, gitlab run's stdout, artifact)
+        ("doc-drift", "0", "0", "[]", []),
+        ("security", "1", "1", _ISSUE, json.loads(_ISSUE)),  # the gate failed
+        ("security", "2", "2", "[]", []),  # could not evaluate
+        ("doc-drift", "1", "0", _ISSUE, json.loads(_ISSUE)),  # the runs disagree
+        ("doc-drift", "0", "1", "Traceback (most recent call last):", []),  # a crash
+        ("security", "0", "2", "", []),  # a usage error prints nothing
+    ],
+)
+def test_the_gitlab_job_writes_a_valid_report_and_exits_with_the_gate(
+    tmp_path, fake_repowise, case
+) -> None:
+    gate, markdown_code, gitlab_code, gitlab_out, report = case
+    code = _run_gitlab_job(
+        tmp_path,
+        fake_repowise,
+        f"repowise-{gate}",
+        FAKE_DOC_DRIFT=markdown_code,
+        FAKE_SECURITY=markdown_code,
+        FAKE_GITLAB=gitlab_code,
+        FAKE_GITLAB_OUT=gitlab_out,
+    )
+    assert code == int(markdown_code)
+    first, second = (tmp_path / "log").read_text(encoding="utf-8").splitlines()
+    assert first.endswith("--format markdown") and second.endswith("--format gitlab")
+    assert first.removesuffix("markdown") == second.removesuffix("gitlab")
+    artifact = tmp_path / f"gl-code-quality-{gate}.json"
+    assert json.loads(artifact.read_text(encoding="utf-8")) == report
+
+
+def test_the_default_branch_job_writes_both_reports(tmp_path, fake_repowise) -> None:
+    code = _run_gitlab_job(
+        tmp_path, fake_repowise, "repowise-code-quality", FAKE_DOC_DRIFT="1",
+        FAKE_GITLAB_OUT=_ISSUE,
+    )
+    assert code == 0
+    (call,) = (tmp_path / "log").read_text(encoding="utf-8").splitlines()
+    assert call.startswith("doc-drift --check") and call.endswith("--format gitlab")
+    doc_drift = tmp_path / "gl-code-quality-doc-drift.json"
+    assert json.loads(doc_drift.read_text(encoding="utf-8")) == json.loads(_ISSUE)
+    security = tmp_path / "gl-code-quality-security.json"
+    assert json.loads(security.read_text(encoding="utf-8")) == []
+
+
 @pytest.fixture
 def fake_repowise(tmp_path: Path) -> Path:
-    """A ``repowise`` that logs its arguments and exits with ``$FAKE_<GATE>``."""
+    """A ``repowise`` that logs its arguments and exits with ``$FAKE_<GATE>``.
+
+    A ``--format gitlab`` run prints ``$FAKE_GITLAB_OUT`` (default ``[]``) and
+    exits with ``$FAKE_GITLAB`` when that is set.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "repowise"
     fake.write_text(
         "#!/usr/bin/env bash\n"
         'echo "$*" >> "$FAKE_LOG"\n'
+        'case "$*" in *"--format gitlab"*)\n'
+        '  printf "%s" "${FAKE_GITLAB_OUT-[]}"\n'
+        '  if [ -n "${FAKE_GITLAB:-}" ]; then exit "$FAKE_GITLAB"; fi ;;\n'
+        "esac\n"
         'case "$1" in\n'
         '  coverage) exit "${FAKE_COVERAGE:-0}" ;;\n'
         '  doc-drift) exit "${FAKE_DOC_DRIFT:-0}" ;;\n'

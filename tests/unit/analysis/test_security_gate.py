@@ -18,6 +18,7 @@ from repowise.core.analysis.security_gate import (
     evaluate,
     fingerprint_of,
     github_annotations,
+    render_gitlab,
     render_markdown,
     render_sarif,
     scan_change,
@@ -272,6 +273,7 @@ def test_no_raw_secret_in_any_format(repo, tmp_path):
         render_markdown(gate, label="main...HEAD", files_scanned=2, commits_scanned=3),
         "\n".join(github_annotations(scan.findings, gate)),
         json.dumps(render_sarif(scan.findings, tool_version="0")),
+        json.dumps(render_gitlab(scan.findings)),
         baseline.read_text(encoding="utf-8"),
     ]
     for raw in (KEY, "hunter2hunter2", PEM_BODY[:20]):
@@ -475,3 +477,53 @@ def test_diff_noprefix_config_does_not_misread_paths(repo):
     _write(repo, "b/cfg.py", "password = 'Zq8vLm2pXr7w'\n")
     _commit(repo, "nested")
     assert [f["file_path"] for f in _scan(repo).findings] == ["b/cfg.py"]
+
+
+def test_gitlab_maps_severities_drops_the_baseline_and_puts_history_on_line_one():
+    accepted = _row(snippet="eval(accepted)")
+    rows = [
+        _row(line=4),
+        _row("subprocess_shell_true", "med", line=2, snippet="run(x, shell=True)"),
+        _row("weak_hash", "low", line=3, snippet="md5"),
+        _row("aws_access_key", snippet="AWS = 'AKIA****'", line=9, commit="a" * 40),
+        accepted,
+    ]
+    issues = render_gitlab(rows, accepted=frozenset({accepted["fingerprint"]}))
+    by_check = {i["check_name"].removeprefix("repowise-security/"): i for i in issues}
+    assert set(by_check) == {"eval_call", "subprocess_shell_true", "weak_hash", "aws_access_key"}
+    assert by_check["eval_call"]["check_name"] == "repowise-security/eval_call"
+    assert by_check["eval_call"]["severity"] == "critical"
+    assert by_check["subprocess_shell_true"]["severity"] == "minor"
+    assert by_check["weak_hash"]["severity"] == "minor"
+    assert by_check["eval_call"]["location"] == {"path": "a.py", "lines": {"begin": 4}}
+    assert by_check["aws_access_key"]["location"]["lines"] == {"begin": 1}
+    assert "aaaaaaa" in by_check["aws_access_key"]["description"]
+    assert by_check["eval_call"]["fingerprint"] == rows[0]["fingerprint"]
+
+
+@pytest.mark.parametrize(
+    ("fail_on", "expected"),
+    [
+        ("high", ["critical", "minor", "minor"]),
+        ("med", ["critical", "major", "minor"]),
+        ("low", ["critical", "major", "major"]),
+    ],
+)
+def test_gitlab_severity_follows_the_gate(fail_on, expected):
+    rows = [
+        _row(),
+        _row("subprocess_shell_true", "med", snippet="run(x, shell=True)"),
+        _row("weak_hash", "low", snippet="md5"),
+    ]
+    assert [i["severity"] for i in render_gitlab(rows, fail_on=fail_on)] == expected
+
+
+def test_gitlab_keeps_two_identical_lines_apart():
+    # Two identical matched lines in one file share a fingerprint by design.
+    rows = [_row(line=7), _row(line=2)]
+    first, second = render_gitlab(rows)
+    assert first["location"]["lines"]["begin"] == 2
+    assert (first["fingerprint"], second["fingerprint"]) == (
+        rows[0]["fingerprint"],
+        rows[0]["fingerprint"] + ":2",
+    )

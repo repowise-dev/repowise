@@ -21,7 +21,8 @@ EXIT_GATE_FAILED = 1
 #: The gate could not run: no report, unknown revision, bad config, ...
 EXIT_CANNOT_EVALUATE = 2
 
-#: Output formats every gating command offers; a command may add more (SARIF).
+#: Output formats every gating command offers; a command may add more (SARIF,
+#: GitLab Code Quality).
 CI_FORMATS = ("table", "json", "markdown", "github")
 
 #: Why a diff against the base failed in CI, nearly always.
@@ -42,7 +43,8 @@ def cannot_evaluate(fmt: str, code: str, message: str) -> NoReturn:
     """Report why the gate could not run and exit :data:`EXIT_CANNOT_EVALUATE`.
 
     ``json`` gets a ``{"error", "message"}`` document on stdout, ``github`` an
-    ``::error::`` line; the message always reaches stderr for a human.
+    ``::error::`` line, ``gitlab`` an empty issue list so the report artifact
+    stays valid JSON; the message always reaches stderr for a human.
     """
     from rich.markup import escape
 
@@ -54,6 +56,8 @@ def cannot_evaluate(fmt: str, code: str, message: str) -> NoReturn:
         emit_json({"error": code, "message": message})
     elif fmt == "github":
         click.echo(error(message))
+    elif fmt == "gitlab":
+        click.echo("[]")
     if fmt != "json":
         err_console.print(f"[red]{escape(message)}[/red]")
     raise click.exceptions.Exit(EXIT_CANNOT_EVALUATE)

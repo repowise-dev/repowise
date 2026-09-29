@@ -179,6 +179,29 @@ def test_sarif_is_one_json_document(monkeypatch, tmp_path):
     ]["uri"] == "docs/a.md"
 
 
+def test_gitlab_is_one_issue_list_without_the_baseline(monkeypatch, tmp_path):
+    baseline = tmp_path / "baseline.json"
+    _invoke(monkeypatch, tmp_path, [_finding()], ["--write-baseline", str(baseline)])
+    findings = [_finding(), _finding(target="src/other.py", confidence=0.5)]
+    args = ["--baseline", str(baseline), "--format", "gitlab"]
+    result = _invoke(monkeypatch, tmp_path, findings, args, runner=_split_runner())
+    assert result.exit_code == 0
+    (issue,) = json.loads(result.stdout)
+    assert issue["severity"] == "minor"
+    assert issue["location"] == {"path": "docs/a.md", "lines": {"begin": 3}}
+
+
+def test_gitlab_prints_an_empty_list_when_it_cannot_evaluate(monkeypatch, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--baseline", str(bad), "--format", "gitlab"],
+        runner=_split_runner(),
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.stdout) == []
+
+
 def test_document_filter_narrows_the_gate(monkeypatch, tmp_path):
     findings = [_finding(), _finding(file_path=".github/b.md")]
     result = _invoke(

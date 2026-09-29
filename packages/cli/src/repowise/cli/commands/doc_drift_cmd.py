@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 _NO_INDEX = object()
 _STALE_INDEX = object()
 
-_FORMATS = (*CI_FORMATS, "sarif")
+_FORMATS = (*CI_FORMATS, "sarif", "gitlab")
 
 
 def _repo_path(path: str | None, repo_alias: str | None, no_workspace: bool, fmt: str) -> Path:
@@ -189,6 +189,9 @@ def _emit(
                 findings, tool_version=__version__, fail_on=fail_on, accepted=accepted
             )
         )
+    elif fmt == "gitlab":
+        fail_on = gate.fail_on if gate is not None else HIGH_CONFIDENCE_THRESHOLD
+        emit_json(render.render_gitlab(findings, fail_on=fail_on, accepted=accepted))
     elif fmt in ("markdown", "github"):
         markdown = render.render_markdown(
             findings,
@@ -222,9 +225,14 @@ def _print_verdict(gate: GateResult) -> None:
 
 
 def _refuse(code: str, message: str, fmt: str, *, remedy: str, repo: str) -> NoReturn:
-    """Refuse and exit 1; machine formats other than json keep stdout empty."""
+    """Refuse and exit 1; machine formats other than json and gitlab keep stdout empty.
+
+    ``gitlab`` prints an empty issue list, so the report artifact stays valid.
+    """
     if fmt in ("json", "table"):
         emit_refusal(code, message, fmt, remedy=remedy, repo=repo)
+    elif fmt == "gitlab":
+        click.echo("[]")
     from rich.markup import escape
 
     notices = ci_notices(fmt)
@@ -393,7 +401,10 @@ def _run_check(
 @click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 @format_option(
     choices=_FORMATS,
-    help="Output format. 'github' prints annotations and fills the job summary.",
+    help=(
+        "Output format. 'github' prints annotations and fills the job summary; "
+        "'sarif' is for code-scanning upload; 'gitlab' is a GitLab Code Quality report."
+    ),
 )
 def doc_drift_command(
     path: str | None,

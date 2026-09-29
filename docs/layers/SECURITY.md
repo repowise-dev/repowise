@@ -258,7 +258,8 @@ clone, an unreadable baseline). A git error is never read as a clean change.
 
 Every format carries the masked snippet only, because CI logs are often
 public: `table`, `json`, `markdown`, `github` (annotations plus the job
-summary) and `sarif` (for code-scanning upload). The gate is the registry
+summary), `sarif` (for code-scanning upload) and `gitlab` (a GitLab Code
+Quality report for the merge request widget). The gate is the registry
 above and has its limits: a pass means no pattern matched a changed line.
 
 **Baseline.** `--write-baseline FILE` records the change's findings in a
@@ -274,7 +275,10 @@ different value sharing the first four characters on an identical line stays
 accepted. Because the gate sees one change at a time, writing to an existing
 baseline adds to its entries (and to those of `--baseline`, when given)
 instead of replacing them; remove an entry by deleting it from the file.
-`--format sarif` marks accepted findings as suppressed.
+`--format sarif` marks accepted findings as suppressed; `--format gitlab`
+leaves them out, because that format has no suppression field. In the Code
+Quality report a finding at or above `--fail-on` is `critical` when high and
+`major` otherwise, and one below it `minor`.
 
 Without a REVSPEC the base comes from the CI's pull-request variables, else
 the remote's default branch. A shallow checkout cannot be read commit by

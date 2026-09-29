@@ -6,8 +6,11 @@
 #     - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
 #
 # Each gate is its own job, so one failing does not hide the others. The
-# markdown report is printed to the job log and kept as an artifact. Exit codes
-# are the gates': 1 failed, 2 could not evaluate; both fail the job.
+# markdown report is printed to the job log and kept as an artifact. Doc drift
+# and security also write a Code Quality report, so their findings show in the
+# merge request's Code Quality widget; repowise-code-quality publishes the
+# default branch's report the widget compares against. Exit codes are the
+# gates': 1 failed, 2 could not evaluate; both fail the job.
 #
 # Variables (set them in your .gitlab-ci.yml or the project's CI settings):
 #   REPOWISE_VERSION                Version to install; empty installs the latest.
@@ -49,26 +52,74 @@ repowise-coverage:
 repowise-doc-drift:
   extends: .repowise
   script:
-    - >
-      repowise doc-drift --check
-      ${REPOWISE_DOC_DRIFT_BASELINE:+--baseline "$REPOWISE_DOC_DRIFT_BASELINE"}
-      --format markdown > repowise-doc-drift.md
+    # The gate runs once per format (one run writing both would halve the cost).
+    # The Code Quality run goes even when the gate fails, and the job exits with
+    # the gate's code. Its output is kept only when it parses as JSON, so a usage
+    # error or a crash leaves `[]` rather than an invalid artifact.
+    - |
+      status=0
+      repowise doc-drift --check \
+        ${REPOWISE_DOC_DRIFT_BASELINE:+--baseline "$REPOWISE_DOC_DRIFT_BASELINE"} \
+        --format markdown > repowise-doc-drift.md || status=$?
+      repowise doc-drift --check \
+        ${REPOWISE_DOC_DRIFT_BASELINE:+--baseline "$REPOWISE_DOC_DRIFT_BASELINE"} \
+        --format gitlab > gl.tmp || true
+      python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-doc-drift.json \
+        || echo '[]' > gl-code-quality-doc-drift.json
+      exit "$status"
   after_script:
     - cat repowise-doc-drift.md
   artifacts:
     when: always
     paths: [repowise-doc-drift.md]
+    reports:
+      codequality: gl-code-quality-doc-drift.json
 
 repowise-security:
   extends: .repowise
   script:
-    - >
-      repowise security check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
-      --fail-on "${REPOWISE_SECURITY_FAIL_ON:-high}"
-      ${REPOWISE_SECURITY_BASELINE:+--baseline "$REPOWISE_SECURITY_BASELINE"}
-      --format markdown > repowise-security.md
+    # Two runs and a guarded report, as in repowise-doc-drift.
+    - |
+      status=0
+      repowise security check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
+        --fail-on "${REPOWISE_SECURITY_FAIL_ON:-high}" \
+        ${REPOWISE_SECURITY_BASELINE:+--baseline "$REPOWISE_SECURITY_BASELINE"} \
+        --format markdown > repowise-security.md || status=$?
+      repowise security check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
+        --fail-on "${REPOWISE_SECURITY_FAIL_ON:-high}" \
+        ${REPOWISE_SECURITY_BASELINE:+--baseline "$REPOWISE_SECURITY_BASELINE"} \
+        --format gitlab > gl.tmp || true
+      python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-security.json \
+        || echo '[]' > gl-code-quality-security.json
+      exit "$status"
   after_script:
     - cat repowise-security.md
   artifacts:
     when: always
     paths: [repowise-security.md]
+    reports:
+      codequality: gl-code-quality-security.json
+
+# The Code Quality widget compares a merge request's report with the one from
+# the target branch's latest pipeline, so this job publishes that one on the
+# default branch. It never fails the pipeline. Security judges only what a
+# change adds, and the default branch has no change to judge, so its report is
+# an empty list and every security issue a merge request raises shows as new.
+repowise-code-quality:
+  image: python:3.12
+  allow_failure: true
+  script:
+    - |
+      python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
+      repowise doc-drift --check \
+        ${REPOWISE_DOC_DRIFT_BASELINE:+--baseline "$REPOWISE_DOC_DRIFT_BASELINE"} \
+        --format gitlab > gl.tmp || true
+      python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-doc-drift.json \
+        || echo '[]' > gl-code-quality-doc-drift.json
+      echo '[]' > gl-code-quality-security.json
+  artifacts:
+    when: always
+    reports:
+      codequality: [gl-code-quality-doc-drift.json, gl-code-quality-security.json]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

@@ -107,9 +107,15 @@ def test_an_unreadable_index_refuses_rather_than_reporting_zero(
     assert "findings" not in payload
 
 
-@pytest.mark.parametrize("fmt", ["sarif", "markdown", "github"])
-def test_a_refusal_under_a_machine_format_keeps_stdout_empty(monkeypatch, tmp_path, fmt):
-    """A refusal must not land in the file a CI step redirects stdout into."""
+@pytest.mark.parametrize(
+    ("fmt", "stdout"), [("sarif", ""), ("markdown", ""), ("github", ""), ("gitlab", "[]")]
+)
+def test_a_refusal_under_a_machine_format_keeps_stdout_empty(monkeypatch, tmp_path, fmt, stdout):
+    """A refusal must not land in the file a CI step redirects stdout into.
+
+    ``gitlab`` prints an empty issue list instead, so the Code Quality
+    artifact stays valid JSON.
+    """
     monkeypatch.setattr(doc_drift_cmd, "_repo_path", lambda *a, **k: tmp_path)
 
     def _run(coro):
@@ -119,7 +125,7 @@ def test_a_refusal_under_a_machine_format_keeps_stdout_empty(monkeypatch, tmp_pa
     monkeypatch.setattr(doc_drift_cmd, "run_async", _run)
     result = _split_runner().invoke(doc_drift_cmd.doc_drift_command, ["--format", fmt])
     assert result.exit_code == 1
-    assert result.stdout == ""
+    assert result.stdout.strip() == stdout
     assert "No readable Repowise index" in result.stderr
 
 
@@ -222,3 +228,5 @@ def test_min_confidence_defaults_to_showing_what_the_index_stored(monkeypatch, t
     CliRunner().invoke(doc_drift_cmd.doc_drift_command, [])
 
     assert captured["mc"] is None
+
+

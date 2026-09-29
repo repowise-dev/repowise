@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.ci import baseline as ci_baseline
-from repowise.core.ci import github, sarif
+from repowise.core.ci import github, gitlab, sarif
 from repowise.core.ci.markdown import ROW_LIMIT, cell, more_line, plural
 from repowise.core.support_paths import DOC_EXTENSIONS
 
@@ -554,3 +554,40 @@ def render_sarif(
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)
+
+
+def _gitlab_severity(severity: str, fail_on: str) -> str:
+    if _RANK[severity] < _RANK[fail_on]:
+        return "minor"
+    return "critical" if severity == "high" else "major"
+
+
+def render_gitlab(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    fail_on: str = "high",
+    accepted: frozenset[str] = frozenset(),
+) -> list[dict]:
+    """GitLab Code Quality issues whose severity follows the gate, as SARIF's level does.
+
+    At or above *fail_on*: ``critical`` for high, ``major`` otherwise; below
+    it, ``minor``. *accepted* (the baseline) is applied by
+    :func:`~repowise.core.ci.gitlab.report`. A secret found only in an earlier
+    commit sits on line 1 of its file, since its line belongs to that commit;
+    when the change deleted that file, the path is absent at the head.
+    """
+    return gitlab.report(
+        SARIF_TOOL_NAME,
+        (
+            gitlab.issue(
+                str(f["kind"]),
+                _gitlab_severity(f["severity"], fail_on),
+                _message(f),
+                str(f["file_path"]),
+                None if f["commit"] else int(f["line_number"]),
+                f["fingerprint"],
+            )
+            for f in _order(findings)
+        ),
+        accepted=accepted,
+    )
