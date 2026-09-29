@@ -306,6 +306,8 @@ async def overview_summary(
 
     # Languages and module count come from the one rule Stats uses, so the two
     # pages cannot disagree on either number.
+    # One narrow row per file node, not a GROUP BY: module_count needs paths. Fine to
+    # ~100k files; past that, count languages in SQL and fetch only code paths.
     node_rows = await session.execute(
         select(GraphNode.node_id, GraphNode.language, GraphNode.external_system_id).where(
             GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
