@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from repowise.core.generation.api_contract_detector import detect_code_api_contracts
 from repowise.core.ingestion.models import FileInfo, HeritageRelation, Import, ParsedFile, Symbol
 
@@ -117,7 +119,8 @@ def test_skips_python_file_without_fastapi():
     assert pf.file_info.is_api_contract is False
 
 
-def test_detects_aspnet_controller_via_inheritance():
+@pytest.mark.parametrize("base", ["ControllerBase", "Controller", "ApiController"])
+def test_detects_aspnet_controller_via_inheritance(base):
     pf = _parsed(
         "Controllers/UsersController.cs",
         "csharp",
@@ -125,7 +128,7 @@ def test_detects_aspnet_controller_via_inheritance():
             _sym("UsersController", kind="class", signature="class UsersController"),
             _sym("Get", kind="method", parent="UsersController"),
         ],
-        heritage=[_extends("UsersController", "ControllerBase")],
+        heritage=[_extends("UsersController", base)],
     )
     assert detect_code_api_contracts([pf]) == 1
 

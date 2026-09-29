@@ -53,7 +53,8 @@ def _python_is_fastapi_router(parsed: ParsedFile) -> bool:
     return False
 
 
-_ASPNET_CONTROLLER_BASES = frozenset({"ControllerBase", "Controller"})
+# ApiController is also the classic Web API 2 base class, not only the attribute.
+_ASPNET_CONTROLLER_BASES = frozenset({"ControllerBase", "Controller", "ApiController"})
 _ASPNET_CLASS_ATTRIBUTES = frozenset({"ApiController", "Route"})
 _ASPNET_ACTION_ATTRIBUTES = frozenset(
     {"HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpPatch", "HttpHead", "HttpOptions"}
