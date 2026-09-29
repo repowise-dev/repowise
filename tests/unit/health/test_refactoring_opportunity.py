@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
@@ -11,6 +13,10 @@ from repowise.core.analysis.health.refactoring.opportunity import (
     is_standalone_clone,
     opportunity_public_id,
     opportunity_status,
+)
+from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    _details_payload,
+    _row_kwargs,
 )
 
 
@@ -236,6 +242,36 @@ def test_mechanical_and_judgment_steps_are_counted_separately() -> None:
     opportunity = compose_opportunities([plan("extract_method"), split()])[0]
     assert (opportunity.mechanical_steps, opportunity.judgment_steps) == (1, 1)
     assert opportunity.step_count == 2
+
+
+def test_the_stored_step_count_is_the_stored_steps() -> None:
+    """The row's ``step_count`` and the details it ships with describe one list.
+
+    A reader pairs the row (counts) with the details (steps) by id; if either
+    half could disagree, a queue would promise steps its drawer never shows.
+    """
+    rows = [
+        plan("extract_method"),
+        plan("extract_method", "render"),
+        split(),
+        clone(intra=False, co_change=7),
+        clone(intra=True, co_change=0),
+        plan("extract_method", file_path="svc/billing.py"),
+    ]
+    for rank, opportunity in enumerate(compose_opportunities(rows)):
+        details = _details_payload(opportunity, validations={}, finding_ids={})
+        row = _row_kwargs(
+            opportunity,
+            rank_position=rank,
+            queue_position=rank,
+            status="open",
+            details=details,
+            analyzed_commit=None,
+        )
+        stored_steps = json.loads(row["details_json"])["steps"]
+        assert row["step_count"] == len(stored_steps) == len(opportunity.steps)
+        assert row["mechanical_steps"] + row["judgment_steps"] == row["step_count"]
+        assert opportunity.as_dict()["step_count"] == len(opportunity.as_dict()["steps"])
 
 
 # --------------------------------------------------------------------------
