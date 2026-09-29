@@ -8,12 +8,13 @@ these adapters so no consumer has to know which.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 
 def field(row: Any, name: str, default: Any = None) -> Any:
-    """Read one attribute from a dataclass, an ORM row, or a dict."""
-    if isinstance(row, dict):
+    """Read one attribute from a dataclass, an ORM row, or a mapping."""
+    if isinstance(row, Mapping):
         return row.get(name, default)
     return getattr(row, name, default)
 

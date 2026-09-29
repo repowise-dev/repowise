@@ -196,6 +196,7 @@ async def stats_highlights(
         select(
             GitMetadata.file_path,
             GitMetadata.primary_owner_name,
+            GitMetadata.primary_owner_email,
             GitMetadata.bus_factor,
             GitMetadata.commit_count_total,
             GitMetadata.commit_count_capped,
@@ -235,7 +236,7 @@ async def stats_highlights(
     rhythm = activity["rhythm"]
     rhythm["code_half_life_days"] = sh.code_half_life(all_meta, activity["origin"]["last_commit_at"])
     people = {
-        **sh.build_people(all_meta),
+        **sh.build_people(all_meta, commits),
         "contributor_count": activity["origin"]["contributor_count"],
         "chronotypes": activity["chronotypes"],
         "arrivals": activity["arrivals"],

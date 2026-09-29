@@ -17,14 +17,12 @@ ISO strings (artifacts); :func:`parse_dt` normalises all three to aware UTC.
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
-from repowise.core.author_identity import build_identity_resolver
 from repowise.core.test_paths import is_test_related_path
 
 Row = Mapping[str, Any]
@@ -51,39 +49,7 @@ _LOCAL_TIME_COVERAGE = 0.99
 # A peak hour drawn from fewer commits than this is noise, not a habit.
 _CHRONOTYPE_MIN_COMMITS = 10
 
-# Automation, excluded from the people-shaped sections. Either an explicit bot
-# marker or a service name matched in full, so "Netlify Johnson" stays a person.
-_BOT_NAME_RE = re.compile(
-    r"(\[bot\]"
-    r"|^bot$"
-    r"|[-_ ]bot$"
-    r"|^(dependabot|renovate(bot)?|greenkeeper|snyk([-_ ]bot)?|imgbot|"
-    r"github[-_ ]?actions|semantic[-_ ]release|allcontributors|codecov|mergify|"
-    r"pre[-_ ]commit[-_ ]ci|netlify|vercel)$)",
-    re.IGNORECASE,
-)
-_BOT_EMAIL_RE = re.compile(
-    r"(\[bot\]@|@bots\.noreply\.github\.com|^(actions@github\.com|"
-    r"noreply@github\.com)$)",
-    re.IGNORECASE,
-)
-
 _FUNCTION_KINDS = frozenset({"function", "method"})
-
-
-def is_bot(name: str | None, email: str | None) -> bool:
-    """True when this author is automation (CI or a coding agent's own identity).
-
-    Identity only: an agent-*assisted* commit still has a human author.
-    """
-    # Imported here: the provenance module loads the whole git indexer package.
-    from repowise.core.ingestion.git_indexer.agent_provenance import agent_from_identity
-
-    if agent_from_identity(name, email):
-        return True
-    if name and _BOT_NAME_RE.search(name):
-        return True
-    return bool(email and _BOT_EMAIL_RE.search(email))
 
 
 def size_class(total_nloc: int) -> dict[str, Any]:
@@ -404,9 +370,10 @@ def build_commit_pass(commits: Iterable[Row], repo_totals: Row | None = None) ->
     """
     totals = repo_totals or {}
     rows = list(commits)
-    resolve = build_identity_resolver([(r.get("author_name"), r.get("author_email")) for r in rows])
+    from repowise.core.analysis.owners import people_resolver
 
-    contributors: set[str] = set()
+    resolve = people_resolver(commit_rows=rows)
+
     display_name: dict[str, str] = {}
     humans: set[str] = set()
     arrival: dict[str, datetime] = {}
@@ -418,9 +385,8 @@ def build_commit_pass(commits: Iterable[Row], repo_totals: Row | None = None) ->
         name, email = row.get("author_name"), row.get("author_email")
         key = resolve(name, email) if (name or email) else None
         if key:
-            contributors.add(key)
-            display_name.setdefault(key, name or key)
-            if not is_bot(name, email):
+            display_name.setdefault(key, resolve.display_name(key))
+            if not resolve.is_bot(key):
                 humans.add(key)
         awards.add(row)
         moment = parse_dt(row.get("committed_at"))
@@ -451,7 +417,7 @@ def build_commit_pass(commits: Iterable[Row], repo_totals: Row | None = None) ->
         key=lambda a: a["first_commit_at"] or "",
     )
     return {
-        "origin": _origin(totals, first_at, max(commit_times, default=None), len(rows), len(contributors)),
+        "origin": _origin(totals, first_at, max(commit_times, default=None), len(rows), len(humans)),
         "rhythm": rhythm,
         "chronotypes": (
             _chronotypes(cal["hours"], cal["weekdays"], display_name) if local_mode else []
@@ -554,17 +520,28 @@ def code_half_life(git_metadata: Iterable[Row], last_at: Any) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def build_people(git_metadata: Iterable[Row]) -> dict[str, Any]:
-    """Owner count, single-owner files, directory silos and the truck factor."""
-    from repowise.core.analysis.health.aggregation import module_label
+def build_people(git_metadata: Iterable[Row], commits: Iterable[Row] = ()) -> dict[str, Any]:
+    """Owner count, single-owner files, directory silos and the truck factor.
 
+    Owners are people, not display names: each file's primary owner goes
+    through :func:`people_resolver`, so one person under two names or emails
+    is one owner, and automation owns nothing here.
+    """
+    from repowise.core.analysis.health.aggregation import module_label
+    from repowise.core.analysis.owners import people_resolver
+
+    rows = list(git_metadata)
+    resolve = people_resolver(rows, commits)
     owners: Counter[str] = Counter()
     single_owner_files = 0
     module_owner_files: dict[str, Counter[str]] = {}
     module_file_totals: Counter[str] = Counter()
 
-    for m in git_metadata:
-        owner = m.get("primary_owner_name")
+    for m in rows:
+        name = m.get("primary_owner_name")
+        owner = resolve(name, m.get("primary_owner_email")) if name else None
+        if owner and resolve.is_bot(owner):
+            owner = None
         if _int(m.get("bus_factor")) == 1:
             single_owner_files += 1
         module = module_label(m.get("file_path"))

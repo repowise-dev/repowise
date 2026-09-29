@@ -27,6 +27,7 @@ from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
 from repowise.core.author_identity import (
+    IdentityResolver,
     build_identity_resolver,
     canonicalize_author_email,
 )
@@ -110,6 +111,30 @@ class OwnerAccumulator:
 ACTIVITY_WINDOW_DAYS = 90
 
 
+def people_resolver(
+    git_rows: Iterable[Any] = (), commit_rows: Iterable[Any] = ()
+) -> IdentityResolver:
+    """The one identity resolver every people-shaped figure goes through.
+
+    Built from every (name, email) the rows carry: each file's primary owner
+    and ``top_authors_json`` entries, and each commit's author. A commit row's
+    optional ``co_authors`` (``Co-authored-by`` trailer pairs) is evidence only
+    and never merges anyone (see :func:`build_identity_resolver`). Owners,
+    the truck factor, ownership rollups and the whole-history contributor count
+    all key on it, so one person is one bucket everywhere.
+    """
+    pairs: list[tuple[str | None, str | None]] = []
+    evidence: list[tuple[str | None, str | None]] = []
+    for m in git_rows:
+        pairs.append((row_field(m, "primary_owner_name"), row_field(m, "primary_owner_email")))
+        for a in json_field(m, "top_authors_json", []):
+            pairs.append((a.get("name"), a.get("email")))
+    for c in commit_rows:
+        pairs.append((row_field(c, "author_name"), row_field(c, "author_email")))
+        evidence.extend(row_field(c, "co_authors") or ())
+    return build_identity_resolver(pairs, evidence)
+
+
 def aggregate_owners(
     git_rows: Iterable[Any],
     dead_rows: Iterable[Any],
@@ -130,16 +155,7 @@ def aggregate_owners(
     accs: dict[str, OwnerAccumulator] = {}
     module_totals: dict[str, int] = defaultdict(int)
 
-    # The resolver folds noreply variants and same-name real+noreply emails to
-    # one bucket, so it needs every (name, email) pair before the main walk.
-    pairs: list[tuple[str | None, str | None]] = []
-    for m in rows:
-        pairs.append((row_field(m, "primary_owner_name"), row_field(m, "primary_owner_email")))
-        for a in json_field(m, "top_authors_json", []):
-            pairs.append((a.get("name"), a.get("email")))
-    for c in commits:
-        pairs.append((row_field(c, "author_name"), row_field(c, "author_email")))
-    resolve = build_identity_resolver(pairs)
+    resolve = people_resolver(rows, commits)
 
     def _ensure(name: str, email: str | None) -> OwnerAccumulator:
         k = resolve(name, email)
@@ -147,11 +163,8 @@ def aggregate_owners(
             return OwnerAccumulator(key="", name=name or "(unknown)", email=email)
         acc = accs.get(k)
         if acc is None:
-            acc = OwnerAccumulator(key=k, name=name or (email or ""), email=email)
+            acc = OwnerAccumulator(key=k, name=resolve.display_name(k), email=email)
             accs[k] = acc
-        # Promote a richer display name if we learn one later.
-        if name and (not acc.name or acc.name == acc.email):
-            acc.name = name
         if email and not acc.email:
             acc.email = email
         return acc
@@ -265,7 +278,7 @@ def aggregate_owners(
 
 def _apply_commit_activity(
     accs: dict[str, OwnerAccumulator],
-    resolve: Any,
+    resolve: IdentityResolver,
     commits: list[Any],
     total_commits: int | None,
 ) -> None:
@@ -336,5 +349,6 @@ __all__ = [
     "as_utc",
     "module_share",
     "owner_key",
+    "people_resolver",
     "silo_modules",
 ]

@@ -504,6 +504,38 @@ def _lifetime_churn(
     return _walk_churn(repo, rev)
 
 
+# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
+_TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
+
+
+def count_people(repo: Any, rev: str) -> int:
+    """Humans who authored a non-merge commit reachable from *rev*.
+
+    One ``git log --no-merges`` pass reads each commit's mailmap-applied author
+    and its ``Co-authored-by`` trailers, and the shared people resolver folds
+    one person's several names and emails into one (trailers are evidence
+    only). Automation is not counted.
+    """
+    from repowise.core.analysis.owners import people_resolver
+
+    out = repo.git.log(
+        "--no-merges",
+        "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
+        rev,
+    )
+    rows = []
+    for line in out.splitlines():
+        name, _, rest = line.partition("\0")
+        email, _, trailers = rest.partition("\0")
+        co_authors = [
+            (m["name"], m["email"])
+            for value in trailers.split("\x1f")
+            if (m := _TRAILER_PERSON_RE.match(value))
+        ]
+        rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
+    return len(people_resolver(commit_rows=rows).people())
+
+
 def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
@@ -527,9 +559,8 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     - the root commit(s) — earliest committed date (project age), the founding
       author's name, and that commit's subject. Multiple roots (merged
       histories) use the earliest root.
-    - ``git shortlog -sn`` — one line per mailmap-folded author, so its line
-      count is the true all-time contributor count. It is passed a revision
-      (rather than left to read stdin, which would block).
+    - one ``git log --no-merges`` over author names and emails — the
+      all-time count of people (see :func:`count_people`).
 
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
@@ -570,11 +601,8 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     except Exception:
         pass
 
-    try:
-        out = repo.git.shortlog("-sn", rev)
-        totals.total_contributor_count = sum(1 for line in out.splitlines() if line.strip())
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        totals.total_contributor_count = count_people(repo, rev)
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
         repo, totals.total_commit_count, rev, head_sha, prior

@@ -24,8 +24,8 @@ from tests.unit.server.conftest import create_test_repo
 GOLDEN = Path(__file__).parent / "golden" / "ownership_rollups.json"
 
 _ALICE = {"name": "Alice", "email": "alice@example.com"}
-_BOB = {"name": "Bob", "email": "bob@example.com"}
-_BOB_NOREPLY = {"name": "Bob", "email": "4242+bob@users.noreply.github.com"}
+_BOB = {"name": "Bob Stone", "email": "bob@example.com"}
+_BOB_NOREPLY = {"name": "Bob Stone", "email": "4242+bob@users.noreply.github.com"}
 _CAROL = {"name": "Carol", "email": None}
 
 
@@ -67,7 +67,7 @@ _GIT = {
         ),
     ),
     "src/api.py": dict(
-        primary_owner_name="Bob",
+        primary_owner_name="Bob Stone",
         primary_owner_email="4242+bob@users.noreply.github.com",
         primary_owner_commit_pct=0.9,
         top_authors_json=_authors((_BOB_NOREPLY, 18, 1_785_000_000), (_ALICE, 2, None)),
@@ -95,7 +95,7 @@ _GIT = {
         bus_factor=1,
     ),
     "lib/util.py": dict(
-        primary_owner_name="Bob",
+        primary_owner_name="Bob Stone",
         primary_owner_email="bob@example.com",
         primary_owner_commit_pct=0.6,
         top_authors_json=_authors((_BOB, 6, None), (_ALICE, 4, 1_770_000_000)),
