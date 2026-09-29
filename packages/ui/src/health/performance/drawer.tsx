@@ -203,27 +203,58 @@ function SiblingsNote({
   );
 }
 
-/** The plan's edits in order; only the rarer mechanical ones are marked. */
+/**
+ * The plan's edits in order; only the rarer mechanical ones are marked.
+ *
+ * Consecutive steps that make the same edit at different call sites read as
+ * one step with its locations: the server emits one step per site, and eight
+ * copies of "Collect the keys before the loop" said nothing seven times.
+ */
 function PlanSteps({ steps }: { steps: PerformanceOpportunityPlanStep[] }) {
+  const groups: PerformanceOpportunityPlanStep[][] = [];
+  for (const step of [...steps].sort((a, b) => a.order - b.order)) {
+    const last = groups[groups.length - 1];
+    if (last && last[0]!.action === step.action && last[0]!.applicability === step.applicability) {
+      last.push(step);
+    } else {
+      groups.push([step]);
+    }
+  }
+  const where = (step: PerformanceOpportunityPlanStep) =>
+    step.file_path ? `${step.file_path}${step.line ? `:${step.line}` : ""}` : null;
   return (
     <ol className="mt-3 space-y-1.5">
-      {[...steps]
-        .sort((a, b) => a.order - b.order)
-        .map((step) => (
-          <li key={step.order} className="text-sm text-[var(--color-text-secondary)]">
-            <span className="tabular-nums text-[var(--color-text-tertiary)]">{step.order}.</span>{" "}
-            {step.action}
-            {step.applicability === "mechanical" ? (
-              <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">mechanical</span>
-            ) : null}
-            {step.file_path ? (
-              <span className="ml-1.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-                {step.file_path}
-                {step.line ? `:${step.line}` : ""}
+      {groups.map((group, index) => {
+        const first = group[0]!;
+        const places = group.map(where).filter((p): p is string => Boolean(p));
+        return (
+          <li key={first.order} className="text-sm text-[var(--color-text-secondary)]">
+            <span className="tabular-nums text-[var(--color-text-tertiary)]">{index + 1}.</span>{" "}
+            {first.action}
+            {group.length > 1 ? (
+              <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
+                {`at ${group.length} call sites`}
               </span>
             ) : null}
+            {first.applicability === "mechanical" ? (
+              <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">mechanical</span>
+            ) : null}
+            {places.length === 1 ? (
+              <span className="ml-1.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                {places[0]}
+              </span>
+            ) : places.length > 1 ? (
+              <ul className="mt-1 space-y-0.5 pl-5">
+                {places.map((p) => (
+                  <li key={p} className="break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </li>
-        ))}
+        );
+      })}
     </ol>
   );
 }

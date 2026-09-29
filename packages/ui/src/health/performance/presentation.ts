@@ -126,16 +126,35 @@ const CAUSE_BY_MARKER: Record<string, (boundary: C4IoKind | null) => string> = {
     `${b ? boundaryNoun(b) : "Resource"} client constructed on every iteration`,
 };
 
-/**
- * The cause a reader should act on, in words. The terminal sink is deliberately
- * absent: it is machine evidence and belongs in the monospace line beneath.
- */
-export function opportunityTitle(opportunity: PerformanceOpportunity): string {
+/** The cause in words: "Database call inside a loop". */
+export function opportunityCause(opportunity: PerformanceOpportunity): string {
   const cause = CAUSE_BY_MARKER[opportunity.biomarker_type];
   const phrase = cause
     ? cause(opportunity.boundary_kind)
     : biomarkerLabel(opportunity.biomarker_type);
   return phrase[0]!.toUpperCase() + phrase.slice(1);
+}
+
+/**
+ * The short name of the place to change: the intervention symbol without its
+ * path, else the first caller, else the file's name. It is what separates two
+ * rows that share a cause; the full path stays in the evidence line.
+ */
+export function opportunitySubject(opportunity: PerformanceOpportunity): string {
+  const symbol = opportunity.intervention_symbol?.trim();
+  if (symbol) return symbol.split("::").pop() ?? symbol;
+  const first = opportunity.evidence[0]?.function_name;
+  if (first) return first;
+  return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
+}
+
+/**
+ * The row's title: the cause, then where. Every database loop in a repository
+ * used to share one title ("Database call inside a loop" on 273 rows), so the
+ * part that told rows apart was the mono line nobody reads first.
+ */
+export function opportunityTitle(opportunity: PerformanceOpportunity): string {
+  return `${opportunityCause(opportunity)} in ${opportunitySubject(opportunity)}`;
 }
 
 /**
@@ -159,6 +178,43 @@ export function affectedSummary(opportunity: PerformanceOpportunity): string {
   const sitePart = `${sites.toLocaleString()} call site${sites === 1 ? "" : "s"}`;
   const filePart = `${files.toLocaleString()} file${files === 1 ? "" : "s"}`;
   return `${sitePart} across ${filePart}`;
+}
+
+const MULTIPLIER_PHRASE: Record<string, string> = {
+  io_in_loop: "runs once per loop iteration",
+  serial_await_in_loop: "awaited one at a time",
+  nested_loop_with_io: "runs inside nested loops",
+};
+
+/**
+ * A rank factor as a reader's reason, without the points: "8 call sites",
+ * "reachable from an entry point". The points stay in `whyRankedLabel`, which
+ * the drawer shows for anyone checking the arithmetic.
+ */
+export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
+  const value = factor.value;
+  switch (factor.factor) {
+    case "affected_call_sites":
+      return typeof value === "number"
+        ? `${value.toLocaleString()} call site${value === 1 ? "" : "s"}`
+        : "several call sites";
+    case "boundary_kind":
+      return !value || value === NO_BOUNDARY
+        ? "in-process work"
+        : `a ${boundaryLabel(String(value)).toLowerCase()} call`;
+    case "multiplier_shape":
+      return MULTIPLIER_PHRASE[String(value)] ?? humanizeToken(String(value));
+    case "execution_context":
+      return `${contextLabel(String(value) as PerformanceExecutionContext).toLowerCase()} code`;
+    case "entry_reachability":
+      return "reachable from an entry point";
+    case "loop_magnitude":
+      return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
+    case "provenance":
+      return value === "call-site" ? "seen at the call site" : humanizeToken(String(value));
+    default:
+      return whyRankedLabel(factor);
+  }
 }
 
 /** `Multiplier shape: serial await in loop (+4)`, capped by the server at three. */

@@ -36,7 +36,12 @@ import {
 import type { HealthWorkItemFinding } from "./refactoring-card";
 import { FilterSelect, FilterChip } from "./code-health-controls";
 import { ImpactEffortQuadrant } from "./impact-effort-quadrant";
-import { biomarkerLabel } from "./biomarker-glossary";
+import {
+  biomarkerLabel,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isHistoryBiomarker,
+} from "./biomarker-glossary";
 import { buildAiPrompt } from "./ai-prompt-builder";
 import { SEVERITY_LABEL, type Severity } from "./tokens";
 import type { CodeHealthAdapter } from "./code-health-adapter";
@@ -270,7 +275,19 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   // not group size, so "Leverage" sorted stays leverage-led inside and out.
   const grouped = useMemo(() => {
     const targets = queue?.targets ?? [];
-    if (groupBy === "none") return [{ key: "All", targets }];
+    if (groupBy === "none") {
+      // A file led by a history marker has nothing in its code to change, so
+      // it reads under Watch, after the files an edit can improve. The lead is
+      // a history marker only when the file has no code-shape finding at all.
+      const fix = targets.filter((t) => !isHistoryBiomarker(t.primary_biomarker));
+      const watch = targets.filter((t) => isHistoryBiomarker(t.primary_biomarker));
+      return watch.length
+        ? [
+            { key: "All", targets: fix },
+            { key: HISTORY_LABEL, targets: watch },
+          ].filter((g) => g.targets.length > 0)
+        : [{ key: "All", targets }];
+    }
     const groups = new Map<string, typeof targets>();
     for (const t of targets) {
       let key = "—";
@@ -487,13 +504,19 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
             <div className="space-y-6">
               {grouped.map((g) => (
                 <section key={g.key} className="space-y-2">
-                  {groupBy !== "none" ? (
+                  {groupBy !== "none" || g.key === HISTORY_LABEL ? (
                     <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                       {g.key}{" "}
                       <span className="text-[var(--color-text-secondary)]">
-                        ({g.targets.length})
+                        ({g.targets.length}
+                        {groupBy === "none" ? " on this page" : ""})
                       </span>
                     </h3>
+                  ) : null}
+                  {groupBy === "none" && g.key === HISTORY_LABEL ? (
+                    <p className="max-w-[72ch] text-xs text-[var(--color-text-tertiary)]">
+                      {HISTORY_EXPLAINER}
+                    </p>
                   ) : null}
                   <HealthWorkQueueList
                     targets={g.targets}

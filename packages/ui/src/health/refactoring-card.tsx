@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
-import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
+import {
+  biomarkerInfo,
+  biomarkerLabel,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isHistoryBiomarker,
+} from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { EFFORT_TINT, type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
@@ -113,6 +119,9 @@ export function HealthWorkItemCard({
   // label no longer depend on shipping the findings themselves.
   const findings = target.all_findings ?? loaded;
   const hasFindings = target.finding_count > 0;
+  // Led by a history marker: context for a reviewer, not something an edit
+  // clears, so the card neither rates it as a defect nor offers a fix prompt.
+  const watch = isHistoryBiomarker(target.primary_biomarker);
 
   const toggle = async () => {
     const next = !expanded;
@@ -145,7 +154,13 @@ export function HealthWorkItemCard({
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <SeverityMark severity={target.primary_severity} />
+          {watch ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              {HISTORY_LABEL}
+            </span>
+          ) : (
+            <SeverityMark severity={target.primary_severity} />
+          )}
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
             {biomarkerInfo(target.primary_biomarker).description ? (
@@ -176,7 +191,11 @@ export function HealthWorkItemCard({
               target: target.file_path,
               targetKind: "path",
             }}
-            question={`Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`}
+            question={
+              watch
+                ? `What does the ${biomarkerLabel(target.primary_biomarker)} signal say about ${target.file_path}, and what should a reviewer watch for when it changes?`
+                : `Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`
+            }
             label={`Ask about the finding in ${target.file_path}`}
             className="-my-1 h-6 w-6"
           />
@@ -221,7 +240,10 @@ export function HealthWorkItemCard({
           </span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
-        {onGeneratePrompt ? (
+        {watch ? (
+          <p className="text-xs text-[var(--color-text-tertiary)]">{HISTORY_EXPLAINER}</p>
+        ) : null}
+        {onGeneratePrompt && !watch ? (
           <div className="pt-2">
             <button
               type="button"

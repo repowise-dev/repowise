@@ -111,3 +111,23 @@ describe("RefactoringCard lazy findings", () => {
     expect(screen.queryByRole("button", { name: /findings/ })).not.toBeInTheDocument();
   });
 });
+
+describe("a file led by a history marker", () => {
+  it("reads as Watch, explains why, and offers no fix prompt", () => {
+    render(
+      <RefactoringCard
+        target={target({ primary_biomarker: "change_entropy", biomarkers: ["change_entropy"] })}
+        onGeneratePrompt={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Watch")).toBeInTheDocument();
+    expect(screen.getByText(/Editing the file will not clear it/)).toBeInTheDocument();
+    expect(screen.queryByText("AI fix prompt")).not.toBeInTheDocument();
+  });
+
+  it("keeps the fix prompt for a code-shape lead", () => {
+    render(<RefactoringCard target={target()} onGeneratePrompt={vi.fn()} />);
+    expect(screen.getByText("AI fix prompt")).toBeInTheDocument();
+    expect(screen.queryByText("Watch")).not.toBeInTheDocument();
+  });
+});

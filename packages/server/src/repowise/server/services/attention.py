@@ -24,6 +24,7 @@ from repowise.core.analysis.attention import (
     severity_of_file_score,
     silo_source,
 )
+from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
@@ -100,7 +101,10 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
     # The biomarker to name each file by: its own heaviest one. Bounded to the
     # handful of files above, so this is a keyed read rather than a scan.
     paths = [r.file_path for r in rows]
+    # A history marker names only when the file has nothing an edit can fix,
+    # the same rule `primary_finding` applies everywhere else.
     lead_biomarker: dict[str, str] = {}
+    history_lead: dict[str, str] = {}
     for path, biomarker in (
         await session.execute(
             select(HealthFinding.file_path, HealthFinding.biomarker_type)
@@ -108,6 +112,11 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
             .order_by(HealthFinding.health_impact.desc())
         )
     ).all():
+        if biomarker_category(biomarker) == HISTORY_CATEGORY:
+            history_lead.setdefault(path, biomarker)
+        else:
+            lead_biomarker.setdefault(path, biomarker)
+    for path, biomarker in history_lead.items():
         lead_biomarker.setdefault(path, biomarker)
 
     items = [

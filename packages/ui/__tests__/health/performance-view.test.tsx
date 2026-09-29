@@ -105,10 +105,11 @@ describe("PerformanceView queue", () => {
     expect(headings[2]).toContain("Needs investigation");
   });
 
-  it("shows the cause in words with the sink as separate monospace evidence", async () => {
+  it("shows the cause in words, where in mono, and the sink as separate evidence", async () => {
     render(<PerformanceView adapter={adapter()} />);
     const [first] = await rows();
-    expect(within(first!).getByText("Database call inside a loop")).toBeTruthy();
+    expect(within(first!).getByText(/Database call inside a loop in/)).toBeTruthy();
+    expect(within(first!).getByText("load").tagName).toBe("CODE");
     expect(within(first!).getByText("src/db.py::fetch")).toBeTruthy();
     expect(within(first!).getByText(/2 call sites across 2 files/)).toBeTruthy();
     expect(within(first!).getByText(/High evidence confidence/)).toBeTruthy();
@@ -780,7 +781,7 @@ describe("PerformanceView accessibility", () => {
     render(<PerformanceView adapter={adapter()} />);
     const [first] = await rows();
     expect(first!.getAttribute("tabindex")).toBe("0");
-    expect(first!.getAttribute("aria-label")).toBe("Inspect Database call inside a loop");
+    expect(first!.getAttribute("aria-label")).toBe("Inspect Database call inside a loop in load");
     fireEvent.keyDown(first!, { key: "Enter" });
     expect(await screen.findByRole("dialog")).toBeTruthy();
   });

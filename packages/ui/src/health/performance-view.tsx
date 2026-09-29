@@ -199,6 +199,12 @@ export function PerformanceView({
       sub: `of ${summary.total.toLocaleString()} causes`,
     },
   ];
+  // A zero does not lead: when nothing is proven safe, the ribbon opens on
+  // what there is, and "Plan ready: 0" still reads, just not first.
+  if (!summary.actionability?.plan_ready) {
+    const first = stats.shift();
+    if (first) stats.push(first);
+  }
 
   return (
     <div className="space-y-8">

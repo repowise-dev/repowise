@@ -12,15 +12,34 @@ import {
   planPresentation,
   siblingFixLabel,
   whyRankedLabel,
+  whyRankedPhrase,
 } from "../../src/health/performance/presentation";
 import { contiguousSections } from "../../src/health/performance/queue";
 import { opportunity } from "./fixtures/performance";
 
 describe("performance presentation", () => {
-  it("titles a cause in words and keeps the sink out of the title", () => {
+  it("titles a cause in words, then names where by its short symbol", () => {
     const title = opportunityTitle(opportunity());
-    expect(title).toBe("Database call inside a loop");
+    expect(title).toBe("Database call inside a loop in load");
     expect(title).not.toContain("::");
+    expect(opportunityTitle(opportunity({ intervention_symbol: null }))).toBe(
+      "Database call inside a loop in run",
+    );
+  });
+
+  it("reads rank factors as reasons, not points", () => {
+    expect(whyRankedPhrase({ factor: "affected_call_sites", value: 8, points: 6 })).toBe(
+      "8 call sites",
+    );
+    expect(whyRankedPhrase({ factor: "boundary_kind", value: "db", points: 4 })).toBe(
+      "a database call",
+    );
+    expect(whyRankedPhrase({ factor: "multiplier_shape", value: "io_in_loop", points: 4 })).toBe(
+      "runs once per loop iteration",
+    );
+    expect(whyRankedPhrase({ factor: "entry_reachability", value: true, points: 3 })).toBe(
+      "reachable from an entry point",
+    );
   });
 
   it("gives every performance marker a non-empty title", () => {
