@@ -533,5 +533,20 @@ export const HISTORY_CHIP =
 
 export const HISTORY_LABEL = "Watch";
 
+/**
+ * History-category markers that are still work: writing or updating a
+ * decision clears them. Mirrors core `GOVERNANCE_BIOMARKERS`.
+ */
+const GOVERNANCE_BIOMARKERS: ReadonlySet<string> = new Set([
+  "ungoverned_hotspot",
+  "stale_governance",
+  "contradictory_decision",
+]);
+
+/** A marker nothing in the repository can clear: context for a reviewer. */
+export function isWatchOnlyBiomarker(name: string): boolean {
+  return isHistoryBiomarker(name) && !GOVERNANCE_BIOMARKERS.has(name);
+}
+
 export const HISTORY_EXPLAINER =
   "Measured from this file's git history, not its code. Editing the file will not clear it.";

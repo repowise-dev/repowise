@@ -40,7 +40,7 @@ import {
   biomarkerLabel,
   HISTORY_EXPLAINER,
   HISTORY_LABEL,
-  isHistoryBiomarker,
+  isWatchOnlyBiomarker,
 } from "./biomarker-glossary";
 import { buildAiPrompt } from "./ai-prompt-builder";
 import { SEVERITY_LABEL, type Severity } from "./tokens";
@@ -279,8 +279,8 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
       // A file led by a history marker has nothing in its code to change, so
       // it reads under Watch, after the files an edit can improve. The lead is
       // a history marker only when the file has no code-shape finding at all.
-      const fix = targets.filter((t) => !isHistoryBiomarker(t.primary_biomarker));
-      const watch = targets.filter((t) => isHistoryBiomarker(t.primary_biomarker));
+      const fix = targets.filter((t) => !isWatchOnlyBiomarker(t.primary_biomarker));
+      const watch = targets.filter((t) => isWatchOnlyBiomarker(t.primary_biomarker));
       return watch.length
         ? [
             { key: "All", targets: fix },

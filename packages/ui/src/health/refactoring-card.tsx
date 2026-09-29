@@ -8,7 +8,7 @@ import {
   biomarkerLabel,
   HISTORY_EXPLAINER,
   HISTORY_LABEL,
-  isHistoryBiomarker,
+  isWatchOnlyBiomarker,
 } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { EFFORT_TINT, type Severity } from "./tokens";
@@ -121,7 +121,7 @@ export function HealthWorkItemCard({
   const hasFindings = target.finding_count > 0;
   // Led by a history marker: context for a reviewer, not something an edit
   // clears, so the card neither rates it as a defect nor offers a fix prompt.
-  const watch = isHistoryBiomarker(target.primary_biomarker);
+  const watch = isWatchOnlyBiomarker(target.primary_biomarker);
 
   const toggle = async () => {
     const next = !expanded;

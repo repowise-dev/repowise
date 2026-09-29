@@ -4,8 +4,8 @@ Next actions are computed on read, so this is the only stored half. Local
 SQLite stores never run Alembic -- ``init_db``'s reconciler creates the table --
 so this migration exists for managed Postgres and is guarded for that reason.
 
-Revision ID: 0082
-Revises: 0081
+Revision ID: 0083
+Revises: 0082
 Create Date: 2026-09-29
 """
 
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0082"
-down_revision: str | None = "0081"
+revision: str = "0083"
+down_revision: str | None = "0082"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

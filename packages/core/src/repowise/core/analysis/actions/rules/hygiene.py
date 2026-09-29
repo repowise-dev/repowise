@@ -6,6 +6,8 @@ import re
 from collections import defaultdict
 from datetime import timedelta
 
+from repowise.core.support_paths import DOC_EXTENSIONS
+
 from ..context import RepoContext
 from ..facts import RepoFacts
 from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
@@ -24,7 +26,6 @@ SECRET_KINDS = {
 }
 PUBLIC_ENV_KIND = "public_env_secret"
 
-_DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt", ".adoc")
 _COMMENT_PREFIXES = ("#", "//", "*", "/*", ">>>", "--", '"', "'")
 
 
@@ -37,7 +38,7 @@ _QUOTED = re.compile(r"""["']([^"']*)["']""")
 
 def _looks_like_code(path: str, snippet: str) -> bool:
     lowered = path.lower()
-    if lowered.endswith(_DOC_SUFFIXES) or lowered.startswith("docs/") or "/docs/" in lowered:
+    if lowered.endswith(tuple(DOC_EXTENSIONS)) or lowered.startswith("docs/") or "/docs/" in lowered:
         return False
     # Comments, docstrings and quoted examples: the scanner matches text, and a
     # sentence about passwords is not a password.
