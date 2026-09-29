@@ -25,6 +25,7 @@ import {
 
 import { AdaptivePanel } from "../shared/adaptive-panel";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { RouterAnchor } from "./router-anchor";
 
 /** The evidence line carrying the enclosing heading trail. */
 const TRAIL_PREFIX = "under: ";
@@ -166,20 +167,14 @@ export function DocDriftDetailPanel({
             onClick={() => onPrompt(finding)}
             label="Fix with an agent"
           />
-          <a
+          <RouterAnchor
             href={documentHref(finding.file_path, finding.line_number)}
-            // Stays a real anchor so it can be opened in a new tab; the router
-            // only takes over a plain left click.
-            onClick={(event) => {
-              if (!navigate || event.metaKey || event.ctrlKey || event.shiftKey) return;
-              event.preventDefault();
-              navigate(documentHref(finding.file_path, finding.line_number));
-            }}
+            navigate={navigate}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             Open document
-          </a>
+          </RouterAnchor>
         </div>
       </div>
     </AdaptivePanel>

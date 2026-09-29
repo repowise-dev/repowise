@@ -21,8 +21,10 @@ vi.stubGlobal("ResizeObserver", RO);
 /**
  * The findings table stacks into a card list beside the real table and lets CSS
  * pick one. jsdom applies no CSS, so a cell matches in both; scope by caption.
+ * One table per document, so the caption names which.
  */
-const TABLE = { name: /Documentation assertions/i };
+const TABLE = { name: /Documentation assertions in docs\/architecture\.md/i };
+const CLI_TABLE = { name: /Documentation assertions in docs\/cli\.md/i };
 /** The detail panel and the prompt modal are both dialogs; name tells them apart. */
 const PANEL = /docs\/architecture\.md:42/;
 const PROMPT = /Documentation fix prompt/i;
@@ -132,7 +134,7 @@ describe("DocDriftView", () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
 
     const table = await screen.findByRole("table", TABLE);
-    expect(within(table).getByText(/docs\/architecture\.md/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "docs/architecture.md" })).toBeTruthy();
     expect(within(table).getByText("src/auth.py")).toBeTruthy();
   });
 
@@ -346,7 +348,7 @@ describe("DocDriftView", () => {
     renderView(<DocDriftView adapter={makeAdapter({ navigate })} />);
 
     const table = await screen.findByRole("table", TABLE);
-    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+    fireEvent.click(within(table).getByText("src/auth.py"));
 
     expect(await screen.findByRole("dialog", { name: PANEL })).toBeTruthy();
     expect(navigate).not.toHaveBeenCalled();
@@ -355,7 +357,7 @@ describe("DocDriftView", () => {
   it("shows the evidence the row has no room for", async () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
     const table = await screen.findByRole("table", TABLE);
-    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+    fireEvent.click(within(table).getByText("src/auth.py"));
 
     // The line as written, the heading trail and the resolver's trace all
     // arrive with every finding and were previously discarded.
@@ -367,15 +369,15 @@ describe("DocDriftView", () => {
   it("shows the likely replacement only when the engine found one", async () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
     const table = await screen.findByRole("table", TABLE);
-    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+    const cliTable = screen.getByRole("table", CLI_TABLE);
+    fireEvent.click(within(table).getByText("src/auth.py"));
 
     const panel = await screen.findByRole("dialog", { name: PANEL });
     expect(within(panel).getByText("Likely now")).toBeTruthy();
     expect(within(panel).getByText("src/auth/")).toBeTruthy();
     expect(within(panel).getByText("Became a package")).toBeTruthy();
 
-    // The document and its own-anchor target both match; either cell opens the row.
-    fireEvent.click(within(table).getAllByText(/docs\/cli\.md/)[0]!);
+    fireEvent.click(within(cliTable).getByText("docs/cli.md#usage"));
     const other = await screen.findByRole("dialog", { name: /docs\/cli\.md:7/ });
     expect(within(other).queryByText("Likely now")).toBeNull();
   });
@@ -383,7 +385,7 @@ describe("DocDriftView", () => {
   it("repeats what a finding does and does not claim where the action is", async () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
     const table = await screen.findByRole("table", TABLE);
-    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+    fireEvent.click(within(table).getByText("src/auth.py"));
 
     const panel = await screen.findByRole("dialog", { name: PANEL });
     expect(within(panel).getByText(new RegExp(BASIS.slice(0, 40)))).toBeTruthy();
@@ -393,7 +395,7 @@ describe("DocDriftView", () => {
     const navigate = vi.fn();
     renderView(<DocDriftView adapter={makeAdapter({ navigate })} />);
     const table = await screen.findByRole("table", TABLE);
-    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+    fireEvent.click(within(table).getByText("src/auth.py"));
 
     fireEvent.click(await screen.findByRole("link", { name: /Open document/i }));
     await waitFor(() =>
@@ -445,5 +447,100 @@ describe("DocDriftView", () => {
     const prompt = (await screen.findByRole("dialog", { name: PROMPT })).textContent ?? "";
     expect(prompt).toContain("docs/architecture.md:42");
     expect(prompt).toContain("docs/cli.md:7");
+  });
+
+  it("groups rows under their document, in reading order", async () => {
+    const early: DocDriftFinding = { ...FINDINGS[0]!, id: "f0", line_number: 3, target: "src/old.py" };
+    const adapter = makeAdapter({
+      listFindings: vi.fn(async () =>
+        response({ findings: [FINDINGS[1]!, FINDINGS[0]!, early], findings_emitted: 3 }),
+      ),
+    });
+    renderView(<DocDriftView adapter={adapter} />);
+
+    const table = await screen.findByRole("table", TABLE);
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual(["docs/architecture.md", "docs/cli.md"]);
+    expect(screen.getByText("2 findings")).toBeTruthy();
+    expect(screen.getByText("1 finding")).toBeTruthy();
+
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows.map((r) => within(r).getByText(/^line /).textContent)).toEqual([
+      "line 3",
+      "line 42",
+    ]);
+  });
+
+  it("narrows to one document on the server when one is picked", async () => {
+    const listFindings = vi.fn(async () => response());
+    renderView(<DocDriftView adapter={makeAdapter({ listFindings })} />);
+    await screen.findByRole("table", TABLE);
+
+    fireEvent.change(screen.getByLabelText(/^Document$/), {
+      target: { value: "docs/cli.md" },
+    });
+
+    await waitFor(() =>
+      expect(listFindings).toHaveBeenCalledWith(
+        expect.objectContaining({ document: "docs/cli.md" }),
+      ),
+    );
+  });
+
+  it("opens narrowed to a deep-linked document", async () => {
+    const listFindings = vi.fn(async () => response());
+    renderView(
+      <DocDriftView
+        adapter={makeAdapter({ listFindings })}
+        initialDocument="docs/cli.md"
+      />,
+    );
+
+    await screen.findByRole("table", CLI_TABLE);
+    expect(listFindings).toHaveBeenCalledWith(
+      expect.objectContaining({ document: "docs/cli.md" }),
+    );
+    // Rows follow the selection even when a host's server ignores the filter.
+    expect(screen.queryByRole("table", TABLE)).toBeNull();
+  });
+
+  it("keeps the previous document's rows while the next one loads", async () => {
+    let release: (r: DocDriftResponse) => void = () => {};
+    const listFindings = vi.fn(async (opts?: { document?: string }) => {
+      if (opts?.document === "docs/cli.md") {
+        return new Promise<DocDriftResponse>((resolve) => (release = resolve));
+      }
+      const findings = FINDINGS.filter(
+        (f) => !opts?.document || f.file_path === opts.document,
+      );
+      return response({ findings, findings_emitted: findings.length });
+    });
+    renderView(
+      <DocDriftView
+        adapter={makeAdapter({ listFindings })}
+        initialDocument="docs/architecture.md"
+      />,
+    );
+    await screen.findByRole("table", TABLE);
+    await screen.findByRole("option", { name: "docs/cli.md" });
+
+    fireEvent.change(screen.getByLabelText(/^Document$/), {
+      target: { value: "docs/cli.md" },
+    });
+
+    // Filtering A's rows to B client-side would flash the empty state.
+    await waitFor(() =>
+      expect(listFindings).toHaveBeenCalledWith(
+        expect.objectContaining({ document: "docs/cli.md" }),
+      ),
+    );
+    expect(screen.queryByText("No findings in this slice")).toBeNull();
+    expect(screen.getByRole("table", TABLE)).toBeTruthy();
+
+    release(response({ findings: [FINDINGS[1]!], findings_emitted: 1 }));
+    expect(await screen.findByRole("table", CLI_TABLE)).toBeTruthy();
+    expect(screen.queryByRole("table", TABLE)).toBeNull();
   });
 });

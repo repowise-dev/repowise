@@ -12,6 +12,10 @@
  * A row opens the detail panel rather than navigating. The evidence that makes
  * a finding actionable does not fit in a row, and the document's own file page
  * cannot show it either.
+ *
+ * Rows are grouped by document, one section each, headed by the path and its
+ * count, so the document still leads and each row only adds the line. One
+ * table per section because the shared table has no group-header rows.
  */
 
 import { FileText } from "lucide-react";
@@ -28,6 +32,7 @@ import {
 } from "../shared/responsive-table";
 import { EmptyState } from "../shared/empty-state";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { groupByDocument } from "./group-by-document";
 
 export interface DriftFindingsTableProps {
   findings: DocDriftFinding[];
@@ -64,13 +69,11 @@ export function DriftFindingsTable({
 }: DriftFindingsTableProps) {
   const columns: ResponsiveColumn<DocDriftFinding>[] = [
     {
-      key: "document",
-      header: "Document",
+      key: "line",
+      header: "Line",
       priority: 1,
-      // Widths are capped per cell, not left to the table: a repo-relative
-      // path and a heading slug are both long and unbreakable, and an
-      // auto-laid-out table gives them the room by pushing the confidence
-      // column off the side, which is the one column a reader triages on.
+      // Capped per cell so long slugs and reasons cannot push the confidence
+      // column, the one a reader triages on, off the side.
       cellClassName: "max-w-[34ch]",
       render: (f) => (
         <div className="flex min-w-0 flex-col gap-0.5">
@@ -78,8 +81,7 @@ export function DriftFindingsTable({
             className="truncate font-mono text-xs text-[var(--color-text-primary)]"
             title={`${f.file_path}:${f.line_number}`}
           >
-            {f.file_path}
-            <span className="text-[var(--color-text-tertiary)]">:{f.line_number}</span>
+            line {f.line_number}
             {f.is_new ? (
               <Badge variant="accent" className="ml-1.5 h-4 px-1 text-[10px]">
                 new
@@ -156,23 +158,52 @@ export function DriftFindingsTable({
     },
   ];
 
+  if (findings.length === 0) {
+    return (
+      <EmptyState
+        icon={<FileText className="h-6 w-6" />}
+        title="No findings in this slice"
+        description="Widen the confidence floor or clear the reference filter to see the rest."
+      />
+    );
+  }
+
+  // Sections by path, rows by line: the order the document is read in.
+  const groups = groupByDocument(
+    findings,
+    (f) => f.file_path,
+    (f) => f.line_number,
+  ).sort((a, b) => a.document.localeCompare(b.document));
+
   return (
-    <ResponsiveTable
-      columns={columns}
-      rows={findings}
-      rowKey={(f) => f.id}
-      stacked="md"
-      caption="Documentation assertions the repository no longer satisfies"
-      onRowClick={onSelect}
-      rowClassName={() => "cursor-pointer"}
-      selectedKey={selectedId ?? null}
-      empty={
-        <EmptyState
-          icon={<FileText className="h-6 w-6" />}
-          title="No findings in this slice"
-          description="Widen the confidence floor or clear the reference filter to see the rest."
-        />
-      }
-    />
+    <div className="flex flex-col divide-y divide-[var(--color-border-default)] overflow-hidden border border-[var(--color-border-default)]">
+      {groups.map((group) => (
+        <section key={group.document} aria-label={group.document}>
+          <header className="flex min-w-0 items-baseline justify-between gap-3 bg-[var(--color-bg-elevated)] px-3 py-2">
+            <h3
+              className="min-w-0 truncate font-mono text-xs font-medium text-[var(--color-text-primary)]"
+              title={group.document}
+            >
+              {group.document}
+            </h3>
+            <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+              {group.items.length}{" "}
+              {group.items.length === 1 ? "finding" : "findings"}
+            </span>
+          </header>
+          <ResponsiveTable
+            bare
+            columns={columns}
+            rows={group.items}
+            rowKey={(f) => f.id}
+            stacked="md"
+            caption={`Documentation assertions in ${group.document} the repository no longer satisfies`}
+            onRowClick={onSelect}
+            rowClassName={() => "cursor-pointer"}
+            selectedKey={selectedId ?? null}
+          />
+        </section>
+      ))}
+    </div>
   );
 }
