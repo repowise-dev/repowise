@@ -114,7 +114,7 @@ def resolve_index_scope(
     git_tier = _choice(state.get("git_tier", scope.get("git_tier")), {"essential", "full"})
     if isinstance(stored, Mapping):
         provenance = _choice(
-            scope.get("content_provenance", provenance), {"none", "template", "model"}
+            scope.get("content_provenance", provenance), {"none", "template", "model", "mixed"}
         )
 
     unavailable = analysis.get("unavailable", [])

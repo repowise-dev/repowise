@@ -49,3 +49,10 @@ def test_scope_surfaces_degraded_features_as_unavailable() -> None:
         "Execution flow: parser failed",
         "health",
     ]
+
+
+def test_mixed_provenance_survives_resolution() -> None:
+    # A wiki where only some pages carry model prose is "mixed", not "model".
+    state = {"run_mode": "standard", "docs_mode": "llm"}
+    stamp_index_scope(state, {}, content_provenance="mixed")
+    assert resolve_index_scope(state, {})["content_provenance"] == "mixed"
