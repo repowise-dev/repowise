@@ -53,6 +53,25 @@ export interface ActionWhy {
   basis: ActionFactBasis;
 }
 
+/** One piece of evidence: a finding, a site, a reference. */
+export interface ActionDetail {
+  path: string;
+  line: number | null;
+  symbol: string | null;
+  marker: string | null;
+  severity: string | null;
+  reason: string;
+  /** The commit or stored id that produced it. */
+  ref: string | null;
+}
+
+/** A way to see more: the MCP call for an agent, the CLI line for a person. */
+export interface ActionCommand {
+  purpose: string;
+  mcp: string | null;
+  cli: string | null;
+}
+
 export interface NextAction {
   /** Stable across re-index: derived from the rule and its target. */
   id: string;
@@ -78,6 +97,10 @@ export interface NextAction {
   includes: string[];
   /** Sent back with a dismissal; the action returns when it changes. */
   fingerprint: string;
+  /** The evidence itself, capped; `details_total` is how many there were. */
+  details: ActionDetail[];
+  details_total: number;
+  commands: ActionCommand[];
 }
 
 export interface ActionHorizon {

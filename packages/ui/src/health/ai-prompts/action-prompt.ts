@@ -1,16 +1,10 @@
-import type { NextAction } from "@repowise-dev/types/actions";
+import type { ActionDetail, NextAction } from "@repowise-dev/types/actions";
 
-import {
-  bulletList,
-  closingSections,
-  FLAVOR_PREAMBLE,
-  joinSections,
-  repoSuffix,
-  type AiPromptFlavor,
-} from "./shared";
+import { biomarkerLabel } from "../biomarker-glossary";
+import { bulletList, closingSections, joinSections, repoSuffix, type AiPromptFlavor } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
-// Next action prompt: one action from the Overview's "Do next" list
+// Next action prompt: one action from "Do next", handed to an agent cold
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuildActionPromptOptions {
@@ -19,63 +13,125 @@ export interface BuildActionPromptOptions {
   repoName?: string;
 }
 
+/**
+ * The opening. Not the fix-prompt preamble: an action can span many files and
+ * is built from stored analysis, so the agent is told both before it reads a
+ * line.
+ */
+const OPENING: Record<AiPromptFlavor, string> = {
+  generic:
+    "You are a senior engineer in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis of the repository (git history, code health, the dependency graph). Its evidence is listed in full or in part; treat each item as a lead to verify against the code, not as ground truth.",
+  "claude-code":
+    "You are Claude Code in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: read the code with Read and Grep, confirm it, and use TodoWrite to track the files you work through.",
+  "claude-code-mcp":
+    "You are Claude Code in this repository, which Repowise indexes and serves over MCP. The action below comes from Repowise's stored analysis. Use the MCP calls listed under \"Look closer\" before reading files by hand: they return the full evidence with line numbers, reasons and history. Treat each item as a lead to confirm against the code.",
+  cursor:
+    "Work in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: open the file with @file, confirm it, then act.",
+};
+
 const CONSTRAINTS = [
-  "**Confirm the facts before you change anything.** The action was built from a stored index; read the code and its history to check that what it says still holds.",
-  "**Stay inside the target.** Change what the action names. If the right fix is somewhere else, stop and say where and why instead of widening the change.",
-  "**Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the existing tests before and after.",
-  "**Say when the action is wrong.** If the facts do not hold, or the fix would cost more than the problem, report that rather than forcing an edit.",
+  "**Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.",
+  "**Stay inside what the action names.** Work only on the files and functions listed. If the right fix is elsewhere, stop and say where and why.",
+  "**Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the tests that cover each file before and after.",
+  "**Say when an item is wrong.** If a finding does not hold, or its fix would cost more than it saves, report that rather than forcing an edit.",
 ];
 
 const EXPECTED = [
-  "1. What you checked, and whether the action's facts held.",
-  "2. The change, or the reason you made none.",
-  "3. How the done condition below is now met, or what is left.",
+  "1. For each item you looked at: whether it held, and what you changed or why you left it.",
+  "2. The tests you ran, before and after.",
+  "3. What remains against the done condition.",
 ];
 
+function detailLine(d: ActionDetail): string {
+  const where = `\`${d.path}${d.line ? `:${d.line}` : ""}\``;
+  const what = [
+    d.symbol ? `\`${d.symbol.split("::").pop()}\`` : null,
+    d.marker ? biomarkerLabel(d.marker) : null,
+    d.severity,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const ref = d.ref && /^[0-9a-f]{7,40}$/.test(d.ref) ? ` (commit ${d.ref.slice(0, 10)})` : "";
+  return `- ${where}${what ? `: ${what}` : ""}${ref}${d.reason ? `\n  - ${d.reason}` : ""}`;
+}
+
 /**
- * Hand one next action to an agent: its claim, the evidence behind it, and
- * what finished looks like. The agent is told to verify first, because the
- * action is a lead drawn from stored analysis rather than a live reading.
+ * Hand one next action to an agent: the claim, the evidence itself, how to get
+ * the rest, and what finished looks like. Written so an agent with no prior
+ * context can start work from this text alone.
  */
 export function buildActionPrompt({
   action,
   flavor = "generic",
   repoName,
 }: BuildActionPromptOptions): string {
+  const useMcp = flavor === "claude-code-mcp";
+  const shownDetails = action.details.length;
+  const moreDetails = action.details_total - shownDetails;
   const target = action.target.symbol
-    ? `\`${action.target.path}\` (\`${action.target.symbol}\`)`
+    ? `\`${action.target.path}\` (\`${action.target.symbol.split("::").pop()}\`)`
     : action.target.path
       ? `\`${action.target.path}\``
-      : "the repository";
+      : null;
+
+  const commands = action.commands
+    .map((c) => {
+      const line = useMcp ? (c.mcp ?? c.cli) : (c.cli ?? c.mcp);
+      return line ? `- ${c.purpose}:\n  \`${line}\`` : null;
+    })
+    .filter((l): l is string => l !== null);
+
   return joinSections([
-    FLAVOR_PREAMBLE[flavor],
+    OPENING[flavor],
     "",
-    `## Next action${repoSuffix(repoName)}`,
+    `## Action${repoSuffix(repoName)}`,
     "",
     `**${action.title}**`,
     "",
     action.impact,
     "",
-    "## Evidence",
+    "## Why it is on the list",
     "",
     bulletList([
-      `Target: ${target}`,
+      target ? `Target: ${target}` : null,
       ...action.why.map(
         (w) => `${w.label}: ${w.value}${w.basis === "measured" ? "" : ` (${w.basis})`}`,
       ),
-      action.includes.length
-        ? `Covers: ${action.includes.map((p) => `\`${p}\``).join(", ")}`
-        : null,
-      `Effort estimate: ${action.effort}; confidence: ${action.confidence}`,
+      `Effort estimate: ${action.effort}; confidence in the facts: ${action.confidence}`,
     ]),
     "",
+    shownDetails
+      ? joinSections([
+          `## Evidence (${shownDetails.toLocaleString()} of ${action.details_total.toLocaleString()}${
+            moreDetails > 0 ? ", worst first" : ""
+          })`,
+          "",
+          action.details.map(detailLine).join("\n"),
+          moreDetails > 0
+            ? `\n…and ${moreDetails.toLocaleString()} more. The first call under "Look closer" returns them.`
+            : "",
+          "",
+        ])
+      : action.includes.length
+        ? joinSections([
+            "## Files",
+            "",
+            action.includes.map((p) => `- \`${p}\``).join("\n"),
+            "",
+          ])
+        : "",
+    commands.length
+      ? joinSections([
+          useMcp ? "## Look closer (Repowise MCP)" : "## Look closer (Repowise CLI)",
+          "",
+          commands.join("\n"),
+          "",
+        ])
+      : "",
     "## Done when",
     "",
     action.done_when + (action.command ? `\n\nCommand: \`${action.command}\`` : ""),
     "",
     ...closingSections(CONSTRAINTS, EXPECTED),
-    flavor === "claude-code-mcp"
-      ? "Start with `get_risk([...])` on the target for its history and test gaps, and `get_context([...])` for its structure, before reading files by hand."
-      : "",
   ]);
 }

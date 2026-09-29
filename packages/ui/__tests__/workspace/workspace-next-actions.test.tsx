@@ -23,6 +23,9 @@ function action(id: string, title: string, tier: NextAction["tier"] = "plan"): N
     marker: null,
     evidence_ids: [],
     evidence_total: 0,
+    details: [],
+    details_total: 0,
+    commands: [],
     includes: [],
     fingerprint: "fp",
   };

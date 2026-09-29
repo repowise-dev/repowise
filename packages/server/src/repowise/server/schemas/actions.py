@@ -20,6 +20,22 @@ class ActionTarget(BaseModel):
     symbol: str | None = None
 
 
+class ActionDetail(BaseModel):
+    path: str
+    line: int | None = None
+    symbol: str | None = None
+    marker: str | None = None
+    severity: str | None = None
+    reason: str = ""
+    ref: str | None = None
+
+
+class ActionCommand(BaseModel):
+    purpose: str
+    mcp: str | None = None
+    cli: str | None = None
+
+
 class NextAction(BaseModel):
     id: str
     rule: str
@@ -40,6 +56,9 @@ class NextAction(BaseModel):
     evidence_total: int
     includes: list[str]
     fingerprint: str
+    details: list[ActionDetail] = Field(default_factory=list)
+    details_total: int = 0
+    commands: list[ActionCommand] = Field(default_factory=list)
 
 
 class ActionHorizon(BaseModel):

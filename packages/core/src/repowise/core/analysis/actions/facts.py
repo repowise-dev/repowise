@@ -60,6 +60,7 @@ class RecentFinding:
     severity: str
     change_kind: str
     line: int | None
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

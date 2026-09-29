@@ -81,6 +81,50 @@ class WhyFact:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionDetail:
+    """One piece of evidence behind an action: a finding, a site, a reference.
+
+    What an agent needs to start without re-deriving the list: where, what,
+    and why. ``ref`` is the commit or stored id that produced it.
+    """
+
+    path: str
+    line: int | None = None
+    symbol: str | None = None
+    marker: str | None = None
+    severity: str | None = None
+    reason: str = ""
+    ref: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "line": self.line,
+            "symbol": self.symbol,
+            "marker": self.marker,
+            "severity": self.severity,
+            "reason": self.reason,
+            "ref": self.ref,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ActionCommand:
+    """A way to see more: the MCP call an agent makes, the CLI line a person runs."""
+
+    purpose: str
+    mcp: str | None = None
+    cli: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"purpose": self.purpose, "mcp": self.mcp, "cli": self.cli}
+
+
+#: Evidence rows carried per action. The total says how many there were.
+DETAILS_CAP = 40
+
+
+@dataclass(frozen=True, slots=True)
 class Action:
     rule: ActionRule
     tier: ActionTier
@@ -116,6 +160,9 @@ class Action:
     #: Changes when the facts behind the action change materially. A dismissal
     #: records it, and a dismissed action returns when it no longer matches.
     fingerprint: str = ""
+    details: tuple[ActionDetail, ...] = ()
+    details_total: int = 0
+    commands: tuple[ActionCommand, ...] = ()
 
     @property
     def action_id(self) -> str:
@@ -148,6 +195,9 @@ class Action:
             "evidence_total": self.evidence_total,
             "includes": list(self.includes),
             "fingerprint": self.fingerprint,
+            "details": [d.as_dict() for d in self.details[:DETAILS_CAP]],
+            "details_total": max(self.details_total, len(self.details)),
+            "commands": [c.as_dict() for c in self.commands],
         }
 
 

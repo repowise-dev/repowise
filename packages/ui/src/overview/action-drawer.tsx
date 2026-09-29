@@ -1,12 +1,19 @@
 "use client";
 
-import type { ElementType, ReactNode } from "react";
+import { useState, type ElementType, type ReactNode } from "react";
 import { ArrowUpRight, BellOff, Check, X } from "lucide-react";
-import type { ActionStateValue, ActionSurface, NextAction } from "@repowise-dev/types/actions";
+import type {
+  ActionDetail,
+  ActionStateValue,
+  ActionSurface,
+  NextAction,
+} from "@repowise-dev/types/actions";
 
 import { AiPromptBlock } from "../health/ai-prompt-modal";
 import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
+import { biomarkerLabel } from "../health/biomarker-glossary";
 import { SeverityMark } from "../health/severity-mark";
+import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
 
 const TIER_LABEL: Record<NextAction["tier"], string> = {
@@ -133,7 +140,21 @@ export function ActionDrawer({
               </Section>
             ) : null}
 
-            {action.target.path || action.includes.length > 0 ? (
+            {action.details.length > 0 ? (
+              <Section
+                title={`Evidence (${action.details_total.toLocaleString()})`}
+              >
+                <EvidenceList
+                  key={action.id}
+                  details={action.details}
+                  total={action.details_total}
+                  fileHref={fileHref}
+                  LinkComponent={LinkComponent}
+                />
+              </Section>
+            ) : null}
+
+            {action.details.length === 0 && (action.target.path || action.includes.length > 0) ? (
               <Section title={action.includes.length > 0 ? "Where to start" : "Where"}>
                 {action.target.path && action.target.kind !== "decision" ? (
                   <p className="font-mono text-sm text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
@@ -187,6 +208,29 @@ export function ActionDrawer({
               </p>
             </Section>
 
+            {action.commands.length > 0 ? (
+              <Section title="Look closer">
+                <ul className="space-y-3">
+                  {action.commands.map((c) => (
+                    <li key={c.purpose} className="space-y-1">
+                      <p className="text-sm text-[var(--color-text-secondary)]">{c.purpose}</p>
+                      {c.cli ? (
+                        <pre className="overflow-x-auto rounded bg-[var(--color-bg-inset)] px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
+                          {c.cli}
+                        </pre>
+                      ) : null}
+                      {c.mcp ? (
+                        <pre className="overflow-x-auto rounded bg-[var(--color-bg-inset)] px-3 py-1.5 font-mono text-xs text-[var(--color-text-secondary)]">
+                          <span className="text-[var(--color-text-tertiary)]">MCP </span>
+                          {c.mcp}
+                        </pre>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            ) : null}
+
             <Section title="Hand it to an agent">
               <div className="-mx-5">
                 <AiPromptBlock
@@ -226,5 +270,84 @@ export function ActionDrawer({
         </div>
       ) : null}
     </AdaptivePanel>
+  );
+}
+
+/** Rows shown before "Show all"; the payload carries up to 40. */
+const EVIDENCE_PREVIEW = 8;
+
+const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+
+function EvidenceList({
+  details,
+  total,
+  fileHref,
+  LinkComponent,
+}: {
+  details: ActionDetail[];
+  total: number;
+  fileHref?: ((path: string) => string | null) | undefined;
+  LinkComponent?: ElementType | undefined;
+}) {
+  const [all, setAll] = useState(false);
+  const Link = LinkComponent ?? "a";
+  const shown = all ? details : details.slice(0, EVIDENCE_PREVIEW);
+  return (
+    <div className="space-y-2">
+      <ul className="divide-y divide-[var(--color-border-default)]">
+        {shown.map((d, i) => {
+          const href = fileHref?.(d.path) ?? null;
+          const where = `${d.path}${d.line ? `:${d.line}` : ""}`;
+          return (
+            <li key={`${d.path}:${d.line ?? ""}:${d.symbol ?? ""}:${d.marker ?? ""}:${i}`} className="space-y-0.5 py-2">
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                {d.severity && SEVERITIES.has(d.severity) ? (
+                  <SeverityMark severity={d.severity as Severity} compact />
+                ) : null}
+                {href ? (
+                  <Link
+                    href={href}
+                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  >
+                    {where}
+                  </Link>
+                ) : (
+                  <span className="min-w-0 font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+                    {where}
+                  </span>
+                )}
+                {d.symbol ? (
+                  <code className="font-mono text-xs text-[var(--color-text-primary)]">
+                    {d.symbol.split("::").pop()}
+                  </code>
+                ) : null}
+                {d.marker ? (
+                  <span className="text-xs text-[var(--color-text-secondary)]">{biomarkerLabel(d.marker)}</span>
+                ) : null}
+              </div>
+              {d.reason ? (
+                <p className="text-xs text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{d.reason}</p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {details.length > EVIDENCE_PREVIEW || total > details.length ? (
+        <p className="flex flex-wrap items-baseline gap-x-3 text-xs text-[var(--color-text-tertiary)]">
+          {details.length > EVIDENCE_PREVIEW ? (
+            <button
+              type="button"
+              onClick={() => setAll((a) => !a)}
+              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            >
+              {all ? "Show fewer" : `Show all ${details.length.toLocaleString()}`}
+            </button>
+          ) : null}
+          {total > details.length ? (
+            <span>{`${(total - details.length).toLocaleString()} more; "Look closer" below lists them.`}</span>
+          ) : null}
+        </p>
+      ) : null}
+    </div>
   );
 }

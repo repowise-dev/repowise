@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from ..context import RepoContext
 from ..facts import RepoFacts
-from ..model import Action, RuleOutcome, WhyFact, fingerprint
+from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
 from ._text import code, plural
 
 # ---------------------------------------------------------------------------
@@ -109,6 +109,17 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 done_when=done,
                 evidence_total=len(found),
                 fingerprint=fingerprint(len(found)),
+                details=tuple(
+                    ActionDetail(path=s.file_path, line=s.line, marker=s.kind, reason=s.snippet)
+                    for s in found
+                ),
+                commands=(
+                    ActionCommand(
+                        "Where the value is read and who calls it",
+                        mcp=f'get_context(targets=["{path}"], include=["callers"])',
+                        cli=f"repowise context {path}",
+                    ),
+                ),
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
@@ -171,6 +182,17 @@ def broken_doc_refs(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 weight=float(len(targets)),
                 evidence_total=len(found),
                 fingerprint=fingerprint(len(targets)),
+                details=tuple(
+                    ActionDetail(path=doc, line=d.line, marker=d.kind, reason=d.reason, ref=d.target)
+                    for d in found
+                ),
+                commands=(
+                    ActionCommand(
+                        "Every broken reference, with a likely replacement where one is known",
+                        mcp=f'get_context(targets=["{doc}"], include=["doc_drift"])',
+                        cli="repowise doc-drift",
+                    ),
+                ),
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
@@ -235,6 +257,23 @@ def dead_code_batch(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         weight=float(lines),
         evidence_ids=tuple(d.finding_id for d in found[:50]),
         evidence_total=len(found),
+        details=tuple(
+            ActionDetail(
+                path=d.file_path,
+                symbol=d.symbol,
+                reason=f"{d.lines} lines, nothing reaches it",
+                ref=d.finding_id,
+            )
+            for d in sorted(found, key=lambda d: -d.lines)
+        ),
+        details_total=len(found),
+        commands=(
+            ActionCommand(
+                "The deletion-ready list with the evidence for each",
+                mcp="get_dead_code(safe_only=True)",
+                cli="repowise dead-code --safe-only",
+            ),
+        ),
         fingerprint=fingerprint(len(found) // 5),
     )
     return RuleOutcome(rule, "evaluated", "", (action,))
@@ -266,6 +305,13 @@ def stale_decision(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             effort="S",
             confidence="medium",
             done_when="The decision is re-accepted, amended or superseded.",
+            commands=(
+                ActionCommand(
+                    "The decision, the code it governs, and how it drifted",
+                    mcp=f'get_why(id="{d.id}")',
+                    cli="repowise decision health",
+                ),
+            ),
             weight=float(len(facts.stale_decisions) - i),
             fingerprint=fingerprint(d.id),
         )

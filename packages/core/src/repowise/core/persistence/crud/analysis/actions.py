@@ -296,6 +296,7 @@ async def _recent(
                 severity=f.severity,
                 change_kind=f.change_kind,
                 line=f.line_start,
+                reason=f.reason or "",
             )
         )
     return {"recent_findings": tuple(recent)}

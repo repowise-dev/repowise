@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import posixpath
 from collections import defaultdict
+from datetime import datetime
 
 from ..context import RepoContext
 from ..facts import FileFacts, RepoFacts
-from ..model import Action, RuleOutcome, WhyFact, fingerprint
-from ._text import code, humanize, plural
+from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
+from ._text import code, humanize, plural, py_list
 
 #: Files that tell the week's story as well as the quarter's: busy fragile
 #: files someone touched this week, strongest first.
@@ -108,6 +109,45 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         fingerprint=fingerprint(len(found), critical),
+        details=_regression_details(found),
+        commands=_regression_commands([path], latest.sha),
+    )
+
+
+def _regression_details(found: list) -> tuple[ActionDetail, ...]:
+    ordered = sorted(found, key=lambda f: (f.severity != "critical", f.file_path, f.line or 0))
+    return tuple(
+        ActionDetail(
+            path=f.file_path,
+            line=f.line,
+            symbol=f.symbol,
+            marker=f.biomarker,
+            severity=f.severity,
+            reason=f.reason,
+            ref=f.sha,
+        )
+        for f in ordered
+    )
+
+
+def _regression_commands(paths: list[str], sha: str) -> tuple[ActionCommand, ...]:
+    first = paths[0]
+    return (
+        ActionCommand(
+            "Every open finding in these files, with its line and reason",
+            mcp=f'get_health(targets={py_list(paths[:10])}, include=["biomarkers"])',
+            cli=f"repowise health --file {first}",
+        ),
+        ActionCommand(
+            "The commit that last made the first file worse, and what it put at risk",
+            mcp=f'get_change_risk(revspec="{sha}")',
+            cli=f"git show {sha[:12]} -- {first}",
+        ),
+        ActionCommand(
+            "A file's structure and callers before editing it",
+            mcp=f'get_context(targets=["{first}"], include=["skeleton", "callers"])',
+            cli=f"repowise context {first}",
+        ),
     )
 
 
@@ -147,6 +187,15 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),
         fingerprint=fingerprint(len(found) // 10, critical // 5),
+        # Evidence in the order the files are ranked, so it starts where the
+        # impact line says to start; the commit to inspect is the latest one
+        # that touched that same file.
+        details=tuple(d for _, fs in ranked for d in _regression_details(fs)),
+        details_total=len(found),
+        commands=_regression_commands(
+            [path for path, _ in ranked],
+            max(worst, key=lambda f: f.committed_at or datetime.min).sha,
+        ),
     )
 
 
@@ -238,6 +287,32 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 marker=f.lead.biomarker if f.lead else None,
                 weight=float(f.fix_commits_90d * f.commits_90d),
                 fingerprint=fingerprint(variant, f.fix_commits_90d // 5),
+                details=(
+                    (
+                        ActionDetail(
+                            path=f.path,
+                            line=f.lead.line,
+                            symbol=f.lead.function,
+                            marker=f.lead.biomarker,
+                            severity=f.lead.severity,
+                            reason=f.lead.reason,
+                        ),
+                    )
+                    if f.lead
+                    else ()
+                ),
+                commands=(
+                    ActionCommand(
+                        "Its bug-fix history, co-change partners and test gaps",
+                        mcp=f'get_risk(targets=["{f.path}"])',
+                        cli=f"repowise risk -t {f.path}",
+                    ),
+                    ActionCommand(
+                        "Every open finding in the file",
+                        mcp=f'get_health(targets=["{f.path}"], include=["biomarkers"])',
+                        cli=f"repowise health --file {f.path}",
+                    ),
+                ),
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
@@ -331,6 +406,28 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 evidence_total=len(members),
                 includes=includes,
                 fingerprint=fingerprint(share // 5),
+                details=tuple(
+                    ActionDetail(
+                        path=p,
+                        reason=(
+                            f"{production[p].fix_commits_90d} bug-fix commits, "
+                            f"{production[p].commits_90d} commits in 90 days"
+                        ),
+                    )
+                    for p in members
+                ),
+                commands=(
+                    ActionCommand(
+                        "Bug-fix history and co-change partners for the most fixed files",
+                        mcp=f"get_risk(targets={py_list(members[:5])})",
+                        cli="repowise risk " + " ".join(f"-t {p}" for p in members[:5]),
+                    ),
+                    ActionCommand(
+                        "Why the folder is shaped this way",
+                        mcp=f'get_why(targets=["{folder}/"])',
+                        cli=f"repowise why {folder}/",
+                    ),
+                ),
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
@@ -410,6 +507,18 @@ def hot_path_perf(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 weight=float(p.call_sites),
                 evidence_ids=(p.opportunity_id,),
                 evidence_total=p.call_sites,
+                commands=(
+                    ActionCommand(
+                        "Every call site, the fix strategy and the tests to run",
+                        mcp=f'get_health(opportunity_id="{p.opportunity_id}")',
+                        cli=f"repowise health --file {p.file_path}",
+                    ),
+                    ActionCommand(
+                        "The function's body and its callers",
+                        mcp=f'get_symbol("{p.symbol or p.file_path}", depth=1)',
+                        cli=f"repowise symbol {p.symbol or p.file_path}",
+                    ),
+                ),
                 fingerprint=fingerprint(p.call_sites, p.actionability),
             )
         )

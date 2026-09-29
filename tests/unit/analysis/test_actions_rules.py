@@ -596,3 +596,16 @@ def test_secret_ignores_placeholder_examples_in_code() -> None:
 def test_secret_ignores_a_dummy_word_value() -> None:
     dummy = SecretFacts("src/ollama.py", "hardcoded_secret", 3, 'OpenAI(api_key="ollama", base_url=u)')
     assert _run(hygiene.live_secret, _facts(secrets=(dummy,))).actions == ()
+
+
+def test_rollup_carries_evidence_starting_with_the_worst_file_and_commands() -> None:
+    found = (
+        *(_recent(f"src/f{i}.py", sha=f"s{i}") for i in range(4)),
+        _recent("src/worst.py", severity="critical", sha="w1"),
+    )
+    (a,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
+    assert a.details[0].path == "src/worst.py" == a.includes[0]
+    assert a.details_total == 5
+    mcp = [c.mcp for c in a.commands]
+    assert any(m and m.startswith('get_health(targets=["src/worst.py"') for m in mcp)
+    assert 'get_change_risk(revspec="w1")' in mcp
