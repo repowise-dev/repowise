@@ -93,19 +93,24 @@ def ci_revspec(root: str, revspec: str | None) -> str:
         raise CannotEvaluateError("base_not_found", str(exc)) from exc
 
 
-def change_lines(root: str, revspec: str | None) -> tuple[dict[str, set[int]], str]:
-    """``({file: new-side lines}, label)`` for *revspec*, else the CI's target branch."""
+def change_lines(
+    root: str, revspec: str | None, *, staged: bool = False
+) -> tuple[dict[str, set[int]], str]:
+    """``({file: new-side lines}, label)`` for *revspec*, else the CI's target branch.
+
+    With *staged*, the staged diff (what ``git commit`` would record) instead.
+    """
     import subprocess
 
     from repowise.core.analysis.changed_lines import changed_lines
 
-    revspec = ci_revspec(root, revspec)
+    revspec = None if staged else ci_revspec(root, revspec)
     try:
-        return changed_lines(root, revspec)
+        return changed_lines(root, revspec, staged=staged)
     except ValueError as exc:
+        hint = "" if staged else f" {SHALLOW_CLONE_HINT}"
         raise CannotEvaluateError(
-            "diff_failed",
-            f"Could not diff {revspec}: {exc}. {SHALLOW_CLONE_HINT}"
+            "diff_failed", f"Could not diff {revspec or 'the staged changes'}: {exc}.{hint}"
         ) from exc
     except (subprocess.SubprocessError, OSError) as exc:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc

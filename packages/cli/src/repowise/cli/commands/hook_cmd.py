@@ -67,12 +67,22 @@ def _hook_target(
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
-def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+@click.option(
+    "--security",
+    is_flag=True,
+    default=False,
+    help="Also install a pre-commit hook that runs `repowise security check --staged` "
+    "and blocks a commit that adds a finding at or above high (skip once with "
+    "git commit --no-verify).",
+)
+def hook_install(path: str | None, workspace: bool, no_workspace: bool, security: bool) -> None:
     """Install a post-commit hook that auto-syncs after every commit."""
-    from repowise.cli.hooks import install
+    from repowise.cli.hooks import install, install_security
 
     target = _hook_target(path, workspace, no_workspace)
     _run_post_commit_action(target, install, action="installed")
+    if security:
+        _run_security_action(target, install_security, style="green")
 
 
 @hook_group.command("uninstall")
@@ -91,10 +101,11 @@ def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
     help="Force single-repo mode even when invoked from a workspace.",
 )
 def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Remove the repowise post-commit hook."""
-    from repowise.cli.hooks import uninstall
+    """Remove everything repowise installed: the post-commit hook and the security block."""
+    from repowise.cli.hooks import uninstall, uninstall_security
 
     target = _hook_target(path, workspace, no_workspace)
+    _run_security_action(target, uninstall_security)
     _run_post_commit_action(target, uninstall, action="uninstalled")
 
 
@@ -118,6 +129,16 @@ def _run_post_commit_action(target, run: Callable[[Path], str], *, action: str) 
 
     if not succeeded:
         raise click.ClickException(f"No post-commit hooks were {action}.")
+
+
+def _run_security_action(target, run: Callable[[Path], str], *, style: str = "") -> None:
+    """The opt-in pre-commit security block across the same targets as the post-commit hook."""
+    for alias, repo_path in _target_repo_entries(target):
+        result = run(repo_path)
+        if not style and not result.startswith("removed"):
+            continue  # uninstall reports the block only where there was one
+        label = f"  {alias} pre-commit (security)" if target.is_workspace else "Pre-commit (security)"
+        console.print(f"{label}: [{style}]{result}[/{style}]" if style else f"{label}: {result}")
 
 
 @hook_group.group("rewrite")
@@ -1008,20 +1029,24 @@ def hook_backfill(path: str | None, all_projects: bool, days: int | None, reset:
     help="Force single-repo mode even when invoked from a workspace.",
 )
 def hook_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Check if the repowise post-commit hook is installed."""
-    from repowise.cli.hooks import status
+    """Check if the repowise post-commit hook (and the security pre-commit block) is installed."""
+    from repowise.cli.hooks import security_status, status
 
     target = _hook_target(path, workspace, no_workspace)
+
+    def _line(label: str, result: str) -> str:
+        icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
+        return f"  {icon} {label}: {result}"
 
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         for entry in target.ws_config.repos:
             abs_path = (target.ws_root / entry.path).resolve()
-            result = status(abs_path)
-            icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
-            console.print(f"  {icon} {entry.alias}: {result}")
+            console.print(_line(entry.alias, status(abs_path)))
+            if (result := security_status(abs_path)).startswith("installed"):
+                console.print(_line(f"{entry.alias} pre-commit (security)", result))
     else:
         assert target.repo_path is not None
-        result = status(target.repo_path)
-        icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
-        console.print(f"  {icon} post-commit: {result}")
+        console.print(_line("post-commit", status(target.repo_path)))
+        if (result := security_status(target.repo_path)).startswith("installed"):
+            console.print(_line("pre-commit (security)", result))

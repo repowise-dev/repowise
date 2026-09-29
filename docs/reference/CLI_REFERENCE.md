@@ -990,10 +990,18 @@ default branch.
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
 | `--path` | A path inside the repository (defaults to cwd) |
+| `--staged` | Check the staged changes instead, read from the index (no history scan); for a pre-commit hook. Takes no REVSPEC |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
+
+A `repowise-security-ignore` comment on a finding's line silences it (or
+`repowise-security-ignore: kind, kind` for only those kinds); silenced findings
+never fail and are still counted in every format. `security.patterns` in
+`.repowise/config.yaml` adds secret shapes of your own
+(see [Custom patterns](../layers/SECURITY.md#custom-patterns-securitypatterns)).
 
 ```bash
 repowise security check origin/main...HEAD
+repowise security check --staged
 repowise security check --format github --baseline .security-baseline.json
 repowise security check --format sarif > security.sarif
 repowise security check --format gitlab > gl-code-quality-security.json
@@ -1002,7 +1010,8 @@ repowise security check --write-baseline .security-baseline.json
 
 Exit codes: `0` gate passed, `1` gate failed, `2` could not evaluate (not a git
 repository, unknown revision, a shallow clone missing the merge-base or cutting
-a commit of the change, an unreadable baseline). Check out with full history
+a commit of the change, an unreadable baseline, an invalid `security.patterns`,
+an unexpected internal error; REVSPEC given with `--staged` is a usage error). Check out with full history
 (`fetch-depth: 0`). See [In CI](../layers/SECURITY.md#in-ci-repowise-security-check)
 for the scoping rules and a GitHub Actions recipe with SARIF upload.
 
@@ -1735,7 +1744,14 @@ Install a post-commit git hook that runs `repowise update` in the background aft
 ```bash
 repowise hook install                    # current repo
 repowise hook install --workspace        # all workspace repos
+repowise hook install --security         # also a pre-commit security check
 ```
+
+`--security` also adds a pre-commit block that runs `repowise security check
+--staged` and blocks a commit that adds a finding at or above `high` (exit 1);
+when the check cannot run, the commit goes through. `hook uninstall` removes
+everything repowise installed, this block included. Skip it once with
+`git commit --no-verify`.
 
 ### `repowise hook status`
 
@@ -1748,7 +1764,8 @@ repowise hook status --workspace
 
 ### `repowise hook uninstall`
 
-Remove the post-commit hook.
+Remove everything `hook install` added: the post-commit hook and, when
+installed, the `--security` pre-commit block.
 
 ```bash
 repowise hook uninstall

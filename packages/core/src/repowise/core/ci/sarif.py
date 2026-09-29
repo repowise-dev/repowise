@@ -34,14 +34,16 @@ def result(
     properties: Mapping[str, Any] | None = None,
     *,
     suppressed: bool = False,
+    suppression_kind: str = "external",
     fixes: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict:
     """One result, located relative to ``%SRCROOT%`` with a percent-encoded URI.
 
     *line* ``None`` locates the result on the file alone, for a finding whose
-    line belongs to another revision. *suppressed* marks one accepted outside
-    the log (a baseline), so code scanning shows it closed rather than open.
-    *fixes* are :func:`fix` objects proposing an edit.
+    line belongs to another revision. *suppressed* marks one accepted, so code
+    scanning shows it closed rather than open: ``external`` for a baseline,
+    ``inSource`` for a marker in the code itself. *fixes* are :func:`fix`
+    objects proposing an edit.
     """
     location: dict[str, Any] = {"artifactLocation": _artifact(path)}
     if line is not None:
@@ -54,7 +56,7 @@ def result(
         "partialFingerprints": {fingerprint_key: fingerprint},
     }
     if suppressed:
-        out["suppressions"] = [{"kind": "external"}]
+        out["suppressions"] = [{"kind": suppression_kind}]
     if fixes:
         out["fixes"] = [dict(f) for f in fixes]
     if properties:
@@ -102,8 +104,13 @@ def run(
     version: str,
     rules: Sequence[Mapping[str, Any]],
     results: Sequence[Mapping[str, Any]],
+    *,
+    properties: Mapping[str, Any] | None = None,
 ) -> dict:
-    """A complete log with one run; ``ruleIndex`` is filled for known rule ids."""
+    """A complete log with one run; ``ruleIndex`` is filled for known rule ids.
+
+    *properties* become the run's property bag (counts a result cannot carry).
+    """
     index = {r["id"]: i for i, r in enumerate(rules)}
     indexed = []
     for res in results:
@@ -111,21 +118,18 @@ def run(
         if res["ruleId"] in index:
             res["ruleIndex"] = index[res["ruleId"]]
         indexed.append(res)
-    return {
-        "$schema": SCHEMA,
-        "version": "2.1.0",
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": tool_name,
-                        "version": version,
-                        "informationUri": INFORMATION_URI,
-                        "rules": [dict(r) for r in rules],
-                    }
-                },
-                "columnKind": "utf16CodeUnits",
-                "results": indexed,
+    one_run: dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": tool_name,
+                "version": version,
+                "informationUri": INFORMATION_URI,
+                "rules": [dict(r) for r in rules],
             }
-        ],
+        },
+        "columnKind": "utf16CodeUnits",
+        "results": indexed,
     }
+    if properties:
+        one_run["properties"] = dict(properties)
+    return {"$schema": SCHEMA, "version": "2.1.0", "runs": [one_run]}

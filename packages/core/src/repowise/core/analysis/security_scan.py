@@ -468,11 +468,14 @@ def _secret_spans(line: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _mask_line(line: str) -> str:
-    if not _SECRET_PREFILTER.search(line):
+def _mask_line(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
+    spans = list(extra)
+    if _SECRET_PREFILTER.search(line):
+        spans += _secret_spans(line)
+    if not spans:
         return line
     merged: list[tuple[int, int]] = []
-    for start, end in sorted(_secret_spans(line)):
+    for start, end in sorted(spans):
         if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
@@ -487,12 +490,23 @@ def _mask_line(line: str) -> str:
     return "".join(out)
 
 
-def _snippet(line: str) -> str:
+def masked_snippet(line: str, spans: Iterable[tuple[int, int]] = ()) -> str:
+    """:func:`_snippet` with the ``(start, end)`` *spans* of *line* masked as secrets too.
+
+    For secret shapes defined outside the registry. A line that reads as PEM
+    key body is masked whole, as the scan does for body lines.
+    """
+    if _PEM_BODY_LINE.search(line):
+        return _redaction(line.strip())
+    return _snippet(line, spans)
+
+
+def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 
     Masking comes first because a value cut by the trim no longer matches.
     """
-    text = _mask_line(line).strip()
+    text = _mask_line(line, extra).strip()
     cut = _SNIPPET_MAX
     if len(text) > cut:
         # Never end inside a marker: a bare ``*`` run defeats line verification.

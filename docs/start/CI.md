@@ -79,7 +79,11 @@ deletes or renames), which needs no baseline but does need `fetch-depth: 0`.
 Security has a baseline too, for accepting a finding a change adds on purpose
 (a documented test key, say): `repowise security check --write-baseline
 .security-baseline.json` on that change records it, and `--baseline` accepts it
-from then on.
+from then on. For one false positive, a `repowise-security-ignore` comment on
+its line silences it, and it is still counted in every format
+([details](../layers/SECURITY.md#silencing-one-finding-repowise-security-ignore)).
+`repowise security check --staged` is for a local pre-commit hook, not CI: it
+reads the index, which a CI checkout has nothing staged in.
 
 ## GitHub Actions
 

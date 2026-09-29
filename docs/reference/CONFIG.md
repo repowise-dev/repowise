@@ -14,6 +14,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
+[The `security:` block](#the-security-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -89,7 +90,8 @@ flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
 > **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
 > Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect. `max_tokens` must be a positive integer when documentation is
+> take effect. The `security:` block is the exception: `repowise security
+> check` rejects an unknown key there. `max_tokens` must be a positive integer when documentation is
 > generated. The `distill:` block is validated only when you run
 > `repowise doctor`. If a setting doesn't seem to be taking effect, check
 > spelling and indentation first.
@@ -553,6 +555,22 @@ Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
+
+### The `security:` block
+
+Secret shapes of your own for `repowise security check`, checked strictly: an
+unknown key or an invalid pattern stops the check with exit 2.
+
+```yaml
+security:
+  patterns:
+    - name: internal_token
+      regex: 'itk_[A-Za-z0-9]{32}'
+      severity: high
+```
+
+See [custom patterns](../layers/SECURITY.md#custom-patterns-securitypatterns)
+for the rules and limits.
 
 ### The `refactoring:` block
 

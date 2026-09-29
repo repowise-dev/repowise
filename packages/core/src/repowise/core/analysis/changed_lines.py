@@ -32,10 +32,17 @@ from .git_cli import _git, split_revspec
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
-#: Pinned header prefixes: ``diff.noprefix`` or a custom prefix in the user's
+#: Pinned diff output: ``diff.noprefix`` or a custom prefix in the user's
 #: config would otherwise make :func:`_header_path` strip a real ``a/`` or
-#: ``b/`` directory, or keep a prefix that names no file.
-DIFF_PREFIXES = ("--src-prefix=a/", "--dst-prefix=b/")
+#: ``b/`` directory, and an external diff, a textconv or ``color.diff=always``
+#: would print something the parser reads as no change at all.
+DIFF_ARGS = (
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-ext-diff",
+    "--no-color",
+    "--no-textconv",
+)
 
 
 @dataclass
@@ -240,7 +247,7 @@ def changed_lines(
         return _working_tree_lines(repo_path, base)
 
     if staged or not revspec:
-        diff = _git(["diff", "--cached", "--unified=0", *DIFF_PREFIXES], repo_path)
+        diff = _git(["diff", "--cached", "--unified=0", *DIFF_ARGS], repo_path)
         return _parse_unified_diff(diff), "staged changes"
 
     if (parts := split_revspec(revspec)) is not None:
@@ -250,7 +257,7 @@ def changed_lines(
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
         label = f"{base}{sep}{head}"
-        diff = _diff(repo_path, ["diff", "--unified=0", *DIFF_PREFIXES, label])
+        diff = _diff(repo_path, ["diff", "--unified=0", *DIFF_ARGS, label])
         return _parse_unified_diff(diff), label
 
     _verify_ref(repo_path, revspec)
@@ -261,7 +268,7 @@ def changed_lines(
     # --format= drops the commit message so only the diff body is parsed.
     # -m --first-parent matches what change risk counts on a merge; without it
     # git's combined diff emits nothing at all and a merged PR reads as empty.
-    args = ["show", "--unified=0", *DIFF_PREFIXES, "--format=", "-m", "--first-parent", revspec]
+    args = ["show", "--unified=0", *DIFF_ARGS, "--format=", "-m", "--first-parent", revspec]
     return _parse_unified_diff(_diff(repo_path, args)), revspec
 
 
@@ -269,11 +276,11 @@ def _working_tree_lines(repo_path: str, base: str | None) -> tuple[dict[str, set
     """The working-tree half of :func:`changed_lines`: from *base*'s merge-base, else ``HEAD``."""
     start = _merge_base_or_empty(repo_path, base) if base and base != "HEAD" else ""
     if start:
-        diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, start], repo_path)
+        diff = _git(["diff", "--unified=0", *DIFF_ARGS, start], repo_path)
         changed = _parse_unified_diff(diff)
         changed.update(_untracked_lines(repo_path))
         return changed, working_tree_label(base)
-    diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, "HEAD"], repo_path)
+    diff = _git(["diff", "--unified=0", *DIFF_ARGS, "HEAD"], repo_path)
     changed = _parse_unified_diff(diff)
     if base:
         # Asked for what a push brings, with no merge-base to diff from: new
@@ -316,7 +323,7 @@ def diff_since(
     the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
     """
     tail = [until] if until else []
-    args = ["diff", "--unified=0", *DIFF_PREFIXES, since, *tail, "--", *paths]
+    args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
     return parse_unified_diff(_diff(repo_path, args))
 
 
