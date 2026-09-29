@@ -1034,14 +1034,41 @@ class TestExactMatchSignal:
 
     @pytest.mark.asyncio
     async def test_fuzzy_only_sets_false_with_note(self, setup_mcp):
-        # "AuthServiceXyz" token-overlaps AuthService (a hit) but matches no
-        # symbol exactly — the signal must fire even though results are non-empty.
+        # "AuthServ" token-overlaps AuthService (a hit) but matches no symbol
+        # exactly — the signal must fire even though results are non-empty. Two
+        # humps, like a product name, so it is not read as a missing code name.
         from repowise.server.mcp_server import search_codebase
 
-        result = await search_codebase("AuthServiceXyz", mode="symbol")
+        result = await search_codebase("AuthServ", mode="symbol")
         assert result["results"], "fuzzy neighbour should still be returned"
         assert result["exact_match"] is False
         assert "exactly matches" in result.get("note", "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            # Code-shaped names no symbol carries. "AuthServiceXyz" used to
+            # return AuthService as a fuzzy neighbour, standing in for it.
+            "AuthServiceXyz",
+            "executeToolWithRetryBackoff",
+            "validate_trigger_nonce",
+            "AnthropicStreamingAdapter",
+            "getToolkitMigrationPlan",
+            "where is validate_trigger_nonce defined",
+        ],
+    )
+    async def test_a_missing_code_name_returns_no_symbol(self, setup_mcp, query):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+        result = await search_codebase(query)
+        assert not [r for r in result["results"] if r.get("type") == "symbol"]
+        assert result["exact_match"] is False
+        assert "No indexed symbol is named" in result["note"]
+        for hit in result["results"]:
+            assert hit["relation"] == NOT_THE_NAMED_SYMBOL
+            assert hit.get("confidence_score", 0.0) < 0.5
 
     @pytest.mark.asyncio
     async def test_concept_query_gets_no_signal(self, setup_mcp):

@@ -44,13 +44,17 @@ from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
     _MIN_RELEVANCE_SCORE,
     _VALID_MODES,
+    NOT_THE_NAMED_SYMBOL,
     _canonical_symbol_query,
     _embedded_identifiers,
     _fetch_limit_for,
     _has_exact_symbol,
     _identifier_candidates,
     _is_why_shaped,
+    _looks_like_code_name,
     _looks_like_exact_token,
+    _mark_not_the_named_symbol,
+    _names_a_path,
     _qual_norm,
     _resolve_mode,
     _symbol_matches_name,
@@ -820,6 +824,24 @@ def _tag_repo(items: list[dict], ctx, multi: bool) -> None:
             item["repo"] = ctx.alias
 
 
+def _missing_named_symbols(
+    candidates: list[str], exact: bool, canonical: bool, concepts: list[dict]
+) -> list[str]:
+    """Code-shaped names the query asks after that no indexed symbol (or
+    returned module path) carries: they do not exist here. Their fuzzy
+    neighbours would stand in for them, so the caller empties the symbol half;
+    the pages are marked here as related to the question, not the symbol."""
+    if exact or canonical:
+        return []
+    page_paths = [c.get("target_path") or "" for c in concepts]
+    missing = [
+        c for c in candidates if _looks_like_code_name(c) and not _names_a_path(c, page_paths)
+    ]
+    if missing:
+        _mark_not_the_named_symbol(concepts)
+    return missing
+
+
 async def _structured_search(
     query: str,
     limit: int,
@@ -891,6 +913,9 @@ async def _structured_search(
     # Computed once here so the hybrid interleave and the exact-match note below
     # agree on the same signal.
     exact = _has_exact_symbol(candidates, symbols) if candidates else False
+    missing = _missing_named_symbols(candidates, exact, bool(canonical_symbol), concepts)
+    if missing:
+        symbols = []
 
     if mode == "symbol":
         results = symbols[:limit]
@@ -935,7 +960,14 @@ async def _structured_search(
     # ``exact`` were computed above so ordering and this note stay consistent.
     if candidates:
         response["exact_match"] = exact
-        if not exact:
+        if missing:
+            shown = ", ".join(repr(c) for c in missing[:3])
+            response["note"] = (
+                f"No indexed symbol is named {shown}, so no symbol is returned "
+                f"for it. Any page here is {NOT_THE_NAMED_SYMBOL}. Recheck the "
+                "spelling, or search a shorter part of the name. " + EXHAUSTIVE_SWEEP_HINT
+            )
+        elif not exact:
             shown = ", ".join(repr(c) for c in candidates[:3])
             response["note"] = (
                 f"No indexed symbol exactly matches {shown}. The results are "

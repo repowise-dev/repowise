@@ -184,6 +184,50 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     return out
 
 
+_CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+_LOWER_CAMEL_RE = re.compile(r"[a-z]{2,}[a-z0-9]*[A-Z][a-z]")
+
+
+def _looks_like_code_name(token: str) -> bool:
+    """Shaped so no prose word or product name fits it.
+
+    snake_case, lowerCamel (``proxyExecute``), or three or more capitalised
+    humps (``AnthropicStreamingAdapter``). ``TypeScript``, ``GitHub``,
+    ``iPhone`` and ``macOS`` do not fit, so a name like them that matches no
+    symbol never reads as "that symbol does not exist".
+    """
+    if not _WORD_CHAIN_RE.fullmatch(token):
+        return False  # prose around a name ("AuthService login") is not one name
+    leaf = token.rsplit(".", 1)[-1].strip("_")
+    if "_" in leaf or _LOWER_CAMEL_RE.match(leaf):
+        return True
+    return leaf[:1].isupper() and len(_CAMEL_HUMP_RE.findall(leaf)) >= 3
+
+
+def _names_a_path(token: str, paths: list[str]) -> bool:
+    """Whether ``token``'s last dotted part is a directory or file stem among
+    ``paths``: a module the question names, which no symbol table carries."""
+    leaf = token.rsplit(".", 1)[-1]
+    return any(leaf == seg.split(".", 1)[0] for path in paths for seg in path.split("/"))
+
+
+# The label and confidence ceiling on the pages a search returns for a named
+# symbol that is not indexed: they answer the prose around the name at best.
+NOT_THE_NAMED_SYMBOL = "related, not the named symbol"
+_NOT_THE_NAMED_SYMBOL_CONFIDENCE = 0.45
+
+
+def _mark_not_the_named_symbol(items: list[dict]) -> None:
+    """Label ``items`` as related to the question, not the missing symbol, and
+    cap their ``confidence_score`` below the 0.5 an agent would trust."""
+    for item in items:
+        item["relation"] = NOT_THE_NAMED_SYMBOL
+        if "confidence_score" in item:
+            item["confidence_score"] = min(
+                item["confidence_score"], _NOT_THE_NAMED_SYMBOL_CONFIDENCE
+            )
+
+
 def _identifier_candidates(query: str, mode: str, names: Container[str] | None = None) -> list[str]:
     """Identifier tokens the query is asking after, for the exact-match signal.
 
