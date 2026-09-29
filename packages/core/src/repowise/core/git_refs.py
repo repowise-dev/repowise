@@ -18,6 +18,7 @@ __all__ = [
     "BranchRef",
     "ahead_behind",
     "ahead_behind_many",
+    "change_base",
     "changed_files",
     "commit_file_sets",
     "current_branch",
@@ -30,6 +31,7 @@ __all__ = [
     "resolve",
     "toplevel",
     "tracked_paths",
+    "tracked_paths_at",
 ]
 
 #: Subprocess failures that mean "no answer", not "bug": a wedged or missing
@@ -73,6 +75,29 @@ def toplevel(repo_path: str) -> str:
 def tracked_paths(repo_path: str) -> frozenset[str]:
     """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
     return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
+
+
+def tracked_paths_at(repo_path: str, rev: str) -> frozenset[str]:
+    """Every path git tracked at *rev*, repo-relative POSIX, or empty when git cannot answer."""
+    listing = _read(repo_path, ["ls-tree", "-r", "-z", "--name-only", f"{rev}^{{tree}}"])
+    return frozenset(p for p in listing.split("\0") if p)
+
+
+def change_base(repo_path: str, revspec: str) -> str:
+    """The commit a change starts from, ``""`` when git cannot name it.
+
+    The merge-base for ``base...head``, ``base`` for ``base..head``, and a
+    single commit's first parent: the side the change's diff is taken from.
+    Unlike change risk's ``history_ref`` / ``range_anchor``, ``..`` starts at *base*
+    itself here, as the diff does, not at the merge-base.
+    """
+    parts = split_revspec(revspec)
+    if parts is None:
+        return resolve(repo_path, f"{revspec}^1")
+    base, sep, head = parts
+    if sep == "...":
+        return _read(repo_path, ["merge-base", base, head])
+    return resolve(repo_path, base)
 
 
 def is_shallow(repo_path: str) -> bool:

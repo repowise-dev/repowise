@@ -2264,6 +2264,9 @@ class CoverageIngest(Base):
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_lines: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``CoverageScope.to_dict()``: the reports and ignore globs measured, so a
+    # later measurement can tell whether it is comparable. NULL: not recorded.
+    scope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_coverage_ingests_repo_ingested", "repository_id", "ingested_at"),

@@ -28,6 +28,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
+from typing import Any
 
 import pathspec
 
@@ -140,6 +141,9 @@ class CoverageConfig:
     gate_errors: tuple[str, ...] = ()
     # The stricter gate over risky files only (``coverage check --fail-under-risky``).
     fail_under_risky: float | None = None
+    # Most project coverage may fall from the change's base, in percentage
+    # points (``coverage check --max-drop``).
+    max_drop: float | None = None
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -171,6 +175,7 @@ class CoverageConfig:
             gates=gates,
             gate_errors=gate_errors,
             fail_under_risky=_percent(block.get("fail_under_risky")),
+            max_drop=_percent(block.get("max_drop")),
         )
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:
@@ -382,6 +387,10 @@ class ResolvedCoverage:
     # Set by :func:`resolve_reports`; consumers must flag the aggregate as
     # partial rather than reporting the mapped subset's numbers as repo-wide.
     mapping_partial: bool = False
+    # One format per report read, repeats kept, and the ``coverage.ignore``
+    # applied: with ``mapping_partial``, what makes two measurements comparable.
+    report_formats: list[str] = field(default_factory=list)
+    ignore: tuple[str, ...] = ()
 
     @property
     def matched(self) -> int:
@@ -400,6 +409,15 @@ class ResolvedCoverage:
             unmatched_path_count=len(self.unmatched),
             ambiguous_path_count=len(self.ambiguous),
             unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
+            mapping_partial=self.mapping_partial,
+            scope=self.scope,
+        )
+
+    @property
+    def scope(self) -> CoverageScope:
+        return CoverageScope(
+            report_formats=tuple(sorted(self.report_formats)),
+            ignore=tuple(sorted(self.ignore)),
             mapping_partial=self.mapping_partial,
         )
 
@@ -423,6 +441,45 @@ class CoverageProvenance:
     ambiguous_path_count: int | None = None
     unmatched_sample: tuple[str, ...] = ()
     mapping_partial: bool = False
+    # ``None`` when the writer did not resolve the reports itself.
+    scope: CoverageScope | None = None
+
+
+@dataclass(frozen=True)
+class CoverageScope:
+    """What makes two coverage measurements comparable.
+
+    *report_formats* has one entry per report read (``("lcov", "lcov")`` for
+    two lcov reports), sorted; *ignore* is the ``coverage.ignore`` applied,
+    sorted. A base and head that differ in either measured different things,
+    and a partial mapping measured a fragment, so neither delta means anything
+    (``patch_coverage.delta.incomparable_reasons``).
+    """
+
+    report_formats: tuple[str, ...] = ()
+    ignore: tuple[str, ...] = ()
+    mapping_partial: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "report_formats": list(self.report_formats),
+            "ignore": list(self.ignore),
+            "mapping_partial": self.mapping_partial,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> CoverageScope | None:
+        """The scope :meth:`to_dict` wrote, ``None`` for anything else."""
+        if not isinstance(data, dict):
+            return None
+        formats, ignore = data.get("report_formats"), data.get("ignore")
+        if not isinstance(formats, list) or not isinstance(ignore, list):
+            return None
+        return cls(
+            report_formats=tuple(sorted(str(f) for f in formats)),
+            ignore=tuple(sorted(str(g) for g in ignore)),
+            mapping_partial=bool(data.get("mapping_partial", False)),
+        )
 
 
 def discover_artifacts(
@@ -864,7 +921,7 @@ def resolve_reports(
     """
     suffix_index = _build_suffix_index(repo_keys)
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
-    result = ResolvedCoverage()
+    result = ResolvedCoverage(ignore=tuple(ignore))
     by_key: dict[str, FileCoverage] = {}
     report_file_count = 0
     for report in reports:
@@ -873,6 +930,7 @@ def resolve_reports(
         # not rewrite an lcov report's ``web/src/x.ts``.
         modules = go_modules if report.source_format == "go-coverprofile" else ()
         _note_format(result, report.source_format)
+        result.report_formats.append(report.source_format)
         for fc in report.files:
             report_file_count += 1
             key, ambiguous, exact = _resolve_path(

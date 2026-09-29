@@ -2324,6 +2324,25 @@ export interface PatchCoverageFileRisk {
   reasons: string[];
 }
 
+/** A file whose coverage changed on lines the change did not touch. */
+export interface PatchCoverageOutsideChange {
+  file_path: string;
+  status: "changed" | "no_longer_measured";
+  newly_uncovered_ranges: number[][];
+  newly_uncovered_line_count: number;
+  newly_covered_line_count: number;
+  base_pct: number | null;
+  head_pct: number | null;
+  causes: PatchCoverageOutsideChangeCause[] | null;
+}
+
+/** A changed file that explains coverage lost outside the change. */
+export interface PatchCoverageOutsideChangeCause {
+  kind: "test_deleted" | "test_modified" | "dependent_changed";
+  path: string;
+  basis: "per_test" | "graph" | "name";
+}
+
 /** One path-scoped gate from ``coverage.gates``, judged on the change. */
 export interface PatchCoveragePathGate {
   name: string;
@@ -2338,6 +2357,27 @@ export interface PatchCoveragePathGate {
   gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
 }
 
+/** Project coverage at the change's base against its head. */
+export interface PatchCoverageProject {
+  basis: "base_report" | "history";
+  base_commit: string | null;
+  head_commit: string | null;
+  base: PatchCoverageProjectTotals | null;
+  head: PatchCoverageProjectTotals | null;
+  delta_pct: number | null;
+  max_drop: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+  incomparable: string[];
+  outside_change: PatchCoverageOutsideChange[] | null;
+  outside_change_note: string | null;
+}
+
+export interface PatchCoverageProjectTotals {
+  covered_line_count: number;
+  coverable_line_count: number;
+  coverage_pct: number | null;
+}
+
 export interface PatchCoverageResponse {
   patch_coverage_pct: number | null;
   covered_line_count: number;
@@ -2350,6 +2390,7 @@ export interface PatchCoverageResponse {
   scope: PatchCoverageScope;
   path_gates: PatchCoveragePathGate[];
   risky: PatchCoverageRisky | null;
+  project: PatchCoverageProject | null;
 }
 
 /** Patch coverage over the measured files history marks as risky. */

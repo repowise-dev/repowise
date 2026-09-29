@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
 from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
+from .delta import IndirectCause, IndirectChange, ProjectDelta
 from .hints import RANGE_LIMIT, TestHint, first_hint, hint_phrase
 from .risk import FileRisk
 
@@ -248,6 +249,8 @@ def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
 def render_markdown(pc: PatchCoverage) -> str:
     """Markdown for a CI step summary or PR comment."""
     out = [headline(pc)]
+    if project := project_line(pc):
+        out += ["", project]
     if risky := risky_line(pc):
         out += ["", risky]
     out += ["", scope_line(pc)]
@@ -257,6 +260,7 @@ def render_markdown(pc: PatchCoverage) -> str:
     out += _gap_table(pc)
     out += _details(pc.with_status("not_in_report"), "not in the coverage report")
     out += _details(pc.with_status("no_line_data"), "in a report without line data")
+    out += _outside_section(pc)
     return "\n".join(out) + "\n"
 
 
@@ -306,6 +310,10 @@ def _gap_rows(pc: PatchCoverage, rows: list[FilePatchCoverage]) -> list[str]:
     return lines
 
 
+#: Warning slots kept for coverage lost outside the change; unused ones go to ranges.
+OUTSIDE_RESERVE = 3
+
+
 def github_annotations(pc: PatchCoverage) -> list[str]:
     """GitHub Actions workflow commands for a change's patch coverage.
 
@@ -313,8 +321,9 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
     not informational and a failing risky-file gate; one exempted by the
     small-change tolerance, and an informational gate below its threshold, is
     a notice, so neither is silent. Uncovered ranges are marked riskiest file
-    first, then largest range, capped at what GitHub displays, with a notice
-    counting the rest.
+    first, then largest range, sharing what GitHub displays with a warning per
+    file that lost coverage outside the change (:data:`OUTSIDE_RESERVE`),
+    with one notice counting the rest.
     """
     ranges = sorted(
         ((f, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
@@ -326,7 +335,12 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
         *_path_gate_annotations(pc),
         *_gate_annotations(pc.risky_gate, risky_line(pc, markdown=False)),
     ]
-    return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
+    if pc.project is not None:
+        verdict += _gate_annotations(pc.project.gate, project_line(pc, markdown=False))
+    outside = [_outside_annotation(c) for c in _lost_outside(pc)]
+    return verdict + github.cap_shared(
+        warnings, outside, reserve=OUTSIDE_RESERVE, noun="warnings"
+    )
 
 
 def _gate_annotations(gate: str, text: str) -> list[str]:
@@ -369,6 +383,156 @@ def _range_annotation(f: FilePatchCoverage, a: int, b: int) -> str:
 def _hint_for(f: FilePatchCoverage, a: int, b: int) -> TestHint | None:
     """The hint for range ``(a, b)``, when the index gave one."""
     return next((h for h in f.hints or () if h.range == (a, b)), None)
+
+
+def project_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
+    """Project coverage at the head against the base, or ``""`` when not computed.
+
+    ``Project coverage 81.2% · down 0.30 points from 81.5% at a1b2c3d · within
+    the 0.5-point max-drop gate``: one shape on every surface (the UI's
+    ``projectText`` mirrors it). Incomparable measurements say why instead.
+    """
+    p = pc.project
+    if p is None:
+        return ""
+    bold = "**" if markdown else ""
+    if reason := _not_compared(p):
+        return f"{bold}Project coverage not compared:{bold} {reason}."
+    assert p.base is not None and p.head is not None  # _not_compared vouches
+    head, base = p.head.pct, p.base.pct
+    parts = [
+        f"{bold}Project coverage {fmt_pct(head)}{bold}",
+        _delta_phrase(head, base, p.base_commit),
+        _gate_phrase(p.gate, p.max_drop),
+    ]
+    return " · ".join(part for part in parts if part)
+
+
+def _not_compared(p: ProjectDelta) -> str:
+    """Why the two sides were not compared, or ``""`` when they were."""
+    if p.incomparable:
+        return "; ".join(p.incomparable)
+    if p.head is None or p.head.pct is None:
+        return "the head measured no coverable line"
+    if p.base is None or p.base.pct is None:
+        return "the base measured no coverable line"
+    return ""
+
+
+def _delta_phrase(head: float, base: float, base_commit: str | None) -> str:
+    """``down 0.30 points from 81.5% at a1b2c3d``; ``unchanged`` at zero."""
+    points = round(head - base, 2)
+    change = "unchanged" if points == 0 else (
+        f"{'up' if points > 0 else 'down'} {abs(points):.2f} points"
+    )
+    at = f" at {base_commit[:7]}" if base_commit else ""
+    return f"{change} from {fmt_pct(base)}{at}"
+
+
+def _gate_phrase(gate: str, max_drop: float | None) -> str:
+    if gate == "fail":
+        return f"falls more than the {max_drop:g}-point max-drop gate allows"
+    if gate == "pass":
+        return f"within the {max_drop:g}-point max-drop gate"
+    return ""
+
+
+def outside_change_rows(pc: PatchCoverage) -> tuple[IndirectChange, ...]:
+    """The files whose coverage changed outside the change, when a base report named them."""
+    rows = pc.project.outside_change if pc.project is not None else None
+    return rows or ()
+
+
+def _lost_outside(pc: PatchCoverage) -> list[IndirectChange]:
+    """Rows that lost coverage: newly uncovered lines (most first), or no longer measured."""
+    return [
+        c
+        for c in outside_change_rows(pc)
+        if c.newly_uncovered_ranges or c.status == "no_longer_measured"
+    ]
+
+
+def cause_words(causes: tuple[IndirectCause, ...] | None) -> str:
+    """``"deleted test tests/test_a.py (by name)"``; ``"unknown"`` when not assessed."""
+    if causes is None:
+        return "unknown"
+    if not causes:
+        return "nothing in the change names it"
+    shown = [
+        f"{_CAUSE_KIND[c.kind]} {c.path} ({_CAUSE_BASIS[c.basis]})" for c in causes[:_CAUSE_LIMIT]
+    ]
+    rest = len(causes) - len(shown)
+    return ", ".join(shown) + (f", +{rest} more" if rest else "")
+
+
+_CAUSE_KIND = {
+    "test_deleted": "deleted test",
+    "test_modified": "changed test",
+    "dependent_changed": "changed dependent",
+}
+_CAUSE_BASIS = {"per_test": "measured", "graph": "inferred", "name": "by name"}
+_CAUSE_LIMIT = 2
+
+
+def indirect_row(c: IndirectChange) -> tuple[str, str, str, str, str]:
+    """``(file, before, after, newly uncovered lines, cause)`` in plain text."""
+    if c.status == "no_longer_measured":
+        after, lost = "not measured", "the head report does not name it"
+    else:
+        after = fmt_pct(c.head_pct)
+        lost = format_ranges(c.newly_uncovered_ranges, RANGE_LIMIT) or "none"
+        if c.newly_covered_line_count:
+            lost += f" ({c.newly_covered_line_count} newly covered)"
+    cause = cause_words(c.causes) if c.newly_uncovered_ranges else ""
+    return c.file_path, fmt_pct(c.base_pct), after, lost, cause
+
+
+def _outside_section(pc: PatchCoverage) -> list[str]:
+    p = pc.project
+    if p is None or (not p.outside_change and not p.outside_change_note):
+        return []
+    out = ["", "### Coverage outside the change"]
+    if p.outside_change_note:
+        out += ["", f"Files left out: {p.outside_change_note}."]
+    rows = outside_change_rows(pc)
+    if not rows:
+        return out
+    out += [
+        "",
+        "| File | Before | After | Newly uncovered lines | Cause |",
+        "|---|---|---|---|---|",
+    ]
+    for c in rows[:ROW_LIMIT]:
+        path, *rest = indirect_row(c)
+        out.append(f"| `{cell(path)}` | " + " | ".join(cell(v) for v in rest) + " |")
+    if len(rows) > ROW_LIMIT:
+        out += ["", more_line(len(rows) - ROW_LIMIT, "files")]
+    return out
+
+
+def _outside_annotation(c: IndirectChange) -> str:
+    """A file-level warning at the first line that lost coverage, or on the file."""
+    if c.status == "no_longer_measured":
+        return github.annotation(
+            "warning",
+            f"Measured at the base ({fmt_pct(c.base_pct)}), not in the head's coverage report",
+            file=c.file_path,
+            title="Coverage lost outside the change",
+        )
+    n = c.newly_uncovered_line_count
+    message = (
+        f"{plural(n, 'line')} outside the change lost coverage "
+        f"({format_ranges(c.newly_uncovered_ranges, RANGE_LIMIT)})"
+    )
+    if c.causes:
+        message += f"; cause: {cause_words(c.causes)}"
+    return github.annotation(
+        "warning",
+        message,
+        file=c.file_path,
+        line=c.newly_uncovered_ranges[0][0],
+        title="Coverage lost outside the change",
+    )
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:

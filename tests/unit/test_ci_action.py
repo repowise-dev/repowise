@@ -59,7 +59,9 @@ def test_the_gitlab_template_parses() -> None:
     risk = " ".join(jobs["repowise-risk"]["script"])
     assert "--fail-above-percentile" in risk and "--format markdown" in risk
     assert "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE" in jobs["repowise-risk"]["rules"][0]["if"]
-    assert "--fail-under-risky" in " ".join(jobs["repowise-coverage"]["script"])
+    coverage = " ".join(jobs["repowise-coverage"]["script"])
+    assert "--fail-under-risky" in coverage
+    assert "--base-report" in coverage and "--max-drop" in coverage
 
 
 def _gitlab_jobs() -> dict:
@@ -157,6 +159,29 @@ def test_the_default_branch_job_writes_the_doc_drift_report(tmp_path, fake_repow
     assert json.loads(doc_drift.read_text(encoding="utf-8")) == json.loads(_ISSUE)
 
 
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        ("", "coverage check origin/main...HEAD --report a.info --format markdown"),
+        (
+            "base/a.info base/b.info",
+            "coverage check origin/main...HEAD --report a.info --base-report base/a.info "
+            "--base-report base/b.info --max-drop 0.5 --format markdown",
+        ),
+    ],
+)
+def test_the_gitlab_coverage_job_passes_base_reports_only_when_set(
+    tmp_path, fake_repowise, base, expected
+) -> None:
+    env = {"REPOWISE_COVERAGE_REPORT": "a.info", "REPOWISE_COVERAGE_BASE_REPORT": base}
+    if base:
+        env["REPOWISE_COVERAGE_MAX_DROP"] = "0.5"
+    code = _run_gitlab_job(tmp_path, fake_repowise, "repowise-coverage", **env)
+
+    assert code == 0
+    assert (tmp_path / "log").read_text(encoding="utf-8").split() == expected.split()
+
+
 def test_the_gitlab_coverage_job_leaves_globs_to_repowise() -> None:
     script = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))["repowise-coverage"]["script"]
     # Globbing off before the unquoted, space-split report list is expanded.
@@ -226,6 +251,8 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "COVERAGE_FAIL_UNDER": "",
         "COVERAGE_MIN_COVERABLE_LINES": "",
         "COVERAGE_FAIL_UNDER_RISKY": "",
+        "COVERAGE_BASE_REPORT": "",
+        "COVERAGE_MAX_DROP": "",
         "DOC_DRIFT_BASELINE": "",
         "SECURITY_FAIL_ON": "high",
         "SECURITY_BASELINE": "",
@@ -276,6 +303,22 @@ def test_inputs_reach_the_commands(tmp_path, fake_repowise) -> None:
     assert security == (
         "security check origin/main...HEAD --fail-on high "
         "--baseline .security-baseline.json --format github"
+    )
+
+
+def test_base_report_inputs_reach_the_coverage_command(tmp_path, fake_repowise) -> None:
+    code, _, calls = _run(
+        tmp_path,
+        fake_repowise,
+        CHECKS="coverage",
+        COVERAGE_REPORT="lcov.info",
+        COVERAGE_BASE_REPORT="base/lcov.info\nbase/web/**/lcov.info=web",
+        COVERAGE_MAX_DROP="0.5",
+    )
+    assert code == 0
+    assert calls.strip() == (
+        "coverage check --format github --report lcov.info "
+        "--base-report base/lcov.info --base-report base/web/**/lcov.info=web --max-drop 0.5"
     )
 
 

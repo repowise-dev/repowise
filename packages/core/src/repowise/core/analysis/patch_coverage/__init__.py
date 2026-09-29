@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .causes import apply_causes, name_causes, needs_causes, read_indirect_causes
 from .compute import (
     FilePatchCoverage,
     FileStatus,
@@ -11,6 +12,16 @@ from .compute import (
     PathGateResult,
     compute_patch_coverage,
     patch_coverage_from_resolved,
+)
+from .delta import (
+    IndirectCause,
+    IndirectChange,
+    OutsideChangeScan,
+    ProjectDelta,
+    ProjectTotals,
+    incomparable_reasons,
+    indirect_changes,
+    project_totals,
 )
 from .hints import (
     TestHint,
@@ -24,12 +35,16 @@ from .render import (
     RANGE_LIMIT,
     STATUS_TEXT,
     attention_rows,
+    cause_words,
     fmt_pct,
     format_ranges,
     github_annotations,
     headline,
+    indirect_row,
+    outside_change_rows,
     path_gate_row,
     path_gate_verdict,
+    project_line,
     render_markdown,
     risk_basis_line,
     risk_words,
@@ -45,7 +60,14 @@ from .risk import (
     read_git_fix_history,
     risk_unreadable,
 )
-from .stored import read_index_facts, stored_patch_coverage
+from .stored import (
+    attach_history_delta,
+    history_delta,
+    ingest_scope,
+    ingest_totals,
+    read_index_facts,
+    stored_patch_coverage,
+)
 
 __all__ = [
     "RANGE_LIMIT",
@@ -56,15 +78,23 @@ __all__ = [
     "GateStatus",
     "GitFixHistory",
     "IndexFacts",
+    "IndirectCause",
+    "IndirectChange",
+    "OutsideChangeScan",
     "PatchCoverage",
     "PatchScope",
     "PathGateResult",
+    "ProjectDelta",
+    "ProjectTotals",
     "TestHint",
+    "apply_causes",
     "assess_risks",
     "attach_hints",
+    "attach_history_delta",
     "attach_risk",
     "attention_rows",
     "build_hints",
+    "cause_words",
     "compute_patch_coverage",
     "first_hint",
     "fmt_pct",
@@ -72,11 +102,23 @@ __all__ = [
     "github_annotations",
     "headline",
     "hint_phrase",
+    "history_delta",
+    "incomparable_reasons",
+    "indirect_changes",
+    "indirect_row",
+    "ingest_scope",
+    "ingest_totals",
+    "name_causes",
+    "needs_causes",
+    "outside_change_rows",
     "patch_coverage_from_resolved",
     "path_gate_row",
     "path_gate_verdict",
+    "project_line",
+    "project_totals",
     "read_git_fix_history",
     "read_index_facts",
+    "read_indirect_causes",
     "read_test_hints",
     "render_markdown",
     "risk_basis_line",

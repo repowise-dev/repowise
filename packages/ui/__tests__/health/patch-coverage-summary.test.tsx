@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type {
   PatchCoveragePathGate,
+  PatchCoverageProject,
   PatchCoverageResponse,
 } from "@repowise-dev/types/generated/http";
 import {
@@ -9,6 +10,7 @@ import {
   floorPct,
   formatLineRanges,
   hintReason,
+  projectText,
   riskWords,
 } from "../../src/health/patch-coverage-summary.js";
 
@@ -52,6 +54,28 @@ function coverage(fileCount: number): PatchCoverageResponse {
     },
     path_gates: [],
     risky: null,
+    project: null,
+  };
+}
+
+function project(base: number, head: number, delta: number): PatchCoverageProject {
+  const totals = (pct: number) => ({
+    covered_line_count: Math.round(pct * 10),
+    coverable_line_count: 1000,
+    coverage_pct: pct,
+  });
+  return {
+    basis: "history",
+    base_commit: "a1b2c3d".padEnd(40, "0"),
+    head_commit: "h".repeat(40),
+    base: totals(base),
+    head: totals(head),
+    delta_pct: delta,
+    max_drop: null,
+    gate: "not_set",
+    incomparable: [],
+    outside_change: null,
+    outside_change_note: null,
   };
 }
 
@@ -122,6 +146,24 @@ describe("patch coverage formatting", () => {
     expect(floorPct(66.66)).toBe("66.6");
     expect(floorPct(57.3)).toBe("57.3");
     expect(floorPct(100)).toBe("100.0");
+  });
+
+  const DOWN = "Project coverage 81.2% · down 0.30 points from 81.5% at a1b2c3d";
+  it.each([
+    [project(81.5, 81.2, -0.3), DOWN],
+    [project(80, 80.25, 0.25), "Project coverage 80.2% · up 0.25 points from 80.0% at a1b2c3d"],
+    [project(80, 80, 0), "Project coverage 80.0% · unchanged from 80.0% at a1b2c3d"],
+    [
+      { ...project(81.5, 81.2, -0.3), max_drop: 0.5, gate: "pass" as const },
+      `${DOWN} · within the 0.5-point max-drop gate`,
+    ],
+    [
+      { ...project(81.5, 81.2, -0.3), max_drop: 0.1, gate: "fail" as const },
+      `${DOWN} · falls more than the 0.1-point max-drop gate allows`,
+    ],
+    [{ ...project(80, 80, 0), base: null, delta_pct: null }, null],
+  ])("words the project delta as the core's project line (%#)", (given, expected) => {
+    expect(projectText(given)).toBe(expected);
   });
 
   it("prints single lines bare and runs as a span", () => {
@@ -257,6 +299,31 @@ describe("PatchCoverageSummary", () => {
     ).toBeTruthy();
   });
 
+  it("compares project coverage with the base under the headline", () => {
+    render(
+      <PatchCoverageSummary coverage={{ ...coverage(1), project: project(81.5, 81.2, -0.3) }} />,
+    );
+    expect(
+      screen.getByText("Project coverage 81.2% · down 0.30 points from 81.5% at a1b2c3d"),
+    ).toBeTruthy();
+  });
+
+  it("says in muted text why project coverage was not compared", () => {
+    const incomparable = {
+      ...project(81.5, 81.2, -0.3),
+      incomparable: ["the base read 1 lcov report, the head read 2 lcov reports"],
+    };
+    render(<PatchCoverageSummary coverage={{ ...coverage(1), project: incomparable }} />);
+    const line = screen.getByText(/Project coverage not compared: the base read 1 lcov/);
+    expect(line.className).toContain("text-tertiary");
+    expect(screen.queryByText(/down 0.30 points/)).toBeNull();
+  });
+
+  it("shows no project line without a base measurement", () => {
+    render(<PatchCoverageSummary coverage={coverage(1)} />);
+    expect(screen.queryByText(/Project coverage/)).toBeNull();
+  });
+
   it("shows no gate list without path-scoped gates", () => {
     render(<PatchCoverageSummary coverage={coverage(1)} />);
     expect(screen.queryByRole("list", { name: "Path-scoped gates" })).toBeNull();
@@ -265,7 +332,7 @@ describe("PatchCoverageSummary", () => {
 
   it("renders a response from a server older than path-scoped gates and risk", () => {
     const base = coverage(1);
-    const { path_gates: _gates, risky: _risky, ...older } = base;
+    const { path_gates: _gates, risky: _risky, project: _project, ...older } = base;
     const { config_errors: _errors, ...olderScope } = base.scope;
     render(
       <PatchCoverageSummary

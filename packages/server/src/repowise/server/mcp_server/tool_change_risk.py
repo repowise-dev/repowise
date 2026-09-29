@@ -1209,7 +1209,9 @@ async def _patch_coverage_block(
     apply as they do in the CLI gate; path gates read ``no_data`` on stale
     coverage or invalid config, which ``scope.config_errors`` names. Each row
     carries its file's risk, from the index and the checkout's git history, and
-    ``hints``: the test file to extend per uncovered range.
+    ``hints``: the test file to extend per uncovered range. ``project``
+    compares the ingest measured at the change's base commit with the current
+    one, when both exist (repo-wide totals only, never gated here).
 
     With no revspec, *changed* is what a push would bring (the caller diffs
     from the merge-base with the push base, *label* names it). For uncommitted
@@ -1223,6 +1225,7 @@ async def _patch_coverage_block(
     from repowise.core.analysis.patch_coverage import (
         assess_risks,
         attach_hints,
+        attach_history_delta,
         attach_risk,
         attention_rows,
         read_git_fix_history,
@@ -1240,6 +1243,9 @@ async def _patch_coverage_block(
         mtime = await asyncio.to_thread(newest_mtime, ctx.path, changed)
     else:
         head_commit = git_refs.resolve(str(ctx.path), revspec_head(revspec)) or None
+    base_commit = await asyncio.to_thread(
+        _change_base, str(ctx.path), revspec, label, result.working_tree
+    )
     index: dict = {}
     try:
         async with get_session(session_factory) as session:
@@ -1255,6 +1261,7 @@ async def _patch_coverage_block(
             )
             # An unreadable index row leaves risk to git alone and hints null.
             if patch is not None:
+                patch = await attach_history_delta(session, repo_id, patch, base_commit)
                 with contextlib.suppress(SQLAlchemyError):
                     index = await read_index_facts(
                         session, repo_id, [f.file_path for f in patch.files]
@@ -1289,6 +1296,25 @@ async def _patch_coverage_block(
         )
     block["files"] = rows[:_IMPACTED_TESTS_LIMIT]
     return block
+
+
+def _change_base(
+    repo_path: str, revspec: str | None, label: str | None, working_tree: bool
+) -> str | None:
+    """The commit the measured change starts from, ``None`` when git cannot name it.
+
+    A working-tree change starts at the merge-base with its push base when the
+    label names one (``<base>...working tree``), else at ``HEAD``.
+    """
+    from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import split_revspec
+
+    if not working_tree:
+        return git_refs.change_base(repo_path, revspec or "HEAD") or None
+    parts = split_revspec(label or "")
+    if parts is None:
+        return git_refs.resolve(repo_path, "HEAD") or None
+    return git_refs.change_base(repo_path, f"{parts[0]}...HEAD") or None
 
 
 async def _impacted_tests_block(

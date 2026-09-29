@@ -325,6 +325,277 @@ def test_coverage_ignore_drops_changed_files_and_report_entries(repo) -> None:
         1,
         0,
     )
+# -- project coverage and coverage outside the change -------------------------
+
+
+@pytest.fixture
+def delta_repo(tmp_path):
+    """``feat`` rewrites src/app.py line 3 and deletes tests/test_lib.py."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    (tmp_path / "src" / "lib.py").write_text("w = 1\nx = 2\ny = 3\nz = 4\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_lib.py").write_text("def test(): pass\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "init")
+    _git(tmp_path, "switch", "-qc", "feat")
+    (tmp_path / "src" / "app.py").write_text("a = 1\nb = 2\nc = 33\n", encoding="utf-8")
+    _git(tmp_path, "rm", "-q", "tests/test_lib.py")
+    _git(tmp_path, "commit", "-qam", "feat")
+    return tmp_path
+
+
+def _report(repo, name: str, files: dict[str, dict[int, int]]) -> str:
+    """An lcov report at *name* with absolute paths, one record per file."""
+    records = [
+        f"SF:{repo / path}\n"
+        + "".join(f"DA:{n},{hits}\n" for n, hits in lines.items())
+        + "end_of_record\n"
+        for path, lines in files.items()
+    ]
+    out = repo / name
+    out.write_text("".join(records), encoding="utf-8")
+    return str(out)
+
+
+_APP = {1: 1, 2: 1, 3: 1}
+
+
+def _delta_reports(repo, app=_APP) -> tuple[str, str]:
+    """Base: every line covered. Head: lib.py lines 3-4 lost with the deleted test."""
+    base = _report(
+        repo, "base.lcov", {"src/app.py": _APP, "src/lib.py": dict.fromkeys(range(1, 5), 1)}
+    )
+    head = _report(
+        repo, "head.lcov", {"src/app.py": app, "src/lib.py": {1: 1, 2: 1, 3: 0, 4: 0}}
+    )
+    return base, head
+
+
+def test_a_base_report_adds_project_coverage_and_coverage_outside_the_change(
+    delta_repo,
+) -> None:
+    base, head = _delta_reports(delta_repo)
+
+    result = _run(
+        delta_repo, "main...feat", "--report", head, "--base-report", base, "--format", "json"
+    )
+
+    assert result.exit_code == 0, result.output
+    project = json.loads(result.stdout)["project"]
+    assert project["basis"] == "base_report"
+    assert (project["base"]["coverage_pct"], project["head"]["coverage_pct"]) == (100.0, 71.42)
+    assert project["delta_pct"] == -28.57
+    assert project["gate"] == "not_set"
+    (lib,) = project["outside_change"]
+    assert (lib["file_path"], lib["newly_uncovered_ranges"]) == ("src/lib.py", [[3, 4]])
+    # No index: the deleted test is paired with the file by name.
+    assert lib["causes"] == [
+        {"kind": "test_deleted", "path": "tests/test_lib.py", "basis": "name"}
+    ]
+
+
+def test_max_drop_gates_the_project_delta(delta_repo) -> None:
+    base, head = _delta_reports(delta_repo)
+    args = ("main...feat", "--report", head, "--base-report", base)
+
+    assert _run(delta_repo, *args, "--max-drop", "30").exit_code == 0
+    failed = _run(delta_repo, *args, "--max-drop", "1")
+    assert failed.exit_code == 1, failed.output
+    assert "falls more than the 1-point max-drop gate allows" in failed.output
+    assert "Coverage outside the change" in failed.output
+
+
+def test_max_drop_defaults_to_config_and_a_bad_value_exits_2(delta_repo) -> None:
+    base, head = _delta_reports(delta_repo)
+    config = delta_repo / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    args = ("main...feat", "--report", head, "--base-report", base)
+
+    config.write_text("coverage:\n  max_drop: 1\n", encoding="utf-8")
+    assert _run(delta_repo, *args).exit_code == 1
+    config.write_text("coverage:\n  max_drop: lots\n", encoding="utf-8")
+    bad = _run(delta_repo, *args)
+    assert bad.exit_code == 2
+    assert "coverage.max_drop must be a number" in bad.output
+
+
+def test_an_incomparable_base_report_exits_2(delta_repo) -> None:
+    base, head = _delta_reports(delta_repo)
+    copy = delta_repo / "base-copy.lcov"
+    copy.write_text((delta_repo / "base.lcov").read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = _run(
+        delta_repo,
+        "main...feat",
+        "--report",
+        head,
+        "--base-report",
+        base,
+        "--base-report",
+        str(copy),
+        "--format",
+        "json",
+    )
+
+    assert result.exit_code == 2, result.output
+    error = json.loads(result.stdout)
+    assert error["error"] == "project_scope_mismatch"
+    assert "the base read 2 lcov reports, the head read 1 lcov report" in error["message"]
+
+
+def test_max_drop_without_a_base_exits_2(delta_repo) -> None:
+    _, head = _delta_reports(delta_repo)
+
+    result = _run(
+        delta_repo, "main...feat", "--report", head, "--max-drop", "1", "--format", "json"
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == "project_base_missing"
+
+
+def test_a_config_max_drop_without_a_base_is_a_note_not_a_failure(delta_repo) -> None:
+    _, head = _delta_reports(delta_repo)
+    config = delta_repo / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("coverage:\n  max_drop: 1\n", encoding="utf-8")
+
+    table = _run(delta_repo, "main...feat", "--report", head)
+    data = _run(delta_repo, "main...feat", "--report", head, "--format", "json")
+
+    assert table.exit_code == 0, table.output
+    assert "Project coverage not evaluated" in table.output
+    assert data.exit_code == 0 and json.loads(data.stdout)["project"] is None
+    # The flag asks for the gate explicitly: no base cannot evaluate.
+    assert _run(delta_repo, "main...feat", "--report", head, "--max-drop", "1").exit_code == 2
+
+
+def _ask(repo, head, prefixes, base_reports=()):
+    """A project comparison over *repo*, asked for by flags, as ``coverage check`` builds it."""
+    from repowise.cli.commands import coverage_check_cmd as cmd
+    from repowise.core.analysis.health.coverage import CoverageConfig
+
+    reports = cmd._Reports(repo, CoverageConfig(), prefixes, None)
+    return cmd._ProjectAsk(
+        reports, head, tuple(base_reports), "main...feat", cmd.console, None, True
+    )
+
+
+def test_a_history_base_counts_only_the_files_the_index_lists(delta_repo) -> None:
+    import json as _json
+    from types import SimpleNamespace
+
+    from repowise.cli.commands import coverage_check_cmd as cmd
+
+    # The head report names src/lib.py too, which git tracks but the index does not list.
+    _, head_report = _delta_reports(delta_repo)
+    ask = _ask(delta_repo, None, cmd._cli_reports((head_report,)))
+    head = cmd._resolve_reports(ask.reports, cmd.console)
+    ask = _ask(delta_repo, head, ask.reports.prefixes)
+    assert {fc.file_path for fc in head.files} == {"src/app.py", "src/lib.py"}
+    # The same figures ingested at the base, over the index's one file.
+    row = SimpleNamespace(
+        covered_lines=3,
+        total_lines=3,
+        scope_json=_json.dumps(head.scope.to_dict()),
+        ingested_commit_sha="b" * 40,
+    )
+
+    project = cmd._report_against_ingest(ask, row, {"src/app.py"})
+
+    assert project.incomparable == ()
+    assert (project.head.covered_line_count, project.head.coverable_line_count) == (3, 3)
+    assert project.delta_pct == 0
+    # With no index keys there is nothing to count the head against.
+    assert cmd._report_against_ingest(ask, row, set()).incomparable
+
+
+@pytest.mark.parametrize(
+    ("index_keys", "rows", "base_lines"),
+    [
+        # src/lib.py is not indexed: it counts on neither side and is not listed.
+        ({"src/app.py"}, [], 3),
+        # Indexed but missing from the head ingest: no longer measured, and it
+        # stays in the base total.
+        ({"src/app.py", "src/lib.py"}, [("src/lib.py", "no_longer_measured")], 7),
+    ],
+)
+def test_a_base_report_against_a_stored_head_counts_what_the_index_lists(
+    delta_repo, monkeypatch, index_keys, rows, base_lines
+) -> None:
+    from repowise.cli.commands import coverage_check_cmd as cmd
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import file_coverage
+
+    base_report, _ = _delta_reports(delta_repo)
+    # The stored head measured src/app.py only; the base report also names src/lib.py.
+    # Its changed line 3 is uncovered, so the two sides differ only where the change did.
+    stored = {"src/app.py": file_coverage("src/app.py", [1, 2], [1, 2, 3])}
+    base_ask = _ask(delta_repo, None, cmd._cli_reports((base_report,)))
+    base = cmd._resolve_reports(base_ask.reports, cmd.console)
+    monkeypatch.setattr(
+        cmd, "_head_coverage", lambda _root, _head: (stored, base.scope, index_keys)
+    )
+
+    project = cmd._report_delta(
+        _ask(delta_repo, None, {}, (base_report,)),
+        git_refs.change_base(str(delta_repo), "main...feat"),
+    )
+
+    assert [(c.file_path, c.status) for c in project.outside_change] == rows
+    assert project.outside_change_note is None
+    assert (project.base.coverable_line_count, project.head.coverable_line_count) == (
+        base_lines,
+        3,
+    )
+
+
+def test_a_failure_found_already_stands_when_there_is_no_base(delta_repo) -> None:
+    # The changed line is uncovered, so the flat gate fails before the base is looked for.
+    _, head = _delta_reports(delta_repo, app={1: 1, 2: 1, 3: 0})
+
+    result = _run(
+        delta_repo, "main...feat", "--report", head, "--fail-under", "80", "--max-drop", "1"
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "below the 80.0% gate" in result.output
+    assert "Project coverage not evaluated" in result.output
+
+
+def test_markdown_and_github_carry_the_project_line_and_outside_table(
+    delta_repo, tmp_path_factory
+) -> None:
+    base, head = _delta_reports(delta_repo)
+    args = ("main...feat", "--report", head, "--base-report", base)
+    summary = tmp_path_factory.mktemp("gh") / "summary.md"
+
+    markdown = _run(delta_repo, *args, "--format", "markdown").stdout
+    github = _run(
+        delta_repo,
+        *args,
+        "--max-drop",
+        "1",
+        "--format",
+        "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+
+    assert "**Project coverage 71.4%** · down 28.57 points from 100.0% at " in markdown
+    assert "### Coverage outside the change" in markdown
+    row = "| `src/lib.py` | 100.0% | 50.0% | 3-4 | deleted test tests/test_lib.py (by name) |"
+    assert row in markdown
+    assert "::warning file=src/lib.py,line=3,title=Coverage lost outside the change::" in (
+        github.stdout
+    )
+    assert "::error::Project coverage 71.4%" in github.stdout
+    assert "### Coverage outside the change" in summary.read_text(encoding="utf-8")
+
+
 @pytest.fixture
 def fixed_repo(tmp_path):
     """``main`` fixed src/app.py twice and src/other.py once; ``feat`` edits app lines 2-3."""

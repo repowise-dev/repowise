@@ -66,3 +66,27 @@ def cap_annotations(
     if len(lines) > limit:
         kept.append(notice(f"{len(lines) - limit} more {noun}, listed in the job summary"))
     return kept
+
+
+def cap_shared(
+    primary: Sequence[str],
+    secondary: Sequence[str],
+    *,
+    reserve: int,
+    noun: str,
+    limit: int = ANNOTATION_LIMIT,
+) -> list[str]:
+    """Two kinds of annotation sharing one *limit*, plus one notice counting the rest.
+
+    *secondary* keeps up to *reserve* slots, more when *primary* leaves them
+    unused; *primary* takes what remains.
+    """
+    n_secondary = min(len(secondary), max(reserve, limit - len(primary)))
+    n_primary = min(len(primary), limit - n_secondary)
+    kept = [*primary[:n_primary], *secondary[:n_secondary]]
+    rest = len(primary) + len(secondary) - len(kept)
+    if rest:
+        kept.append(
+            notice(f"{rest} more {noun}; the first {limit} are listed in the job summary")
+        )
+    return kept

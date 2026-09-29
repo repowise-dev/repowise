@@ -1354,6 +1354,8 @@ are out of scope and only counted.
 | `--fail-under` | Exit 1 when patch coverage is below this percentage (0-100). Defaults to `coverage.fail_under` in `.repowise/config.yaml`; with neither set the command reports without gating |
 | `--min-coverable-lines` | Small-change tolerance: a change with fewer changed executable lines than this (counting only lines the report measures, as the percentage does) is reported against the threshold but never fails (`gate` reads `too_small`). Defaults to `coverage.min_coverable_lines` |
 | `--fail-under-risky` | Exit 1 when patch coverage of the risky files alone is below this percentage. Risky: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. Defaults to `coverage.fail_under_risky`. With no risky file changed the gate is not applied (`no_data`, exit `0`) |
+| `--base-report` | Coverage report measured at the change's base commit (the merge-base for `A...B`), read like `--report` and repeatable. Adds project coverage at the base against the head and the files whose coverage changed outside the change |
+| `--max-drop` | Exit 1 when project coverage falls more than this many points from the change's base (0-100). Defaults to `coverage.max_drop`. Needs a base: `--base-report`, or an index's ingest at the base commit |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, or `github` |
 
@@ -1389,9 +1391,21 @@ per uncovered range: `range`, `symbol`, `tests`, `basis` (`per_test`,
 `unmatched_report_path_count`, `ignored_file_count`, `config_errors`),
 `path_gates[]` (`name`, `paths`, `threshold`, `informational`,
 `measured_file_count`, `unmeasured_file_count`, `covered_line_count`,
-`coverable_line_count`, `patch_coverage_pct`, `gate`) and `risky`
+`coverable_line_count`, `patch_coverage_pct`, `gate`), `risky`
 (`file_count`, `covered_line_count`, `coverable_line_count`,
-`patch_coverage_pct`, `threshold`, `gate`). Changed files and report entries
+`patch_coverage_pct`, `threshold`, `gate`) and `project`, null without a base
+measurement (`basis`: `base_report` or `history`, `base_commit`,
+`head_commit`, `base` and `head` with `covered_line_count`,
+`coverable_line_count`, `coverage_pct`, `delta_pct` in points, `max_drop`,
+`gate`, `incomparable` reasons, `outside_change_note`, and `outside_change[]`,
+null on the history basis or when most files did not line up:
+`file_path`, `status` (`changed`, `no_longer_measured`),
+`newly_uncovered_ranges`, `newly_uncovered_line_count`,
+`newly_covered_line_count`, `base_pct`, `head_pct`, `causes`: `kind`
+(`test_deleted`, `test_modified`, `dependent_changed`), `path`, `basis`
+(`per_test`, `graph`, `name`)). With a base report, the markdown adds a
+"Coverage outside the change" table and `github` a `::warning` per file that
+lost coverage there. Changed files and report entries
 matching `coverage.ignore` (gitignore syntax) are left out and counted as
 ignored. Go coverprofile paths under a `go.mod`'s module path are mapped to
 that module's directory unless the report has a per-report prefix or
@@ -1401,8 +1415,9 @@ that module's directory unless the report has a per-report prefix or
 **Exit codes:** `0` the gate passes or there is nothing to judge (no
 threshold, no measurable changed lines, or a change under the small-change
 tolerance); `1` patch coverage is below `--fail-under`, a path-scoped gate
-that is not informational fails, or the risky files' is below
-`--fail-under-risky`; `2` the check could not run: no report found, a
+that is not informational fails, the risky files' is below
+`--fail-under-risky`, or project coverage fell more than `--max-drop` points;
+`2` the check could not run: no report found, a
 `--report` path or glob matching no file, none readable, none matching a
 repository file, or every entry matching `coverage.ignore`; an unknown
 revision; no merge-base (a shallow clone); a single commit at a shallow
@@ -1411,7 +1426,11 @@ clone's boundary; bad config or a malformed `coverage.fail_under` /
 `coverage.gates` entry (named in the message); not a git repository;
 `--fail-under-risky` set on a shallow clone, or with a measured file whose
 risk could not be read (unless the flat or a path-scoped gate already failed,
-which exits `1`).
+which exits `1`); under the `--max-drop` or `--base-report` flag, a base the
+check cannot use: none measured, not comparable with the head (other reports,
+another `coverage.ignore`, a partial mapping), or no coverable line on a side
+(again unless another gate already failed, which exits `1`). With the gate
+from `coverage.max_drop` alone, those are a note and exit `0`.
 
 **Path-scoped gates.** Each entry of `coverage.gates` (`name`, `paths` as
 gitignore-style globs relative to the repository root, optional `fail_under`

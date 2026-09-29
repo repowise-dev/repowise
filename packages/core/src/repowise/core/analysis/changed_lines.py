@@ -320,6 +320,36 @@ def diff_since(
     return parse_unified_diff(_diff(repo_path, args))
 
 
+def change_diff(
+    repo_path: str, base: str, head: str
+) -> tuple[dict[str, FileDiff], dict[str, str], set[str]]:
+    """``(diffs, renames, deleted)`` for the change from commit *base* to *head*.
+
+    *diffs* is :func:`parse_unified_diff`'s, keyed by new-side path;
+    *renames* maps each renamed file's old path to its new one; *deleted*
+    holds the old paths of deleted files. Rename detection is on for both
+    reads, whatever the user's ``diff.renames``.
+    """
+    diffs = parse_unified_diff(
+        _diff(repo_path, ["diff", "--unified=0", "-M", *DIFF_PREFIXES, base, head])
+    )
+    fields = _diff(repo_path, ["diff", "--name-status", "-z", "-M", base, head]).split("\0")
+    renames: dict[str, str] = {}
+    deleted: set[str] = set()
+    i = 0
+    while i < len(fields) - 1:
+        status = fields[i]
+        if status[:1] in ("R", "C"):
+            if status[0] == "R":
+                renames[fields[i + 1]] = fields[i + 2]
+            i += 3
+            continue
+        if status == "D":
+            deleted.add(fields[i + 1])
+        i += 2
+    return diffs, renames, deleted
+
+
 def _diff(repo_path: str, args: list[str]) -> str:
     """Run a diff, turning git's refusal (e.g. no merge-base) into ``ValueError``."""
     try:

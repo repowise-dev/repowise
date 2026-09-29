@@ -21,6 +21,7 @@ from .detector import PARSERS, detect_format, is_test_file, paired_test_file, pa
 from .discovery import (
     CoverageConfig,
     CoverageProvenance,
+    CoverageScope,
     PathGate,
     ResolvedCoverage,
     ResolvedTestCoverage,
@@ -54,6 +55,7 @@ __all__ = [
     "CoverageDecay",
     "CoverageProvenance",
     "CoverageReport",
+    "CoverageScope",
     "FileCoverage",
     "FreshnessStatus",
     "PathGate",

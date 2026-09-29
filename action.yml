@@ -55,6 +55,20 @@ inputs:
       bug-fix history. A change with no risky file is not gated. Empty uses
       coverage.fail_under_risky from .repowise/config.yaml, else no risky gate.
     default: ""
+  coverage-base-report:
+    description: >-
+      Coverage reports measured at the change's base commit (the merge-base
+      with the target branch), one per line, read like coverage-report. Adds
+      project coverage at the base against the head, and the files whose
+      coverage changed outside the change.
+    default: ""
+  coverage-max-drop:
+    description: >-
+      Most project coverage may fall from the change's base, in percentage
+      points. Needs coverage-base-report (or an index that stored coverage at
+      the base). Empty uses coverage.max_drop from .repowise/config.yaml, else
+      reports without gating.
+    default: ""
   doc-drift-baseline:
     description: Committed doc-drift baseline file; only findings it does not list fail.
     default: ""
@@ -116,6 +130,8 @@ runs:
         COVERAGE_FAIL_UNDER: ${{ inputs.coverage-fail-under }}
         COVERAGE_MIN_COVERABLE_LINES: ${{ inputs.coverage-min-coverable-lines }}
         COVERAGE_FAIL_UNDER_RISKY: ${{ inputs.coverage-fail-under-risky }}
+        COVERAGE_BASE_REPORT: ${{ inputs.coverage-base-report }}
+        COVERAGE_MAX_DROP: ${{ inputs.coverage-max-drop }}
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
         SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
         SECURITY_BASELINE: ${{ inputs.security-baseline }}

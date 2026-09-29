@@ -23,6 +23,7 @@ from repowise.core.persistence.crud import (
     load_coverage_history,
     load_coverage_map,
     load_file_coverage,
+    load_ingest_at_commit,
     save_coverage_files,
     upsert_repository,
 )
@@ -115,6 +116,79 @@ async def test_stored_patch_coverage_is_none_without_coverage(async_session, rep
     from repowise.core.analysis.patch_coverage import stored_patch_coverage
 
     assert await stored_patch_coverage(async_session, repo.id, {"a.py": {1}}) is None
+
+
+async def _scoped_ingest(session, repo_id: str, lcov: str, commit: str, minute: int) -> None:
+    resolved = resolve_reports([parse_lcov(lcov)], {"src/a.py"})
+    await save_coverage_files(
+        session,
+        repo_id,
+        resolved.files,
+        source_format="lcov",
+        provenance=resolved.provenance,
+        ingested_commit_sha=commit,
+        ingested_at=_at(minute),
+    )
+
+
+async def _stored_with_base(session, repo_id: str, changed, head: str, base: str):
+    """Stored patch coverage with the project delta attached, as the read surfaces do."""
+    from repowise.core.analysis.patch_coverage import (
+        attach_history_delta,
+        stored_patch_coverage,
+    )
+
+    pc = await stored_patch_coverage(session, repo_id, changed, head_commit=head)
+    return await attach_history_delta(session, repo_id, pc, base)
+
+
+async def test_stored_patch_coverage_compares_the_ingest_at_the_base(async_session, repo) -> None:
+    await _scoped_ingest(async_session, repo.id, _LCOV, "base", 0)  # 2 of 3 lines
+    worse = _LCOV.replace("DA:4,2", "DA:4,0")  # 1 of 3 at the head
+    await _scoped_ingest(async_session, repo.id, worse, "head", 1)
+
+    stored = await _stored_with_base(async_session, repo.id, {"src/a.py": {1}}, "head", "base")
+
+    assert stored is not None and stored.project is not None
+    project = stored.project.to_dict()
+    assert (project["basis"], project["base_commit"], project["head_commit"]) == (
+        "history",
+        "base",
+        "head",
+    )
+    assert project["delta_pct"] == -33.33
+    # Read-only surfaces never gate, and history keeps no per-file rows.
+    assert (project["gate"], project["outside_change"], project["incomparable"]) == (
+        "not_set",
+        None,
+        [],
+    )
+
+
+async def test_stored_patch_coverage_has_no_project_without_a_base_ingest(
+    async_session, repo
+) -> None:
+    await _scoped_ingest(async_session, repo.id, _LCOV, "head", 0)
+    changed = {"src/a.py": {1}}
+
+    missing = await _stored_with_base(async_session, repo.id, changed, "head", "base")
+    stale = await _stored_with_base(async_session, repo.id, changed, "later", "head")
+
+    assert missing is not None and missing.project is None
+    # Coverage not measured at the head is not the head's figure.
+    assert stale is not None and stale.project is None
+
+
+async def test_a_base_ingest_without_a_scope_is_incomparable(async_session, repo) -> None:
+    await _ingest(async_session, repo.id, 5, 0, ingested_commit_sha="base")
+    await _scoped_ingest(async_session, repo.id, _LCOV, "head", 1)
+
+    stored = await _stored_with_base(async_session, repo.id, {"src/a.py": {1}}, "head", "base")
+
+    assert stored.project.incomparable == (
+        "the base ingest predates scope records; pass --base-report, "
+        "or re-measure coverage at the base commit",
+    )
 
 
 async def test_ingest_provenance_reaches_the_summary_and_stored_patch_scope(
@@ -292,16 +366,82 @@ async def test_reingesting_the_same_report_restamps_rather_than_appends(
 ) -> None:
     await _ingest(async_session, repo.id, 5, 0, ingested_commit_sha="one")
     await _ingest(async_session, repo.id, 6, 1, ingested_commit_sha="two")
-    # An update that re-ingests, or a full re-index: the same figures again.
-    await _ingest(async_session, repo.id, 6, 2, ingested_commit_sha="three")
+    # An update that re-ingests, or a full re-index: the same figures, same commit.
+    await _ingest(async_session, repo.id, 6, 2, ingested_commit_sha="two")
 
+    rows = (await async_session.execute(select(CoverageIngest))).scalars().all()
     history = await load_coverage_history(async_session, repo.id)
 
+    assert len(rows) == 2
     assert [(p["ingested_commit_sha"], p["line_coverage_pct"]) for p in history] == [
         ("one", 50.0),
-        ("three", 60.0),
+        ("two", 60.0),
     ]
     assert history[-1]["ingested_at"].startswith("2026-09-01T12:02:00")
+
+
+async def test_an_unknown_commit_appends_and_the_trend_collapses_repeats(
+    async_session, repo
+) -> None:
+    await _ingest(async_session, repo.id, 6, 0, ingested_commit_sha="one")
+    # A writer that does not know the commit: a row of its own, never "one".
+    await _ingest(async_session, repo.id, 6, 1)
+    await _ingest(async_session, repo.id, 7, 2, ingested_commit_sha="two")
+
+    rows = (
+        await async_session.execute(select(CoverageIngest).order_by(CoverageIngest.ingested_at))
+    ).scalars()
+    history = await load_coverage_history(async_session, repo.id)
+
+    assert [r.ingested_commit_sha for r in rows] == ["one", None, "two"]
+    # Consecutive identical figures read as one point, the newest of them.
+    assert [(p["ingested_commit_sha"], p["line_coverage_pct"]) for p in history] == [
+        (None, 60.0),
+        ("two", 70.0),
+    ]
+
+
+async def test_the_same_figures_at_another_commit_are_a_new_measurement(
+    async_session, repo
+) -> None:
+    # Identical coverage at a change's base and head: restamping would move the
+    # base's measurement to the head and lose the base.
+    await _ingest(async_session, repo.id, 6, 0, ingested_commit_sha="base")
+    await _ingest(async_session, repo.id, 6, 1, ingested_commit_sha="head")
+
+    history = await load_coverage_history(async_session, repo.id)
+    base = await load_ingest_at_commit(async_session, repo.id, "base")
+
+    # The trend collapses the repeat; the rows (and the base) are both kept.
+    assert [p["ingested_commit_sha"] for p in history] == ["head"]
+    assert base is not None and base.line_coverage_pct == 60.0
+    assert await load_ingest_at_commit(async_session, repo.id, "other") is None
+
+
+async def test_an_ingest_records_the_scope_it_measured(async_session, repo) -> None:
+    from repowise.core.analysis.patch_coverage import ingest_scope, ingest_totals
+
+    resolved = resolve_reports(
+        [parse_lcov(_LCOV), parse_lcov(_LCOV)], {"src/a.py"}, ignore=["gen/"]
+    )
+    await save_coverage_files(
+        async_session,
+        repo.id,
+        resolved.files,
+        source_format="lcov",
+        provenance=resolved.provenance,
+        ingested_commit_sha="abc",
+    )
+    # A writer without provenance records no scope: "scope unknown".
+    await _ingest(async_session, repo.id, 4, 1, ingested_commit_sha="def")
+
+    scoped = await load_ingest_at_commit(async_session, repo.id, "abc")
+    unscoped = await load_ingest_at_commit(async_session, repo.id, "def")
+
+    assert ingest_scope(scoped) == resolved.scope
+    assert resolved.scope.report_formats == ("lcov", "lcov")
+    assert ingest_scope(unscoped) is None
+    assert (ingest_totals(unscoped).covered_line_count, ingest_totals(unscoped).pct) == (4, 40.0)
 
 
 async def test_an_ingest_with_no_coverable_lines_stays_off_the_trend(

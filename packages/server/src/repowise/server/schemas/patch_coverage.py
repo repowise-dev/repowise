@@ -10,6 +10,12 @@ from pydantic import BaseModel, ConfigDict
 
 from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
 from repowise.core.analysis.patch_coverage.compute import FileStatus, GateStatus
+from repowise.core.analysis.patch_coverage.delta import (
+    CauseBasis,
+    CauseKind,
+    DeltaBasis,
+    IndirectStatus,
+)
 from repowise.core.analysis.patch_coverage.hints import HintBasis
 from repowise.core.analysis.patch_coverage.risk import RiskBasis
 
@@ -128,6 +134,63 @@ class PatchCoverageRisky(_Strict):
     gate: GateStatus
 
 
+class PatchCoverageProjectTotals(_Strict):
+    covered_line_count: int
+    coverable_line_count: int
+    #: 0-100, floored to two decimals; null when nothing was coverable.
+    coverage_pct: float | None
+
+
+class PatchCoverageOutsideChangeCause(_Strict):
+    """A changed file that explains coverage lost outside the change."""
+
+    kind: CauseKind
+    path: str
+    #: ``per_test`` measured, ``graph`` inferred from the index's call and
+    #: import edges, ``name`` a test named for the file.
+    basis: CauseBasis
+
+
+class PatchCoverageOutsideChange(_Strict):
+    """A file whose coverage changed on lines the change did not touch."""
+
+    file_path: str
+    #: ``no_longer_measured``: the base report named it, the head's does not.
+    status: IndirectStatus
+    #: Head-side inclusive ``[start, end]`` runs covered at the base, not at the head.
+    newly_uncovered_ranges: list[list[int]]
+    newly_uncovered_line_count: int
+    newly_covered_line_count: int
+    base_pct: float | None
+    head_pct: float | None
+    #: Null when not assessed; empty when nothing in the change explains it.
+    causes: list[PatchCoverageOutsideChangeCause] | None
+
+
+class PatchCoverageProject(_Strict):
+    """Project coverage at the change's base against its head."""
+
+    #: ``history``: stored ingests (totals only); ``base_report``: a report
+    #: measured at the base commit.
+    basis: DeltaBasis
+    base_commit: str | None
+    head_commit: str | None
+    base: PatchCoverageProjectTotals | None
+    head: PatchCoverageProjectTotals | None
+    #: Head minus base, in percentage points, rounded to two decimals.
+    delta_pct: float | None
+    max_drop: float | None
+    #: ``no_data`` when the two measurements cannot be compared.
+    gate: GateStatus
+    #: Why the base and head measured different things; empty when comparable.
+    incomparable: list[str]
+    #: Null on the history basis, which keeps no per-file rows per commit, and
+    #: when most files of the base report did not line up with the base commit.
+    outside_change: list[PatchCoverageOutsideChange] | None
+    #: Why files were left out of ``outside_change``; null when none were.
+    outside_change_note: str | None
+
+
 class PatchCoverageResponse(_Strict):
     patch_coverage_pct: float | None
     covered_line_count: int
@@ -146,3 +209,5 @@ class PatchCoverageResponse(_Strict):
     path_gates: list[PatchCoveragePathGate]
     #: Null when no file's risk was assessed.
     risky: PatchCoverageRisky | None
+    #: Null when no ingest was measured at the change's base.
+    project: PatchCoverageProject | None

@@ -129,6 +129,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     threshold: null,
     gate: "not_set",
   },
+  project: null,
   scope: {
     label: "coverage.xml",
     source_formats: ["cobertura"],

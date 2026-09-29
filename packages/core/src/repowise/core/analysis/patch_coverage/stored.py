@@ -7,13 +7,17 @@ REST API, editors) reads what ``coverage add`` or indexing stored. Both end in
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..health.coverage.discovery import CoverageScope
 from ..health.coverage.freshness import coverage_freshness, working_tree_freshness
 from .compute import PatchCoverage, PatchScope, compute_patch_coverage
+from .delta import ProjectDelta, ProjectTotals, incomparable_reasons
 from .risk import IndexFacts
 
 if TYPE_CHECKING:
@@ -44,7 +48,8 @@ async def stored_patch_coverage(
     For a change that ends in the working tree, pass *working_tree_mtime* (the
     newest modification time of the changed files) instead of *head_commit*: no
     commit names that code, so freshness is whether the last ingest came after
-    it (``working_tree_freshness``).
+    it (``working_tree_freshness``). :func:`attach_history_delta` adds the
+    project delta.
     """
     from repowise.core.persistence.crud import (
         get_coverage_summary,
@@ -87,6 +92,63 @@ async def stored_patch_coverage(
             freshness=freshness,
             config_errors=cfg.gate_errors,
         ),
+    )
+
+
+async def attach_history_delta(
+    session: AsyncSession, repository_id: str, pc: PatchCoverage, base_commit: str | None
+) -> PatchCoverage:
+    """*pc* with ``project``: the ingest at *base_commit* against the newest one.
+
+    Only for stored coverage current for the change (the newest ingest is then
+    the head's figure); history basis, never gated here. *pc* unchanged otherwise.
+    """
+    if not base_commit or pc.scope.freshness != "current":
+        return pc
+    return replace(pc, project=await history_delta(session, repository_id, base_commit))
+
+
+def ingest_totals(row: Any) -> ProjectTotals | None:
+    """A stored ingest's repo-wide figures; ``None`` for a row written before them."""
+    if row.covered_lines is None or row.total_lines is None:
+        return None
+    return ProjectTotals(row.covered_lines, row.total_lines)
+
+
+def ingest_scope(row: Any) -> CoverageScope | None:
+    """What a stored ingest measured; ``None`` for a row written before scopes were kept."""
+    try:
+        return CoverageScope.from_dict(json.loads(row.scope_json)) if row.scope_json else None
+    except ValueError:
+        return None
+
+
+async def history_delta(
+    session: AsyncSession,
+    repository_id: str,
+    base_commit: str,
+    *,
+    max_drop: float | None = None,
+) -> ProjectDelta | None:
+    """The ingest at *base_commit* against the newest ingest.
+
+    ``None`` when no ingest was measured at *base_commit*, or when it is the
+    head ingest itself (a working-tree change measured over its own base).
+    """
+    from repowise.core.persistence.crud import load_ingest_at_commit, load_newest_ingest
+
+    base = await load_ingest_at_commit(session, repository_id, base_commit)
+    head = await load_newest_ingest(session, repository_id)
+    if base is None or head is None or base.id == head.id:
+        return None
+    return ProjectDelta(
+        base=ingest_totals(base),
+        head=ingest_totals(head),
+        basis="history",
+        base_commit=base_commit,
+        head_commit=head.ingested_commit_sha,
+        max_drop=max_drop,
+        incomparable=incomparable_reasons(ingest_scope(base), ingest_scope(head)),
     )
 
 

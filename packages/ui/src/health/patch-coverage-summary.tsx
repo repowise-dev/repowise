@@ -14,6 +14,10 @@
  * first, in the order `repowise coverage check` uses. A line says where the
  * risk came from when not every file had index data. With an index, a file
  * with uncovered lines also names the test file to extend.
+ *
+ * When coverage was also stored at the change's base commit, one line under
+ * the headline compares project coverage there with the head, or says in muted
+ * text why the two measurements cannot be compared.
  */
 
 import type { ReactNode } from "react";
@@ -21,6 +25,7 @@ import type {
   PatchCoverageFile,
   PatchCoverageFileRisk,
   PatchCoveragePathGate,
+  PatchCoverageProject,
   PatchCoverageResponse,
   PatchCoverageTestHint,
 } from "@repowise-dev/types/generated/http";
@@ -167,6 +172,8 @@ export function PatchCoverageSummary({
   return (
     <div className="flex flex-col gap-1.5">
       <Headline coverage={coverage} />
+      {/* Guarded: a server older than the project delta sends no field. */}
+      <ProjectLine project={coverage.project ?? null} />
       <RiskyLine risky={coverage.risky} />
       <ScopeNotes coverage={coverage} />
       {/* Guarded: a server older than path-scoped gates sends neither field. */}
@@ -221,6 +228,55 @@ function Headline({ coverage }: { coverage: PatchCoverageResponse }) {
       )}
     </p>
   );
+}
+
+/**
+ * Project coverage at the head against the base, worded as the core's
+ * `project_line` (patch_coverage/render.py) words it: `Project coverage 81.2% ·
+ * down 0.30 points from 81.5% at a1b2c3d`, then the max-drop verdict when one
+ * was judged. `null` without both figures.
+ */
+export function projectText(project: PatchCoverageProject): string | null {
+  const head = project.head?.coverage_pct;
+  const base = project.base?.coverage_pct;
+  if (head == null || base == null || project.delta_pct == null) return null;
+  const parts = [
+    `Project coverage ${floorPct(head)}%`,
+    deltaPhrase(project.delta_pct, base, project.base_commit),
+    gatePhrase(project),
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** `down 0.30 points from 81.5% at a1b2c3d`; `unchanged` at zero. */
+function deltaPhrase(delta: number, base: number, baseCommit: string | null): string {
+  const change =
+    delta === 0 ? "unchanged" : `${delta > 0 ? "up" : "down"} ${Math.abs(delta).toFixed(2)} points`;
+  const at = baseCommit ? ` at ${baseCommit.slice(0, 7)}` : "";
+  return `${change} from ${floorPct(base)}%${at}`;
+}
+
+/** The max-drop verdict, when one was judged; `""` otherwise. */
+function gatePhrase(project: PatchCoverageProject): string {
+  if (project.gate === "fail") {
+    return `falls more than the ${project.max_drop}-point max-drop gate allows`;
+  }
+  if (project.gate === "pass") return `within the ${project.max_drop}-point max-drop gate`;
+  return "";
+}
+
+function ProjectLine({ project }: { project: PatchCoverageProject | null }) {
+  if (project == null) return null;
+  if (project.incomparable.length > 0) {
+    return (
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        Project coverage not compared: {project.incomparable.join("; ")}
+      </p>
+    );
+  }
+  const text = projectText(project);
+  if (text == null) return null;
+  return <p className="text-xs tabular-nums text-[var(--color-text-secondary)]">{text}</p>;
 }
 
 /** Only when a risky file has changed executable lines: nothing else to report. */

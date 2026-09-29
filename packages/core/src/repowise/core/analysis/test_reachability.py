@@ -197,6 +197,7 @@ __all__ = [
     "ReachedBy",
     "call_graph_from_db",
     "call_graph_from_graph",
+    "direct_dependents",
     "files_reached_by_tests",
     "files_with_paired_tests",
     "load_test_files",
@@ -589,6 +590,29 @@ async def _import_reaching(
                 queued.add(dependent)
                 frontier.append(dependent)
     return found
+
+
+async def direct_dependents(
+    session: AsyncSession, repo_id: str, files: list[str]
+) -> dict[str, set[str]]:
+    """Files with an import edge into each of *files*, or a call into a symbol it declares.
+
+    One hop, no tests excluded: the direct callers and importers a change to
+    them could have moved coverage through. A file with none is absent.
+    """
+    out: dict[str, set[str]] = {}
+    for dependent, dependency in await _edges_into(
+        session, repo_id, files, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
+    ):
+        out.setdefault(dependency, set()).add(dependent)
+    declared = await _edges_from(session, repo_id, files, ["defines"])
+    owner = {symbol: path for path, symbol in declared}
+    for caller, callee in await _edges_into(
+        session, repo_id, sorted(owner), sorted(EXECUTION_EDGE_TYPES), UNRELIABLE_CALL_ORIGINS
+    ):
+        if (source := file_of_symbol(caller)) != owner[callee]:
+            out.setdefault(owner[callee], set()).add(source)
+    return out
 
 
 def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:

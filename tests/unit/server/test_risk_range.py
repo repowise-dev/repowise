@@ -336,3 +336,43 @@ async def test_patch_coverage_rows_carry_index_risk(
     assert risk["risky"] is True and risk["reasons"] == ["hotspot"]
     assert data["risky"]["file_count"] == 1
     assert data["risky"]["patch_coverage_pct"] == 66.66
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_compares_the_ingest_at_the_merge_base(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import parse_lcov, resolve_reports
+    from repowise.core.persistence.crud import save_coverage_files
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/health/coverage/patch"
+
+    async def _ingest(commit: str, hits: str) -> None:
+        lcov = f"SF:src/a.py\nDA:1,1\nDA:2,{hits}\nDA:3,0\nend_of_record\n"
+        resolved = resolve_reports([parse_lcov(lcov)], {"src/a.py"})
+        await save_coverage_files(
+            session,
+            repo["id"],
+            resolved.files,
+            source_format="lcov",
+            provenance=resolved.provenance,
+            ingested_commit_sha=commit,
+        )
+        await session.commit()
+
+    await _ingest(base, "1")
+    await _ingest(head, "0")
+    project = (await client.get(url, params={"base": base})).json()["project"]
+
+    assert (project["basis"], project["base_commit"], project["head_commit"]) == (
+        "history",
+        base,
+        head,
+    )
+    assert project["delta_pct"] == -33.33
+    assert (project["gate"], project["outside_change"]) == ("not_set", None)

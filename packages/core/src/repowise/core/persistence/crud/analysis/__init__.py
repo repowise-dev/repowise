@@ -27,6 +27,8 @@ from .coverage import (
     load_coverage_history,
     load_coverage_map,
     load_file_coverage,
+    load_ingest_at_commit,
+    load_newest_ingest,
     save_coverage_files,
 )
 from .coverage_map import (
@@ -173,6 +175,8 @@ __all__ = [
     "load_coverage_history",
     "load_coverage_map",
     "load_file_coverage",
+    "load_ingest_at_commit",
+    "load_newest_ingest",
     "opportunity_details",
     "performance_facet_counts",
     "performance_file_rollups",

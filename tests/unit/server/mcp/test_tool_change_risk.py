@@ -441,6 +441,58 @@ async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
     assert partial["gate"] == "not_set"
 
 
+async def test_patch_coverage_compares_the_ingest_at_the_change_base(
+    monkeypatch, factory, session, tmp_path
+):
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import parse_lcov, resolve_reports
+    from repowise.core.persistence.crud import save_coverage_files, upsert_repository
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    for commit, hits in (("base0", "1"), ("abc", "0")):
+        lcov = f"SF:a.py\nDA:1,1\nDA:2,{hits}\nend_of_record\n"
+        resolved = resolve_reports([parse_lcov(lcov)], {"a.py"})
+        await save_coverage_files(
+            session,
+            repo.id,
+            resolved.files,
+            source_format="lcov",
+            provenance=resolved.provenance,
+            ingested_commit_sha=commit,
+        )
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    bases = []
+
+    def _change_base(_path, revspec):
+        bases.append(revspec)
+        return "base0"
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    monkeypatch.setattr(git_refs, "change_base", _change_base)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+
+    assert bases == ["main...HEAD"]
+    project = block["project"]
+    assert (project["basis"], project["base_commit"], project["head_commit"]) == (
+        "history",
+        "base0",
+        "abc",
+    )
+    assert (project["delta_pct"], project["gate"]) == (-50.0, "not_set")
+    # A working-tree change measured from a push base starts at their merge-base.
+    assert tool._change_base(str(tmp_path), None, "main...working tree", True) == "base0"
+    assert bases[-1] == "main...HEAD"
+
+
 @pytest.mark.asyncio
 async def test_patch_coverage_rows_carry_their_files_risk(monkeypatch, factory, session, tmp_path):
     from repowise.core import git_refs

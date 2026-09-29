@@ -41,6 +41,7 @@ from ..health.coverage.model import FileCoverage
 
 if TYPE_CHECKING:
     from ..health.coverage.discovery import PathGate, ResolvedCoverage
+    from .delta import ProjectDelta
     from .hints import TestHint
     from .risk import FileRisk
 
@@ -201,6 +202,8 @@ class PatchCoverage:
     path_gates: tuple[PathGateResult, ...] = ()
     # A stricter gate over the risky files only (``risk.attach_risk``).
     risky_threshold: float | None = None
+    # Project coverage at the change's base against its head (``delta``).
+    project: ProjectDelta | None = None
 
     @property
     def changed_file_count(self) -> int:
@@ -233,14 +236,18 @@ class PatchCoverage:
 
     @property
     def gate(self) -> GateStatus:
-        """``flat_gate``, or ``fail`` when a path-scoped or the risky-file gate fails.
+        """``flat_gate``, or ``fail`` when a path-scoped, the risky-file or the project gate fails.
 
-        With no flat threshold the risky-file gate's status is the verdict.
+        With no flat threshold the risky-file gate's status is the verdict, and
+        with neither, the project gate's.
         """
-        if self.failing_path_gates or self.risky_gate == "fail":
+        project = self.project.gate if self.project is not None else "not_set"
+        if self.failing_path_gates or "fail" in (self.risky_gate, project):
             return "fail"
-        flat = self.flat_gate
-        return self.risky_gate if flat == "not_set" else flat
+        for status in (self.flat_gate, self.risky_gate):
+            if status != "not_set":
+                return status
+        return project
 
     @property
     def failing_path_gates(self) -> list[PathGateResult]:
@@ -309,6 +316,7 @@ class PatchCoverage:
             "scope": self.scope.to_dict(),
             "path_gates": [g.to_dict() for g in self.path_gates],
             "risky": self._risky_dict(),
+            "project": self.project.to_dict() if self.project is not None else None,
         }
 
 

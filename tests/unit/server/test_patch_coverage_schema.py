@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.core.analysis.health.coverage import PathGate, file_coverage
 from repowise.core.analysis.patch_coverage import (
     FileRisk,
+    IndirectCause,
+    IndirectChange,
     PatchScope,
+    ProjectDelta,
+    ProjectTotals,
     TestHint,
     attach_hints,
     attach_risk,
@@ -79,3 +85,29 @@ def test_every_to_dict_key_round_trips_through_the_response_model() -> None:
     assert hinted["files"][0]["hints"][0]["basis"] == "per_test"
     assert {f["file_path"] for f in hinted["files"] if f["hints"] is not None} == {"a.py"}
     assert PatchCoverageResponse.model_validate(hinted).model_dump() == hinted
+
+    # With a project delta: totals, the gate and each outside-change row round-trip.
+    project = ProjectDelta(
+        base=ProjectTotals(80, 100),
+        head=ProjectTotals(79, 100),
+        basis="base_report",
+        base_commit="b" * 40,
+        head_commit="h" * 40,
+        max_drop=0.5,
+        outside_change=(
+            IndirectChange(
+                "b.py",
+                ((4, 6),),
+                1,
+                50.0,
+                40.0,
+                "changed",
+                (IndirectCause("test_deleted", "tests/test_b.py", "name"),),
+            ),
+            IndirectChange("c.py", (), 0, 100.0, None, "no_longer_measured"),
+        ),
+    )
+    projected = replace(pc, project=project).to_dict()
+    assert projected["project"]["gate"] == "fail"
+    assert PatchCoverageResponse.model_validate(projected).model_dump() == projected
+    assert wire["project"] is None

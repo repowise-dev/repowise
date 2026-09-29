@@ -132,6 +132,35 @@ def test_changed_lines_three_dot_diffs_from_merge_base(git_repo) -> None:
     assert changed_lines(str(git_repo), "main..feat")[0] == {"mod.py": {2, 3}}
 
 
+def test_change_diff_names_renames_and_deletions_and_its_base(git_repo) -> None:
+    from repowise.core import git_refs
+    from repowise.core.analysis.changed_lines import change_diff
+
+    body = "".join(f"line{i} = {i}\n" for i in range(20))
+    (git_repo / "old.py").write_text(body, encoding="utf-8")
+    (git_repo / "gone.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "more")
+    _git(git_repo, "branch", "-M", "main")
+    _git(git_repo, "switch", "-qc", "feat")
+    _git(git_repo, "mv", "old.py", "new.py")
+    (git_repo / "new.py").write_text("top = 0\n" + body, encoding="utf-8")
+    _git(git_repo, "rm", "-q", "gone.py")
+    _git(git_repo, "commit", "-qam", "move")
+
+    base = git_refs.change_base(str(git_repo), "main...feat")
+    diffs, renames, deleted = change_diff(str(git_repo), base, "feat")
+
+    # A range with either separator, and a commit (its first parent), start at main.
+    starts = {git_refs.change_base(str(git_repo), rev) for rev in ("feat", "main..feat")}
+    tracked = git_refs.tracked_paths_at(str(git_repo), base)
+
+    assert starts == {base} == {git_refs.resolve(str(git_repo), "main")}
+    assert (renames, deleted) == ({"old.py": "new.py"}, {"gone.py"})
+    assert diffs["new.py"].new_lines == {1}
+    assert {"old.py", "gone.py", "mod.py"} <= tracked and "new.py" not in tracked
+
+
 def test_working_tree_from_a_base_is_everything_a_push_brings(git_repo) -> None:
     # The branch committed line 2 and left line 4 uncommitted; base moved line 3.
     _git(git_repo, "branch", "-M", "main")

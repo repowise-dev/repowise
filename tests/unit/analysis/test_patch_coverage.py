@@ -240,7 +240,7 @@ def test_annotations_mark_largest_ranges_first_and_count_the_rest() -> None:
     assert len(warnings) == 10
     assert "line=50,endLine=54" in warnings[0]
     assert lines[0].startswith("::error::Patch coverage")
-    assert lines[-1].startswith("::notice::3 more uncovered changed ranges")
+    assert lines[-1] == "::notice::3 more warnings; the first 10 are listed in the job summary"
 
 
 def test_markdown_lists_files_without_line_data() -> None:

@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 from .._shared import _BATCH_SIZE
 
 #: Ingest rows kept per repo for the coverage trend; older ones are pruned on write.
+#: One row per measured commit, so identical figures can repeat; the trend read
+#: (``load_coverage_history``) collapses consecutive repeats.
 COVERAGE_HISTORY_RETENTION: int = 50
 
 
@@ -36,8 +38,9 @@ async def save_coverage_files(
 
     Mirrors the delete-then-insert pattern used by the health writers for the
     per-file rows; the ingest row is appended, with the repo-wide figures of
-    *files*, unless the newest one already says exactly that (then it is
-    restamped), and ingests past ``COVERAGE_HISTORY_RETENTION`` are pruned.
+    *files*, unless the newest one already says exactly that at the same
+    commit (then it is restamped, see ``_record_ingest``), and ingests past
+    ``COVERAGE_HISTORY_RETENTION`` are pruned.
     *files* is a list of ``FileCoverage`` dataclasses (or dicts with the
     same shape). *provenance*, from a writer that resolved the report
     itself, supplies the formats, the path counts and ``mapping_partial``
@@ -113,10 +116,11 @@ def _ingest_figures(
         "branch_coverage_pct": branch_pct,
         "covered_lines": covered,
         "total_lines": total,
+        "scope_json": json.dumps(p.scope.to_dict()) if p.scope is not None else None,
     }
 
 
-async def _newest_ingest(session: AsyncSession, repository_id: str) -> CoverageIngest | None:
+async def load_newest_ingest(session: AsyncSession, repository_id: str) -> CoverageIngest | None:
     return (
         await session.execute(
             select(CoverageIngest)
@@ -135,15 +139,22 @@ async def _record_ingest(
     at: datetime,
     commit: str | None,
 ) -> None:
-    """Append the ingest, or restamp the newest when it measured exactly this.
+    """Append the ingest, or restamp the newest when it measured exactly this, there.
 
-    The same report ingested again (an update that re-ingests, a full
-    re-index) is one measurement, not a new trend point.
+    The same report ingested again at the same commit (an update that
+    re-ingests, a full re-index) is one measurement, not a new trend point.
+    The same figures at another commit, or at an unknown one, are a new row:
+    restamping would move the base's measurement to the head (a project delta
+    would lose its base), or leave a commit on a row whose files name none.
     """
-    newest = await _newest_ingest(session, repository_id)
-    if newest is not None and all(getattr(newest, k) == v for k, v in measured.items()):
+    newest = await load_newest_ingest(session, repository_id)
+    if (
+        newest is not None
+        and commit is not None
+        and commit == newest.ingested_commit_sha
+        and all(getattr(newest, k) == v for k, v in measured.items())
+    ):
         newest.ingested_at = at
-        newest.ingested_commit_sha = commit
         return
     session.add(
         CoverageIngest(
@@ -154,6 +165,23 @@ async def _record_ingest(
             **measured,
         )
     )
+
+
+async def load_ingest_at_commit(
+    session: AsyncSession, repository_id: str, commit_sha: str
+) -> CoverageIngest | None:
+    """The newest ingest measured at *commit_sha*, ``None`` when none was."""
+    return (
+        await session.execute(
+            select(CoverageIngest)
+            .where(
+                CoverageIngest.repository_id == repository_id,
+                CoverageIngest.ingested_commit_sha == commit_sha,
+            )
+            .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def _prune_history(session: AsyncSession, repository_id: str) -> None:
@@ -490,6 +518,7 @@ async def load_coverage_history(
 
     Rows written before the figures existed are skipped, and so are partial
     ingests: their figure is a subset's coverage, not the repository's.
+    Consecutive rows with the same figures collapse into the newest of them.
     """
     result = await session.execute(
         select(
@@ -506,15 +535,22 @@ async def load_coverage_history(
         .order_by(CoverageIngest.ingested_at.desc(), CoverageIngest.id.desc())
         .limit(limit)
     )
-    return [
-        {
+    points: list[dict[str, Any]] = []
+    for row in reversed(result.all()):
+        point = {
             "ingested_at": row.ingested_at.isoformat(),
             "ingested_commit_sha": row.ingested_commit_sha,
             "line_coverage_pct": row.line_coverage_pct,
             "branch_coverage_pct": row.branch_coverage_pct,
         }
-        for row in reversed(result.all())
-    ]
+        figures = (row.line_coverage_pct, row.branch_coverage_pct)
+        if points and (points[-1]["line_coverage_pct"], points[-1]["branch_coverage_pct"]) == (
+            figures
+        ):
+            points[-1] = point
+        else:
+            points.append(point)
+    return points
 
 
 async def get_coverage_summary(
@@ -545,7 +581,7 @@ async def get_coverage_summary(
         )
     if not rows:
         return empty_coverage_summary()
-    ingest = await _newest_ingest(session, repository_id)
+    ingest = await load_newest_ingest(session, repository_id)
     covered, total, line_pct, branch_pct = _aggregate(
         (_covered_count(r), r.total_coverable_lines, r.branch_coverage_pct) for r in rows
     )
