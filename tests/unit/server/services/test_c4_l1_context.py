@@ -107,6 +107,22 @@ async def test_system_description_falls_back_to_readme(async_session, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "readme",
+    [
+        "A tiny web framework.\n\nMore detail.\n",
+        "![badge](x.svg)\n\nA tiny web framework.\n\n## Install\n\nUse pip.\n",
+    ],
+    ids=["no-headings", "intro-before-first-heading"],
+)
+async def test_system_description_reads_unheaded_readme_intro(async_session, tmp_path, readme):
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+    repo = await _repo(async_session, tmp_path, [])
+    view = await c4_builder.build_l1(async_session, repo.id)
+    assert view.system.description == "A tiny web framework."
+
+
+@pytest.mark.asyncio
 async def test_system_description_empty_without_sources(async_session, tmp_path):
     repo = await _repo(async_session, tmp_path / "missing", [])
     view = await c4_builder.build_l1(async_session, repo.id)

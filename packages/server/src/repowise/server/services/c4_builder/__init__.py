@@ -155,7 +155,7 @@ def _system_for(repo: Repository | None, repo_id: str) -> System:
 
 
 def _system_description(local_path: str | None) -> str:
-    """The root manifest's description, else the README's first opening paragraph."""
+    """The root manifest's description, else the README's first prose paragraph."""
     if not local_path:
         return ""
     root = Path(local_path)
@@ -163,13 +163,9 @@ def _system_description(local_path: str | None) -> str:
     if text:
         return text
     # Lazy: the generation package is heavy to import for one file read.
-    from repowise.core.generation.context.readme_digest import readme_digest
+    from repowise.core.generation.context.readme_digest import readme_opening
 
-    for block in readme_digest(root).split("\n\n"):
-        _, _, paragraph = block.partition("\n")
-        if paragraph.strip():
-            return paragraph.strip()
-    return ""
+    return readme_opening(root)
 
 
 # ---------------------------------------------------------------------------

@@ -62,12 +62,12 @@ _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _LINK_TEXT = r"\1"
 
 
-def _opening_paragraph(lines: list[str], start: int) -> str:
+def _opening_paragraph(lines: list[str], start: int, *, past_headings: bool = False) -> str:
     """The first prose paragraph at or after *start*, before the next heading.
 
     Skips fenced code, decoration and blank lines. Returns "" when the section
     opens straight onto another heading, which is the common shape of a table
-    of contents.
+    of contents, unless *past_headings* lets it read on to the first prose.
     """
     i = start
     fenced = False
@@ -86,7 +86,10 @@ def _opening_paragraph(lines: list[str], start: int) -> str:
             i += 1
             continue
         if _HEADING.match(line):
-            break
+            if body or not past_headings:
+                break
+            i += 1
+            continue
         if not stripped or _DECORATION.match(line):
             # Blank lines before the paragraph are skipped; one after it ends
             # the paragraph, so that a section contributes one paragraph.
@@ -144,3 +147,16 @@ def readme_digest(repo_root: Path, *, max_chars: int = _MAX_CHARS) -> str:
             out.append(entry)
             budget -= cost
     return "\n\n".join(out)
+
+
+def readme_opening(repo_root: Path) -> str:
+    """The README's first prose paragraph, headed or not; "" when there is none."""
+    for rel in _DIGEST_DOCS:
+        try:
+            text = (repo_root / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        paragraph = _opening_paragraph(text.splitlines(), 0, past_headings=True)
+        if paragraph:
+            return paragraph
+    return ""
