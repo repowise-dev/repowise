@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
 from repowise.core.persistence import ExternalSystem, Repository
 from repowise.core.persistence.crud import (
+    code_file_rows,
     get_kg_layers,
     get_kg_project_meta,
     get_kg_tour_steps,
@@ -352,7 +353,7 @@ async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, di
                 GitMetadata.is_hotspot,
                 GitMetadata.primary_owner_name,
                 GitMetadata.bus_factor,
-            ).where(GitMetadata.repository_id == repo_id)
+            ).where(code_file_rows(repo_id))
         )
     ).all()
     hotspot_paths = [row[0] for row in git_rows if row[1]]

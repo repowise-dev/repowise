@@ -286,7 +286,7 @@ async def overview_summary(
     # /ownership?granularity=module aggregation the page used to fetch).
     owner_rows = await session.execute(
         select(GitMetadata.file_path, GitMetadata.primary_owner_name).where(
-            GitMetadata.repository_id == repo_id
+            crud.code_file_rows(repo_id)
         )
     )
     module_owner_files: dict[str, dict[str, int]] = {}

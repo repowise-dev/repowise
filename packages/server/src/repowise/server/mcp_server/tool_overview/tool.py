@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -193,9 +194,7 @@ _READING_ORDER_HINT = (
 async def _load_git_rows(session: Any, repository: Any, exclude_spec: Any) -> list[Any]:
     """Git metadata rows outside the exclude rules, the source of git health and ownership."""
     git_res = await session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == repository.id,
-        )
+        select(GitMetadata).where(code_file_rows(repository.id))
     )
     return filter_rows_by_attr(list(git_res.scalars().all()), "file_path", exclude_spec)
 

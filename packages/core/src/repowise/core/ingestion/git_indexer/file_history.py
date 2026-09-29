@@ -89,6 +89,9 @@ def new_meta(file_path: str) -> dict[str, Any]:
     """Return the default metadata dict for *file_path* (all fields zeroed)."""
     return {
         "file_path": file_path,
+        # A non-code file: history tier only (counts, span, authors). No blame,
+        # no churn signals, and kept out of the repo-relative rankings.
+        "history_only": False,
         "commit_count_total": 0,
         "commit_count_90d": 0,
         "commit_count_30d": 0,
@@ -308,6 +311,7 @@ def index_file(
     provenance_classifier: Any | None = None,
     note_agents: dict[str, str] | None = None,
     trace_index: Any | None = None,
+    history_only: bool = False,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -319,12 +323,17 @@ def index_file(
     repo's newest commit, so re-indexing the same commit yields the same
     windows and a historical checkout measures the 90 days before it. Falls
     back to ``now()``.
+
+    *history_only* (a non-code file) keeps the history tier: commit counts and
+    windows, first and last commit, and authorship. Blame, the decayed churn
+    score, agent provenance and commit-message mining stay code-only.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
     thirty_days_ago_ts = (now - timedelta(days=30)).timestamp()
 
     meta = new_meta(file_path)
+    meta["history_only"] = history_only
 
     orig_path: str | None = None
     if precomputed_commits is not None:
@@ -354,16 +363,18 @@ def index_file(
         _add_span(meta, commits, now)
         authors = _Authors.tally(commits, ninety_days_ago_ts)
         _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
+        _add_ownership(meta, authors)
+        meta["is_stable"] = _is_stable(meta)
+        if history_only:
+            return meta
         _add_agent_rollup(meta, commits)
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
-        _add_ownership(meta, authors)
         if include_blame:
             _add_blame_ownership(meta, repo, repo_path, now, authors)
         _add_commit_messages(meta, commits)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
             meta["original_path"] = orig_path
-        meta["is_stable"] = _is_stable(meta)
     except Exception:
         logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 

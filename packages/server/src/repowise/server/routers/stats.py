@@ -201,7 +201,7 @@ async def stats_highlights(
             GitMetadata.commit_count_capped,
             GitMetadata.first_commit_at,
             GitMetadata.last_commit_at,
-        ).where(GitMetadata.repository_id == repo_id),
+        ).where(crud.code_file_rows(repo_id)),
     )
     commits = await _rows(
         session,

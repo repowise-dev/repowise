@@ -17,6 +17,7 @@ from repowise.core.analysis.owners import (
     owner_key,
     silo_modules,
 )
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitCommit,
@@ -36,7 +37,7 @@ async def aggregate_owners(
     """
 
     git_rows = (
-        (await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id)))
+        (await session.execute(select(GitMetadata).where(code_file_rows(repo_id))))
         .scalars()
         .all()
     )

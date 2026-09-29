@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ __all__ = [
     "RepoTotals",
     "_CommitRec",
     "_extract_rename_paths",
+    "_history_tier_files",
     "_parse_commit_record",
     "_should_skip_index",
     "capture_repo_totals",
@@ -595,3 +597,30 @@ def _should_skip_index(file_path: str) -> bool:
     Everything else (data, config, markup, dotfiles, binaries) is skipped.
     """
     return Path(file_path).suffix.lower() not in _CODE_EXTENSIONS
+
+
+def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
+    """The non-code files among *paths* that still get their commit history recorded.
+
+    The history tier (counts, first and last commit, authors) covers every
+    tracked file except vendored and generated directories, lockfiles and
+    binaries: the traverser's own blocklists, plus a sniff for NUL bytes.
+    """
+    from ..traverser import (
+        _BLOCKED_DIRS,
+        _BLOCKED_EXTENSIONS,
+        _BLOCKED_FILENAME_SPEC,
+        _is_binary,
+    )
+
+    def _keep(file_path: str) -> bool:
+        parts = file_path.split("/")
+        if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+            return False
+        if Path(file_path).suffix.lower() in _BLOCKED_EXTENSIONS:
+            return False
+        if _BLOCKED_FILENAME_SPEC.match_file(parts[-1]):
+            return False
+        return not _is_binary(repo_path / file_path)
+
+    return {fp for fp in paths if _should_skip_index(fp) and _keep(fp)}

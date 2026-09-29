@@ -10,7 +10,7 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,16 @@ from ._shared import (
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
 # ---------------------------------------------------------------------------
+
+
+def code_file_rows(repository_id: str) -> ColumnElement[bool]:
+    """``where`` clause for a repository's code-file git rows.
+
+    Repo-wide ownership, bus-factor and module rollups count only these: a
+    ``history_only`` row (a doc or config file) carries commit counts, not
+    ownership signal.
+    """
+    return and_(GitMetadata.repository_id == repository_id, GitMetadata.history_only.is_(False))
 
 
 async def upsert_git_metadata(
@@ -321,6 +331,9 @@ async def recompute_git_percentiles(
     Python path gives it, and a gate at 0.80 turns that into findings that
     appear and disappear on an unchanged tree.
 
+    Every ranking is over code rows: ``history_only`` rows (non-code files)
+    carry counts and authors but no rank, and read 0 / not-a-hotspot.
+
     Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
     the repo-relative top-quartile gate AND the absolute activity floors —
     keep the two paths in sync.
@@ -348,33 +361,37 @@ WITH ranked AS (
       ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
     ) AS prank
   FROM git_metadata
-  WHERE repository_id = :repo_id
+  WHERE repository_id = :repo_id AND NOT history_only
 ),
 entropy_ranked AS (
   SELECT id,
     (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
-         WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
   FROM git_metadata
-  WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(change_entropy, 0.0) > 0.0
 ),
 scatter_ranked AS (
   SELECT id,
     (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
-         WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
   FROM git_metadata
-  WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(co_change_mass, 0.0) > 0.0
 ),
 defect_ranked AS (
   SELECT id,
     PERCENT_RANK() OVER (ORDER BY COALESCE(prior_defect_count, 0)) AS drank
   FROM git_metadata
-  WHERE repository_id = :repo_id
+  WHERE repository_id = :repo_id AND NOT history_only
 )
 UPDATE git_metadata
-SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
-    is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
+SET churn_percentile = COALESCE(
+      (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0),
+    is_hotspot = (COALESCE((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0)
+                  >= 0.75
                   AND git_metadata.commit_count_90d >= :min_commits_90d
                   AND (git_metadata.commit_count_90d >= :high_commits_90d
                        OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)

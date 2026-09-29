@@ -628,7 +628,7 @@ async def get_ownership(
     one entry per tracked file.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = result.scalars().all()
 
     if granularity == "file":
@@ -831,7 +831,7 @@ async def get_git_summary(
     10) so an engineering leader can see the broader contributor surface.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = list(result.scalars().all())
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)

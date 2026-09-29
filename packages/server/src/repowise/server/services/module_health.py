@@ -24,6 +24,7 @@ from repowise.core.analysis.module_health import (
     module_health_score,
     summarize,
 )
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -47,7 +48,7 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
     """Fetch the four inputs for *repo_id* and fold them by top-level module."""
 
     files = (
-        (await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id)))
+        (await session.execute(select(GitMetadata).where(code_file_rows(repo_id))))
         .scalars()
         .all()
     )
