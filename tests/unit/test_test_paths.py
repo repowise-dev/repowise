@@ -157,6 +157,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     (".github/workflows/data/test_settings.py.tpl", None, ""),
     # ...but a test of an action's own script is still a test
     (".github/actions/notify/notify.test.mjs", None, "test"),
+    # Support directories count anywhere, .github included.
+    (".github/test-data/expected.json", None, "support"),
+    (".github/actions/notify/__snapshots__/Button.snap", None, "support"),
 )
 
 

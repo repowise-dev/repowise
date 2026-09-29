@@ -308,18 +308,18 @@ def _classify(path: str, language: str | None) -> str:
 
     named_test = _is_test_name(filename)
 
+    # A scaffolding directory that needs no test tree around it settles the
+    # question before the tree rules run, ``.github/`` included. A test-shaped
+    # filename still wins, so ``testdata/build_test.go`` stays a test.
+    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
+        return "support"
+
     # ``.github/`` holds CI workflows, actions, issue templates and agent
     # instructions, so no directory there makes a test tree, however it is named
     # (``skills/unit-tests/SKILL.md``). Only a test-shaped source file counts:
     # the suite for a custom action's script is still a test.
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
-
-    # A scaffolding directory that needs no test tree around it settles the
-    # question before the tree rules run. A test-shaped filename still wins, so
-    # ``testdata/build_test.go`` stays a test.
-    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
-        return "support"
 
     if not named_test and not _is_test_dir(segments, original_segments, filename, language):
         return ""
