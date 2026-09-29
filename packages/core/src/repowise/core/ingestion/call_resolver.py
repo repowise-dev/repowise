@@ -570,7 +570,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         redirects: dict[str, str] = {}
         for decl_file, decl_id, key in declarations:
             candidates = definitions.get(key, ())
-            if not candidates:
+            # An overload stub's implementation shares its id: already defined.
+            if not candidates or any(sym_id == decl_id for _f, sym_id in candidates):
                 continue
             # Deduped by symbol id, not by row: an overload set defined in one
             # file is several definitions sharing one id, and counting rows

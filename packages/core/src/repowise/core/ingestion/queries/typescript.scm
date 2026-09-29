@@ -152,6 +152,24 @@
   )
 )
 
+; Overload signatures: ``function f(a: string): string;`` and a class body's
+; ``m(a: string): void;``. Bodiless, so the parser marks them declarations; the
+; implementation under the same id is the symbol that is served, and one with
+; no implementation (an ambient ``declare``) is dropped there. An interface's
+; method_signature is a member shape, not an overload, and stays out.
+(function_signature
+  name: (identifier) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
+(class_body
+  (method_signature
+    (accessibility_modifier)? @symbol.modifiers
+    name: [(property_identifier) (private_property_identifier)] @symbol.name
+    parameters: (formal_parameters) @symbol.params
+  ) @symbol.def
+)
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

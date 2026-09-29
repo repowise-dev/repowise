@@ -208,7 +208,9 @@ class Symbol:
     # declaration in a header. The definition carrying the same name lives in
     # a .cpp and is the symbol a call should attach to; the call resolver
     # redirects onto it, and the dead-code pass never reports a declaration,
-    # since a declaration is not independently deletable.
+    # since a declaration is not independently deletable. Python ``@overload``
+    # stubs and TypeScript overload signatures are declarations too: they share
+    # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
 
 

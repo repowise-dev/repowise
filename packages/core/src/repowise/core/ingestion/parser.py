@@ -493,12 +493,52 @@ def _match_identity(
     return def_node, name_nodes, name, export_type, start_line
 
 
+# ``@overload`` stubs are signatures for the type checker; the undecorated def
+# that follows under the same id is the one that runs.
+def _is_python_overload(def_node: Node, src: str) -> bool:
+    parent = def_node.parent
+    if parent is None or parent.type != "decorated_definition":
+        return False
+    for decorator in parent.children:
+        if decorator.type != "decorator":
+            continue
+        # The expression, not the node text: a trailing comment sits inside it.
+        expr = next((c for c in decorator.named_children if c.type != "comment"), None)
+        # ``overload``, ``typing.overload``, or through an alias (``t.overload``).
+        if expr is not None and _node_text(expr, src).rsplit(".", 1)[-1] == "overload":
+            return True
+    return False
+
+
+_TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})
+
+
+def _keep_ts_overloads_beside_a_body(symbols: list[Symbol], node_types: list[str]) -> list[Symbol]:
+    """Drop a bodiless TS signature whose id has no implementation in the file.
+
+    That is an ambient declaration (``declare function``, a ``.d.ts``), not an
+    overload, and it never was a symbol.
+    """
+    bodied = {s.id for s, t in zip(symbols, node_types, strict=True) if t not in _TS_OVERLOAD_SIGNATURES}
+    return [
+        s
+        for s, t in zip(symbols, node_types, strict=True)
+        if t not in _TS_OVERLOAD_SIGNATURES or s.id in bodied
+    ]
+
+
 def _is_declaration(
-    def_node: Node, config: LanguageConfig, language: str, export_type: _CppExportType | None
+    def_node: Node,
+    config: LanguageConfig,
+    language: str,
+    export_type: _CppExportType | None,
+    src: str,
 ) -> bool:
     node_type = def_node.type
     if node_type in config.declaration_node_types:
         return True
+    if language == "python":
+        return _is_python_overload(def_node, src)
     if export_type is not None:
         return export_type.is_forward_declaration
     return _is_bodiless_cpp_type(language, node_type, def_node)
@@ -1313,9 +1353,9 @@ class ASTParser:
         language = file_info.language
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
-        # Parallel to ``symbols`` (same indices) -- only populated/consumed
-        # for Pascal and Objective-C, to dedupe interface-declaration vs.
-        # implementation method pairs after the loop. See
+        # Parallel to ``symbols`` (same indices) -- consumed for Pascal and
+        # Objective-C, to dedupe interface-declaration vs. implementation
+        # method pairs after the loop, and for TS overload signatures. See
         # _dedupe_pascal_interface_symbols / _dedupe_objc_interface_symbols.
         node_types: list[str] = []
         # Also parallel to ``symbols``, Objective-C only: which of @interface /
@@ -1347,6 +1387,9 @@ class ASTParser:
 
         if language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
+
+        if language in _TS_JS_LANGUAGES:
+            symbols = _keep_ts_overloads_beside_a_body(symbols, node_types)
 
         # A .m file routinely declares its private methods in a class
         # extension and defines them below in the @implementation, which
@@ -1451,7 +1494,7 @@ class ASTParser:
             language=language,
             parent_name=parent_name,
             is_exported_symbol=is_exported_symbol,
-            is_declaration=_is_declaration(def_node, config, language, export_type),
+            is_declaration=_is_declaration(def_node, config, language, export_type, src),
         )
         return symbol, def_node
 

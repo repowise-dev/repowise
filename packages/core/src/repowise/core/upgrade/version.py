@@ -59,7 +59,10 @@ STORE_FORMAT_VERSION: int = 2
 #: guess, no sibling lookup inside a package, never the importer itself), and
 #: ``from pkg import a, b`` over submodules no longer edges into
 #: ``pkg/__init__.py``. Reconciling once drops the stale edges from old stores.
-PARSER_SCHEMA_VERSION: int = 4
+#:
+#: v5: an overload signature (Python ``@overload``, TypeScript function / method
+#: overload) is marked ``is_declaration`` so lookups serve the implementation.
+PARSER_SCHEMA_VERSION: int = 5
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
