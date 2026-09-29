@@ -990,14 +990,17 @@ default branch.
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
 | `--path` | A path inside the repository (defaults to cwd) |
-| `--staged` | Check the staged changes instead, read from the index (no history scan); for a pre-commit hook. Takes no REVSPEC |
+| `--staged` | Check the staged lines, read from the index, for a pre-commit hook: no history scan, no REVSPEC; `security.patterns` still comes from the working tree |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 
-A `repowise-security-ignore` comment on a finding's line silences it (or
-`repowise-security-ignore: kind, kind` for only those kinds); silenced findings
-never fail and are still counted in every format. `security.patterns` in
-`.repowise/config.yaml` adds secret shapes of your own
-(see [Custom patterns](../layers/SECURITY.md#custom-patterns-securitypatterns)).
+A `repowise-security-ignore` comment on a finding's line silences it:
+
+- The token is exact and case-sensitive and covers its own line only; there is no next-line or whole-file form.
+- Bare, it silences every kind on the line; `: kind, kind` silences only those (`custom:<name>` for a custom pattern). Free text after the colon names no kind and silences nothing.
+- A secret found in an earlier commit of the change stays silenced only if that commit carries the marker; squash or rotate.
+- Silenced findings never fail and never enter `--write-baseline`. JSON lists them in `gate.suppressed` (never the matched text) with `gate.suppressed_count`; SARIF marks them `inSource`; table, markdown and `github` count them; the GitLab report omits them and logs the count.
+
+Custom secret shapes go in [`security.patterns`](CONFIG.md#the-security-block).
 
 ```bash
 repowise security check origin/main...HEAD
@@ -1011,8 +1014,8 @@ repowise security check --write-baseline .security-baseline.json
 Exit codes: `0` gate passed, `1` gate failed, `2` could not evaluate (not a git
 repository, unknown revision, a shallow clone missing the merge-base or cutting
 a commit of the change, an unreadable baseline, an invalid `security.patterns`,
-an unexpected internal error; REVSPEC given with `--staged` is a usage error). Check out with full history
-(`fetch-depth: 0`). See [In CI](../layers/SECURITY.md#in-ci-repowise-security-check)
+an unexpected internal error, a REVSPEC given with `--staged`). Check out with
+full history (`fetch-depth: 0`). See [In CI](../layers/SECURITY.md#in-ci-repowise-security-check)
 for the scoping rules and a GitHub Actions recipe with SARIF upload.
 
 ---
@@ -1747,11 +1750,10 @@ repowise hook install --workspace        # all workspace repos
 repowise hook install --security         # also a pre-commit security check
 ```
 
-`--security` also adds a pre-commit block that runs `repowise security check
---staged` and blocks a commit that adds a finding at or above `high` (exit 1);
-when the check cannot run, the commit goes through. `hook uninstall` removes
-everything repowise installed, this block included. Skip it once with
-`git commit --no-verify`.
+`--security` adds a marked block at the top of the pre-commit script that runs
+`repowise security check --staged`: exit 1 (a finding at or above `high`)
+blocks the commit; exit 2 or a missing `repowise` lets it through. `hook status`
+reports it. Skip it once with `git commit --no-verify`.
 
 ### `repowise hook status`
 

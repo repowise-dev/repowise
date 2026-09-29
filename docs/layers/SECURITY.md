@@ -300,91 +300,29 @@ GitHub Action, the GitLab template and the SARIF upload are in
 
 ### Silencing one finding: `repowise-security-ignore`
 
-For a single false positive, put `repowise-security-ignore` anywhere on the
-finding's own line, in whatever comment syntax the file uses:
-
-```python
-EXAMPLE_KEY = "AKIAIOSFODNN7EXAMPLE"  # repowise-security-ignore: aws_access_key
-```
-
-How the marker is read:
-
-- The token is exact and case-sensitive. `repowise-security-ignore-file` or
-  `-next-line` is not a marker: there is no next-line or whole-file form,
-  because a file-wide ignore for secrets is too blunt; use the baseline for that.
-- The bare token silences every kind on its line.
-- `repowise-security-ignore: kind, kind` silences only the kinds it lists (a
-  custom pattern is `custom:<name>`). The first word after the colon and any
-  comma-separated words after it are read as kind names, so free text there
-  (`: see ticket`) names no real kind and silences nothing: the marker fails
-  closed.
-- It covers its own line only. For a secret committed inside the change, the
-  marker has to be on the line in the commit that added it: adding it in a later
-  commit silences the head but the earlier commit still reports the secret,
-  because it stays in the history. Squash the change, or rotate the secret.
-
-A silenced finding never fails the gate and never enters `--write-baseline`,
-but it is not dropped: JSON lists it under `gate.suppressed` (file, line, kind,
-severity, fingerprint, and the commit for a secret found in an earlier commit;
-never the matched text) with `gate.suppressed_count`, the table and markdown
-count and list it, SARIF carries it with an `inSource` suppression, and
-`github` counts it in the job summary. The GitLab Code Quality report leaves it
-out, as it does baselined findings, and the count goes to the job log.
+For a single false positive, put `repowise-security-ignore` on the finding's
+own line, in any comment syntax; `repowise-security-ignore: aws_access_key`
+silences only the kinds it lists. There is no next-line or whole-file form: use
+the baseline for that. A silenced finding never fails the gate and is still
+reported as suppressed in every format. The exact rules are in the
+[CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
 
 ### Custom patterns: `security.patterns`
 
-A secret shape of your own goes in `.repowise/config.yaml`:
-
-```yaml
-security:
-  patterns:
-    - name: internal_token        # 1 to 40 of a-z, 0-9, _ and -, unique
-      regex: 'itk_[A-Za-z0-9]{32}'
-      severity: high              # low, med or high; high when omitted
-```
-
-Each pattern is a secret kind named `custom:<name>`, treated like the built-in
-ones: only changed lines count, and every commit of the change is scanned for
-it. The whole match is masked to its first four characters and `****` in every
-format, including in the snippet of a built-in finding on the same line. The
-finding is keyed on its file, kind and masked line, like the keyword kinds,
-because a repository's own pattern can be as weak as a password; two matches
-whose visible prefix and line agree share one baseline entry. Unlike the
-built-in secrets, a custom pattern keeps its configured severity under test,
-fixture and example paths. SARIF gets one rule per pattern (`custom/<name>`)
-and the GitLab report the same check name.
-
-The config is checked before the scan, and the gate exits 2
-(`config_invalid`) listing every problem: an unknown key, a missing name or
-regex, a duplicate or badly shaped name, a regex that does not compile, one
-that can match zero characters (the empty string, `\b`, a lone lookahead), a
-repeated group that itself repeats or alternates (`(a+)+`, `(\w*)*`,
-`(a|aa)+`, which backtrack exponentially; the check is best effort), and a bad
-severity. At most 50 patterns, each regex at most 500 characters. Patterns run
-line by line and a line longer than 4096 characters is not matched against
-them; the output counts such lines (`long_lines_skipped` in JSON, a run
-property in SARIF, a note in the table, markdown and GitLab job log). Only line
-length is bounded: a pathological regex that passes the checks can still be
-slow.
+A secret shape of your own goes under `security.patterns` in
+`.repowise/config.yaml` as a name, a regex and a severity. Each becomes the
+secret kind `custom:<name>`, scanned and masked like the built-in ones, and an
+invalid pattern stops the check with exit 2. Keys and limits are in
+[the `security:` block](../reference/CONFIG.md#the-security-block).
 
 ### Before a commit: `--staged`
 
 `repowise security check --staged` checks what the next commit would record:
-the staged changed lines, read from the index, so an unstaged edit does not
-count. There is no history to scan yet. It takes no REVSPEC (a usage error,
-exit 2). `security.patterns` is read from the working tree's
-`.repowise/config.yaml`, not from the index.
-
-`repowise hook install --security` adds a pre-commit hook that runs it. The
-hook blocks the commit only on exit 1, a finding at or above `high`; when the
-check cannot run (exit 2, including an unexpected error, or `repowise` is not
-installed) it says why and lets the commit through, because a broken tool must
-not stop anyone committing. It goes into an existing pre-commit script as a
-marked block at the top, and `repowise hook status` reports it once installed.
-Plain `repowise hook install` does not add it, and `repowise hook uninstall`
-removes everything repowise installed: the post-commit hook and this block,
-leaving the rest of the script alone. Skip it once with
-`git commit --no-verify`.
+the staged lines, read from the index. `repowise hook install --security` runs
+it as a pre-commit hook that blocks a commit only on a finding at or above
+`high`, and lets the commit through when the check cannot run. Skip it once
+with `git commit --no-verify`. See
+[`repowise hook install`](../reference/CLI_REFERENCE.md#repowise-hook-install).
 
 ## Line verification
 
