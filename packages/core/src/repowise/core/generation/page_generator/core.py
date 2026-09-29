@@ -23,6 +23,7 @@ import jinja2
 import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
+from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
 from ..context.evidence import (
@@ -336,6 +337,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # file template does not emit; keep this type's original extraction.
         page.summary = _extract_summary(page.content)
         _attach_file_provenance(page, ctx)
+        # Embedded for search, not rendered (see file_page.j2).
+        if ctx.file_vocabulary:
+            page.metadata[FILE_VOCABULARY_KEY] = ctx.file_vocabulary
         return page
 
     # ------------------------------------------------------------------

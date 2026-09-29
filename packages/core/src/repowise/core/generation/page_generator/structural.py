@@ -692,7 +692,7 @@ def stale_spotlight_paths(
 class StructuralRenderMixin:
     """Template-only renderers, mixed into PageGenerator.
 
-    Requires the host to provide ``_render``, ``_provider`` and ``_config``.
+    Requires the host to provide ``_render`` and ``_config``.
     """
 
     def _render_page(
@@ -707,7 +707,8 @@ class StructuralRenderMixin:
         """Render one template page and wrap it as a GeneratedPage.
 
         The mirror of ``_build_generated_page`` for the no-model path: same
-        fields, zero tokens, ``provider_name="template"``.
+        fields, zero tokens, ``provider_name="template"``, and no model name:
+        no model wrote this page, so it must not be credited to one.
 
         Confidence is a constant here, not a parameter. It used to be
         overridable so a stub could claim less than a sole renderer's page,
@@ -727,7 +728,7 @@ class StructuralRenderMixin:
             content=content,
             summary=_extract_summary(content, skip_metadata=True),
             source_hash=compute_source_hash(content),
-            model_name=self._provider.model_name,
+            model_name="",
             provider_name="template",
             input_tokens=0,
             output_tokens=0,

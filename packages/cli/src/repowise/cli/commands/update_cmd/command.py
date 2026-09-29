@@ -1659,6 +1659,7 @@ def run_update(
                             target_path=page.target_path,
                             summary=page.summary,
                             content=page.content,
+                            page_metadata=page.metadata,
                         )
                     )
                     is not None

@@ -367,7 +367,6 @@ def test_no_identifier_the_context_carried_leaves_the_page(generator):
         ],
         kg_layer_name="Core Pipeline",
         kg_layer_role="edge_connector",
-        file_vocabulary="prune_dirs max_depth node_modules",
     )
     page = render(generator, ctx)
 
@@ -377,7 +376,6 @@ def test_no_identifier_the_context_carried_leaves_the_page(generator):
         | set(ctx.dependents)
         | {s["name"] for s in ctx.symbols}
         | {cc["path"] for cc in ctx.co_change_pages}
-        | set(ctx.file_vocabulary.split())
     )
     missing = sorted(name for name in expected if name not in page)
 
@@ -415,13 +413,15 @@ def _contributor_hide(source: str) -> set[str]:
 def test_the_scaffolding_headings_are_the_ones_the_reader_lens_hides(generator):
     """The template and ``reader-persona.ts`` have to agree, byte for byte.
 
-    ``## In the code`` and ``## Questions this page answers`` exist for
-    retrieval: the vocabulary bag is the only part of the page written in the
-    words a question uses, and the question block is the only part shaped like
-    one. Neither can be dropped here without dropping it from the index, so
-    the reader persona hides them client-side instead — and it matches on the
-    heading text, lowercased, which is a string in another language's source
-    file. The headings come out of a real render for that reason.
+    ``## Questions this page answers`` exists for retrieval: the question
+    block is the only part of the page shaped like a question. It cannot be
+    dropped here without dropping it from the index, so the reader persona
+    hides it client-side instead — and it matches on the heading text,
+    lowercased, which is a string in another language's source file. The
+    heading comes out of a real render for that reason.
+
+    ``## In the code`` is no longer rendered at all (the file vocabulary is
+    embedded from page metadata), so the vocabulary never reaches a reader.
     """
     ctx = _context(
         dependents=["pkg/cli/main.py"],
@@ -429,11 +429,12 @@ def test_the_scaffolding_headings_are_the_ones_the_reader_lens_hides(generator):
     )
     page = render(generator, ctx)
     rendered = {ln[3:].strip().lower() for ln in page.splitlines() if ln.startswith("## ")}
-    assert {"in the code", "questions this page answers"} <= rendered
+    assert "questions this page answers" in rendered
+    assert "in the code" not in rendered
 
     hidden = _contributor_hide(READER_PERSONA_TS.read_text(encoding="utf-8"))
 
-    assert {"in the code", "questions this page answers"} <= hidden
+    assert "questions this page answers" in hidden
 
 
 # ---------------------------------------------------------------------------

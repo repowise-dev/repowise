@@ -109,13 +109,6 @@ These modules change together with this one in history and nothing in the depend
 {% endfor %}
 {% endif %}
 
-{% if ctx.dead_code_findings %}
-### Potentially unused code
-{% for finding in ctx.dead_code_findings[:10] %}
-- `{{ finding.symbol_name or '?' }}` — {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
-{% endfor %}
-{% endif %}
-
 {% if module_git_summary is defined and module_git_summary %}
 ### Recent activity
 Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in 90 days).
