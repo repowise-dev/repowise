@@ -122,6 +122,9 @@ class CoverageState:
     status: CoverageStatus
     ingested_at: datetime | None = None
     files_measured: int = 0
+    #: The report's paths did not all map to this repository's files, so a
+    #: file without a row may be covered and simply unmatched.
+    partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)

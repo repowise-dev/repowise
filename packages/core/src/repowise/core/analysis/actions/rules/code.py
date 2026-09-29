@@ -208,6 +208,8 @@ def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
         return WhyFact("line coverage", value, basis)
     if facts.coverage.status == "unknown":
         return WhyFact("line coverage", "Unknown, no report", "unknown")
+    if facts.coverage.partial:
+        return WhyFact("line coverage", "Unknown, the report only partly mapped", "unknown")
     return WhyFact("line coverage", "Unknown, not in the report", "unknown")
 
 

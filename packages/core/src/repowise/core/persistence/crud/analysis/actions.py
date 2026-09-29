@@ -38,6 +38,7 @@ from repowise.core.author_identity import author_identity_key
 from ...models import (
     ActionState,
     CoverageFile,
+    CoverageIngest,
     DeadCodeFinding,
     DocDriftFinding,
     FixEvent,
@@ -488,13 +489,36 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
     ).one()
     if not count:
         return {"coverage": CoverageState("unknown")}
-    # One ingest writes every row with the same commit, so the rows alone say
-    # when and where coverage was measured; ``coverage_ingests`` (newer
-    # indexes) adds provenance this reader does not need.
-    # Stale only when both commits are known and differ; a row without a commit
-    # cannot be called out of date.
+    # The ingest record is authoritative for when, at which commit, and whether
+    # the report's paths all mapped. Indexes that predate it carry the same
+    # commit on every row, because one ingest replaces them all.
+    partial = False
+    try:
+        async with session.begin_nested():
+            ingest = (
+                await session.execute(
+                    select(
+                        CoverageIngest.ingested_at,
+                        CoverageIngest.ingested_commit_sha,
+                        CoverageIngest.mapping_partial,
+                    )
+                    .where(CoverageIngest.repository_id == repo_id)
+                    .order_by(CoverageIngest.ingested_at.desc())
+                    .limit(1)
+                )
+            ).first()
+        if ingest is not None:
+            latest_at, latest_sha, partial = (
+                ingest.ingested_at,
+                ingest.ingested_commit_sha,
+                bool(ingest.mapping_partial),
+            )
+    except Exception:  # an index from before ingests were recorded
+        pass
+    # Stale only when both commits are known and differ; a report without a
+    # commit cannot be called out of date.
     status = "stale" if latest_sha and head_sha and latest_sha != head_sha else "measured"
-    return {"coverage": CoverageState(status, latest_at, int(count))}
+    return {"coverage": CoverageState(status, latest_at, int(count), partial)}
 
 
 _Reader = Callable[[], Awaitable[dict[str, Any]]]

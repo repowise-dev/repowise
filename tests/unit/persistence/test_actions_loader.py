@@ -260,3 +260,30 @@ async def test_dismissed_action_returns_when_its_fingerprint_changes(async_sessi
     (back,) = _by_rule(view)["live_secret"]
     assert back["id"] == secret["id"]
     assert back["fingerprint"] != secret["fingerprint"]
+
+
+async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import _coverage
+    from repowise.core.persistence.models import CoverageFile, CoverageIngest
+
+    rid = await _seed(async_session)
+    async_session.add(
+        CoverageFile(
+            repository_id=rid,
+            file_path="src/core.py",
+            source_format="lcov",
+            line_coverage_pct=50.0,
+            covered_lines_json="[]",
+            total_coverable_lines=10,
+            ingested_commit_sha="zzzz-row",
+        )
+    )
+    async_session.add(
+        CoverageIngest(repository_id=rid, ingested_commit_sha="head", mapping_partial=True)
+    )
+    await async_session.flush()
+
+    state = (await _coverage(async_session, rid, "head"))["coverage"]
+    # The row's sha sorts after "head", which `max()` over rows would have picked.
+    assert (state.status, state.partial, state.files_measured) == ("measured", True, 1)
+    assert (await _coverage(async_session, rid, "newer"))["coverage"].status == "stale"
