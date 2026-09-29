@@ -21,6 +21,7 @@ from repowise.core.generation.concept_tree.naming import (
     decode_response,
     deterministic_title,
 )
+from repowise.core.generation.concept_tree.planner import PlannerInputs, plan_deterministic
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.page_generator import PageGenerator
@@ -236,6 +237,16 @@ def test_a_rollup_at_a_chapter_directory_keeps_its_name_and_material():
     assert not rollup.is_rollup
     assert rollup.display.startswith("Packages:")
     assert rollup.context_paths == ()
+
+
+def test_the_planner_walls_packages_the_way_selection_does():
+    files, roots = _monorepo()
+    walled = group_files(files, params=PARAMS, package_roots=roots)
+    _outline, groups = plan_deterministic(
+        PlannerInputs(repo_name="r", production_files=files, package_roots=roots), params=PARAMS
+    )
+    assert [g.members for g in groups] == [g.members for g in walled]
+    assert [g.packages for g in groups if g.packages] == [tuple(f"packages/{n}" for n in THIN)]
 
 
 def test_top_level_thin_packages_roll_up_at_the_root():
