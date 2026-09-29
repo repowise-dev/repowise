@@ -1,7 +1,8 @@
 name: Repowise CI gates
 description: >-
   Gate a pull request on patch coverage, documentation drift, new security
-  findings and change risk. Needs git and nothing else: no index, no API key.
+  findings and change risk, and select the tests it needs. The gates need git
+  and nothing else (no index, no API key); test selection reads a cached index.
 author: repowise-dev
 branding:
   icon: check-circle
@@ -97,6 +98,17 @@ inputs:
       "true" uploads doc-drift and security findings to GitHub code scanning.
       The workflow needs the security-events write permission.
     default: "false"
+  impacted-tests:
+    description: >-
+      "true" selects the tests the change needs (repowise impacted-tests
+      --format args) and sets the impacted-tests and run-all-tests outputs. It
+      requires a cached Repowise index: restore .repowise into the working
+      directory first, and the step brings it up to date with repowise update
+      --index-only. Without one every answer is run-all-tests, with the reason.
+    default: "false"
+  impacted-tests-runner:
+    description: Runner the tests output is written for (auto, pytest, go, jest or files).
+    default: auto
 
 outputs:
   coverage:
@@ -114,6 +126,15 @@ outputs:
   sarif-dir:
     description: Directory holding the SARIF files, when upload-sarif is on.
     value: ${{ steps.gates.outputs.sarif-dir }}
+  impacted-tests:
+    description: With impacted-tests, the runner arguments for the selected tests, or ":all" to run every test.
+    value: ${{ steps.impacted.outputs.impacted-tests }}
+  run-all-tests:
+    description: >-
+      With impacted-tests, "false" only when the subset is safe to run alone;
+      "true" when every test must run, also when selection could not run.
+      Branch on != 'false' so a skipped step runs everything.
+    value: ${{ steps.impacted.outputs.run-all-tests }}
 
 runs:
   using: composite
@@ -128,8 +149,21 @@ runs:
         REPOWISE_VERSION: ${{ inputs.version }}
       run: python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
 
+    - name: Select impacted tests
+      id: impacted
+      if: inputs.impacted-tests == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BASE: ${{ inputs.base }}
+        RUNNER: ${{ inputs.impacted-tests-runner }}
+        PYTHONUTF8: "1"
+      run: bash "$GITHUB_ACTION_PATH/ci/github/impacted-tests.sh"
+
     - name: Run gates
       id: gates
+      # Test selection alone runs no gate.
+      if: inputs.checks != '' || inputs.impacted-tests != 'true'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:

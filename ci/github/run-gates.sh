@@ -25,15 +25,10 @@ for name in $names; do
 done
 
 # Coverage, security and risk diff the change, so they need its history and
-# the target branch; risk also ranks it against recent commits. A shallow
-# clone has neither; fetch them rather than exit 2.
+# the target branch; risk also ranks it against recent commits.
 if wants coverage || wants security || wants risk; then
-  if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-    git fetch --quiet --no-tags --unshallow origin || true
-  fi
-  if [[ -n "${GITHUB_BASE_REF:-}" ]] && ! git rev-parse --verify --quiet "refs/remotes/origin/$GITHUB_BASE_REF" >/dev/null; then
-    git fetch --quiet --no-tags origin "+refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF" || true
-  fi
+  here=${0//\\//}
+  source "${here%/*}/fetch-base.sh"
 fi
 
 failed=0

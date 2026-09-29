@@ -1054,8 +1054,9 @@ line up.
 | Flag | Description |
 |------|-------------|
 | `--path` | Repo path (defaults to cwd / workspace primary) |
-| `--staged` | Diff the staged changes (`git diff --cached`); the default when no range is given |
-| `--format` | `table` (default), `json` (full report), or `list` (test ids one per line, for piping) |
+| `--staged` | Diff the staged changes (`git diff --cached`); the default when no range is given, outside CI (in CI the default is the pull request's change) |
+| `--format` | `table` (default), `json` (full report plus the selection), `list` (test ids one per line, for piping), or `args` (one line of runner arguments, or `:all` when every test must run; reasons on stderr) |
+| `--runner` | Who `--format args` is for: `auto` (default; picked from the selected test files, `files` when mixed), `pytest` (node ids and files), `go` (package directories), `jest` (files), `files` |
 
 ```bash
 repowise impacted-tests                        # staged changes
@@ -1063,7 +1064,24 @@ repowise impacted-tests main...HEAD            # a branch / PR (diffed from the 
 repowise impacted-tests main..HEAD             # a plain range
 repowise impacted-tests abc123                 # a single commit
 repowise impacted-tests main..HEAD --format list | xargs pytest
+repowise impacted-tests main...HEAD --format args --runner pytest
 ```
+
+`--format args` exits `0` whether it selects a subset or everything, and `2`
+only when it cannot read the change or `tests.*` in the config. The rules for
+running everything are in [CI](../start/CI.md#selecting-the-tests-a-change-needs).
+
+Behaviour changes that came with `--format args`, for every format:
+
+- `--format list` (and the table) now include more tests: the graph is asked
+  for every changed file, coverage or not, the import walk follows imports
+  through other modules and tests with no depth or count cap, and deleted or
+  removal-only files are looked up too.
+- An unknown revision, missing history or a bad `tests.*` config exits `2`
+  (it was `1`), with the message on stderr.
+- In CI (`CI`, a CI host marker or a pull-request branch variable set), a
+  missing REVSPEC means the pull request's change, as for the gates; outside
+  CI it is still the staged changes.
 
 ---
 

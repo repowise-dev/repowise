@@ -36,6 +36,10 @@
 #   REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
 #                                   Fail when the change ranks above this percentile of
 #                                   recent commits. The risk job runs only when it is set.
+#   REPOWISE_IMPACTED_TESTS         "true" adds repowise-impacted-tests, which selects the
+#                                   tests the change needs from a cached index.
+#   REPOWISE_IMPACTED_TESTS_RUNNER  Runner its arguments are for: auto (default), pytest,
+#                                   go, jest or files.
 
 .repowise:
   image: python:3.12
@@ -160,3 +164,38 @@ repowise-risk:
     paths: [repowise-risk.md]
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
+
+# Test selection, opt-in with REPOWISE_IMPACTED_TESTS: "true". It fails
+# closed: RUN_ALL_TESTS in the dotenv report is "false" only when the arguments
+# in the impacted-tests.txt artifact are safe to run alone; a test job should
+# run everything unless it reads "false". It needs a cached Repowise index
+# (give the job a cache holding .repowise), which it updates first; when that
+# update or the selection fails, the report says run everything and the job
+# still passes, so a broken setup costs a full run, never a red pipeline.
+repowise-impacted-tests:
+  extends: .repowise
+  script:
+    - |
+      status=0
+      run_all=true
+      echo ":all" > impacted-tests.txt
+      if [ -f .repowise/state.json ] && ! repowise update --index-only; then
+        echo "The cached index could not be updated; running every test."
+      else
+        repowise impacted-tests "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
+          --format args --runner "${REPOWISE_IMPACTED_TESTS_RUNNER:-auto}" > selected.txt || status=$?
+        if [ "$status" -ne 0 ]; then
+          echo "Test selection could not run (exit $status); running every test."
+        elif [ "$(wc -l < selected.txt)" -eq 1 ] && [ "$(cat selected.txt)" != ":all" ]; then
+          mv selected.txt impacted-tests.txt
+          run_all=false
+        fi
+      fi
+      printf 'RUN_ALL_TESTS=%s\n' "$run_all" > repowise-impacted-tests.env
+  artifacts:
+    when: always
+    paths: [impacted-tests.txt]
+    reports:
+      dotenv: repowise-impacted-tests.env
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_IMPACTED_TESTS == "true"

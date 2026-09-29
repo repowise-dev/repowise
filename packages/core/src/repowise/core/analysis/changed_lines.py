@@ -246,9 +246,17 @@ def changed_lines(
     if working_tree:
         return _working_tree_lines(repo_path, base)
 
+    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+    diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
+    return _parse_unified_diff(diff), label
+
+
+def _change_command(
+    repo_path: str, revspec: str | None, *, staged: bool
+) -> tuple[list[str], list[str], str]:
+    """``(git command, revisions, label)`` that diff a change, its refs verified."""
     if staged or not revspec:
-        diff = _git(["diff", "--cached", "--unified=0", *DIFF_ARGS], repo_path)
-        return _parse_unified_diff(diff), "staged changes"
+        return ["diff", "--cached"], [], "staged changes"
 
     if (parts := split_revspec(revspec)) is not None:
         # ``base...head`` is what a pull request changed: git diffs from the
@@ -257,8 +265,7 @@ def changed_lines(
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
         label = f"{base}{sep}{head}"
-        diff = _diff(repo_path, ["diff", "--unified=0", *DIFF_ARGS, label])
-        return _parse_unified_diff(diff), label
+        return ["diff"], [label], label
 
     _verify_ref(repo_path, revspec)
     if is_shallow_root(repo_path, revspec):
@@ -268,8 +275,69 @@ def changed_lines(
     # --format= drops the commit message so only the diff body is parsed.
     # -m --first-parent matches what change risk counts on a merge; without it
     # git's combined diff emits nothing at all and a merged PR reads as empty.
-    args = ["show", "--unified=0", *DIFF_ARGS, "--format=", "-m", "--first-parent", revspec]
-    return _parse_unified_diff(_diff(repo_path, args)), revspec
+    return ["show", "--format=", "-m", "--first-parent"], [revspec], revspec
+
+
+@dataclass
+class ChangeSet:
+    """Every path a change touched, for a reader that must not miss one.
+
+    *files* holds each path present after the change, including those
+    :func:`changed_lines` drops (a removal-only edit, a binary or mode-only
+    change, which have no new-side lines); *deleted* the paths it removed. A
+    rename reads as a deletion plus an addition. *base* and *head* are the
+    commits either side; *head* is ``None`` for staged changes, and either is
+    ``None`` when git cannot name it.
+    """
+
+    files: dict[str, FileDiff]
+    deleted: set[str]
+    label: str
+    base: str | None
+    head: str | None
+
+
+def change_set(repo_path: str, revspec: str | None = None, *, staged: bool = False) -> ChangeSet:
+    """The change :func:`changed_lines` reads, with every touched path and its ends.
+
+    Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
+    """
+    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+    tail = ["--no-renames", *revisions]
+    diffs = parse_unified_diff(_diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *tail]))
+    listing = _diff(repo_path, [*command, "--name-status", "-z", *tail])
+    fields = [f.strip("\n") for f in listing.split("\0")]
+    files: dict[str, FileDiff] = {}
+    deleted: set[str] = set()
+    for status, path in zip(fields[0::2], fields[1::2], strict=False):
+        if not path:
+            continue
+        if status.startswith("D"):
+            deleted.add(path)
+        else:
+            files[path] = diffs.get(path) or FileDiff(path=path)
+    base, head = _change_ends(repo_path, revspec, staged=staged)
+    return ChangeSet(files, deleted, label, base, head)
+
+
+def _change_ends(
+    repo_path: str, revspec: str | None, *, staged: bool
+) -> tuple[str | None, str | None]:
+    """The commits a change goes from and to; ``None`` where git names none."""
+
+    def sha(rev: str) -> str | None:
+        args = ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"]
+        return _git(args, repo_path, check=False).strip() or None
+
+    if staged or not revspec:
+        return sha("HEAD"), None
+    if (parts := split_revspec(revspec)) is not None:
+        base, sep, head = parts
+        if sep == "...":
+            fork = _git(["merge-base", base, head], repo_path, check=False).strip()
+            return fork or None, sha(head)
+        return sha(base), sha(head)
+    return sha(f"{revspec}^"), sha(revspec)
 
 
 def _working_tree_lines(repo_path: str, base: str | None) -> tuple[dict[str, set[int]], str]:
@@ -378,3 +446,23 @@ def is_shallow_root(repo_path: str, rev: str) -> bool:
         return False
     sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
     return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()
+
+
+def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:
+    """Files outside *change* that differ between *indexed_commit* and its base.
+
+    What an index built at another commit cannot see. Empty when the index was
+    built at either end of the change; ``None`` when that cannot be told (no
+    recorded commit, no base, or a commit this clone lacks).
+    """
+    if indexed_commit and indexed_commit in (change.base, change.head):
+        return []
+    if not indexed_commit or not change.base:
+        return None
+    args = ["diff", "--name-only", "-z", "--no-renames", indexed_commit, change.base]
+    try:
+        listing = _git(args, repo_path)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    touched = set(change.files) | change.deleted
+    return [p for p in listing.split("\0") if p.strip() and p not in touched]

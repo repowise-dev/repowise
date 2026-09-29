@@ -278,3 +278,79 @@ def test_change_health_refuses_a_shallow_boundary_commit(git_repo, tmp_path_fact
         text=True,
     ).stdout.strip()
     assert GitRevisionSource(str(git_repo)).resolve(root).base_sha
+
+
+# --- change_set: every touched path, for test selection -----------------------
+
+
+def _sha(cwd, rev: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", rev], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_change_set_keeps_what_changed_lines_drops(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set
+
+    (git_repo / "gone.py").write_text("x = 1\n", encoding="utf-8")
+    (git_repo / "old_name.py").write_text("y = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "more")
+    # A removal-only edit, a deletion, a rename and a binary file.
+    (git_repo / "mod.py").write_text("a = 1\nc = 3\n", encoding="utf-8")
+    (git_repo / "gone.py").unlink()
+    (git_repo / "old_name.py").rename(git_repo / "new_name.py")
+    (git_repo / "logo.png").write_bytes(b"\x89PNG\x00\x01")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "change")
+
+    change = change_set(str(git_repo), "HEAD~1..HEAD")
+    assert "mod.py" not in changed_lines(str(git_repo), "HEAD~1..HEAD")[0]
+    assert set(change.files) == {"mod.py", "new_name.py", "logo.png"}
+    assert change.deleted == {"gone.py", "old_name.py"}
+    assert change.files["mod.py"].new_lines == set()
+    assert change.files["mod.py"].old_ranges == [(2, 2)]
+    assert change.label == "HEAD~1..HEAD"
+    assert (change.base, change.head) == (_sha(git_repo, "HEAD~1"), _sha(git_repo, "HEAD"))
+
+
+def test_change_set_ends_for_a_commit_a_fork_and_the_index(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set
+
+    first = _sha(git_repo, "HEAD")
+    _git(git_repo, "branch", "-M", "main")
+    _git(git_repo, "switch", "-qc", "feat")
+    (git_repo / "mod.py").write_text("a = 1\nb = 22\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "feat edit")
+    _git(git_repo, "switch", "-q", "main")
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 33\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "base edit")
+
+    fork = change_set(str(git_repo), "main...feat")
+    assert (fork.base, fork.head) == (first, _sha(git_repo, "feat"))
+    one = change_set(str(git_repo), "main")
+    assert (one.base, one.head) == (first, _sha(git_repo, "main"))
+    (git_repo / "mod.py").write_text("a = 0\nb = 2\nc = 33\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    staged = change_set(str(git_repo))
+    assert (staged.base, staged.head) == (_sha(git_repo, "HEAD"), None)
+    assert staged.label == "staged changes" and set(staged.files) == {"mod.py"}
+    with pytest.raises(ValueError):
+        change_set(str(git_repo), "nope..HEAD")
+
+
+def test_index_gap_names_what_an_older_index_cannot_see(git_repo) -> None:
+    from repowise.core.analysis.changed_lines import change_set, index_gap
+
+    indexed = _sha(git_repo, "HEAD")
+    (git_repo / "other.py").write_text("o = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "base moves")
+    (git_repo / "mod.py").write_text("a = 9\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "change")
+
+    change = change_set(str(git_repo), "HEAD~1..HEAD")
+    assert index_gap(str(git_repo), indexed, change) == ["other.py"]
+    assert index_gap(str(git_repo), _sha(git_repo, "HEAD~1"), change) == []
+    assert index_gap(str(git_repo), None, change) is None
+    assert index_gap(str(git_repo), "0" * 40, change) is None

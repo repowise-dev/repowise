@@ -185,13 +185,15 @@ repowise impacted-tests main...HEAD            # a branch or PR, from the merge-
 repowise impacted-tests main..HEAD             # a plain range
 repowise impacted-tests abc123                 # a single commit
 repowise impacted-tests main..HEAD --format list | xargs pytest
+repowise impacted-tests main...HEAD --format args --runner pytest   # for CI
 ```
 
 | Flag | Values |
 |------|--------|
 | `--path` | Repo path (defaults to cwd, or the workspace primary) |
-| `--staged` | Diff `git diff --cached`. Implied when no range is given |
-| `--format` | `table` (default), `json` (full report), `list` (test ids, one per line) |
+| `--staged` | Diff `git diff --cached`. Implied when no range is given outside CI; in CI the default is the pull request's change |
+| `--format` | `table` (default), `json` (full report and the selection), `list` (test ids, one per line), `args` (one line of runner arguments, or `:all`) |
+| `--runner` | Who `--format args` is for: `auto` (default), `pytest`, `go`, `jest`, `files` |
 
 It always says which path fired, and it never lets a guess pass for evidence:
 
@@ -199,15 +201,31 @@ It always says which path fired, and it never lets a guess pass for evidence:
 |-----------|-------------|
 | Changed file has per-test coverage on the changed lines | The exact covering tests, `via: coverage` |
 | The changed file is itself a test | Itself, `via: changed-test` |
-| Changed file has no coverage rows, but a test reaches it in the graph | Those test files, `via: import-graph`, in the "NOT coverage-backed" table |
+| Changed file has no coverage rows, but a test reaches it in the graph | Those test files, `via: call-graph` or `via: import-graph` (a test importing it directly, through other modules, or through another test), in the "NOT coverage-backed" table |
 | No coverage and no graph edge, but a name-shaped match | That file, `via: filename-pattern`, in the same table |
 | None of the above | "unknown, run the full suite to be safe" |
 | No map ingested at all | A prompt to run `coverage add` on a report with contexts |
 
-Deletion-only files are dropped from the diff (there are no new lines to cover).
-With `--format list` the caveats go to stderr so the stdout pipe into `pytest`
-stays clean. The command exits `0` in every one of these cases, including "no
-tests found": it is a reporting tool, not a gate.
+Changed lines are looked up on the side of the diff the map was measured at:
+the old file's line numbers for a map measured at the change's base, the new
+file's for one measured at its head. A map measured at another commit, a
+deleted file, and an edit with no new lines (a removal, a binary file) are
+matched by file instead, and then the graph is asked as well, since a
+file-level match proves less. With `--format list` the caveats go to stderr so
+the stdout pipe into `pytest` stays clean. The command exits `0` in every one
+of these cases, including "no tests found": it is a reporting tool, not a gate.
+
+`--format args` turns the answer into a CI decision that fails closed: a
+subset only when every part of it is known, else `:all`, with the reasons on
+stderr. An empty change, a lockfile or build config change, a non-test file in
+a test tree, an unknown or guess-only changed file, a route through a test
+helper, a missing or out-of-date index, and a deleted file no test is known to
+use all run everything. Coverage adds to the graph's answer and never replaces
+it, and only documentation (`docs/` and root README-like files) is skipped.
+`tests.full_run_on` and
+`tests.always_run` in `.repowise/config.yaml` extend the rules. The full rule
+table, the runners and the Action and GitLab recipes are in
+[CI](../start/CI.md#selecting-the-tests-a-change-needs).
 
 A `base...head` range diffs from the merge-base of the two, so it is what a pull
 request changed: commits that landed on `base` after the branch forked stay out.
@@ -722,7 +740,7 @@ Note that `--coverage-report` is test coverage, while `--coverage` controls
 | `repowise coverage status` | Coverage summary plus test-to-code map counts. Flag: `--path` |
 | `repowise coverage check [REVSPEC]` | Patch-coverage gate for CI, no index needed. Flags: `--report`, `--report-format`, `--fail-under`, `--min-coverable-lines`, `--fail-under-risky`, `--fail-under-branches`, `--base-report`, `--max-drop`, `--path`, `--format` |
 | `repowise coverage suggest-gates` | Propose path-scoped gates for `coverage.gates` as YAML to paste below `coverage:`; writes nothing. Flags: `--path`, `--format` |
-| `repowise impacted-tests [REVSPEC]` | The tests a change exercises. Flags: `--path`, `--staged`, `--format` |
+| `repowise impacted-tests [REVSPEC]` | The tests a change exercises, or with `--format args` the runner arguments CI should run. Flags: `--path`, `--staged`, `--format`, `--runner` |
 
 Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage).
 

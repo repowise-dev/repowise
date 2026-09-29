@@ -74,3 +74,19 @@ def test_default_revspec_falls_back_to_remote_trunk(detached_repo) -> None:
 def test_default_revspec_raises_when_nothing_names_a_base(detached_repo) -> None:
     with pytest.raises(BaseNotFoundError):
         default_revspec(str(detached_repo), {})
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"CI": "true"}, True),
+        ({"GITHUB_BASE_REF": "main"}, True),
+        ({"CI": "false"}, False),
+        ({"CI": "", "GITHUB_BASE_REF": " "}, False),
+        ({}, False),
+    ],
+)
+def test_in_ci_reads_the_ci_variables(env, expected) -> None:
+    from repowise.core.ci.base import in_ci
+
+    assert in_ci(env) is expected

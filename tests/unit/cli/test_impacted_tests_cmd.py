@@ -1,0 +1,247 @@
+"""``repowise impacted-tests --format args|json``: selection against a real repo and index."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from repowise.cli.main import cli
+from repowise.core.ci.base import CI_BASE_VARS, CI_ENV_VARS
+
+
+def _git(cwd, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+
+
+async def _index(root: Path, head_commit: str) -> None:
+    """A wiki.db whose graph has tests/test_a.py importing src/a.py."""
+    from repowise.cli.helpers import resolve_command_target
+    from repowise.core.persistence.database import init_db
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+
+    db = root / ".repowise" / "wiki.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
+    await init_db(engine)
+    local_path = str(resolve_command_target(path=str(root)).repo_path)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        session.add(Repository(id="r1", name="r", local_path=local_path, head_commit=head_commit))
+        for path, is_test in (("src/a.py", False), ("src/b.py", False), ("tests/test_a.py", True)):
+            node = GraphNode(repository_id="r1", node_id=path, node_type="file", is_test=is_test)
+            session.add(node)
+        session.add(
+            GraphEdge(
+                repository_id="r1",
+                source_node_id="tests/test_a.py",
+                target_node_id="src/a.py",
+                edge_type="imports",
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """``main`` holds the code and an index built there; ``feat`` edits src/a.py and a doc."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    _write(
+        tmp_path,
+        {
+            "src/a.py": "A = 1\n",
+            "src/b.py": "B = 1\n",
+            "tests/test_a.py": "from src.a import A\n\ndef test_a():\n    assert A\n",
+            "README.md": "docs\n",
+            ".gitignore": ".repowise/\n",
+        },
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "init")
+    asyncio.run(_index(tmp_path, _git(tmp_path, "rev-parse", "HEAD")))
+    _git(tmp_path, "switch", "-qc", "feat")
+    _write(tmp_path, {"src/a.py": "A = 2\n", "README.md": "more docs\n"})
+    _git(tmp_path, "commit", "-qam", "feat")
+    return tmp_path
+
+
+def _run(repo, *args: str, env: dict[str, str] | None = None):
+    # The host CI's own variables must not pick the change.
+    env = {**dict.fromkeys((*CI_ENV_VARS, *CI_BASE_VARS), ""), **(env or {})}
+    # Separate streams: click 8.1 mixes stderr into stdout unless told not to.
+    split = "mix_stderr" in inspect.signature(CliRunner.__init__).parameters
+    runner = CliRunner(env=env, mix_stderr=False) if split else CliRunner(env=env)
+    return runner.invoke(cli, ["impacted-tests", "--path", str(repo), *args])
+
+
+def _err(result) -> str:
+    """Stderr with rich's line wrapping undone."""
+    return " ".join(result.stderr.split())
+
+
+def test_args_prints_the_subset_on_one_line(repo) -> None:
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+    assert "1 argument(s) for pytest." in _err(result)
+    assert "documentation: no tests needed" in _err(result)
+
+
+def test_json_adds_the_selection_to_the_report(repo) -> None:
+    result = _run(repo, "main...feat", "--format", "json", "--runner", "files")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["inferred_tests"] == [
+        {"source_file": "src/a.py", "test_file": "tests/test_a.py", "via": "import-graph"}
+    ]
+    assert data["run_all"] is False
+    assert data["runner"] == "files" and data["args"] == ["tests/test_a.py"]
+    assert data["selected"]["skipped_files"] == ["README.md"]
+    assert data["selected"]["basis"] == {"README.md": "no-tests-needed", "src/a.py": "import-graph"}
+
+
+def test_a_lockfile_change_runs_everything_and_says_why(repo) -> None:
+    _write(repo, {"uv.lock": "lock\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "deps")
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ":all\n"
+    assert "uv.lock changed: dependencies can change any test." in _err(result)
+
+
+def test_a_new_untested_file_runs_everything(repo) -> None:
+    _write(repo, {"src/c.py": "C = 1\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "new")
+    result = _run(repo, "main...feat", "--format", "json")
+    data = json.loads(result.stdout)
+    assert data["run_all"] is True and data["args"] == [":all"]
+    assert data["reasons"][0].startswith("src/c.py: no coverage")
+
+
+def test_no_index_runs_everything(repo) -> None:
+    (repo / ".repowise" / "wiki.db").unlink()
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ":all\n"
+    assert "No index" in _err(result)
+
+
+def test_an_index_behind_the_base_runs_everything(repo) -> None:
+    # main moves past the indexed commit, and the branch is rebased onto it.
+    _git(repo, "switch", "-q", "main")
+    _write(repo, {"src/b.py": "B = 2\n"})
+    _git(repo, "commit", "-qam", "main moves")
+    _git(repo, "switch", "-q", "feat")
+    _git(repo, "rebase", "-q", "main")
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "The index predates 1 changed file(s) outside this change (e.g. src/b.py)" in (
+        _err(result)
+    )
+
+
+def test_in_ci_the_default_change_is_the_pull_requests(repo) -> None:
+    # Nothing is staged, so the local default would select nothing at all.
+    result = _run(repo, "--format", "args", env={"CI": "true"})
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+    # Locally the default is the staged changes, and nothing is staged: that is
+    # no change to select from, never "no tests needed".
+    local = _run(repo, "--format", "args")
+    assert local.stdout == ":all\n"
+    assert "No change against staged changes; nothing to select from." in _err(local)
+
+
+def test_a_bad_config_cannot_evaluate(repo) -> None:
+    _write(repo, {".repowise/config.yaml": "tests:\n  full_run_on: schema/**\n"})
+    result = _run(repo, "main...feat", "--format", "json")
+    assert result.exit_code == 2
+    data = json.loads(result.stdout)
+    assert data["error"] == "config_invalid"
+    assert data["message"].startswith("tests.full_run_on must be a list")
+    args = _run(repo, "main...feat", "--format", "args")
+    assert args.exit_code == 2 and args.stdout == ""
+
+
+def test_config_extends_the_full_run_triggers(repo) -> None:
+    _write(repo, {".repowise/config.yaml": "tests:\n  full_run_on: ['README.md']\n"})
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "README.md changed: it matches tests.full_run_on." in _err(result)
+
+
+def test_an_unknown_revision_cannot_evaluate(repo) -> None:
+    result = _run(repo, "nope...feat", "--format", "args")
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
+def test_json_reports_the_indexed_commit_and_map_state(repo) -> None:
+    data = json.loads(_run(repo, "main...feat", "--format", "json").stdout)
+    assert data["indexed_commit"] == _git(repo, "rev-parse", "main")
+    assert data["map_current"] is True
+
+
+def test_list_prints_one_test_per_line(repo) -> None:
+    result = _run(repo, "main...feat", "--format", "list")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+
+
+def test_an_index_that_disagrees_about_its_commit_runs_everything(repo) -> None:
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": _git(repo, "rev-parse", "feat")}), encoding="utf-8"
+    )
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "The index records two commits" in _err(result)
+
+
+def test_a_graph_that_cannot_be_read_runs_everything(repo, monkeypatch) -> None:
+    from repowise.cli.commands import impacted_tests_cmd
+
+    async def _broken(*_a, **_k):
+        raise RuntimeError("edge table locked")
+
+    monkeypatch.setattr(impacted_tests_cmd, "_graph_candidates", _broken)
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "The graph could not be read (RuntimeError: edge table locked)" in _err(result)
+
+
+def test_a_changed_file_in_the_test_tree_that_is_not_a_test_runs_everything(repo) -> None:
+    _write(repo, {"tests/data/users.json": "[]\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "data")
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "tests/data/users.json is in a test tree but is not code" in _err(result)
+
+
+def test_a_changed_test_package_init_selects_the_tests_under_it(repo) -> None:
+    _write(repo, {"tests/__init__.py": "# package\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "tests package")
+    result = _run(repo, "main...feat", "--format", "json")
+    data = json.loads(result.stdout)
+    assert data["run_all"] is False, data["reasons"]
+    assert data["selected"]["basis"]["tests/__init__.py"] == "test-package"
+    assert data["args"] == ["tests/test_a.py"]

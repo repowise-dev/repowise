@@ -374,3 +374,179 @@ def test_no_check_selected_is_refused(tmp_path, fake_repowise) -> None:
     code, _, calls = _run(tmp_path, fake_repowise, CHECKS=" ")
     assert code == 2
     assert calls == ""
+
+
+# -- test selection -----------------------------------------------------------
+
+SELECTOR = ROOT / "ci" / "github" / "impacted-tests.sh"
+
+
+@pytest.fixture
+def fake_selector(tmp_path: Path) -> Path:
+    """A ``repowise`` that logs its arguments; ``update`` exits ``$FAKE_UPDATE``,
+    anything else prints ``$FAKE_OUT`` and exits ``$FAKE_CODE``."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "repowise"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "$*" >> "$FAKE_LOG"\n'
+        'if [ "$1" = update ]; then exit "${FAKE_UPDATE:-0}"; fi\n'
+        'echo "why it chose" >&2\n'
+        'printf "%s\\n" "${FAKE_OUT-}"\n'
+        'exit "${FAKE_CODE:-0}"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    return bin_dir
+
+
+def _outputs(text: str) -> dict[str, str]:
+    """``$GITHUB_OUTPUT`` parsed the way the runner does, delimiter form included."""
+    out: dict[str, str] = {}
+    lines = iter(text.splitlines())
+    for line in lines:
+        if "<<" in line:
+            name, delim = line.split("<<", 1)
+            out[name] = "\n".join(iter(lambda: next(lines), delim))
+        else:
+            name, value = line.split("=", 1)
+            out[name] = value
+    return out
+
+
+def test_the_selection_step_reads_only_what_the_action_passes() -> None:
+    step = next(s for s in _action()["runs"]["steps"] if s.get("id") == "impacted")
+    read = set(re.findall(r"\$\{?([A-Z][A-Z_]+)", SELECTOR.read_text(encoding="utf-8")))
+    assert read - {"GITHUB_OUTPUT", "GITHUB_BASE_REF", "RANDOM"} <= set(step["env"])
+    assert set(step["env"]) - {"PYTHONUTF8"} <= read
+    assert step["if"] == "inputs.impacted-tests == 'true'"
+    outputs = _action()["outputs"]
+    assert outputs["impacted-tests"]["value"] == "${{ steps.impacted.outputs.impacted-tests }}"
+    assert outputs["run-all-tests"]["value"] == "${{ steps.impacted.outputs.run-all-tests }}"
+
+
+def _select(
+    tmp_path: Path, bin_dir: Path, *, cached: bool = False, **env: str
+) -> tuple[int, dict[str, str], list[str]]:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is not available")
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    if cached:
+        (repo / ".repowise").mkdir(exist_ok=True)
+        (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    out, log = tmp_path / "out", tmp_path / "log"
+    full = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(out),
+        "GITHUB_BASE_REF": "",
+        "FAKE_LOG": str(log),
+        "BASE": "",
+        "RUNNER": "auto",
+        **env,
+    }
+    proc = subprocess.run([bash, str(SELECTOR)], cwd=repo, env=full, capture_output=True, text=True)
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return proc.returncode, _outputs(out.read_text(encoding="utf-8")), calls
+
+
+def test_the_selection_step_passes_the_subset_on(tmp_path, fake_selector) -> None:
+    code, outputs, calls = _select(
+        tmp_path,
+        fake_selector,
+        BASE="origin/main...HEAD",
+        RUNNER="pytest",
+        FAKE_OUT="tests/test_a.py 'tests/test_b.py::test_x[a b]'",
+    )
+    assert code == 0
+    assert calls == ["impacted-tests origin/main...HEAD --format args --runner pytest"]
+    assert outputs == {
+        "impacted-tests": "tests/test_a.py 'tests/test_b.py::test_x[a b]'",
+        "run-all-tests": "false",
+    }
+
+
+def test_the_selection_step_flags_a_full_run(tmp_path, fake_selector) -> None:
+    code, outputs, calls = _select(tmp_path, fake_selector, FAKE_OUT=":all")
+    assert code == 0
+    # Without a base the CLI reads the pull request's target itself.
+    assert calls == ["impacted-tests --format args --runner auto"]
+    assert outputs == {"impacted-tests": ":all", "run-all-tests": "true"}
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"FAKE_OUT": "", "FAKE_CODE": "2"},  # could not evaluate
+        {"FAKE_OUT": "tests/test_a.py\nrun-all-tests=false"},  # not one line
+    ],
+)
+def test_a_selection_that_cannot_be_trusted_runs_every_test(tmp_path, fake_selector, env) -> None:
+    code, outputs, _ = _select(tmp_path, fake_selector, **env)
+    assert code == 0
+    assert outputs == {"impacted-tests": ":all", "run-all-tests": "true"}
+
+
+def test_the_selection_step_updates_a_cached_index_first(tmp_path, fake_selector) -> None:
+    code, outputs, calls = _select(tmp_path, fake_selector, cached=True, FAKE_OUT="t.py")
+    assert code == 0
+    assert calls == ["update --index-only", "impacted-tests --format args --runner auto"]
+    assert outputs["run-all-tests"] == "false"
+    failed, outputs, calls = _select(tmp_path, fake_selector, cached=True, FAKE_UPDATE="1")
+    assert failed == 0
+    assert calls[-1] == "update --index-only"
+    assert outputs == {"impacted-tests": ":all", "run-all-tests": "true"}
+
+
+def _gitlab_select(tmp_path, bin_dir, *, cached: bool = False, **env) -> tuple[int, str, str]:
+    if cached:
+        (tmp_path / ".repowise").mkdir(exist_ok=True)
+        (tmp_path / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    code = _run_gitlab_job(
+        tmp_path, bin_dir, "repowise-impacted-tests", REPOWISE_IMPACTED_TESTS_RUNNER="go", **env
+    )
+    report = (tmp_path / "repowise-impacted-tests.env").read_text(encoding="utf-8")
+    return code, report, (tmp_path / "impacted-tests.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("out", "exit_code", "args", "run_all"),
+    [
+        ("./pkg/x", "0", "./pkg/x\n", "false"),
+        (":all", "0", ":all\n", "true"),
+        ("", "2", ":all\n", "true"),  # could not evaluate
+        ("./a\n./b", "0", ":all\n", "true"),  # not one line
+    ],
+)
+def test_the_gitlab_selection_job_fails_closed(
+    tmp_path, fake_selector, out, exit_code, args, run_all
+) -> None:
+    job = _gitlab_jobs()["repowise-impacted-tests"]
+    assert "allow_failure" not in job  # it never fails: a failure means run everything
+    assert job["artifacts"]["reports"]["dotenv"] == "repowise-impacted-tests.env"
+    assert job["artifacts"]["paths"] == ["impacted-tests.txt"]
+    assert "$REPOWISE_IMPACTED_TESTS" in job["rules"][0]["if"]
+    code, report, written = _gitlab_select(
+        tmp_path, fake_selector, FAKE_OUT=out, FAKE_CODE=exit_code
+    )
+    assert code == 0
+    assert (tmp_path / "log").read_text(encoding="utf-8").strip() == (
+        "impacted-tests origin/main...HEAD --format args --runner go"
+    )
+    # Only the flag travels as a variable; the arguments are an artifact.
+    assert report == f"RUN_ALL_TESTS={run_all}\n"
+    assert written == args
+
+
+def test_the_gitlab_job_runs_everything_when_the_cache_cannot_update(
+    tmp_path, fake_selector
+) -> None:
+    code, report, written = _gitlab_select(tmp_path, fake_selector, cached=True, FAKE_UPDATE="1")
+    assert code == 0
+    assert report == "RUN_ALL_TESTS=true\n" and written == ":all\n"
+    assert (tmp_path / "log").read_text(encoding="utf-8").strip() == "update --index-only"
