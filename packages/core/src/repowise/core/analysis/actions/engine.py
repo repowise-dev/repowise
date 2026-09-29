@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from .context import RepoContext, build_context
@@ -59,7 +59,7 @@ def _hidden(action: Action, record: ActionStateRecord | None, now: datetime) -> 
 
 
 def _naive(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo else value
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
 def _order(actions: list[Action]) -> list[Action]:
@@ -93,15 +93,16 @@ def compose_actions(
     outcomes = [rule(facts, ctx) for rule in RULES]
     actions = [a for o in outcomes for a in o.actions]
 
-    # A folder action speaks for the fragile files inside it; listing both
-    # tells one story twice.
-    absorbed = {p for a in actions for p in a.includes}
-    actions = [a for a in actions if not (a.rule == "fragile_file" and a.target_path in absorbed)]
-
     states = states or {}
     horizons: dict[str, Any] = {}
     for horizon in HORIZONS:
         pool = [a for a in actions if horizon in a.horizons]
+        # A folder action speaks for the fragile files inside it, in the time
+        # frame it appears in; listing both there tells one story twice. The
+        # week's regression roll-up names files too, but only as a starting
+        # point, so it absorbs nothing.
+        absorbed = {p for a in pool if a.rule == "fix_concentration" for p in a.includes}
+        pool = [a for a in pool if not (a.rule == "fragile_file" and a.target_path in absorbed)]
         visible = [a for a in pool if not _hidden(a, states.get(a.action_id), now)]
         ordered = _order(visible)
         by_tier: dict[str, int] = {}

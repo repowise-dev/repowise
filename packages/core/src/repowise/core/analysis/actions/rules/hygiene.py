@@ -50,7 +50,13 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     for path, found in by_file.items():
         public = all(s.kind == PUBLIC_ENV_KIND for s in found)
         lines = sorted({s.line for s in found if s.line})
-        where = f"line {lines[0]}" if len(lines) == 1 else plural(len(lines), "line")
+        where = (
+            f"line {lines[0]}"
+            if len(lines) == 1
+            else plural(len(lines), "line")
+            if lines
+            else "Unknown line"
+        )
         if public:
             title = f"Keep the secret out of a public environment variable in {code(path)}"
             impact = (
@@ -188,7 +194,10 @@ def dead_code_batch(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         tier="plan",
         horizons=("quarter",),
         severity="low",
-        title=f"Delete {plural(len(found), 'unused symbol')} ({lines:,} lines)",
+        title=(
+            f"Delete {len(found):,} unused "
+            f"{'symbol or file' if len(found) == 1 else 'symbols and files'} ({lines:,} lines)"
+        ),
         impact=(
             f"Nothing in the graph reaches them, across {plural(len(files), 'file')}; "
             "every reader and agent pays to skip them."
@@ -271,7 +280,7 @@ def knowledge_loss(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     for f in facts.files.values():
         if f.is_test or f.owner_key is None or (f.owner_pct or 0) < 0.8:
             continue
-        if f.commits_90d < ctx.busy_threshold:
+        if f.commits_90d < ctx.busy_threshold or (f.bus_factor or 1) > 1:
             continue
         last = facts.author_last_commit.get(f.owner_key)
         if last is None:

@@ -385,7 +385,7 @@ def test_dead_code_excludes_standalone_dirs() -> None:
     real = tuple(DeadFacts(f"d{i}", "src/a.py", f"f{i}", 5) for i in range(3))
     (a,) = _run(hygiene.dead_code_batch, _facts(dead=standalone + real)).actions
     assert a.evidence_total == 3
-    assert a.title == "Delete 3 unused symbols (15 lines)"
+    assert a.title == "Delete 3 unused symbols and files (15 lines)"
 
 
 # ---------------------------------------------------------------------------
@@ -550,3 +550,33 @@ def test_action_id_is_stable_for_rule_and_target() -> None:
     (c,) = _run(hygiene.broken_doc_refs, _facts(drift=(_drift(document="docs/x.md"),))).actions
     assert c.action_id != a.action_id
     assert a.action_id.startswith("act_")
+
+
+# ---------------------------------------------------------------------------
+# Review regressions
+# ---------------------------------------------------------------------------
+
+
+def test_week_rollup_does_not_hide_a_fragile_file_from_the_quarter() -> None:
+    fragile = _file("src/f0.py", fix_commits_90d=9, commits_90d=20)
+    found = tuple(_recent(f"src/f{i}.py") for i in range(4))
+    view = compose_actions(_facts([fragile], recent_findings=found), now=ANCHOR)
+    quarter = [a["target"]["path"] for a in view["horizons"]["quarter"]["actions"]]
+    assert "src/f0.py" in quarter
+
+
+def test_two_perf_opportunities_on_one_symbol_keep_distinct_ids() -> None:
+    one = _perf(opportunity_id="op1", boundary="db")
+    two = _perf(opportunity_id="op2", boundary="network")
+    ids = {a.action_id for a in _run(code.hot_path_perf, _facts(perf=(one, two))).actions}
+    assert len(ids) == 2
+
+
+def test_fragile_id_survives_a_change_of_lead_function() -> None:
+    lead = LeadFinding("complex_method", "high", "a", 1, "")
+    before = _file("src/x.py", fix_commits_90d=9, commits_90d=20, line_coverage_pct=90.0, lead=lead)
+    after = replace(before, lead=replace(lead, function="b"))
+    ctx = dict(busy_threshold=5, fix_threshold=3)
+    (a,) = _run(code.fragile_file, _facts([before]), **ctx).actions
+    (b,) = _run(code.fragile_file, _facts([after]), **ctx).actions
+    assert a.action_id == b.action_id

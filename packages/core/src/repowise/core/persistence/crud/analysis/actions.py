@@ -490,7 +490,9 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
     # One ingest writes every row with the same commit, so the rows alone say
     # when and where coverage was measured; ``coverage_ingests`` (newer
     # indexes) adds provenance this reader does not need.
-    status = "measured" if latest_sha and head_sha and latest_sha == head_sha else "stale"
+    # Stale only when both commits are known and differ; a row without a commit
+    # cannot be called out of date.
+    status = "stale" if latest_sha and head_sha and latest_sha != head_sha else "measured"
     return {"coverage": CoverageState(status, latest_at, int(count))}
 
 

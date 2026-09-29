@@ -2,6 +2,7 @@ import * as React from "react";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
+import { fileEntityPath } from "../shared/entity";
 import { StatRibbon } from "../stats/stat-ribbon";
 import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
@@ -9,6 +10,7 @@ import { CommitRows, DecisionRows, type CommitRow } from "./activity-lists";
 import { ChangeLine } from "./change-line";
 import { ExploreList } from "./explore-list";
 import { HealthLede } from "./health-lede";
+import { HotspotTable } from "./hotspot-table";
 import { LanguageBar } from "./language-bar";
 import {
   buildChangeStats,
@@ -26,6 +28,7 @@ import { OverviewSection, SectionLink } from "./section";
 /** How many rows each list section shows before deferring to its own page. */
 const ATTENTION_ROWS = 6;
 const DECISION_ROWS = 6;
+const HOTSPOT_ROWS = 5;
 
 export interface OverviewBodySlots {
   /** The identity header. Each host builds its own: OSS carries reindex
@@ -203,6 +206,28 @@ export function OverviewBody({
           </div>
         </div>
       </OverviewSection>
+
+      {/* A host without actions keeps the hotspot table: with "Do next", its
+          files arrive as fragile-file and bug-fix concentration actions with
+          the reason attached, and a second "riskiest files" list would
+          disagree with Code Health's. */}
+      {!slots.actions && summary.top_hotspots.length > 0 && (
+        <OverviewSection
+          title="Where the risk concentrates"
+          description="Ranked by prior bug fixes and change frequency, mined from full git history rather than from the code alone."
+          action={
+            <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={LinkComponent}>
+              {`All ${formatNumber(stats.hotspot_count)} hotspots`}
+            </SectionLink>
+          }
+        >
+          <HotspotTable
+            hotspots={summary.top_hotspots.slice(0, HOTSPOT_ROWS)}
+            hrefFor={(path) => fileEntityPath(base, path)}
+            LinkComponent={LinkComponent}
+          />
+        </OverviewSection>
+      )}
 
       {/* The areas, now as the inventory behind "Do next": every detector's
           count and its worst example, folded because the list above already

@@ -73,10 +73,16 @@ function formatDay(iso: string | null): string | null {
  * sees it, and names the window, because "this week" means the repository's
  * last week of commits, which is not always the calendar's.
  */
-export function actionsStatus(data: ActionsResponse, horizon: ActionHorizonKey): string {
+export function actionsStatus(
+  data: ActionsResponse,
+  horizon: ActionHorizonKey,
+  answered: ReadonlySet<string> = new Set(),
+): string {
   const h = data.horizons[horizon];
-  const work = (h.by_tier.act_now ?? 0) + (h.by_tier.plan ?? 0);
-  const now = h.by_tier.act_now ?? 0;
+  const gone = (tier: ActionTier) =>
+    h.actions.filter((a) => a.tier === tier && answered.has(a.id)).length;
+  const now = (h.by_tier.act_now ?? 0) - gone("act_now");
+  const work = now + (h.by_tier.plan ?? 0) - gone("plan");
   const until = formatDay(data.anchor);
   const window =
     horizon === "week"
@@ -101,8 +107,13 @@ export function actionsStatus(data: ActionsResponse, horizon: ActionHorizonKey):
 export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
-  const work = (key: ActionHorizonKey) =>
-    data ? (data.horizons[key].by_tier.act_now ?? 0) + (data.horizons[key].by_tier.plan ?? 0) : 0;
+  const work = (key: ActionHorizonKey, less: ReadonlySet<string> = new Set()) =>
+    data
+      ? (data.horizons[key].by_tier.act_now ?? 0) +
+        (data.horizons[key].by_tier.plan ?? 0) -
+        data.horizons[key].actions.filter((a) => a.tier !== "improve_signal" && less.has(a.id))
+          .length
+      : 0;
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
@@ -153,14 +164,14 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
   return (
     <OverviewSection
       title="Do next"
-      description={actionsStatus(data, horizon)}
+      description={actionsStatus(data, horizon, answered)}
       action={
         <Segmented
           label="Time frame"
           value={horizon}
           options={[
-            { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
-            { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
+            { value: "week", label: "This week", count: String(work("week", answered)), hint: "What the last 7 days of commits changed" },
+            { value: "quarter", label: "This quarter", count: String(work("quarter", answered)), hint: "What the last 90 days say is worth planning" },
           ]}
           onChange={(v) => {
             setHorizon(v);
@@ -169,7 +180,11 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
         />
       }
     >
-      {shown.length === 0 ? (
+      {shown.length === 0 && answered.size > 0 && h.actions.length > 0 ? (
+        <p className="py-2 text-sm text-[var(--color-text-secondary)]">
+          You have answered everything listed here. Answers are kept until the facts change.
+        </p>
+      ) : shown.length === 0 ? (
         <EmptyActions data={data} />
       ) : (
         <div className="flex flex-col">
@@ -210,8 +225,11 @@ export function NextActions({ data, hrefFor, onSetState, repoName, LinkComponent
             {`Listing ${rows.length.toLocaleString()} of ${total.toLocaleString()}.`}
           </span>
         )}
-        {h.hidden > 0 && (
-          <span className="tabular-nums">{`${plural(h.hidden, "action")} dismissed or snoozed.`}</span>
+        {h.hidden + (h.actions.length - rows.length) > 0 && (
+          <span className="tabular-nums">{`${plural(
+            h.hidden + (h.actions.length - rows.length),
+            "action",
+          )} answered (done, snoozed or dismissed).`}</span>
         )}
         {unavailable.length > 0 && (
           <span>
@@ -250,7 +268,7 @@ function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
   return out;
 }
 
-function ActionRow({
+export function ActionRow({
   action,
   href,
   LinkComponent,
@@ -356,9 +374,14 @@ function ActionRow({
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:inline">
-          {`${EFFORT_LABEL[action.effort]} effort`}
-          {action.confidence === "medium" && ", worth a check"}
+        <span className="text-xs text-[var(--color-text-tertiary)]">
+          <span className="hidden sm:inline">{`${EFFORT_LABEL[action.effort]} effort`}</span>
+          {action.confidence === "medium" && (
+            <>
+              <span className="hidden sm:inline">, </span>
+              <span>worth a check</span>
+            </>
+          )}
         </span>
         <RowOverflow label={`More for ${plainTitle}`} items={items} />
       </div>

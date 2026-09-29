@@ -76,3 +76,19 @@ async def test_put_state_hides_the_action(actions_client: AsyncClient, session_f
     cleared = await actions_client.put(f"{url}/{secret['id']}/state", json={"state": None})
     assert cleared.status_code == 200
     assert (await actions_client.get(url)).json()["horizons"]["quarter"]["hidden"] == 0
+
+
+async def test_unknown_repository_is_404(actions_client: AsyncClient) -> None:
+    assert (await actions_client.get("/api/repos/nope/actions")).status_code == 404
+    resp = await actions_client.put(
+        "/api/repos/nope/actions/act_0123456789abcdef/state", json={"state": "dismissed"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_overlong_action_id_is_rejected(actions_client: AsyncClient) -> None:
+    repo = await create_test_repo(actions_client)
+    resp = await actions_client.put(
+        f"/api/repos/{repo['id']}/actions/{'x' * 40}/state", json={"state": "dismissed"}
+    )
+    assert resp.status_code == 422

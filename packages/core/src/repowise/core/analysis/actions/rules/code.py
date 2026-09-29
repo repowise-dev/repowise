@@ -75,9 +75,10 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
     lead = max(found, key=lambda f: (f.severity == "critical", f.line or 0))
     if len(symbols) == 1:
         title = f"Simplify {code(symbols[0])} in {code(path)} while the change is fresh"
+    elif symbols:
+        title = f"Tidy {plural(len(symbols), 'function')} you changed in {code(path)} this week"
     else:
-        count = len(symbols) or len(found)
-        title = f"Tidy {plural(count, 'function')} you changed in {code(path)} this week"
+        title = f"Tidy what this week's changes left in {code(path)}"
     latest = max(commits.values(), key=lambda f: f.committed_at or ctx.anchor)
     return Action(
         rule="fresh_regressions",
@@ -86,12 +87,12 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         severity="critical" if critical else "high",
         title=title,
         impact=(
-            f"{plural(len(commits), 'commit')} in the last 7 days added "
+            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened "
             f"{plural(len(found), 'critical or high finding')} here, still open. "
             "Fixing now costs less than after the next change."
         ),
         why=(
-            WhyFact("serious findings added", str(len(found))),
+            WhyFact("serious findings", str(len(found))),
             WhyFact("critical", str(critical)),
             WhyFact("latest commit", latest.subject[:72] or latest.sha[:7]),
         ),
@@ -122,16 +123,16 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         horizons=("week",),
         severity="critical" if critical else "high",
         title=(
-            f"Clean up what this week's commits added: {plural(len(found), 'serious finding')} "
+            f"Clean up what this week's commits left: {plural(len(found), 'serious finding')} "
             f"in {len(ranked):,} files"
         ),
         impact=(
-            f"{plural(len(commits), 'commit')} in the last 7 days added them and they are "
+            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened them, and they are "
             f"still open. Start with {code(worst_path)}"
             + (f", which has {worst_critical} critical." if worst_critical else ".")
         ),
         why=(
-            WhyFact("serious findings added", str(len(found))),
+            WhyFact("serious findings", str(len(found))),
             WhyFact("critical", str(critical)),
             WhyFact("files", str(len(ranked))),
         ),
@@ -229,6 +230,7 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 target_kind="file",
                 target_path=f.path,
                 target_symbol=f.lead.function if variant == "simplify" and f.lead else None,
+                identity=f.path,
                 surface="file",
                 effort="M" if (f.nloc or 0) < 600 else "L",
                 confidence="high" if variant != "unknown" else "medium",
@@ -381,7 +383,8 @@ def hot_path_perf(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 title=title,
                 impact=(
                     f"{plural(p.call_sites, 'loop')} across {plural(p.files, 'file')} "
-                    "reach it from code an entry point calls, once per item."
+                    f"{'reaches' if p.call_sites == 1 else 'reach'} it from code an entry "
+                    "point calls, once per item."
                 ),
                 why=(
                     WhyFact("file", posixpath.basename(p.file_path)),
@@ -398,6 +401,7 @@ def hot_path_perf(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 target_kind="symbol" if p.symbol else "file",
                 target_path=p.file_path,
                 target_symbol=p.symbol,
+                identity=p.opportunity_id,
                 surface="performance",
                 effort=_effort(p.effort),
                 confidence="high" if p.actionability == "plan_ready" else "medium",

@@ -9,7 +9,7 @@ measured, and "busy" means a different commit count in each.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from .facts import RepoFacts
 
@@ -56,7 +56,7 @@ class RepoContext:
 def _naive(value: datetime) -> datetime:
     # SQLite hands back naive datetimes and Postgres aware ones; compare in UTC
     # wall time either way.
-    return value.replace(tzinfo=None) if value.tzinfo else value
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
 def _percentile(values: list[int], q: float) -> int:

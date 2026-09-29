@@ -100,6 +100,11 @@ class Action:
     #: Rule-local ordering weight, comparable only within its rule.
     weight: float = 0.0
     target_symbol: str | None = None
+    #: What makes this action the same action next time, when the target alone
+    #: does not: two performance opportunities can share a symbol, and a
+    #: fragile file's lead function can change without the file's story
+    #: changing. Defaults to ``target_path:target_symbol``.
+    identity: str | None = None
     evidence_ids: tuple[str, ...] = ()
     evidence_total: int = 0
     #: Files a folder-level action absorbed, so their own rows do not repeat.
@@ -114,7 +119,8 @@ class Action:
 
     @property
     def action_id(self) -> str:
-        key = f"{self.rule}:{self.target_path}:{self.target_symbol or ''}"
+        identity = self.identity or f"{self.target_path}:{self.target_symbol or ''}"
+        key = f"{self.rule}:{identity}"
         return "act_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
     def as_dict(self) -> dict[str, Any]:

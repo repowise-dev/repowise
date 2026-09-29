@@ -78,7 +78,7 @@ class ActionStateRequest(BaseModel):
     state: Literal["dismissed", "snoozed", "done"] | None = Field(
         description="None clears the person's answer."
     )
-    fingerprint: str = ""
+    fingerprint: str = Field("", max_length=32)
     snooze_days: int = Field(14, ge=1, le=365)
 
 
@@ -86,3 +86,25 @@ class ActionStateResponse(BaseModel):
     action_id: str
     state: Literal["dismissed", "snoozed", "done"] | None
     until: datetime | None = None
+
+
+class WorkspaceRepoActions(BaseModel):
+    alias: str
+    repo_id: str | None
+    status: Literal["available", "unavailable"]
+    reason: str = ""
+    #: The strongest work per horizon (act now and plan tiers only), with totals.
+    horizons: dict[Literal["week", "quarter"], ActionHorizon] = Field(default_factory=dict)
+
+
+class WorkspaceCrossRepoAction(BaseModel):
+    kind: Literal["breaking_contract"]
+    title: str
+    impact: str
+    count: int
+    repos: list[str]
+
+
+class WorkspaceActionsResponse(BaseModel):
+    repos: list[WorkspaceRepoActions]
+    cross_repo: list[WorkspaceCrossRepoAction]
