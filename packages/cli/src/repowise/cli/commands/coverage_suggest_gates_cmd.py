@@ -100,7 +100,7 @@ def _graph(root: Path, layout_paths: set[tuple[str, ...]]):
     # One id for every file: the index never computed communities.
     if len(set(communities.values())) <= 1:
         return GateSource("graph", f"{at} has no communities computed")
-    gates, cut = community_gates(communities)
+    gates, cut = community_gates(communities, _file_sizes(root, communities))
     gates = [g for g in gates if g.paths not in layout_paths]
     if not gates:
         return GateSource(
@@ -108,6 +108,17 @@ def _graph(root: Path, layout_paths: set[tuple[str, ...]]):
             f"{at}: no community of {MIN_COMMUNITY_FILES}+ source files beyond the packages",
         )
     return GateSource("graph", at + (f"; {cut} smaller communities not shown" if cut else ""), gates)
+
+
+def _file_sizes(root: Path, files) -> dict[str, int]:
+    """Bytes per file on disk, for naming a root-level community; a missing file is left out."""
+    sizes: dict[str, int] = {}
+    for rel in files:
+        try:
+            sizes[rel] = (root / rel).stat().st_size
+        except OSError:
+            continue
+    return sizes
 
 
 async def _read_graph(root: Path) -> tuple[dict[str, int], str | None] | str:

@@ -102,6 +102,45 @@ describe("PatchCoverageSummary", () => {
     expect(screen.queryByText(/ignored by/)).toBeNull();
   });
 
+  it("marks stale coverage and lists what the report does not measure", () => {
+    const base = coverage(1);
+    render(
+      <PatchCoverageSummary
+        coverage={{
+          ...base,
+          files: [
+            {
+              file_path: "src/core.ts",
+              status: "measured",
+              changed_line_count: 5,
+              coverable_line_count: 3,
+              covered_line_count: 2,
+              patch_coverage_pct: 66.66,
+              uncovered_ranges: [
+                [3, 3],
+                [7, 9],
+              ],
+            },
+            {
+              file_path: "src/new.ts",
+              status: "not_in_report",
+              changed_line_count: 4,
+              coverable_line_count: 0,
+              covered_line_count: 0,
+              patch_coverage_pct: null,
+              uncovered_ranges: [],
+            },
+          ],
+          scope: { ...base.scope, freshness: "stale" },
+        }}
+      />,
+    );
+    expect(screen.getByText("abcdef1")).toBeTruthy();
+    expect(screen.getByText(/not at this change's head/)).toBeTruthy();
+    expect(screen.getByText("lines 3, 7-9")).toBeTruthy();
+    expect(screen.getByText("not in report")).toBeTruthy();
+  });
+
   it("counts changed files coverage.ignore left out", () => {
     const base = coverage(1);
     render(

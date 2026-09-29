@@ -1132,7 +1132,6 @@ async def _patch_coverage_block(
     head_commit = None
     if not result.working_tree:
         head_commit = git_refs.resolve(str(ctx.path), revspec_head(revspec)) or None
-    cfg = configured_coverage(ctx.path)
     try:
         async with get_session(session_factory) as session:
             patch = await stored_patch_coverage(
@@ -1141,10 +1140,7 @@ async def _patch_coverage_block(
                 changed,
                 label=result.features.ref,
                 head_commit=head_commit,
-                min_coverable_lines=cfg.min_coverable_lines,
-                ignore=cfg.ignore,
-                gates=cfg.gates,
-                config_errors=cfg.gate_errors,
+                config=configured_coverage(ctx.path),
             )
     except (LookupError, SQLAlchemyError):
         return None

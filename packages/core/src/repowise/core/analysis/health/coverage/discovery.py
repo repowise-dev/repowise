@@ -222,41 +222,70 @@ def _path_gates(value: object) -> tuple[tuple[PathGate, ...], tuple[str, ...]]:
     return tuple(gates), tuple(errors)
 
 
+class _InvalidGateError(Exception):
+    """Why one ``coverage.gates`` entry cannot be used; the message says so."""
+
+
 def _parse_path_gate(entry: object, taken: set[str]) -> PathGate | str:
-    """One ``coverage.gates`` entry, or what is wrong with it."""
+    """One ``coverage.gates`` entry, or what is wrong with it (the first problem found)."""
+    try:
+        fields = _gate_fields(entry)
+        return PathGate(
+            _gate_name(fields.get("name"), taken),
+            _gate_paths(fields.get("paths")),
+            _gate_threshold(fields.get("fail_under")),
+            _gate_informational(fields.get("informational", False)),
+        )
+    except _InvalidGateError as exc:
+        return str(exc)
+
+
+def _gate_fields(entry: object) -> dict:
     if not isinstance(entry, dict):
-        return "must be a mapping with name and paths."
+        raise _InvalidGateError("must be a mapping with name and paths.")
     unknown = sorted(str(k) for k in entry if k not in _PATH_GATE_KEYS)
     if unknown:
-        return f"unknown key {', '.join(unknown)}; expected {', '.join(_PATH_GATE_KEYS)}."
-    name = entry.get("name")
+        raise _InvalidGateError(
+            f"unknown key {', '.join(unknown)}; expected {', '.join(_PATH_GATE_KEYS)}."
+        )
+    return entry
+
+
+def _gate_name(name: object, taken: set[str]) -> str:
     if not isinstance(name, str) or not name.strip():
-        return "name must be a non-empty string."
+        raise _InvalidGateError("name must be a non-empty string.")
     if name in taken:
-        return "duplicate name; each gate needs its own."
-    raw_paths = entry.get("paths")
-    paths = (raw_paths,) if isinstance(raw_paths, str) else raw_paths
-    if (
-        not isinstance(paths, (list, tuple))
-        or not paths
-        or not all(isinstance(p, str) and p.strip() for p in paths)
-    ):
-        return "paths must be a non-empty list of globs."
+        raise _InvalidGateError("duplicate name; each gate needs its own.")
+    return name
+
+
+def _gate_paths(raw: object) -> tuple[str, ...]:
+    paths = (raw,) if isinstance(raw, str) else raw
+    if not isinstance(paths, (list, tuple)) or not paths:
+        raise _InvalidGateError("paths must be a non-empty list of globs.")
+    if not all(isinstance(p, str) and p.strip() for p in paths):
+        raise _InvalidGateError("paths must be a non-empty list of globs.")
     try:
         spec = pathspec.PathSpec.from_lines("gitwildmatch", paths)
     except ValueError as exc:
-        return f"invalid glob in paths: {exc}"
+        raise _InvalidGateError(f"invalid glob in paths: {exc}") from exc
     if not any(p.include for p in spec.patterns):
         # Only comments or ``!`` exclusions: the gate could never match a file.
-        return "paths must include a glob that is not a comment or a ! exclusion."
-    raw_threshold = entry.get("fail_under")
-    threshold = _percent(raw_threshold)
-    if raw_threshold is not None and threshold is None:
-        return f"fail_under must be a number from 0 to 100, got {raw_threshold!r}."
-    informational = entry.get("informational", False)
-    if not isinstance(informational, bool):
-        return f"informational must be true or false, got {informational!r}."
-    return PathGate(name, tuple(paths), threshold, informational)
+        raise _InvalidGateError("paths must include a glob that is not a comment or a ! exclusion.")
+    return tuple(paths)
+
+
+def _gate_threshold(raw: object) -> float | None:
+    threshold = _percent(raw)
+    if raw is not None and threshold is None:
+        raise _InvalidGateError(f"fail_under must be a number from 0 to 100, got {raw!r}.")
+    return threshold
+
+
+def _gate_informational(raw: object) -> bool:
+    if not isinstance(raw, bool):
+        raise _InvalidGateError(f"informational must be true or false, got {raw!r}.")
+    return raw
 
 
 def _report_entries(value: object) -> tuple[tuple[str, ...], dict[str, str]]:

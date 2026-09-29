@@ -483,18 +483,9 @@ describe("risk App", () => {
       />,
     );
 
-    // Floored, never rounded up: 66.66 reads 66.6.
+    // The panel renders the shared summary, whose own tests own the wording.
     expect(await screen.findByText("66.6%")).toBeTruthy();
-    expect(
-      screen.getByText("2 of 3 changed executable lines covered"),
-    ).toBeTruthy();
-    expect(screen.getByText("abcdef1")).toBeTruthy();
-    expect(screen.getByText(/not at this change's head/)).toBeTruthy();
-    expect(screen.getByText("lines 3, 7-9")).toBeTruthy();
-    expect(screen.getByText("not in report")).toBeTruthy();
-    // Path-scoped gates reach the editor through the shared summary.
-    expect(screen.getByText("web-app")).toBeTruthy();
-    expect(screen.getByText("fails")).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Path-scoped gates" })).toBeTruthy();
 
     fireEvent.click(screen.getByTitle("Open src/core.ts"));
     expect(openFile).toHaveBeenCalledWith("src/core.ts");

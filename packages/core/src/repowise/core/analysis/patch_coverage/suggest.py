@@ -12,7 +12,7 @@ import json
 import posixpath
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -83,16 +83,7 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
     ``[Section] @owners`` header, owner-less lines take the section's owners.
     """
     paths: dict[str, list[str]] = {}
-    defaults: list[str] = []
-    for raw in text.splitlines():
-        line = _COMMENT.sub("", raw).strip()
-        if not line:
-            continue
-        if section := _SECTION.match(line):
-            defaults = _FIELDS.split(section.group(1)) if section.group(1) else []
-            continue
-        pattern, *owners = _FIELDS.split(line)
-        owners = owners or defaults
+    for pattern, owners in _codeowners_rules(text):
         if pattern in _CATCH_ALL:
             paths.clear()
             continue
@@ -106,6 +97,20 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
         for owner, owned in paths.items()
         if _any_live(owned)
     ]
+
+
+def _codeowners_rules(text: str) -> Iterator[tuple[str, list[str]]]:
+    """``(pattern, owners)`` per rule line; owner-less lines take a GitLab section's owners."""
+    defaults: list[str] = []
+    for raw in text.splitlines():
+        line = _COMMENT.sub("", raw).strip()
+        if not line:
+            continue
+        if section := _SECTION.match(line):
+            defaults = _FIELDS.split(section.group(1)) if section.group(1) else []
+            continue
+        pattern, *owners = _FIELDS.split(line)
+        yield pattern, owners or defaults
 
 
 def layout_gates(tracked: Iterable[str]) -> list[SuggestedGate]:
@@ -139,31 +144,70 @@ def layout_gates(tracked: Iterable[str]) -> list[SuggestedGate]:
     return [SuggestedGate(d, (f"/{d}/",)) for d in top]
 
 
-def community_gates(communities: Mapping[str, int]) -> tuple[list[SuggestedGate], int]:
-    """Gates from graph communities (``{file: community_id}``), and how many were cut.
+def community_gates(
+    communities: Mapping[str, int], sizes: Mapping[str, int] | None = None
+) -> tuple[list[SuggestedGate], int]:
+    """Gates from graph communities (``{file: community_id}``), and how many were not tried.
 
-    Each community with at least :data:`MIN_COMMUNITY_FILES` source files
-    becomes a gate over the directories holding them, named by their longest
-    common directory. Ceiling: a directory shared with another community is
-    in both gates, since a glob names directories, not the graph's split.
+    Largest first, each community with at least :data:`MIN_COMMUNITY_FILES`
+    source files becomes a gate over its repository-root files and the
+    directories holding the rest, named by their longest common directory, or
+    by its largest file's stem (*sizes*, bytes) when that is the root. A
+    directory an earlier gate lists is not listed again, and a gate left with
+    fewer than :data:`MIN_COMMUNITY_FILES` of its own files is dropped.
+    Ceiling: a directory still holds other communities' files, since a glob
+    names directories, not the graph's split.
     """
     members: dict[int, list[str]] = defaultdict(list)
     for path, community in communities.items():
         if _is_source(path):
             members[community].append(path)
     big = sorted(
-        (files for files in members.values() if len(files) >= MIN_COMMUNITY_FILES),
-        key=lambda files: (-len(files), min(files)),
+        (sorted(files) for files in members.values() if len(files) >= MIN_COMMUNITY_FILES),
+        key=lambda files: (-len(files), files[0]),
     )
-    gates = []
-    for files in big[:COMMUNITY_LIMIT]:
-        dirs = {posixpath.dirname(f) for f in files}
-        common = posixpath.commonpath(sorted(dirs)) if "" not in dirs else ""
-        name = PurePosixPath(common).name or "root"
-        globs = sorted(f"/{f}" for f in files if not posixpath.dirname(f))
-        globs += [f"/{d}/" for d in _outermost(d for d in dirs if d)]
-        gates.append(SuggestedGate(name, tuple(globs)))
-    return gates, max(0, len(big) - COMMUNITY_LIMIT)
+    gates: list[SuggestedGate] = []
+    claimed: list[str] = []
+    tried = 0
+    for files in big:
+        if len(gates) == COMMUNITY_LIMIT:
+            break
+        tried += 1
+        if gate := _community_gate(files, claimed, sizes or {}):
+            gates.append(gate)
+    return gates, len(big) - tried
+
+
+def _community_gate(
+    files: list[str], claimed: list[str], sizes: Mapping[str, int]
+) -> SuggestedGate | None:
+    """One community's gate over what no earlier gate claimed, or ``None`` when too little is left."""
+    dirs = [
+        d
+        for d in _outermost(posixpath.dirname(f) for f in files if posixpath.dirname(f))
+        if not _under(d, claimed)
+    ]
+    loose = [f for f in files if not posixpath.dirname(f)]
+    if len(loose) + sum(_under(f, dirs) for f in files) < MIN_COMMUNITY_FILES:
+        return None
+    claimed.extend(dirs)
+    globs = [f"/{f}" for f in loose] + [f"/{d}/" for d in dirs]
+    return SuggestedGate(_community_name(files, sizes), tuple(globs))
+
+
+def _community_name(files: list[str], sizes: Mapping[str, int]) -> str:
+    """The longest common directory's name, else the largest file's stem."""
+    dirs = {posixpath.dirname(f) for f in files}
+    common = "" if "" in dirs else posixpath.commonpath(sorted(dirs))
+    if common:
+        return PurePosixPath(common).name
+    largest = min(files, key=lambda f: (-sizes.get(f, 0), f))
+    return PurePosixPath(largest).stem
+
+
+def _under(path: str, dirs: Iterable[str]) -> bool:
+    """Whether *path* is one of *dirs* or inside one."""
+    return any(path == d or path.startswith(d + "/") for d in dirs)
 
 
 def unique_names(sources: Sequence[GateSource]) -> None:

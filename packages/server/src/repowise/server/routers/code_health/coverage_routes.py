@@ -386,16 +386,12 @@ async def health_coverage_patch(
     from repowise.core.analysis.patch_coverage import stored_patch_coverage
 
     changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
-    cfg = configured_coverage(repo.local_path)
     patch = await stored_patch_coverage(
         session,
         repo.id,
         changed,
         label=label,
         head_commit=head_sha or None,
-        min_coverable_lines=cfg.min_coverable_lines,
-        ignore=cfg.ignore,
-        gates=cfg.gates,
-        config_errors=cfg.gate_errors,
+        config=configured_coverage(repo.local_path),
     )
     return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None

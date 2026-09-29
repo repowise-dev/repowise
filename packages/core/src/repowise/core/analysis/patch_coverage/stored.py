@@ -7,7 +7,7 @@ REST API, editors) reads what ``coverage add`` or indexing stored. Both end in
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,7 @@ from ..health.coverage.freshness import coverage_freshness
 from .compute import PatchCoverage, PatchScope, compute_patch_coverage
 
 if TYPE_CHECKING:
-    from ..health.coverage.discovery import PathGate
+    from ..health.coverage.discovery import CoverageConfig
 
 
 async def stored_patch_coverage(
@@ -27,26 +27,26 @@ async def stored_patch_coverage(
     label: str = "",
     head_commit: str | None = None,
     threshold: float | None = None,
-    min_coverable_lines: int | None = None,
-    ignore: Sequence[str] = (),
-    gates: Sequence[PathGate] = (),
-    config_errors: Sequence[str] = (),
+    config: CoverageConfig | None = None,
 ) -> PatchCoverage | None:
     """Patch coverage of *changed* against stored coverage; ``None`` when none is stored.
 
     *head_commit* is the commit the change ends at; coverage measured anywhere
-    else is marked ``stale`` in the scope. *min_coverable_lines*, *ignore* and
-    *gates* come from ``coverage:`` config; only the CLI gate passes *threshold*.
+    else is marked ``stale`` in the scope. *config* is the repository's
+    ``coverage:`` block: its ``ignore``, ``min_coverable_lines`` and ``gates``
+    apply, while ``fail_under`` does not; only the CLI gate passes *threshold*.
     Path-scoped gates are judged only on coverage measured at the change's
-    head and with no *config_errors* (invalid ``coverage.gates`` entries),
-    the only coverage and config the CLI gate itself judges; otherwise they
-    read ``no_data`` and the scope carries the errors.
+    head and with no ``gate_errors`` (invalid ``coverage.gates`` entries), the
+    only coverage and config the CLI gate itself judges; otherwise they read
+    ``no_data`` and the scope carries the errors.
     """
     from repowise.core.persistence.crud import (
         get_coverage_summary,
         load_coverage_for_repo,
         load_file_coverage,
     )
+
+    from ..health.coverage.discovery import CoverageConfig
 
     rows = await load_coverage_for_repo(session, repository_id, include_covered_lines=False)
     if not rows:
@@ -58,14 +58,15 @@ async def stored_patch_coverage(
     commit = summary["ingested_commit_sha"]
     paths = summary["report_paths"]
     freshness = coverage_freshness(commit, head_commit)
+    cfg = config or CoverageConfig()
     return compute_patch_coverage(
         changed,
         coverage,
         threshold=threshold,
-        min_coverable_lines=min_coverable_lines,
-        ignore=ignore,
-        gates=gates,
-        judge_gates=freshness == "current" and not config_errors,
+        min_coverable_lines=cfg.min_coverable_lines,
+        ignore=cfg.ignore,
+        gates=cfg.gates,
+        judge_gates=freshness == "current" and not cfg.gate_errors,
         report_paths=measured,
         scope=PatchScope(
             label=label,
@@ -75,6 +76,6 @@ async def stored_patch_coverage(
             mapping_partial=bool(summary["mapping_partial"]),
             measured_commit=commit,
             freshness=freshness,
-            config_errors=tuple(config_errors),
+            config_errors=cfg.gate_errors,
         ),
     )

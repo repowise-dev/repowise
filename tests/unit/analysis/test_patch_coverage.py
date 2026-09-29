@@ -500,9 +500,49 @@ def test_community_gates_name_by_common_directory_and_skip_tiny_ones() -> None:
 def test_community_gates_keep_repository_root_files() -> None:
     from repowise.core.analysis.patch_coverage.suggest import community_gates
 
-    gates, _ = community_gates({"main.py": 1, "lib/x.py": 1, "lib/y.py": 1})
+    communities = {"main.py": 1, "lib/x.py": 1, "lib/y.py": 1}
+    gates, _ = community_gates(communities, {"main.py": 900, "lib/x.py": 100})
 
-    assert [(g.name, g.paths) for g in gates] == [("root", ("/main.py", "/lib/"))]
+    # Rooted at the repository root: named after its largest file.
+    assert [(g.name, g.paths) for g in gates] == [("main", ("/main.py", "/lib/"))]
+
+
+def test_community_gates_on_a_flat_layout_claim_each_directory_once() -> None:
+    from repowise.core.analysis.patch_coverage.suggest import (
+        GateSource,
+        community_gates,
+        unique_names,
+    )
+
+    # A flat Go module: loose root files, one shared doc/ directory.
+    communities = {
+        "command.go": 1,
+        "help.go": 1,
+        "run.go": 1,
+        "doc/man.go": 1,
+        "doc/md.go": 1,
+        "args.go": 2,
+        "shell.go": 2,
+        "complete.go": 2,
+        "doc/rest.go": 2,
+        "cobra.go": 3,
+        "doc/util.go": 3,
+        "doc/yaml.go": 3,
+    }
+    sizes = {"command.go": 5000, "complete.go": 3000, "cobra.go": 800}
+
+    gates, cut = community_gates(communities, sizes)
+
+    assert [(g.name, g.paths) for g in gates] == [
+        ("command", ("/command.go", "/help.go", "/run.go", "/doc/")),
+        # doc/ is the first gate's; three loose files are enough on their own.
+        ("complete", ("/args.go", "/complete.go", "/shell.go")),
+    ]
+    # The third keeps one loose file once doc/ is claimed: too few, dropped.
+    assert cut == 0
+    source = GateSource("graph", "the index", gates)
+    unique_names([source])
+    assert len({g.name for g in source.gates}) == len(source.gates)
 
 
 def test_layout_gates_name_clashing_packages_by_their_root() -> None:

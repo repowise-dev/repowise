@@ -18,6 +18,7 @@ against the threshold but exits 0.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -251,9 +252,8 @@ async def _stored(
                 label=label,
                 head_commit=git_refs.resolve(str(root), revspec_head(label)),
                 threshold=threshold,
-                min_coverable_lines=min_lines,
-                ignore=cfg.ignore,
-                gates=cfg.gates,
+                # The flag overrides its config key, as for a report.
+                config=replace(cfg, min_coverable_lines=min_lines),
             )
         except SQLAlchemyError as exc:
             raise CannotEvaluateError(

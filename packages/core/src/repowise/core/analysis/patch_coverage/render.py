@@ -16,7 +16,7 @@ import math
 from collections.abc import Sequence
 
 from ...ci import github
-from ...ci.markdown import ROW_LIMIT, cell, details, more_line
+from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
 from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
 
 #: Uncovered ranges shown per file before "+N more".
@@ -96,15 +96,6 @@ _PATH_GATE_TEXT = {
 
 def path_gate_row(g: PathGateResult) -> tuple[str, str, str, str]:
     """``(name, verdict, covered, threshold)`` for one path-scoped gate, in plain text."""
-    verdict = _PATH_GATE_TEXT[g.gate]
-    if g.gate == "no_data" and g.coverable_line_count:
-        # Counted but not judged: stale coverage or invalid config.
-        verdict = "not judged"
-    elif g.gate == "no_data" and g.unmeasured_file_count:
-        n = g.unmeasured_file_count
-        verdict += f" ({n} changed {'file' if n == 1 else 'files'} not measured)"
-    if g.informational:
-        verdict = f"{'below threshold' if g.gate == 'fail' else verdict} (informational)"
     covered = "n/a"
     if g.coverable_line_count:
         covered = (
@@ -112,7 +103,26 @@ def path_gate_row(g: PathGateResult) -> tuple[str, str, str, str]:
             f"({fmt_pct(g.patch_coverage_pct)})"
         )
     threshold = "none" if g.threshold is None else fmt_pct(g.threshold)
-    return g.name, verdict, covered, threshold
+    return g.name, _path_gate_words(g), covered, threshold
+
+
+def _path_gate_words(g: PathGateResult) -> str:
+    if g.informational:
+        words = "below threshold" if g.gate == "fail" else _no_data_words(g)
+        return f"{words} (informational)"
+    return _no_data_words(g)
+
+
+def _no_data_words(g: PathGateResult) -> str:
+    """The verdict in words, saying why a ``no_data`` gate has none."""
+    if g.gate != "no_data":
+        return _PATH_GATE_TEXT[g.gate]
+    if g.coverable_line_count:
+        # Counted but not judged: stale coverage or invalid config.
+        return "not judged"
+    n = g.unmeasured_file_count
+    unmeasured = f" ({plural(n, 'changed file')} not measured)" if n else ""
+    return _PATH_GATE_TEXT["no_data"] + unmeasured
 
 
 def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:

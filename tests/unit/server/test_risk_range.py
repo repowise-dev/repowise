@@ -245,14 +245,24 @@ async def test_patch_coverage_reads_stored_coverage(
     empty = await client.get(url, params={"base": base})
     assert empty.status_code == 200 and empty.json() is None
 
-    await save_coverage_files(
-        session,
-        repo["id"],
-        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
-        source_format="lcov",
-        ingested_commit_sha=head,
-    )
-    await session.commit()
+    async def _ingest(commit: str) -> None:
+        await save_coverage_files(
+            session,
+            repo["id"],
+            [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+            source_format="lcov",
+            ingested_commit_sha=commit,
+        )
+        await session.commit()
+
+    async def _with_config(coverage_block: str) -> dict:
+        (git_repo / ".repowise").mkdir(exist_ok=True)
+        (git_repo / ".repowise" / "config.yaml").write_text(
+            f"coverage:\n{coverage_block}", encoding="utf-8"
+        )
+        return (await client.get(url, params={"base": base})).json()
+
+    await _ingest(head)
     data = (await client.get(url, params={"base": base})).json()
 
     assert data["patch_coverage_pct"] == 66.66
@@ -261,63 +271,26 @@ async def test_patch_coverage_reads_stored_coverage(
     assert data["scope"]["label"] == f"{base}...HEAD"
     assert (await client.get(url, params={"base": "nope"})).status_code == 400
 
-    # coverage.ignore reaches the stored-coverage surface as it does the CLI gate.
-    (git_repo / ".repowise").mkdir(exist_ok=True)
-    (git_repo / ".repowise" / "config.yaml").write_text(
-        "coverage:\n  ignore: [src/a.py]\n", encoding="utf-8"
-    )
-    ignored = (await client.get(url, params={"base": base})).json()
+    # The repository's coverage config reaches the stored-coverage surface as
+    # it does the CLI gate; the compute tests own what each verdict is.
+    ignored = await _with_config("  ignore: [src/a.py]\n")
     assert ignored["scope"]["ignored_file_count"] == 1
     assert ignored["files"] == []
     assert ignored["path_gates"] == []
 
-    # So do the path-scoped gates in coverage.gates.
-    (git_repo / ".repowise" / "config.yaml").write_text(
-        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 50}\n",
-        encoding="utf-8",
-    )
-    gated = (await client.get(url, params={"base": base})).json()
-    assert gated["path_gates"] == [
-        {
-            "name": "src",
-            "paths": ["src/"],
-            "threshold": 50.0,
-            "informational": False,
-            "measured_file_count": 1,
-            "unmeasured_file_count": 0,
-            "covered_line_count": 2,
-            "coverable_line_count": 3,
-            "patch_coverage_pct": 66.66,
-            "gate": "pass",
-        }
-    ]
-    assert gated["gate"] == "not_set"
+    one_gate = "  gates:\n    - {name: src, paths: [src/], fail_under: 50}\n"
+    gated = await _with_config(one_gate)
+    assert [(g["name"], g["gate"]) for g in gated["path_gates"]] == [("src", "pass")]
 
     # An invalid entry is carried, and no gate is judged beside it.
-    (git_repo / ".repowise" / "config.yaml").write_text(
-        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 90}\n"
-        "    - {name: src, paths: [lib/]}\n",
-        encoding="utf-8",
-    )
-    partial = (await client.get(url, params={"base": base})).json()
+    partial = await _with_config(one_gate + "    - {name: src, paths: [lib/]}\n")
     assert partial["scope"]["config_errors"] == [
         "coverage.gates[1] ('src'): duplicate name; each gate needs its own."
     ]
     assert [g["gate"] for g in partial["path_gates"]] == ["no_data"]
 
     # Coverage measured at another commit gets no verdict either.
-    (git_repo / ".repowise" / "config.yaml").write_text(
-        "coverage:\n  gates:\n    - {name: src, paths: [src/], fail_under: 90}\n",
-        encoding="utf-8",
-    )
-    await save_coverage_files(
-        session,
-        repo["id"],
-        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
-        source_format="lcov",
-        ingested_commit_sha=base,
-    )
-    await session.commit()
-    stale = (await client.get(url, params={"base": base})).json()
+    await _ingest(base)
+    stale = await _with_config(one_gate)
     assert stale["scope"]["freshness"] == "stale"
     assert [g["gate"] for g in stale["path_gates"]] == ["no_data"]

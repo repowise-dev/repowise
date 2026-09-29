@@ -51,12 +51,17 @@ def _run(repo, *args: str, env: dict[str, str] | None = None):
     )
 
 
+def _check_json(repo, report: str, *, exit_code: int = 0) -> dict:
+    """``coverage check main...feat --format json`` over *report*, at the expected exit code."""
+    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    assert result.exit_code == exit_code, result.output
+    return json.loads(result.stdout)
+
+
 def test_json_reports_patch_coverage_without_an_index(repo) -> None:
     report = _lcov(repo, {1: 1, 2: 1, 3: 0})
-    result = _run(repo, "main...feat", "--report", report, "--format", "json")
+    data = _check_json(repo, report)
 
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.stdout)
     assert data["patch_coverage_pct"] == 50.0
     assert (data["covered_line_count"], data["coverable_line_count"]) == (1, 2)
     assert data["gate"] == "not_set"
@@ -347,6 +352,9 @@ def test_stored_coverage_is_not_gated_when_stale_or_without_line_data() -> None:
 # -- path-scoped gates -------------------------------------------------------
 
 
+_SRC_GATE = "    - {name: src, paths: [src/], fail_under: 80}\n"
+
+
 def _gates_config(repo, gates: str) -> None:
     (repo / ".repowise").mkdir(exist_ok=True)
     (repo / ".repowise" / "config.yaml").write_text(
@@ -355,12 +363,10 @@ def _gates_config(repo, gates: str) -> None:
 
 
 def test_a_failing_path_gate_fails_the_check(repo) -> None:
-    _gates_config(repo, "    - {name: src, paths: [src/], fail_under: 80}\n")
+    _gates_config(repo, _SRC_GATE)
     report = _lcov(repo, {2: 1, 3: 0})
 
-    result = _run(repo, "main...feat", "--report", report, "--format", "json")
-    assert result.exit_code == 1, result.output
-    data = json.loads(result.stdout)
+    data = _check_json(repo, report, exit_code=1)
     # No whole-change threshold, yet the path gate fails the change.
     assert data["threshold"] is None
     assert data["gate"] == "fail"
@@ -379,19 +385,12 @@ def test_an_informational_path_gate_never_fails_the_check(repo) -> None:
     _gates_config(
         repo, "    - {name: src, paths: [src/], fail_under: 80, informational: true}\n"
     )
-    report = _lcov(repo, {2: 1, 3: 0})
-
-    result = _run(repo, "main...feat", "--report", report, "--format", "json")
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["path_gates"][0]["gate"] == "fail"
+    data = _check_json(repo, _lcov(repo, {2: 1, 3: 0}))
+    assert data["path_gates"][0]["gate"] == "fail"
 
 
 def test_github_format_errors_per_failing_path_gate(repo, tmp_path_factory) -> None:
-    _gates_config(
-        repo,
-        "    - {name: src, paths: [src/], fail_under: 80}\n"
-        "    - {name: docs, paths: [docs/], fail_under: 80}\n",
-    )
+    _gates_config(repo, _SRC_GATE + "    - {name: docs, paths: [docs/], fail_under: 80}\n")
     summary = tmp_path_factory.mktemp("gh") / "summary.md"
 
     result = _run(
@@ -447,8 +446,9 @@ def test_stored_coverage_is_judged_by_the_configured_path_gates(monkeypatch, tmp
 
     run = coverage_check_cmd._stored(tmp_path, {"a.py": {1}}, "HEAD", None, 3, cfg)
     coverage_check_cmd.run_async(run)
-    assert seen["gates"] == cfg.gates
-    assert (seen["ignore"], seen["min_coverable_lines"]) == (("gen/",), 3)
+    assert seen["config"].gates == cfg.gates
+    assert seen["config"].ignore == ("gen/",)
+    assert seen["config"].min_coverable_lines == 3
 
 
 # -- coverage suggest-gates --------------------------------------------------
