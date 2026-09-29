@@ -311,6 +311,52 @@ def _query_health_line(repo_path: Path) -> str | None:
     )
 
 
+def _load_actions(repo_path: Path) -> dict | None:
+    """The stored next-actions view, or ``None``; never raises (see ``next_cmd``)."""
+    try:
+        from repowise.cli.commands.next_cmd import load_view
+
+        return load_view(repo_path)
+    except Exception:
+        return None
+
+
+def _next_actions_summary(view: dict | None) -> dict | None:
+    """Counts only, for the json mode; ``repowise next --format json`` has the rows."""
+    if view is None:
+        return None
+    return {
+        "anchor": view.get("anchor"),
+        **{
+            name: {"total": h.get("total", 0), "by_tier": h.get("by_tier", {})}
+            for name, h in view["horizons"].items()
+        },
+        "unavailable": sorted(view.get("unavailable") or {}),
+    }
+
+
+def _next_actions_lines(view: dict | None) -> list[str]:
+    """The "Next" block: where things stand and the first thing worth doing."""
+    if view is None:
+        return []
+    from rich.markup import escape
+
+    from repowise.cli.commands.next_cmd import default_horizon, render_title, status_sentence
+
+    # The week's sentence names both windows when the week is quiet; the row
+    # under it comes from whichever window ``repowise next`` would open on.
+    lines = [f"[bold]Next:[/bold] {escape(status_sentence(view, 'week'))}"]
+    horizon = default_horizon(view)
+    top = next(
+        (a for a in view["horizons"][horizon]["actions"] if a["tier"] in ("act_now", "plan")),
+        None,
+    )
+    if top is not None:
+        lines.append(f"  {render_title(top['title'])}")
+        lines.append("  [dim]Run [bold]repowise next[/bold] for the list.[/dim]")
+    return lines
+
+
 def _format_relative_time(iso_timestamp: str | None) -> str:
     """Format an ISO 8601 timestamp as a relative time string."""
     if not iso_timestamp:
@@ -593,6 +639,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
                 "health": _query_health(repo_path),
+                "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
             }
         )
@@ -666,3 +713,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if health_line:
         console.print()
         console.print(health_line)
+
+    next_lines = _next_actions_lines(_load_actions(repo_path))
+    if next_lines:
+        console.print()
+        for line in next_lines:
+            console.print(line)

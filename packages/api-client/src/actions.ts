@@ -2,6 +2,7 @@ import type {
   ActionsResponse,
   ActionStateRequest,
   ActionStateResponse,
+  WorkspaceActionsResponse,
 } from "@repowise-dev/types/actions";
 import { apiGet, apiPut } from "./client";
 
@@ -19,4 +20,9 @@ export async function setActionState(
     `/api/repos/${repoId}/actions/${encodeURIComponent(actionId)}/state`,
     body,
   );
+}
+
+/** Each workspace repository's lead actions, plus the cross-repository ones. */
+export async function getWorkspaceActions(): Promise<WorkspaceActionsResponse> {
+  return apiGet<WorkspaceActionsResponse>("/api/workspace/actions");
 }

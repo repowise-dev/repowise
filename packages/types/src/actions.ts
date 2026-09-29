@@ -126,3 +126,25 @@ export interface ActionStateResponse {
   state: ActionStateValue | null;
   until: string | null;
 }
+
+export interface WorkspaceRepoActions {
+  alias: string;
+  repo_id: string | null;
+  status: "available" | "unavailable";
+  reason: string;
+  /** The strongest work per horizon (act now and plan tiers), with totals. */
+  horizons: Partial<Record<ActionHorizonKey, ActionHorizon>>;
+}
+
+export interface WorkspaceCrossRepoAction {
+  kind: "breaking_contract";
+  title: string;
+  impact: string;
+  count: number;
+  repos: string[];
+}
+
+export interface WorkspaceActionsResponse {
+  repos: WorkspaceRepoActions[];
+  cross_repo: WorkspaceCrossRepoAction[];
+}

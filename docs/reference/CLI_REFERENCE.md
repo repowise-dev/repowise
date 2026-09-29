@@ -2,7 +2,7 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `next`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
 **Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `doc-drift`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
@@ -26,7 +26,8 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`symbol`](#repowise-symbol-symbol_id) ·
 [`why`](#repowise-why-query) ·
 [shared `ask`/`context`/`symbol`/`why` options](#shared-options-ask-context-symbol-why) ·
-[`status`](#repowise-status-path)
+[`status`](#repowise-status-path) ·
+[`next`](#repowise-next-path)
 
 **Health and risk**
 [`health`](#repowise-health-path) ·
@@ -700,6 +701,23 @@ repowise status --format json            # machine-readable
 ```
 
 In workspace mode, the table includes a **Docs** column with each repo's page count and a per-repo **Docs status** block listing skip reasons (e.g. `cost gate declined`) and the exact remediation command.
+
+For a single repo it ends with a short **Next** block: how many things are worth doing this week (or this quarter, when the week is quiet) and the first of them. `--format json` carries the counts as `next_actions`; `repowise next` has the list.
+
+---
+
+### `repowise next [PATH]`
+
+The few things worth doing next, ranked from the index. The same stored actions the web app's overview and MCP `get_overview` (`next_actions`) read, so all three agree.
+
+```bash
+repowise next                      # this week, or the quarter when the week holds no work
+repowise next --horizon quarter    # the 90-day window
+repowise next --all                # up to 20 rows instead of 5
+repowise next --format json        # the whole stored view (--json also works)
+```
+
+Rows are grouped as **Now**, **Worth planning** and **Improve what Repowise can see**, each with its impact, the facts behind it, when it counts as done, and a command when one applies. An index built before a store existed names that store and suggests `repowise update` rather than reporting it as empty.
 
 ---
 

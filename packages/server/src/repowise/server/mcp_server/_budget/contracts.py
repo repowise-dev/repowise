@@ -268,6 +268,13 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # served 0 of 40 while 73% of the budget went unspent.
             "outline.sections[]",
             "outline",
+            # Built at three rows a horizon. The quarter trims first, since the
+            # week is the nearer ask, and the totals stay until the whole block
+            # goes.
+            "next_actions.quarter.actions[]",
+            "next_actions.week.actions[]",
+            "next_actions_reason",
+            "next_actions",
             "tool_surface",
             "repos[]",
             "key_modules[]",

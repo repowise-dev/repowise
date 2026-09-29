@@ -43,6 +43,11 @@ from repowise.server.schemas import (
     WorkspaceSystemGraphResponse,
     WorkspaceTestImpactResponse,
 )
+from repowise.server.schemas.actions import (
+    WorkspaceActionsResponse,
+    WorkspaceCrossRepoAction,
+    WorkspaceRepoActions,
+)
 from repowise.server.services.module_health import read_repo_health_score
 
 router = APIRouter(
@@ -650,6 +655,99 @@ async def get_test_impact(
     from repowise.core.workspace.test_impact import workspace_test_impact_to_dict
 
     return WorkspaceTestImpactResponse(**workspace_test_impact_to_dict(result))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/actions
+# ---------------------------------------------------------------------------
+
+#: Per repository, per horizon: enough to say what leads, not a second copy of
+#: each repository's own list.
+WORKSPACE_ACTIONS_PER_REPO = 2
+
+
+@router.get("/actions", response_model=WorkspaceActionsResponse)
+async def get_workspace_actions(
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+) -> WorkspaceActionsResponse:
+    """What to do next across the workspace: each repository's lead actions,
+    plus the cross-repository ones only the workspace can see.
+
+    Each repository's list is the same fold its own Overview serves
+    (``load_actions_view``), trimmed to the work tiers, so the two pages never
+    disagree about what leads.
+    """
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.database import get_session
+
+    _require_workspace(ws_config)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_root_path = Path(ws_root) if ws_root else None
+
+    repos: list[WorkspaceRepoActions] = []
+    for r in ws_config.repos:
+        repo_id = None
+        if ws_root_path:
+            db_path = (ws_root_path / r.path).resolve() / ".repowise" / "wiki.db"
+            repo_id = _query_repo_stats(db_path).get("repo_id")
+        if not repo_id:
+            repos.append(
+                WorkspaceRepoActions(
+                    alias=r.alias, repo_id=None, status="unavailable", reason="Not indexed yet."
+                )
+            )
+            continue
+        try:
+            async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
+                view = await load_actions_view(session, repo_id)
+        except Exception as exc:  # one repository must not cost the page
+            _log.warning("workspace actions: %s unavailable: %s", r.alias, exc)
+            repos.append(
+                WorkspaceRepoActions(
+                    alias=r.alias,
+                    repo_id=repo_id,
+                    status="unavailable",
+                    reason="Could not read this repository's index.",
+                )
+            )
+            continue
+        horizons = {}
+        for key, h in view["horizons"].items():
+            work = [a for a in h["actions"] if a["tier"] != "improve_signal"]
+            horizons[key] = {
+                **h,
+                "actions": work[:WORKSPACE_ACTIONS_PER_REPO],
+                "total": (h["by_tier"].get("act_now", 0) + h["by_tier"].get("plan", 0)),
+            }
+        repos.append(
+            WorkspaceRepoActions(
+                alias=r.alias, repo_id=repo_id, status="available", horizons=horizons
+            )
+        )
+
+    cross_repo: list[WorkspaceCrossRepoAction] = []
+    report = enricher.get_breaking_changes() if enricher is not None else None
+    if report:
+        view = reads.breaking_changes_view(report, repo=None, severity="breaking")
+        count = int(view.get("breaking_count") or 0)
+        if count:
+            impacted = sorted(view.get("impacted_repos") or [])
+            cross_repo.append(
+                WorkspaceCrossRepoAction(
+                    kind="breaking_contract",
+                    title=f"Resolve {count} breaking contract change{'' if count == 1 else 's'}",
+                    impact=(
+                        "A provider changed a route, topic or table that another repository "
+                        "consumes"
+                        + (f"; {', '.join(impacted)} depend on it." if impacted else ".")
+                    ),
+                    count=count,
+                    repos=impacted,
+                )
+            )
+    return WorkspaceActionsResponse(repos=repos, cross_repo=cross_repo)
 
 
 # ---------------------------------------------------------------------------
