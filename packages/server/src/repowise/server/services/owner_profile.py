@@ -1,6 +1,6 @@
 """Owner / contributor aggregation service.
 
-Fetches ``GitMetadata`` + ``DeadCodeFinding`` rows and folds them with
+Fetches ``GitMetadata``, ``DeadCodeFinding`` and ``GitCommit`` rows and folds them with
 :func:`repowise.core.analysis.owners.aggregate_owners`. The exposed ``key`` is
 URL-safe only at the router layer; the fold deals with the canonical form.
 """
@@ -17,7 +17,12 @@ from repowise.core.analysis.owners import (
     owner_key,
     silo_modules,
 )
-from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+from repowise.core.persistence.models import (
+    DeadCodeFinding,
+    GitCommit,
+    GitMetadata,
+    Repository,
+)
 
 _OwnerAccumulator = OwnerAccumulator
 
@@ -44,7 +49,20 @@ async def aggregate_owners(
             ).where(DeadCodeFinding.repository_id == repo_id)
         )
     ).all()
-    return _fold.aggregate_owners(git_rows, dead_rows)
+    commit_rows = (
+        await session.execute(
+            select(
+                GitCommit.sha,
+                GitCommit.author_name,
+                GitCommit.author_email,
+                GitCommit.committed_at,
+            ).where(GitCommit.repository_id == repo_id)
+        )
+    ).all()
+    total_commits = await session.scalar(
+        select(Repository.total_commit_count).where(Repository.id == repo_id)
+    )
+    return _fold.aggregate_owners(git_rows, dead_rows, commit_rows, total_commits)
 
 
 __all__ = [

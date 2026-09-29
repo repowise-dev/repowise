@@ -10,8 +10,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 12,
-        "commit_count_90d": 25,
-        "last_commit_at": "2026-07-01T00:00:00Z",
+        "commit_count_90d": 2,
+        "last_commit_at": "2026-08-01T12:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -23,8 +23,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 0,
         "dead_code_lines_owned": 0,
-        "commit_count_90d": 18,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 1,
+        "last_commit_at": "2026-07-01T00:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -36,8 +36,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 30,
-        "commit_count_90d": 5,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 0,
+        "last_commit_at": "2020-03-03T00:00:00Z",
         "bus_factor_risk_files": 1
       }
     ],
@@ -56,8 +56,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 12,
-        "commit_count_90d": 25,
-        "last_commit_at": "2026-07-01T00:00:00Z",
+        "commit_count_90d": 2,
+        "last_commit_at": "2026-08-01T12:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -69,8 +69,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 0,
         "dead_code_lines_owned": 0,
-        "commit_count_90d": 18,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 1,
+        "last_commit_at": "2026-07-01T00:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -82,8 +82,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 30,
-        "commit_count_90d": 5,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 0,
+        "last_commit_at": "2020-03-03T00:00:00Z",
         "bus_factor_risk_files": 1
       }
     ],
@@ -101,8 +101,8 @@
       "silo_modules": 0,
       "dead_code_files_owned": 1,
       "dead_code_lines_owned": 12,
-      "commit_count_90d": 25,
-      "last_commit_at": "2026-07-01T00:00:00Z",
+      "commit_count_90d": 2,
+      "last_commit_at": "2026-08-01T12:00:00Z",
       "first_commit_at": "2025-01-02T03:04:05Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 218,
@@ -189,8 +189,8 @@
       "silo_modules": 0,
       "dead_code_files_owned": 0,
       "dead_code_lines_owned": 0,
-      "commit_count_90d": 18,
-      "last_commit_at": "2026-08-01T12:00:00Z",
+      "commit_count_90d": 1,
+      "last_commit_at": "2026-07-01T00:00:00Z",
       "first_commit_at": "2025-01-02T03:04:05Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 132,
@@ -274,8 +274,8 @@
       "silo_modules": 0,
       "dead_code_files_owned": 1,
       "dead_code_lines_owned": 30,
-      "commit_count_90d": 5,
-      "last_commit_at": "2026-08-01T12:00:00Z",
+      "commit_count_90d": 0,
+      "last_commit_at": "2020-03-03T00:00:00Z",
       "first_commit_at": "2019-03-03T00:00:00Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 30,

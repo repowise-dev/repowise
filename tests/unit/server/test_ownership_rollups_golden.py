@@ -129,6 +129,29 @@ async def _seed(session_factory, repo_id: str) -> None:
             await crud.upsert_git_metadata(
                 session, repository_id=repo_id, file_path=path, **fields
             )
+        # The per-commit rows the owners' 90-day activity is counted from:
+        # distinct commits before the newest one, a noreply alias folding into
+        # Bob, and Carol inactive for years.
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo_id,
+            [
+                {
+                    "sha": sha,
+                    "author_name": who["name"],
+                    "author_email": who["email"] or "",
+                    "committed_at": at,
+                }
+                for sha, who, at in [
+                    ("c1", _ALICE, datetime(2026, 8, 1, 12, 0, 0)),
+                    ("c2", _ALICE, datetime(2026, 7, 20)),
+                    ("c3", _BOB_NOREPLY, datetime(2026, 7, 1)),
+                    ("c4", _BOB, datetime(2026, 1, 5)),
+                    ("c5", _CAROL, datetime(2020, 3, 3)),
+                ]
+            ],
+        )
+        await crud.update_repo_git_totals(session, repo_id, total_commit_count=5)
         session.add_all(
             [
                 WikiSymbol(
