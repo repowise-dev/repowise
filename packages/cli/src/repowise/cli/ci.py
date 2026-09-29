@@ -24,6 +24,12 @@ EXIT_CANNOT_EVALUATE = 2
 #: Output formats every gating command offers; a command may add more (SARIF).
 CI_FORMATS = ("table", "json", "markdown", "github")
 
+#: Why a diff against the base failed in CI, nearly always.
+SHALLOW_CLONE_HINT = (
+    "A shallow CI clone needs the base branch and enough history for a "
+    "merge-base (fetch-depth: 0, or git fetch --deepen)."
+)
+
 
 def ci_notices(fmt: str) -> Any:
     """Where asides go: stdout for the table, stderr for every machine format."""
@@ -89,9 +95,7 @@ def change_lines(root: str, revspec: str | None) -> tuple[dict[str, set[int]], s
     except ValueError as exc:
         raise CannotEvaluateError(
             "diff_failed",
-            f"Could not diff {revspec}: {exc}. A shallow CI clone needs the base "
-            "branch and enough history for a merge-base (fetch-depth: 0, or "
-            "git fetch --deepen)."
+            f"Could not diff {revspec}: {exc}. {SHALLOW_CLONE_HINT}"
         ) from exc
     except (subprocess.SubprocessError, OSError) as exc:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc

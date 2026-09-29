@@ -117,6 +117,22 @@ Baseline entries are keyed on the document, the reference class and the target,
 not the line number, so editing a document above a known finding does not turn
 it back into a new one.
 
+On a pull request you can instead gate only the drift the change is answerable
+for, with no baseline to maintain:
+
+```bash
+repowise doc-drift --check --since auto --format github
+```
+
+`--since REVSPEC` keeps a finding when the change edits its document, deletes
+or renames the file or directory it names, edits the document its anchor
+points into, or edits a manifest of the kind that declares its command. `auto`
+reads the target branch from the CI's pull-request variables and diffs from the
+merge-base (`origin/main...HEAD`), so a shallow checkout needs `fetch-depth: 0`.
+A bare ref means `REF...HEAD`, and when the range ends at `HEAD` uncommitted and
+untracked changes count too, since the check reads the working tree. Anything
+left out is counted in the summary.
+
 ## The reverse view
 
 The question "which documents talk about this file?" is worth asking before

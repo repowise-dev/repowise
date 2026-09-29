@@ -75,11 +75,14 @@ def render_markdown(
     gate: GateResult | None,
     documents_scanned: int | None = None,
     suppressed: int = 0,
+    scope_label: str | None = None,
+    out_of_scope: int = 0,
 ) -> str:
     """Step-summary / PR-comment markdown: verdict first, then a capped table.
 
     With a gate, only the failing findings are tabulated and a passing run
-    stays short. Without one, every finding is.
+    stays short. Without one, every finding is. *scope_label* names the change
+    a predictive run was scoped to; *out_of_scope* counts what it left out.
     """
     lines: list[str] = []
     if gate is not None:
@@ -114,6 +117,8 @@ def render_markdown(
         notes.append(f"{gate.below_threshold} below the threshold")
     if suppressed:
         notes.append(f"{plural(suppressed, 'reference')} suppressed inline")
+    if scope_label:
+        notes.append(f"scoped to {scope_label}, {out_of_scope} outside the change")
     if notes:
         lines.append("")
         summary = "; ".join(notes)

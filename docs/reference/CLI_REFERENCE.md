@@ -763,6 +763,7 @@ with a close match. It is a suggestion to check, never applied.
 | `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
 | `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
+| `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, and commands whose manifest it edits. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
 | `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif` |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
@@ -778,6 +779,7 @@ repowise doc-drift --check --format github               # annotations + step su
 repowise doc-drift --check --format sarif > drift.sarif  # code scanning upload
 repowise doc-drift --check --write-baseline .doc-drift-baseline.json
 repowise doc-drift --check --baseline .doc-drift-baseline.json
+repowise doc-drift --check --since auto                  # only drift this PR is answerable for
 ```
 
 `github` prints workflow annotations and, when `$GITHUB_STEP_SUMMARY` is set,
@@ -787,7 +789,8 @@ Without `--check`, exits non-zero when there is no readable index, or when the
 index predates drift storage; in both cases `--format json` still emits a
 document naming the reason, not an empty finding list that would read as
 a clean tree. With `--check`, exit codes are `0` gate passed, `1` gate failed,
-`2` could not evaluate (not a git repository, unreadable baseline).
+`2` could not evaluate (not a git repository, unreadable baseline, a `--since`
+revision that cannot be diffed).
 
 ---
 

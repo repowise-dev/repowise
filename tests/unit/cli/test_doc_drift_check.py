@@ -221,3 +221,83 @@ def test_end_to_end_on_a_real_working_tree(tmp_path):
     (finding,) = payload["findings"]
     assert finding["target"] == "src/tools/cli.py"
     assert finding["suggestion"] == "src/tools/cli/"
+
+
+def _scoped(monkeypatch, *changes):
+    from repowise.core.analysis.doc_drift import scope as scope_mod
+
+    scope = scope_mod.ChangeScope.from_changes(changes, label="main...HEAD")
+    monkeypatch.setattr(scope_mod, "scope_since", lambda root, revspec: scope)
+
+
+def test_since_gates_only_drift_the_change_is_answerable_for(monkeypatch, tmp_path):
+    from repowise.core.analysis.change_health.sources import FileChange
+
+    _scoped(monkeypatch, FileChange(head_path=None, base_path="src/gone.py", status="deleted"))
+    findings = [_finding(), _finding(file_path="docs/b.md", target="src/old.py")]
+    result = _invoke(
+        monkeypatch, tmp_path, findings, ["--since", "main...HEAD", "--format", "json"]
+    )
+    payload = json.loads(result.output)
+    assert result.exit_code == 1
+    assert [f["file_path"] for f in payload["findings"]] == ["docs/a.md"]
+    assert payload["findings"][0]["scope_reason"] == "removed"
+    assert payload["scope"] == {
+        "revspec": "main...HEAD",
+        "documents_changed": 0,
+        "paths_removed": 1,
+        "out_of_scope": 1,
+    }
+
+
+def test_since_passes_when_the_drift_predates_the_change(monkeypatch, tmp_path):
+    _scoped(monkeypatch)
+    result = _invoke(monkeypatch, tmp_path, [_finding()], ["--since", "main...HEAD"])
+    assert result.exit_code == 0
+    assert "Gate passed" in result.output
+
+
+def test_since_markdown_names_the_scope(monkeypatch, tmp_path):
+    _scoped(monkeypatch)
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--since", "main...HEAD", "--format", "markdown"]
+    )
+    assert "scoped to main...HEAD, 1 outside the change" in result.output
+
+
+def test_since_auto_without_a_base_exits_two(monkeypatch, tmp_path):
+    from repowise.core.ci import base
+
+    def _none(root, env=None):
+        raise base.BaseNotFoundError("no base")
+
+    monkeypatch.setattr(base, "default_revspec", _none)
+    result = _invoke(monkeypatch, tmp_path, [_finding()], ["--since", "auto", "--format", "json"])
+    assert result.exit_code == 2
+    assert json.loads(result.output)["error"] == "base_not_found"
+
+
+def test_since_on_a_bad_revision_exits_two(monkeypatch, tmp_path):
+    from repowise.core.analysis.doc_drift import scope as scope_mod
+
+    def _bad(root, revspec):
+        raise ValueError("unknown revision")
+
+    monkeypatch.setattr(scope_mod, "scope_since", _bad)
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--since", "nope...HEAD", "--format", "json"]
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.output)["error"] == "diff_failed"
+
+
+def test_since_requires_check_and_refuses_write_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(doc_drift_cmd, "_repo_path", lambda *a, **k: tmp_path)
+    runner = CliRunner()
+    alone = runner.invoke(doc_drift_cmd.doc_drift_command, ["--since", "main...HEAD"])
+    assert alone.exit_code == 2
+    both = runner.invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--since", "main...HEAD", "--write-baseline", str(tmp_path / "b.json")],
+    )
+    assert both.exit_code == 2

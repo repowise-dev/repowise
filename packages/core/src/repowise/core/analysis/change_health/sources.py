@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..change_risk.features import split_revspec
 from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
+from ..git_cli import split_revspec
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -150,8 +150,10 @@ def _status_word(code: str) -> str:
 class GitRevisionSource:
     """Local adapter over a Git checkout."""
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(self, repo_path: str, *, hunks: bool = True) -> None:
         self.repo_path = repo_path
+        # False for callers that read only which paths changed, not the lines.
+        self.hunks = hunks
 
     # -- resolution ---------------------------------------------------------
 
@@ -226,7 +228,11 @@ class GitRevisionSource:
 
     def _changes(self, diff_args: list[str]) -> list[FileChange]:
         name_status = _git([*diff_args, "--name-status", "-z"], self.repo_path)
-        diffs = parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+        diffs = (
+            parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+            if self.hunks
+            else {}
+        )
         changes: list[FileChange] = []
         for code, base_path, head_path in _iter_name_status(name_status):
             status = _status_word(code)

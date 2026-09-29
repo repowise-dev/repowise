@@ -17,7 +17,6 @@ offline calibration. Two entry points:
 from __future__ import annotations
 
 import math
-import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,9 @@ from pathlib import Path
 import pathspec
 
 from ...ingestion.git_indexer._constants import is_fix_commit
+
+# Re-exported: callers across the package import these from here.
+from ..git_cli import GIT_TIMEOUT_SECONDS, _git, split_revspec  # noqa: F401
 
 #: ``ChangeFeatures.ref`` for a score of the uncommitted change. Not a revspec —
 #: it names the unit scored, in the same slot a sha or ``base..head`` occupies.
@@ -56,52 +58,10 @@ class ChangeFeatures:
     file_churn: tuple[tuple[str, int], ...] = ()
 
 
-# Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
-# point is that a stuck git (lock contention, network filesystem) must fail
-# loud instead of hanging the caller's thread forever.
-GIT_TIMEOUT_SECONDS = 60
-
-
-def split_revspec(revspec: str) -> tuple[str, str, str] | None:
-    """Split ``base..head`` / ``base...head`` into ``(base, sep, head)``.
-
-    ``None`` for a single revision. An empty side means ``HEAD``, as in git. Three dots
-    keep their git meaning (diff from the merge-base), so every reader of a
-    range measures the same change.
-    """
-    sep = "..." if "..." in revspec else ".." if ".." in revspec else None
-    if sep is None:
-        return None
-    base, _, head = revspec.partition(sep)
-    return base or "HEAD", sep, head or "HEAD"
-
-
 def revspec_head(revspec: str | None) -> str:
     """The revision a change ends at: a range's head, else the revision itself."""
     parts = split_revspec(revspec) if revspec else None
     return parts[2] if parts else revspec or "HEAD"
-
-
-def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
-    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
-    # pipe handles can wedge the session (same failure mode _meta.py guards
-    # against). check=True so a bad revspec raises instead of yielding empty
-    # stdout, which used to score as a zero-feature "low risk" change.
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if check and proc.returncode != 0:
-        raise subprocess.CalledProcessError(
-            proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
-        )
-    return proc.stdout
 
 
 def _accumulate_numstat(

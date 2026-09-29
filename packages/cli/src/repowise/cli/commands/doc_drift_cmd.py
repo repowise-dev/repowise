@@ -15,6 +15,7 @@ import click
 from repowise.cli.ci import (
     CI_FORMATS,
     EXIT_GATE_FAILED,
+    SHALLOW_CLONE_HINT,
     append_step_summary,
     cannot_evaluate,
     ci_notices,
@@ -173,6 +174,7 @@ def _emit(
     accepted: frozenset[str] = frozenset(),
 ) -> None:
     """Write *payload* in *fmt*; *gate* and *report* exist only under ``--check``."""
+    scope = payload.get("scope") or {}
     from repowise.core.analysis.doc_drift import render
 
     findings = payload["findings"]
@@ -193,6 +195,8 @@ def _emit(
             gate=gate,
             documents_scanned=report.documents_scanned if report is not None else None,
             suppressed=report.suppressed if report is not None else 0,
+            scope_label=scope.get("revspec"),
+            out_of_scope=scope.get("out_of_scope", 0),
         )
         if fmt == "markdown":
             click.echo(markdown)
@@ -229,6 +233,27 @@ def _refuse(code: str, message: str, fmt: str, *, remedy: str, repo: str) -> NoR
     raise click.exceptions.Exit(1)
 
 
+def _scope_to(root: Path, since: str, findings: list[dict], fmt: str) -> tuple[list, dict]:
+    """Keep the findings the change *since* is answerable for; exit 2 when it cannot diff."""
+    import subprocess
+
+    from repowise.core.analysis.doc_drift.scope import scope_findings, scope_since
+    from repowise.core.ci.base import BaseNotFoundError, default_revspec
+
+    try:
+        revspec = default_revspec(str(root)) if since == "auto" else since
+    except BaseNotFoundError as exc:
+        cannot_evaluate(fmt, "base_not_found", str(exc))
+    try:
+        scope = scope_since(str(root), revspec)
+    except ValueError as exc:
+        cannot_evaluate(fmt, "diff_failed", f"Could not diff {revspec}: {exc}. {SHALLOW_CLONE_HINT}")
+    except (subprocess.SubprocessError, OSError) as exc:
+        cannot_evaluate(fmt, "git_failed", f"Could not run git: {exc}")
+    kept, left_out = scope_findings(findings, scope)
+    return kept, scope.summary(left_out)
+
+
 def _run_check(
     root: Path,
     fmt: str,
@@ -239,6 +264,7 @@ def _run_check(
     fail_on: float,
     baseline_path: Path | None,
     write_baseline_path: Path | None,
+    since: str | None = None,
 ) -> None:
     from repowise.cli.helpers import silence_logs_for_machine_output
     from repowise.core.analysis.doc_drift.baseline import (
@@ -261,6 +287,9 @@ def _run_check(
     except LiveTreeError as exc:
         cannot_evaluate(fmt, "not_a_git_repository", str(exc))
     findings = _only_documents(findings, documents)
+    scope = None
+    if since is not None:
+        findings, scope = _scope_to(root, since, findings, fmt)
 
     if write_baseline_path is not None:
         try:
@@ -290,6 +319,8 @@ def _run_check(
         suppressed=report.suppressed,
         gate=gate.to_dict(),
     )
+    if scope is not None:
+        payload["scope"] = scope
     _emit(fmt, payload, gate=gate, report=report, accepted=baseline or frozenset())
     if not gate.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
@@ -347,6 +378,17 @@ def _run_check(
     default=None,
     help="With --check, record the current findings to this file and exit 0.",
 )
+@click.option(
+    "--since",
+    metavar="REVSPEC",
+    default=None,
+    help=(
+        "With --check, gate only drift this change is answerable for: documents it "
+        "edits, documents naming files it deletes or renames, anchors into documents "
+        "it edits, and commands whose manifest it edits. A bare ref means REF...HEAD, "
+        "plus uncommitted changes; 'auto' reads the target branch from CI."
+    ),
+)
 @click.option("--repo", "repo_alias", default=None, help="In workspace mode, target one repo.")
 @click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 @format_option(
@@ -362,6 +404,7 @@ def doc_drift_command(
     fail_on_confidence: float,
     baseline_path: Path | None,
     write_baseline_path: Path | None,
+    since: str | None,
     repo_alias: str | None,
     no_workspace: bool,
     fmt: str,
@@ -369,6 +412,10 @@ def doc_drift_command(
     """Show documentation that the repository no longer matches."""
     if not check and (baseline_path or write_baseline_path):
         raise click.UsageError("--baseline and --write-baseline require --check.")
+    if since is not None and not check:
+        raise click.UsageError("--since requires --check.")
+    if since is not None and write_baseline_path:
+        raise click.UsageError("--write-baseline records every finding; drop --since.")
     root = _repo_path(path, repo_alias, no_workspace, fmt)
 
     if check:
@@ -381,6 +428,7 @@ def doc_drift_command(
             fail_on=fail_on_confidence,
             baseline_path=baseline_path,
             write_baseline_path=write_baseline_path,
+            since=since,
         )
         return
 
