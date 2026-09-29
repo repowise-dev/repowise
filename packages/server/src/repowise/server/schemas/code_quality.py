@@ -11,6 +11,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
     effective_safe_to_delete,
     path_risk_factors,
 )
+from repowise.core.analysis.finding_registry import verification_label
 
 
 class DeadCodeFindingResponse(BaseModel):
@@ -45,6 +46,8 @@ class DeadCodeFindingResponse(BaseModel):
     # ladder (0 commits is what earns the high tiers), so surfacing it is what
     # makes a low confidence score legible: the file is still being worked on.
     commit_count_90d: int
+    # ``"unverified"`` for a provisional kind a caller asked for by name.
+    verification: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DeadCodeFindingResponse:
@@ -76,6 +79,7 @@ class DeadCodeFindingResponse(BaseModel):
             note=obj.note,  # type: ignore[attr-defined]
             last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
             commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
+            verification=verification_label(obj.kind),  # type: ignore[attr-defined]
         )
 
 

@@ -13,6 +13,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
     SAFE_CONFIDENCE_THRESHOLD,
     effective_safe_to_delete,
 )
+from repowise.core.analysis.finding_registry import excluded_types
 
 from ...models import DeadCodeFinding, _new_uuid
 from .._shared import _BATCH_SIZE, _finding_file_path
@@ -196,8 +197,12 @@ async def get_dead_code_findings(
     status: str = "open",
     safe_to_delete: bool | None = None,
     limit: int | None = None,
+    include_withheld: bool = False,
 ) -> list[DeadCodeFinding]:
     """Return dead code findings filtered by kind, confidence, and status.
+
+    Kinds the finding-type registry withholds are left out unless
+    ``include_withheld``; naming a provisional ``kind`` is an explicit request.
 
     ``safe_to_delete`` and ``limit`` exist so a caller that wants a short
     preview does not have to load every open finding in the repository and
@@ -211,6 +216,8 @@ async def get_dead_code_findings(
     )
     if kind is not None:
         q = q.where(DeadCodeFinding.kind == kind)
+    if not include_withheld:
+        q = q.where(DeadCodeFinding.kind.not_in(excluded_types(requested=[kind] if kind else ())))
     if safe_to_delete is not None:
         q = q.where(DeadCodeFinding.safe_to_delete.is_(safe_to_delete))
     q = q.order_by(DeadCodeFinding.confidence.desc())
@@ -243,6 +250,7 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
         select(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repository_id,
             DeadCodeFinding.status == "open",
+            DeadCodeFinding.kind.not_in(excluded_types()),
         )
     )
     findings = list(result.scalars().all())

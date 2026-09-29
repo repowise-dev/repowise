@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
@@ -451,6 +452,7 @@ async def file_detail(
                     DeadCodeFinding.repository_id == repo_id,
                     DeadCodeFinding.file_path == file_path,
                     DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind.not_in(excluded_types()),
                 )
             )
         )

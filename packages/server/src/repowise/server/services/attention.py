@@ -23,6 +23,7 @@ from repowise.core.analysis.attention import (
     severity_of_file_score,
     silo_source,
 )
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -79,6 +80,7 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
         HealthFinding.repository_id == repo_id,
         HealthFinding.status == "open",
         HealthFinding.file_path.not_in(_test_paths(repo_id)),
+        HealthFinding.biomarker_type.not_in(excluded_types()),
     )
     rows = (
         await session.execute(

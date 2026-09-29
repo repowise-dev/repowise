@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.finding_registry import verification_label
 from repowise.core.analysis.health.aggregation import (
     primary_and_magnitude,
     primary_and_magnitude_by_file,
@@ -35,6 +36,8 @@ def _finding_to_dict(f: Any) -> dict:
         # so the UI can filter findings per dimension. Defaults to defect for
         # rows that predate the split.
         "dimension": getattr(f, "dimension", None) or "defect",
+        # "unverified" for a provisional type a caller asked for by name.
+        "verification": verification_label(f.biomarker_type),
     }
 
 

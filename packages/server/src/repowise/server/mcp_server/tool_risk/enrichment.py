@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
@@ -355,6 +356,7 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.file_path.in_(target_paths),
                     HealthFinding.status == "open",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
                 )
                 .order_by(HealthFinding.health_impact.desc())
             )

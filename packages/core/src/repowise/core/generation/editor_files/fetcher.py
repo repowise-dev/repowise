@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
@@ -435,6 +436,7 @@ class EditorFileDataFetcher:
             .where(
                 HealthFinding.repository_id == self._repo_id,
                 HealthFinding.status == "open",
+                HealthFinding.biomarker_type.not_in(excluded_types()),
             )
             .order_by(HealthFinding.health_impact.desc())
         )

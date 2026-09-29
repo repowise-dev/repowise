@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile
 
@@ -228,10 +229,16 @@ def _select_clone_representatives(
 
 
 def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
-    """Index dead-code findings by file path for per-page lookup."""
+    """Index dead-code findings by file path for per-page lookup.
+
+    Kinds the finding-type registry withholds never reach a page prompt.
+    """
     dead_code_by_file: dict[str, list[dict]] = {}
+    withheld = excluded_types()
     if dead_code_report is not None and getattr(dead_code_report, "findings", None):
         for f in dead_code_report.findings:
+            if str(f.kind) in withheld:
+                continue
             dead_code_by_file.setdefault(f.file_path, []).append(
                 {
                     "symbol_name": f.symbol_name,

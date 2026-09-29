@@ -1047,6 +1047,14 @@ never silently: the response carries `truncated: true`, the `*_total` /
 `_meta.omitted` names refs that restore the dropped rows. Re-requesting one
 block with `only` also recovers it.
 
+**Finding types must earn their place.** `core/analysis/finding_registry.py`
+records each finding type as `validated`, `provisional` or `hidden`. Hidden
+types never appear in `get_health`, `get_dead_code`, overview, priorities or
+wiki prompts (the analyzers still run). Provisional types appear only when asked
+for — `include=["unverified"]` here, `kind=` on `get_dead_code` — and each row
+carries `verification: "unverified"`. `get_dead_code` reports what it held back
+in `summary.withheld_types`.
+
 **Test material is bucketed, not hidden.** Every metric row carries `is_test`
 (distinct from `has_test_file`: "is this file a test" vs "is this file tested").
 In dashboard mode the ranked finding lists are split — `top_findings` /

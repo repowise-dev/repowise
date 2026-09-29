@@ -30,6 +30,8 @@ class HealthFindingResponse(BaseModel):
     #: defect | maintainability | performance. Rows predating the split read
     #: as ``defect``.
     dimension: str = "defect"
+    #: ``"unverified"`` for a provisional finding type, else ``None``.
+    verification: str | None = None
 
 
 class HealthFindingWithSymbolResponse(HealthFindingResponse):

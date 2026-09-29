@@ -55,10 +55,11 @@ class FindingSets:
     test_findings_total: int = 0
 
 
-def _open_findings(repository: Any) -> tuple[Any, Any]:
+def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
     return (
         HealthFinding.repository_id == repository.id,
         HealthFinding.status == "open",
+        HealthFinding.biomarker_type.not_in(req.withheld_types),
     )
 
 
@@ -71,7 +72,7 @@ async def load_targeted_findings(
             (
                 await session.execute(
                     select(HealthFinding)
-                    .where(*_open_findings(repository))
+                    .where(*_open_findings(repository, req))
                     .where(HealthFinding.file_path.in_(pop.effective_targets))
                     .order_by(HealthFinding.health_impact.desc())
                 )
@@ -167,7 +168,7 @@ async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest)
         (
             await session.execute(
                 select(*lite_cols)
-                .where(*_open_findings(repository))
+                .where(*_open_findings(repository, req))
                 .order_by(HealthFinding.health_impact.desc())
             )
         ).all()
@@ -206,7 +207,7 @@ async def read_accuracy_rows(
             (
                 await session.execute(
                     select(HealthFinding)
-                    .where(*_open_findings(repository))
+                    .where(*_open_findings(repository, req))
                     .where(HealthFinding.biomarker_type == "prior_defect")
                 )
             )

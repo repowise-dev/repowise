@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.scoring import ALL_DIMENSIONS
 from repowise.server.services.refactoring_health import CANONICAL_VIEWS as _REFACTORING_VIEWS
 from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
@@ -34,6 +35,8 @@ _KNOWN_INCLUDES = frozenset(
         "defect",
         "maintainability",
         "advisory",
+        # Opts into provisional finding types, each labelled "unverified".
+        "unverified",
     }
 )
 
@@ -73,6 +76,7 @@ class HealthRequest:
     raw_targets: list[str] = field(init=False)
     module_targets: list[str] = field(init=False)
     file_targets: list[str] = field(init=False)
+    withheld_types: frozenset[str] = field(init=False)
 
     def __post_init__(self) -> None:
         # ``0`` means totals and no rows, as on the REST coverage route.
@@ -87,6 +91,9 @@ class HealthRequest:
         # Resolved before the reads, so the filter decides which rows are
         # eligible for the impact cap rather than filtering an already-capped list.
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
+        # Finding types the registry keeps off this surface, dropped at the read
+        # so no list, lead or total counts one.
+        self.withheld_types = excluded_types(include_provisional="unverified" in self.include_set)
         # Performance findings carry zero impact, so an impact-ranked list
         # leaves them out unless asked for; the performance blocks rank them.
         self.ranked_dimensions = self.dimension_filter or _RANKED_DIMENSIONS_DEFAULT

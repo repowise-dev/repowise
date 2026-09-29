@@ -1133,7 +1133,7 @@ async def refresh_unchanged_history(
         return 0
 
     findings_by_path: dict[str, list[Any]] = {}
-    for finding in await get_health_findings(session, repo_id):
+    for finding in await get_health_findings(session, repo_id, include_withheld=True):
         findings_by_path.setdefault(finding.file_path, []).append(finding)
 
     cfg = HealthConfig.load(repo_path)

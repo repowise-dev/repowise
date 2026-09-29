@@ -14,6 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 from ...test_paths import is_test_related_path
+from ..finding_registry import excluded_types
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -272,18 +273,23 @@ class ChangeHealthDeltaService:
         # file cannot contribute a one-sided "introduced" or "resolved".
         # Advisory markers deduct nothing, so adding one is not a regression
         # and removing one is not a fix. Dropped from BOTH sides before
-        # matching, so every counter derived from the match agrees.
+        # matching, so every counter derived from the match agrees. Types the
+        # finding-type registry withholds go the same way, for the same reason.
+        withheld = excluded_types()
         base_findings = [
             f
             for f in base_run.findings
             if rename.get(f.file_path, f.file_path) in subject
             and not is_advisory(f.biomarker_type)
             and not _is_test_perf(f)
+            and f.biomarker_type not in withheld
         ]
         head_findings = [
             f
             for f in head_run.findings_for(subject)
-            if not is_advisory(f.biomarker_type) and not _is_test_perf(f)
+            if not is_advisory(f.biomarker_type)
+            and not _is_test_perf(f)
+            and f.biomarker_type not in withheld
         ]
         match = matcher.match(base_findings, head_findings)
 

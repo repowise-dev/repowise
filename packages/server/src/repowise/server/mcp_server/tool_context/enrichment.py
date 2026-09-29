@@ -27,6 +27,7 @@ from repowise.core.analysis.doc_drift.serialize import (
     collapse_reference_sites,
     documents_with_drift,
 )
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
@@ -695,6 +696,7 @@ async def _resolve_health(
             HealthFinding.repository_id == repo_id,
             HealthFinding.file_path == file_path,
             HealthFinding.status == "open",
+            HealthFinding.biomarker_type.not_in(excluded_types()),
         )
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis import owners as _fold
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.owners import (
     OwnerAccumulator,
     module_share,
@@ -47,7 +48,10 @@ async def aggregate_owners(
                 DeadCodeFinding.primary_owner,
                 DeadCodeFinding.file_path,
                 DeadCodeFinding.lines,
-            ).where(DeadCodeFinding.repository_id == repo_id)
+            ).where(
+                DeadCodeFinding.repository_id == repo_id,
+                DeadCodeFinding.kind.not_in(excluded_types()),
+            )
         )
     ).all()
     commit_rows = (

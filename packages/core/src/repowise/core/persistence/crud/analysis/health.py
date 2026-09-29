@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
+from ....analysis.finding_registry import excluded_types
 from ....analysis.health.finding_identity import finding_public_id
 from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
 
@@ -387,8 +388,14 @@ async def get_health_findings(
     dimension: str | None = None,
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
+    include_withheld: bool = False,
 ) -> list[HealthFinding]:
     """Findings for one repository, ordered by health impact.
+
+    Finding types the registry withholds (``finding_registry``) are left out,
+    so every surface built on this read shows only what has earned a place; a
+    provisional type named in ``biomarker_type`` is an explicit request and is
+    returned. ``include_withheld`` is for analysis that must see every row.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
@@ -413,13 +420,14 @@ async def get_health_findings(
                 HealthFinding.dimension.not_in(list(exclude_dimensions)),
             )
         )
-    if biomarker_type is not None:
-        # Accept a comma-separated list so a caller can pull several biomarker
-        # types in one request (e.g. the function-level + coupling panels).
-        # A single value with no comma still matches exactly (``IN`` of one).
-        types = [t.strip() for t in biomarker_type.split(",") if t.strip()]
-        if types:
-            q = q.where(HealthFinding.biomarker_type.in_(types))
+    # Accept a comma-separated list so a caller can pull several biomarker
+    # types in one request (e.g. the function-level + coupling panels).
+    # A single value with no comma still matches exactly (``IN`` of one).
+    types = [t.strip() for t in (biomarker_type or "").split(",") if t.strip()]
+    if types:
+        q = q.where(HealthFinding.biomarker_type.in_(types))
+    if not include_withheld:
+        q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
     if dimension is not None:

@@ -31,6 +31,7 @@ from repowise.core.analysis.actions.facts import (
     SecretFacts,
 )
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
@@ -180,6 +181,7 @@ async def _files(session: AsyncSession, repo_id: str, since: datetime | None) ->
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
                     HealthFinding.file_path.in_(lead_paths),
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
                 )
             )
         ).all()
@@ -258,6 +260,7 @@ async def _recent(
         for f, subject, at in rows
         if not (files.get(f.file_path) and files[f.file_path].is_test)
         and biomarker_category(f.biomarker_type) != HISTORY_CATEGORY
+        and f.biomarker_type not in excluded_types()
     ]
     if not candidates:
         return {"recent_findings": ()}
@@ -450,6 +453,7 @@ async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.status == "open",
                 DeadCodeFinding.safe_to_delete.is_(True),
+                DeadCodeFinding.kind.not_in(excluded_types()),
             )
         )
     ).all()
