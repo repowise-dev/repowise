@@ -240,3 +240,9 @@ def test_fixture_pkg_under_tests(tmp_path: Path) -> None:
         assert idx.graph.nodes[hidden]["is_entry_point"]
         assert hidden not in idx.project["entry_candidates"]
     assert idx.project["entry_points"] == ["src/main.py"]
+
+
+def test_committed_declaration_target_is_not_an_entry() -> None:
+    data = {"main": "./types/index.d.ts", "bin": "./types/cli.d.cts"}
+    path_set = {"types/index.d.ts", "types/cli.d.cts"}
+    assert manifest_entry_paths(".", data, path_set) == set()

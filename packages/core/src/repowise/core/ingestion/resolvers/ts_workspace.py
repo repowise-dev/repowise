@@ -845,6 +845,8 @@ def probe_manifest_target(
     remapping it would name a file the package does not run.
     Exact hits only, so an ambiguous source never stands in for the build.
     """
+    if target.endswith(_DECLARATION_SUFFIXES):
+        return None  # a declaration never starts a package, committed or not
     hit = _probe_path(f"{pkg_dir}/{target.removeprefix('./')}", path_set)
     if hit is not None:
         return hit
