@@ -1,7 +1,7 @@
 {
   "gopkg": [
     {
-      "addresses_primary_problem": false,
+      "addresses_primary_problem": null,
       "affected_files": [
         "inventory.go"
       ],
@@ -10,7 +10,7 @@
       "evidence": [],
       "file_path": "inventory.go",
       "judgment_steps": 1,
-      "lead_biomarker": "dry_violation",
+      "lead_biomarker": null,
       "lead_refactoring_type": "split_file",
       "mechanical_steps": 0,
       "opportunity_id": "refop2_f8df0afac1fe67c55d05",

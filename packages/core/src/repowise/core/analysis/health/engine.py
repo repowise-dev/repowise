@@ -44,7 +44,7 @@ from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
-from .duplication import DuplicationReport
+from .duplication import ClonePair, DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
@@ -397,6 +397,25 @@ def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | 
     return text.splitlines()
 
 
+def _clone_sources(
+    file_path: str,
+    own_lines: list[str],
+    clones: list[ClonePair],
+    abs_paths: dict[str, str],
+    read_source: SourceReader,
+) -> dict[str, list[str]]:
+    """This file's lines plus each clone partner's, for text-level checks."""
+    out = {file_path: own_lines}
+    for clone in clones:
+        for path in (clone.file_a, clone.file_b):
+            if path in out or path not in abs_paths:
+                continue
+            lines = _read_source_lines(abs_paths[path], read_source)
+            if lines is not None:
+                out[path] = lines
+    return out
+
+
 def _percentile_p80(counts: list[int]) -> int | None:
     """80th percentile of *counts* using the inclusive-lower convention
     already used by ``churn_percentile`` in ``enrich.compute_percentiles``.
@@ -528,6 +547,7 @@ class HealthAnalyzer:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
         self.parsed_files = list(parsed_files or [])
+        self._abs_paths = {pf.file_info.path: pf.file_info.abs_path for pf in self.parsed_files}
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
         # total_coverable_lines}``. ``None``-equivalent files are simply
@@ -1326,6 +1346,15 @@ class HealthAnalyzer:
 
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
+        # Read only for clone-bearing files, keeping the read proportional.
+        source_lines = (
+            _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
+        )
+        clone_sources = (
+            _clone_sources(file_path, source_lines, clones, self._abs_paths, self.read_source)
+            if source_lines is not None and _coverage_is_test_file(file_path)
+            else {}
+        )
 
         # The enclosing package root, falling back to the top-level directory
         # when the repo has no nested packages.
@@ -1367,6 +1396,7 @@ class HealthAnalyzer:
             total_coverable_lines=total_coverable_lines,
             clones=list(clones),
             duplication_pct=dup_pct,
+            clone_sources=clone_sources,
             graph_view=graph_view,
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
@@ -1445,13 +1475,8 @@ class HealthAnalyzer:
             ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
             blame_index=blame_index,
-            # Source is threaded only for clone-bearing files (the Extract Helper
-            # detector's snippet). Reading it unconditionally would put a
-            # repo-sized read back into the per-file path; gating on clones keeps
-            # it proportional to the small set of files that actually carry one.
-            source_lines=(
-                _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
-            ),
+            # The Extract Helper snippet; ``None`` unless the file carries clones.
+            source_lines=source_lines,
         )
         suggestions = detect_refactorings(
             rctx,
