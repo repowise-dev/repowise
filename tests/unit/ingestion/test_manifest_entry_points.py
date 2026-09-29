@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
 from repowise.core.analysis.kg_curation import curate_knowledge_graph
 from repowise.core.analysis.knowledge_graph import build_knowledge_graph_skeleton
 from repowise.core.ingestion.graph import GraphBuilder
@@ -246,3 +247,18 @@ def test_committed_declaration_target_is_not_an_entry() -> None:
     data = {"main": "./types/index.d.ts", "bin": "./types/cli.d.cts"}
     path_set = {"types/index.d.ts", "types/cli.d.cts"}
     assert manifest_entry_paths(".", data, path_set) == set()
+
+
+def test_bin_source_is_reachable_for_dead_code(tmp_path: Path) -> None:
+    """A ``bin`` built from source keeps that source alive; a stray file does not."""
+    repo = _write(
+        tmp_path,
+        {
+            "package.json": json.dumps({"name": "tool", "bin": {"tool": "./dist/cli.js"}}),
+            "src/cli.ts": "console.log('hi');\n",
+            "src/old.ts": "export const unused = 1;\n",
+        },
+    )
+    idx = _index(repo)
+    assert is_file_reachable("src/cli.ts", idx.graph)
+    assert not is_file_reachable("src/old.ts", idx.graph)
