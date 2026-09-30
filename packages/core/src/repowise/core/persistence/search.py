@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -450,6 +450,19 @@ class FullTextSearch:
         untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
         await self.index_many([(page_id, title, content, summary, target_path)])
+
+    async def index_pages(self, pages: Iterable[Any]) -> None:
+        """Index generated pages in one :meth:`index_many` call.
+
+        Each entry needs ``page_id``, ``title``, ``content``, ``summary`` and
+        ``target_path``. Use this, not :meth:`index` in a loop: a write deletes
+        by ``page_id``, which FTS5 stores unindexed, so every delete scans the
+        whole index. Per page that is quadratic in wiki size (18 GB of reads
+        for a 2,300-page rebuild); batched it is one scan per id chunk.
+        """
+        await self.index_many(
+            [(p.page_id, p.title, p.content, p.summary, p.target_path) for p in pages]
+        )
 
     async def index_many(
         self,

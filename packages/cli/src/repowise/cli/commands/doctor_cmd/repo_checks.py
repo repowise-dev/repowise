@@ -805,15 +805,12 @@ def _run_repo_checks(
                         rows = await session.execute(
                             select(Page).where(Page.id.in_(list(missing_from_fts)))
                         )
-                        for page in rows.scalars().all():
-                            await fts.index(
-                                page.id,
-                                page.title,
-                                page.content,
-                                summary=page.summary,
-                                target_path=page.target_path,
-                            )
-                            repaired += 1
+                        batch = [
+                            (p.id, p.title, p.content, p.summary, p.target_path)
+                            for p in rows.scalars().all()
+                        ]
+                        await fts.index_many(batch)
+                        repaired += len(batch)
 
             # Repair vector store: re-embed missing pages, delete orphaned
             lance_dir = repowise_dir / "lancedb"
