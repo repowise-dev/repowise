@@ -8,8 +8,8 @@ rows back-fill from ``is_entry_point``, the flag that carried both jobs.
 Local SQLite stores get the column from ``init_db``'s additive reconciler; this
 migration covers managed Postgres.
 
-Revision ID: 0091
-Revises: 0090
+Revision ID: 0087
+Revises: 0086
 Create Date: 2026-09-30
 """
 
@@ -21,8 +21,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0091"
-down_revision: str | None = "0090"
+revision: str = "0087"
+down_revision: str | None = "0086"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
