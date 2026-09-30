@@ -805,6 +805,8 @@ def _run_repo_checks(
                         rows = await session.execute(
                             select(Page).where(Page.id.in_(list(missing_from_fts)))
                         )
+                        # ORM rows key on ``id``, not ``page_id``, so they go
+                        # to index_many as tuples rather than to index_pages.
                         batch = [
                             (p.id, p.title, p.content, p.summary, p.target_path)
                             for p in rows.scalars().all()

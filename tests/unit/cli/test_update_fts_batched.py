@@ -2,7 +2,8 @@
 
 Every FTS write deletes by ``page_id``, which the index stores unindexed, so a
 per-page loop rescans the whole index once per page. On a large wiki that was
-the dominant cost of a full re-render, so the write must be a single call.
+the dominant cost of a full re-render, so the write goes in fixed-size chunks:
+one scan per chunk, and a failure or the memory held is bounded to one chunk.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def repo_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_persist_indexes_every_page_in_one_batch(repo_dir, monkeypatch):
+def test_persist_indexes_pages_in_fixed_size_chunks(repo_dir, monkeypatch):
     calls: list[int] = []
     original = FullTextSearch.index_many
 
@@ -57,11 +58,11 @@ def test_persist_indexes_every_page_in_one_batch(repo_dir, monkeypatch):
     degraded: list[str] = []
     total = persist_deterministic_pages(
         repo_path=repo_dir,
-        generated_pages=[_page(i) for i in range(25)],
+        generated_pages=[_page(i) for i in range(600)],
         decay_paths=[],
         degraded=degraded,
     )
 
     assert degraded == []
-    assert total == 25
-    assert calls == [25]
+    assert total == 600
+    assert calls == [500, 100]
