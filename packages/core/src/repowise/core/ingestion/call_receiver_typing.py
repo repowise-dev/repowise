@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from pathlib import Path
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
@@ -12,6 +13,7 @@ from .languages.receiver_types import (
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
+    ScopeMarks,
     bound_types,
     framework_decorated_type,
     in_spans,
@@ -19,6 +21,7 @@ from .languages.receiver_types import (
     names_in_span,
     scan_bindings,
     scan_declarations,
+    scan_scope_marks,
     types_by_class,
     types_in_span,
     unwrapped_names_in_span,
@@ -58,6 +61,33 @@ def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
     cache[key] = value
 
 
+class _Scope(NamedTuple):
+    """What one symbol's span binds, less the symbol's own name."""
+
+    first_bound: dict[str, int]  # name -> first line a positional binding binds it
+    hoisted: frozenset[str]
+    escaped: frozenset[str]
+
+
+def _in_lines(pairs: tuple[tuple[int, str], ...], start: int, end: int) -> tuple[tuple[int, str], ...]:
+    """The ``(line, name)`` pairs on lines *start* through *end*."""
+    lo = bisect_left(pairs, start, key=lambda pair: pair[0])
+    return pairs[lo : bisect_right(pairs, end, lo=lo, key=lambda pair: pair[0])]
+
+
+def _scope_of(symbol: Symbol, bindings: tuple[tuple[int, str], ...], marks: ScopeMarks) -> _Scope:
+    start, end, own = symbol.start_line, symbol.end_line, symbol.name
+    first_bound: dict[str, int] = {}
+    for line, name in _in_lines(bindings, start, end):
+        if name != own:
+            first_bound.setdefault(name, line)
+    return _Scope(
+        first_bound,
+        frozenset(name for _, name in _in_lines(marks.hoisted, start, end) if name != own),
+        frozenset(name for _, name in _in_lines(marks.escaped, start, end)),
+    )
+
+
 def _is_module_level_function(symbol: Symbol) -> bool:
     return symbol.kind in _FUNCTION_KINDS and not symbol.parent_name
 
@@ -94,7 +124,7 @@ class ReceiverTypingMixin:
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
-        self._file_bound_names: dict[str, frozenset[str]] = {}
+        self._scope_chain_cache: dict[str, dict[str, tuple[_Scope, ...]]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
@@ -321,7 +351,6 @@ class ReceiverTypingMixin:
         """Is a bare call's name a parameter or local of the calling function?
 
         Then no module, import or repo-wide symbol of that name is the callee.
-        Ceiling: a Python ``global`` name counts as local and loses its edge.
         """
         language = self._language_of(file_path) or ""
         return language in BINDING_LANGUAGES and self._binds_locally(
@@ -338,35 +367,49 @@ class ReceiverTypingMixin:
     ) -> bool:
         """Does the caller, or a function enclosing it, bind *name* itself?
 
-        Only bindings at or before *through_line* count when it is given: a
-        callback's parameter further down the body cannot shadow a use above.
+        Scopes are asked innermost first, so a ``global`` stops the walk. When
+        *through_line* is given only positional bindings at or before it count:
+        a callback's parameter further down cannot shadow a use above, while a
+        hoisted declaration binds its whole scope.
         """
-        span = self._spans_for(file_path).get(caller_id)
-        if span is None:
-            return False
-        bindings = self._bindings_for(file_path, language)
-        # Most names are bound nowhere in the file; that answer is a set hit.
-        anywhere = self._file_bound_names.get(file_path)
-        if anywhere is None:
-            anywhere = frozenset(bound for _, bound in bindings)
-            _store_capped(self._file_bound_names, file_path, anywhere, _SOURCE_CACHE_FILES)
-        if name not in anywhere:
-            return False
-        for start, end in (span, *self._enclosing_function_spans(file_path, span)):
-            last = end if through_line is None else min(end, through_line)
-            if name in names_in_span(bindings, start, last):
+        for scope in self._scope_chains(file_path, language).get(caller_id, ()):
+            if name in scope.escaped:
+                return False
+            line = scope.first_bound.get(name)
+            if name in scope.hoisted or (
+                line is not None and (through_line is None or line <= through_line)
+            ):
                 return True
         return False
 
-    def _enclosing_function_spans(
-        self, file_path: str, span: tuple[int, int]
-    ) -> list[tuple[int, int]]:
+    def _scope_chains(self, file_path: str, language: str) -> dict[str, tuple[_Scope, ...]]:
+        """``{symbol_id: scopes}``, the symbol's own then each enclosing function's.
+
+        Built once per file in one sweep over the symbols in span order, so a
+        call site's question is a few dict hits however many it asks.
+        """
+        chains = self._scope_chain_cache.get(file_path)
+        if chains is not None:
+            return chains
         parsed = self._parsed_files.get(file_path)
-        return [
-            (s.start_line, s.end_line)
-            for s in (parsed.symbols if parsed else ())
-            if s.kind in _FUNCTION_KINDS and s.start_line <= span[0] and span[1] <= s.end_line
-        ]
+        text = self._text_of(file_path)
+        bindings = self._bindings_for(file_path, language)
+        marks = scan_scope_marks(text, language)
+        chains = {}
+        open_functions: list[tuple[Symbol, _Scope]] = []
+        symbols = sorted(parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line))
+        for symbol in symbols:
+            while open_functions and open_functions[-1][0].end_line < symbol.start_line:
+                open_functions.pop()
+            own = _scope_of(symbol, bindings, marks)
+            enclosing = tuple(
+                scope for outer, scope in reversed(open_functions) if symbol.end_line <= outer.end_line
+            )
+            chains[symbol.id] = (own, *enclosing)
+            if symbol.kind in _FUNCTION_KINDS:
+                open_functions.append((symbol, own))
+        _store_capped(self._scope_chain_cache, file_path, chains, _SOURCE_CACHE_FILES)
+        return chains
 
     def _resolve_chained_receiver(
         self,

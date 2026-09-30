@@ -137,6 +137,15 @@ export function shadowed(helper, n) {
 export function plain(n) {
   return helper(n);
 }
+
+export function hoisted(n) {
+  const r = helper(n);
+  return r;
+
+  function helper(v) {
+    return v;
+  }
+}
 """
 
 
@@ -150,6 +159,9 @@ class TestJavaScript:
 
     def test_unshadowed_name_still_resolves(self, tmp_path: Path, files) -> None:
         assert _callees(tmp_path, files, "javascript", "plain") == {"util.js::helper"}
+
+    def test_a_later_function_declaration_is_hoisted(self, tmp_path: Path, files) -> None:
+        assert _callees(tmp_path, files, "javascript", "hoisted") == set()
 
 
 PY_UTIL = """\
@@ -167,6 +179,17 @@ def shadowed(helper, n):
 
 def plain(n, fallback: int = 0):
     return helper(n)
+
+
+def rebinds(n):
+    helper = len
+    return helper(n)
+
+
+def declares_global(n):
+    global helper
+    helper = helper or len
+    return helper(n)
 """
 
 
@@ -180,6 +203,12 @@ class TestPython:
 
     def test_unshadowed_name_still_resolves(self, tmp_path: Path, files) -> None:
         assert _callees(tmp_path, files, "python", "plain") == {"util.py::helper"}
+
+    def test_an_assignment_shadows_the_import(self, tmp_path: Path, files) -> None:
+        assert _callees(tmp_path, files, "python", "rebinds") == set()
+
+    def test_a_global_name_is_the_modules(self, tmp_path: Path, files) -> None:
+        assert _callees(tmp_path, files, "python", "declares_global") == {"util.py::helper"}
 
 
 class TestBindingScan:

@@ -295,7 +295,6 @@ _PY_BINDINGS = (
     # `with ... as n`, `except ... as n`, `import x as n`.
     re.compile(r"\bas\s+(?P<name>[a-z_]\w*)\b"),
     re.compile(r"\b(?P<name>[a-z_]\w*)\s*:="),
-    re.compile(r"\b(?:global|nonlocal)\s+(?P<name>[a-z_]\w*)"),
 )
 
 # Every parameter of any `def` or `lambda` in the span, the enclosing one
@@ -433,6 +432,38 @@ def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
         found |= _named_bindings(_PY_BINDINGS, cleaned, starts)
         found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_NAME, cleaned, starts)
     return tuple(sorted(found))
+
+
+# What a scope binds beyond its positional bindings. A TypeScript/JavaScript
+# ``function`` declaration is hoisted, so it binds from the top of its scope
+# whatever its line. A Python ``global`` name is the module's in that scope,
+# however the body assigns it.
+_HOISTED = {"typescript": re.compile(r"(?<![\w$.])function\*?\s+(?P<name>[A-Za-z_$][\w$]*)")}
+_ESCAPES = {"python": re.compile(r"\bglobal\s+(?P<names>\w+(?:\s*,\s*\w+)*)")}
+
+
+class ScopeMarks(NamedTuple):
+    """``(line, name)`` pairs a scope treats specially, each in line order."""
+
+    hoisted: tuple[tuple[int, str], ...]
+    escaped: tuple[tuple[int, str], ...]
+
+
+def scan_scope_marks(text: str, language: str) -> ScopeMarks:
+    """The hoisted and module-escaped names *text* declares."""
+    language = _BINDING_SCAN_AS.get(language, language)
+    hoisted, escapes = _HOISTED.get(language), _ESCAPES.get(language)
+    if hoisted is None and escapes is None:
+        return ScopeMarks((), ())
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found_hoisted = _named_bindings((hoisted,), cleaned, starts) if hoisted else set()
+    found_escaped = {
+        (bisect_right(starts, match.start("names")), name.strip())
+        for match in (escapes.finditer(cleaned) if escapes else ())
+        for name in match.group("names").split(",")
+    }
+    return ScopeMarks(tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)))
 
 
 def names_in_span(
