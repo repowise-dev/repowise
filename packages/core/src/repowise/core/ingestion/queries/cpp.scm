@@ -110,6 +110,54 @@
   )
 ) @symbol.def
 
+; A definition returning a pointer or a reference wraps the function_declarator:
+; ``Node *make(...)``, ``char **argv(...)``, ``Foo& Foo::operator=(...)``, and a
+; function returning a function pointer, ``int (*handler(int k))(int)``.
+; Queries cannot recurse, so each wrapper depth is listed; the name shapes are
+; the ones the unwrapped patterns above accept. ``reference_declarator`` does
+; not name its declarator field, so its child is matched unnamed.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: [
+            (identifier) @symbol.name
+            (field_identifier) @symbol.name
+            (qualified_identifier name: (identifier) @symbol.name)
+            (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+            (qualified_identifier name: (operator_name) @symbol.name)
+          ]
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 ; Class
 (class_specifier
   name: (type_identifier) @symbol.name
@@ -191,6 +239,31 @@
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
   )
+) @symbol.def
+
+; ... returning a pointer or a reference, the same wrappers as definitions
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
 ) @symbol.def
 
 ; In-class member-function declaration: ``void Seek(const Slice&);``
