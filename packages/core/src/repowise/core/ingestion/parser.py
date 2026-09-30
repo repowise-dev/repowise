@@ -112,6 +112,8 @@ from .parser_helpers import (
     _qualified_pascal_parent,
     _run_query,
     _rust_shadowed_by_type_param,
+    _ts_object_method_is_top_named,
+    _ts_object_method_owner,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -1535,9 +1537,13 @@ class ASTParser:
 
         # Only module-level and class-body members are symbols; the query is
         # recursive, so defs nested in a callable are dropped. Module-anchored
-        # node types only match at module level and skip the check.
-        if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-            def_node, config.symbol_node_types, export_type_parent_ids
+        # node types only match at module level and skip the check. A TS/JS
+        # object-literal method no named function encloses stays: an anonymous
+        # callback around it has no name its calls could be keyed to.
+        if (
+            node_type not in _MODULE_ANCHORED_NODE_TYPES
+            and not (language in _TS_JS_LANGUAGES and _ts_object_method_is_top_named(def_node))
+            and _has_callable_ancestor(def_node, config.symbol_node_types, export_type_parent_ids)
         ):
             return None
 
@@ -1560,6 +1566,10 @@ class ASTParser:
         export_type_parents: dict[int, str],
     ) -> str | None:
         """The enclosing type or module name, trying each language's own shape."""
+        if language in _TS_JS_LANGUAGES and _ts_object_method_is_top_named(def_node):
+            owner = _ts_object_method_owner(def_node, src)
+            if owner is not None:
+                return owner
         parent_name = self._find_parent(def_node, config, receiver_nodes, src)
         if parent_name is not None:
             return parent_name
