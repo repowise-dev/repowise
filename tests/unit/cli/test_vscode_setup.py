@@ -200,6 +200,12 @@ def test_vscode_setup_refresh_rewrites_idempotently(tmp_path: Path) -> None:
     assert (tmp_path / ".vscode" / "extensions.json").read_text(encoding="utf-8") == ext_first
 
 
+def test_vscode_setup_refresh_never_creates_the_workspace_files(tmp_path: Path) -> None:
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert not (tmp_path / ".vscode").exists()
+
+
 def test_vscode_setup_refresh_skips_when_disabled(tmp_path: Path) -> None:
     VSCodeSetup().refresh_project_files(
         _silent_console(),
