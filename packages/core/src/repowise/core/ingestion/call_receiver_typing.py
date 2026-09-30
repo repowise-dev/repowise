@@ -284,7 +284,7 @@ class ReceiverTypingMixin:
         if receiver_name in body_types:
             return body_types[receiver_name], "body"
         if language in IMPLICIT_FIELD_LANGUAGES:
-            class_id = _enclosing_id(caller_id)
+            class_id = self._caller_class_id(caller_id)
             fields = self._field_types_in(file_path, language).get(class_id, {})
             if receiver_name in fields:
                 return fields[receiver_name], "field"
@@ -373,7 +373,7 @@ class ReceiverTypingMixin:
     ) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for a chain's head name."""
         if head == _CHAIN_SELF[language]:
-            class_id = _enclosing_id(caller_id)
+            class_id = self._caller_class_id(caller_id)
             symbol = self._symbols_by_id.get(class_id)
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
@@ -421,6 +421,20 @@ class ReceiverTypingMixin:
             }
         ids = self._type_ids.get(file_path, {}).get(type_name, ())
         return ids[0] if len(ids) == 1 else None
+
+    def _caller_class_id(self, caller_id: str) -> str:
+        """The id of the type whose method *caller_id* is.
+
+        A method id names only its own class (``path::Inner::m``) while a
+        nested class's id also names the outer one (``path::Outer::Inner``),
+        so the id prefix finds no nested class. The file's one type of that
+        name is the class; two of them leave the method id ambiguous, and a
+        method declared away from its type (a Go receiver, a C++ out-of-line
+        body) has none, so both keep the prefix.
+        """
+        prefix = _enclosing_id(caller_id)
+        file_path, _, class_name = prefix.partition("::")
+        return self._only_type_in(file_path, class_name) or prefix
 
     def _framework_receiver_type(
         self,

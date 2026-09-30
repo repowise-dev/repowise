@@ -1359,9 +1359,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """
         if not self._heritage_parents:
             return None
-        class_id = _extract_class_id(caller_id)
-        if class_id is None:
+        if _extract_class_id(caller_id) is None:
             return None
+        class_id = self._caller_class_id(caller_id)
         # The caller's own class answers even when Strategy 3 declined it for
         # recursion; an ancestor's declaration of the name is not the target.
         if self._declares(class_id, method_name) is not None:
