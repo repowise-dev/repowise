@@ -215,6 +215,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                     summary=page.summary or "",
                     content=page.content or "",
                     page_metadata=page.metadata_json,
+                    digest=page.digest or "",
                 )
                 if item is None:
                     # Below the information floor. Not a failure — the page is

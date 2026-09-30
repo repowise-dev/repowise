@@ -130,6 +130,7 @@ class PriorPage:
     source_hash: str
     model_name: str
     content: str
+    digest: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0

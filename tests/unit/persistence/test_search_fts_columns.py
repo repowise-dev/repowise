@@ -66,7 +66,7 @@ async def repo(async_session):
 
 
 async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, async_session, repo):
-    """An index written by an older repowise gains both columns, populated.
+    """An index written by an older repowise gains the new columns, populated.
 
     The rebuild reads ``wiki_pages``, which is the only place the two new
     fields exist — the old FTS rows never carried them. A silent no-op here
@@ -390,3 +390,23 @@ async def test_unreadable_page_metadata_indexes_without_a_vocabulary(
     )
 
     assert [r.page_id for r in await fts.search("entry point")] == ["file_page:src/main.py"]
+
+
+async def test_the_vocabulary_and_the_digest_are_both_searchable(
+    async_engine, async_session, repo
+):
+    """Two columns kept off the rendered body, one per kind of reader-invisible text."""
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py",
+        "File: src/main.py",
+        _VOCABULARY_PAGE["content"],
+        summary="",
+        target_path="src/main.py",
+        digest="## Questions this page answers\n\n- Where does the zeppelin start?",
+    )
+
+    assert [r.page_id for r in await fts.search("xylophone")] == ["file_page:src/main.py"]
+    assert [r.page_id for r in await fts.search("zeppelin")] == ["file_page:src/main.py"]
