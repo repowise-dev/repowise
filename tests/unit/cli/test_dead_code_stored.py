@@ -131,3 +131,16 @@ def test_both_paths_print_one_shape(indexed_repo):
 
     assert live, "the live fixture must produce a finding to compare"
     assert {tuple(f) for f in stored} == {tuple(f) for f in live}
+
+
+def test_uncommitted_changes_are_noted_not_recomputed(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    (indexed_repo / "a.py").write_text("def unused():\n    return 2\n")
+
+    result = CliRunner().invoke(
+        dead_code_command, [str(indexed_repo), "--format", "md", "--no-workspace"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "working tree has changes the index does not include" in result.output
+    assert "stored_symbol" in result.output
