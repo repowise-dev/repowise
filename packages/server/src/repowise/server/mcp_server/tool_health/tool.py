@@ -17,7 +17,11 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
-from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_health.analysis_meta import (
     _attach_health_analysis_meta,
@@ -189,6 +193,8 @@ async def get_health(
         scope=scope,
         counts=counts,
     )
+    if repo == "all":
+        return _unsupported_repo_all("get_health")
     ctx = await _resolve_repo_context(repo)
     omission_collector = OmissionCollector("get_health", repo_root=ctx.path)
     pager = Pager(req.limit, req.cursor)

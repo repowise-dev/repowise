@@ -16,7 +16,11 @@ from repowise.core.analysis.health.refactoring.recommendations import hydrate_re
 from repowise.core.persistence.crud import get_refactoring_suggestion
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
@@ -53,6 +57,8 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
     )
     from repowise.core.repo_config import load_repo_config
 
+    if repo == "all":
+        return _unsupported_repo_all("generate_refactoring_code")
     ctx = await _resolve_repo_context(repo)
     repo_path = Path(ctx.path)
 
