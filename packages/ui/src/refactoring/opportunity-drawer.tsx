@@ -164,6 +164,9 @@ function DrawerBody({
   const meta = typeMeta(detail.lead_refactoring_type || "");
   const name = detail.file_path.split("/").pop() ?? detail.file_path;
   const others = detail.affected_files.filter((f) => f !== detail.file_path);
+  // The opportunity resolved but its steps did not load. Everything else in the
+  // drawer, triage included, still describes a real opportunity.
+  const stepsUnavailable = detail.details_status === "unavailable";
   const anyRelocated = detail.steps.some(isRelocated);
 
   const [pending, setPending] = React.useState<OpportunityStatus | null>(null);
@@ -290,6 +293,12 @@ function DrawerBody({
               {detail.ordering_note ?? ORDERING_NOTE}
             </p>
           ) : null}
+          {stepsUnavailable ? (
+            <p className="text-[12.5px] text-[var(--color-text-secondary)]">
+              The {detail.step_count} step{detail.step_count === 1 ? "" : "s"} for this opportunity
+              could not be loaded. Try again shortly, or ask for it by id below.
+            </p>
+          ) : null}
           <ol className="space-y-3">
             {detail.steps.map((step, i) => (
               <StepCard
@@ -301,7 +310,7 @@ function DrawerBody({
               />
             ))}
           </ol>
-          {detail.steps_emitted < detail.steps_total ? (
+          {detail.steps_total != null && detail.steps_emitted < detail.steps_total ? (
             <p className="mt-2 text-[11.5px] text-[var(--color-text-tertiary)]">
               Showing {detail.steps_emitted} of {detail.steps_total} steps.
             </p>
@@ -408,7 +417,9 @@ function DrawerBody({
         </section>
       </div>
 
-      {onAiPrompt ? (
+      {/* The prompt carries the ordered steps; without them it would hand an
+          agent an empty plan. */}
+      {onAiPrompt && !stepsUnavailable ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
           <button
             type="button"
