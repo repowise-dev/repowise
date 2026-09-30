@@ -11,6 +11,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+from repowise.core.generation.mermaid_safety import invalid_mermaid_blocks, sanitize_mermaid
 from repowise.core.generation.prose import prose_text
 from repowise.core.ingestion.models import ParsedFile
 from repowise.core.providers.llm.base import GeneratedResponse
@@ -49,6 +50,15 @@ class InvalidGeneratedContentError(ValueError):
         super().__init__(message)
         self.retry_hint = retry_hint if retry_hint is not None else message
         self.retryable = retryable
+
+
+class InvalidMermaidError(InvalidGeneratedContentError):
+    """A mermaid block in the response would not render.
+
+    Retried like any other rejection. When the retry breaks a diagram too, the
+    caller keeps the page and strips the failing blocks: a page without its
+    picture is still worth reading, an error box where the picture was is not.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +242,11 @@ def validate_generated_response(response: GeneratedResponse) -> None:
         raise InvalidGeneratedContentError(
             f"{preamble}{detail}", retry_hint=f"{preamble}{retry_hint}"
         )
+
+    # Checked on the repaired form, which is the form that gets stored.
+    broken = invalid_mermaid_blocks(sanitize_mermaid(response.content))
+    if broken:
+        raise InvalidMermaidError(f"a mermaid diagram will not render: {broken[0]}")
 
 
 # Common words that appear in backticks but are not code symbols.

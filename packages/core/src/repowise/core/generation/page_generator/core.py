@@ -35,6 +35,7 @@ from ..context.evidence import (
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..house_vocabulary import cell
 from ..languages import sanitize_language_code
+from ..mermaid_safety import renderable_mermaid
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
@@ -54,6 +55,7 @@ from .structural import (
 )
 from .validation import (
     InvalidGeneratedContentError,
+    InvalidMermaidError,
     reset_artifact_check_counts,
     validate_generated_response,
 )
@@ -455,8 +457,21 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 cache_hints=cache_hints,
             )
             # A second failure raises, so the caller's stub-fallback path is
-            # reached exactly as it was before the retry existed.
-            validate_generated_response(response)
+            # reached exactly as it was before the retry existed. A page lost
+            # only to a diagram is kept without it: the retry when its own
+            # failure is a diagram, else the first attempt when that one was.
+            # The retry's token counts stay either way; both were billed.
+            try:
+                validate_generated_response(response)
+            except InvalidGeneratedContentError as second_failure:
+                if isinstance(second_failure, InvalidMermaidError):
+                    salvage = response
+                elif isinstance(first_failure, InvalidMermaidError):
+                    salvage = discarded
+                else:
+                    raise
+                response = replace(response, content=renderable_mermaid(salvage.content))
+                validate_generated_response(response)
             # The discarded attempt was billed. Carrying its tokens forward is
             # what keeps the run report's totals equal to what the provider
             # actually charged for; the page itself is the retry's content.
