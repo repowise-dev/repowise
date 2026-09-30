@@ -269,31 +269,45 @@ describe("chat artifact renderers", () => {
     ).toBeInTheDocument();
   });
 
-  it("DeadCodeRenderer separates high and medium confidence", () => {
+  it("DeadCodeRenderer reads the tiered get_dead_code shape", () => {
+    // The wire shape of get_dead_code: totals under `summary`, findings
+    // grouped by confidence under `tiers`.
     render(
       <DeadCodeRenderer
         data={{
-          total_findings: 3,
-          deletable_lines: 88,
-          high_confidence: [
-            {
-              file_path: "src/legacy.ts",
-              symbol_name: "oldFn",
-              kind: "unused_export",
-              confidence: 0.95,
-              reason: "No callers found.",
-              lines: 30,
-              safe_to_delete: true,
+          summary: { total_findings: 3, deletable_lines: 88 },
+          tiers: {
+            high: {
+              count: 1,
+              truncated: false,
+              findings: [
+                {
+                  file_path: "src/legacy.ts",
+                  symbol_name: "oldFn",
+                  kind: "unused_export",
+                  confidence: 0.95,
+                  reason: "No callers found.",
+                  lines: 30,
+                  safe_to_delete: true,
+                },
+              ],
             },
-          ],
-          medium_confidence: [
-            {
-              file_path: "src/maybe.ts",
-              kind: "unreachable_file",
-              confidence: 0.6,
-              reason: "Possibly imported via dynamic require.",
+            medium: {
+              count: 4,
+              truncated: true,
+              findings: [
+                {
+                  file_path: "src/maybe.ts",
+                  kind: "unreachable_file",
+                  confidence: 0.6,
+                  reason: "Possibly imported via dynamic require.",
+                  lines: null,
+                  safe_to_delete: false,
+                },
+              ],
             },
-          ],
+            low: { count: 0, truncated: false, findings: [] },
+          },
         }}
       />,
     );
@@ -302,6 +316,69 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText(/src\/legacy\.ts::oldFn/)).toBeInTheDocument();
     expect(screen.getByText("src/maybe.ts")).toBeInTheDocument();
     expect(screen.getByText("95%")).toBeInTheDocument();
+    expect(screen.getByText("1 of 4 shown")).toBeInTheDocument();
+    expect(screen.queryByText("Low confidence")).not.toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer shows the one finding a finding_id lookup returns", () => {
+    render(
+      <DeadCodeRenderer
+        data={{
+          mode: "finding",
+          finding_id: "dc_1",
+          resolved: true,
+          finding: {
+            file_path: "src/legacy.ts",
+            symbol_name: "oldFn",
+            kind: "unused_export",
+            confidence: 0.95,
+            reason: "No callers found.",
+            lines: 30,
+            safe_to_delete: true,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(/src\/legacy\.ts::oldFn/)).toBeInTheDocument();
+    expect(screen.getByText(/30 lines/)).toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer names an id the lookup did not resolve", () => {
+    render(
+      <DeadCodeRenderer
+        data={{ mode: "finding", finding_id: "dc_gone", resolved: false, finding: null }}
+      />,
+    );
+    expect(screen.getByText("dc_gone")).toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer renders only the tier a tier-filtered call returned", () => {
+    render(
+      <DeadCodeRenderer
+        data={{
+          summary: { total_findings: 2, deletable_lines: 0 },
+          tiers: {
+            low: {
+              count: 1,
+              truncated: false,
+              findings: [
+                {
+                  file_path: "src/dynamic.py",
+                  kind: "unused_export",
+                  confidence: 0.3,
+                  reason: "Only reached through a string lookup.",
+                  lines: 12,
+                  safe_to_delete: false,
+                },
+              ],
+            },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Low confidence")).toBeInTheDocument();
+    expect(screen.getByText("src/dynamic.py")).toBeInTheDocument();
+    expect(screen.queryByText("High confidence")).not.toBeInTheDocument();
   });
 
   it("DiagramRenderer falls back gracefully when no syntax", () => {

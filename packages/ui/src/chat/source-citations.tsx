@@ -143,9 +143,12 @@ export function extractSources(
     }
 
     if (tc.name === "get_dead_code") {
+      const tiers = (result.tiers as Record<string, { findings?: Array<Record<string, unknown>> }>) ?? {};
+      const lookup = result.finding as Record<string, unknown> | null | undefined;
       const rows = [
-        ...((result.high_confidence as Array<Record<string, unknown>>) ?? []),
-        ...((result.medium_confidence as Array<Record<string, unknown>>) ?? []),
+        ...(lookup ? [lookup] : []),
+        ...(tiers.high?.findings ?? []),
+        ...(tiers.medium?.findings ?? []),
       ];
       for (const r of rows.slice(0, 10)) pushFile(tc.id, tc.name, r.file_path);
     }

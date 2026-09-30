@@ -25,6 +25,7 @@ import type {
   ChangeFindingRow,
   ContextArtifactData,
   DeadCodeArtifactData,
+  DeadCodeArtifactFinding,
   DecisionsArtifactData,
   DiagramArtifactData,
   GraphPathArtifactData,
@@ -887,41 +888,55 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
 // Dead code
 // ---------------------------------------------------------------------------
 
+const DEAD_CODE_TIERS = [
+  { key: "high", label: "High confidence", icon: CheckCircle2 },
+  { key: "medium", label: "Medium confidence", icon: AlertTriangle },
+  { key: "low", label: "Low confidence", icon: AlertTriangle },
+] as const;
+
 export function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData }) {
+  if (data.mode === "finding") {
+    return data.finding ? (
+      <DeadCodeRow finding={data.finding} showLines />
+    ) : (
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        No open dead-code finding matches{" "}
+        <span className="break-all font-mono">{data.finding_id}</span>.
+      </p>
+    );
+  }
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-2">
         <StatRow
           label="Findings"
-          value={data.total_findings.toLocaleString()}
+          value={data.summary.total_findings.toLocaleString()}
         />
         <StatRow
           label="Candidate lines"
-          value={data.deletable_lines.toLocaleString()}
+          value={data.summary.deletable_lines.toLocaleString()}
         />
       </div>
 
-      {data.high_confidence.length > 0 && (
-        <div>
-          <SectionTitle icon={CheckCircle2}>High confidence</SectionTitle>
-          <div className="space-y-1.5">
-            {data.high_confidence.map((f, i) => (
-              <DeadCodeRow key={`${f.file_path}:${i}`} finding={f} showLines />
-            ))}
+      {DEAD_CODE_TIERS.map(({ key, label, icon }) => {
+        const tier = data.tiers?.[key];
+        if (!tier || tier.findings.length === 0) return null;
+        return (
+          <div key={key}>
+            <SectionTitle icon={icon}>{label}</SectionTitle>
+            <div className="space-y-1.5">
+              {tier.findings.map((f, i) => (
+                <DeadCodeRow key={`${f.file_path}:${i}`} finding={f} showLines={key === "high"} />
+              ))}
+            </div>
+            {tier.truncated && (
+              <p className="mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+                {tier.findings.length} of {tier.count.toLocaleString()} shown
+              </p>
+            )}
           </div>
-        </div>
-      )}
-
-      {data.medium_confidence.length > 0 && (
-        <div>
-          <SectionTitle icon={AlertTriangle}>Medium confidence</SectionTitle>
-          <div className="space-y-1.5">
-            {data.medium_confidence.map((f, i) => (
-              <DeadCodeRow key={`${f.file_path}:${i}`} finding={f} />
-            ))}
-          </div>
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -930,15 +945,7 @@ function DeadCodeRow({
   finding,
   showLines = false,
 }: {
-  finding: {
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-    lines?: number | null;
-    safe_to_delete?: boolean;
-  };
+  finding: DeadCodeArtifactFinding;
   showLines?: boolean;
 }) {
   return (
