@@ -13,11 +13,12 @@ import json
 from collections import Counter
 from typing import Any
 
+from repowise.core.author_identity import identity_kind, is_bot
+
 from ._constants import (
     _DECISION_SIGNAL_WORDS,
     _HARD_SKIP_PREFIXES,
     _MIN_MESSAGE_LEN,
-    _SKIP_AUTHORS,
     _SOFT_SKIP_PREFIXES,
     HOTSPOT_HIGH_COMMITS_90D,
     HOTSPOT_MIN_COMMITS_90D,
@@ -84,7 +85,7 @@ def get_blame_ownership(repo: Any, file_path: str) -> tuple[str | None, str | No
     return top_name, emails.get(top_name), pct
 
 
-def is_significant_commit(message: str, author: str) -> bool:
+def is_significant_commit(message: str, author: str, email: str | None = None) -> bool:
     """Return True if the commit is considered significant.
 
     Filtering rules:
@@ -103,11 +104,9 @@ def is_significant_commit(message: str, author: str) -> bool:
     for prefix in _HARD_SKIP_PREFIXES:
         if msg.startswith(prefix):
             return False
-    # Always skip bot authors
-    author_lower = author.lower()
-    for skip in _SKIP_AUTHORS:
-        if skip in author_lower:
-            return False
+    # Always skip bot authors; a coding agent's commit can still carry a decision.
+    if identity_kind(author, email) == "bot":
+        return False
     # Soft-skip conventional prefixes unless decision signal present
     for prefix in _SOFT_SKIP_PREFIXES:
         if msg.startswith(prefix):
@@ -153,7 +152,7 @@ def meets_hotspot_floors(meta: dict) -> bool:
 
 
 def count_active_contributors(metadata_list: list[dict], *, window_days: int = 90) -> int | None:
-    """Count distinct non-bot authors active in the trailing *window_days*.
+    """Count distinct human authors active in the trailing *window_days*.
 
     Reads each file's ``top_authors_json`` (per-author ``last_commit_ts``)
     and anchors the window to the most recent author timestamp seen across
@@ -184,8 +183,7 @@ def count_active_contributors(metadata_list: list[dict], *, window_days: int = 9
             name = str(a.get("name") or "").strip()
             if not name:
                 continue
-            lowered = name.lower()
-            if any(skip in lowered for skip in _SKIP_AUTHORS):
+            if is_bot(name, a.get("email")):
                 continue
             prev = author_last_ts.get(name)
             if prev is None or ts > prev:

@@ -8,6 +8,7 @@ per-file author-email selection in ``index_file``.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -15,9 +16,14 @@ from pathlib import Path
 import git
 import pytest
 
+from repowise.core.author_identity import identity_kind, is_bot
 from repowise.core.ingestion.git_indexer import (
     build_identity_resolver,
     canonicalize_author_email,
+)
+from repowise.core.ingestion.git_indexer.enrich import (
+    count_active_contributors,
+    is_significant_commit,
 )
 from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.core.ingestion.git_indexer.records import capture_repo_totals, count_people
@@ -323,6 +329,89 @@ def test_bots_never_merge_and_are_not_people() -> None:
     assert resolve.is_bot(bot)
     assert resolve.is_bot(resolve("github-actions", "ci@acme.io"))
     assert resolve.people() == {"dana@acme.io"}
+
+
+KIND_CASES = [
+    ("copilot-swe-agent[bot]", "198982749+Copilot@users.noreply.github.com", "agent"),
+    ("devin-ai-integration[bot]", "158243242+devin-ai-integration[bot]@users.noreply.github.com", "agent"),
+    ("Cursor Agent", "cursoragent@cursor.com", "agent"),
+    ("Claude", "noreply@anthropic.com", "agent"),
+    ("Claude", "", "agent"),
+    ("dependabot[bot]", f"49699333+dependabot[bot]{_NR}", "bot"),
+    ("github-actions", "ci@acme.io", "bot"),
+    ("renovate", "", "bot"),
+    ("Deploy Bot", "deploy@acme.io", "bot"),
+    ("Dana White", "dana@acme.io", "human"),
+    # Near misses stay people: no loose substring or first-name rules.
+    ("Claudette Moreau", "claudette@acme.io", "human"),
+    ("Netlify Johnson", "nj@acme.io", "human"),
+    ("Aiden Coplin", "aiden@acme.io", "human"),
+    ("renovate-fan", "fan@acme.io", "human"),
+]
+
+
+@pytest.mark.parametrize(("name", "email", "kind"), KIND_CASES)
+def test_identity_kind_table(name, email, kind) -> None:
+    assert identity_kind(name, email) == kind
+    # is_bot keeps meaning "automation of any kind".
+    assert is_bot(name, email) is (kind != "human")
+
+
+def test_resolver_kinds_and_agent_label() -> None:
+    pairs = [
+        ("Cursor Agent", "cursoragent@cursor.com"),
+        ("dependabot[bot]", f"49699333+dependabot[bot]{_NR}"),
+        ("Dana White", "dana@acme.io"),
+    ]
+    resolve = build_identity_resolver(pairs)
+    agent = resolve("Cursor Agent", "cursoragent@cursor.com")
+    bot = resolve("dependabot[bot]", f"49699333+dependabot[bot]{_NR}")
+    assert resolve.kind(agent) == "agent"
+    assert resolve.agent_of(agent) == "cursor"
+    assert resolve.kind(bot) == "bot"
+    assert resolve.agent_of(bot) is None
+    assert resolve.kind("dana@acme.io") == "human"
+    assert resolve.agent_of("dana@acme.io") is None
+    # An unknown key is a person, as before.
+    assert resolve.kind("nobody@acme.io") == "human"
+    assert resolve.people() == {"dana@acme.io"}
+    assert resolve.is_bot(agent) and resolve.is_bot(bot)
+
+
+def test_kind_vote_ties() -> None:
+    # One email seen as a person once and as automation once: a tie stays human.
+    shared = "ops@acme.io"
+    resolve = build_identity_resolver([("Ops Team", shared), ("ops-bot", shared)])
+    assert resolve.kind(shared) == "human"
+    assert not resolve.is_bot(shared)
+    # Automation wins a majority, and an agent/bot tie goes to the agent.
+    resolve = build_identity_resolver(
+        [("Claude", shared), ("ops-bot", shared), ("Claude", shared), ("ops-bot", shared)]
+    )
+    assert resolve.kind(shared) == "agent"
+    assert resolve.agent_of(shared) == "claude"
+    resolve = build_identity_resolver([("ops-bot", shared)] * 2 + [("Claude", shared)])
+    assert resolve.kind(shared) == "bot"
+    assert resolve.agent_of(shared) is None
+
+
+def test_significance_skips_bots_but_keeps_agent_commits() -> None:
+    msg = "refactor: migrate the cache to a write-through store"
+    assert is_significant_commit(msg, "dependabot[bot]") is False
+    assert is_significant_commit(msg, "Deploy Bot") is False
+    assert is_significant_commit(msg, "Ada Lovelace") is True
+    assert is_significant_commit(msg, "Cursor Agent", "cursoragent@cursor.com") is True
+
+
+def test_active_contributors_count_people_only() -> None:
+    ts = 1_700_000_000
+    authors = [
+        {"name": "Dana White", "email": "dana@acme.io", "last_commit_ts": ts},
+        {"name": "Cursor Agent", "email": "cursoragent@cursor.com", "last_commit_ts": ts},
+        {"name": "github-actions[bot]", "email": "", "last_commit_ts": ts},
+        {"name": "Lee Park", "email": "lee@acme.io", "last_commit_ts": ts - 86400},
+    ]
+    assert count_active_contributors([{"top_authors_json": json.dumps(authors)}]) == 2
 
 
 def test_co_author_trailer_alone_never_merges() -> None:

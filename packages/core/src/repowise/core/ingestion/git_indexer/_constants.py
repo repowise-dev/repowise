@@ -63,7 +63,6 @@ _DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
     }
 )
 
-_SKIP_AUTHORS = ("dependabot", "renovate", "github-actions")
 _MIN_MESSAGE_LEN = 12
 
 # Default per-file commit history depth.
