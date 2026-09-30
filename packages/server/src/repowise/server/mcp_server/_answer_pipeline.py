@@ -374,6 +374,7 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
         entry["_sym_rank"] = rank
+        entry["_symbol_names"] = h.symbol_names
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
@@ -502,13 +503,16 @@ class _SymbolLegResult:
     way FTS and the vector store present theirs.
     """
 
-    __slots__ = ("page_id", "page_type", "snippet", "title")
+    __slots__ = ("page_id", "page_type", "snippet", "symbol_names", "title")
 
-    def __init__(self, page_id: str, title: str, snippet: str, page_type: str) -> None:
+    def __init__(
+        self, page_id: str, title: str, snippet: str, page_type: str, symbol_names: list[str]
+    ) -> None:
         self.page_id = page_id
         self.title = title
         self.snippet = snippet
         self.page_type = page_type
+        self.symbol_names = symbol_names
 
 
 async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]:
@@ -544,7 +548,13 @@ async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]
         return []
     _record_leg("symbol", "ok")
     return [
-        _SymbolLegResult(p["page_id"], p["title"], (p.get("summary") or "")[:200], p["page_type"])
+        _SymbolLegResult(
+            p["page_id"],
+            p["title"],
+            (p.get("summary") or "")[:200],
+            p["page_type"],
+            p.get("symbol_names") or [],
+        )
         for p in pages
     ]
 
