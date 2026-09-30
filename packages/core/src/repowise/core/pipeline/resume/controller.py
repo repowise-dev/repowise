@@ -230,10 +230,77 @@ class ResumeController:
                 "a resumed run will have to recompute dead code, health and decisions.",
             )
             return
-        await self._ledger.mark_completed(ResumePhase.ANALYSIS)
+        extraction_completed = decision_report is not None
+        decisions_count = (
+            len(getattr(decision_report, "decisions", []) or []) if extraction_completed else 0
+        )
+        await self._ledger.mark_completed(
+            ResumePhase.ANALYSIS,
+            metadata={
+                "decision_extraction_completed": extraction_completed,
+                "decisions_count": decisions_count,
+            },
+        )
         logger.info("resume_checkpoint_analysis", repo_id=self._repo_id)
+
+    async def has_completed_decision_extraction(self) -> bool:
+        """True iff the completed ANALYSIS phase recorded that decision extraction ran."""
+        job = await self._ledger.get_completed_job(ResumePhase.ANALYSIS)
+        if job is None:
+            return False
+        if job.metadata.get("decision_extraction_completed") is True:
+            return True
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud import list_decisions
+
+        try:
+            async with get_session(self._sf) as session:
+                rows = await list_decisions(session, self._repo_id, limit=1)
+                if rows:
+                    return True
+        except Exception as exc:
+            logger.debug("check_decision_records_failed", error=str(exc))
+        return False
+
+    async def checkpoint_decision_backfill(
+        self,
+        decision_report: Any,
+        progress: Any | None = None,
+    ) -> None:
+        """Persist backfilled decisions for a resumed run and record completion."""
+        from repowise.core.persistence import get_session
+
+        view = SimpleNamespace(
+            dead_code_report=None,
+            health_report=None,
+            decision_report=decision_report,
+            doc_drift_report=None,
+            git_metadata_list=[],
+            generated_pages=None,
+            vector_store=None,
+        )
+        try:
+            async with get_session(self._sf) as session:
+                await persist_analysis(view, session, self._repo_id)
+            decisions_count = len(getattr(decision_report, "decisions", []) or [])
+            await self.mark_decision_extraction_completed(count=decisions_count)
+        except Exception as exc:
+            logger.warning("resume_backfill_decision_persist_failed", error=str(exc))
+            emit_warning(
+                progress,
+                f"Backfilled decisions not saved ({exc}); "
+                "a subsequent resumed run will re-run decision extraction.",
+            )
+
+    async def mark_decision_extraction_completed(self, count: int = 0) -> None:
+        """Update the completed ANALYSIS job record to reflect that decision extraction finished."""
+        await self._ledger.mark_completed(
+            ResumePhase.ANALYSIS,
+            metadata={"decision_extraction_completed": True, "decisions_count": count},
+        )
 
     async def mark_phase_complete(self, phase: ResumePhase) -> None:
         """Record *phase* as completed (analysis / generation persisted by the
         normal end-of-run persist; this just stamps the ledger)."""
         await self._ledger.mark_completed(phase)
+

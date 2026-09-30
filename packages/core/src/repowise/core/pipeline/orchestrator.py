@@ -501,6 +501,34 @@ async def run_pipeline(
             logger.warning("resume_rehydrate_analysis_failed_recomputing", error=str(exc))
             skip_analysis = False
 
+        # If analysis was skipped, but decision extraction never completed (e.g. earlier
+        # run was interrupted during decision extraction or returned None), re-run decision
+        # extraction specifically so that decisions are backfilled without re-running dead code / health.
+        if (
+            skip_analysis
+            and resume_controller
+            and not await resume_controller.has_completed_decision_extraction()
+        ):
+            if progress:
+                progress.on_message(
+                    "info",
+                    "  ↳ Resumed analysis missing decision extraction — running extraction",
+                )
+            decision_report = await _run_decision_extraction(
+                repo_path,
+                llm_client=llm_client,
+                graph_builder=graph_builder,
+                git_meta_map=git_meta_map,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                progress=progress,
+            )
+            if decision_report is not None:
+                gen_decision_report = decision_report
+                await resume_controller.checkpoint_decision_backfill(
+                    decision_report, progress=progress
+                )
+
     if not skip_analysis:
         # The four analyses share read-only inputs (graph, git_meta_map,
         # parsed_files; the lazy metric caches were warmed during ingestion)

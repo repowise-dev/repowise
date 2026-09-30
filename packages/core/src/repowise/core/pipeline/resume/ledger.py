@@ -72,7 +72,22 @@ class ResumeLedger:
         except Exception as exc:
             logger.debug("resume_ledger_start_failed", phase=str(phase), error=str(exc))
 
-    async def mark_completed(self, phase: ResumePhase) -> None:
+    async def get_completed_job(self, phase: ResumePhase) -> Any | None:
+        """Return the latest COMPLETED job record for *phase*, if any."""
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence._interfaces.job_store import JobState
+
+        try:
+            async with get_session(self._sf) as session:
+                jobs = await _store(session).list_jobs(
+                    repository_id=self._repo_id, phase=str(phase), state=JobState.COMPLETED
+                )
+                return jobs[0] if jobs else None
+        except Exception as exc:
+            logger.debug("resume_ledger_get_job_failed", phase=str(phase), error=str(exc))
+            return None
+
+    async def mark_completed(self, phase: ResumePhase, metadata: dict | None = None) -> None:
         from repowise.core.persistence import get_session
         from repowise.core.persistence._interfaces.job_store import JobState
 
@@ -83,8 +98,12 @@ class ResumeLedger:
                 if job_id is None:
                     # No open job (e.g. mark_started failed) — open one so the
                     # COMPLETED state still lands.
-                    job = await store.create_job(repository_id=self._repo_id, phase=str(phase))
+                    job = await store.create_job(
+                        repository_id=self._repo_id,
+                        phase=str(phase),
+                        metadata=metadata,
+                    )
                     job_id = job.id
-                await store.update_state(job_id, JobState.COMPLETED)
+                await store.update_state(job_id, JobState.COMPLETED, metadata=metadata)
         except Exception as exc:
             logger.debug("resume_ledger_complete_failed", phase=str(phase), error=str(exc))

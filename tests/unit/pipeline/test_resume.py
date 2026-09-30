@@ -331,3 +331,50 @@ async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf
             "a resumed run will have to recompute dead code, health and decisions.",
         )
     ]
+
+
+async def test_decision_extraction_completion_tracking(sf, monkeypatch):
+    """Test that ResumeController correctly records and checks decision extraction status."""
+    from types import SimpleNamespace
+
+    async def _ok(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_symbol_analysis", _ok)
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_analysis", _ok)
+
+    repo_id = await _make_repo(sf)
+    progress = _RecordingProgress()
+
+    # Case 1: checkpoint_analysis without decision_report (e.g. extraction not completed)
+    ctrl1 = ResumeController(sf, repo_id, resume=False)
+    await ctrl1.checkpoint_analysis(
+        parsed_files=[],
+        dead_code_report=None,
+        health_report=None,
+        decision_report=None,
+        git_metadata_list=[],
+        progress=progress,
+    )
+
+    assert await ctrl1.has_completed_decision_extraction() is False
+
+    # Mark decision extraction completed
+    await ctrl1.mark_decision_extraction_completed(count=5)
+    assert await ctrl1.has_completed_decision_extraction() is True
+
+    # Case 2: fresh controller with genuine empty decisions
+    repo_id_2 = await _make_repo(sf)
+    ctrl2 = ResumeController(sf, repo_id_2, resume=False)
+    empty_decision_report = SimpleNamespace(decisions=[])
+    await ctrl2.checkpoint_analysis(
+        parsed_files=[],
+        dead_code_report=None,
+        health_report=None,
+        decision_report=empty_decision_report,
+        git_metadata_list=[],
+        progress=progress,
+    )
+
+    assert await ctrl2.has_completed_decision_extraction() is True
+
