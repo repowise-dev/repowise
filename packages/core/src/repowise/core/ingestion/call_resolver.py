@@ -123,7 +123,7 @@ PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "go"}
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
-_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript"})
+_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go"})
 
 
 def _overload_return_types(

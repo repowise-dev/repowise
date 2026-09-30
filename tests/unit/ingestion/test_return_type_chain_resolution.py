@@ -432,3 +432,32 @@ def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -
     assert len(resolved) == 1
     assert resolved[0].callee_id == "logging/log.go::Event::Err"
     assert resolved[0].origin.startswith("return_type_")
+
+
+def test_go_external_return_type_does_not_bind_a_same_named_repo_type(tmp_path: Path) -> None:
+    """`*zerolog.Event` is not the repository's own `Event` in an unrelated package.
+
+    Go types are package-scoped, so a repository-wide match on the bare type
+    name is a coincidence rather than a binding, the same as java's.
+    """
+    parsed = _go_packages(
+        tmp_path,
+        {
+            "logging/log.go": (
+                'package logging\n\nimport "github.com/rs/zerolog"\n\n'
+                "func Error() *zerolog.Event { return nil }\n"
+            ),
+            "audit/event.go": (
+                "package audit\n\ntype Event struct{}\n\n"
+                "func (e *Event) Err(err error) *Event { return e }\n"
+            ),
+            "cmd/run.go": _GO_CALLER,
+        },
+    )
+    call = _go_chain(parsed, "Err")
+
+    resolved = CallResolver(
+        parsed, {"cmd/run.go": {"logging/log.go"}}, repo_path=str(tmp_path)
+    ).resolve_file("cmd/run.go", [call])
+
+    assert resolved == []
