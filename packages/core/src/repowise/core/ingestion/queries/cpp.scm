@@ -113,7 +113,8 @@
 ; A definition returning a pointer or a reference wraps the function_declarator:
 ; ``Node *make(...)``, ``char **argv(...)``, ``Foo& Foo::operator=(...)``, and a
 ; function returning a function pointer, ``int (*handler(int k))(int)``.
-; Queries cannot recurse, so each wrapper depth is listed; the name shapes are
+; Queries cannot recurse, so each wrapper depth is listed (up to two pointer
+; levels; ``T ***f()`` is not matched); the name shapes are
 ; the ones the unwrapped patterns above accept. ``reference_declarator`` does
 ; not name its declarator field, so its child is matched unnamed.
 (function_definition

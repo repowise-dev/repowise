@@ -17,7 +17,8 @@
 ; A declarator that returns a pointer wraps the function_declarator:
 ; ``client *createClient(...)``, ``char **argv(...)``, and a function returning
 ; a function pointer, ``int (*handler(int k))(int)``. Queries cannot recurse,
-; so each wrapper depth is listed. A function-pointer variable
+; so each wrapper depth is listed (three pointer levels, ``T ***f()``, are not
+; matched; none occur in the C codebases checked). A function-pointer variable
 ; (``void (*cb)(int);``) has no inner function_declarator and never matches.
 (function_definition
   declarator: [

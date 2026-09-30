@@ -67,6 +67,14 @@ def test_function_pointer_variable_is_not_a_function(language: str) -> None:
     assert "alloc_fn" not in names
 
 
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_function_pointer_struct_field_is_not_a_function(language: str) -> None:
+    src = "struct ops { void *(*alloc)(unsigned n); char **(*split)(const char *s); };\n"
+    names = _names(src, language)
+    assert "alloc" not in names
+    assert "split" not in names
+
+
 def test_call_in_pointer_returning_body_keys_to_it() -> None:
     src = "void helper(void) {}\nclient *createClient(int fd) { helper(); return 0; }\n"
     calls = _parse(src, "c").calls
