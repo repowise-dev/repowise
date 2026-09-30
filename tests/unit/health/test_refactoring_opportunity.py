@@ -17,6 +17,7 @@ from repowise.core.analysis.health.refactoring.opportunity import (
 )
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     _details_payload,
+    _diversified_order,
     _row_kwargs,
 )
 
@@ -536,3 +537,35 @@ def test_a_test_file_ranks_after_production_whatever_its_score() -> None:
     ranked = compose_opportunities(rows)
     assert [item.file_path for item in ranked] == ["svc/orders.py", "tests/test_orders.py"]
     assert ranked[1].rank_score > ranked[0].rank_score
+
+
+def _ranked(path: str, biomarker: str, kind: str = "extract_method"):
+    from types import SimpleNamespace
+
+    # Credited, so every row is interleaved (zero-credit work queues last).
+    return SimpleNamespace(
+        file_path=path,
+        lead_biomarker=biomarker,
+        lead_refactoring_type=kind,
+        recoverable_health=1.0,
+    )
+
+
+def test_one_cause_in_bulk_does_not_own_the_queue_head() -> None:
+    # Rank order: twenty clone opportunities in one area, then two other causes.
+    ranked = [_ranked(f"lib/dup/m{i}.py", "dry_violation", "extract_helper") for i in range(20)]
+    ranked += [_ranked("svc/a.py", "complex_method"), _ranked("api/b.py", "low_cohesion")]
+    head = [ranked[i].lead_biomarker for i in _diversified_order(ranked)[:3]]
+    assert sorted(head) == ["complex_method", "dry_violation", "low_cohesion"]
+
+
+def test_the_queue_puts_every_test_file_after_production() -> None:
+    # Two production files share a group; a test file would otherwise take the
+    # second slot in the first round.
+    ranked = [
+        _ranked("svc/a.py", "complex_method"),
+        _ranked("svc/b.py", "complex_method"),
+        _ranked("tests/test_a.py", "complex_method"),
+    ]
+    order = [ranked[i].file_path for i in _diversified_order(ranked)]
+    assert order == ["svc/a.py", "svc/b.py", "tests/test_a.py"]

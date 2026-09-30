@@ -473,6 +473,22 @@ def _compose_one(
     )
 
 
+def _shown_by_file(
+    suggestions: Sequence[RefactoringSuggestion],
+) -> dict[str, list[tuple[RefactoringSuggestion, str]]]:
+    """Plans and their ids per file, less those whose cause the registry withholds.
+
+    Ids are assigned over the whole set, so a withheld plan cannot shift a
+    shown plan's id.
+    """
+    withheld = excluded_types()
+    by_file: dict[str, list[tuple[RefactoringSuggestion, str]]] = {}
+    for suggestion, plan_id in zip(suggestions, assign_public_ids(suggestions), strict=True):
+        if suggestion.source_biomarker not in withheld:
+            by_file.setdefault(suggestion.file_path, []).append((suggestion, plan_id))
+    return by_file
+
+
 def compose_opportunities(
     rows: Iterable[Any],
     *,
@@ -511,16 +527,7 @@ def compose_opportunities(
         for suggestion in (rehydrate_suggestion(row) for row in rows)
         if suggestion.refactoring_type not in EXCLUDED_TYPES
     ]
-    # Ids over the whole set, so a withheld plan cannot shift a shown plan's id.
-    plan_ids = assign_public_ids(suggestions)
-    withheld = excluded_types()
-    by_file: dict[str, list[tuple[RefactoringSuggestion, str]]] = {}
-    for suggestion, plan_id in zip(suggestions, plan_ids, strict=True):
-        # Neither a step nor evidence: the registry hides this plan's cause.
-        if suggestion.source_biomarker in withheld:
-            continue
-        by_file.setdefault(suggestion.file_path, []).append((suggestion, plan_id))
-
+    by_file = _shown_by_file(suggestions)
     composed = [
         opportunity
         for file_path in sorted(by_file)

@@ -109,12 +109,17 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
             groups.setdefault(
                 (item.lead_biomarker or "", item.lead_refactoring_type, area), []
             ).append(position)
-        ordered_groups = sorted(groups.values(), key=lambda members: members[0])
-        for round_index in range(max((len(m) for m in ordered_groups), default=0)):
-            for members in ordered_groups:
-                if round_index < len(members):
-                    order.append(members[round_index])
+        order.extend(_round_robin(list(groups.values())))
         order.extend(uncredited)
+    return order
+
+
+def _round_robin(groups: list[list[int]]) -> list[int]:
+    """One member per group per round, groups ordered by their best member."""
+    ordered = sorted(groups, key=lambda members: members[0])
+    order: list[int] = []
+    for round_index in range(max((len(m) for m in ordered), default=0)):
+        order.extend(m[round_index] for m in ordered if round_index < len(m))
     return order
 
 
