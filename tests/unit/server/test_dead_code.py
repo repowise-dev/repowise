@@ -221,3 +221,36 @@ async def test_resolve_finding_invalid_status(client: AsyncClient, app) -> None:
         json={"status": "invalid_status"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stored_safe_unreachable_file_is_review_only_on_every_surface(
+    client: AsyncClient, app
+) -> None:
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.services.attention import _dead_code_items
+
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            HealthFileMetric(
+                repository_id=repo["id"],
+                file_path="src/dead_module.py",
+                score=9.0,
+                max_ccn=1,
+                max_nesting=1,
+                nloc=50,
+                has_test_file=False,
+                module="src",
+                is_test=False,
+            )
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/dead_module.py")
+    assert resp.status_code == 200
+    assert [f["safe_to_delete"] for f in resp.json()["dead_code"]] == [False]
+
+    async with get_session(app.state.session_factory) as session:
+        items, total, _ = await _dead_code_items(session, repo["id"])
+    assert (items, total) == ([], 0)

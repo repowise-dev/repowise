@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
@@ -467,7 +468,9 @@ async def file_detail(
             "confidence": f.confidence,
             "reason": f.reason,
             "lines": f.lines,
-            "safe_to_delete": f.safe_to_delete,
+            "safe_to_delete": effective_safe_to_delete(
+                f.confidence, f.file_path, f.safe_to_delete, f.kind
+            ),
         }
         for f in dead_rows
     ]
