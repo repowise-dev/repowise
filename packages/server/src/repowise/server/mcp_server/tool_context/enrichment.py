@@ -56,7 +56,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
-from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_basis
+from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import (
@@ -65,6 +65,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     is_missing_table,
 )
+from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 #: Where a resolved target path waits between its card being built and the
@@ -219,7 +220,7 @@ async def _resolve_call_graph(
             if want_callees:
                 result_data["callees"] = []
                 result_data["callees_basis"] = await call_resolution_basis(
-                    session, repo_id, node.language, cache_key=basis_cache_key(repository)
+                    session, repo_id, node.language, cache_key=index_state_key(repository)
                 )
             return
         if want_callers:
@@ -401,7 +402,7 @@ async def _resolve_call_graph(
     for key in ("callers", "callees"):
         if key in result_data and not result_data[key]:
             result_data[f"{key}_basis"] = await call_resolution_basis(
-                session, repo_id, node.language, cache_key=basis_cache_key(repository)
+                session, repo_id, node.language, cache_key=index_state_key(repository)
             )
 
     if relations:
@@ -519,7 +520,7 @@ async def _resolve_file_level_callers(
     )
     if repository is not None and not result_data.get("callers"):
         result_data["callers_basis"] = await call_resolution_basis(
-            session, repo_id, node.language, cache_key=basis_cache_key(repository)
+            session, repo_id, node.language, cache_key=index_state_key(repository)
         )
 
 

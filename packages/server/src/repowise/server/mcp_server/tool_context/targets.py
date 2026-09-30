@@ -41,7 +41,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_basis
+from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
@@ -52,6 +52,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
+from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows
 from repowise.server.mcp_server.tool_context.enrichment import (
@@ -816,7 +817,7 @@ async def _resolve_one_target(
                     session,
                     repo_id,
                     getattr(sym, "language", None),
-                    cache_key=basis_cache_key(repository),
+                    cache_key=index_state_key(repository),
                 )
             # Candidates
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]

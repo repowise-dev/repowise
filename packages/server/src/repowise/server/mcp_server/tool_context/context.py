@@ -89,7 +89,7 @@ _INCLUDE_BLOCKS = frozenset(
 async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> str | None:
     """One sentence naming index layers that hold none of the files served here."""
     try:
-        from repowise.server.mcp_server._basis import basis_cache_key
+        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._scope import unrelated_scope_hint
 
         served = [
@@ -101,7 +101,7 @@ async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> 
             session,
             repository.id,
             served,
-            cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+            cache_key=f"{repository.id}:{index_state_key(repository)}",
         )
     except Exception:
         return None

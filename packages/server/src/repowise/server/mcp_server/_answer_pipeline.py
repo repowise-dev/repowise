@@ -62,6 +62,7 @@ from repowise.server.mcp_server._graph_files import (
     is_symbol_node,
     keep_projected_edge,
     node_to_file,
+    per_index,
 )
 from repowise.server.mcp_server._helpers import (
     _EMBED_TIMEOUT_ENV,
@@ -824,7 +825,9 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
         # and its siblings join ``path::Name`` nodes, so an equality test against
         # a seed path matched none of them and the call graph was invisible here.
         seed_set = set(seed_paths)
-        pairs = await _projected_edges(session, repo_id)
+        pairs = await per_index(
+            session, repo_id, "projected_edges", lambda: _projected_edges(session, repo_id)
+        )
 
         neighbors: set[str] = set()
         degree: dict[str, int] = {}
