@@ -68,6 +68,21 @@ def scan_package_roots(
 ) -> set[str]:
     """Repo-relative POSIX directories holding a package manifest.
 
+    The directory set of :func:`scan_package_manifests`; see it for the walk.
+    """
+    return set(
+        scan_package_manifests(repo_root, is_pruned=is_pruned, prune_nested_git=prune_nested_git)
+    )
+
+
+def scan_package_manifests(
+    repo_root: str | os.PathLike[str],
+    *,
+    is_pruned: Callable[[Path], bool] | None = None,
+    prune_nested_git: bool = True,
+) -> dict[str, frozenset[str]]:
+    """Each package root mapped to the manifest filenames found in it.
+
     A manifest at the repo root is omitted: it would put every file in one
     bucket, which is the degenerate case package attribution exists to avoid.
 
@@ -84,16 +99,18 @@ def scan_package_roots(
     root = Path(repo_root)
     names = package_manifest_names()
     prune = is_pruned if is_pruned is not None else _default_prune(root)
-    roots: set[str] = set()
+    roots: dict[str, frozenset[str]] = {}
 
     for dirpath, dirnames, filenames in walk_repo(root, prune_nested_git=prune_nested_git):
         rel_dir = Path(dirpath).relative_to(root)
         # Prune in place so the walk never descends — the point of the scan is
         # to be cheap enough to run on every update.
         dirnames[:] = [d for d in dirnames if not prune(rel_dir / d)]
-        if rel_dir == Path() or not names.intersection(filenames):
+        if rel_dir == Path():
             continue
-        roots.add(rel_dir.as_posix())
+        matched = names.intersection(filenames)
+        if matched:
+            roots[rel_dir.as_posix()] = matched
 
     return roots
 

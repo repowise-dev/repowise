@@ -729,14 +729,9 @@ class FileTraverser:
         # Mirrors GraphBuilder._prune_nested_git.
         prune_nested = not (self._include_submodules or self._include_nested_repos)
 
-        for rel_pkg in sorted(self.package_root_dirs()):
+        for rel_pkg, found in sorted(self.package_manifests().items()):
             pkg_dir = self.repo_root / rel_pkg
-            try:
-                manifests = sorted(_MANIFEST_FILES.intersection(os.listdir(pkg_dir)))
-            except OSError:
-                continue
-            if not manifests:
-                continue
+            manifests = sorted(found)
             probe = f"{rel_pkg}/{manifests[0]}"
             if is_test_related_path(probe) or is_example_path(probe):
                 continue
@@ -773,9 +768,13 @@ class FileTraverser:
         attribution, and this traverser's own skip semantics (nested-repo
         opt-ins included), so the two agree on what a package is.
         """
-        from .package_roots import scan_package_roots
+        return set(self.package_manifests())
 
-        return scan_package_roots(
+    def package_manifests(self) -> dict[str, frozenset[str]]:
+        """:meth:`package_root_dirs` with the manifest filenames each one holds."""
+        from .package_roots import scan_package_manifests
+
+        return scan_package_manifests(
             self.repo_root,
             is_pruned=self.dir_chain_skipped,
             prune_nested_git=not (self._include_submodules or self._include_nested_repos),
