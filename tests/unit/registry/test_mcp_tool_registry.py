@@ -10,12 +10,15 @@ from repowise.core.registry import MCPToolRegistry
 
 
 class _FakeMCP:
-    """Minimal stand-in for FastMCP — captures ``mcp.tool()(fn)`` calls."""
+    """Minimal stand-in for FastMCP — captures ``mcp.tool(**kw)(fn)`` calls."""
 
     def __init__(self) -> None:
         self.registered: list[Any] = []
+        self.registration_kwargs: list[dict[str, Any]] = []
 
-    def tool(self) -> Any:
+    def tool(self, **kwargs: Any) -> Any:
+        self.registration_kwargs.append(kwargs)
+
         def _decorator(fn: Any) -> Any:
             self.registered.append(fn)
             return fn
@@ -109,3 +112,69 @@ def test_reset_clears_tools(registry):
 
     registry.reset()
     assert registry.tools() == []
+
+
+def test_apply_passes_annotations_per_safety_kind(registry):
+    from mcp.types import ToolAnnotations
+
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+
+    @registry.register(safety="read_only")
+    async def reader() -> dict:
+        return {}
+
+    @registry.register(safety="generative")
+    async def generator() -> dict:
+        return {}
+
+    @registry.register(safety="mutating")
+    async def mutator() -> dict:
+        return {}
+
+    mcp = _FakeMCP()
+    registry.apply(
+        mcp,
+        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
+    )
+
+    by_tool = dict(
+        zip(
+            [fn.__name__ for fn in mcp.registered],
+            mcp.registration_kwargs,
+            strict=True,
+        )
+    )
+    assert by_tool["reader"]["annotations"] == ToolAnnotations(
+        readOnlyHint=True, openWorldHint=False
+    )
+    assert by_tool["generator"]["annotations"] == ToolAnnotations(
+        readOnlyHint=True, openWorldHint=True
+    )
+    assert by_tool["mutator"]["annotations"] == ToolAnnotations(
+        readOnlyHint=False, destructiveHint=True, idempotentHint=True
+    )
+
+
+def test_apply_annotations_reach_a_real_fastmcp_server(registry):
+    from mcp.server.fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
+
+    @registry.register(safety="mutating")
+    async def set_finding_status() -> dict:
+        return {}
+
+    server = FastMCP("test")
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+
+    registry.apply(
+        server,
+        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
+    )
+
+    import asyncio
+
+    tools = asyncio.run(server.list_tools())
+    tool = next(t for t in tools if t.name == "set_finding_status")
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is True
