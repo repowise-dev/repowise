@@ -331,6 +331,8 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                         for path, count in package_file_counts(mg.file_paths, mg.packages)
                     ],
                     public_api=compute_public_api(material, parsed_by_path, package_roots),
+                    parsed_files=parsed_by_path,
+                    source_map=run.source_map,
                 ),
             )
         )

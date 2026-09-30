@@ -74,6 +74,7 @@ def _entry(name: str, sym: Any, path: str, alias_of: str) -> dict:
     if sym is None:  # a namespace export
         return {
             "name": name,
+            "id": "",
             "kind": "module",
             "file": path,
             "signature": "",
@@ -83,6 +84,7 @@ def _entry(name: str, sym: Any, path: str, alias_of: str) -> dict:
     doc = (sym.docstring or "").strip().splitlines()
     return {
         "name": name,
+        "id": sym.id,
         "kind": sym.kind,
         "file": path,
         "signature": "" if alias_of else " ".join((sym.signature or "").split()),
@@ -165,7 +167,7 @@ class _Resolver:
 def compute_public_api(
     material: Iterable[str], parsed: Mapping[str, Any], package_roots: set[str]
 ) -> list[dict]:
-    """``[{name, kind, file, signature, doc}]`` a page's files publish, entry order.
+    """``[{name, id, kind, file, signature, doc}]`` a page's files publish, entry order.
 
     A symbol published under a second name (``export { A as B }``) is listed
     again with ``alias_of`` and no excerpt. Ceiling: ``export { default as X }``,
