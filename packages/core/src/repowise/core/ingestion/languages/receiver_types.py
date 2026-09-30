@@ -148,6 +148,34 @@ _GO_SHORT_DECL = re.compile(
 # ``var x Foo`` / ``var x *Foo``: rare, but no pattern above reaches it.
 _GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})")
 
+# A struct field is the rest of its line: a type, its type arguments (two levels,
+# the ``_TYPE`` ceiling) and a tag. A field is typed only as ``T`` or ``*T``, as
+# ``_GO_SHORT_DECL`` types a value: ``[]T``, ``map[K]T`` and ``chan T`` hold a
+# ``T`` but are not one. Exported fields are capitalised, so the name is too.
+#
+# The type is unqualified: ``fd *sftp.File`` is never the ``File`` the file
+# itself declares, and a chain hop can only look a type up in its own file.
+# Ceiling: a field typed from another repo package stays untyped until a hop
+# can follow a Go import to a package.
+_GO_FIELD_NAME = r"[A-Za-z_]\w*"
+_GO_FIELD_END = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?[ \t]*(?:`[^`\n]*`?)?[ \t]*$"
+
+# ``parent *Command``, and each name of ``a, b Foo``: a name opens the line or
+# follows a comma, and the lookahead leaves the next name unconsumed. Both field
+# shapes set ``member`` to their whole match, so they reach class scope whatever
+# closed them and never type a local: a body line such as ``return err`` matches
+# too, but lies in no struct.
+_GO_FIELD = re.compile(
+    rf"(?m)(?:^[ \t]*|,[ \t]*)(?P<member>(?P<name>{_GO_FIELD_NAME}))"
+    rf"(?=(?:[ \t]*,[ \t]*{_GO_FIELD_NAME})*[ \t]+\*?(?P<type>{_GO_FIELD_NAME}){_GO_FIELD_END})"
+)
+
+# An embedded ``Base`` or ``*Base`` is a field named ``Base``, the name
+# ``c.Base.Method()`` reads it by.
+_GO_EMBEDDED_FIELD = re.compile(
+    rf"(?m)^[ \t]*\*?(?P<member>(?P<type>(?P<name>{_GO_FIELD_NAME}))){_GO_FIELD_END}"
+)
+
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
 # and `class A(val x: Foo)` are all `name: Type`.
 #
@@ -230,9 +258,10 @@ _CPP_DECLARATION = re.compile(
 
 
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
-# No Go shape captures a closer, so class scope drops every Go declaration:
-# intended, since Go is not in IMPLICIT_FIELD_LANGUAGES.
-_GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL)
+# Only the field shapes reach class scope. Go is still not in
+# IMPLICIT_FIELD_LANGUAGES: a field is read through its receiver (``c.parent``),
+# so it types a chain hop and never a bare name.
+_GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL, _GO_FIELD, _GO_EMBEDDED_FIELD)
 _KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
 _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONSTRUCTED)
@@ -468,7 +497,8 @@ class Declaration(NamedTuple):
     operator refuses these names.
 
     ``member`` marks a field of the enclosing class declared from inside a
-    method (``self.x = T()``, a constructor parameter property). It belongs
+    method (``self.x = T()``, a constructor parameter property) or, in Go, a
+    struct field, which no closer tells from a local. It belongs
     to the class wherever it sits, and never to the body.
     """
 

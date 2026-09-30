@@ -36,11 +36,11 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 _SOURCE_CACHE_FILES = 4
 
 # Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
-# receiver, every segment after the head a field. Go's selector receiver is
-# absent: ``pkg.Var`` and ``s.field`` are one shape there. Each maps to the
-# name that means the caller's own instance; TypeScript's ``self`` is a
-# global, not ``this``.
-_CHAIN_SELF = {"python": "self", "typescript": "this"}
+# receiver, every segment after the head a field. Each maps to the name that
+# means the caller's own instance; TypeScript's ``self`` is a global, not
+# ``this``. Go has no such name: its receiver is a parameter, typed from the
+# body, and a ``pkg.Var`` head types nothing, so it cannot pass for ``s.field``.
+_CHAIN_SELF: dict[str, str | None] = {"python": "self", "typescript": "this", "go": None}
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
