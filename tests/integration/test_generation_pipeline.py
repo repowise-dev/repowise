@@ -406,9 +406,10 @@ class TestGenerationPipeline:
             f"Duplicate page IDs found: {[i for i in ids if ids.count(i) > 1]}"
         )
 
-    def test_all_pages_have_model_name(self, pipeline_result):
+    def test_model_name_only_on_model_written_pages(self, pipeline_result):
+        # A template page made no model call, so it names no model.
         for page in pipeline_result["pages"]:
-            assert page.model_name
+            assert bool(page.model_name) == (page.provider_name != "template")
 
     def test_all_pages_provider_is_mock(self, pipeline_result):
         # LLM pages use the mock provider; the deterministic coverage tail
