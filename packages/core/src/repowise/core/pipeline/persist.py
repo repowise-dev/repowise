@@ -1743,16 +1743,31 @@ async def persist_git_refresh(
         await replace_git_history(session, repo_id, git_meta_map, full_git_summary)
         return
 
+    from sqlalchemy import select
+
     from repowise.core.persistence.crud import (
         recompute_git_percentiles,
         upsert_git_metadata_bulk,
     )
+    from repowise.core.persistence.models import GitMetadata
 
-    await upsert_git_metadata_bulk(
-        session,
-        repo_id,
-        [*git_meta_map.values(), *(git_decay_map or {}).values()],
-    )
+    decay_rows = list((git_decay_map or {}).values())
+    if decay_rows:
+        stored = set(
+            (
+                await session.execute(
+                    select(GitMetadata.file_path).where(GitMetadata.repository_id == repo_id)
+                )
+            ).scalars()
+        )
+        # A decay row is partial, so it only refreshes a stored row: inserted,
+        # it is a fragment with no totals or owner. History-tier rows are
+        # complete and upsert whole, which also fills the non-code rows an
+        # index built before that tier never wrote.
+        decay_rows = [
+            row for row in decay_rows if row.get("history_only") or row["file_path"] in stored
+        ]
+    await upsert_git_metadata_bulk(session, repo_id, [*git_meta_map.values(), *decay_rows])
     await recompute_git_percentiles(session, repo_id)
 
 

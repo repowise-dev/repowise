@@ -556,7 +556,9 @@ class GitIndexer:
         scores can only ratchet downward and never recover (issue #728). This
         recomputes just those fields off the walks already loaded here; the
         persist path upserts them field-by-field so ownership / age / authorship
-        (correct only from the full init walk) are left intact.
+        (correct only from the full init walk) are left intact. Idle
+        history-tier files get their complete row instead (see
+        ``_compute_idle_decay``).
 
         ``timings`` is the run's phase table; each walk below records a
         ``rebuild.git.*`` row so a slow git step names itself.
@@ -568,12 +570,6 @@ class GitIndexer:
         # idle refresh minted rows for every tracked config and markup file,
         # which the health pass then scored: a store grew rows a fresh index
         # never has.
-        # Non-code files get the same history tier the full index gives them.
-        history_files = _history_tier_files(self.repo_path, all_files or changed_file_paths)
-        history_changed = history_files.intersection(changed_file_paths)
-        changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
-        if all_files:
-            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
         repo = self._get_repo()
         if repo is None:
             return []
@@ -581,6 +577,15 @@ class GitIndexer:
             with contextlib.suppress(Exception):
                 repo.close()
             return []
+        # Non-code files get the same history tier the full index gives them,
+        # drawn from the same tracked-file set: the parsed files miss .rst,
+        # LICENSE and the like.
+        tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
+        history_files = _history_tier_files(self.repo_path, tier_paths or changed_file_paths)
+        history_changed = history_files.intersection(changed_file_paths)
+        changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
+        if all_files:
+            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
 
         loop = asyncio.get_event_loop()
         include_blame = self.tier.includes_blame
@@ -839,6 +844,8 @@ class GitIndexer:
         kept so the field-wise upsert leaves full-history columns untouched. A
         signal absent from a walk resolves to its recovered baseline (``0`` /
         ``[]``) so, e.g., a file whose only fix aged out drops to zero.
+        History-tier files are the exception: their row is complete, flagged
+        ``history_only``, and carries no code signal.
         """
         out: dict[str, dict] = {}
         for fp in idle_paths:
@@ -854,6 +861,12 @@ class GitIndexer:
                 provenance_classifier=prov_clf,
                 history_only=fp in history_files,
             )
+            if fp in history_files:
+                # The history tier comes only from this shared walk, so this is
+                # the full row a fresh index writes. Persisted whole, it also
+                # backfills stores indexed before non-code files had rows.
+                out[fp] = meta
+                continue
             meta["change_entropy"] = walk.entropy.get(fp, 0.0)
             meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
             meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
