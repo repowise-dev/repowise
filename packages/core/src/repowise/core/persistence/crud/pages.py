@@ -338,6 +338,7 @@ async def load_prior_pages(
             input_tokens=row.input_tokens,
             output_tokens=row.output_tokens,
             cached_tokens=row.cached_tokens,
+            metadata=metadata,
         )
     return prior
 

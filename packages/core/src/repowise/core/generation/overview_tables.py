@@ -5,7 +5,7 @@ resampled on every render: two calls with the same prompt, the same model and
 the same temperature produced pages that disagreed on their row count and on
 which paths they cited. Facts the run already holds — which packages exist,
 where they are, how big they are — are built here instead and embedded after
-the page comes back, the same way the architecture map already is.
+the page comes back, the same way the system map is.
 
 That makes them identical on the model-written page and on the structure-only
 page, stable across updates that changed no code, and assertable in a test.

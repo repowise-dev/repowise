@@ -20,7 +20,14 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
 from ..agent_digest import MODULE_SIGNALS_KEY, module_signals, split_questions
-from ..architecture_mermaid import embed_mermaid
+from ..architecture_map import SystemMap
+from ..architecture_mermaid import (
+    apply_names,
+    embed_system_map,
+    naming_payload,
+    split_names,
+    system_map_section,
+)
 from ..context.assembler import build_concept_index
 from ..context_assembler import FilePageContext
 from ..models import (
@@ -28,6 +35,7 @@ from ..models import (
     STUB_FALLBACK_ERROR,
     STUB_PAGE_CONFIDENCE,
     GeneratedPage,
+    compute_page_id,
     compute_source_hash,
 )
 from ..overview_tables import (
@@ -77,24 +85,37 @@ def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> Gener
     return page
 
 
-def _with_architecture_map(page: GeneratedPage, overview_mermaid: str | None) -> GeneratedPage:
-    """Embed the KG-derived architecture map into an already-built page.
+#: Page metadata key holding the model's names for the system map, so a reused
+#: or fallback page recompiles the current structure without another call.
+SYSTEM_MAP_NAMES = "system_map_names"
 
-    The overview is where the map lives, so the stub paths carry it too — a
-    provider outage should cost the prose around the diagram, not the diagram.
-    Embedding is idempotent, so calling this on a page that already has one is
-    safe.
+
+def _with_system_map(
+    page: GeneratedPage,
+    system_map: SystemMap | None,
+    repo_name: str,
+    names: dict | None = None,
+) -> GeneratedPage:
+    """Compile the system map from the current structure into a built page.
+
+    Every path carries it, the stub and the outage fallback too: a provider
+    outage should cost the prose around the diagram, not the diagram. The map
+    is recompiled on every render, so a structure or compiler change reaches a
+    reused page; the names are the only model output it keeps.
     """
-    if not overview_mermaid:
-        return page
-    page.content = embed_mermaid(page.content, overview_mermaid, heading="## Architecture map")
+    section = None
+    if system_map:
+        section = system_map_section(apply_names(system_map, names), repo_name)
+        if names:
+            page.metadata[SYSTEM_MAP_NAMES] = names
+    page.content = embed_system_map(page.content, section)
     return page
 
 
 def _with_package_table(page: GeneratedPage, package_stats: list[dict]) -> GeneratedPage:
     """Embed the package table into an already-built page.
 
-    Same reasoning as the architecture map, and the same three paths: the model
+    Same reasoning as the system map, and the same three paths: the model
     page, the deterministic page and the provider-outage fallback all carry it,
     because which packages exist is a fact the run already holds. Writing it
     through the model instead meant it was resampled on every render — two
@@ -409,7 +430,7 @@ class PerTypeGenerationMixin:
         repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
-        overview_mermaid: str | None = None,
+        system_map: SystemMap | None = None,
         source_map: dict[str, bytes] | None = None,
         parsed_files: list[ParsedFile] | None = None,
         capabilities: Sequence[Capability] = (),
@@ -445,17 +466,27 @@ class PerTypeGenerationMixin:
             }
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
+        prior = self._prior_pages.get(compute_page_id("repo_overview", repo_name))
+        prior_names = dict(prior.metadata).get(SYSTEM_MAP_NAMES) if prior else None
         if self._config.deterministic:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            page = _with_architecture_map(
+            # Stored names survive a keyless render, for the next keyed one to reuse.
+            page = _with_system_map(
                 _with_package_table(_with_capability_table(stub, capabilities), ctx.package_stats),
-                overview_mermaid,
+                system_map,
+                repo_name,
+                prior_names,
             )
             selection = self._disabled_source_evidence("repo_overview", "deterministic_generation")
             return self._attach_source_evidence(page, "repo_overview", selection)
-        user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
+        user_prompt = self._render(
+            "repo_overview.j2",
+            ctx=ctx,
+            repo_git_summary=repo_git_summary,
+            system_map_payload=naming_payload(system_map) if system_map else "",
+        )
         user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
@@ -467,16 +498,23 @@ class PerTypeGenerationMixin:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            page = _with_architecture_map(
+            page = _with_system_map(
                 _with_package_table(
                     _with_capability_table(
                         _stub_fallback(stub, "repo_overview", exc), capabilities
                     ),
                     ctx.package_stats,
                 ),
-                overview_mermaid,
+                system_map,
+                repo_name,
+                prior_names,
             )
             return self._attach_source_evidence(page, "repo_overview", evidence)
+        # A fresh reply carries the names block; a reused one takes the names
+        # the stored page kept.
+        prose, names = split_names(response.content)
+        response = replace(response, content=prose)
+        names = names or prior_names
         overview_grounding_evidence: dict[str, str] = {}
         for item in evidence.included:
             overview_grounding_evidence[item.path] = "\n".join(
@@ -500,11 +538,9 @@ class PerTypeGenerationMixin:
                 count=len(ungrounded),
                 tokens=ungrounded[:20],
             )
-        # The overview carries its own enumerable facts: the package table and
-        # the KG-derived architecture map are built from the run, not drawn by
-        # the model, and both embeds are idempotent so a reused page picks them
-        # up too. Appended in reading order, so what the repository does lands
-        # above what it is made of, and both above the diagram.
+        # The overview carries its own enumerable facts: the tables and the
+        # system map are built from the run, not by the model. The table embeds
+        # are idempotent, so a reused page picks them up too.
         # Unconditional: content reused from an earlier run keeps that run's
         # rows, and an empty selection has to remove them.
         response = replace(
@@ -518,13 +554,6 @@ class PerTypeGenerationMixin:
                     response.content, build_package_table(ctx.package_stats)
                 ),
             )
-        if overview_mermaid:
-            response = replace(
-                response,
-                content=embed_mermaid(
-                    response.content, overview_mermaid, heading="## Architecture map"
-                ),
-            )
         page = self._build_generated_page(
             "repo_overview",
             repo_name,
@@ -533,55 +562,8 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["repo_overview"],
         )
+        page = _with_system_map(page, system_map, repo_name, names)
         return self._attach_source_evidence(page, "repo_overview", evidence)
-
-    async def generate_architecture_diagram(
-        self,
-        graph: Any,
-        pagerank: dict[str, float],
-        community: dict[str, int],
-        sccs: list[Any],
-        repo_name: str,
-        overview_mermaid: str | None = None,
-    ) -> GeneratedPage:
-        ctx = self._assembler.assemble_architecture_diagram(
-            graph, pagerank, community, sccs, repo_name
-        )
-        if self._config.deterministic:
-            return self._stub_architecture_diagram(
-                ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
-            )
-        user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
-        try:
-            response = await self._call_provider(
-                "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
-            )
-        except Exception as exc:
-            # The stub embeds the same KG-derived map the model path overwrites
-            # the model's diagram with, so the fallback keeps the diagram and
-            # loses only the prose around it.
-            stub = self._stub_architecture_diagram(
-                ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
-            )
-            return _stub_fallback(stub, "architecture_diagram", exc)
-        # Swap the LLM's free-form diagram for the deterministic KG-derived map
-        # (idempotent, applies to fresh and reused content). Falls back to the
-        # LLM's own mermaid when the KG can't produce one.
-        if overview_mermaid:
-            response = replace(
-                response,
-                content=embed_mermaid(
-                    response.content, overview_mermaid, heading="## Architecture map"
-                ),
-            )
-        return self._build_generated_page(
-            "architecture_diagram",
-            repo_name,
-            f"Architecture Diagram: {repo_name}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["architecture_diagram"],
-        )
 
     async def generate_api_contract(
         self,
@@ -701,7 +683,7 @@ class PerTypeGenerationMixin:
 
     @staticmethod
     def _tag_promoted_pages(pages: list[GeneratedPage]) -> None:
-        """Tag repo_overview / architecture_diagram pages with their slot.
+        """Tag promoted pages (the repo overview) with their onboarding slot.
 
         Mutates each matching page's ``metadata["onboarding_slot"]`` so the
         UI groups them into the Onboarding folder without changing their

@@ -10,7 +10,6 @@ import pytest
 
 from repowise.core.generation.context_assembler import (
     ApiContractContext,
-    ArchitectureDiagramContext,
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
@@ -526,37 +525,6 @@ def test_spotlight_asks_about_importers_only_when_it_has_them(
     # The two it can always ask survive on a symbol with no edges at all.
     assert "`_normalise`" in without
     assert without.count("?") >= 2
-
-
-# ---------------------------------------------------------------------------
-# architecture_diagram.j2
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def architecture_diagram_ctx() -> ArchitectureDiagramContext:
-    return ArchitectureDiagramContext(
-        repo_name="my-repo",
-        nodes=["pkg/a.py", "pkg/b.py"],
-        edges=[("pkg/a.py", "pkg/b.py")],
-        communities={0: ["pkg/a.py"], 1: ["pkg/b.py"]},
-        scc_groups=[],
-    )
-
-
-def test_architecture_diagram_renders_without_error(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert result
-
-
-def test_architecture_diagram_has_heading(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert "##" in result
-
-
-def test_architecture_diagram_mentions_mermaid(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert "mermaid" in result.lower()
 
 
 # ---------------------------------------------------------------------------

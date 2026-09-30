@@ -14,8 +14,8 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -136,6 +136,8 @@ class PriorPage:
     output_tokens: int = 0
     cached_tokens: int = 0
     content_hash: str = ""
+    #: The stored page's metadata, for facts a reused page must carry forward.
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):

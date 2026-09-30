@@ -213,15 +213,6 @@ class RepoOverviewContext:
 
 
 @dataclass
-class ArchitectureDiagramContext:
-    repo_name: str
-    nodes: list[str]
-    edges: list[tuple[str, str]]
-    communities: dict[int, list[str]]
-    scc_groups: list[list[str]]
-
-
-@dataclass
 class ApiContractContext:
     file_path: str
     language: str

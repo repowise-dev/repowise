@@ -102,17 +102,16 @@ def derive_actors(entry_points: list[str]) -> list[Actor]:
     if not kinds:
         kinds = ["user"]
 
-    ordered = [k for k in _KIND_ORDER if k in kinds]
-    actors: list[Actor] = []
-    for kind in ordered:
-        name, description = _ACTOR_META[kind]
-        actors.append(
-            Actor(
-                id=render(PersonId(kind)),
-                kind=kind,
-                name=name,
-                description=description,
-                verb=_ACTOR_VERB[kind],
-            )
-        )
-    return actors
+    return [actor_for(k) for k in _KIND_ORDER if k in kinds]
+
+
+def actor_for(kind: str) -> Actor:
+    """The actor of one kind (``cli``, ``api``, ``scheduler``, ``developer``, ``user``)."""
+    name, description = _ACTOR_META[kind]
+    return Actor(
+        id=render(PersonId(kind)),
+        kind=kind,
+        name=name,
+        description=description,
+        verb=_ACTOR_VERB[kind],
+    )

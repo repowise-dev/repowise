@@ -9,11 +9,10 @@ history. A model adds nothing to that and introduces staleness, so these have
 one renderer and no model path at all. Their templates sit at
 ``templates/<name>.j2``.
 
-**Keyless stubs.** ``module_page``, ``repo_overview``, ``architecture_diagram``
-and ``onboarding`` exist to synthesise, which is exactly what a template
-cannot do. They keep a model path; what lives here is the honest thin version
-a user without an API key gets, which the same page upgrades away from once a
-key is present. Their templates sit at ``templates/stub/<name>.j2``.
+**Keyless stubs.** ``module_page``, ``repo_overview`` and ``onboarding``
+exist to synthesise, which is exactly what a template cannot do. They keep a
+model path; what lives here is the honest thin version a user without an API
+key gets, which the same page upgrades away from once a key is present. Their templates sit at ``templates/stub/<name>.j2``.
 
 Everything either renderer emits is derived from the parsed AST, the import
 graph, git history or the knowledge graph, so it is factual by construction
@@ -949,20 +948,6 @@ class StructuralRenderMixin:
             template="repo_overview.j2",
             ctx=ctx,
             repo_git_summary=repo_git_summary,
-        )
-
-    def _stub_architecture_diagram(
-        self, ctx: Any, repo_name: str, title: str, overview_mermaid: str | None
-    ) -> GeneratedPage:
-        return self._stub_page(
-            page_type="architecture_diagram",
-            target_path=repo_name,
-            title=title,
-            template="architecture_diagram.j2",
-            ctx=ctx,
-            # Structural on the model path too, where it overwrites whatever
-            # diagram the model drew. Here it is simply the diagram.
-            overview_mermaid=overview_mermaid or "",
         )
 
     def _stub_onboarding_page(self, spec: Any, ctx: Any, target_path: str) -> GeneratedPage:

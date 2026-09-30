@@ -14,7 +14,7 @@ from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 # ---------------------------------------------------------------------------
 # System prompts, one per page type that a model writes.
 #
-# Only four are left. The page types whose facts a parser knows exactly are
+# Only three are left. The page types whose facts a parser knows exactly are
 # rendered from structure and never reach a provider, so a system prompt for
 # one of them would be a string nothing sends.
 # ---------------------------------------------------------------------------
@@ -83,12 +83,6 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "The page is a short orientation, not a manual: keep the prose within the "
         "word budget the user prompt states. The enumerable facts are inserted "
         "after you write, from the code as indexed, so do not tabulate them."
-    ),
-    "architecture_diagram": (
-        "You are repowise, an expert technical documentation generator. "
-        "Generate an architecture overview with a Mermaid diagram. "
-        "You MUST include a fenced mermaid block with graph TD showing key dependencies. "
-        "Output markdown only."
     ),
     "onboarding": (
         "You are repowise, an expert technical documentation generator producing "
