@@ -22,6 +22,7 @@ from .. import onboarding as _onboarding
 from ..agent_digest import MODULE_SIGNALS_KEY, module_signals, split_questions
 from ..architecture_mermaid import embed_mermaid
 from ..context.assembler import build_concept_index
+from ..context.module_facts import module_base
 from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
@@ -37,6 +38,7 @@ from ..overview_tables import (
     embed_capability_table,
     embed_package_table,
 )
+from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
 
 log = structlog.get_logger(__name__)
@@ -371,6 +373,15 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
+        )
+        # Citations of a missing file, or one its section never names, go.
+        # Diagrams are checked for every page of the run in ``sanitize_pages``.
+        page.content = lint_sources(
+            page.content,
+            base=module_base(ctx.files),
+            members=ctx.files,
+            known_paths=[n for n in graph if "::" not in n],
+            symbols_by_file={fc.file_path: [s["name"] for s in fc.symbols] for fc in file_contexts},
         )
         return _stamp_concept(_with_digest(page))
 

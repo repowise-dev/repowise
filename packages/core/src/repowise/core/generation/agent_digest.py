@@ -38,7 +38,7 @@ _H2 = re.compile(r"^##\s+(.+?)\s*#*\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
 
-def _h2_sections(content: str) -> list[tuple[str | None, list[str]]]:
+def h2_sections(content: str) -> list[tuple[str | None, list[str]]]:
     """Split *content* into ``(heading, lines)`` runs at level-2 headings.
 
     The first run has no heading. A ``##`` inside a fenced block is text.
@@ -64,7 +64,7 @@ def split_questions(content: str) -> tuple[str, str]:
     """
     body: list[str] = []
     questions: list[str] = []
-    for heading, lines in _h2_sections(content or ""):
+    for heading, lines in h2_sections(content or ""):
         if heading is not None and heading.strip().lower() in _QUESTION_HEADINGS:
             questions.extend(lines)
         else:

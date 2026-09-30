@@ -1,10 +1,9 @@
-"""A module page reads as an explanation: prose, one diagram, few tables.
+"""A module page is stored in the shape a reader reads, whatever the model sent.
 
-The measures a reader feels are checked on the page as stored: the share of
-lines that are table rows, the word count, and whether headings name what the
-module does, not a template slot. A page written to the contract passes
-them after every post-processing step; the table-heavy shape the contract
-replaces fails them.
+Checked on the page as stored, after every post-processing step: no diagram
+the renderer rejects, no citation of a file that does not exist, the agent
+material in the digest, and headings that name what the module does. Every
+built-in style asks for the same shape.
 """
 
 from __future__ import annotations
@@ -36,17 +35,6 @@ _REQUIRED_TAIL = ["Where to start reading", "How it connects"]
 def table_line_share(markdown: str) -> float:
     lines = [line for line in markdown.splitlines() if line.strip()]
     return sum(1 for line in lines if line.lstrip().startswith("|")) / max(1, len(lines))
-
-
-def prose_words(markdown: str) -> int:
-    kept, fenced = [], False
-    for line in markdown.splitlines():
-        if line.strip().startswith("```"):
-            fenced = not fenced
-            continue
-        if not fenced and not line.lstrip().startswith(("|", "Sources:", "#")):
-            kept.append(line)
-    return len(re.findall(r"\b\w[\w'-]*\b", "\n".join(kept)))
 
 
 def generic_headings(markdown: str) -> list[str]:
@@ -86,7 +74,10 @@ _RESPONSE = "\n\n".join(
         "Sources: `billing/charge.py`",
         "## Holding the stock",
         _SECTION.format(part="stock", verb="reserves stock for", file="stock/reserve.py"),
-        "Sources: `stock/reserve.py`",
+        "Sources: `stock/reserve.py`, `stock/ghost.py`",
+        "## Following one order",
+        "The order moves from the basket to the store.",
+        "```mermaid\nsequenceDiagram\n    Orders calls Billing\n```",
         "## Where to start reading",
         "- `orders/place.py` - where an order starts.\n"
         "- `billing/charge.py` - how payment is taken.\n"
@@ -142,22 +133,22 @@ async def _page(config, provider=None):
     )
 
 
-async def test_a_contract_page_reads_as_prose(sample_config):
+async def test_post_processing_keeps_the_shape_and_moves_agent_material(sample_config):
+    """What the pipeline does to a response, not what the fixture already is:
+    the broken diagram and the invented citation go, the questions move to the
+    digest, and the reading shape survives."""
     page = await _page(sample_config)
 
-    assert table_line_share(page.content) == 0
-    assert 500 <= prose_words(page.content) <= 800
-    assert generic_headings(page.content) == []
+    assert page.content.count("```mermaid") == 1
     assert invalid_mermaid_blocks(page.content) == []
+    assert "ghost.py" not in page.content
     assert page.content.count("Sources: `") == 3
+    assert "Questions this page answers" not in page.content
+    assert page.digest.startswith("## Questions this page answers")
+    assert table_line_share(page.content) == 0
+    assert generic_headings(page.content) == []
     headings = re.findall(r"^##\s+(.+?)\s*$", page.content, re.M)
     assert headings[-2:] == _REQUIRED_TAIL
-
-
-def test_the_measures_reject_the_table_heavy_shape():
-    dump = "## Overview\n\n| File | Role |\n| --- | --- |\n" + "| `a.py` | x |\n" * 12
-    assert table_line_share(dump) > 0.5
-    assert generic_headings(dump) == ["Overview"]
 
 
 @pytest.mark.parametrize("style", ["comprehensive", "caveman", "reference", "tutorial"])
