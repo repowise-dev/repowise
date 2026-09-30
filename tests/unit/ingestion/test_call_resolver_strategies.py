@@ -420,6 +420,187 @@ class TestFieldTypedReceiver:
         assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
 
 
+_GO_DETECT = (
+    "go",
+    "package detect\n\n"
+    "type Detector struct{}\n\n"
+    "type Other struct{}\n\n"
+    "func NewDetector() *Detector { return &Detector{} }\n\n"
+    "func NewPair() (*Detector, error) { return &Detector{}, nil }\n\n"
+    "func NewOther() *Other { return &Other{} }\n\n"
+    "func (d *Detector) Child() *Other { return &Other{} }\n\n"
+    "func (d *Detector) Scan() int { return 1 }\n\n"
+    "func (o *Other) Scan() int { return 2 }\n\n"
+    "func (o *Other) Walk() int { return 3 }\n",
+)
+
+
+def _go_method_edges(tmp_path: Path, body: str) -> list[tuple[str, str, float, str]]:
+    """Method edges from ``cmd/run.go::run`` whose body is *body*."""
+    parsed = _parse_all(
+        tmp_path,
+        {
+            "detect/detect.go": _GO_DETECT,
+            "cmd/run.go": (
+                "go",
+                'package cmd\n\nimport "example.com/app/detect"\n\n'
+                f"func run(ok bool) {{\n{body}}}\n",
+            ),
+        },
+    )
+    _link_imports(parsed, {"cmd/run.go": {"example.com/app/detect": "detect/detect.go"}})
+    edges = _edges(
+        parsed, tmp_path, {"cmd/run.go": {"detect/detect.go"}, "detect/detect.go": set()}
+    )
+    return [e for e in edges if e[0] == "cmd/run.go::run" and e[1].count("::") == 2]
+
+
+class TestGoCallTypedLocal:
+    """``x := pkg.New(..)`` types ``x`` from ``New``'s declared return type."""
+
+    def test_a_constructor_result_types_its_receiver(self, tmp_path: Path) -> None:
+        edges = _go_method_edges(tmp_path, "\td := detect.NewDetector()\n\td.Scan()\n")
+        assert [e[1] for e in edges] == ["detect/detect.go::Detector::Scan"]
+        assert edges[0][3].startswith("receiver_typed_")
+
+    def test_the_first_of_several_results_is_the_type(self, tmp_path: Path) -> None:
+        body = "\td, err := detect.NewPair()\n\t_ = err\n\td.Scan()\n"
+        edges = _go_method_edges(tmp_path, body)
+        assert [e[1] for e in edges] == ["detect/detect.go::Detector::Scan"]
+
+    def test_a_local_typed_from_a_method_on_an_earlier_one(self, tmp_path: Path) -> None:
+        body = "\td := detect.NewDetector()\n\tc := d.Child()\n\tc.Walk()\n"
+        assert sorted(e[1] for e in _go_method_edges(tmp_path, body)) == [
+            "detect/detect.go::Detector::Child",
+            "detect/detect.go::Other::Walk",
+        ]
+
+    def test_two_blocks_declaring_different_types_type_neither(self, tmp_path: Path) -> None:
+        """Each ``:=`` is its own block's variable, and which one a call sees
+        is not read from the text, so the name gets no type."""
+        body = (
+            "\tif ok {\n\t\td := detect.NewDetector()\n\t\td.Scan()\n\t} else {\n"
+            "\t\td := detect.NewOther()\n\t\td.Scan()\n\t}\n"
+        )
+        assert _go_method_edges(tmp_path, body) == []
+
+    def test_a_chained_right_hand_side_is_not_the_head_s_type(self, tmp_path: Path) -> None:
+        """``x`` holds ``Child``'s result, never ``NewDetector``'s."""
+        body = "\tx := detect.NewDetector().Child()\n\tx.Scan()\n"
+        targets = [e[1] for e in _go_method_edges(tmp_path, body)]
+        assert "detect/detect.go::Detector::Scan" not in targets
+
+
+    def test_a_declared_name_keeps_its_declaration_s_type(self, tmp_path: Path) -> None:
+        """A call-typed ``:=`` of a name a literal already types adds nothing,
+        so the existing reading is neither changed nor refused."""
+        body = (
+            "\tc := &detect.Other{}\n\tif ok {\n\t\tc := detect.NewOther()\n\t\t_ = c\n\t}\n"
+            "\tc.Walk()\n"
+        )
+        targets = [e[1] for e in _go_method_edges(tmp_path, body)]
+        assert targets == ["detect/detect.go::Other::Walk"]
+
+
+    def test_a_callee_reached_by_a_repo_wide_guess_types_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """``fs.Open`` on an interface lands on another package's ``Fs`` only
+        by name; its return type must not seed a second guess."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "app/fs.go": (
+                    "go",
+                    "package app\n\ntype Fs interface {\n\tOpen() File\n}\n\n"
+                    "type File interface {\n\tClose() error\n}\n\n"
+                    "func Read(fs Fs) {\n\tf := fs.Open()\n\tf.Close()\n}\n",
+                ),
+                "gcs/fs.go": (
+                    "go",
+                    "package gcs\n\ntype Fs struct{}\n\ntype GcsFile struct{}\n\n"
+                    "func (fs *Fs) Open() *GcsFile { return nil }\n\n"
+                    "func (f *GcsFile) Close() error { return nil }\n",
+                ),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert "gcs/fs.go::GcsFile::Close" not in [e[1] for e in edges]
+
+
+    def test_a_method_in_a_sibling_file_of_the_type_s_package(self, tmp_path: Path) -> None:
+        """Go puts methods in any file of the package, not only the type's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "detect/detect.go": (
+                    "go",
+                    "package detect\n\ntype Detector struct{}\n\n"
+                    "func NewDetector() *Detector { return &Detector{} }\n",
+                ),
+                "detect/baseline.go": (
+                    "go",
+                    "package detect\n\nfunc (d *Detector) AddBaseline() error { return nil }\n",
+                ),
+                "cmd/run.go": (
+                    "go",
+                    'package cmd\n\nimport "example.com/app/detect"\n\n'
+                    "func run() {\n\td := detect.NewDetector()\n\td.AddBaseline()\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"cmd/run.go": {"example.com/app/detect": "detect/detect.go"}})
+        edges = _edges(
+            parsed,
+            tmp_path,
+            {
+                "cmd/run.go": {"detect/detect.go"},
+                "detect/detect.go": set(),
+                "detect/baseline.go": set(),
+            },
+        )
+        assert (
+            "cmd/run.go::run",
+            "detect/baseline.go::Detector::AddBaseline",
+            0.88,
+            "receiver_typed_import",
+        ) in edges
+
+
+    def test_a_same_named_type_in_another_package_does_not_answer(
+        self, tmp_path: Path
+    ) -> None:
+        """``Open`` returns ``detect``'s own ``Store``; ``other.Store`` shares
+        only the name, and the name is all a repo-wide lookup would see."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "detect/store.go": (
+                    "go",
+                    "package detect\n\ntype Store interface {\n\tSave() int\n}\n\n"
+                    "func Open() Store { return nil }\n",
+                ),
+                "other/store.go": (
+                    "go",
+                    "package other\n\ntype Store struct{}\n\n"
+                    "func (s *Store) Save() int { return 1 }\n",
+                ),
+                "cmd/run.go": (
+                    "go",
+                    'package cmd\n\nimport "example.com/app/detect"\n\n'
+                    "func run() {\n\ts := detect.Open()\n\ts.Save()\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"cmd/run.go": {"example.com/app/detect": "detect/store.go"}})
+        edges = _edges(
+            parsed,
+            tmp_path,
+            {"cmd/run.go": {"detect/store.go"}, "detect/store.go": set(), "other/store.go": set()},
+        )
+        assert "other/store.go::Store::Save" not in [e[1] for e in edges]
+
+
 class TestPythonTypedReceiver:
     """Python reaches the same strategy through its own declaration shapes."""
 

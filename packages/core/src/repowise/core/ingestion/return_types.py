@@ -46,6 +46,31 @@ def signature_parameter_count(signature: str) -> int | None:
     return None
 
 
+def go_first_result(value: str) -> str:
+    """The first result's type of a go result list, ``(*T, error)`` -> ``*T``.
+
+    Named results group their names, so ``(a, b *T, err error)`` types ``a``
+    by the first entry that carries a type.
+    """
+    if not value.startswith("(") or not value.endswith(")"):
+        return value
+    entries: list[str] = []
+    depth = 0
+    current = ""
+    for char in value[1:-1]:
+        if char == "," and depth == 0:
+            entries.append(current.strip())
+            current = ""
+            continue
+        depth += (char in "([{") - (char in ")]}")
+        current += char
+    entries.append(current.strip())
+    if not any(" " in entry for entry in entries):
+        return entries[0]
+    typed = next(entry for entry in entries if " " in entry)
+    return typed.split(None, 1)[1]
+
+
 def normalize_return_type(raw: str, language: str) -> str | None:
     """Reduce a named return type to the repository's class-name key.
 
