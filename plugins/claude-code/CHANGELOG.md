@@ -2,6 +2,19 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.54.0
+
+### Changed
+- The `coverage` command documents gating a change in CI with
+  `repowise coverage check`: the report, threshold and output-format options,
+  and the report formats the parser reads (Go cover profiles, JaCoCo and
+  repowise JSON joined LCOV, Cobertura, Clover and coverage.py).
+- The `impacted-tests` command documents `--format args` and `--runner`, and
+  that the selection answers `:all` whenever it is not certain.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  global augment matcher. The new coverage re-ingest hook is opt-in and
+  repository-local, written by the CLI, so the plugin does not ship it.
+
 ## 0.53.0
 
 ### Changed
