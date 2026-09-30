@@ -432,9 +432,13 @@ class ReceiverTypingMixin:
         method declared away from its type (a Go receiver, a C++ out-of-line
         body) has none, so both keep the prefix.
         """
-        prefix = _enclosing_id(caller_id)
-        file_path, _, class_name = prefix.partition("::")
-        return self._only_type_in(file_path, class_name) or prefix
+        caller = self._symbols_by_id.get(caller_id)
+        file_path = self._symbol_paths_by_id.get(caller_id)
+        if caller is not None and caller.parent_name and file_path is not None:
+            class_id = self._only_type_in(file_path, caller.parent_name)
+            if class_id is not None:
+                return class_id
+        return _enclosing_id(caller_id)
 
     def _framework_receiver_type(
         self,
