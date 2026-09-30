@@ -1,10 +1,10 @@
-"""Unit tests for c4_builder.actors — actor derivation from entry points."""
+"""Unit tests for analysis.c4.actors: actor derivation from entry points."""
 
 from __future__ import annotations
 
 import pytest
 
-from repowise.server.services.c4_builder.actors import (
+from repowise.core.analysis.c4.actors import (
     classify_entry_point,
     derive_actors,
 )

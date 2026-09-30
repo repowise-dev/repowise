@@ -1,10 +1,10 @@
-"""Unit tests for c4_builder.labels — relation verbs + coupling buckets."""
+"""Unit tests for analysis.c4.labels: relation verbs and coupling buckets."""
 
 from __future__ import annotations
 
 import pytest
 
-from repowise.server.services.c4_builder.labels import coupling_strength, relation_label
+from repowise.core.analysis.c4.labels import coupling_strength, relation_label
 
 
 @pytest.mark.parametrize(

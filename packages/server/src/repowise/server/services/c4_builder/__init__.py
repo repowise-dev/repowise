@@ -24,6 +24,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.c4.actors import derive_actors
 from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
 from repowise.core.ingestion.workspace_members import root_description
 from repowise.core.persistence import ExternalSystem, Repository
@@ -37,7 +38,6 @@ from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 from repowise.core.support_paths import is_support_path
 from repowise.core.test_paths import is_test_related_path
 
-from .actors import derive_actors
 from .components import detect_components, detect_components_for_all
 from .containers import container_id, detect_containers
 from .models import (

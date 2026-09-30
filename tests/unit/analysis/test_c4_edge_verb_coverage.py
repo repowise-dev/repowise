@@ -5,17 +5,12 @@ fall-through is silent: `framework` and `dynamic_uses` rendered that way for
 their whole life, covering 10% of file-level edges on a live index, and
 `type_use` (6,596 rows across 42 local indexes) still did until this test
 existed.
-
-Lives here rather than beside the other vocabulary tests in
-`tests/unit/ingestion/` because it imports `repowise.server` — an ingestion
-test that hard-fails when only the core package is installed is a worse trade
-than a slightly split test suite.
 """
 
 from __future__ import annotations
 
+from repowise.core.analysis.c4.labels import _EDGE_VERB, _VERB_PRIORITY
 from repowise.core.ingestion.models import EDGE_TYPE_VALUES
-from repowise.server.services.c4_builder.labels import _EDGE_VERB, _VERB_PRIORITY
 
 
 def test_every_edge_type_has_a_verb() -> None:
