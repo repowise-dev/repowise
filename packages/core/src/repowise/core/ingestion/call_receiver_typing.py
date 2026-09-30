@@ -94,6 +94,7 @@ class ReceiverTypingMixin:
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        self._file_bound_names: dict[str, frozenset[str]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
@@ -312,15 +313,50 @@ class ReceiverTypingMixin:
         if language not in BINDING_LANGUAGES:
             return None
         type_name = self._module_types_in(file_path, language).get(receiver_name)
-        if type_name is None:
+        if type_name is None or self._binds_locally(file_path, caller_id, language, receiver_name):
             return None
-        span = self._spans_for(file_path).get(caller_id)
-        if span is not None:
-            bindings = self._bindings_for(file_path, language)
-            for start, end in (span, *self._enclosing_function_spans(file_path, span)):
-                if receiver_name in names_in_span(bindings, start, end):
-                    return None
         return type_name
+
+    def _shadowed_by_local(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Is a bare call's name a parameter or local of the calling function?
+
+        Then no module, import or repo-wide symbol of that name is the callee.
+        Ceiling: a Python ``global`` name counts as local and loses its edge.
+        """
+        language = self._language_of(file_path) or ""
+        return language in BINDING_LANGUAGES and self._binds_locally(
+            file_path, caller_id, language, call.target_name, call.line
+        )
+
+    def _binds_locally(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        name: str,
+        through_line: int | None = None,
+    ) -> bool:
+        """Does the caller, or a function enclosing it, bind *name* itself?
+
+        Only bindings at or before *through_line* count when it is given: a
+        callback's parameter further down the body cannot shadow a use above.
+        """
+        span = self._spans_for(file_path).get(caller_id)
+        if span is None:
+            return False
+        bindings = self._bindings_for(file_path, language)
+        # Most names are bound nowhere in the file; that answer is a set hit.
+        anywhere = self._file_bound_names.get(file_path)
+        if anywhere is None:
+            anywhere = frozenset(bound for _, bound in bindings)
+            _store_capped(self._file_bound_names, file_path, anywhere, _SOURCE_CACHE_FILES)
+        if name not in anywhere:
+            return False
+        for start, end in (span, *self._enclosing_function_spans(file_path, span)):
+            last = end if through_line is None else min(end, through_line)
+            if name in names_in_span(bindings, start, last):
+                return True
+        return False
 
     def _enclosing_function_spans(
         self, file_path: str, span: tuple[int, int]

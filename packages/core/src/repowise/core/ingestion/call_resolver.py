@@ -959,6 +959,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Every tier keys on the target name, so a name the repo declares
         # nowhere can only be matched under an import alias (2a below).
         declared = target_name in self._global_symbols
+        # A parameter or local of that name hides every tier below.
+        if self._shadowed_by_local(file_path, call, caller_id):
+            return None
 
         # Tier 1: same-file
         handled, resolved = self._same_file_free_call(file_path, call, caller_id)
