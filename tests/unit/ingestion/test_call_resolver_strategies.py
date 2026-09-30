@@ -13,6 +13,7 @@ language reaches and in what order, and a spy states that directly.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -685,6 +686,25 @@ class TestForeignReceiverTypes:
                 ),
             },
         )
+        assert _edges(parsed, tmp_path) == []
+
+    def test_the_refusal_holds_over_a_bare_name_fallback(self, tmp_path: Path) -> None:
+        """A refused receiver is an answer, not a miss: the bare tiers never see it."""
+        self._workspace(tmp_path)
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "crates/a/src/lib.rs": self._DECLARES,
+                "crates/b/src/lib.rs": (
+                    "rust",
+                    "use std::collections::HashMap;\n\npub fn run() {\n"
+                    "    let m = HashMap::new();\n}\n",
+                ),
+            },
+        )
+        caller = parsed["crates/b/src/lib.rs"]
+        caller.calls = [replace(c, bare_name_fallback=True) for c in caller.calls]
+        assert [c.receiver_name for c in caller.calls] == ["HashMap"]
         assert _edges(parsed, tmp_path) == []
 
     def test_the_same_call_resolves_when_the_file_rebinds_the_name(

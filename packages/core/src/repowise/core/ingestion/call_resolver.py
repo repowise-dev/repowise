@@ -755,8 +755,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
-            hit = self._resolve_member_call(file_path, call, caller_id)
-            if hit is None and call.bare_name_fallback:
+            handled, hit = self._resolve_member_call(file_path, call, caller_id)
+            if not handled and call.bare_name_fallback:
                 hit = self._resolve_free_call(file_path, call, caller_id)
             return self._with_props(hit, call)
 
@@ -1144,8 +1144,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         file_path: str,
         call: CallSite,
         caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve receiver.method() calls."""
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Resolve receiver.method() calls, as ``(handled, edge)``.
+
+        A handled None is a refusal (the receiver's type is foreign), which a
+        bare-name fallback must not overrule.
+        """
         receiver_name = call.receiver_name
         method_name = call.target_name
         assert receiver_name is not None
@@ -1153,13 +1157,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.
         if method_name not in self._global_symbols:
-            return None
+            return False, None
 
         # The caller's own file first, ahead of the language strategies: a
         # private inner class here outranks a same-named package sibling.
         own_file = self._file_methods.get(file_path, {}).get((receiver_name, method_name))
         if own_file is not None and own_file != caller_id:
-            return ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
+            return True, ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
 
         # A language may reach a receiver no import statement mentions: a Go
         # package alias spanning several files, a JVM class in the same package.
@@ -1171,13 +1175,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             or self._crate_root_call(call, caller_id)
         )
         if hit is not None:
-            return hit
+            return True, hit
 
         handled, hit = self._receiver_class_call(file_path, call, caller_id)
         if handled:
-            return hit
+            return True, hit
 
-        return self._unclassed_receiver_call(file_path, call, caller_id)
+        hit = self._unclassed_receiver_call(file_path, call, caller_id)
+        return hit is not None, hit
 
     def _unclassed_receiver_call(
         self,
