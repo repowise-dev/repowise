@@ -8,6 +8,7 @@ each module under the project's 400-line ceiling.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import replace
@@ -18,6 +19,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
+from ..agent_digest import MODULE_SIGNALS_KEY, module_signals, split_questions
 from ..architecture_mermaid import embed_mermaid
 from ..context.assembler import build_concept_index
 from ..context_assembler import FilePageContext
@@ -315,47 +317,51 @@ class PerTypeGenerationMixin:
             page.structural_key = structural_key or page.structural_key
             return page
 
-        def _with_concept_index(page: GeneratedPage) -> GeneratedPage:
-            """Append the module's own identifiers to whatever wrote the page.
+        def _with_digest(page: GeneratedPage) -> GeneratedPage:
+            """Split what the page carries for agents off its body.
 
-            After generation rather than inside the prompt, and that placement
-            is the point. ``module_page.j2`` is a prompt: a table put in it is
-            material the model may reformat, abbreviate or drop, and a page
-            whose identifiers came out of a provider is exactly as trustworthy
-            as the prose around them. Appended here, every name and path is the
-            symbol index's and no response can change it.
+            The identifiers, public API and git signals are rendered here from
+            the index, not asked of the model: material in a prompt is
+            material a model may reformat, abbreviate or drop, and appended
+            after generation every name and path is the index's own. After
+            ``_build_generated_page`` too, so the page summary is still drawn
+            from the model's opening.
 
-            After ``_build_generated_page`` too, so the page summary is still
-            drawn from the model's opening rather than from a table row.
+            The package table of a roll-up stays in the body: it is how a
+            reader finds the packages the page covers. Replaced, not appended,
+            so a page reused from a prior run keeps one table.
             """
-            tables = []
             if ctx.packages:
-                # One row per package of a roll-up, for the same reason.
-                tables.append(
-                    self._render("_package_table.j2", style_prefix=False, rows=ctx.packages)
-                )
+                table = self._render("_package_table.j2", style_prefix=False, rows=ctx.packages)
+                page.content = embed_package_table(page.content or "", table.strip())
+            page.content, questions = split_questions(page.content)
             rows, omitted = build_concept_index(file_contexts)
-            if rows:
-                tables.append(
-                    self._render(
-                        "_concept_index_table.j2", style_prefix=False, rows=rows, omitted=omitted
-                    )
-                )
-            for table in tables:
-                page.content = f"{(page.content or '').rstrip()}\n\n{table.strip()}\n"
+            signals = module_signals(ctx, module_git_summary)
+            if signals:
+                page.metadata[MODULE_SIGNALS_KEY] = signals
+            digest = self._render(
+                "_agent_digest.j2",
+                style_prefix=False,
+                questions=questions,
+                public_api=ctx.public_api,
+                concept_rows=rows,
+                concept_omitted=omitted,
+                signals=signals,
+            )
+            page.digest = re.sub(r"\n{3,}", "\n\n", digest).strip()
             return page
 
         if self._config.deterministic:
-            page = self._stub_module_page(ctx, page_target, title, module_git_summary)
-            return _stamp_concept(_with_concept_index(page))
-        user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
+            page = self._stub_module_page(ctx, page_target, title)
+            return _stamp_concept(_with_digest(page))
+        user_prompt = self._render("module_page.j2", ctx=ctx)
         try:
             response = await self._call_provider(
                 "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
             )
         except Exception as exc:
-            stub = self._stub_module_page(ctx, page_target, title, module_git_summary)
-            return _stamp_concept(_with_concept_index(_stub_fallback(stub, "module_page", exc)))
+            stub = self._stub_module_page(ctx, page_target, title)
+            return _stamp_concept(_with_digest(_stub_fallback(stub, "module_page", exc)))
         page = self._build_generated_page(
             "module_page",
             page_target,
@@ -364,7 +370,7 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
         )
-        return _stamp_concept(_with_concept_index(page))
+        return _stamp_concept(_with_digest(page))
 
     async def generate_scc_page(
         self,

@@ -446,7 +446,7 @@ def test_module_page_leads_with_the_concept_title(generator):
     group is; the line beneath says where to go and look.
     """
     ctx = _module_ctx(generator._assembler, ["src/ingest/read.py", "src/parse/ast.py"])
-    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
+    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline")
 
     assert page.title == "Ingestion Pipeline"
     assert page.content.startswith("# Ingestion Pipeline\n")
@@ -463,7 +463,7 @@ def test_module_page_of_root_files_says_so(generator):
     top level.
     """
     ctx = _module_ctx(generator._assembler, ["setup.py", "main.py"])
-    page = generator._stub_module_page(ctx, "root", "Project Entry Points", None)
+    page = generator._stub_module_page(ctx, "root", "Project Entry Points")
 
     assert "Repository root" in page.content
     assert "`.`" not in page.content
