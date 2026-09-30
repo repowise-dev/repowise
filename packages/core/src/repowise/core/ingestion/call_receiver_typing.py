@@ -52,6 +52,7 @@ _BODY_TYPE_CACHE_ENTRIES = 2048
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
+_T = TypeVar("_T", bound=tuple)
 
 
 def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
@@ -69,8 +70,8 @@ class _Scope(NamedTuple):
     escaped: frozenset[str]
 
 
-def _in_lines(pairs: tuple[tuple[int, str], ...], start: int, end: int) -> tuple[tuple[int, str], ...]:
-    """The ``(line, name)`` pairs on lines *start* through *end*."""
+def _in_lines(pairs: tuple[_T, ...], start: int, end: int) -> tuple[_T, ...]:
+    """The entries (each led by its line) on lines *start* through *end*."""
     lo = bisect_left(pairs, start, key=lambda pair: pair[0])
     return pairs[lo : bisect_right(pairs, end, lo=lo, key=lambda pair: pair[0])]
 
@@ -83,9 +84,19 @@ def _scope_of(symbol: Symbol, bindings: tuple[tuple[int, str], ...], marks: Scop
             first_bound.setdefault(name, line)
     return _Scope(
         first_bound,
-        frozenset(name for _, name in _in_lines(marks.hoisted, start, end) if name != own),
+        frozenset(
+            name
+            for _, name, depth in _in_lines(marks.hoisted, start, end)
+            if name != own and depth == _body_depth(marks, start)
+        ),
         frozenset(name for _, name in _in_lines(marks.escaped, start, end)),
     )
+
+
+def _body_depth(marks: ScopeMarks, start_line: int) -> int:
+    """The brace depth of the statements directly in the body opening on *start_line*."""
+    depths = marks.line_depths
+    return (depths[start_line] if start_line < len(depths) else 0) + 1
 
 
 def _is_module_level_function(symbol: Symbol) -> bool:

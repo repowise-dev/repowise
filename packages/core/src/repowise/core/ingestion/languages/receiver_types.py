@@ -443,10 +443,39 @@ _ESCAPES = {"python": re.compile(r"\bglobal\s+(?P<names>\w+(?:\s*,\s*\w+)*)")}
 
 
 class ScopeMarks(NamedTuple):
-    """``(line, name)`` pairs a scope treats specially, each in line order."""
+    """Names a scope treats specially, each in line order.
 
-    hoisted: tuple[tuple[int, str], ...]
+    A hoisted entry is ``(line, name, brace depth)``: a declaration hoists
+    only into the function whose body holds it directly, one brace below the
+    line that function starts on (``line_depths``, indexed by line). A block
+    declaration is block-scoped in a module, so it hoists nowhere.
+    """
+
+    hoisted: tuple[tuple[int, str, int], ...]
     escaped: tuple[tuple[int, str], ...]
+    line_depths: tuple[int, ...]
+
+
+def _brace_depths(cleaned: str) -> tuple[list[int], list[int]]:
+    """Brace depth at every offset of *cleaned*, and at each line's first character."""
+    at: list[int] = []
+    lines = [0]
+    depth = 0
+    seen_code = False
+    for ch in cleaned:
+        at.append(depth)
+        if ch == "\n":
+            lines.append(depth)
+            seen_code = False
+            continue
+        if not seen_code and not ch.isspace():
+            lines[-1] = depth
+            seen_code = True
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(depth - 1, 0)
+    return at, lines
 
 
 def scan_scope_marks(text: str, language: str) -> ScopeMarks:
@@ -454,16 +483,25 @@ def scan_scope_marks(text: str, language: str) -> ScopeMarks:
     language = _BINDING_SCAN_AS.get(language, language)
     hoisted, escapes = _HOISTED.get(language), _ESCAPES.get(language)
     if hoisted is None and escapes is None:
-        return ScopeMarks((), ())
+        return ScopeMarks((), (), ())
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
-    found_hoisted = _named_bindings((hoisted,), cleaned, starts) if hoisted else set()
+    found_hoisted: set[tuple[int, str, int]] = set()
+    line_depths: list[int] = []
+    if hoisted is not None:
+        at, line_depths = _brace_depths(cleaned)
+        found_hoisted = {
+            (bisect_right(starts, match.start("name")), match.group("name"), at[match.start()])
+            for match in hoisted.finditer(cleaned)
+        }
     found_escaped = {
         (bisect_right(starts, match.start("names")), name.strip())
         for match in (escapes.finditer(cleaned) if escapes else ())
         for name in match.group("names").split(",")
     }
-    return ScopeMarks(tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)))
+    return ScopeMarks(
+        tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)), (0, *line_depths)
+    )
 
 
 def names_in_span(

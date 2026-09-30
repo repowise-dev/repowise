@@ -146,6 +146,13 @@ export function hoisted(n) {
     return v;
   }
 }
+
+export function outer() {
+  return helper(1);
+  function later() {
+    function helper() {}
+  }
+}
 """
 
 
@@ -162,6 +169,10 @@ class TestJavaScript:
 
     def test_a_later_function_declaration_is_hoisted(self, tmp_path: Path, files) -> None:
         assert _callees(tmp_path, files, "javascript", "hoisted") == set()
+
+    def test_a_declaration_hoists_only_into_its_own_function(self, tmp_path: Path, files) -> None:
+        # `helper` is declared inside `later`, so `outer` still calls the import.
+        assert _callees(tmp_path, files, "javascript", "outer") == {"util.js::helper"}
 
 
 PY_UTIL = """\
@@ -190,6 +201,16 @@ def declares_global(n):
     global helper
     helper = helper or len
     return helper(n)
+
+
+def encloses(n):
+    helper = len
+
+    def inner():
+        nonlocal helper
+        return helper(n)
+
+    return inner
 """
 
 
@@ -209,6 +230,13 @@ class TestPython:
 
     def test_a_global_name_is_the_modules(self, tmp_path: Path, files) -> None:
         assert _callees(tmp_path, files, "python", "declares_global") == {"util.py::helper"}
+
+    def test_a_nonlocal_name_stays_the_enclosing_functions(self, tmp_path: Path, files) -> None:
+        # Nothing module-level is the callee, whichever caller the site is filed under.
+        parsed_callees = _callees(tmp_path, files, "python", "encloses") | _callees(
+            tmp_path, files, "python", "encloses::inner"
+        )
+        assert "util.py::helper" not in parsed_callees
 
 
 class TestBindingScan:
