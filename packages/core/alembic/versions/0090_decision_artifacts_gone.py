@@ -4,8 +4,8 @@ Local SQLite stores never run Alembic (``init_db``'s reconciler adds missing
 columns), so this migration exists for managed Postgres. Existing rows have
 not been checked yet, hence ``false``; the next index fills it.
 
-Revision ID: 0087
-Revises: 0086
+Revision ID: 0090
+Revises: 0089
 Create Date: 2026-09-30
 """
 
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0087"
-down_revision: str | None = "0086"
+revision: str = "0090"
+down_revision: str | None = "0089"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
