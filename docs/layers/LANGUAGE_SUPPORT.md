@@ -98,8 +98,11 @@ are listed per language and framework in
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Scala's import resolution is partial: it shares the JVM index with Java and
-Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
-Good language resolves imports outright. On the Partial rung the two languages
+Kotlin and falls back to parsing SBT / Mill build files. Elixir and F# also
+have dedicated resolvers with known gaps, described in their rows below.
+Object Pascal and Objective-C resolve through the generic unit-name or
+header-stem match, and COBOL resolves literal program calls, not imports.
+Every other Full and Good language has a dedicated import resolver. On the Partial rung the two languages
 split: Luau resolves `require()` and has no health markers, Razor has C#
 health markers and no import edges yet.
 
@@ -192,7 +195,7 @@ extractors and code-health markers.
 | Language | Extensions | Import resolution |
 |----------|-----------|--------------|
 | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| **TypeScript** | `.ts` `.tsx` | ESM / `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM / `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` / `require()` including CommonJS re-export shapes and member picks |
 | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and Node `#`-prefixed subpath imports |
 | **Vue** | `.vue` | The TS/JS resolver plus `jsconfig`/`tsconfig` aliases, directory-index components, router `import()` specifiers |
@@ -200,7 +203,7 @@ extractors and code-health markers.
 | **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java, so resolution is cross-language |
 | **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
 | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
-| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` | `#include` via `compile_commands.json` plus CMake / Bazel header maps, header↔implementation pairing |
+| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hh` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` `.inc` | `#include` via `compile_commands.json` plus CMake / Bazel header maps, header↔implementation pairing |
 | **C#** | `.cs` | `using` / `global using` / aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
 | **Scala** | `.scala` | The shared JVM index (cross-language with Java/Kotlin), SBT / Mill build parsing as fallback |
 | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
@@ -268,7 +271,7 @@ and local procedure transfers resolve, while copybook resolution, dynamic
 `CALL data-item`, dialect-specific syntax and source-format preprocessing are
 explicitly deferred. Dead-code findings are also suppressed because JCL and
 scheduler entry points usually live outside the indexed source graph.
-| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
+| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
 | **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate, plus scene, autoload and `class_name` edges (see [GDScript / Godot](../architecture/language-support.md#gdscript--godot)) |
 | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
 | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, with the Mix `lib/foo/bar.ex` → `Foo.Bar` convention as the fallback; `alias Foo.{Bar, Baz}` names both modules (no heritage: `use` and `@behaviour` are not inheritance) |
