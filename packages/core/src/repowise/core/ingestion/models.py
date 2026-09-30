@@ -310,6 +310,10 @@ class CallSite:
     scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
+    # The grammar's bare-call pattern also matched this member call (Java
+    # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
+    # when no receiver strategy answers, never beside one.
+    bare_name_fallback: bool = False
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);

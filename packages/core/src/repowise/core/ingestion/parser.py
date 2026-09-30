@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 
@@ -599,6 +600,34 @@ def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
         ):
             return None
     return frozenset(props_set)
+
+
+def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+    """Fold the receiver-less copy of a member call into the copy with a receiver.
+
+    A grammar's bare-call pattern that leaves the object unconstrained (Java's
+    ``method_invocation``, Ruby's ``call``) matches ``obj.m()`` too. Resolved on
+    its own, that copy binds ``m`` by bare name beside whatever ``obj``'s type
+    answers, so it survives only as the member call's ``bare_name_fallback``.
+    Keyed on the call node, not the line, so a bare ``m(obj.m())`` keeps its own
+    site.
+    """
+    member_sites = {site for site, call in calls if not _is_bare(call)}
+    bare_sites = {site for site, call in calls if site in member_sites and _is_bare(call)}
+    folded: list[CallSite] = []
+    for site, call in calls:
+        if _is_bare(call):
+            if site not in member_sites:
+                folded.append(call)
+        elif call.receiver_name and site in bare_sites:
+            folded.append(replace(call, bare_name_fallback=True))
+        else:
+            folded.append(call)
+    return folded
+
+
+def _is_bare(call: CallSite) -> bool:
+    return not (call.receiver_name or call.receiver_call)
 
 
 def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
@@ -1716,7 +1745,8 @@ class ASTParser:
             key=lambda t: (t[0], -t[1]),
         )
 
-        calls: list[CallSite] = []
+        # Each call as ``(site, call)``; see ``_fold_receiverless_twins``.
+        calls: list[tuple[tuple[int, int, str], CallSite]] = []
 
         for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
@@ -1783,23 +1813,26 @@ class ASTParser:
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
             calls.append(
-                CallSite(
-                    target_name=target_name,
-                    receiver_name=receiver_name,
-                    caller_symbol_id=caller_id,
-                    line=line,
-                    argument_count=arg_count,
-                    receiver_call=receiver_call,
-                    scope_name=scope_name,
-                    edge_type=(
-                        "references"
-                        if site_node.type in config.reference_call_node_types
-                        else "calls"
+                (
+                    (site_node.start_byte, site_node.end_byte, target_name),
+                    CallSite(
+                        target_name=target_name,
+                        receiver_name=receiver_name,
+                        caller_symbol_id=caller_id,
+                        line=line,
+                        argument_count=arg_count,
+                        receiver_call=receiver_call,
+                        scope_name=scope_name,
+                        edge_type=(
+                            "references"
+                            if site_node.type in config.reference_call_node_types
+                            else "calls"
+                        ),
+                        supplied_props=_jsx_supplied_props(site_node, src),
                     ),
-                    supplied_props=_jsx_supplied_props(site_node, src),
                 )
             )
-        return _dedupe_calls(calls)
+        return _dedupe_calls(_fold_receiverless_twins(calls))
 
     def _extract_references(
         self,
