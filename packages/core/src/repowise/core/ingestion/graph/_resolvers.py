@@ -401,9 +401,21 @@ class ResolveMixin:
                             continue
                         if self._graph.has_node(rel):
                             rels.append(rel)
+                    # ``Policy`1`` is the generic ``Policy<T>``; symbol ids and
+                    # imported names spell it ``Policy``.
+                    local_name = fqn.rsplit(".", 1)[-1].split("`", 1)[0]
+                    fragments = tuple(sorted(rels))
+                    for rel in rels:
+                        # Two partial types sharing a bare name in one file
+                        # (``Policy`` and ``Policy<T>``, or two namespaces) are
+                        # told apart by nothing the call resolver sees, so
+                        # neither lends that file its fragments.
+                        key = (rel, local_name)
+                        self._partial_fragments[key] = (
+                            () if key in self._partial_fragments else fragments
+                        )
                     if len(rels) < 2:
                         continue
-                    local_name = fqn.rsplit(".", 1)[-1]
                     for a in rels:
                         for b in rels:
                             if a == b or self._graph.has_edge(a, b):
@@ -609,6 +621,7 @@ class ResolveMixin:
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
             heritage_parents=self._heritage_parents(),
+            partial_fragments=self._partial_fragments,
         )
 
         # Record which C/C++ declarations were paired with a definition. The

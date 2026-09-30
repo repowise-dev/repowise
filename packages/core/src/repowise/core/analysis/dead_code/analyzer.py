@@ -1646,12 +1646,11 @@ class DeadCodeAnalyzer:
             # reported all three as unused. The set is shared with the
             # unused-export pass, so it also carries types this population can
             # never hold — a method or an interface is filtered out above.
-            is_used = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type")
-                in REACHABILITY_USE_EDGE_TYPES
-                for pred in self.graph.predecessors(node)
-            )
-            if is_used:
+            # ``new X(..)`` lands on X's constructor (``path::X::X``) when X
+            # declares one, and constructing a type uses it.
+            if self._has_inbound_use(node) or self._has_inbound_use(
+                f"{file_path}::{sym_name}::{sym_name}"
+            ):
                 continue
 
             # Dispatch-table pattern: a private helper imported by name
@@ -1691,6 +1690,16 @@ class DeadCodeAnalyzer:
             )
 
         return findings
+
+    def _has_inbound_use(self, node: str) -> bool:
+        """Whether any reachability-use edge lands on *node* (False if absent)."""
+        if not self.graph.has_node(node):
+            return False
+        return any(
+            self.graph.get_edge_data(pred, node, {}).get("edge_type")
+            in REACHABILITY_USE_EDGE_TYPES
+            for pred in self.graph.predecessors(node)
+        )
 
     def _is_internal_candidate(
         self, node_data: dict, dynamic_patterns: tuple[str, ...], whitelist: set[str]

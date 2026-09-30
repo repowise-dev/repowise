@@ -44,6 +44,10 @@ _TYPE_DECL_RE = re.compile(
     re.MULTILINE,
 )
 
+# The type-parameter list right after a declared name: ``<TKey, TValue>``.
+# Type parameters are plain identifiers, so the list holds no nested ``<``.
+_GENERIC_PARAMS_RE = re.compile(r"\s*<([^<>]*)>")
+
 
 def declared_namespaces(cs_text: str) -> list[str]:
     """Return every namespace declared in *cs_text*, in source order.
@@ -55,19 +59,28 @@ def declared_namespaces(cs_text: str) -> list[str]:
 
 
 class TypeDecl:
-    """One type declaration: bare + one-level-qualified name, partial flag."""
+    """One type declaration: bare + one-level-qualified name, partial flag.
 
-    __slots__ = ("is_partial", "name", "namespace", "qualified")
+    *arity* is the declaration's own generic parameter count. ``Policy`` and
+    ``Policy<TResult>`` are two types, so ``fqn`` carries it the way the CLR
+    spells it (``Policy`1``) and their partial fragments stay apart.
+    """
 
-    def __init__(self, name: str, qualified: str, namespace: str, is_partial: bool):
+    __slots__ = ("arity", "is_partial", "name", "namespace", "qualified")
+
+    def __init__(
+        self, name: str, qualified: str, namespace: str, is_partial: bool, arity: int = 0
+    ):
         self.name = name
         self.qualified = qualified
         self.namespace = namespace
         self.is_partial = is_partial
+        self.arity = arity
 
     @property
     def fqn(self) -> str:
-        return f"{self.namespace}.{self.qualified}" if self.namespace else self.qualified
+        name = f"{self.qualified}`{self.arity}" if self.arity else self.qualified
+        return f"{self.namespace}.{name}" if self.namespace else name
 
 
 def scan_type_declarations(cs_text: str) -> list[TypeDecl]:
@@ -103,7 +116,9 @@ def scan_type_declarations(cs_text: str) -> list[TypeDecl]:
             else:
                 break
         is_partial = "partial" in (m.group(1) or "").split()
-        decls.append(TypeDecl(name, qualified, namespace, is_partial))
+        generic = _GENERIC_PARAMS_RE.match(cs_text, m.end())
+        arity = generic.group(1).count(",") + 1 if generic else 0
+        decls.append(TypeDecl(name, qualified, namespace, is_partial, arity))
         stack.append((depth, name))
     return decls
 
@@ -193,6 +208,8 @@ _VB_MODIFIERS = (
     r"Public|Private|Protected|Friend|Partial|MustInherit|NotInheritable|"
     r"Shadows|Overloads|Default|Shared"
 )
+# ``Class Foo(Of TKey, TValue)``: the VB spelling of a type-parameter list.
+_VB_GENERIC_PARAMS_RE = re.compile(r"\s*\(\s*Of\s+([^()]*)\)", re.IGNORECASE)
 _VB_TYPE_DECL_RE = re.compile(
     rf"^((?:(?:{_VB_MODIFIERS})\s+)*)"
     rf"(?:Class|Module|Structure|Interface|Enum)\s+({_VB_IDENT})",
@@ -230,7 +247,9 @@ def scan_vb_declarations(vb_text: str) -> tuple[list[str], list[TypeDecl]]:
         if type_match:
             name = type_match.group(2)
             is_partial = "partial" in type_match.group(1).lower().split()
-            decls.append(TypeDecl(name, name, ".".join(stack), is_partial))
+            generic = _VB_GENERIC_PARAMS_RE.match(line, type_match.end())
+            arity = generic.group(1).count(",") + 1 if generic else 0
+            decls.append(TypeDecl(name, name, ".".join(stack), is_partial, arity))
     return namespaces, decls
 
 

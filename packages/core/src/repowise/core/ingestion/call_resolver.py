@@ -213,11 +213,15 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         import_maps: Any | None = None,
         heritage_parents: dict[str, set[str]] | None = None,
         return_type_chain_languages: frozenset[str] | None = None,
+        partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
         self._heritage_parents: dict[str, set[str]] = heritage_parents or {}
+        # {(file, partial type name): files declaring a fragment of it}, from
+        # the builder's C#/VB.NET partial pass. Empty in every other language.
+        self._partial_fragments = partial_fragments or {}
         self._return_type_chain_languages = (
             PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
             if return_type_chain_languages is None
@@ -948,6 +952,37 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
 
+    def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """The caller's class member *name* declared in another fragment of it.
+
+        Every fragment of a C#/VB.NET ``partial`` type is one class scope, so a
+        member (nested types included) that any fragment declares is visible by
+        bare name in all of them. The lookup is keyed on the caller's file and
+        class, so a same-named member of an unrelated class never answers.
+        Fragments are asked in path order; an overload set split across them
+        binds to the first. A nested type answers with its constructor when it
+        declares one, as ``new X(..)`` does within a single file.
+        """
+        caller_class = _extract_class_from_symbol_id(caller_id)
+        if not caller_class:
+            return None
+        for fragment in self._partial_fragments.get((file_path, caller_class), ()):
+            if fragment == file_path:
+                continue
+            methods = self._file_methods.get(fragment, {})
+            sym_id = methods.get((caller_class, name))
+            if sym_id is None or sym_id == caller_id:
+                continue
+            if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
+                return methods.get((name, name), sym_id)
+            # A call site does not record ``new``, so ``new FaultGenerator()``
+            # and a member method ``FaultGenerator()`` look alike. When the
+            # repo also declares a type of that name, the method is a guess.
+            if name in self._csharp_type_names:
+                return None
+            return sym_id
+        return None
+
     def _resolve_free_call(
         self,
         file_path: str,
@@ -964,6 +999,17 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         handled, resolved = self._same_file_free_call(file_path, call, caller_id)
         if handled:
             return resolved
+        # Still the caller's own class, declared in a sibling partial fragment.
+        # Not asked when this file declares the name itself: Tier 1 declines a
+        # call into the caller's own overload set (one id), and a same-named
+        # overload in another fragment is no better evidence than that.
+        if (
+            target_name not in self._file_symbols.get(file_path, {})
+            and (call.line, target_name) not in self._member_shaped_sites(file_path)
+        ):
+            sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
 
         # A language may see names no import mentions (a package sibling, a
         # C/C++ build target), and those beat the import and global tiers.
@@ -1312,15 +1358,18 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """Strategy 3: receiver is "self" or "this", so look in the same class.
 
-        Only the caller's own file can hold the match, so index straight
-        into it instead of scanning every file's method dict.
+        Only the caller's own file, or a sibling fragment of a partial class,
+        can hold the match, so index straight into those instead of scanning
+        every file's method dict.
         """
         if call.receiver_name not in ("self", "this"):
             return None
         caller_class = _extract_class_from_symbol_id(caller_id)
         if not caller_class:
             return None
-        sym_id = self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
+        sym_id = self._file_methods.get(file_path, {}).get(
+            (caller_class, call.target_name)
+        ) or self._partial_fragment_member(file_path, caller_id, call.target_name)
         if sym_id is None or sym_id == caller_id:
             return None
         return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")

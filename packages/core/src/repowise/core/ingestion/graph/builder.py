@@ -63,6 +63,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # {(file, partial type's bare name): every file declaring a fragment
+        # of that type}, filled by ``_resolve_dotnet_partials`` so the call
+        # resolver can treat the fragments as the one class scope they are.
+        self._partial_fragments: dict[tuple[str, str], tuple[str, ...]] = {}
         # ``TraversalStats`` for the walk that produced this graph, stashed by
         # the caller. Carried here rather than widened into the return tuples
         # of ``build_repo_graph``/``rebuild_graph_and_git`` (ten unpack sites
