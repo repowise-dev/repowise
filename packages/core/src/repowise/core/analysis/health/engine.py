@@ -120,10 +120,6 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
-# v37: test files and registration-only files (a C++ ``Q_OBJECT`` TU, a JVM
-# service impl) are reachability roots, not entry points, so they no longer
-# seed the perf entry-reachability walk.
-#
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
 # entry points, so perf findings reachable from them are marked so.
@@ -337,7 +333,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 37
+HEALTH_ANALYZER_VERSION = 36
 
 
 def walked_functions(
