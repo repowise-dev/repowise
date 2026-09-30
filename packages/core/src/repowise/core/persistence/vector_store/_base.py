@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..information_floor import count_page_denied_a_vector, meets_information_floor
-from ..search import SearchResult
+from ..search import FILE_VOCABULARY_KEY, SearchResult
 
 __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
@@ -96,11 +96,6 @@ EMBED_TEXT_MAX_CHARS = 16_000
 # store raised its ceiling while the recipe still handed it 600 characters,
 # and on the paths that passed no content at all, an empty string.
 STORED_SNIPPET_CHARS = 2_000
-
-# Page-metadata key for a file page's own vocabulary (field names, string
-# literals, comment prose). It is embedded with the page but not rendered on
-# it: a bag of words helps retrieval and reads to a person as noise.
-FILE_VOCABULARY_KEY = "file_vocabulary"
 
 
 def cap_embed_text(page_id: str, text: str) -> str:
