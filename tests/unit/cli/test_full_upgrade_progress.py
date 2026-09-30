@@ -99,6 +99,7 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
         content="# Current",
         summary="Current page",
         target_path="current.py",
+        digest="",
     )
 
     with pytest.raises(RuntimeError, match="temporary FTS failure"):
