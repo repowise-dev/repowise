@@ -701,3 +701,132 @@ def types_by_class(
                 break
 
     return by_class
+
+
+# ``for k, v := range expr`` declares ``k`` and ``v`` with no type spelled: each
+# is whatever ranging over ``expr``'s container yields in its position. Two
+# scans feed it, the clauses and the containers they may range over, and the
+# resolver joins them, since only it can type ``expr`` itself.
+RANGE_LANGUAGES = frozenset({"go"})
+
+# What ranging over each container shape yields, the group name giving the
+# position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
+# ``T``; ``map[K]V`` a ``K``, then a ``V``; ``chan T`` a ``T`` alone. A pointer
+# element is still a ``T``. Anything else, a named container type included,
+# yields nothing, so its range variables stay untyped.
+_GO_ELEMENT_SHAPES = (
+    re.compile(rf"(?:\[\d*\]|\.\.\.)\*?(?P<value>{_GO_TYPE})"),
+    re.compile(rf"map\[\*?(?P<key>{_GO_TYPE})\]\*?(?P<value>{_GO_TYPE})"),
+    re.compile(rf"(?:<-\s*)?chan(?:\s*<-)?\s+\*?(?P<key>{_GO_TYPE})"),
+)
+
+# Any one of those spellings, for the declaration scans to capture whole.
+_GO_CONTAINER = (
+    rf"(?:\[\d*\]|\.\.\.|map\[\*?{_GO_TYPE}\]|(?:<-\s*)?chan(?:\s*<-)?\s+)\*?{_GO_TYPE}"
+)
+
+_GO_CONTAINER_DECLARATIONS = (
+    # A parameter or named result, as ``_GO_PARAM``. Only the last name of
+    # ``a, b []T`` is read: a missed declaration, never a wrong one.
+    re.compile(rf"(?<![\w.])(?P<name>{_GO_NAME})\s+(?P<type>{_GO_CONTAINER})\s*(?=[,)])"),
+    # ``var xs []T``.
+    re.compile(rf"(?m)(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+(?P<type>{_GO_CONTAINER})\s*(?=[=;)]|$)"),
+    # ``xs := []T{}`` and ``xs := make([]T, n)``.
+    re.compile(
+        rf"(?<![\w.])(?P<name>{_GO_NAME})\s*:=\s*(?:make\(\s*)?(?P<type>{_GO_CONTAINER})\s*(?=[{{,)])"
+    ),
+    # A struct field is the whole line, tag aside. ``member`` keeps it out of
+    # every body and admits it at class scope, where no closer marks it.
+    re.compile(
+        rf"(?m)^[ \t]*(?P<member>(?P<name>[A-Za-z_]\w*))[ \t]+(?P<type>{_GO_CONTAINER})"
+        r"[ \t]*(?:`[^`\n]*`)?[ \t]*$"
+    ),
+)
+
+# The range expression is a name, ``h.field`` or ``h.Method()``, closed by the
+# loop's brace. Anything longer (``h.a.b``, ``f().x``, ``xs[1:]``) is refused.
+_GO_RANGE = re.compile(
+    rf"\bfor\s+(?P<key>{_GO_NAME})(?:\s*,\s*(?P<value>{_GO_NAME}))?\s*:=\s*range\s+"
+    rf"(?P<head>{_GO_NAME})(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\{{"
+)
+
+
+class RangeClause(NamedTuple):
+    """One ``for key, value := range head[.member[()]]`` at one line.
+
+    ``value`` is empty when only one variable is declared; ``_`` names none.
+    """
+
+    line: int
+    key: str
+    value: str
+    head: str
+    member: str
+    call: bool
+
+
+class RangeScan(NamedTuple):
+    """A file's range clauses, and its container declarations typed by spelling."""
+
+    clauses: tuple[RangeClause, ...]
+    containers: tuple[Declaration, ...]
+
+
+def scan_ranges(text: str, language: str) -> RangeScan:
+    """Every range clause and container declaration *text* makes, in line order."""
+    if language not in RANGE_LANGUAGES:
+        return RangeScan((), ())
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    clauses = tuple(
+        RangeClause(
+            bisect_right(starts, match.start()),
+            match.group("key"),
+            match.group("value") or "",
+            match.group("head"),
+            match.group("member") or "",
+            bool(match.group("call")),
+        )
+        for match in _GO_RANGE.finditer(cleaned)
+    )
+    containers = sorted(
+        Declaration(
+            bisect_right(starts, match.start()),
+            match.group("name"),
+            match.group("type"),
+            member=bool(match.groupdict().get("member")),
+        )
+        for pattern in _GO_CONTAINER_DECLARATIONS
+        for match in pattern.finditer(cleaned)
+    )
+    return RangeScan(clauses, tuple(containers))
+
+
+def range_element_types(
+    spelling: str | None, language: str
+) -> tuple[str | None, str | None] | None:
+    """``(key type, value type)`` for ranging over *spelling*, or None if unknown.
+
+    A position holding a predeclared type (an index's ``int``) is None within
+    a known shape.
+    """
+    if not spelling or language not in RANGE_LANGUAGES:
+        return None
+    for shape in _GO_ELEMENT_SHAPES:
+        match = shape.fullmatch(spelling)
+        if match is not None:
+            key, value = (match.groupdict().get(role) for role in ("key", "value"))
+            return (
+                _usable_type_name(key, language)[0] if key else None,
+                _usable_type_name(value, language)[0] if value else None,
+            )
+    return None
+
+
+def clauses_in_span(
+    clauses: tuple[RangeClause, ...], start_line: int, end_line: int
+) -> tuple[RangeClause, ...]:
+    """The range clauses inside one function body, in line order."""
+    first = bisect_left(clauses, start_line, key=lambda c: c.line)
+    last = bisect_right(clauses, end_line, key=lambda c: c.line)
+    return clauses[first:last]

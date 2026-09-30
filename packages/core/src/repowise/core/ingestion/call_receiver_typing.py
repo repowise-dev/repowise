@@ -10,21 +10,28 @@ from .languages.receiver_types import (
     BINDING_LANGUAGES,
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
+    RANGE_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
+    RangeClause,
+    RangeScan,
     bound_types,
+    clauses_in_span,
     framework_decorated_type,
     in_spans,
     merge_spans,
     names_in_span,
+    range_element_types,
     scan_bindings,
     scan_declarations,
+    scan_ranges,
     types_by_class,
     types_in_span,
     unwrapped_names_in_span,
 )
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
+from .return_types import declared_return_type
 from .type_names import POINTER_LIKE_MEMBERS
 
 # Which symbols own a class scope, and which of them swallow one. A class span
@@ -89,6 +96,9 @@ class ReceiverTypingMixin:
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
         self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
+        self._range_scans: dict[str, RangeScan] = {}
+        # {file: {class_id: {field: container spelling}}}
+        self._container_fields: dict[str, dict[str, dict[str, str | None]]] = {}
         self._module_types: dict[str, dict[str, str | None]] = {}
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
@@ -600,6 +610,8 @@ class ReceiverTypingMixin:
             )
         else:
             types = types_in_span(declarations, *span)
+            if language in RANGE_LANGUAGES:
+                self._type_range_variables(file_path, language, span, types)
 
         _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
         return types
@@ -651,20 +663,121 @@ class ReceiverTypingMixin:
     ) -> dict[str, dict[str, str | None]]:
         """``{class_id: {name: type}}`` for the fields one file's classes declare."""
         by_class = self._field_types.get(file_path)
-        if by_class is not None:
-            return by_class
+        if by_class is None:
+            by_class = self._class_scope_types(
+                file_path, self._declarations_for(file_path, language), language
+            )
+            _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
+        return by_class
 
+    def _class_scope_types(
+        self, file_path: str, declarations: tuple[Declaration, ...], language: str
+    ) -> dict[str, dict[str, str | None]]:
+        """*declarations* grouped by the class in *file_path* each is a field of."""
         parsed = self._parsed_files.get(file_path)
         symbols = parsed.symbols if parsed else ()
-        class_spans = {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS}
-        by_class = types_by_class(
-            self._declarations_for(file_path, language),
-            class_spans,
+        return types_by_class(
+            declarations,
+            {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS},
             [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
             language,
         )
-        _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
+
+    def _type_range_variables(
+        self,
+        file_path: str,
+        language: str,
+        span: tuple[int, int],
+        types: dict[str, str | None],
+    ) -> None:
+        """Add each ``range`` variable in one body to *types*, the body's own.
+
+        In line order, so a loop over an outer loop's variable sees it typed.
+        A variable over a container of unknown shape maps to None, as a name
+        declared twice does, so it never inherits an outer declaration's type.
+        """
+        scan = self._range_scan_for(file_path, language)
+        clauses = clauses_in_span(scan.clauses, *span)
+        if not clauses:
+            return
+        containers = types_in_span(scan.containers, *span)
+        for clause in clauses:
+            spelling = self._ranged_container(file_path, language, clause, types, containers)
+            elements = range_element_types(spelling, language) or (None, None)
+            for name, type_name in zip((clause.key, clause.value), elements, strict=True):
+                if name and name != "_":
+                    types[name] = type_name if types.get(name, type_name) == type_name else None
+
+    def _ranged_container(
+        self,
+        file_path: str,
+        language: str,
+        clause: RangeClause,
+        types: dict[str, str | None],
+        containers: dict[str, str | None],
+    ) -> str | None:
+        """How the container one range clause walks is spelled, or None.
+
+        A bare name is a container the body declares, and never one it also
+        typed as a value. ``h.field`` and ``h.Method()`` are read off the one
+        class ``h``'s type names: the field's declaration, or the method's
+        declared return type. Ceiling: a method declared in another file of
+        the class's package is not found, which costs the edge.
+        """
+        if not clause.member:
+            return None if clause.head in types else containers.get(clause.head)
+        head_type = types.get(clause.head)
+        class_id = None if head_type is None else self._range_class(file_path, head_type, language)
+        if class_id is None:
+            return None
+        if clause.call:
+            sym_id = self._declares(class_id, clause.member)
+            symbol = None if sym_id is None else self._symbols_by_id.get(sym_id)
+            return None if symbol is None else declared_return_type(symbol.signature or "")
+        class_file = class_id.partition("::")[0]
+        return self._container_fields_in(class_file, language).get(class_id, {}).get(clause.member)
+
+    def _range_class(self, file_path: str, type_name: str, language: str) -> str | None:
+        """The id of the one class *type_name* names, seen from *file_path*.
+
+        Go qualifies a type by its package, never by an imported name, so past
+        this file the one type of that name in the language answers, and two
+        refuse.
+        """
+        found = self._class_named(file_path, type_name)
+        if found is not None:
+            return found[1]
+        if type_name in self._externally_bound_names(file_path):
+            return None
+        ids = [
+            sym_id
+            for sym_id in self._global_symbols.get(type_name, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+            and symbol.kind in _TYPE_KINDS
+            and (parsed := self._parsed_files.get(sym_id.partition("::")[0])) is not None
+            and parsed.file_info.language == language
+        ]
+        return ids[0] if len(ids) == 1 else None
+
+    def _container_fields_in(
+        self, file_path: str, language: str
+    ) -> dict[str, dict[str, str | None]]:
+        """``{class_id: {field: container spelling}}`` for one file's classes."""
+        by_class = self._container_fields.get(file_path)
+        if by_class is None:
+            by_class = self._class_scope_types(
+                file_path, self._range_scan_for(file_path, language).containers, language
+            )
+            _store_capped(self._container_fields, file_path, by_class, _SOURCE_CACHE_FILES)
         return by_class
+
+    def _range_scan_for(self, file_path: str, language: str) -> RangeScan:
+        """One file's range clauses and containers, scanned once however many bodies ask."""
+        found = self._range_scans.get(file_path)
+        if found is None:
+            found = scan_ranges(self._text_of(file_path), language)
+            _store_capped(self._range_scans, file_path, found, _SOURCE_CACHE_FILES)
+        return found
 
     def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
         """Every name the calling body binds, however it was bound."""
