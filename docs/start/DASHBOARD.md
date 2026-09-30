@@ -119,16 +119,26 @@ regenerating everything.
 
 <img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise dependency graph: detected communities laid out on the module map, sized by how much code each holds" width="100%" />
 
-Five views behind `?view=`:
+Four tabs, with the view in `?view=`:
 
-- **map** (default): the layered architecture map.
-- **explore**: the dependency-graph canvas with ELK layout, a context drawer
-  per node, a centrality leaderboard, and detected communities.
-- **deps**: the external dependency registry.
-- **symbols**: the symbol index, covered below.
-- **coupling**: change coupling, the files that keep changing together without
-  an import edge between them. This is the view that catches the coupling
-  static analysis cannot see.
+- **Map** (default): the dependency graph. A scope switcher in the header picks
+  the zoom: `?view=files` (default) draws every file grouped into its detected
+  community, with a band for each strong link between communities, and
+  `?view=communities` draws the communities alone. `?signal=dead` or
+  `?signal=hot` lights dead code or hot files on the graph, and `?module=` or
+  `?community=` narrows the file graph. Hover or select a file to see what it
+  imports and what imports it; a node's doc page opens in a rail beside the
+  canvas.
+- **Coupling** (`?view=coupling`): change coupling, the files that keep
+  changing together without an import edge between them. This is the view that
+  catches the coupling static analysis cannot see.
+- **Third-party** (`?view=packages`): the declared third-party dependency
+  registry.
+- **Symbols** (`?view=symbols`): the symbol index, covered below.
+
+Older links still work: `?view=map` and `?view=graph` open the communities
+view, `?view=explore` the files view, `?view=deps` Third-party, and
+`?view=layers` redirects to the Knowledge Graph.
 
 Index-only safe: all of it is computed from the parse and git history.
 
@@ -151,20 +161,31 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 <img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the health band distribution, KPI cards and the code health map" width="100%" />
 
-Tabs behind `?tab=`:
+Tabs behind `?tab=` (the label shown, then the id):
 
-- **triage** (default): the health ring, the band distribution, the three
-  co-equal KPIs (defect risk, maintainability, performance), and the
-  lowest-scoring files.
-- **findings**: every marker finding, filterable by dimension and severity.
-- **hotspots**: churn-versus-complexity and churn-versus-bus-factor scatters,
-  with the refactor quadrant tinted.
-- **coverage**: ingested test coverage joined against risk, so untested
-  hotspots stand out.
-- **dead-code**: unreachable files, unused exports, and zombie packages, tiered
-  by confidence.
-- **impact**: blast radius for a file or a set of changed files.
-- **security**: the security findings table, by directory and by severity.
+- **Overview** (`triage`, default): a lede that leads with the defect score and
+  says what it means, then the code health map with its inspector. A lens
+  switcher recolors the same map by health, maintainability, performance, or
+  churn. Under the map sit the ranked hotspot table, sortable by bus
+  factor with a filter for single-owner files, and the score trend.
+- **Performance** (`performance`): the ranked performance opportunities, each a
+  cause with its steps and the raw observations as evidence.
+- **Findings** (`findings`): the fix-next queue of marker findings, filterable
+  by dimension and severity, with function-level panels.
+- **Tests** (`coverage`): ingested test coverage joined against risk, so
+  untested hotspots stand out.
+- **Dead code** (`dead-code`): unreachable files, unused exports, and zombie
+  packages, tiered by confidence.
+- **Doc drift** (`doc-drift`): documentation the code no longer supports.
+- **Security** (`security`): the security findings table, by directory and by
+  severity.
+- **Blast radius** (`impact`): blast radius for a file or a set of changed
+  files.
+
+Two header controls filter the Overview and Findings tabs: scope (all code or
+production only) and what the score counts (everything, or code shape only,
+which drops the git-derived half). Older links still
+work: `?tab=hotspots`, `heatmap`, `modules`, and `trend` land on Overview.
 
 Clicking any file opens the health drawer: its markers, its file signals
 (owners, churn, dependents), its score trend as a sparkline, and its **bug
