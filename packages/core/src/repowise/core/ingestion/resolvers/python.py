@@ -10,6 +10,7 @@ from ..languages.python_modules import (
     _index_priority,
     _is_package_dir,
     build_python_module_index,
+    dotted_module_for,
 )
 from .context import ResolverContext
 
@@ -89,11 +90,31 @@ def _resolve_file(module_path: str, importer_path: str, ctx: ResolverContext) ->
     # ``pkg/types.py``.
     dotted = module_path.replace(".", "/")
     if not _is_package_dir(importer_dir.as_posix(), ctx.path_set):
-        base = "" if importer_dir.as_posix() == "." else f"{importer_dir.as_posix()}/"
-        hit = _module_file(f"{base}{dotted}", ctx.path_set)
-        if hit:
-            return hit
-    return _resolve_in_repo(module_path, dotted, ctx)
+        hit = _module_file(_under(importer_dir.as_posix(), dotted), ctx.path_set)
+    else:
+        hit = _resolve_in_own_root(module_path, dotted, importer_path, ctx)
+    return hit or _resolve_in_repo(module_path, dotted, ctx)
+
+
+def _under(root: str, rel: str) -> str:
+    return rel if root in ("", ".") else f"{root}/{rel}"
+
+
+def _resolve_in_own_root(
+    module_path: str, dotted: str, importer_path: str, ctx: ResolverContext
+) -> str | None:
+    """*module_path* under the root the importer's own package is imported from."""
+    # ``libs/x/pkg/mod.py`` is ``pkg.mod``, so ``libs/x`` is on sys.path
+    # whenever it runs, and ``import helper`` there means ``libs/x/helper.py``.
+    # A stdlib name stays external, as for any other package member.
+    if module_path.split(".")[0] in _STDLIB_NAMES:
+        return None
+    own = dotted_module_for(importer_path, ctx.path_set)
+    if not own:
+        return None
+    parts = Path(importer_path).with_suffix("").parts
+    depth = own.count(".") + 1 + (parts[-1] == "__init__")
+    return _module_file(_under("/".join(parts[:-depth]), dotted), ctx.path_set)
 
 
 def _resolve_in_repo(module_path: str, dotted: str, ctx: ResolverContext) -> str | None:

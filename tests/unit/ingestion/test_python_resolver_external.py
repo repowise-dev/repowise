@@ -262,3 +262,74 @@ def test_src_monorepo_resolves_by_dotted_name(py_src_monorepo) -> None:
     # ``io`` is the stdlib even though ``corelib/io.py`` exists.
     assert resolve_python_import("io", main, ctx) == "external:io"
     assert resolve_python_import("clitool.main", "packages/cli/tests/test_main.py", ctx) == main
+
+
+@pytest.fixture
+def py_nested_import_root() -> ResolverContext:
+    """microdot's layout: a vendored package beside a loose module it imports."""
+    return _layout_ctx(
+        {
+            "libs/circuitpython/adafruit_ticks.py",
+            "libs/circuitpython/asyncio/__init__.py",
+            "libs/circuitpython/asyncio/core.py",
+            "libs/circuitpython/asyncio/types.py",
+            "libs/micropython/adafruit_ticks.py",
+            "libs/circuitpython/tools/run.py",
+            "libs/circuitpython/tools/helper.py",
+            "src/microdot/__init__.py",
+            "src/microdot/helpers.py",
+            "vendor/helpers.py",
+        }
+    )
+
+
+def test_package_member_resolves_a_bare_name_under_its_own_root(py_nested_import_root) -> None:
+    """``asyncio/core.py`` is imported from ``libs/circuitpython``, so its siblings are too."""
+    ctx = py_nested_import_root
+    for importer in (
+        "libs/circuitpython/asyncio/core.py",
+        "libs/circuitpython/asyncio/__init__.py",
+    ):
+        assert resolve_python_import("adafruit_ticks", importer, ctx) == (
+            "libs/circuitpython/adafruit_ticks.py"
+        )
+    # A stdlib name stays the stdlib, even beside ``asyncio/types.py``.
+    assert resolve_python_import("types", "libs/circuitpython/asyncio/core.py", ctx) == (
+        "external:types"
+    )
+
+
+def test_a_script_sibling_in_a_nested_non_package_dir_resolves(py_nested_import_root) -> None:
+    ctx = py_nested_import_root
+    assert resolve_python_import("helper", "libs/circuitpython/tools/run.py", ctx) == (
+        "libs/circuitpython/tools/helper.py"
+    )
+
+
+def test_own_root_never_matches_a_same_stem_module_elsewhere(py_nested_import_root) -> None:
+    ctx = py_nested_import_root
+    # ``src/microdot`` is imported from ``src``, which has no ``adafruit_ticks.py``.
+    assert resolve_python_import("adafruit_ticks", "src/microdot/helpers.py", ctx) == (
+        "external:adafruit_ticks"
+    )
+    # ``src`` has no ``helpers.py``; ``vendor/helpers.py`` and the package's own are other roots.
+    assert resolve_python_import("helpers", "src/microdot/__init__.py", ctx) == "external:helpers"
+    assert resolve_python_import("helper", "libs/circuitpython/asyncio/core.py", ctx) == (
+        "external:helper"
+    )
+
+
+def test_own_root_wins_over_a_same_dotted_name_in_another_root() -> None:
+    """Two distributions each with a ``tests`` package: each imports its own."""
+    ctx = _layout_ctx(
+        {
+            "libs/a/tests/__init__.py",
+            "libs/a/tests/stubs.py",
+            "libs/b/tests/__init__.py",
+            "libs/b/tests/stubs.py",
+            "libs/b/tests/test_x.py",
+        }
+    )
+    assert resolve_python_import("tests.stubs", "libs/b/tests/test_x.py", ctx) == (
+        "libs/b/tests/stubs.py"
+    )
