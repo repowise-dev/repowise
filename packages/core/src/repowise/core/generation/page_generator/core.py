@@ -23,7 +23,6 @@ import jinja2
 import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
-from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
 from ..context.evidence import (
@@ -339,6 +338,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         _attach_file_provenance(page, ctx)
         # Embedded for search, not rendered (see file_page.j2).
         if ctx.file_vocabulary:
+            # Local: persistence pulls SQLAlchemy into every parse worker.
+            from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY
+
             page.metadata[FILE_VOCABULARY_KEY] = ctx.file_vocabulary
         return page
 
