@@ -6,10 +6,12 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -250,6 +252,50 @@ async def upsert_git_metadata_bulk(
         ),
         batch_size=_BATCH_SIZE,
     )
+
+
+def split_blame_line_shares(connection: Connection) -> int:
+    """Move blame line shares stored as commit shares into ``primary_owner_line_pct``.
+
+    Before that column existed, blame overwrote ``primary_owner_commit_pct``
+    with the blame owner's share of current lines, and a file without new
+    commits is never re-walked to fix it. Such a row is recognisable from its
+    own stored data: the value is not the owner's share of the file's commits
+    per ``top_authors_json`` / ``commit_count_total``. Those rows get the value
+    as their line share and the owner's commit share (None when they have no
+    counted commits); every other row, including all commit-only rows, is left
+    alone. Sync so both Alembic and the SQLite schema reconciler can run it,
+    once, when the column is added. Returns the number of rows moved.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT id, primary_owner_name, primary_owner_commit_pct, commit_count_total, "
+            "top_authors_json FROM git_metadata "
+            "WHERE primary_owner_commit_pct IS NOT NULL AND primary_owner_line_pct IS NULL"
+        )
+    ).all()
+    moves: list[dict] = []
+    for row_id, owner, stored_pct, total, authors_json in rows:
+        try:
+            authors = json.loads(authors_json or "[]")
+        except ValueError:
+            continue
+        if not authors or not total:
+            continue  # nothing to check the value against
+        own = next((a.get("commit_count", 0) for a in authors if a.get("name") == owner), 0)
+        commit_pct = own / total if own else None
+        if commit_pct is not None and abs(commit_pct - stored_pct) < 1e-9:
+            continue
+        moves.append({"id": row_id, "line_pct": stored_pct, "commit_pct": commit_pct})
+    if moves:
+        connection.execute(
+            text(
+                "UPDATE git_metadata SET primary_owner_line_pct = :line_pct, "
+                "primary_owner_commit_pct = :commit_pct WHERE id = :id"
+            ),
+            moves,
+        )
+    return len(moves)
 
 
 async def recompute_git_percentiles(

@@ -380,6 +380,20 @@ def _add_column_ddl(column: object, dialect: object) -> str:
     return " ".join(parts)
 
 
+def _split_blame_line_shares(connection: object) -> int:
+    from repowise.core.persistence.crud.git import split_blame_line_shares
+
+    return split_blame_line_shares(connection)  # type: ignore[arg-type]
+
+
+#: One-time data fixes that must run when the reconciler adds a column, for
+#: rows the new column changes the meaning of. Alembic runs the same step in
+#: the column's migration for managed Postgres. Keyed ``table.column``.
+_DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
+    "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+}
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -440,9 +454,11 @@ def _reconcile_schema(connection: object) -> None:
         # ``build`` renders the statement as well as running it, because
         # compiling a column's type can fail on its own and that failure has
         # to strand no more than compiling it successfully and failing to
-        # execute it would.
+        # execute it would. A data step runs itself and returns None.
         try:
-            connection.execute(build())  # type: ignore[attr-defined]
+            statement = build()
+            if statement is not None:
+                connection.execute(statement)  # type: ignore[attr-defined]
         except Exception as exc:  # re-raised below, once the walk is done
             if not continue_past_failure:
                 raise
@@ -470,12 +486,16 @@ def _reconcile_schema(connection: object) -> None:
         for column in table.columns:
             if column.name in db_cols:
                 continue
+            what = f"{table.name}.{column.name}"
             _run(
-                f"{table.name}.{column.name}",
+                what,
                 lambda table=table, column=column: text(
                     f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
                 ),
             )
+            data_step = _DATA_STEPS_ON_ADD.get(what)
+            if data_step is not None and not any(name == what for name, _ in failures):
+                _run(f"{what}:data", lambda data_step=data_step: data_step(connection) and None)
 
         # --- Indexes ---------------------------------------------------
         # Only model-declared indexes (i.e. ``Index(...)`` on the table

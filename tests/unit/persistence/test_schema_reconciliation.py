@@ -480,3 +480,72 @@ async def test_reconciler_handles_arbitrary_new_column(tmp_path: Path) -> None:
         await engine.dispose()
 
     assert target_column in _table_columns(db_path, target_table)
+
+
+@pytest.mark.asyncio
+async def test_adding_owner_line_pct_moves_stale_blame_line_shares(tmp_path: Path) -> None:
+    """Before ``primary_owner_line_pct`` existed, blame stored the owner's line
+    share as ``primary_owner_commit_pct``. Upgrading must not leave that value
+    labelled a commit share on files no update re-walks."""
+    import json
+
+    from repowise.core.persistence import create_session_factory, crud, get_session
+
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    authors = json.dumps(
+        [{"name": "Bob", "commit_count": 3}, {"name": "Ada", "commit_count": 1}]
+    )
+    rows = {
+        # blame owner Ada: 70% of lines, 1 of 4 commits
+        "blame.py": ("Ada", 0.7),
+        # no blame: the top committer and their commit share, already right
+        "commits.py": ("Bob", 0.75),
+        # blame owner with no counted commits
+        "old.py": ("Cy", 0.6),
+    }
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await crud.upsert_repository(session, name="r", local_path=str(tmp_path))
+            await crud.upsert_git_metadata_bulk(
+                session,
+                repo.id,
+                [
+                    {
+                        "file_path": path,
+                        "commit_count_total": 4,
+                        "top_authors_json": authors,
+                        "primary_owner_name": owner,
+                        "primary_owner_commit_pct": pct,
+                    }
+                    for path, (owner, pct) in rows.items()
+                ],
+            )
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, 'ALTER TABLE "git_metadata" DROP COLUMN "primary_owner_line_pct"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    got = {
+        path: (commit_pct, line_pct)
+        for path, commit_pct, line_pct in _fetchall(
+            db_path,
+            "SELECT file_path, primary_owner_commit_pct, primary_owner_line_pct "
+            "FROM git_metadata",
+        )
+    }
+    assert got == {
+        "blame.py": (0.25, 0.7),
+        "commits.py": (0.75, None),
+        "old.py": (None, 0.6),
+    }
