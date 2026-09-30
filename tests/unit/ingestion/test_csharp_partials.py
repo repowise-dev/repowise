@@ -261,6 +261,31 @@ class TestPartialFragmentScope:
             graph, "Chaos.Index.cs::Chaos::Use"
         )
 
+    def test_partial_method_call_reaches_a_fragment(self, tmp_path: Path) -> None:
+        # A partial method is declared in one fragment and implemented in
+        # another; a call from a third lands on one of the two, never elsewhere.
+        (tmp_path / "Form.cs").write_text(
+            "namespace Acme;\npublic partial class Form\n{\n"
+            "    public void Load() { OnLoaded(); }\n}\n"
+        )
+        (tmp_path / "Form.Hooks.cs").write_text(
+            "namespace Acme;\npublic partial class Form\n{\n"
+            "    partial void OnLoaded();\n}\n"
+        )
+        (tmp_path / "Form.Impl.cs").write_text(
+            "namespace Acme;\npublic partial class Form\n{\n"
+            "    partial void OnLoaded() { }\n}\n"
+        )
+        (tmp_path / "Other.cs").write_text(
+            "namespace Acme;\ninternal class Other\n{\n    private void OnLoaded() { }\n}\n"
+        )
+        calls = _calls(_build(tmp_path), "Form.cs::Form::Load")
+        assert len(calls) == 1
+        assert set(calls) <= {
+            "Form.Hooks.cs::Form::OnLoaded",
+            "Form.Impl.cs::Form::OnLoaded",
+        }
+
     def test_sibling_fragment_use_is_not_unused_internal(self, tmp_path: Path) -> None:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 

@@ -305,4 +305,4 @@ def vb_namespace_key(namespace: str, root: str) -> str:
 def _vb_fqn(decl: TypeDecl, root: str) -> str:
     """Fully-qualified name of a VB declaration, under its namespace key."""
     namespace = vb_namespace_key(decl.namespace, root)
-    return f"{namespace}.{decl.name}" if namespace else decl.name
+    return TypeDecl(decl.name, decl.qualified, namespace, decl.is_partial, decl.arity).fqn

@@ -16,7 +16,10 @@ from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.languages.vbnet_same_namespace import (
     resolve_vbnet_same_namespace_refs,
 )
-from repowise.core.ingestion.resolvers.dotnet.namespace_map import scan_vb_declarations
+from repowise.core.ingestion.resolvers.dotnet.namespace_map import (
+    build_vb_namespace_map,
+    scan_vb_declarations,
+)
 
 
 def _graph_for(texts: dict[str, str]) -> nx.DiGraph:
@@ -263,6 +266,48 @@ class TestPartialClasses:
             "Partial Class Cache(Of TKey, TValue)\nEnd Class\n"
         )
         assert [d.fqn for d in decls] == ["Cache", "Cache`2"]
+
+    def test_generic_twin_is_not_a_fragment(self, tmp_path: Path) -> None:
+        # Cache and Cache(Of TKey, TValue) are two types: neither the partial
+        # map nor call resolution may merge their fragments.
+        files = {
+            "App/App.vbproj": (
+                '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n'
+                "    <RootNamespace>Acme</RootNamespace>\n"
+                "  </PropertyGroup>\n</Project>\n"
+            ),
+            "App/Cache.vb": (
+                "Partial Class Cache\n"
+                "    Public Sub Run()\n        Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+            "App/Cache.Evict.vb": (
+                "Partial Class Cache\n"
+                "    Private Sub Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+            "App/CacheT.vb": (
+                "Partial Class Cache(Of TKey, TValue)\n"
+                "    Private Sub Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+        }
+        repo = _write(tmp_path, files)
+        vb = [repo / p for p in files if p.endswith(".vb")]
+        texts = {p: p.read_text() for p in vb}
+        _ns, _types, partials = build_vb_namespace_map(
+            vb, texts=texts, root_namespaces=dict.fromkeys(vb, "Acme")
+        )
+        assert {k: sorted(p.name for p in v) for k, v in partials.items()} == {
+            "Acme.Cache": ["Cache.Evict.vb", "Cache.vb"],
+            "Acme.Cache`2": ["CacheT.vb"],
+        }
+        calls = {
+            callee
+            for _, callee, data in _build(repo).out_edges("App/Cache.vb::Cache::Run", data=True)
+            if data.get("edge_type") == "calls"
+        }
+        assert calls == {"App/Cache.Evict.vb::Cache::Evict"}
 
     def test_non_partial_same_name_types_are_not_linked(self, tmp_path: Path) -> None:
         repo = _write(
