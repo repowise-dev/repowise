@@ -57,6 +57,7 @@ from typing import Any
 
 import pathspec
 
+from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
 
 #: Printed alone instead of arguments when every test must run.
@@ -162,7 +163,7 @@ _ROOT_META = (
 )
 # A root file only reads as project meta with no extension or a prose one:
 # ``history.json`` or ``changes.yaml`` is data a test may load.
-_DOC_SUFFIXES = frozenset({"", ".md", ".markdown", ".rst", ".txt", ".adoc"})
+_DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
 
 # Extensions a test runner collects tests from; anything else in a test tree
 # (data, snapshots, golden files) is read by tests, not run.
