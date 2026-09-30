@@ -172,11 +172,18 @@ class TestResolution:
         )
         assert not _callees(tmp_path, body) & {"a.go::Command::HasAlias"}
 
-    def test_an_unknown_container_shadows_an_outer_declaration(self, tmp_path: Path) -> None:
-        """``sub`` inside the loop is not the ``*Command`` parameter it shadows."""
+    def test_a_loop_variable_does_not_retype_the_receiver_body_wide(self, tmp_path: Path) -> None:
+        """A body is one scope, so the loop's ``c`` must not cost the method's."""
         body = (
-            "func run(sub *Command, xs Commands) {\n\tfor _, sub := range xs {\n"
-            "\t\tsub.HasAlias(\"x\")\n\t}\n}\n"
+            "func (c *Command) run(xs Commands) {\n\tfor _, c := range xs {\n\t\t_ = c\n\t}\n"
+            "\tc.HasAlias(\"x\")\n}\n"
+        )
+        assert ("a.go::Command::run", "a.go::Command::HasAlias") in _range_edges(tmp_path, body)
+
+    def test_two_loops_typing_one_name_differently_refuse_it(self, tmp_path: Path) -> None:
+        body = (
+            "func (c *Command) find() {\n\tfor _, x := range c.commands {\n\t}\n"
+            "\tfor _, x := range c.groups {\n\t\tx.HasAlias(\"x\")\n\t}\n}\n"
         )
         assert not _callees(tmp_path, body) & {"a.go::Command::HasAlias"}
 

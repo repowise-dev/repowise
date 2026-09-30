@@ -693,19 +693,23 @@ class ReceiverTypingMixin:
         """Add each ``range`` variable in one body to *types*, the body's own.
 
         In line order, so a loop over an outer loop's variable sees it typed.
-        A variable over a container of unknown shape maps to None, as a name
-        declared twice does, so it never inherits an outer declaration's type.
+        A body is one flat scope and a loop variable lives only in its block,
+        so one reusing a name the body already declares (``for _, cmd := range``
+        inside a ``cmd`` method) is skipped rather than let it retype or
+        refuse the name body-wide. Two loops typing one name differently
+        refuse it, as a name declared twice does.
         """
         scan = self._range_scan_for(file_path, language)
         clauses = clauses_in_span(scan.clauses, *span)
         if not clauses:
             return
         containers = types_in_span(scan.containers, *span)
+        declared = frozenset(types)
         for clause in clauses:
             spelling = self._ranged_container(file_path, language, clause, types, containers)
             elements = range_element_types(spelling, language) or (None, None)
             for name, type_name in zip((clause.key, clause.value), elements, strict=True):
-                if name and name != "_":
+                if name and name != "_" and name not in declared:
                     types[name] = type_name if types.get(name, type_name) == type_name else None
 
     def _ranged_container(
