@@ -81,7 +81,16 @@ function identityStats(data: StatsHighlights): RibbonStat[] {
       sub: languageMix(data),
       hint: "Programming languages by file count. Data and markup formats such as JSON, YAML and Markdown are not counted.",
     },
-    { label: "Commits", value: formatNumber(origin.total_commits) },
+    {
+      label: "Commits",
+      value: formatNumber(origin.total_commits),
+      ...(origin.total_merge_commits != null
+        ? {
+            sub: `plus ${formatNumber(origin.total_merge_commits)} merge${origin.total_merge_commits === 1 ? "" : "s"}`,
+            hint: "Non-merge commits reachable from HEAD. Merge commits are counted apart.",
+          }
+        : {}),
+    },
   ];
 }
 

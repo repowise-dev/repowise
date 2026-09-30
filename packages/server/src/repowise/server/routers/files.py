@@ -323,6 +323,8 @@ async def file_detail(
         # onto HotspotResponse so the hotspots list does not carry a per-symbol
         # map on every row; only this page has symbols to spend it on.
         git["fix_symbol_counts"] = _json_or(git_meta.fix_symbol_counts_json, {})
+        # The blame owner's share of current lines, next to their commit share.
+        git["primary_owner_line_pct"] = git_meta.primary_owner_line_pct
         git["agent"] = {
             "agent_commit_count": git_meta.agent_commit_count or 0,
             "agent_authored_pct": git_meta.agent_authored_pct,

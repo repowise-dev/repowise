@@ -117,6 +117,9 @@ export interface FileDetailGit extends Hotspot {
   co_change_partners: CoChangePartner[];
   agent: FileAgentProvenance;
   first_commit_at: string | null;
+  /** The primary (blame) owner's share of current lines, 0-1. Null without
+   *  blame; `primary_owner_commit_pct` is the same person's share of commits. */
+  primary_owner_line_pct?: number | null;
   /** `symbol_id` -> counted fixes that landed in it, over the same window as
    *  `prior_defect_count`. Approximate: symbol spans are current-tree while
    *  each fix's line ranges are numbered on its own parent commit. A symbol
