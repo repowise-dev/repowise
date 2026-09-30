@@ -10,6 +10,8 @@ from sqlalchemy import select
 
 from repowise.core.analysis.risk_semantics import file_risk_scales
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.persistence.batches import chunked
+from repowise.core.persistence.crud import get_graph_nodes_by_ids, get_test_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -33,7 +35,12 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
-from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
+from .assessment import (
+    _assess_one_target,
+    _get_active_contributor_count,
+    fix_annotation,
+    normalize_target_path,
+)
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health
 
@@ -110,25 +117,63 @@ def _add_link(links: dict[str, dict[str, set[str]]], node: str, other: str, edge
     links.setdefault(node, {}).setdefault(other, set()).add(edge_type)
 
 
-async def _load_dependency_graph(session: Any, repo_id: str) -> _DependencyGraph:
-    node_res = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
-    node_meta = {n.node_id: n for n in node_res.scalars().all()}
-    file_node_ids = {node_id for node_id, node in node_meta.items() if node.node_type == "file"}
+async def _file_dependency_edges(
+    session: Any, repo_id: str, endpoint: Any, node_ids: set[str], node_meta: dict[str, GraphNode]
+) -> list[GraphEdge]:
+    """File-to-file dependency edges whose *endpoint* column is in *node_ids*.
 
-    # File-to-file dependency edges only: every edge is read as "X depends on
-    # Y", so a symbol, containment or co-change edge would invent a dependent
-    # (a co-change partner would be reported as an import).
-    res = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
-            GraphEdge.source_node_id.in_(file_node_ids),
-            GraphEdge.target_node_id.in_(file_node_ids),
+    File-to-file only: every edge is read as "X depends on Y", so a symbol,
+    containment or co-change edge would invent a dependent (a co-change
+    partner would be reported as an import). The node-type check runs here
+    rather than as SQL subqueries, which led SQLite onto the source-node index
+    and cost seconds per call. Endpoint rows are added to *node_meta*.
+    """
+    edges: list[GraphEdge] = []
+    for batch in chunked(sorted(node_ids)):
+        res = await session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
+                endpoint.in_(batch),
+            )
         )
+        edges.extend(res.scalars().all())
+    unseen = {n for e in edges for n in (e.source_node_id, e.target_node_id)} - node_meta.keys()
+    node_meta.update(await get_graph_nodes_by_ids(session, repo_id, sorted(unseen)))
+
+    def is_file(node_id: str) -> bool:
+        node = node_meta.get(node_id)
+        return node is not None and node.node_type == "file"
+
+    return [e for e in edges if is_file(e.source_node_id) and is_file(e.target_node_id)]
+
+
+async def _load_dependency_graph(session: Any, repo_id: str, roots: set[str]) -> _DependencyGraph:
+    """The part of the dependency graph the cards for *roots* read.
+
+    That is every edge touching a root (``import_links``), plus the edges into
+    each direct dependent, the second hop ``_dependency_population`` walks.
+    Adjacency and ``dep_counts`` are complete for roots and their direct
+    dependents only, and ``node_meta`` holds just the roots and the endpoints
+    of those edges. Reading the whole graph instead cost tens of seconds per
+    call on a large repository.
+    """
+    node_meta = await get_graph_nodes_by_ids(session, repo_id, sorted(roots))
+    near = await _file_dependency_edges(
+        session, repo_id, GraphEdge.target_node_id, roots, node_meta
     )
+    near += await _file_dependency_edges(
+        session, repo_id, GraphEdge.source_node_id, roots, node_meta
+    )
+    direct = {e.source_node_id for e in near if e.target_node_id in roots}
+    far = await _file_dependency_edges(
+        session, repo_id, GraphEdge.target_node_id, direct - roots, node_meta
+    )
+
     import_links: dict[str, dict[str, set[str]]] = {}
     reverse_deps: dict[str, dict[str, set[str]]] = {}
-    for e in res.scalars().all():
+    # A root-to-root edge comes back from both queries; the sets absorb it.
+    for e in [*near, *far]:
         edge_type = str(e.edge_type)
         _add_link(import_links, e.source_node_id, e.target_node_id, edge_type)
         _add_link(import_links, e.target_node_id, e.source_node_id, edge_type)
@@ -199,7 +244,10 @@ async def _gather_evidence(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
-        graph = await _load_dependency_graph(session, repo_id)
+        # A card walks from the target as given and reads links under its
+        # normalized path, so both spellings are roots.
+        roots = {*targets, *(normalize_target_path(t, repository.local_path) for t in targets)}
+        graph = await _load_dependency_graph(session, repo_id, roots)
 
         # Repo-wide, so computed once for every target's bus-factor calibration.
         team_size = await _get_active_contributor_count(session, repo_id)
@@ -226,11 +274,13 @@ async def _gather_evidence(
         if len(targets) > 1 and not changed_files:
             global_hotspots = await _global_hotspots(session, repo_id, targets, exclude_spec)
         pr_blast_radius = None
+        # Only the PR directive reads this, and only for affected file paths.
+        test_paths: set[str] = set()
         if changed_files:
             pr_blast_radius = await _pr_blast_radius(
                 session, repo_id, ctx.alias, changed_files, exclude_spec
             )
-        test_paths = {nid for nid, n in graph.node_meta.items() if n.is_test}
+            test_paths = await get_test_file_paths(session, repo_id)
     return _RiskEvidence(repository, results, test_paths, global_hotspots, pr_blast_radius)
 
 
