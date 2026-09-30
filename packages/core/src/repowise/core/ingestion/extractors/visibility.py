@@ -566,6 +566,16 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     return False
 
 
+def _in_anonymous_namespace(def_node: Node) -> bool:
+    """Return True if an unnamed ``namespace { ... }`` encloses the def."""
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type == "namespace_definition" and ancestor.child_by_field_name("name") is None:
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
 def _has_file_scope_static(def_node: Node, src: str) -> bool:
     """Return True if a ``static`` storage-class specifier appears in the leading declarators."""
     for child in def_node.children[:4]:
@@ -591,7 +601,8 @@ def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> 
         ``private`` (the C++ class default) — ``struct`` defaults to
         ``public``.
       * Free function at namespace / file scope with ``static`` storage
-        class → ``private`` (translation-unit local; not importable).
+        class, or anything in an anonymous namespace → ``private``
+        (translation-unit local; not importable).
       * ``__declspec(dllexport)`` or ``__attribute__((visibility("default")))``
         → forces ``public`` and sets ``is_exported = True`` so a future
         "exported entry point" check can whitelist it.
@@ -610,8 +621,9 @@ def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> 
         # No access specifier — use the enclosing aggregate's default.
         return _enclosing_class_default_access(def_node), False
 
-    # 3. File-scope ``static`` is translation-unit local.
-    if _has_file_scope_static(def_node, src):
+    # 3. File-scope ``static`` and an anonymous namespace are both internal
+    # linkage: translation-unit local.
+    if _has_file_scope_static(def_node, src) or _in_anonymous_namespace(def_node):
         return "private", False
 
     return current_visibility, False

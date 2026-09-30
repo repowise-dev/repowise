@@ -55,6 +55,7 @@ from .models import (
     symbol_id_language,
 )
 from .resolved_call import ResolvedCall
+from .resolvers.cpp import _SOURCE_TU_EXTS
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
 from .type_names import (
     csharp_extension_receiver,
@@ -177,6 +178,21 @@ def _renames_on_the_way(binding: NamedBinding | None, name: str) -> bool:
     return binding is not None and (binding.exported_name or name) != name
 
 
+def _has_internal_linkage(path: str, sym: Symbol) -> bool:
+    """Is *sym* a C/C++ free symbol only its own translation unit can name?
+
+    The parser records ``static`` and anonymous-namespace linkage as
+    ``private``. A header's copy is compiled into every file that includes it,
+    so only a source file keeps the symbol to itself.
+    """
+    return (
+        sym.language in ("c", "cpp")
+        and sym.parent_name is None
+        and sym.visibility == "private"
+        and path.lower().endswith(_SOURCE_TU_EXTS)
+    )
+
+
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     """Are these two paths the same C++ translation unit?
 
@@ -272,6 +288,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Held as an id set rather than a full id->kind map: it is the only
         # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        # C/C++ symbols with internal linkage; see ``_reachable_by_name``.
+        self._tu_local_ids: set[str] = set()
         self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
@@ -498,7 +516,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 if extended is not None:
                     extensions[(extended, sym.name)].add((path, sym.id))
 
-            self._index_globally(sym)
+            self._index_globally(path, sym)
 
         self._file_symbols[path] = file_syms
         self._file_methods[path] = file_methods
@@ -512,7 +530,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return extended if extended in self._csharp_type_names else None
 
-    def _index_globally(self, sym: Symbol) -> None:
+    def _index_globally(self, path: str, sym: Symbol) -> None:
+        if _has_internal_linkage(path, sym):
+            self._tu_local_ids.add(sym.id)
         if sym.kind in _NON_CALLABLE_KINDS:
             self._non_callable_ids.add(sym.id)
         if _is_property_accessor(sym):
@@ -1089,9 +1109,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Tier 3 and what follows it: answers not grounded in this file or its imports."""
         target_name = call.target_name
         # Tier 3: global unique match, only within the same language.
-        # Uniqueness is judged on the unfiltered list on purpose: filtering data
-        # members out first would re-uniquify a name a field and a method share.
-        candidates = self._global_symbols.get(target_name, [])
+        # Uniqueness is judged before filtering data members, on purpose: filtering
+        # them out first would re-uniquify a name a field and a method share. A
+        # symbol the caller cannot name at all is no rival, so that one is dropped.
+        candidates = [
+            sym_id
+            for sym_id in self._global_symbols.get(target_name, ())
+            if self._reachable_by_name(file_path, sym_id)
+        ]
         if len(candidates) == 1 and candidates[0] != caller_id:
             return self._global_unique_match(
                 file_path, call, caller_id, target_name, candidates[0]
@@ -1111,6 +1136,16 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if only == caller_id or only in self._property_accessor_ids:
             return None
         return self._global_unique_match(file_path, call, caller_id, target_name, only)
+
+    def _reachable_by_name(self, file_path: str, sym_id: str) -> bool:
+        """Can a bare name in *file_path* reach *sym_id* with no include in between?
+
+        Not when *sym_id* has internal linkage in another translation unit: a
+        ``static`` function in one .c file cannot be linked from any other. The
+        include-grounded tiers need no check, since an included file is part of
+        the includer's translation unit.
+        """
+        return sym_id not in self._tu_local_ids or self._symbol_paths_by_id.get(sym_id) == file_path
 
     def _implicit_inherited_call(
         self,

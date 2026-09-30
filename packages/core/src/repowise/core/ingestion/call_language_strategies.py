@@ -241,7 +241,11 @@ class LanguageStrategiesMixin:
         for sibling in siblings:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
+            if (
+                sym_id is not None
+                and sym_id != caller_id
+                and self._reachable_by_name(file_path, sym_id)
+            ):
                 return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
         return None
 
