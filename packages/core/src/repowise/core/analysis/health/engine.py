@@ -120,15 +120,6 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
-# v37: a ``hidden_coupling`` sentence quotes the commit count its ratio divided
-# by, and whose it is; a record claiming more shared commits than the smaller
-# file has is no longer reported.
-#
-# v36: a file's dependents are the distinct files that depend on it in code.
-# Raw in-degree also counted co-change partners, so a file often committed with
-# many others reported them as dependents, and the centrality gates and
-# refactoring ranking that read the count moved with it.
-#
 # v35: the update's full re-score reads every stored git column, so the
 # percentile gates of ``prior_defect`` and ``co_change_scatter`` see their
 # inputs, and it keeps the stored blame-marker findings it cannot recompute.
@@ -338,7 +329,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 37
+HEALTH_ANALYZER_VERSION = 36
 
 
 def walked_functions(
