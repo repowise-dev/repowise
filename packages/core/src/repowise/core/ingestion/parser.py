@@ -64,6 +64,7 @@ from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
     refine_csharp_visibility,
+    refine_java_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -827,6 +828,10 @@ def _refine_visibility(
     # it, which the modifier-text fn cannot see.
     if language == "csharp":
         return refine_csharp_visibility(def_node, visibility), False
+    # Java: no access keyword means package-private, except inside an
+    # interface or annotation body, which the modifier-text fn cannot see.
+    if language == "java":
+        return refine_java_visibility(def_node), False
     # TS/JS: a top-level declaration is only public when exported —
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:

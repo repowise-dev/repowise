@@ -4,8 +4,8 @@ Most languages can determine visibility from a symbol's name + modifier
 text alone (the ``visibility_fn`` shape). Some cannot, because the answer
 depends on surrounding AST context — C/C++ ``public:`` / ``private:``
 access specifier siblings, ``static`` storage class at file scope and
-``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
-differs by enclosing declaration; TS/JS export position; Rust's
+``__declspec(dllexport)`` attributes; the C# and Java no-modifier
+defaults, which differ by enclosing declaration; TS/JS export position; Rust's
 trait items, which may not write a modifier of their own. Each has a
 ``refine_*_visibility`` the parser calls after the generic
 ``visibility_fn``.
@@ -59,12 +59,20 @@ def rust_visibility(_name: str, mods: list[str]) -> str:
 
 
 def java_visibility(_name: str, mods: list[str]) -> str:
+    """Java visibility; no access keyword is package-private, recorded ``internal``.
+
+    That default is the top-level type one. Interface members and enum
+    constructors default differently, which ``refine_java_visibility``
+    corrects from the AST.
+    """
     combined = " ".join(mods).lower()
     if "private" in combined:
         return "private"
     if "protected" in combined:
         return "protected"
-    return "public"
+    if "public" in combined:
+        return "public"
+    return "internal"
 
 
 def public_by_default(_name: str, _mods: list[str]) -> str:
@@ -374,6 +382,41 @@ def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
             break
         node = node.parent
     return current_visibility
+
+
+# ---------------------------------------------------------------------------
+# Java node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+_JAVA_ACCESS_KEYWORDS = ("private", "protected", "public")
+
+# Members of these bodies are implicitly public (JLS 9.4, 9.5, 9.6).
+_JAVA_PUBLIC_BODIES = frozenset({"interface_body", "annotation_type_body"})
+
+
+def refine_java_visibility(def_node: Node) -> str:
+    """Give a Java declaration the access it writes, else its scope's default.
+
+    Read from the AST because the query's modifier-less pattern matches first
+    and the parser keeps the first match, so ``private class X`` reaches
+    ``java_visibility`` with no modifier text at all. With no access keyword a
+    declaration is package-private, except that interface and annotation
+    members are public and an enum constructor is private.
+    """
+    modifiers = next((c for c in def_node.children if c.type == "modifiers"), None)
+    if modifiers is not None:
+        written = {c.type for c in modifiers.children}
+        for keyword in _JAVA_ACCESS_KEYWORDS:
+            if keyword in written:
+                return keyword
+    body = def_node.parent
+    if body is None:
+        return "internal"
+    if body.type in _JAVA_PUBLIC_BODIES:
+        return "public"
+    if def_node.type == "constructor_declaration" and body.type == "enum_body_declarations":
+        return "private"
+    return "internal"
 
 
 # ---------------------------------------------------------------------------
