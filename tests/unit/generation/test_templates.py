@@ -8,6 +8,7 @@ from pathlib import Path
 import jinja2
 import pytest
 
+from repowise.core.generation.context.module_facts import build_module_facts
 from repowise.core.generation.context_assembler import (
     ApiContractContext,
     ArchitectureDiagramContext,
@@ -266,7 +267,7 @@ def test_file_page_asks_about_importers_only_when_it_has_them(
 
 @pytest.fixture(scope="module")
 def module_page_ctx() -> ModulePageContext:
-    return ModulePageContext(
+    ctx = ModulePageContext(
         title="Calculation Engine",
         language="python",
         total_symbols=5,
@@ -278,6 +279,8 @@ def module_page_ctx() -> ModulePageContext:
         files=["python_pkg/calculator.py", "python_pkg/models.py"],
         directories=["python_pkg"],
     )
+    ctx.facts = build_module_facts(ctx, [], None)
+    return ctx
 
 
 def test_module_page_renders_without_error(jinja_env, module_page_ctx):

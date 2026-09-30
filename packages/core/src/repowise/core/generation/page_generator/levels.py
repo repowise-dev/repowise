@@ -258,6 +258,15 @@ def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
     return [{"title": g.display, "path": g.key} for g in children]
 
 
+def _execution_flows(graph_builder: Any) -> list[Any]:
+    """The run's traced execution flows, for module pages that host one."""
+    try:
+        return list(graph_builder.execution_flows().flows)
+    except Exception as exc:
+        log.warning("module_page.execution_flows_unavailable", error=str(exc))
+        return []
+
+
 def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
@@ -267,6 +276,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if not isinstance(parsed_by_path, dict) or not parsed_by_path:
         parsed_by_path = {p.file_info.path: p for p in run.parsed_files}
     package_roots = package_roots_from_paths(set(parsed_by_path))
+    flows = _execution_flows(run.graph_builder)
     for mg in run.sel_module_groups:
         # Read from the wider set: a chapter's prose is about its whole
         # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
@@ -333,6 +343,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     public_api=compute_public_api(material, parsed_by_path, package_roots),
                     parsed_files=parsed_by_path,
                     source_map=run.source_map,
+                    execution_flows=flows,
                 ),
             )
         )

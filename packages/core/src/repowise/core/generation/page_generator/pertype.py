@@ -215,6 +215,7 @@ class PerTypeGenerationMixin:
         public_api: list[dict] | None = None,
         parsed_files: dict[str, Any] | None = None,
         source_map: dict[str, bytes] | None = None,
+        execution_flows: Sequence[Any] = (),
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -235,6 +236,7 @@ class PerTypeGenerationMixin:
             public_api=public_api,
             parsed_files=parsed_files,
             source_map=source_map,
+            execution_flows=execution_flows,
         )
         module_git_summary = None
         if git_meta_map:

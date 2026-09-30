@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -45,6 +46,7 @@ from .graph_intelligence import (
     extract_heritage,
 )
 from .module_excerpts import module_excerpts
+from .module_facts import build_module_facts
 from .token_budget import (
     estimate_kg_tokens,
     estimate_tokens,
@@ -511,6 +513,7 @@ class ContextAssembler:
         public_api: list[dict] | None = None,
         parsed_files: dict[str, ParsedFile] | None = None,
         source_map: dict[str, bytes] | None = None,
+        execution_flows: Sequence[Any] = (),
     ) -> ModulePageContext:
         """Assemble context for the module_page template.
 
@@ -645,7 +648,7 @@ class ContextAssembler:
             max(0, _MODULE_EXCERPT_BUDGET - api_cost),
         )
 
-        return ModulePageContext(
+        ctx = ModulePageContext(
             title=title,
             directories=directories,
             language=language,
@@ -671,7 +674,16 @@ class ContextAssembler:
             packages=packages or [],
             public_api=api_rows,
             public_api_omitted=len(public_api or ()) - len(api_rows),
-            code_excerpts=excerpts.rendered,
+            code_excerpts=[
+                {
+                    "file": item.path,
+                    "symbol": item.symbol,
+                    "lines": f"{item.start_line}-{item.end_line}",
+                    "truncated": item.truncated,
+                    "code": item.text,
+                }
+                for item in excerpts.included
+            ],
             declared_files=declared_files,
             hotspot_count=hotspot_count,
             stable_count=stable_count,
@@ -680,6 +692,8 @@ class ContextAssembler:
             bugfix_total=bugfix_total,
             most_fixed_file=most_fixed_file,
         )
+        ctx.facts = build_module_facts(ctx, file_contexts, graph, execution_flows)
+        return ctx
 
     def _excerpt_public_api(self, api: list[dict]) -> tuple[list[dict], int]:
         """Every name (to the hard cap), then signature + doc line while half the rest lasts.

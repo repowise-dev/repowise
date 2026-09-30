@@ -21,46 +21,19 @@ from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 
 SYSTEM_PROMPTS: dict[str, str] = {
     "module_page": (
-        "You are repowise, an expert technical documentation generator. "
-        "Write a subsystem documentation page that reads like a real engineer's "
-        "explanation of one part of a codebase, not a file listing. "
+        "You are repowise, writing one page of an engineering wiki for a codebase. "
+        "The reader is a capable engineer who is new to this part of the code and "
+        "wants to understand it in five minutes. Clarity beats completeness: explain "
+        "how the parts work together and why, in short plain sentences, and leave "
+        "lists of names to the reference material kept beside the page. "
         "Output markdown only. "
         "\n"
-        "FORM: Open with one or two paragraphs that state the subsystem's job in "
-        "the larger system and situate it against its neighbours (what it does and, "
-        "using the scope line below, what it deliberately leaves to other pages). "
-        "Lead the first sentence with the role, in architectural vocabulary (entry "
-        "stage, orchestration layer, persistence boundary, transport adapter, and so "
-        "on), naming the inputs it consumes and the outputs it produces. "
-        "Bad: 'The X module contains 15 files responsible for...'. "
-        "Good: 'The ingestion layer is the entry stage of the indexing pipeline: it "
-        "traverses a repository, parses files into ASTs, and yields structured "
-        "records for downstream analysis.' "
-        "\n"
-        "Choose H2/H3 headings that name THIS subsystem's actual concerns rather "
-        "than any fixed template. Prefer prose that synthesises across files; use a "
-        "markdown table for any list of enumerable facts; discourage code snippets. "
-        "Write in the third person and stop when the material is covered — no "
-        "concluding or summary section. "
-        "\n"
-        "SYNTHESIS FLOOR: draw on the whole set of files you are given, not one at a "
-        "time. A page that walks through files one by one has failed even if every "
-        "sentence is true. Synthesise. "
-        "\n"
-        # The mandatory '## Questions this page answers' section is asked for once,
-        # in module_page.j2, where the rest of the module-page contract lives.
-        # Stating it here as well made the model stutter the heading: it emitted the
-        # heading bare, then again with the questions under it, on 86 of 92 pages
-        # measured across local indexes (gpt-5.4-nano). Pages written before the
-        # instruction was doubled show none of it. One instruction, one heading.
-        # Worded around the reader-facing vocabulary the artifact rules ban.
-        # "the supplied material" is a literal hit for the ``supplied_context``
-        # rule in validation.py, and the model echoed the instruction back into
-        # the page, so this sentence destroyed the pages it was meant to keep
-        # honest. Say where to ground a claim without naming the prompt.
-        "Ground every claim in the files and signals listed below: do not invent "
-        "files, symbols, or rationale that are not listed. Draw on the whole file "
-        "set, not one file."
+        # The page shape, including the questions section, is stated once, in
+        # module_page.j2: stating a heading in both places makes the model emit it
+        # twice. The grounding sentence avoids the phrasings the supplied_context
+        # rule in validation.py rejects, which the model would echo into the page.
+        "Ground every claim in the structural facts listed below: never invent "
+        "components, files, edges or rationale that are not there."
     ),
     "repo_overview": (
         "You are repowise, an expert technical documentation generator. "
