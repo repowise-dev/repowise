@@ -218,9 +218,7 @@ def _slugify(text: str) -> str:
 # reaches the export instead of being dropped.
 # "5": which files are tests changed (``repowise.core.test_paths``), moving the
 # ``test`` tag on file nodes without moving a node or edge count.
-# "6": test files and code named after a spec are no longer API contracts,
-# moving the ``api_contract`` tag without moving a count.
-KG_BUILDER_VERSION = "6"
+KG_BUILDER_VERSION = "5"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
