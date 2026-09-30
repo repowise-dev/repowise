@@ -253,13 +253,14 @@ a per-test coverage map (`repowise coverage add`) makes it more precise.
 - It exits `0` for a subset or for everything, and `2` only when it cannot read the change or the `tests.*` config.
 - Branch on the run-all flag, never on `:all`: jest and vitest read it as a pattern and run nothing.
 - It runs everything for: an empty change; a lockfile, manifest, build, test or CI config change; `.repowise/config.yaml`; a production package's `__init__.py`.
-- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports.
+- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports; any Python test helper while a conftest or pytest config loads plugins by name.
 - It also runs everything for: a missing, out-of-date or unreadable index; a per-test map at its row cap; a deleted file no known test used.
-- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped; an empty line means only those changed.
+- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it); an empty line means only those changed.
+- Tests the graph cannot see into (not indexed, or importing nothing it resolves, such as a test that only runs a subprocess) run with every subset. With `--runner pytest`, test-named modules outside `testpaths` and outside test directories are left out, as a bare `pytest` leaves them out.
 - A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
 - Without a range, in CI it reads the pull request's change; locally, the staged changes.
 - `tests.full_run_on` (gitignore patterns) adds run-everything paths; `tests.always_run` is appended to every selection as written.
-- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed.
+- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed. A test that reaches the change only through a subprocess, a plugin or registry loaded by a string name, or a directory it globs, while importing something else, is missed too: list such tests in `tests.always_run`, and run the full suite on the default branch.
 
 **What to expect.** The subset is only as small as the code is loosely coupled.
 On tightly coupled code the graph alone picks most tests (over 80% of test

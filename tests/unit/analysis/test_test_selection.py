@@ -13,7 +13,10 @@ from repowise.core.analysis.test_selection import (
     Selection,
     SelectionInput,
     TestSelectionConfig,
+    doc_readers,
     format_args,
+    plugin_loader,
+    pytest_testpaths,
     resolve_runner,
     runner_args,
     select_tests,
@@ -131,6 +134,12 @@ def test_no_index_runs_everything_when_code_changed() -> None:
         ("packages/core/templates/page.md", False),
         ("src/notice.py", False),
         ("data/users.json", False),
+        # Code is a module whatever its name or place, and root data is data.
+        ("docs/conf.py", False),
+        ("docs/examples/snippet.py", False),
+        ("history.py", False),
+        ("security.go", False),
+        ("changes.json", False),
     ],
 )
 def test_only_documentation_is_skipped(path, skipped) -> None:
@@ -580,3 +589,113 @@ def test_a_changed_helper_selects_the_tests_that_import_it(deleted) -> None:
     assert not sel.run_all, sel.reasons
     assert sel.tests == ("tests/test_x.py", "tests/test_y.py")
     assert sel.basis[path] == "helper-importers"
+
+
+# -- what the graph cannot see ------------------------------------------------
+
+
+def test_a_doc_some_code_names_runs_everything() -> None:
+    readers = {"docs/agent/TOOLS.md": "tests/unit/test_tools.py"}
+    sel = _select(["docs/agent/TOOLS.md", "docs/guide.md"], doc_readers=readers)
+    assert sel.run_all
+    assert sel.reasons[0] == (
+        "docs/agent/TOOLS.md is named by tests/unit/test_tools.py, so a test may read it; "
+        "the tests that do are not tracked."
+    )
+    assert sel.basis == {"docs/agent/TOOLS.md": "full-run", "docs/guide.md": "no-tests-needed"}
+
+
+def test_doc_readers_are_code_naming_the_doc_or_a_doctest_glob() -> None:
+    docs = ["README.md", "docs/guide.md"]
+    sources = [
+        ("pyproject.toml", 'readme = "README.md"\n'),
+        ("src/help.py", 'HINT = "use --doctest-glob"\n'),
+        ("tests/test_readme.py", 'ROOT / "README.md"\n'),
+    ]
+    assert doc_readers(docs, sources) == {"README.md": "tests/test_readme.py"}
+    glob = [("pytest.ini", "[pytest]\naddopts = --doctest-glob='*.md'\n")]
+    assert doc_readers(docs, glob) == {"README.md": "pytest.ini", "docs/guide.md": "pytest.ini"}
+
+
+@pytest.mark.parametrize(
+    ("path", "text", "loads"),
+    [
+        ("tests/conftest.py", 'pytest_plugins = ["tests.plugins.db"]\n', True),
+        ("pyproject.toml", '[tool.pytest.ini_options]\naddopts = "-p tests.plugin"\n', True),
+        ("pytest.ini", "[pytest]\naddopts = -p no:cacheprovider -v\n", False),
+        ("tests/test_a.py", 'pytest_plugins = ["x"]\n', False),
+    ],
+)
+def test_plugin_loader_finds_plugins_loaded_by_name(path, text, loads) -> None:
+    assert (plugin_loader([(path, text)]) == path) is loads
+
+
+def test_a_helper_is_unknown_while_plugins_are_loaded_by_name() -> None:
+    """A plugin's fixtures reach tests that never import it."""
+    path = "tests/plugins/db.py"
+    tiers = _tiers(
+        inferred=[
+            _inferred(path, path, "changed-test"),
+            _inferred(path, "tests/test_x.py", "import-graph"),
+        ]
+    )
+    tiers["helper_importers"] = {path: ["tests/test_x.py"]}
+    assert not _select([path], tiers).run_all
+    sel = _select([path], tiers, plugin_loader="tests/conftest.py")
+    assert sel.run_all
+    assert "tests/conftest.py loads pytest plugins by name" in sel.reasons[0]
+    route = _tiers(
+        inferred=[
+            _inferred("src/a.py", path, "import-graph"),
+            _inferred("src/a.py", "tests/test_x.py", "import-graph"),
+        ]
+    )
+    route["helper_importers"] = {path: ["tests/test_x.py"]}
+    reached = _select(["src/a.py"], route, plugin_loader="tests/conftest.py")
+    assert reached.run_all
+    assert reached.reasons[0].startswith("src/a.py is reached through a test helper:")
+
+
+def test_a_test_the_graph_cannot_see_into_runs_with_every_subset() -> None:
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "import-graph")])
+    sel = _select(["src/a.py"], tiers, unplaced_tests=["tests/test_cli.py"])
+    assert not sel.run_all
+    assert sel.tests == ("tests/test_a.py", "tests/test_cli.py")
+    assert (
+        "1 test file(s) the graph cannot see into run with every selection "
+        "(e.g. tests/test_cli.py)." in sel.reasons
+    )
+    # Documentation alone still needs no test.
+    assert _select(["docs/guide.md"], unplaced_tests=["tests/test_cli.py"]).tests == ()
+
+
+def test_pytest_is_not_given_production_modules_outside_testpaths() -> None:
+    """``core/test_paths.py`` is test-shaped, but a bare pytest never collects it."""
+    tests = ("tests/test_a.py", "src/pkg/test_paths.py", "src/pkg/tests/test_b.py")
+    sel = Selection(run_all=False, reasons=(), tests=tests, pytest_testpaths=("tests",))
+    assert runner_args(sel, "pytest") == ["tests/test_a.py", "src/pkg/tests/test_b.py"]
+    assert runner_args(Selection(run_all=False, reasons=(), tests=tests), "pytest") == list(tests)
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        (
+            {"pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["tests", "./it/"]\n'},
+            ("tests", "it"),
+        ),
+        (
+            {"setup.cfg": "[tool:pytest]\ntestpaths = tests\n    integration\n"},
+            ("tests", "integration"),
+        ),
+        # pytest.ini wins even with no section, over a pyproject that has one.
+        (
+            {"pytest.ini": "", "pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["t"]\n'},
+            (),
+        ),
+        ({"pyproject.toml": "not toml ["}, ()),
+        ({}, ()),
+    ],
+)
+def test_pytest_testpaths_reads_the_config_pytest_reads(files, expected) -> None:
+    assert pytest_testpaths(files.get) == expected

@@ -13,10 +13,12 @@ is chosen when any of these hold:
    a path listed in ``tests.full_run_on``;
 3. a changed or deleted file sits in a test tree but is not code (data, a
    snapshot, a golden file), or is a helper module no test imports;
-4. a changed file is neither code the index knows nor documentation;
+4. a changed file is neither code the index knows nor documentation, or is
+   documentation some code names (a test may read it);
 5. a changed code file has no known test, only a filename guess names one, or
-   a route to it passes through a test helper no test imports (its users are
-   unknown);
+   a route to it passes through a test helper no test imports, or any Python
+   test helper while a conftest or pytest config loads plugins by name (its
+   users are unknown);
 6. the index is missing, was built before other files changed, disagrees with
    itself about its commit, or its graph could not be read;
 7. the per-test map hit its stored row cap;
@@ -25,13 +27,15 @@ is chosen when any of these hold:
 
 Otherwise the subset is the covering tests, the tests the graph shows reaching
 the changed files (a changed test, the call graph, the import graph) and
-``tests.always_run``. A test package's ``__init__.py`` or a ``conftest.py``
+``tests.always_run``, plus every test the graph cannot see into (not indexed,
+or with no resolved edge). A test package's ``__init__.py`` or a ``conftest.py``
 (changed, deleted, or on a route to a changed file) stands for every test under
 its directory. A helper module tests import stands for the tests that import
 it, directly or through other helpers (basis ``helper-importers``), which are the files that run it: Python runs the package file
 for each module in it, and pytest loads a conftest for each test at or below
 it. Only documentation (``docs/`` and the root README,
-CHANGELOG, LICENSE and the like) is skipped without a test.
+CHANGELOG, LICENSE and the like, never code) that no code names is skipped
+without a test.
 
 :func:`runner_args` renders a selection as arguments for one test runner; a
 full run renders as the :data:`RUN_ALL` sentinel. pytest and go reject it as a
@@ -41,9 +45,13 @@ a pipeline must branch on the run-all flag rather than rely on the sentinel.
 
 from __future__ import annotations
 
+import configparser
+import re
 import shlex
-from collections.abc import Collection, Iterable, Mapping
+import tomllib
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -152,6 +160,9 @@ _ROOT_META = (
     "code_of_conduct",
     "security",
 )
+# A root file only reads as project meta with no extension or a prose one:
+# ``history.json`` or ``changes.yaml`` is data a test may load.
+_DOC_SUFFIXES = frozenset({"", ".md", ".markdown", ".rst", ".txt", ".adoc"})
 
 # Extensions a test runner collects tests from; anything else in a test tree
 # (data, snapshots, golden files) is read by tests, not run.
@@ -232,6 +243,7 @@ class Selection:
     always_run: tuple[str, ...] = ()
     skipped_files: tuple[str, ...] = ()
     basis: Mapping[str, str] = field(default_factory=dict)
+    pytest_testpaths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -247,11 +259,69 @@ class Selection:
 
 
 def is_documentation(path: str) -> bool:
-    """``docs/**`` or a root-level README, CHANGELOG, LICENSE and the like."""
+    """``docs/**`` or a root-level README, CHANGELOG, LICENSE and the like.
+
+    Never code: a ``docs/conf.py``, an example a test imports, or a root
+    ``history.py`` is a module like any other, so the graph decides it.
+    """
+    if is_code_file(path):
+        return False
     if _DOCS_SPEC.match_file(path):
         return True
     p = PurePosixPath(path)
-    return len(p.parts) == 1 and p.name.lower().startswith(_ROOT_META)
+    return (
+        len(p.parts) == 1
+        and p.suffix.lower() in _DOC_SUFFIXES
+        and p.name.lower().startswith(_ROOT_META)
+    )
+
+
+# pytest config a doctest glob or a plugin can be declared in.
+_PYTEST_CONFIGS = frozenset({"pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini"})
+# ``pytest_plugins = [...]`` or ``-p name`` (not ``-p no:name``, which disables one).
+_PLUGIN_DECLARATION = re.compile(r"\bpytest_plugins\b|(?:^|[\s\"'=])-p\s*(?!no:)[A-Za-z_]")
+
+
+def is_scan_source(path: str) -> bool:
+    """Code or pytest config: the files :func:`doc_readers` and :func:`plugin_loader` read."""
+    name = PurePosixPath(path).name
+    return is_code_file(path) or name in _PYTEST_CONFIGS
+
+
+def doc_readers(docs: Collection[str], sources: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """``{doc: a file naming it}`` for each of *docs* some code or config names.
+
+    A test that reads a doc names it (``ROOT / "README.md"``), and a
+    ``--doctest-glob`` turns every doc into a test, so either means the doc's
+    tests are unknown. Ceiling: a test that globs a directory names no file.
+    """
+    names = {doc: PurePosixPath(doc).name for doc in docs}
+    out: dict[str, str] = {}
+    for path, text in sources:
+        # Config only for the glob, code only for names: pyproject's
+        # ``readme = "README.md"`` is packaging, not a test.
+        if not is_code_file(path):
+            if "doctest-glob" in text:
+                return {doc: path for doc in docs}
+            continue
+        for doc, name in names.items():
+            if doc not in out and name in text:
+                out[doc] = path
+    return out
+
+
+def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
+    """The first conftest or pytest config that loads a plugin module by name.
+
+    Such a plugin's fixtures reach tests that never import it, so while one is
+    declared, a test helper's importers are not all of its users.
+    """
+    for path, text in sources:
+        name = PurePosixPath(path).name
+        pytest_file = name == "conftest.py" or name in _PYTEST_CONFIGS
+        if pytest_file and _PLUGIN_DECLARATION.search(text):
+            return path
+    return None
 
 
 _PACKAGE_INIT_REASON = "every import of the package runs it, and those are not all tracked"
@@ -325,7 +395,10 @@ class SelectionInput:
     tiers name that the checkout does not have; *go_test_dirs* the directories
     holding ``_test.go`` files; *known_tests* every runnable test in the
     checkout, which a test package's ``__init__.py`` or a ``conftest.py``
-    expands to.
+    expands to. *doc_readers* maps a changed doc to a file naming it
+    (:func:`doc_readers`); *plugin_loader* is a file loading pytest plugins by
+    name (:func:`plugin_loader`); *unplaced_tests* are tests the graph cannot
+    see into (not indexed, or with no resolved edge), which every subset runs.
     """
 
     changed: Collection[str]
@@ -342,6 +415,10 @@ class SelectionInput:
     missing: Collection[str] = ()
     go_test_dirs: Collection[str] = ()
     known_tests: Collection[str] = ()
+    doc_readers: Mapping[str, str] = field(default_factory=dict)
+    plugin_loader: str | None = None
+    unplaced_tests: Collection[str] = ()
+    pytest_testpaths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -358,7 +435,7 @@ def select_tests(inp: SelectionInput) -> Selection:
     """Decide what a change must run (see the module docstring for the rules)."""
     deleted = set(inp.deleted)
     paths = sorted(set(inp.changed) | deleted)
-    triage = _triage(paths, inp.config)
+    triage = _triage(paths, inp.config, inp.doc_readers)
     run_all = [*_empty_change_reasons(paths, inp.label), *triage.run_all]
     run_all += _index_reasons(inp, has_code=bool(triage.code))
 
@@ -368,25 +445,38 @@ def select_tests(inp: SelectionInput) -> Selection:
         run_all += file_reasons
     basis = {**triage.basis, **{path: per_file[path][1] for path in triage.code}}
 
-    tests, test_files = _runnable([t for path in triage.code for t in per_file[path][0]])
+    # The graph cannot say what an unplaced test reaches, so it always runs.
+    unplaced = [(t, t) for t in inp.unplaced_tests] if triage.code else []
+    tests, test_files = _runnable(
+        [*(t for path in triage.code for t in per_file[path][0]), *unplaced]
+    )
     return Selection(
         run_all=bool(run_all),
-        reasons=tuple(run_all + _notes(inp, triage.skipped)),
+        reasons=tuple(run_all + _notes(inp, triage.skipped, bool(unplaced))),
         tests=tests,
         test_files=test_files,
         packages=_go_packages(triage.code, deleted, inp.go_test_dirs),
         always_run=inp.config.always_run,
         skipped_files=tuple(triage.skipped),
         basis=basis,
+        pytest_testpaths=inp.pytest_testpaths,
     )
 
 
-def _triage(paths: list[str], config: TestSelectionConfig) -> _Triage:
+def _triage(
+    paths: list[str], config: TestSelectionConfig, doc_readers: Mapping[str, str]
+) -> _Triage:
     """Full-run triggers, documentation and test-tree data first; code for the tiers."""
     out = _Triage()
     for path in paths:
         if why := full_run_reason(path, config.full_run_on):
             out.run_all.append(f"{path} changed: {why}.")
+            out.basis[path] = "full-run"
+        elif is_documentation(path) and (reader := doc_readers.get(path)):
+            out.run_all.append(
+                f"{path} is named by {reader}, so a test may read it; the tests "
+                "that do are not tracked."
+            )
             out.basis[path] = "full-run"
         elif is_documentation(path):
             out.skipped.append(path)
@@ -429,9 +519,14 @@ def _index_reasons(inp: SelectionInput, *, has_code: bool) -> list[str]:
     return out
 
 
-def _notes(inp: SelectionInput, skipped: list[str]) -> list[str]:
+def _notes(inp: SelectionInput, skipped: list[str], unplaced: bool) -> list[str]:
     """Reasons that explain the selection without forcing a full run."""
     out = []
+    if unplaced:
+        out.append(
+            f"{len(inp.unplaced_tests)} test file(s) the graph cannot see into run with "
+            f"every selection (e.g. {sorted(inp.unplaced_tests)[0]})."
+        )
     if not inp.map_current and inp.tiers.get("covered"):
         out.append(
             "The per-test map was measured at another commit, so covering tests "
@@ -487,6 +582,7 @@ class _Evidence:
     missing: frozenset[str]
     deleted: frozenset[str]
     known_tests: tuple[str, ...]
+    plugin_loader: str | None
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -505,6 +601,7 @@ class _Evidence:
             missing=frozenset(inp.missing),
             deleted=frozenset(deleted),
             known_tests=tuple(inp.known_tests),
+            plugin_loader=inp.plugin_loader,
         )
 
     def found(self, path: str) -> list[_TestRef]:
@@ -586,6 +683,8 @@ def _expand_scopes(tests: list[_TestRef], scopes: set[str], ev: _Evidence) -> li
 
 def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
     """A changed helper stands for its importers; one no test imports is unknown."""
+    if plugin := _plugin_reason(path, ev):
+        return [plugin]
     if ev.importers.get(path):
         return []
     return [
@@ -594,12 +693,25 @@ def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
     ]
 
 
+def _plugin_reason(helper: str, ev: _Evidence) -> str | None:
+    """A Python helper may be a plugin, whose fixtures reach tests that never import it."""
+    if not (ev.plugin_loader and helper.endswith(_PYTHON)):
+        return None
+    return (
+        f"{helper} is a test helper and {ev.plugin_loader} loads pytest plugins by "
+        "name, so tests that use its fixtures without an import are not tracked."
+    )
+
+
 def _helper_route_reasons(path: str, helpers: list[str], ev: _Evidence) -> list[str]:
     """A helper on a route stands for its importers, which the walk adds beside it.
 
     One no test imports is used some other way (a fixture, a plugin), so its
     users are unknown.
     """
+    plugins = [r for h in helpers if (r := _plugin_reason(h, ev))]
+    if plugins:
+        return [f"{path} is reached through a test helper: {plugins[0]}"]
     unimported = [h for h in helpers if not ev.importers.get(h)]
     if not unimported:
         return []
@@ -709,7 +821,67 @@ def resolve_runner(selection: Selection, runner: str) -> str:
 
 
 def _pytest_args(selection: Selection) -> list[str]:
-    return [t for t in selection.tests if t.split("::", 1)[0].endswith(_PYTHON)]
+    roots = selection.pytest_testpaths
+    return [
+        t
+        for t in selection.tests
+        if (f := t.split("::", 1)[0]).endswith(_PYTHON) and _pytest_collects(f, roots)
+    ]
+
+
+def _pytest_collects(path: str, testpaths: tuple[str, ...]) -> bool:
+    """Whether a bare ``pytest`` would run *path*, so passing it adds nothing new.
+
+    A test-shaped module outside ``testpaths`` and outside any test tree is
+    production code (``core/test_paths.py``) that pytest would fail to collect;
+    a full run never runs it, so neither does a subset.
+    """
+    p = PurePosixPath(path)
+    # A neutral file name asks about the directory alone: in a test tree, keep it.
+    if not testpaths or is_test_related_path(str(p.parent / "__init__.py")):
+        return True
+    candidates = [path, *(str(parent) for parent in p.parents)]
+    return any(fnmatchcase(c, root) for root in testpaths for c in candidates)
+
+
+# Where pytest reads ``testpaths`` from, in its own order: the first file that
+# holds the section wins, and a ``pytest.ini`` wins even without one.
+_PYTEST_SECTIONS = (
+    ("pytest.ini", "pytest"),
+    ("pyproject.toml", None),
+    ("tox.ini", "pytest"),
+    ("setup.cfg", "tool:pytest"),
+)
+
+
+def pytest_testpaths(read: Callable[[str], str | None]) -> tuple[str, ...]:
+    """``testpaths`` from the root pytest config (*read* returns a file's text or None).
+
+    ``()`` when unset or unreadable, which filters nothing.
+    """
+    for name, section in _PYTEST_SECTIONS:
+        if (text := read(name)) is None:
+            continue
+        try:
+            value = _testpaths_value(text, section, always=name == "pytest.ini")
+        except (tomllib.TOMLDecodeError, configparser.Error):
+            return ()
+        if value is not None:
+            paths = value.split() if isinstance(value, str) else value
+            return tuple(str(v).strip("/").removeprefix("./") or "." for v in paths)
+    return ()
+
+
+def _testpaths_value(text: str, section: str | None, *, always: bool) -> Any:
+    """The raw ``testpaths`` of one config, ``None`` when it has no pytest section."""
+    if section is None:
+        block = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
+        return None if block is None else block.get("testpaths", ())
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read_string(text)
+    if not parser.has_section(section):
+        return "" if always else None
+    return parser.get(section, "testpaths", fallback="")
 
 
 def _go_args(selection: Selection) -> list[str]:

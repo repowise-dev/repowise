@@ -236,6 +236,41 @@ def test_a_changed_file_in_the_test_tree_that_is_not_a_test_runs_everything(repo
     assert "tests/data/users.json is in a test tree but is not code" in _err(result)
 
 
+def _land_on_main(repo, files: dict[str, str]) -> None:
+    """Commit *files* on main, re-index there, and rebase the change onto it."""
+    _git(repo, "switch", "-q", "main")
+    _write(repo, files)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main moves")
+    (repo / ".repowise" / "wiki.db").unlink()
+    asyncio.run(_index(repo, _git(repo, "rev-parse", "HEAD")))
+    _git(repo, "switch", "-q", "feat")
+    _git(repo, "rebase", "-q", "main")
+
+
+def test_a_doc_a_test_reads_runs_everything(repo) -> None:
+    _land_on_main(repo, {"tests/test_readme.py": 'README = "README.md"\n'})
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "README.md is named by tests/test_readme.py, so a test may read it" in _err(result)
+
+
+def test_tests_the_graph_cannot_see_run_and_production_modules_do_not(repo) -> None:
+    # Neither file is in the index; src/test_util.py is outside testpaths.
+    _land_on_main(
+        repo,
+        {
+            "tests/test_cli.py": "def test_cli():\n    pass\n",
+            "src/test_util.py": "def helper():\n    pass\n",
+            "pytest.ini": "[pytest]\ntestpaths = tests\n",
+        },
+    )
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py tests/test_cli.py\n"
+    assert "2 test file(s) the graph cannot see into" in _err(result)
+
+
 def test_a_changed_test_package_init_selects_the_tests_under_it(repo) -> None:
     _write(repo, {"tests/__init__.py": "# package\n"})
     _git(repo, "add", "-A")

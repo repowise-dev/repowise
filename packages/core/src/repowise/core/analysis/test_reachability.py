@@ -402,6 +402,33 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     return {row[0] for row in res.all()}
 
 
+async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
+    """Test files with a resolved dependency edge into a non-test file of the repository.
+
+    Only these can be found by walking back from a changed file; a test with
+    none (every import unresolved, or it only runs a subprocess) is invisible.
+    An edge into test material (a conftest, a helper) or a third-party module
+    (``external:``) does not count: it says nothing about which of the
+    repository's files the test exercises.
+    """
+    params: dict[str, Any] = {"repo_id": repo_id, "is_test": True, "not_test": False}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT e.source_node_id FROM graph_edges e "
+            "JOIN graph_nodes s ON s.repository_id = e.repository_id "
+            "AND s.node_id = e.source_node_id "
+            "JOIN graph_nodes t ON t.repository_id = e.repository_id "
+            "AND t.node_id = e.target_node_id "
+            f"WHERE e.repository_id = :repo_id AND e.edge_type IN ({ets}) "
+            "AND s.is_test = :is_test AND t.is_test = :not_test AND t.node_type = 'file' "
+            "AND t.node_id NOT LIKE 'external:%'"
+        ),
+        params,
+    )
+    return {row[0] for row in rows}
+
+
 async def tests_reaching(
     session: AsyncSession,
     repo_id: str,

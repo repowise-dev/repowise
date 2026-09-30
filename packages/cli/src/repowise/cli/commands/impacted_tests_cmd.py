@@ -178,8 +178,21 @@ async def _collect(repo_path, change) -> dict:
         # aggregate coverage ingest resolves against).
         repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
         await _resolve_impacted(session, repo_id, _query_lines(change, measured), repo_keys, out)
+        await _place_tests(session, repo_id, out)
 
     return out
+
+
+async def _place_tests(session, repo_id: str, out: dict) -> None:
+    """Record the tests the graph can see into, which selection needs to find the rest."""
+    from repowise.core.analysis.test_reachability import placed_test_files
+
+    if out["graph_error"] is not None:
+        return
+    try:
+        out["placed_tests"] = await placed_test_files(session, repo_id)
+    except Exception as exc:
+        out["graph_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
@@ -236,6 +249,7 @@ def _empty_result(changed_files: int) -> dict:
         "indexed_commit": None,
         "index_problem": None,
         "graph_error": None,
+        "placed_tests": None,
         "helper_importers": {},
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
@@ -429,7 +443,12 @@ def _select(repo_path, change, result: dict, config):
     from repowise.core.analysis.changed_lines import index_gap
     from repowise.core.analysis.test_selection import (
         SelectionInput,
+        doc_readers,
+        is_documentation,
         is_runnable_test,
+        is_scan_source,
+        plugin_loader,
+        pytest_testpaths,
         select_tests,
     )
 
@@ -438,6 +457,10 @@ def _select(repo_path, change, result: dict, config):
     root = Path(repo_path)
     tracked = git_refs.tracked_paths(str(root))
     go_test_dirs = {str(Path(p).parent.as_posix()) for p in tracked if p.endswith("_test.go")}
+    known_tests = sorted(p for p in tracked if is_runnable_test(p))
+    placed = result["placed_tests"]
+    docs = [p for p in (*change.files, *change.deleted) if is_documentation(p)]
+    sources = [p for p in tracked if is_scan_source(p)]
     return select_tests(
         SelectionInput(
             changed=change.files,
@@ -453,9 +476,31 @@ def _select(repo_path, change, result: dict, config):
             graph_error=result["graph_error"],
             missing={f for f in named if not (root / f).is_file()},
             go_test_dirs=go_test_dirs,
-            known_tests=sorted(p for p in tracked if is_runnable_test(p)),
+            known_tests=known_tests,
+            doc_readers=doc_readers(docs, _texts(root, sources)) if docs else {},
+            plugin_loader=plugin_loader(_texts(root, sources, pytest_only=True)),
+            unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
+            pytest_testpaths=pytest_testpaths(lambda name: _text(root / name)),
         )
     )
+
+
+def _text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+
+def _texts(root: Path, paths: list[str], *, pytest_only: bool = False):
+    """``(path, text)`` for each readable file; with *pytest_only*, conftests and configs."""
+    from repowise.core.analysis.test_selection import is_code_file
+
+    for path in paths:
+        if pytest_only and is_code_file(path) and not path.endswith("conftest.py"):
+            continue
+        if (text := _text(root / path)) is not None:
+            yield path, text
 
 
 def _machine_test_ids(result: dict) -> list[str]:
