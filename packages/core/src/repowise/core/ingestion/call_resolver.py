@@ -119,7 +119,7 @@ def _is_property_accessor(sym: Any) -> bool:
 
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "go"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -813,6 +813,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             # methods, so the repository cannot declare its method: the
             # bare-name answer is disproved, not merely unevidenced.
             return from_table
+        if language == "go":
+            # A go method is declared in its receiver type's package and go has
+            # no extension methods, so a head type with no repository method,
+            # declared here or not, leaves nothing for the bare name to find.
+            return True
         if language in ("csharp", "typescript"):
             return False
         return type_name in self._known_type_names

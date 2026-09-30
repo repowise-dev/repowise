@@ -85,7 +85,7 @@
 ; Chained call: obj.Method1().Method2(args)
 (call_expression
   function: (selector_expression
-    operand: (call_expression)
+    operand: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

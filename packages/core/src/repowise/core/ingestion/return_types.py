@@ -61,6 +61,8 @@ def normalize_return_type(raw: str, language: str) -> str | None:
         value = value.removeprefix("global::").rstrip("?").strip()
     if language == "java":
         value = value.rstrip("?").strip()
+    if language == "go":
+        value = value.lstrip("*").strip()
     if language == "cpp":
         value = _CPP_PREFIX.sub("", value)
         while _CPP_SUFFIX.search(value):

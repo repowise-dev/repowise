@@ -214,8 +214,8 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
     assert after == before
 
 
-def test_only_audited_cpp_lane_is_enabled_by_default() -> None:
-    assert frozenset({"cpp"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+def test_only_audited_lanes_are_enabled_by_default() -> None:
+    assert frozenset({"cpp", "go"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
@@ -352,3 +352,83 @@ def test_java_external_chain_head_is_exempt_when_the_repo_declares_the_name(
     )
     assert len(resolved) == 1
     assert resolved[0].callee_id.endswith("::Duration::toNanos")
+
+
+def _go_packages(tmp_path: Path, files: dict[str, str]) -> dict[str, ParsedFile]:
+    parsed: dict[str, ParsedFile] = {}
+    for path, source in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        parsed.update(_parse(tmp_path, path, "go", source))
+    # Stands in for the import-resolution phase, which unit tests do not run.
+    for imp in parsed["cmd/run.go"].imports:
+        imp.resolved_file = "logging/log.go"
+    return parsed
+
+
+def _go_chain(parsed: dict[str, ParsedFile], outer: str):
+    return next(
+        c for c in parsed["cmd/run.go"].calls if c.target_name == outer and c.receiver_call
+    )
+
+
+_GO_CALLER = (
+    'package cmd\n\nimport "example.com/m/logging"\n\n'
+    "func run(e error) {\n\tlogging.Error().Err(e)\n}\n"
+)
+
+
+def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Path) -> None:
+    """`logging.Error().Err(e)` calls zerolog's `Err`, not the package's own `Err`.
+
+    The imported package declares an unrelated `Err` function, which the
+    import-scoped bare-name tier used to bind the chained call to.
+    """
+    parsed = _go_packages(
+        tmp_path,
+        {
+            "logging/log.go": (
+                'package logging\n\nimport "github.com/rs/zerolog"\n\n'
+                "func Error() *zerolog.Event { return nil }\n\n"
+                "func Err(err error) *zerolog.Event { return nil }\n"
+            ),
+            "cmd/run.go": _GO_CALLER,
+        },
+    )
+    call = _go_chain(parsed, "Err")
+    assert call.receiver_call.receiver_name == "logging"
+    imports = {"cmd/run.go": {"logging/log.go"}}
+
+    before = CallResolver(
+        parsed, imports, repo_path=str(tmp_path), return_type_chain_languages=frozenset()
+    ).resolve_file("cmd/run.go", [call])
+    after = CallResolver(parsed, imports, repo_path=str(tmp_path)).resolve_file(
+        "cmd/run.go", [call]
+    )
+
+    assert [edge.callee_id for edge in before] == ["logging/log.go::Err"]
+    assert after == []
+
+
+def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -> None:
+    """The same shape over a type the repository declares resolves to that type's method."""
+    parsed = _go_packages(
+        tmp_path,
+        {
+            "logging/log.go": (
+                "package logging\n\ntype Event struct{}\n\n"
+                "func (e *Event) Err(err error) *Event { return e }\n\n"
+                "func Error() *Event { return &Event{} }\n\n"
+                "func Err(err error) *Event { return nil }\n"
+            ),
+            "cmd/run.go": _GO_CALLER,
+        },
+    )
+    call = _go_chain(parsed, "Err")
+
+    resolved = CallResolver(
+        parsed, {"cmd/run.go": {"logging/log.go"}}, repo_path=str(tmp_path)
+    ).resolve_file("cmd/run.go", [call])
+
+    assert len(resolved) == 1
+    assert resolved[0].callee_id == "logging/log.go::Event::Err"
+    assert resolved[0].origin.startswith("return_type_")

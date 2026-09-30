@@ -180,6 +180,7 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
                 function.child_by_field_name("expression")
                 or function.child_by_field_name("object")
                 or function.child_by_field_name("argument")
+                or function.child_by_field_name("operand")
             )
 
     if target is None:
