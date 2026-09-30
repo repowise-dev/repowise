@@ -33,7 +33,7 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.analysis.test_selection import expand_test_scopes
-from repowise.core.test_paths import is_test_support_path, paired_test_names
+from repowise.core.test_paths import is_test_related_path, is_test_support_path, paired_test_names
 
 from .models import RefactoringSuggestion
 
@@ -858,9 +858,11 @@ def build_recommendations(
 
 
 def canonical_order(recommendations: Sequence[Recommendation]) -> list[Recommendation]:
+    """Rank order, production files first so a test plan never leads the list."""
     return sorted(
         recommendations,
         key=lambda recommendation: (
+            is_test_related_path(recommendation.suggestion.file_path),
             -recommendation.rank_score,
             recommendation.suggestion.refactoring_type,
             recommendation.suggestion.file_path,

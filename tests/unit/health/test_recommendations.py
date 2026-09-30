@@ -111,6 +111,16 @@ def test_default_order_is_deterministic() -> None:
     assert forward == reverse == ["A", "B", "C"]
 
 
+def test_a_test_file_plan_never_leads_the_canonical_order() -> None:
+    plans = [
+        _plan("helper", file_path="tests/test_core.py", impact=9.0),
+        _plan("worker", impact=1.0),
+    ]
+    ranked = build_recommendations(plans)
+    assert [item.suggestion.target_symbol for item in ranked] == ["worker", "helper"]
+    assert ranked[1].rank_score > ranked[0].rank_score
+
+
 def test_legacy_persisted_row_rehydrates_without_phase3_fields() -> None:
     suggestion = rehydrate_suggestion(
         {

@@ -653,6 +653,7 @@ async def test_an_unknown_opportunity_id_says_which_kind_of_unknown(client, app)
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("dry_violation_shown")
 async def test_each_step_keeps_its_own_validation_profile(client, app):
     """Validation must be keyed by plan, not by position.
 
@@ -1076,3 +1077,81 @@ def test_the_diversified_queue_never_gives_a_zero_credit_group_a_head_slot():
     assert order[:3] != [0, 1, 2]  # still interleaves the credited work
     assert sorted(order[:3]) == [0, 1, 2]
     assert order[3:] == [3, 4]
+
+
+# ---------------------------------------------------------------------------
+# The finding registry and test files
+# ---------------------------------------------------------------------------
+
+
+def _clone_plan(path: str, symbol: str) -> dict[str, Any]:
+    """A cross-file, co-changed clone: a step when its biomarker is shown."""
+    return _plan(
+        path,
+        symbol,
+        refactoring_type="extract_helper",
+        evidence={"is_intra_file": False, "co_change_count": 9},
+        impact_delta=4.0,
+        source_biomarker="dry_violation",
+    )
+
+
+@pytest.mark.asyncio
+async def test_withheld_plans_reach_no_list_queue_or_lead(client, app):
+    repo_id = await _repo(client)
+    plans = [_clone_plan(f"dup{i}/m{i}.py", f"c{i}") for i in range(6)]
+    plans.append(_plan("svc/core.py", "work", impact_delta=0.5))
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(session, repo_id, plans)
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        # Stored all the same: the registry decides visibility, not persistence.
+        assert len(await crud.get_refactoring_suggestions(session, repo_id)) == 1
+        assert await crud.count_refactoring_suggestions(session, repo_id) == 1
+        await session.commit()
+
+    queue = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert [item["file_path"] for item in queue["items"]] == ["svc/core.py"]
+    targets = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
+    assert [plan["file_path"] for plan in targets["plans"]] == ["svc/core.py"]
+    get_health = await _mcp(app)
+    assert (await get_health())["refactoring_directive"]["fix_first"] == "svc/core.py"
+
+
+@pytest.mark.asyncio
+async def test_a_test_file_is_never_the_lead_or_ahead_of_production(client, app):
+    repo_id = await _repo(client)
+    plans = [
+        _plan("tests/test_core.py", "helper", impact_delta=9.0),
+        _plan("svc/a.py", "a", impact_delta=0.5),
+        _plan("svc/b.py", "b", impact_delta=0.4),
+    ]
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(session, repo_id, plans)
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+
+    for view in ("diversified", "canonical"):
+        items = (
+            await client.get(
+                f"/api/repos/{repo_id}/refactoring/opportunities", params={"view": view}
+            )
+        ).json()["items"]
+        assert [item["file_path"] for item in items][-1] == "tests/test_core.py"
+    get_health = await _mcp(app)
+    assert (await get_health())["refactoring_directive"]["fix_first"] == "svc/a.py"
+
+
+@pytest.mark.asyncio
+async def test_the_directive_names_no_test_file_when_only_tests_have_work(client, app):
+    repo_id = await _repo(client)
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(
+            session, repo_id, [_plan("tests/test_core.py", "helper")]
+        )
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+    get_health = await _mcp(app)
+    directive = (await get_health())["refactoring_directive"]
+    assert directive["status"] == "clear"
+    assert directive["reason"] == "only_test_file_opportunities"
+    assert directive["opportunities_total"] == 1

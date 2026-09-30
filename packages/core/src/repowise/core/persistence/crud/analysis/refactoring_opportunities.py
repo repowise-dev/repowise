@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....test_paths import is_test_related_path
 from ...models import (
     HealthFinding,
     RefactoringOpportunity,
@@ -87,24 +88,34 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
     Only opportunities that recover health are interleaved. The rest (rank
     order already puts them last) follow in rank order, so a zero-credit cycle
     never takes a head slot from real work.
+
+    Test files are round-robined apart and queue after every production file,
+    as they rank, so the lead is never a test.
     """
     from ....analysis.health.refactoring.opportunity_rank import has_credit
 
-    credited = sum(1 for item in opportunities if has_credit(item))
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    for position, item in enumerate(opportunities[:credited]):
-        parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
-        area = "/".join(parent.split("/")[:2])
-        groups.setdefault(
-            (item.lead_biomarker or "", item.lead_refactoring_type, area), []
-        ).append(position)
-    ordered_groups = sorted(groups.values(), key=lambda members: members[0])
     order: list[int] = []
-    for round_index in range(max((len(m) for m in ordered_groups), default=0)):
-        for members in ordered_groups:
-            if round_index < len(members):
-                order.append(members[round_index])
-    return order + list(range(credited, len(opportunities)))
+    for is_test in (False, True):
+        groups: dict[tuple[str, str, str], list[int]] = {}
+        uncredited: list[int] = []
+        for position, item in enumerate(opportunities):
+            if is_test_related_path(item.file_path) is not is_test:
+                continue
+            if not has_credit(item):
+                uncredited.append(position)
+                continue
+            parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
+            area = "/".join(parent.split("/")[:2])
+            groups.setdefault(
+                (item.lead_biomarker or "", item.lead_refactoring_type, area), []
+            ).append(position)
+        ordered_groups = sorted(groups.values(), key=lambda members: members[0])
+        for round_index in range(max((len(m) for m in ordered_groups), default=0)):
+            for members in ordered_groups:
+                if round_index < len(members):
+                    order.append(members[round_index])
+        order.extend(uncredited)
+    return order
 
 
 def _finding_ids_by_file(findings: list[HealthFinding]) -> dict[str, dict[str, list[str]]]:
@@ -376,8 +387,15 @@ async def finalize_refactoring_opportunities(
         analyzed_commit=analyzed_commit,
     )
 
-    lead_rank = queue_order[0] if queue_order else None
-    lead = opportunities[lead_rank] if lead_rank is not None else None
+    # Never a test file: with only tests left there is no lead to name.
+    lead = next(
+        (
+            opportunities[rank]
+            for rank in queue_order
+            if not is_test_related_path(opportunities[rank].file_path)
+        ),
+        None,
+    )
     lead_details = None
     if lead is not None:
         lead_details = {

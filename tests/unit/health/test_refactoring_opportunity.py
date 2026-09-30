@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from repowise.core.analysis.health.models import primary_biomarker_by_file
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.opportunity import (
     STEP_ORDER,
@@ -115,6 +116,7 @@ def test_only_cross_file_co_changed_clones_earn_a_step(
     assert is_standalone_clone(clone(intra=intra, co_change=co_change)) is standalone
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_demoted_clones_become_evidence_on_the_file_opportunity() -> None:
     rows = [plan("extract_method"), clone(intra=True, co_change=0)]
     opportunity = compose_opportunities(rows)[0]
@@ -123,10 +125,12 @@ def test_demoted_clones_become_evidence_on_the_file_opportunity() -> None:
     assert opportunity.evidence[0].summary["is_intra_file"] is True
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_a_file_with_only_demoted_clones_publishes_nothing() -> None:
     assert compose_opportunities([clone(intra=True, co_change=0)]) == []
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_a_high_signal_clone_is_a_step_not_evidence() -> None:
     opportunity = compose_opportunities([clone(intra=False, co_change=7)])[0]
     assert opportunity.step_count == 1
@@ -138,6 +142,7 @@ def test_a_high_signal_clone_is_a_step_not_evidence() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_structural_steps_precede_extractions() -> None:
     rows = [plan("extract_method"), clone(intra=False, co_change=5), split()]
     steps = compose_opportunities(rows)[0].steps
@@ -215,6 +220,7 @@ def test_a_purely_structural_file_leads_with_its_structure() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_blast_radius_is_charged_once_over_the_union() -> None:
     shared = {"files": ["svc/billing.py"], "file_count": 1}
     one = compose_opportunities([clone(intra=False, co_change=4, blast_radius=shared)])[0]
@@ -244,6 +250,7 @@ def test_mechanical_and_judgment_steps_are_counted_separately() -> None:
     assert opportunity.step_count == 2
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_the_stored_step_count_is_the_stored_steps() -> None:
     """The row's ``step_count`` and the details it ships with describe one list.
 
@@ -279,6 +286,7 @@ def test_the_stored_step_count_is_the_stored_steps() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_a_step_set_with_no_benefit_cannot_outrank_one_that_recovers_health() -> None:
     barren = compose_opportunities([clone(intra=False, co_change=4)])[0]
     real = compose_opportunities([plan("extract_method", file_path="svc/billing.py")])[0]
@@ -336,6 +344,7 @@ def test_the_id_changes_when_the_work_changes() -> None:
     assert one.opportunity_id != two.opportunity_id
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_evidence_does_not_rename_the_work() -> None:
     bare = compose_opportunities([plan("extract_method")])[0]
     witnessed = compose_opportunities([plan("extract_method"), clone(intra=True, co_change=0)])[0]
@@ -433,6 +442,7 @@ def block(name: str, **kwargs) -> RefactoringSuggestion:
     )
 
 
+@pytest.mark.usefixtures("dry_violation_shown")
 def test_a_finding_several_steps_answer_is_recovered_once() -> None:
     # Two cross-file, co-changed clone blocks both overlap one file-level
     # dry_violation finding: the file recovers it once, at the larger claim.
@@ -470,3 +480,59 @@ def test_work_that_recovers_health_ranks_ahead_of_zero_credit_work():
     )
     ordered = sorted([cycle, small, split], key=rank_sort_key)
     assert [o.opportunity_id for o in ordered] == ["o2", "o1", "o3"]
+
+
+# --------------------------------------------------------------------------
+# finding registry and test files
+# --------------------------------------------------------------------------
+
+
+def test_a_withheld_biomarker_is_neither_a_step_nor_evidence() -> None:
+    rows = [plan("extract_method"), clone(intra=False, co_change=7), clone(intra=True, co_change=0)]
+    (opportunity,) = compose_opportunities(rows)
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert opportunity.evidence == ()
+
+
+def test_a_file_whose_plans_are_all_withheld_publishes_nothing() -> None:
+    assert compose_opportunities([clone(intra=False, co_change=7)]) == []
+
+
+def test_a_withheld_plan_does_not_rename_the_shown_work() -> None:
+    shown = [plan("extract_method")]
+    elsewhere = clone(intra=False, co_change=7, file_path="svc/billing.py")
+    (alone,) = compose_opportunities(shown)
+    (beside,) = compose_opportunities([*shown, elsewhere])
+    assert beside.opportunity_id == alone.opportunity_id
+
+
+def test_a_withheld_finding_never_leads_a_file() -> None:
+    from types import SimpleNamespace
+
+    findings = [
+        SimpleNamespace(
+            file_path="svc/orders.py", biomarker_type="dry_violation", health_impact=9.0
+        ),
+        SimpleNamespace(
+            file_path="svc/orders.py", biomarker_type="complex_method", health_impact=2.0
+        ),
+    ]
+    assert primary_biomarker_by_file(findings) == {"svc/orders.py": "complex_method"}
+
+
+def test_many_withheld_clones_cannot_crowd_the_ranking() -> None:
+    clones = [
+        clone(intra=False, co_change=9, file_path=f"pkg{i % 4}/m{i}.py") for i in range(40)
+    ]
+    ranked = compose_opportunities([*clones, plan("extract_method")])
+    assert [item.file_path for item in ranked] == ["svc/orders.py"]
+
+
+def test_a_test_file_ranks_after_production_whatever_its_score() -> None:
+    rows = [
+        plan("extract_method", impact_delta=5.0, file_path="tests/test_orders.py"),
+        plan("extract_method", impact_delta=0.5),
+    ]
+    ranked = compose_opportunities(rows)
+    assert [item.file_path for item in ranked] == ["svc/orders.py", "tests/test_orders.py"]
+    assert ranked[1].rank_score > ranked[0].rank_score

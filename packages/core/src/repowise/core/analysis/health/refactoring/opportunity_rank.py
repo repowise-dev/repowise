@@ -33,6 +33,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from repowise.core.test_paths import is_test_related_path
+
 from .models import CONFIDENCE_LEVELS, RefactoringSuggestion
 from .recommendations import EFFORT_COST, detector_native_benefit, priority_score
 from .recommendations import surface_confidence_risk as _surface_confidence_risk
@@ -133,15 +135,21 @@ def why_ranked(factors: dict[str, float], *, limit: int = 3) -> list[dict[str, A
     return [{"factor": name, "value": value} for name, value in ordered[:limit]]
 
 
-def rank_sort_key(opportunity: Any) -> tuple[bool, float, str, str]:
-    """A total order. The id tail is what stops ties floating between runs.
+def rank_sort_key(opportunity: Any) -> tuple[bool, bool, float, str, str]:
+    """A total order, production files first. The id tail is what stops ties
+    floating between runs.
 
-    Work that recovers health comes first. A detector-native benefit (a cycle's
-    size, a split's group count) is not health, and on this repo it outranked
-    every real extraction once those were credited proportionally; those
-    opportunities stay listed, after the credited ones, in their own order.
+    A test file never leads: it has no users, and its helpers score badly by
+    design. Tests still rank among themselves, after every production file.
+
+    Within each, work that recovers health comes first. A detector-native
+    benefit (a cycle's size, a split's group count) is not health, and on this
+    repo it outranked every real extraction once those were credited
+    proportionally; those opportunities stay listed, after the credited ones,
+    in their own order.
     """
     return (
+        is_test_related_path(opportunity.file_path),
         not has_credit(opportunity),
         -opportunity.rank_score,
         opportunity.file_path,

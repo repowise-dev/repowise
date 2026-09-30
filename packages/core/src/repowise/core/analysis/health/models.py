@@ -139,9 +139,18 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
 
 
 def primary_biomarker_by_file(findings: Iterable[Any]) -> dict[str, str]:
-    """Each file's dominant cause, keyed by path. See :func:`primary_finding`."""
+    """Each file's dominant cause, keyed by path. See :func:`primary_finding`.
+
+    A type the finding registry withholds never leads: the refactoring surfaces
+    that read this would otherwise name a finding no other surface shows.
+    """
+    from ..finding_registry import excluded_types
+
+    withheld = excluded_types()
     by_file: dict[str, list[Any]] = {}
     for finding in findings:
+        if finding.biomarker_type in withheld:
+            continue
         by_file.setdefault(finding.file_path, []).append(finding)
     leads = {path: primary_finding(items) for path, items in by_file.items()}
     return {path: lead.biomarker_type for path, lead in leads.items() if lead is not None}

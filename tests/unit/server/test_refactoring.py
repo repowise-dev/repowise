@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import event
 
@@ -13,6 +14,10 @@ from repowise.core.persistence import (
     batch_upsert_graph_nodes,
     crud,
 )
+
+# The seed covers every plan type, extract_helper included; the registry's
+# hiding of its biomarker is tested in test_refactoring_opportunities.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
 
 
 async def create_test_repo(client: AsyncClient) -> dict:

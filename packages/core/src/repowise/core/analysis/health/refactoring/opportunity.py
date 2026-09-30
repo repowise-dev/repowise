@@ -45,6 +45,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ...finding_registry import excluded_types
 from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
 from .identity import REFACTORING_MODEL_VERSION, assign_public_ids, stable_id
@@ -494,6 +495,10 @@ def compose_opportunities(
     attaches each step's ``finding_ids`` and credits a finding once when
     several steps answer it; omitting them leaves both unknown and sums every
     step's own impact.
+
+    A plan whose ``source_biomarker`` the finding registry withholds is left
+    out, as a step and as evidence; the plan row itself stays stored.
+    Ranking puts test files after production (:func:`.opportunity_rank.rank_sort_key`).
     """
     leads = primary_biomarker_by_file or {}
     findings_by_file: dict[str, list[Any]] | None = None
@@ -506,9 +511,14 @@ def compose_opportunities(
         for suggestion in (rehydrate_suggestion(row) for row in rows)
         if suggestion.refactoring_type not in EXCLUDED_TYPES
     ]
+    # Ids over the whole set, so a withheld plan cannot shift a shown plan's id.
     plan_ids = assign_public_ids(suggestions)
+    withheld = excluded_types()
     by_file: dict[str, list[tuple[RefactoringSuggestion, str]]] = {}
     for suggestion, plan_id in zip(suggestions, plan_ids, strict=True):
+        # Neither a step nor evidence: the registry hides this plan's cause.
+        if suggestion.source_biomarker in withheld:
+            continue
         by_file.setdefault(suggestion.file_path, []).append((suggestion, plan_id))
 
     composed = [

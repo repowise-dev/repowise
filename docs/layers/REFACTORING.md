@@ -127,6 +127,12 @@ page cost the whole repository.
 `performance_fix` plans are excluded by construction: the performance layer
 composes, ranks and owns the lifecycle of its own opportunities.
 
+Plans whose `source_biomarker` the finding registry
+(`analysis/finding_registry.py`) withholds are left out too, as steps and as
+evidence, and so are they from the plan lists, the attention list and the
+`get_health` directive. A withheld finding never becomes a file's
+`lead_biomarker`. The plan rows stay stored and addressable by id.
+
 **Split File ids across `init` and `update`.** A full index, an incremental
 update and a re-score from stored git metadata now build the same symbol graph
 for a file at one commit, so its `split_file` plan id is the same on every path:
@@ -150,6 +156,11 @@ tie.
 | `diversified` *(default)* | Rank order round-robined over (lead biomarker, lead refactoring type, containing area). Falls back to plain rank order when a repository has one cause in one area. |
 | `canonical` | The published rank order verbatim, ties and all. What the old default produced. |
 | `file_spread` | Asked for one row per file. An opportunity *is* one file's work, so the spread is satisfied by construction; the value resolves onto the diversified order, which is what it was reaching for. |
+
+Test files (tests and test support, by `test_paths.is_test_related_path`) rank
+after every production file, in both views and in the plan list, and never lead
+the `refactoring_directive`. When only test files have open work the directive
+is `clear` with reason `only_test_file_opportunities`.
 
 Both older values keep working. The same parameter also selects the legacy
 `refactoring_plans` list's view, where `diversified` resolves to that list's

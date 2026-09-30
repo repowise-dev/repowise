@@ -349,12 +349,19 @@ def directive_from_summary(row: Any | None) -> dict[str, Any]:
         return dict(UNAVAILABLE)
     payload = _loads_dict(field(row, "summary_json"))
     lead = payload.get("lead")
+    total = int(payload.get("opportunities_total") or 0)
     if not lead:
+        # The finalizer never leads with a test file, so opportunities
+        # without a lead are all in tests.
         return {
             "status": "clear",
-            "reason": "no_open_opportunities",
-            "detail": "No refactoring opportunity is open for this repository.",
-            "opportunities_total": int(payload.get("opportunities_total") or 0),
+            "reason": "only_test_file_opportunities" if total else "no_open_opportunities",
+            "detail": (
+                "Every open refactoring opportunity is in a test file; none leads."
+                if total
+                else "No refactoring opportunity is open for this repository."
+            ),
+            "opportunities_total": total,
         }
     addresses = lead.get("addresses_primary_problem")
     directive: dict[str, Any] = {
@@ -370,7 +377,7 @@ def directive_from_summary(row: Any | None) -> dict[str, Any]:
         "confidence": lead.get("confidence"),
         "recovers_health_points": lead.get("recoverable_health"),
         "addresses_primary_problem": addresses,
-        "opportunities_total": int(payload.get("opportunities_total") or 0),
+        "opportunities_total": total,
         "next_action": {
             "tool": "get_health",
             "arguments": {"opportunity_id": lead.get("opportunity_id")},

@@ -383,7 +383,12 @@ export interface RefactoringDirectiveLead {
  */
 export type RefactoringDirective =
   | RefactoringDirectiveAvailable
-  | { status: "clear"; reason: "no_open_opportunities"; detail: string; opportunities_total: number }
+  | {
+      status: "clear";
+      reason: "no_open_opportunities" | "only_test_file_opportunities";
+      detail: string;
+      opportunities_total: number;
+    }
   | RefactoringRollupUnavailable;
 
 export interface RefactoringDirectiveAvailable {
