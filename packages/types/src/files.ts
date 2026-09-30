@@ -36,6 +36,8 @@ export interface FileHealthFinding {
    * `defect` when an older payload omits it.
    */
   dimension?: HealthDimension;
+  /** `"unverified"` for a provisional finding type; null for a validated one. */
+  verification?: string | null;
 }
 
 export interface FileHealthMetric {

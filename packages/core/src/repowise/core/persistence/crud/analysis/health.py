@@ -26,7 +26,7 @@ from ....analysis.health.ranking import (
     sort_metrics_worst_first,
     worst_metric,
 )
-from ....analysis.health.rows import detail_map
+from ....analysis.health.rows import detail_map, split_tests
 from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
 from ....test_paths import is_test_related_path
@@ -624,6 +624,8 @@ async def get_health_summary(
             "average_health": 10.0,
             "worst_performer_path": None,
             "worst_performer_score": None,
+            "worst_test_path": None,
+            "worst_test_score": None,
             "open_findings": 0,
             "maintainability_average": None,
             "performance_average": None,
@@ -696,7 +698,11 @@ async def get_health_summary(
     # agreed with the worst-files list only because every caller happened to
     # pass an already-ranked list — a floor tie made the headline and the list
     # under it disagree the moment one did not.
-    worst = worst_metric(metrics, deduction_by_path(findings))
+    deductions = deduction_by_path(findings)
+    worst = worst_metric(metrics, deductions)
+    # The worst production file heads the page; the worst test file is named
+    # apart, under the same ranking, so a weak test is not lost behind it.
+    worst_test = worst_metric(split_tests(metrics)[1], deductions)
 
     by_dim: dict[str, int] = {}
     for finding in findings:
@@ -722,6 +728,8 @@ async def get_health_summary(
         "average_health": round(avg, 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
+        "worst_test_path": worst_test.file_path if worst_test is not None else None,
+        "worst_test_score": round(worst_test.score, 2) if worst_test is not None else None,
         # Advisory findings carry a zero health impact, so counting them
         # here would grow the headline without anything having got worse.
         "open_findings": len(findings) - by_dim.get(ADVISORY_DIMENSION, 0),

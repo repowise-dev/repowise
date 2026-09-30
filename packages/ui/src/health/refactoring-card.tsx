@@ -17,6 +17,7 @@ import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -31,6 +32,8 @@ export interface HealthWorkItemFinding {
   reason: string;
   status?: string;
   details?: BiomarkerDetailsRecord | null;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -285,6 +288,7 @@ export function HealthWorkItemCard({
                     <span className="text-xs font-medium text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}

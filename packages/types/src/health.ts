@@ -334,6 +334,9 @@ export interface HealthFinding {
    * older payload omits it.
    */
   dimension?: HealthDimension;
+  /** `"unverified"` for a provisional finding type, shown because it was asked
+   *  for by name. Null or absent for a validated type. */
+  verification?: string | null;
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
@@ -627,6 +630,10 @@ export interface HealthOverviewSummary {
   hotspot_health?: number | null;
   worst_performer_path: string | null;
   worst_performer_score: number | null;
+  /** The lowest-scoring test file, ranked apart from production files. Null
+   *  without test files; absent on an older server. */
+  worst_test_path?: string | null;
+  worst_test_score?: number | null;
   open_findings: number;
   severity_breakdown?: {
     critical: number;

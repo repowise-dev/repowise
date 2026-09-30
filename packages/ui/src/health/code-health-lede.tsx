@@ -109,6 +109,8 @@ export function CodeHealthLede({
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
   const hotspot = summary.hotspot_health;
+  const worstTestPath = summary.worst_test_path;
+  const worstTestScore = summary.worst_test_score;
   // Read off the response, not the page's control: the two disagree while a
   // request is in flight, and a figure captioned by the mode the reader just
   // asked for rather than the one it was computed under is the whole bug this
@@ -260,6 +262,25 @@ export function CodeHealthLede({
               {formatScore(hotspot)}
             </strong>
             , {describeGap(hotspot, health)}
+          </p>
+        )}
+
+        {/* Tests are ranked apart from production files, so the weakest one
+            would otherwise never be named on this page. */}
+        {worstTestPath && worstTestScore != null && (
+          <p className="mt-2.5">
+            Test files are ranked apart. The lowest scoring is{" "}
+            <span className="break-all font-mono text-[12px] text-[var(--color-text-primary)]">
+              {worstTestPath}
+            </span>{" "}
+            at{" "}
+            <strong
+              className="font-semibold"
+              style={{ color: healthBandColor(bandForScore(worstTestScore)) }}
+            >
+              {formatScore(worstTestScore)}
+            </strong>
+            .
           </p>
         )}
       </PageLede>

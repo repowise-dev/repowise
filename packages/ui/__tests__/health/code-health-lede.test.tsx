@@ -114,3 +114,21 @@ describe("CodeHealthLede — the figure and its band agree at the edge", () => {
     expect(container.textContent).not.toContain("7.0 out of 10");
   });
 });
+
+describe("CodeHealthLede: the worst test file", () => {
+  it("names the lowest-scoring test file apart from production", () => {
+    const { container } = render(
+      <CodeHealthLede
+        summary={summary({ worst_test_path: "tests/test_big.py", worst_test_score: 2.4 })}
+      />,
+    );
+    expect(screen.getByText("tests/test_big.py")).toBeInTheDocument();
+    expect(container.textContent).toContain("Test files are ranked apart.");
+    expect(container.textContent).toContain("at 2.4.");
+  });
+
+  it("says nothing about tests when there are none, or the server predates it", () => {
+    const { container } = render(<CodeHealthLede summary={summary({ worst_test_path: null })} />);
+    expect(container.textContent).not.toContain("Test files are ranked apart");
+  });
+});
