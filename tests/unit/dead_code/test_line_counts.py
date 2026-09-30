@@ -75,7 +75,7 @@ def test_file_counted_from_disk_without_source_map(tmp_path):
 
 def test_unreadable_file_is_unknown_not_guessed():
     g = _build_graph(nodes={"pkg/gone.py": _file(9), "pkg/a.py": _file(1)})
-    by_path, report = _unreachable(g, source_map={"pkg/a.py": b"x = 1\n"})
+    by_path, _ = _unreachable(g, source_map={"pkg/a.py": b"x = 1\n"})
     gone = by_path["pkg/gone.py"]
     assert gone.lines is None
     assert "Line count unavailable: source was not read" in gone.evidence
