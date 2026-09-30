@@ -73,7 +73,7 @@ The default surface is deliberately small: fewer, richer tools mean fewer round-
 
 - **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
 - **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
-- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, and `generate_refactoring_code` are eligible in either mode. `get_architecture`, `get_blast_radius`, and `get_conformance` are workspace-only. All six are off by default.
+- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `set_finding_status` are eligible in either mode. `get_architecture`, `get_blast_radius`, and `get_conformance` are workspace-only. All seven are off by default.
 
 **Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 
