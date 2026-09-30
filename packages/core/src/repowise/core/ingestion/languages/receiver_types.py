@@ -164,7 +164,8 @@ _GO_FIELD_END = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?[ \t]*(?:`[^`\n]*`?)?[ \
 # follows a comma, and the lookahead leaves the next name unconsumed. Both field
 # shapes set ``member`` to their whole match, so they reach class scope whatever
 # closed them and never type a local: a body line such as ``return err`` matches
-# too, but lies in no struct.
+# too, but lies in no struct. That holds while a Go struct span never contains a
+# function body; ``test_a_field_never_types_a_local`` guards it.
 _GO_FIELD = re.compile(
     rf"(?m)(?:^[ \t]*|,[ \t]*)(?P<member>(?P<name>{_GO_FIELD_NAME}))"
     rf"(?=(?:[ \t]*,[ \t]*{_GO_FIELD_NAME})*[ \t]+\*?(?P<type>{_GO_FIELD_NAME}){_GO_FIELD_END})"
