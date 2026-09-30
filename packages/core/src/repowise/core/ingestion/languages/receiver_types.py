@@ -803,23 +803,27 @@ def scan_ranges(text: str, language: str) -> RangeScan:
 
 
 def range_element_types(
-    spelling: str | None, language: str
+    spelling: str | None, language: str, external: frozenset[str] = frozenset()
 ) -> tuple[str | None, str | None] | None:
     """``(key type, value type)`` for ranging over *spelling*, or None if unknown.
 
-    A position holding a predeclared type (an index's ``int``) is None within
-    a known shape.
+    A position holding a predeclared type (an index's ``int``), or a type
+    qualified by an *external* package (``os.FileInfo``, whose bare name a
+    repo type may share), is None within a known shape.
     """
     if not spelling or language not in RANGE_LANGUAGES:
         return None
+
+    def element(raw: str | None) -> str | None:
+        if not raw or raw.partition(".")[0] in external:
+            return None
+        return _usable_type_name(raw, language)[0]
+
     for shape in _GO_ELEMENT_SHAPES:
         match = shape.fullmatch(spelling)
         if match is not None:
-            key, value = (match.groupdict().get(role) for role in ("key", "value"))
-            return (
-                _usable_type_name(key, language)[0] if key else None,
-                _usable_type_name(value, language)[0] if value else None,
-            )
+            groups = match.groupdict()
+            return element(groups.get("key")), element(groups.get("value"))
     return None
 
 

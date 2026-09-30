@@ -59,6 +59,14 @@ class TestElementTypes:
         """A named container, a nested one or a non-container yields nothing."""
         assert range_element_types(spelling, "go") is None
 
+    def test_an_externally_qualified_element_is_refused(self) -> None:
+        """``os.FileInfo`` bares to a name a repo type may share."""
+        assert range_element_types("[]os.FileInfo", "go", frozenset({"os"})) == (None, None)
+        assert range_element_types("[]report.Finding", "go", frozenset({"os"})) == (
+            None,
+            "Finding",
+        )
+
     def test_other_languages_have_no_table(self) -> None:
         assert range_element_types("[]Rule", "java") is None
 
@@ -186,6 +194,22 @@ class TestResolution:
             "\tfor _, x := range c.groups {\n\t\tx.HasAlias(\"x\")\n\t}\n}\n"
         )
         assert not _callees(tmp_path, body) & {"a.go::Command::HasAlias"}
+
+    def test_an_external_element_does_not_bind_a_repo_type_of_its_name(
+        self, tmp_path: Path
+    ) -> None:
+        files = {
+            "a.go": (
+                "go",
+                "package main\n\nimport (\n\t\"os\"\n\t\"path/filepath\"\n)\n\n"
+                "type FileInfo struct{}\n\nfunc (f FileInfo) IsDir() bool { return false }\n\n"
+                "func list(infos []os.FileInfo, more []filepath.FileInfo) {\n"
+                "\tfor _, i := range infos {\n\t\ti.IsDir()\n\t}\n"
+                "\tfor _, m := range more {\n\t\tm.IsDir()\n\t}\n}\n",
+            )
+        }
+        callees = {callee for _, callee, _, _ in _edges(tmp_path, files)}
+        assert "a.go::FileInfo::IsDir" not in callees
 
     def test_two_hops_are_refused(self, tmp_path: Path) -> None:
         body = (

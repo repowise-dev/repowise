@@ -706,8 +706,11 @@ class ReceiverTypingMixin:
         containers = types_in_span(scan.containers, *span)
         declared = frozenset(types)
         for clause in clauses:
-            spelling = self._ranged_container(file_path, language, clause, types, containers)
-            elements = range_element_types(spelling, language) or (None, None)
+            spelling, written_in = self._ranged_container(
+                file_path, language, clause, types, containers
+            )
+            external = self._externally_bound_names(written_in)
+            elements = range_element_types(spelling, language, external) or (None, None)
             for name, type_name in zip((clause.key, clause.value), elements, strict=True):
                 if name and name != "_" and name not in declared:
                     types[name] = type_name if types.get(name, type_name) == type_name else None
@@ -719,27 +722,30 @@ class ReceiverTypingMixin:
         clause: RangeClause,
         types: dict[str, str | None],
         containers: dict[str, str | None],
-    ) -> str | None:
-        """How the container one range clause walks is spelled, or None.
+    ) -> tuple[str | None, str]:
+        """How the container one range clause walks is spelled, and in which file.
 
-        A bare name is a container the body declares, and never one it also
+        The file is where the spelling's package qualifiers are imported. A
+        bare name is a container the body declares, and never one it also
         typed as a value. ``h.field`` and ``h.Method()`` are read off the one
         class ``h``'s type names: the field's declaration, or the method's
         declared return type. Ceiling: a method declared in another file of
         the class's package is not found, which costs the edge.
         """
         if not clause.member:
-            return None if clause.head in types else containers.get(clause.head)
+            return (None if clause.head in types else containers.get(clause.head)), file_path
         head_type = types.get(clause.head)
         class_id = None if head_type is None else self._range_class(file_path, head_type, language)
         if class_id is None:
-            return None
+            return None, file_path
+        class_file = class_id.partition("::")[0]
         if clause.call:
             sym_id = self._declares(class_id, clause.member)
             symbol = None if sym_id is None else self._symbols_by_id.get(sym_id)
-            return None if symbol is None else declared_return_type(symbol.signature or "")
-        class_file = class_id.partition("::")[0]
-        return self._container_fields_in(class_file, language).get(class_id, {}).get(clause.member)
+            spelling = None if symbol is None else declared_return_type(symbol.signature or "")
+            return spelling, class_file
+        fields = self._container_fields_in(class_file, language).get(class_id, {})
+        return fields.get(clause.member), class_file
 
     def _range_class(self, file_path: str, type_name: str, language: str) -> str | None:
         """The id of the one class *type_name* names, seen from *file_path*.
