@@ -13,8 +13,7 @@ import {
   PresentOverlay,
   buildPresentModel,
   canPresent,
-  loadPresentPages,
-  type PresentMode,
+  loadPresentSource,
 } from "@repowise-dev/ui/present";
 import {
   DEFAULT_PERSONA,
@@ -149,29 +148,27 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
-  // Present mode — an on-the-fly slide deck + guided walkthrough over the same
-  // loaded pages. Open state lives in ?present=deck|walkthrough so a specific
-  // mode is shareable. The model is derived, never generated or fetched.
+  // Present mode: a short deck derived from the same pages, never generated.
+  // Open state lives in ?present so a deck link is shareable; any value opens
+  // it, which keeps older ?present=deck links working.
   const presentable = useMemo(() => canPresent(pages), [pages]);
-  const presentParam = searchParams.get("present");
-  const presentMode: PresentMode | null =
-    presentParam === "walkthrough" ? "walkthrough" : presentParam === "deck" ? "deck" : null;
-  // A deck draws on a couple of dozen pages out of thousands, so their bodies
-  // are fetched when Present is opened rather than carried by the page list.
+  const presentOpen = searchParams.has("present");
+  // A deck draws on a handful of pages out of thousands, so their bodies are
+  // fetched when Present is opened, not carried by the page list.
   const { data: presentModel = null } = useSWR(
-    presentable && presentMode ? `present:${repoId}` : null,
+    presentable && presentOpen ? `present:${repoId}` : null,
     async () => {
-      const source = await loadPresentPages(pages, (id) =>
+      const source = await loadPresentSource(pages, (id) =>
         getPageById(id, repoId) as Promise<DocPage>,
       );
-      return source.length > 0 ? buildPresentModel(source) : null;
+      return source ? buildPresentModel(source) : null;
     },
     { revalidateOnFocus: false },
   );
   const setPresent = useCallback(
-    (mode: PresentMode | null, pageId?: string) => {
+    (open: boolean, pageId?: string) => {
       const params = new URLSearchParams(searchParams.toString());
-      if (mode) params.set("present", mode);
+      if (open) params.set("present", "deck");
       else params.delete("present");
       if (pageId) params.set("page", pageId);
       const qs = params.toString();
@@ -182,7 +179,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const openInReaderFromPresent = useCallback(
     (pageId: string) => {
       setSelectedPageId(pageId);
-      setPresent(null, pageId);
+      setPresent(false, pageId);
     },
     [setPresent],
   );
@@ -396,7 +393,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             page={selectedPage}
             repoId={repoId}
           />
-          {presentable && <PresentButton onClick={() => setPresent("deck")} />}
+          {presentable && <PresentButton onClick={() => setPresent(true)} />}
           {selectedPage && (
             <SidebarToggle
               open={sidebarOpen}
@@ -409,12 +406,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       </div>
 
       {/* Present mode overlay — full-screen, escapes the dashboard chrome */}
-      {presentMode && presentModel && (
+      {presentOpen && presentModel && (
         <PresentOverlay
           model={presentModel}
-          initialMode={presentMode}
-          onClose={() => setPresent(null)}
-          onModeChange={(m) => setPresent(m)}
+          onClose={() => setPresent(false)}
           onOpenPage={openInReaderFromPresent}
         />
       )}

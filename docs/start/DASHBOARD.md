@@ -70,34 +70,33 @@ restores when you leave.
 ### Present mode (the hidden one)
 
 Inside the docs header there is a **Present** button. It turns the wiki you
-already generated into a full-screen, keyboard-driven presentation. Nothing is
-generated for it: the deck is derived synchronously from the pages already
-loaded, so there is no LLM call, no network round trip, and no extra cost. The
-button only appears when the repo has a `repo_overview` page.
+already generated into a short, full-screen, keyboard-driven deck. Nothing is
+generated for it: the deck is built from the overview and a handful of module
+pages, fetched when you open it, so there is no LLM call and no extra cost. The
+button only appears when the repo has a `repo_overview` page. The state lives in
+the URL (`?present=deck`), so a deck link is shareable.
 
-The state lives in the URL (`?present=deck` or `?present=walkthrough`), so a
-particular mode is shareable.
+The deck tells one story in a fixed order:
 
-**Deck** is a slide view assembled in a fixed order: a title slide from the
-overview page, up to two architecture-diagram slides, up to five layer slides
-(prose on the left and the layer's mermaid diagram on the right when it has
-one), up to five module slides, a "where to start" slide built from the guided
-tour metadata, and a closing slide. Each slide carries a freshness dot and an
-"open in reader" link that drops you back into the docs view on that page.
+1. **Title**: the repository name and the overview's opening.
+2. **How it fits together**: the overview's architecture diagram, with the
+   sentence around it. A flowchart with no edges is skipped.
+3. **One slide per major part**: the largest top-level sections of the docs
+   tree (up to six, in tree order). Each shows the page's opening, its first
+   diagram beside it, and its step-named sections as a numbered list.
+4. **One flow, end to end**: a sequence diagram from those pages that no earlier
+   slide showed, when one exists.
+5. **Where to start reading**: each part's first recommended file, then the
+   guided tour's stops, grouped by why they matter. When some top-level
+   sections were left out, this slide says how many.
 
-**Walkthrough** is the guided-reading version of the same content: one step per
-guided-tour stop, each with a "why this matters" callout, a longer excerpt from
-the target page, and a reading-time estimate. A left rail tracks which steps
-you have finished and shows the total estimate. If the index has no guided tour,
-the walkthrough falls back to the deck's sections rather than showing an empty
-pane.
+Prose is cut on sentence boundaries only, and tables, lists and stat lines never
+become slide text, so older pages give a shorter deck, not a broken one. Every
+slide drawn from a page has an "Open in docs" link back to it, and a stale or
+outdated source page is marked.
 
 Keys while the overlay is open: `→` / `Space` / `PageDown` next, `←` / `PageUp`
-back, `Home` / `End` first and last, `Esc` to close. Deck and Walkthrough each
-keep their own position, so toggling between them does not lose your place.
-
-This is the fastest way to hand a repo to a new joiner: open Present, hit
-Walkthrough, and let the guided tour do the talking.
+back, `Home` / `End` first and last, `Esc` to close.
 
 ### Doc freshness
 
@@ -316,7 +315,7 @@ These appear only when repowise is running over a multi-repo workspace. See
 | Key | Does |
 |---|---|
 | `⌘K` / `Ctrl+K` | Command palette (jump to a page, file, or symbol) |
-| `→` `Space` `PageDown` | Present mode: next slide or step |
+| `→` `Space` `PageDown` | Present mode: next slide |
 | `←` `PageUp` | Present mode: previous |
 | `Home` `End` | Present mode: first / last |
 | `Esc` | Close Present mode or the open drawer |

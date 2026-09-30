@@ -1,6 +1,6 @@
 // Small, dependency-free markdown helpers for turning a wiki page into slide
-// material. All fence-aware so a `## ` or ``` inside a fenced code block is
-// never mistaken for a heading or a block boundary (same care as
+// material. All fence-aware so a `## ` or a blank line inside a fenced block is
+// never mistaken for a heading or a paragraph boundary (same care as
 // reader-persona's filter).
 
 export interface MarkdownSection {
@@ -86,33 +86,78 @@ export function extractMermaidBlocks(markdown: string): string[] {
   return blocks;
 }
 
-/** Remove fenced code and mermaid blocks (used only for word counting). */
-function stripFences(markdown: string): string {
-  return markdown.replace(/```[\s\S]*?```/g, " ");
-}
-
-export function countWords(markdown: string): number {
-  const text = stripFences(markdown).replace(/[#>*`_\-|]/g, " ");
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  return words.length;
+/** Split markdown into blank-line separated blocks, keeping fences whole. */
+export function splitBlocks(markdown: string): string[] {
+  const blocks: string[] = [];
+  let buf: string[] = [];
+  let inFence = false;
+  const flush = () => {
+    const text = buf.join("\n").trim();
+    if (text) blocks.push(text);
+    buf = [];
+  };
+  for (const line of markdown.split("\n")) {
+    if (FENCE.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") flush();
+    else buf.push(line);
+  }
+  flush();
+  return blocks;
 }
 
 /**
- * Trim prose to a slide-sized excerpt on a paragraph boundary. Keeps whole
- * paragraphs up to `maxChars`, and always returns at least the first paragraph
- * so a slide is never blank when the first block is long.
+ * Whether a block reads as explanatory prose: not a heading, list, table,
+ * fence, quote, rule, an emphasis-only footnote or a `**Label:** value` stat
+ * line, and it ends a sentence (or introduces a list with a colon).
  */
-export function clampProse(markdown: string, maxChars: number): string {
-  const trimmed = markdown.trim();
-  if (trimmed.length <= maxChars) return trimmed;
-  const paras = trimmed.split(/\n{2,}/);
-  const out: string[] = [];
-  let len = 0;
-  for (const p of paras) {
-    if (out.length > 0 && len + p.length > maxChars) break;
-    out.push(p);
-    len += p.length + 2;
-    if (len >= maxChars) break;
+export function isProse(block: string): boolean {
+  const text = block.trim();
+  if (text.length < 40) return false;
+  if (/^(#|\||>|```|---|\*\*\*|[-*+]\s|\d+[.)]\s)/.test(text)) return false;
+  if (/^\*\*[^*\n]+:\*\*/.test(text)) return false;
+  if (/^([*_])[^*_][\s\S]*\1$/.test(text)) return false;
+  return /[.!?:][)"'`*_]*$/.test(text);
+}
+
+/**
+ * Keep whole sentences up to `maxChars`. Always returns at least the first
+ * sentence, however long, so a slide never ends mid-thought.
+ */
+export function wholeSentences(paragraph: string, maxChars: number): string {
+  const text = paragraph.replace(/\s*\n\s*/g, " ").trim();
+  // A sentence ends at . ! ? followed by a space and an uppercase or markup
+  // start, so "e.g. the" and "v1.2" do not split.
+  const sentences = text.split(/(?<=[.!?][)"'`*_]*)\s+(?=[A-Z`*_("[])/);
+  let out = sentences[0] ?? "";
+  for (const s of sentences.slice(1)) {
+    if (out.length + 1 + s.length > maxChars) break;
+    out += ` ${s}`;
   }
-  return out.join("\n\n").trim();
+  return out;
+}
+
+/**
+ * The diagram type a mermaid source declares: the first word after any
+ * front matter block, `%%` comments and `%%{init}%%` directives.
+ */
+export function diagramKind(chart: string): string {
+  const body = chart.trimStart().replace(/^---\r?\n[\s\S]*?\n---[ \t]*(\r?\n|$)/, "");
+  const line = body
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l !== "" && !l.startsWith("%%"));
+  return (line?.split(/\s/, 1)[0] ?? "").toLowerCase();
+}
+
+/**
+ * Whether a diagram has anything to show. A flowchart with no edges is a row
+ * of boxes, which says less than the list it came from; every other kind is
+ * taken as drawn.
+ */
+export function isDrawable(chart: string): boolean {
+  const kind = diagramKind(chart);
+  if (kind !== "flowchart" && kind !== "graph") return true;
+  return chart
+    .split("\n")
+    .some((line) => /(--|==|-\.|~~~)/.test(line.replace(/"[^"]*"/g, "")));
 }
