@@ -342,6 +342,16 @@ half does, the reply is that file's card with `resolved_to` naming the file and
 a `note` saying which symbol was not found. The file's symbol list is where the
 correct id is, so this is a partial answer rather than a dead end.
 
+**Several targets under one budget:** each target gets an equal share of the
+response budget, and a small target's unused share passes to the others. A
+target over its share degrades in place: symbols first, then its optional
+blocks, largest first (named per target in `dropped_blocks`), then symbols down
+to one. A miss's `suggestions` and a symbol's ambiguity `candidates` are never
+shed. When even the identity cards cannot all fit, whole targets are dropped
+first so the rest keep their detail; the response then leads with
+`dropped_targets` and, when it fits, a `recovery` call: the same call narrowed
+to the dropped targets.
+
 **When to use:** Before reading or modifying code. Pass all relevant targets in one call to minimize round-trips. In workspace mode, enriched with cross-repo co-change and contract data.
 
 **Example calls:**

@@ -428,6 +428,20 @@ def test_context_projection_reports_a_target_the_tool_never_mentioned():
     assert out["not_found"] == ["typo.py"]
 
 
+def test_context_projection_keeps_per_target_reductions_and_recovery():
+    """A block dropped from one target must be as visible as a dropped target."""
+    recovery = {"tool": "get_context", "arguments": {"targets": ["b.py"]}}
+    payload = {
+        **CONTEXT_PAYLOAD,
+        "truncated": True,
+        "dropped_blocks": {"a.py": ["callers"]},
+        "recovery": recovery,
+    }
+    out = project_context(payload, ("a.py", "b.py"))
+    assert out["dropped_blocks"] == {"a.py": ["callers"]}
+    assert out["recovery"] == recovery
+
+
 def test_symbol_projection_keeps_the_body_and_the_continuation():
     """``symbol``'s payload *is* its answer, so only the envelope is dropped."""
     out = project_symbol(SYMBOL_PAYLOAD)
