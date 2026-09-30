@@ -294,7 +294,7 @@ async def _lead_with_pr_directive(
     ),
 )
 async def get_risk(
-    targets: list[str],
+    targets: list[str] | None = None,
     repo: str | None = None,
     changed_files: list[str] | None = None,
     include: list[str] | None = None,
@@ -323,7 +323,7 @@ async def get_risk(
     Include-gated blocks are projections, not omissions.
 
     Args:
-        targets: file paths to assess.
+        targets: file paths to assess; defaults to changed_files.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
         include: opt-in blocks - "graph", "churn", "scales" (units and
@@ -331,6 +331,8 @@ async def get_risk(
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
+    if not targets and not changed_files:
+        return {"error": "targets or changed_files is required", "_meta": _build_meta()}
     ignored: list[dict] = []
     include_set = {
         block
@@ -340,7 +342,7 @@ async def get_risk(
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
-    targets = filter_path_list(targets, exclude_spec)
+    targets = filter_path_list(targets or changed_files, exclude_spec)
     changed_files = filter_path_list(changed_files, exclude_spec)
     include_graph = "graph" in include_set
     evidence = await _gather_evidence(
