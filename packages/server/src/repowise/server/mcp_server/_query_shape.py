@@ -166,22 +166,33 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     """Identifier tokens carried inside a natural-language query.
 
     Without ``names``: the shape regex alone. With ``names`` (the indexed
-    symbol names), a token counts only when it names at least one of them, or
-    the last part of a dotted token does: ``executeWithTool`` and
+    symbol names), a token counts when it names at least one of them, or the
+    last part of a dotted token does: ``executeWithTool`` and
     ``client.proxyExecute`` count when indexed, ``TypeScript`` does not unless
-    a symbol carries that name. ``names`` is tested for the token, then for
-    its lowered form, so a container that also answers for each name's
-    lowered spelling gets the case-insensitive leg.
+    a symbol carries that name. A token no prose word fits
+    (``_looks_like_code_name``) counts even unindexed, so a search can say it
+    does not exist. ``names`` is tested for the token, then for its lowered
+    form, so a container that also answers for each name's lowered spelling
+    gets the case-insensitive leg.
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
-    out = []
-    for token in _WORD_CHAIN_RE.findall(query):
-        if "." not in token and not _identifier_shaped(token):
-            continue
-        if _names_symbol(token, names):
-            out.append(token)
-    return out
+    return [
+        token
+        for token in _name_tokens(query)
+        if _names_symbol(token, names) or _looks_like_code_name(token)
+    ]
+
+
+def _name_tokens(query: str) -> list[str]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [t for t in _WORD_CHAIN_RE.findall(query) if "." in t or _identifier_shaped(t)]
+
+
+def _name_lookup_keys(query: str) -> set[str]:
+    """Lowered names ``_embedded_identifiers`` may test for ``query``, so a
+    caller loads only these rows of the symbol table."""
+    return {t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query)}
 
 
 _CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
@@ -211,21 +222,28 @@ def _names_a_path(token: str, paths: list[str]) -> bool:
     return any(leaf == seg.split(".", 1)[0] for path in paths for seg in path.split("/"))
 
 
-# The label and confidence ceiling on the pages a search returns for a named
+# The label and score ceiling on the pages a search returns for a named
 # symbol that is not indexed: they answer the prose around the name at best.
 NOT_THE_NAMED_SYMBOL = "related, not the named symbol"
-_NOT_THE_NAMED_SYMBOL_CONFIDENCE = 0.45
+_NOT_THE_NAMED_SYMBOL_CEILING = 0.45
 
 
 def _mark_not_the_named_symbol(items: list[dict]) -> None:
     """Label ``items`` as related to the question, not the missing symbol, and
-    cap their ``confidence_score`` below the 0.5 an agent would trust."""
+    hold their scores under the 0.5 an agent would trust.
+
+    ``relevance_score`` (what ranks and what clients read) is scaled so the
+    best item sits at the ceiling, keeping the order; ``confidence_score`` is
+    capped where present.
+    """
+    top = max((item.get("relevance_score") or 0.0 for item in items), default=0.0)
+    scale = min(1.0, _NOT_THE_NAMED_SYMBOL_CEILING / top) if top else 1.0
     for item in items:
         item["relation"] = NOT_THE_NAMED_SYMBOL
+        if item.get("relevance_score"):
+            item["relevance_score"] = round(item["relevance_score"] * scale, 4)
         if "confidence_score" in item:
-            item["confidence_score"] = min(
-                item["confidence_score"], _NOT_THE_NAMED_SYMBOL_CONFIDENCE
-            )
+            item["confidence_score"] = min(item["confidence_score"], _NOT_THE_NAMED_SYMBOL_CEILING)
 
 
 def _identifier_candidates(query: str, mode: str, names: Container[str] | None = None) -> list[str]:

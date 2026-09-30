@@ -81,6 +81,42 @@ async def _seed_page(page_id, target_path, page_type="file_page"):
         await session.commit()
 
 
+async def _seed_symbol(name):
+    """Insert a WikiSymbol named ``name`` into the setup_mcp DB."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Page, WikiSymbol
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    async with get_session(mcp_mod._session_factory) as session:
+        rid = (await session.execute(select(Page.repository_id).limit(1))).scalar()
+        session.add(
+            WikiSymbol(
+                id=f"seed-{name}",
+                repository_id=rid,
+                file_path="src/net/client.py",
+                symbol_id=f"src/net/client.py::{name}",
+                name=name,
+                qualified_name=f"net.client.{name}",
+                kind="function",
+                signature=f"def {name}()",
+                start_line=1,
+                end_line=5,
+                visibility="public",
+                is_async=False,
+                complexity_estimate=1,
+                language="python",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("glob", ["*", "?"])
 async def test_path_search_accepts_trailing_glob(setup_mcp, glob):
@@ -930,9 +966,9 @@ class TestIdentifierGrepHint:
     async def test_camelcase_identifier_gets_hint(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
-        result = await search_codebase("how does LanguageRegistry resolve specs")
+        result = await search_codebase("how does LanguageRegistryLoader resolve specs")
         assert "grep_hint" in result
-        assert "LanguageRegistry" in result["grep_hint"]
+        assert "LanguageRegistryLoader" in result["grep_hint"]
 
     @pytest.mark.asyncio
     async def test_plain_english_query_gets_no_hint(self, setup_mcp):
@@ -1059,16 +1095,87 @@ class TestExactMatchSignal:
         ],
     )
     async def test_a_missing_code_name_returns_no_symbol(self, setup_mcp, query):
+        import repowise.server.mcp_server as mcp_mod
         from repowise.server.mcp_server import search_codebase
         from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
 
+        async def fake_search(q, limit=10):
+            return [_mk_result("file_page:src/db/models.py", "DB", "file_page", "", 0.9)]
+
+        mcp_mod._vector_store.search = fake_search
         result = await search_codebase(query)
         assert not [r for r in result["results"] if r.get("type") == "symbol"]
         assert result["exact_match"] is False
         assert "No indexed symbol is named" in result["note"]
+        if " " in query:
+            assert result["results"], "the prose query should still return its page"
         for hit in result["results"]:
             assert hit["relation"] == NOT_THE_NAMED_SYMBOL
-            assert hit.get("confidence_score", 0.0) < 0.5
+            assert hit["relevance_score"] <= 0.45
+
+    @pytest.mark.asyncio
+    async def test_pages_for_a_missing_name_are_capped_in_rank_order(self, setup_mcp):
+        # relevance_score is what hybrid pages carry and clients rank on.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(q, limit=10):
+            return [
+                _mk_result("file_page:src/db/models.py", "DB", "file_page", "", 0.9),
+                _mk_result("file_page:src/auth/service.py", "Auth", "file_page", "", 0.8),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("where is validate_trigger_nonce defined")
+        scores = [hit["relevance_score"] for hit in result["results"]]
+        assert len(scores) == 2
+        assert scores == sorted(scores, reverse=True)
+        assert scores[0] == 0.45 and scores[1] < 0.45
+
+    @pytest.mark.asyncio
+    async def test_a_missing_name_beside_an_indexed_one_is_still_named(self, setup_mcp):
+        # Exactness is per name: AuthService is indexed, AuthServiceXyz is not.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(q, limit=10):
+            return [_mk_result("file_page:src/db/models.py", "DB", "file_page", "", 0.9)]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how does AuthService and AuthServiceXyz work")
+        assert result["mode"] == "hybrid"
+        assert result["exact_match"] is False
+        assert "'AuthServiceXyz'" in result["note"]
+        symbols = [r for r in result["results"] if r.get("type") == "symbol"]
+        assert [s["name"] for s in symbols] == ["AuthService"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name, query",
+        [
+            ("proxyExecute", "how does proxyExecute retry"),
+            ("HTTPClient", "how does HTTPClient send"),
+        ],
+    )
+    async def test_an_indexed_name_routes_hybrid_through_the_symbol_table(
+        self, setup_mcp, name, query
+    ):
+        # The shape regex alone misses both; the symbol table names them.
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_symbol(name)
+        result = await search_codebase(query)
+        assert result["mode"] == "hybrid"
+        assert result["exact_match"] is True
+        assert result["results"][0]["name"] == name
+
+    @pytest.mark.asyncio
+    async def test_a_product_word_no_symbol_carries_stays_concept(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("Is TypeScript used anywhere in this repo")
+        assert result.get("mode") != "hybrid"
+        assert "exact_match" not in result
 
     @pytest.mark.asyncio
     async def test_concept_query_gets_no_signal(self, setup_mcp):

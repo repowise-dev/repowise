@@ -33,7 +33,7 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
-from repowise.server.mcp_server._query_shape import _qual_norm
+from repowise.server.mcp_server._query_shape import _name_lookup_keys, _qual_norm
 from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
@@ -184,6 +184,28 @@ async def _tombstoned_paths(session, repo_id: str, paths: set[str]) -> set[str]:
         )
     )
     return {row[0] for row in res.all()}
+
+
+async def indexed_names(contexts: list, query: str) -> set[str]:
+    """The indexed symbol names ``query`` could name, each also lowered: the
+    ``names`` container ``_embedded_identifiers`` validates against."""
+    keys = _name_lookup_keys(query)
+    names: set[str] = set()
+    if not keys:
+        return names
+    for ctx in contexts:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
+            res = await session.execute(
+                select(WikiSymbol.name)
+                .distinct()
+                .where(
+                    WikiSymbol.repository_id == repository.id,
+                    func.lower(WikiSymbol.name).in_(sorted(keys)),
+                )
+            )
+            names.update(name for (name,) in res.all() if name)
+    return names | {name.lower() for name in names}
 
 
 async def search_symbols_single(
