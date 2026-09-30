@@ -32,7 +32,7 @@ from .languages.receiver_types import (
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type, go_first_result
-from .type_names import POINTER_LIKE_MEMBERS
+from .type_names import POINTER_LIKE_MEMBERS, bare_type_name
 
 # Which symbols own a class scope, and which of them swallow one. A class span
 # contains every method body inside it, so both sets are needed to tell a field
@@ -672,7 +672,9 @@ class ReceiverTypingMixin:
             return callee_id  # a conversion, ``T(x)``
         raw = declared_return_type(symbol.signature or "")
         written = go_first_result(raw).lstrip("*") if raw else ""
-        qualifier, _, type_name = written.rpartition(".")
+        type_name = bare_type_name(written)
+        # The head is the package the callee's file imports, not a type.
+        qualifier = written.rpartition(".")[0]
         if not type_name.isidentifier() or (qualifier and not qualifier.isidentifier()):
             return None
         package = posixpath.dirname(path) if not qualifier else self._imported_dir(path, qualifier)
@@ -705,8 +707,8 @@ class ReceiverTypingMixin:
         A go method may sit in any file of its type's package, so the method
         is looked for across that package, not only the type's own file.
         """
-        type_file, _, type_name = type_id.partition("::")
-        package = posixpath.dirname(type_file)
+        type_name = self._symbols_by_id[type_id].name
+        package = posixpath.dirname(self._symbol_paths_by_id[type_id])
         found = [
             (path, sym_id)
             for path, sym_id in self._global_methods.get((type_name, call.target_name), ())
