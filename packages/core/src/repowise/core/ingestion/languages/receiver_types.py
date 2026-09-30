@@ -331,9 +331,15 @@ _TS_BINDINGS = (
     ),
 )
 _TS_TARGET_LISTS = (
-    re.compile(r"(?<![\w$.])(?:const|let|var)\s*(?P<lhs>\{[^;=]*\}|\[[^;=]*\])\s*(?:=|of\b|in\b)"),
-    # A parameter list: a function, a method, an arrow, a catch clause.
-    re.compile(r"(?P<head>[\w$]*)\s*(?P<lhs>\([^()]*\))\s*(?::[^=;{}()]*?)?\s*(?:=>|\{)"),
+    # Lazy, so a pattern ends at its own bracket, not at one lines later.
+    re.compile(
+        r"(?<![\w$.])(?:const|let|var)\s*(?P<lhs>\{[^;=]*?\}|\[[^;=]*?\])\s*(?:=|of\b|in\b)"
+    ),
+    # A parameter list: a function, a method, an arrow, a catch clause. Not
+    # one after a colon: ``cb: (x: T) => void`` is a function type.
+    re.compile(
+        r"(?<!:)(?<!:\s)(?P<head>[\w$]*)\s*(?P<lhs>\([^()]*\))\s*(?::[^=;{}()]*?)?\s*(?:=>|\{)"
+    ),
 )
 # Heads whose parenthesised part is a condition, not a parameter list.
 _TS_CONDITION_HEADS = frozenset({"if", "for", "while", "switch", "with", "return", "await"})

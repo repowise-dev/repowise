@@ -193,6 +193,16 @@ class TestBindingScan:
         assert "ZodString" not in names
         assert {"create", "params"} <= names
 
+    def test_a_function_type_parameter_is_not_a_binding(self) -> None:
+        text = "const f = (c: C, cb: (stream: S) => void): R => {\n  return stream(c, cb)\n}"
+        assert "stream" not in {n for _, n in scan_bindings(text, "typescript")}
+
+    def test_a_destructuring_pattern_ends_at_its_own_bracket(self) -> None:
+        text = "for (const [k, v] of xs) {\n  out.push(serialize(k, v))\n}\nh['x'] = 1\n"
+        bound = scan_bindings(text, "typescript")
+        assert "serialize" not in {n for _, n in bound}
+        assert {(1, "k"), (1, "v")} <= set(bound)
+
     def test_destructured_parameters_are_bindings(self) -> None:
         text = "function f({ a, b: c }: Props, [d]: T[]) {}"
         names = {n for _, n in scan_bindings(text, "typescript")}
