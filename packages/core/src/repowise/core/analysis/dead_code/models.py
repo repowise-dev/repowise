@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
+
+from .risk_factors import RISK_CAP_CONFIDENCE, SAFE_CONFIDENCE_THRESHOLD
 
 
 class DeadCodeKind(StrEnum):
@@ -63,3 +65,21 @@ class DeadCodeReport:
     #: file's stored verdict alone rather than overwriting it with a guess.
     #: A full run has metadata for everything and leaves this ``None``.
     authoritative_paths: frozenset[str] | None = None
+
+    @classmethod
+    def from_findings(
+        cls, findings: list[DeadCodeFindingData], *, hidden_below_threshold: int = 0
+    ) -> DeadCodeReport:
+        """The report over *findings*, already cut at the confidence floor."""
+        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
+        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
+        return cls(
+            repo_id="",
+            analyzed_at=datetime.now(UTC),
+            total_findings=len(findings),
+            findings=findings,
+            # Sum of the known counts: a lower bound when any count is unknown.
+            deletable_lines=sum(f.lines or 0 for f in findings if f.safe_to_delete),
+            confidence_summary={"high": high, "medium": len(findings) - high - low, "low": low},
+            hidden_below_threshold=hidden_below_threshold,
+        )

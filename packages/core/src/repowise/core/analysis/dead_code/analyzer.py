@@ -909,26 +909,8 @@ class DeadCodeAnalyzer:
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
         findings = [f for f in findings if f.confidence >= min_conf]
 
-        now = datetime.now(UTC)
-        # Sum of the known counts: a lower bound when any count is unknown.
-        deletable = sum(f.lines or 0 for f in findings if f.safe_to_delete)
-
-        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
-        medium = sum(
-            1
-            for f in findings
-            if RISK_CAP_CONFIDENCE <= f.confidence < SAFE_CONFIDENCE_THRESHOLD
-        )
-        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
-
-        return DeadCodeReport(
-            repo_id="",
-            analyzed_at=now,
-            total_findings=len(findings),
-            findings=findings,
-            deletable_lines=deletable,
-            confidence_summary={"high": high, "medium": medium, "low": low},
-            hidden_below_threshold=hidden_below_threshold,
+        return DeadCodeReport.from_findings(
+            findings, hidden_below_threshold=hidden_below_threshold
         )
 
     # ------------------------------------------------------------------
