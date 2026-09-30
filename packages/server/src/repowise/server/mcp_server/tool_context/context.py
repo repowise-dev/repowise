@@ -10,7 +10,8 @@ The split keeps the cached prompt prefix small on multi-turn agent sessions:
 ``get_context`` stays under ~2k tokens for common targets.
 
 Optional ``include`` parameter widens the response:
-  - include=["full_doc"]  → full wiki markdown content
+  - include=["full_doc"]  -> full wiki markdown content, plus the page's agent
+                            digest (questions, identifiers, git signals)
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
   - include=["ownership"] → primary owner, bus factor, contributor count
