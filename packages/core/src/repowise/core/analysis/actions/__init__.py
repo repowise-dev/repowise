@@ -1,6 +1,7 @@
 """Next actions: stored evidence turned into a short list of things to do.
 
-The fold is pure (``engine.compose_actions`` over ``facts.RepoFacts``); the
+The fold is pure (``engine.compose_actions`` over ``facts.RepoFacts``), and so
+is ``build.build_repo_facts``, which turns plain rows into those facts. The
 loader that reads the stores lives in
 ``repowise.core.persistence.crud.analysis.actions``.
 """

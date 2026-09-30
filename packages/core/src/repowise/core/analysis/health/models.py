@@ -105,6 +105,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     report the second as context.
     """
     # Deferred: ``scoring`` imports this module for its data classes.
+    from .rows import field as row_field
     from .scoring import HISTORY_CATEGORY, biomarker_category
 
     code_shape: list[Any] = []
@@ -112,7 +113,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     for f in findings:
         target = (
             history
-            if biomarker_category(getattr(f, "biomarker_type", "")) == HISTORY_CATEGORY
+            if biomarker_category(row_field(f, "biomarker_type", "")) == HISTORY_CATEGORY
             else code_shape
         )
         target.append(f)
