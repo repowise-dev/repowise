@@ -28,15 +28,20 @@ _TS_VALUE_BINDERS = frozenset(
     }
 )
 
-# Bindings that qualify an object-literal method's id: a declarator, a TS
-# class field (``name``) or a JS class field (``property``).
-_TS_OBJECT_OWNERS = frozenset(
-    {"variable_declarator", "public_field_definition", "field_definition"}
-)
+# Bindings that own an object literal, with the field holding their name: a
+# property key, a declarator, a TS class field, a JS class field.
+_TS_OBJECT_OWNER_FIELDS = {
+    "pair": "key",
+    "variable_declarator": "name",
+    "public_field_definition": "name",
+    "field_definition": "property",
+}
 
 _TS_OWNER_NAME_TYPES = frozenset(
     {"identifier", "property_identifier", "private_property_identifier"}
 )
+
+_CALLABLE_KINDS = frozenset({"function", "method"})
 
 
 def _ts_is_named_function(node: Node) -> bool:
@@ -49,38 +54,39 @@ def _ts_is_named_function(node: Node) -> bool:
     )
 
 
-def _ts_object_method_is_top_named(def_node: Node) -> bool:
-    """True for an object-literal method no named function encloses.
+def _ts_nested_object_method_owner(
+    def_node: Node, src: str, symbol_kinds: dict[str, str]
+) -> str | None:
+    """The owner of an object-literal method the callable filter would drop.
 
-    ``install(inst, { gt() {...} })`` inside an anonymous callback: ``gt`` is
-    the nearest name its calls can be attributed to, as a type checker does.
-    A method inside a named function stays a local of that function.
+    ``const Foo = make("Foo", (inst) => install(inst, { gt() {...} }))``: the
+    anonymous callback names nothing, so ``gt`` is the nearest name its calls
+    can be attributed to, as a type checker does, and ``Foo`` qualifies its id
+    so a same-named method of another object keeps a distinct one.
+
+    None when a named function encloses the method (it stays a local of that
+    function), when no callable encloses it (the filter keeps it already, under
+    its existing id), or when the nearest owner has no plain name (a string
+    key, a destructuring pattern), since an unqualified id could collide.
     """
     if def_node.type != "method_definition":
-        return False
+        return None
     parent = def_node.parent
     if parent is None or parent.type != "object":
-        return False
+        return None
+    owner: str | None = None
+    owner_seen = False
+    under_callable = False
     ancestor = parent.parent
     while ancestor is not None:
         if _ts_is_named_function(ancestor):
-            return False
-        ancestor = ancestor.parent
-    return True
-
-
-def _ts_object_method_owner(def_node: Node, src: str) -> str | None:
-    """The binding that qualifies an object-literal method's id.
-
-    ``Foo`` in ``const Foo = make({ gt() {} })``, so same-named methods of two
-    objects in one file keep distinct ids. None when nothing binds the object.
-    """
-    ancestor = def_node.parent
-    while ancestor is not None:
-        if ancestor.type in _TS_OBJECT_OWNERS:
-            name = ancestor.child_by_field_name("name") or ancestor.child_by_field_name("property")
-            if name is not None and name.type in _TS_OWNER_NAME_TYPES:
-                return node_text(name, src)
             return None
+        if not owner_seen and ancestor.type in _TS_OBJECT_OWNER_FIELDS:
+            owner_seen = True
+            name = ancestor.child_by_field_name(_TS_OBJECT_OWNER_FIELDS[ancestor.type])
+            if name is not None and name.type in _TS_OWNER_NAME_TYPES:
+                owner = node_text(name, src)
+        if symbol_kinds.get(ancestor.type) in _CALLABLE_KINDS:
+            under_callable = True
         ancestor = ancestor.parent
-    return None
+    return owner if under_callable else None

@@ -37,7 +37,7 @@ from .lang_helpers.objc import (
 )
 from .lang_helpers.pascal import _dedupe_pascal_interface_symbols, _qualified_pascal_parent
 from .lang_helpers.source_prep import prepare_objectivec_source, prepare_pascal_source
-from .lang_helpers.ts_js import _ts_object_method_is_top_named, _ts_object_method_owner
+from .lang_helpers.ts_js import _ts_nested_object_method_owner
 from .lang_helpers.type_heads import (
     TYPE_HEAD_EXTRACTORS,
     _classify_param_origin,
@@ -80,8 +80,7 @@ __all__ = [
     "_run_query",
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
-    "_ts_object_method_is_top_named",
-    "_ts_object_method_owner",
+    "_ts_nested_object_method_owner",
     "prepare_objectivec_source",
     "prepare_pascal_source",
 ]

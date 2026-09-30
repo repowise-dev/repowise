@@ -868,7 +868,32 @@ export class K {
             assert hidden not in names, hidden
         assert {"outer", "arrow", "K", "m"} <= names
 
-    def test_unbound_module_object_keeps_its_id(self, parser: ASTParser) -> None:
-        src = b"export default { data() { return {}; } };\n"
+    def test_nested_object_is_owned_by_its_property_key(self, parser: ASTParser) -> None:
+        src = b"""\
+export const useStore = defineStore("s", {
+  actions: { inc() { return 1; } },
+  getters: { inc() { return 2; } },
+});
+"""
+        ids = {s.id for s in self._parse(parser, src, "src/store.ts").symbols}
+        assert "src/store.ts::actions::inc" in ids
+        assert "src/store.ts::getters::inc" in ids
+        assert "src/store.ts::inc" not in ids
+
+    def test_no_symbol_without_a_plain_owner_name(self, parser: ASTParser) -> None:
+        src = b"""\
+export const a = f({ "odd-key": { m() { return 1; } } });
+export const { b } = f({ n() { return 2; } });
+"""
+        names = {s.name for s in self._parse(parser, src, "src/owners.ts").symbols}
+        assert "m" not in names
+        assert "n" not in names
+
+    def test_methods_kept_before_keep_their_ids(self, parser: ASTParser) -> None:
+        # No callable encloses these, so they were symbols already: unchanged.
+        src = b"""\
+export default { data() { return {}; }, methods: { inc() { return 1; } } };
+var legacy = { run() { return 1; } };
+"""
         ids = {s.id for s in self._parse(parser, src, "src/options.ts").symbols}
-        assert "src/options.ts::data" in ids
+        assert {"src/options.ts::data", "src/options.ts::inc", "src/options.ts::run"} <= ids
