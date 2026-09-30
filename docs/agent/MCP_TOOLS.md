@@ -295,7 +295,7 @@ The architecture map: summary, key modules, entry points, layers, code and git h
 | `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
-**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture`, `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
+**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
 
 ```
 get_overview()

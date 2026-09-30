@@ -4,7 +4,9 @@ Each endpoint maps to its box (a container, a component, or an external
 system), counts are summed per directed box pair with the edge types seen, and
 self-loops are dropped. Co-change edges are history, not a dependency, so they
 are left out unless a caller opts in. Edges touching a configuration file are
-dropped: reading config is not a dependency between boxes.
+dropped: reading config is not a dependency between boxes. Edges touching a
+test file are dropped too: a test importing a package is not a dependency of
+the box the test sits in.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 
 from repowise.core.support_paths import is_config_path
+from repowise.core.test_paths import is_test_related_path
 
 #: ``(source box, target box) -> (file-pair count, edge types)``.
 BoxEdges = dict[tuple[str, str], tuple[int, frozenset[str]]]
@@ -44,6 +47,8 @@ def roll_up_edges(
         if tgt_box is None or src_box == tgt_box:
             continue
         if is_config_path(src) or is_config_path(tgt):
+            continue
+        if is_test_related_path(src) or is_test_related_path(tgt):
             continue
         counts[(src_box, tgt_box)] += 1
         types[(src_box, tgt_box)].add(etype)

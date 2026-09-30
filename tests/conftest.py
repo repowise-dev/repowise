@@ -118,7 +118,7 @@ def _fresh_per_index_caches():
     so every test's index looks the same to the cache key. Looked up in
     ``sys.modules`` so a test that never loads the server pays nothing.
     """
-    for name in ("_basis", "_scope", "_graph_files"):
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph"):
         module = sys.modules.get(f"repowise.server.mcp_server.{name}")
         if module is not None:
             module.reset_cache()
