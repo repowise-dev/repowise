@@ -990,7 +990,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
         # another language's import of the repo's own package by its published
-        # name may still be marked external and mean repo code.
+        # name may still be marked external and mean repo code. Ceiling: an
+        # in-repo ``except ImportError:`` fallback definition is not linked.
         if (
             binding is not None
             and (binding.source_file or "").startswith(_EXTERNAL_PREFIX)
