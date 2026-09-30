@@ -95,7 +95,7 @@
 ; Chained method call: obj.method1().method2(args)
 (call
   function: (attribute
-    object: (call)
+    object: (call) @call.receiver_call
     attribute: (identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

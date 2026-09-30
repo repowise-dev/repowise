@@ -333,3 +333,68 @@ def test_own_root_wins_over_a_same_dotted_name_in_another_root() -> None:
     assert resolve_python_import("tests.stubs", "libs/b/tests/test_x.py", ctx) == (
         "libs/b/tests/stubs.py"
     )
+
+
+# A name imported from outside the repository is that module's, so a call to
+# it must not fall through to a same-named repo symbol.
+
+
+def _call_edges(tmp_path, sources: dict[str, str]) -> set[tuple[str, str]]:
+    from datetime import datetime
+
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    parser = ASTParser()
+    builder = GraphBuilder(tmp_path)
+    for rel, text in sources.items():
+        abs_path = tmp_path / rel
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_text(text, encoding="utf-8")
+        info = FileInfo(
+            path=rel,
+            abs_path=str(abs_path),
+            language="python",
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        builder.add_file(parser.parse_file(info, text.encode("utf-8")))
+    graph = builder.build()
+    return {(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+
+
+_SHADOWED = {
+    "pkg/__init__.py": "",
+    "pkg/utils.py": "def unquote(s):\n    return s\n\n\ndef other():\n    return 1\n",
+    "pkg/types.py": "class Path:\n    pass\n",
+}
+
+
+def test_an_imported_stdlib_name_does_not_bind_a_same_named_repo_symbol(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {
+            **_SHADOWED,
+            "pkg/urls.py": (
+                "from urllib.parse import unquote\nfrom pkg.utils import other\n\n\n"
+                "def parse(s):\n    other()\n    return unquote(s)\n"
+            ),
+            "pkg/paths.py": "from pathlib import Path\n\n\ndef mk(s):\n    return Path(s)\n",
+        },
+    )
+    assert ("pkg/urls.py::parse", "pkg/utils.py::other") in edges
+    assert not {e for e in edges if e[1] in ("pkg/utils.py::unquote", "pkg/types.py::Path")}
+
+
+def test_an_unimported_name_still_reaches_the_repo_symbol(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {**_SHADOWED, "pkg/paths.py": "def mk(s):\n    return Path(s)\n"},
+    )
+    assert ("pkg/paths.py::mk", "pkg/types.py::Path") in edges

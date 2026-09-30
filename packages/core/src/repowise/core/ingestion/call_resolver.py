@@ -88,6 +88,10 @@ _LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
 
+# The graph's prefix for an import target outside the repository. Also marks a
+# Python base class the repository does not declare, in an MRO walk.
+_EXTERNAL_PREFIX = "external:"
+
 # Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
 # reach, so 3 reaches 4.
 _MAX_ANCESTOR_EXPAND_DEPTH = 3
@@ -224,6 +228,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             else return_type_chain_languages
         )
         self._ancestors: dict[str, tuple[str, ...]] = {}
+        self._mros: dict[str, tuple[str, ...] | None] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
 
@@ -744,6 +749,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         language = self._language_of(file_path) or ""
         receiver_call = call.receiver_call
+        if language == "python" and _is_super_receiver(receiver_call):
+            return self._with_props(self._super_call(call, caller_id), call)
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
         if receiver_call is not None and (
@@ -979,6 +986,17 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A Python name imported from outside the repository is that module's,
+        # not a same-named repo symbol a later tier would find. Python only:
+        # Python resolves a repo's own absolute imports by dotted path, while
+        # another language's import of the repo's own package by its published
+        # name may still be marked external and mean repo code.
+        if (
+            binding is not None
+            and (binding.source_file or "").startswith(_EXTERNAL_PREFIX)
+            and self._language_of(file_path) == "python"
+        ):
+            return None
         if not declared:
             return None
         return (
@@ -1345,6 +1363,83 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
 
+    def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
+        """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
+
+        Never handed to the bare-name tiers, which answered with whichever
+        same-named method the file declared last. A base outside the
+        repository ends the walk unresolved: it may declare ``m`` itself.
+
+        Ceiling: ``super(C, self)`` is read as the caller's own class, since
+        the call site keeps no argument text. A ``C`` naming another class
+        starts the walk in the wrong place; reading the first argument would
+        close it.
+        """
+        class_id = _extract_class_id(caller_id)
+        mro = self._mro(class_id) if class_id is not None else None
+        for ancestor in (mro or ())[1:]:
+            if ancestor.startswith(_EXTERNAL_PREFIX):
+                return None
+            sym_id = self._declares(ancestor, call.target_name)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
+        return None
+
+    def _mro(self, class_id: str, visiting: frozenset[str] = frozenset()) -> tuple[str, ...] | None:
+        """Python's C3 linearization of *class_id*, or None when it cannot be built.
+
+        A base outside the repository is kept as an opaque leaf, so the walk
+        can tell where in the order it sits without knowing its own bases.
+        """
+        if class_id in self._mros:
+            return self._mros[class_id]
+        bases = self._declared_bases(class_id)
+        mro: tuple[str, ...] | None = None
+        if bases is not None and class_id not in visiting:
+            inner = visiting | {class_id}
+            chains: list[tuple[str, ...]] = []
+            for base in bases:
+                external = base.startswith(_EXTERNAL_PREFIX)
+                chain = (base,) if external else self._mro(base, inner)
+                if chain is None:
+                    break
+                chains.append(chain)
+            else:
+                merged = _c3_merge([*chains, tuple(bases)])
+                mro = None if merged is None else (class_id, *merged)
+        self._mros[class_id] = mro
+        return mro
+
+    def _declared_bases(self, class_id: str) -> list[str] | None:
+        """*class_id*'s bases in declaration order, each an in-repo class id or an external marker.
+
+        The resolved heritage is an unordered id set, so each declared name is
+        matched back to its id through the symbol's name, or the name an import
+        alias stands for. None when a name matches two ids, or the file
+        declares two classes of this name.
+        """
+        symbol = self._symbols_by_id.get(class_id)
+        file_path = self._symbol_paths_by_id.get(class_id)
+        parsed = self._parsed_files.get(file_path) if file_path else None
+        if symbol is None or file_path is None or parsed is None:
+            return None
+        relations = [r for r in parsed.heritage if r.child_name == symbol.name]
+        if len({r.line for r in relations}) > 1:
+            return None
+        parents = self._heritage_parents.get(class_id, ())
+        bindings = self._import_bindings.get(file_path, {})
+        bases: list[str] = []
+        for relation in relations:
+            binding = bindings.get(relation.parent_name)
+            names = {relation.parent_name, binding.exported_name if binding else None}
+            hits = [
+                p for p in parents if (s := self._symbols_by_id.get(p)) is not None and s.name in names
+            ]
+            if len(hits) > 1:
+                return None
+            bases.append(hits[0] if hits else _EXTERNAL_PREFIX + relation.parent_name)
+        return bases
+
     def _language_of(self, file_path: str) -> str | None:
         parsed = self._parsed_files.get(file_path)
         return parsed.file_info.language if parsed else None
@@ -1487,6 +1582,27 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     """
     parts = symbol_id.split("::")
     return len(parts) >= 3 and parts[-1] != parts[-2]
+
+
+def _is_super_receiver(receiver: CallReceiver | None) -> bool:
+    """Is this chained call's receiver Python's ``super(...)``?"""
+    return receiver is not None and receiver.target_name == "super" and receiver.receiver_name is None
+
+
+def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:
+    """The C3 merge step of Python's MRO; None when no consistent order exists."""
+    pending = [list(seq) for seq in sequences if seq]
+    merged: list[str] = []
+    while pending:
+        head = next(
+            (seq[0] for seq in pending if not any(seq[0] in other[1:] for other in pending)),
+            None,
+        )
+        if head is None:
+            return None
+        merged.append(head)
+        pending = [rest for seq in pending if (rest := seq[1:] if seq[0] == head else seq)]
+    return merged
 
 
 def _extract_class_id(symbol_id: str) -> str | None:
