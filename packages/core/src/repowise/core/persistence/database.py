@@ -394,6 +394,12 @@ _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
 }
 
 
+def _run_data_step(step: Callable[[object], object], connection: object) -> None:
+    """Run a data step for its effect. Its return value (a row count, often 0)
+    is not a statement, so it must never reach ``connection.execute``."""
+    step(connection)
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -495,7 +501,7 @@ def _reconcile_schema(connection: object) -> None:
             )
             data_step = _DATA_STEPS_ON_ADD.get(what)
             if data_step is not None and not any(name == what for name, _ in failures):
-                _run(f"{what}:data", lambda data_step=data_step: data_step(connection) and None)
+                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
 
         # --- Indexes ---------------------------------------------------
         # Only model-declared indexes (i.e. ``Index(...)`` on the table

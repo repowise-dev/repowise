@@ -549,3 +549,28 @@ async def test_adding_owner_line_pct_moves_stale_blame_line_shares(tmp_path: Pat
         "commits.py": (0.75, None),
         "old.py": (None, 0.6),
     }
+
+
+async def test_adding_owner_line_pct_with_nothing_to_move_succeeds(tmp_path: Path) -> None:
+    """The data step returns how many rows it moved. Zero is the common case
+    (every row already right, or no git history at all) and must not be taken
+    for a statement to execute."""
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, 'ALTER TABLE "git_metadata" DROP COLUMN "primary_owner_line_pct"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    assert "primary_owner_line_pct" in _table_columns(db_path, "git_metadata")
