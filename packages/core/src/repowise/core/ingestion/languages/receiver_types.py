@@ -31,6 +31,7 @@ from ..type_names import (
     bare_type_name,
     is_resolvable_type_name,
     strip_type_arguments,
+    type_qualifier,
     unwrap_pointer_like,
 )
 
@@ -713,7 +714,8 @@ RANGE_LANGUAGES = frozenset({"go"})
 # position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
 # ``T``; ``map[K]V`` a ``K``, then a ``V``; ``chan T`` a ``T`` alone. A pointer
 # element is still a ``T``. Anything else, a named container type included,
-# yields nothing, so its range variables stay untyped.
+# yields nothing, so its range variables stay untyped. Ceiling: a pointer to an
+# array (``*[N]T``, rangeable in Go) is not a shape here either.
 _GO_ELEMENT_SHAPES = (
     re.compile(rf"(?:\[\d*\]|\.\.\.)\*?(?P<value>{_GO_TYPE})"),
     re.compile(rf"map\[\*?(?P<key>{_GO_TYPE})\]\*?(?P<value>{_GO_TYPE})"),
@@ -815,7 +817,7 @@ def range_element_types(
         return None
 
     def element(raw: str | None) -> str | None:
-        if not raw or raw.partition(".")[0] in external:
+        if not raw or type_qualifier(raw) in external:
             return None
         return _usable_type_name(raw, language)[0]
 

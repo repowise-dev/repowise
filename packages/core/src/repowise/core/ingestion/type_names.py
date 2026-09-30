@@ -94,6 +94,16 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+def type_qualifier(raw: str) -> str:
+    """Return what ``bare_type_name`` drops from the front of *raw*, or ``""``.
+
+    ``os.FileInfo`` → ``os``; ``Plain`` → ``""``.
+    """
+    text = strip_type_arguments(raw.strip())
+    head = text[: len(text) - len(bare_type_name(text))]
+    return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
 # C++ template heads whose ``operator->`` forwards to their argument, so
 # ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
 # container holds a ``T`` without being one, and unwrapping ``vector<Foo>``

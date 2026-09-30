@@ -29,7 +29,7 @@ from .languages.receiver_types import (
     types_in_span,
     unwrapped_names_in_span,
 )
-from .models import CallSite, ParsedFile, Symbol
+from .models import CallSite, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type
 from .type_names import POINTER_LIKE_MEMBERS
@@ -738,7 +738,7 @@ class ReceiverTypingMixin:
         class_id = None if head_type is None else self._range_class(file_path, head_type, language)
         if class_id is None:
             return None, file_path
-        class_file = class_id.partition("::")[0]
+        class_file = self._symbol_paths_by_id.get(class_id, file_path)
         if clause.call:
             sym_id = self._declares(class_id, clause.member)
             symbol = None if sym_id is None else self._symbols_by_id.get(sym_id)
@@ -764,8 +764,7 @@ class ReceiverTypingMixin:
             for sym_id in self._global_symbols.get(type_name, ())
             if (symbol := self._symbols_by_id.get(sym_id)) is not None
             and symbol.kind in _TYPE_KINDS
-            and (parsed := self._parsed_files.get(sym_id.partition("::")[0])) is not None
-            and parsed.file_info.language == language
+            and symbol_id_language(self._parsed_files, sym_id) == language
         ]
         return ids[0] if len(ids) == 1 else None
 
