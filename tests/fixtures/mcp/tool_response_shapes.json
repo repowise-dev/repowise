@@ -1288,9 +1288,6 @@
       }
     },
     "architecture": {
-      "layer_order": [
-        null
-      ],
       "layers": [
         {
           "file_count": null,

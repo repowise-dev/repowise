@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.generation.layers import is_adjacent_layer
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
@@ -90,9 +91,19 @@ def _build_guided_tour(
             "in order — entry points first, then the files they import, "
             "with infrastructure last. Each step builds on the previous."
         )
-    layer_order = ov_meta.get("layer_order") or []
-    if layer_order:
-        result.setdefault("architecture", {})["layer_order"] = layer_order
+    # The KG layers already arrive in stack order under their current names;
+    # the stored name list is only the fallback for an index without them.
+    architecture = result.setdefault("architecture", {})
+    # Filter on the stable id where the names pair with it one to one; a
+    # model-given name ("Automated Test Suites") says nothing about the layer.
+    names = ov_meta.get("layer_order") or []
+    ids = ov_meta.get("layer_order_ids") or []
+    keyed = zip(names, ids, strict=True) if len(ids) == len(names) else zip(names, names, strict=True)
+    layer_order = [name for name, key in keyed if not is_adjacent_layer(key)]
+    if layer_order and not architecture.get("layers"):
+        architecture["layer_order"] = layer_order
+    if not architecture:
+        del result["architecture"]
 
 
 def _tour_step(n: int, s: dict[str, Any], sections: dict[str, str | None]) -> dict[str, Any]:

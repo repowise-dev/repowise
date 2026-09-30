@@ -7,6 +7,7 @@ from repowise.core.generation.layers import (
     DOCS_TOOLING_LAYER,
     compute_layer_order,
     infer_layer,
+    is_adjacent_layer,
     layer_key,
     layer_order_basis,
 )
@@ -362,6 +363,13 @@ def test_compute_layer_order_pins_tests_when_given_layer_ids():
 def test_layer_key_normalises_both_spellings():
     assert layer_key("UI") == layer_key("layer:ui") == "ui"
     assert layer_key("Docs & Tooling") == layer_key("layer:docs-tooling") == "docs-tooling"
+
+
+def test_is_adjacent_layer_names_tests_by_name_or_id():
+    assert is_adjacent_layer("Test")
+    assert is_adjacent_layer("layer:test")
+    assert not is_adjacent_layer("layer:service")
+    assert not is_adjacent_layer(DOCS_TOOLING_LAYER)
 
 
 def test_compute_layer_order_single_layer():

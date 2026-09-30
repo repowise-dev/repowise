@@ -224,7 +224,7 @@ Architecture summary, module map, and entry points.
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 | `include` | list[string] | No | Opt-in blocks, any combination of `"content"`, `"outline"`, `"tour"`, `"decisions"`, `"graph"`, `"ownership"` (see below) |
 
-**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names, file counts, layer order), `code_health`, `git_health`, `next_actions` (per horizon, week and quarter: the first three stored actions as `id`, `tier`, `title`, `impact`, `done_when`, `target`, with `total` and `by_tier`; `unavailable` names stores the index predates; replaced by `next_actions_reason` when they cannot be read), `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
+**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names and file counts in stack order, the test layer left out; `layer_order` only for an index without knowledge-graph layers), `code_health`, `git_health`, `next_actions` (per horizon, week and quarter: the first three stored actions as `id`, `tier`, `title`, `impact`, `done_when`, `target`, with `total` and `by_tier`; `unavailable` names stores the index predates; replaced by `next_actions_reason` when they cannot be read), `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
 
 **Opt-in blocks** — omitted unless named in `include`, and not computed at all when they are not:
 

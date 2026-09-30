@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.generation.layers import is_adjacent_layer
 from repowise.core.persistence.crud import (
     get_kg_layers as _get_kg_layers,
 )
@@ -88,8 +89,12 @@ def _stored_label(node: GraphNode) -> str:
 
 
 async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
-    """KG architecture layers + tour availability."""
-    kg_layers = await _get_kg_layers(session, repository.id)
+    """KG architecture layers, in stack order, + tour availability."""
+    kg_layers = [
+        layer
+        for layer in await _get_kg_layers(session, repository.id)
+        if not is_adjacent_layer(layer.layer_id)
+    ]
     kg_tour = await _get_kg_tour_steps(session, repository.id)
     if not kg_layers:
         return {}

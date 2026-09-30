@@ -183,6 +183,18 @@ _CANONICAL_RANK_BY_KEY: dict[str, int] = {
 }
 
 
+_ADJACENT_KEYS: frozenset[str] = frozenset(layer_key(la) for la in ADJACENT_LAYERS)
+
+
+def is_adjacent_layer(layer: str) -> bool:
+    """True for a layer outside the architecture (tests), by name or ``layer:`` id.
+
+    The layer still partitions its files; surfaces that describe the
+    architecture leave it out.
+    """
+    return layer_key(layer) in _ADJACENT_KEYS
+
+
 def _is_pinned(layer: str) -> bool:
     return layer_key(layer) in _PINNED_KEYS
 
