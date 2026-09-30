@@ -85,7 +85,7 @@ def test_a_file_naming_itself_is_not_a_use():
     assert finding.confidence == 1.0
 
 
-def test_a_truly_dead_file_through_the_analyzer_stays_deletion_ready():
+def test_a_truly_dead_file_through_the_analyzer_keeps_full_confidence():
     g = _build_graph(
         nodes={
             "pkg/used.py": {"is_entry_point": True, "symbols": []},
@@ -113,7 +113,8 @@ def test_a_truly_dead_file_through_the_analyzer_stays_deletion_ready():
         }
     )
     by_path = {f.file_path: f for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
-    assert by_path["pkg/old.py"].safe_to_delete is True
+    # A whole file is review-only, however sure the analyzer is.
+    assert by_path["pkg/old.py"].safe_to_delete is False
     assert by_path["pkg/old.py"].confidence == 1.0
     assert by_path["pkg/listed.py"].confidence == RISK_CAP_CONFIDENCE
     assert by_path["pkg/listed.py"].safe_to_delete is False

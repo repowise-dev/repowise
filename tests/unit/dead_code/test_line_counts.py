@@ -61,7 +61,8 @@ def test_nineteen_line_file_counts_nineteen_lines():
     by_path, report = _unreachable(g, source_map={"pkg/a.py": source + b"\n", "pkg/b.py": source})
     assert by_path["pkg/a.py"].lines == 19
     assert by_path["pkg/b.py"].lines == 19
-    assert report.deletable_lines == 38
+    # Whole files are review-only, so none of their lines count as deletable.
+    assert report.deletable_lines == 0
 
 
 def test_file_counted_from_disk_without_source_map(tmp_path):
@@ -78,8 +79,7 @@ def test_unreadable_file_is_unknown_not_guessed():
     gone = by_path["pkg/gone.py"]
     assert gone.lines is None
     assert "Line count unavailable: source was not read" in gone.evidence
-    # The total sums what is known rather than failing on the unknown.
-    assert report.deletable_lines == 1
+    assert by_path["pkg/a.py"].lines == 1
 
 
 def test_zombie_package_sums_real_file_lines():
