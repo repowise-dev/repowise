@@ -37,8 +37,9 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
     source spans it references. For Extract Class the result carries an LCOM4
     before/after self-check.
 
-    Disabled by default — returns an ``error`` unless ``refactoring.llm.enabled``
-    is set in the repo's ``.repowise/config.yaml``. Uses the repo's configured
+    On unless the repo sets ``refactoring.llm.enabled: false`` in
+    ``.repowise/config.yaml``, which returns the plan with generation marked
+    unavailable. Uses the repo's configured
     provider/model (BYO key) and caches by a content hash, so an unchanged plan
     never regenerates.
 

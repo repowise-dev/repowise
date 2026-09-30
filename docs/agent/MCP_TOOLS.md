@@ -165,7 +165,7 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `floor` | Only when the response carries a count derived by walking the indexed graph: names those fields, whose values are lower bounds because an edge the index failed to resolve is uncounted rather than proven absent |
 | `state` | Only when something fired: `degraded` plus `degraded_reasons` mapping each contributing key to its reason (a synthesis reason string, the retrieval legs that broke), `partial`, `truncated`. A coarse roll-up of the response's own flags |
 
-Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all. Neither does `search_codebase` when a workspace call merges results from several repos, since there is no single indexed commit to compare.
+Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance`, and `get_dependency_path` don't carry a freshness envelope at all. Neither does `search_codebase` when a workspace call merges results from several repos, since there is no single indexed commit to compare.
 
 ---
 
@@ -192,10 +192,11 @@ used to filter on the plural, match nothing, and recommend *"No dead code found
 matching your filters."* beside a summary counting hundreds of unused exports
 ([#1496](https://github.com/repowise-dev/repowise/issues/1496)). It covers
 `get_dead_code` (`kind`, `tier`, `min_confidence`), `get_context` (`include`)
-and `search_codebase` (`kind`).
+and `search_codebase` (`kind`, `mode`; an unrecognised `mode` is routed as
+`auto`).
 
 `get_dead_code`'s `min_confidence` additionally accepts the tier names the
-response is organised by — `"high"` (0.8), `"medium"` (0.5), `"low"` (0.0) — as
+response is organised by (`"high"` 0.7, `"medium"` 0.4, `"low"` 0.0) as
 well as a float.
 
 `get_health` is the exception to the shape. It reports a misspelled `only` key
@@ -301,7 +302,7 @@ Two path-bearing blocks, with different jobs:
 | Field | Job | Confidence-gated? |
 |-------|-----|-------------------|
 | `retrieval` | **Evidence.** Enriched hits (summary, snippet, key symbols) to re-read when the prose needs checking. Shrinks as confidence rises, because a trustworthy answer needs less of it. | Yes |
-| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 20. | Shape-gated: the default projection drops it at every confidence |
+| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 5. | Shape-gated: the default projection drops it at every confidence |
 
 `candidates` is built whenever retrieval resolved anything, including on high-confidence answers where `retrieval` is deliberately empty, but the default projection drops it; ask for it with `include=["evidence"]`. It is where to look next; it is not evidence that the answer is right.
 
@@ -330,7 +331,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
 
-**Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
+**Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: call graph, graph metrics, community membership, a body-elided skeleton (never source bodies). `include=["decisions"]` returns three lanes: `decisions` (accepted and governing, full records), `candidates` (proposed, nobody has accepted them, at most 3) and `history` (accepted then withdrawn, at most 2); a dismissed record is in none of them.
 
 A file with no indexed symbols (README, config, plain data) gets a
 `docs.file_preview` instead of an empty symbol list: line and character counts,
@@ -475,7 +476,7 @@ the **wiki**, instead of forcing a fallback to Grep for identifiers.
 
 - *Symbol hits*: `{type: "symbol", symbol_id, name, kind, file, start_line, end_line, signature, next: "get_symbol"}`. Ranked by exact-name/qualified-name match, query-token coverage, then graph centrality (PageRank / betweenness / entry-point); non-test before test unless `kind="test"`.
 - *File hits*: `{type: "file", page_id, file, title, next: "get_context"}`.
-- *Concept hits*: ranked wiki pages with `relevance_score`, `snippet`, `target_path`, and a `search_method` (`embedding` vs `bm25` fallback). A `symbol_spotlight` page's `target_path` is a page identifier of the form `file.py::Symbol`; those hits also carry `file` with the openable path. **Read `file` when present.** `target_path` is for piping into `get_symbol`, not for opening.
+- *Concept hits*: ranked wiki pages with `relevance_score`, `snippet`, `target_path`, and `sources`, the retrievers that found the page (`fts`, `vector`, or both). A `symbol_spotlight` page's `target_path` is a page identifier of the form `file.py::Symbol`; those hits also carry `file` with the openable path. **Read `file` when present.** `target_path` is for piping into `get_symbol`, not for opening.
 
 Alongside `results`, the response carries **`candidates`**: up to `limit`
 distinct files worth opening next, one `{path}` entry each, best first.
@@ -866,7 +867,7 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 
 Two health-mode lanes `counts` reported as a bare number now name their records: `retired_decisions` (superseded, deprecated, dismissed — each row carries its `lane`) and `unscoped_decisions` (accepted records naming no file). Five rows each, ranked, remainder in `_meta.omitted`; full sizes stay in `counts`, split across the three status keys for the retired lane. `active` stays count-only.
 
-`answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
+`answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, `documentation`, or `candidate`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
 
 **The lane a record is in decides whether it binds you, and path mode puts it in one.** `decisions` holds accepted records: somebody accepted each in a recorded event naming the reason, the scope, the evidence and the accepter, so treat them as constraints. `candidates` holds records something inferred and nobody has agreed to; read them as hints and never as rules, and note the `candidates_note` beside them says so too. Nothing produces an acceptance except an explicit `repowise decision confirm` or a committed ADR that says it is accepted, so a candidate that has recurred across fifty sessions is still a candidate.
 
@@ -902,7 +903,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `min_confidence` | float | No | Minimum confidence floor (default `0.4`; `0.7`+ is cleanup-ready only) |
 | `safe_only` | boolean | No | Deletion-ready findings only, excluding anything with runtime-load risk (default `false`) |
 | `limit` | int | No | Max findings per tier, clamped to 25 (default 20) |
-| `tier` | string | No | Restrict to one tier: `high` (>= 0.8) \| `medium` \| `low` |
+| `tier` | string | No | Restrict to one tier: `high` (>= 0.7) \| `medium` (0.4 to 0.7) \| `low` (< 0.4) |
 | `directory` | string | No | Path-prefix filter |
 | `owner` | string | No | Primary-owner filter |
 | `group_by` | string | No | Roll findings up by `directory` or `owner` instead of listing them flat |
@@ -912,7 +913,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
 | `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
-**Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import. `summary.call_resolution_basis` lists, per language, how many call edges the index resolved and what share are guesses, which is the graph the findings rest on.
+**Returns:** Dead code findings grouped by confidence tier (high >= 0.7, medium 0.4 to 0.7, low < 0.4). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import. `summary.call_resolution_basis` lists, per language, how many call edges the index resolved and what share are guesses, which is the graph the findings rest on.
 
 **When to use:** Cleanup tasks, not a targeted fix. Conservative by design: `safe_only` excludes dynamically-loaded patterns and framework-decorated functions.
 
@@ -920,7 +921,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 
 ```
 get_dead_code()
-get_dead_code(min_confidence=0.8, tier="high", safe_only=true)
+get_dead_code(min_confidence=0.7, tier="high", safe_only=true)
 get_dead_code(kind="unused_export", group_by="owner")
 ```
 
@@ -1430,7 +1431,7 @@ get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 
 Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
 
-**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and generation remains unavailable unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. A valid plan id still resolves while generation is disabled, returning the canonical plan plus `generation.available: false`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+**Opt-in:** it must be added to the tool surface (`mcp.tools: ["+generate_refactoring_code"]`). Generation itself is on unless the repo sets `refactoring.llm.enabled: false` in `.repowise/config.yaml`; then a valid plan id still resolves, returning the canonical plan plus `generation: {available: false, reason: "disabled"}`. Without a configured provider it returns `error: "no_provider"`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
 
 **Parameters:**
 
@@ -1439,7 +1440,7 @@ Turns one structured refactoring plan from `get_health(include=["refactoring"])`
 | `suggestion_id` | string | Yes | The `id` of a plan returned by `get_health(include=["refactoring"])` |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you want turned into an applyable diff, and your repo has opted into both the tool and LLM-backed generation.
+**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you want turned into an applyable diff, with the tool opted in and a provider configured.
 
 ```
 generate_refactoring_code(suggestion_id="a1b2c3d4")

@@ -2,7 +2,7 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `next`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `savings`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `next`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
 **Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `doc-drift`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
@@ -51,6 +51,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`distill`](#repowise-distill-command) ·
 [`expand`](#repowise-expand-ref) ·
 [`saved`](#repowise-saved-path) ·
+[`savings sync`](#repowise-savings-sync-path) ·
 [`corrections`](#repowise-corrections-path) ·
 [`hook install`](#repowise-hook-install) ·
 [`hook status`](#repowise-hook-status) ·
@@ -1614,6 +1615,26 @@ repowise saved --by surface          # distill vs hooks vs MCP
 repowise saved --by agent            # which agent the savings went to
 repowise saved --since 2026-06-01
 repowise saved --missed              # what's slipping past the hook
+```
+
+---
+
+### `repowise savings sync [PATH]`
+
+Record savings your agents were shown but the ledger never banked. Reads only
+what was appended to agent transcripts since the last run, so repeating it is
+cheap. A non-zero `deferred` count means the time budget ran out and there is
+more to read; run it again.
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Report what would be recorded without writing anything |
+| `--budget` | Seconds of transcript reading. Raise it to finish a large backlog sooner |
+| `--format` | `table` (default) or `json` |
+
+```bash
+repowise savings sync
+repowise savings sync --dry-run
 ```
 
 ---
