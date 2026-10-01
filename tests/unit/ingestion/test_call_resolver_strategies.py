@@ -1129,3 +1129,181 @@ class TestOwnerAwareModuleTier:
             0.88,
             "module_alias",
         ) in _edges(parsed, tmp_path)
+
+
+class TestExternalReceiverType:
+    """A Java receiver declared with a type the repo does not own is refused.
+
+    Every case declares a same-package ``TagSet`` with ``get`` and ``add``, the
+    names a name-only tier would otherwise hand the call to.
+    """
+
+    _PKG = "src/org/acme/"
+    _TAGSET = (
+        "package org.acme;\npublic class TagSet {\n"
+        "    public Object get(int i) { return null; }\n"
+        "    public boolean add(Object o) { return true; }\n}\n"
+    )
+
+    def _caller_edges(
+        self, tmp_path: Path, caller: str, **others: str
+    ) -> list[tuple[str, str, float, str]]:
+        files = {"TagSet.java": self._TAGSET, **others, "Caller.java": caller}
+        parsed = _parse_all(tmp_path, {self._PKG + k: ("java", v) for k, v in files.items()})
+        return [e for e in _edges(parsed, tmp_path) if "Caller.java" in e[0]]
+
+    @staticmethod
+    def _caller(imports: str, body: str, members: str = "") -> str:
+        return (
+            f"package org.acme;\n{imports}public class Caller {{\n{members}"
+            f"    public Object run({body}\n    }}\n}}\n"
+        )
+
+    def test_an_imported_jdk_type_is_refused(self, tmp_path: Path) -> None:
+        caller = self._caller(
+            "import java.util.ArrayList;\n",
+            "ArrayList<Object> stack) {\n        return stack.get(0);",
+        )
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_a_java_lang_type_needs_no_import_to_be_refused(self, tmp_path: Path) -> None:
+        caller = self._caller(
+            "", ") {\n        StringBuilder sb = new StringBuilder();\n        return sb.add(1);"
+        )
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_a_field_of_a_jdk_type_is_refused(self, tmp_path: Path) -> None:
+        caller = self._caller(
+            "import java.util.List;\n",
+            ") {\n        return items.get(0);",
+            members="    private final List<Object> items = null;\n",
+        )
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_a_member_type_of_a_jdk_type_is_refused(self, tmp_path: Path) -> None:
+        caller = self._caller(
+            "import java.util.Map;\n",
+            "Map.Entry<String, Object> e) {\n        return e.get(0);",
+        )
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_a_wildcard_imported_jdk_type_is_refused(self, tmp_path: Path) -> None:
+        caller = self._caller("import java.util.*;\n", "List<Object> l) {\n        return l.get(0);")
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_a_type_imported_from_outside_the_repo_is_refused(self, tmp_path: Path) -> None:
+        caller = self._caller(
+            "import com.vendor.Multiset;\n",
+            "Multiset<Object> m) {\n        return m.add(1);",
+        )
+        assert self._caller_edges(tmp_path, caller) == []
+
+    def test_the_static_type_decides_over_a_repo_subclass(self, tmp_path: Path) -> None:
+        """``ArrayList l = new Elements()`` calls ``ArrayList.get``; the override is dispatch."""
+        elements = (
+            "package org.acme;\nimport java.util.ArrayList;\n"
+            "public class Elements extends ArrayList<Object> {\n"
+            "    public Object get(int i) { return null; }\n}\n"
+        )
+        caller = self._caller(
+            "import java.util.ArrayList;\n",
+            ") {\n        ArrayList<Object> l = new Elements();\n        return l.get(0);",
+        )
+        edges = self._caller_edges(tmp_path, caller, **{"Elements.java": elements})
+        assert not [e for e in edges if e[1].endswith("::get")]
+
+    def test_a_repo_subclass_of_a_jdk_type_resolves(self, tmp_path: Path) -> None:
+        elements = (
+            "package org.acme;\nimport java.util.ArrayList;\n"
+            "public class Elements extends ArrayList<Object> {\n"
+            "    public Object get(int i) { return null; }\n}\n"
+        )
+        caller = self._caller("", "Elements l) {\n        return l.get(0);")
+        assert (
+            "src/org/acme/Caller.java::Caller::run",
+            "src/org/acme/Elements.java::Elements::get",
+            0.90,
+            "receiver_typed_same_package",
+        ) in self._caller_edges(tmp_path, caller, **{"Elements.java": elements})
+
+    def test_a_repo_class_shadowing_a_jdk_name_resolves(self, tmp_path: Path) -> None:
+        shadow = (
+            "package org.acme;\npublic class List {\n"
+            "    public Object get(int i) { return null; }\n}\n"
+        )
+        caller = self._caller("", "List l) {\n        return l.get(0);")
+        assert (
+            "src/org/acme/Caller.java::Caller::run",
+            "src/org/acme/List.java::List::get",
+            0.90,
+            "receiver_typed_same_package",
+        ) in self._caller_edges(tmp_path, caller, **{"List.java": shadow})
+
+    def test_a_builtin_local_leaves_this_field_to_the_field(self, tmp_path: Path) -> None:
+        """``this.data.get()`` reaches the resolver as ``data.get()``, beside a ``String data``."""
+        caller = self._caller(
+            "",
+            ") {\n        String data = null;\n        return this.data.get(0);",
+            members="    private final TagSet data = new TagSet();\n",
+        )
+        assert (
+            "src/org/acme/Caller.java::Caller::run",
+            "src/org/acme/TagSet.java::TagSet::get",
+            0.90,
+            "receiver_field_same_package",
+        ) in self._caller_edges(tmp_path, caller)
+
+    def test_an_inner_repo_class_resolves(self, tmp_path: Path) -> None:
+        outer = (
+            "package org.acme;\npublic class Outer {\n    public static class Inner {\n"
+            "        public Object get(int i) { return null; }\n    }\n}\n"
+        )
+        caller = self._caller("", "Outer.Inner x) {\n        return x.get(0);")
+        assert (
+            "src/org/acme/Caller.java::Caller::run",
+            "src/org/acme/Outer.java::Inner::get",
+            0.90,
+            "receiver_typed_same_package",
+        ) in self._caller_edges(tmp_path, caller, **{"Outer.java": outer})
+
+    def test_a_generic_parameter_is_not_refused(self, tmp_path: Path) -> None:
+        """``T`` is unknown, not external: the name tiers still answer."""
+        caller = self._caller(
+            "",
+            "Object o) {\n        return run2(o);\n    }\n"
+            "    public <T> Object run2(T x) {\n        return x.get(0);",
+        )
+        assert [e[1] for e in self._caller_edges(tmp_path, caller) if e[1].endswith("::get")] == [
+            "src/org/acme/TagSet.java::TagSet::get"
+        ]
+
+    def test_a_wildcard_imported_unknown_type_is_not_refused(self, tmp_path: Path) -> None:
+        caller = self._caller("import com.vendor.*;\n", "Widget w) {\n        return w.get(0);")
+        assert [e[1] for e in self._caller_edges(tmp_path, caller)] == [
+            "src/org/acme/TagSet.java::TagSet::get"
+        ]
+
+    def test_an_unresolved_import_of_a_repo_type_is_not_refused(self, tmp_path: Path) -> None:
+        """No import-resolution phase runs here, so the import reads as external.
+
+        The repo declaring the name is what keeps it from being refused.
+        """
+        caller = self._caller(
+            "import org.acme.TagSet;\n", "TagSet t) {\n        return t.get(0);"
+        )
+        assert [e[1] for e in self._caller_edges(tmp_path, caller)] == [
+            "src/org/acme/TagSet.java::TagSet::get"
+        ]
+
+    def test_only_java_records_builtin_declarations(self) -> None:
+        from repowise.core.ingestion.languages.receiver_types import (
+            EXTERNAL_TYPE_LANGUAGES,
+            scan_declarations,
+        )
+
+        assert frozenset({"java"}) == EXTERNAL_TYPE_LANGUAGES
+        # Each name is a builtin of its own language.
+        assert [d.type_name for d in scan_declarations("Task<Foo> t;\n", "csharp")] == []
+        assert [d.type_name for d in scan_declarations("List<Foo> xs;\n", "java")] == [
+            "external:List"
+        ]

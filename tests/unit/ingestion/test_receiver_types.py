@@ -12,6 +12,7 @@ from repowise.core.ingestion.languages.receiver_types import (
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     CallAssignment,
+    external_type_name,
     scan_call_assignments,
     scan_declarations,
     types_by_class,
@@ -196,11 +197,16 @@ class TestRefusals:
         produced real wrong edges before this rule existed.
         """
         body = "void run() { Map.Entry<Object, Object> entry = it.next(); }"
-        assert "entry" not in declared_types(body, "java")
+        assert external_type_name(declared_types(body, "java")["entry"]) == "Map.Entry"
 
     def test_builtin_types_are_refused(self) -> None:
+        """Kept only as an external mark, which types nothing and refuses the call."""
         body = "void run(String name, Object value) { }"
-        assert declared_types(body, "java") == {}
+        types = declared_types(body, "java")
+        assert {name: external_type_name(t) for name, t in types.items()} == {
+            "name": "String",
+            "value": "Object",
+        }
 
     def test_single_letter_type_parameter_is_refused(self) -> None:
         body = "<T> void run(T item) { item.hash(); }"

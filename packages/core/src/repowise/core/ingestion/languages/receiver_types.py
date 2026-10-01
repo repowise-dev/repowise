@@ -321,6 +321,13 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # on the scan actually finding typed fields in the language's idiom.
 IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java", "kotlin", "swift"})
 
+# Languages whose scan keeps a declaration of a builtin type, marked external,
+# so the resolver can refuse a call on it instead of matching the method name.
+# Only where nothing in the repo can add a method to a builtin type: C#
+# extension methods, Kotlin and Swift extensions and Rust trait impls all can.
+EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
+_EXTERNAL_TYPE = "external:"
+
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
 # no function behind, so `add.s(...)` is a method call on `Task`. A table, since
 # the decorator lives in an imported framework. Ceiling: an entry earns nothing
@@ -711,6 +718,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
+                if resolved[raw][0] is None and language in EXTERNAL_TYPE_LANGUAGES:
+                    resolved[raw] = (_builtin_type_name(raw, language), False)
             type_name, unwrapped = resolved[raw]
             if type_name is None:
                 continue
@@ -733,6 +742,26 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
 
     found.sort()
     return tuple(found)
+
+
+def _builtin_type_name(raw: str, language: str) -> str | None:
+    """The marked builtin *raw* spells, ``Map.Entry`` for a member type, or None.
+
+    Kept where ``_usable_type_name`` drops it, so a call on the value can be
+    refused rather than left to name matching. A generic parameter (``T``) or
+    any other unknown name stays dropped: unknown is not external.
+    """
+    if _nests_in_a_builtin(raw, language):
+        return _EXTERNAL_TYPE + strip_type_arguments(raw).strip()
+    name = raw if raw.isidentifier() else bare_type_name(raw)
+    return _EXTERNAL_TYPE + name if name in get_builtin_types(language) else None
+
+
+def external_type_name(type_name: str | None) -> str | None:
+    """The builtin a marked type names, or None for any other type."""
+    if type_name is None or not type_name.startswith(_EXTERNAL_TYPE):
+        return None
+    return type_name[len(_EXTERNAL_TYPE) :]
 
 
 class CallAssignment(NamedTuple):
@@ -812,11 +841,17 @@ def _record(types: dict[str, str | None], declaration: Declaration) -> None:
     A name declared with two types maps to ``None`` rather than being dropped:
     only "says nothing" may fall through to a wider scope, not "says something
     unusable".
+
+    A builtin type is the weakest answer: it fills only a name nothing else
+    types, so every non-builtin reading is what it was without it.
     """
-    if declaration.name not in types:
-        types[declaration.name] = declaration.type_name
-    elif types[declaration.name] != declaration.type_name:
-        types[declaration.name] = None
+    name, type_name = declaration.name, declaration.type_name
+    if name not in types or (
+        external_type_name(types[name]) is not None and external_type_name(type_name) is None
+    ):
+        types[name] = type_name
+    elif external_type_name(type_name) is None and types[name] != type_name:
+        types[name] = None
 
 
 def types_in_span(

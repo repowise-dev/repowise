@@ -215,7 +215,7 @@ class Tag {
 # answer the grammar's bare pattern always gave it.
 JAVA_UNTYPED_RECEIVER = """
 class A {
-    int count(Object o) { return o.size(); }
+    <T> int count(T o) { return o.size(); }
 }
 
 class Box {

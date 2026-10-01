@@ -1387,6 +1387,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return True, hit
 
         hit = self._unclassed_receiver_call(file_path, call, caller_id)
+        if hit is None and self._receiver_type_is_external(file_path, call, caller_id):
+            # The method is the external type's: refused, not left to a name match.
+            return True, None
         return hit is not None, hit
 
     def _unclassed_receiver_call(

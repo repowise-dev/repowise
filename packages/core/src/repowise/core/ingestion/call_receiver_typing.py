@@ -11,6 +11,7 @@ from typing import NamedTuple, TypeVar
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
     CALL_TYPED_LANGUAGES,
+    EXTERNAL_TYPE_LANGUAGES,
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
     RANGE_LANGUAGES,
@@ -22,6 +23,7 @@ from .languages.receiver_types import (
     ScopeMarks,
     bound_types,
     clauses_in_span,
+    external_type_name,
     framework_decorated_type,
     in_spans,
     merge_spans,
@@ -41,7 +43,7 @@ from .models import CallSite, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type, go_first_result
 from .symbol_identity import id_segment_name
-from .type_names import POINTER_LIKE_MEMBERS, bare_type_name
+from .type_names import POINTER_LIKE_MEMBERS, bare_type_name, type_qualifier
 
 # Which symbols own a class scope, and which of them swallow one. A class span
 # contains every method body inside it, so both sets are needed to tell a field
@@ -333,6 +335,12 @@ class ReceiverTypingMixin:
         )
         if type_name is None:
             return None
+        builtin = external_type_name(type_name)
+        if builtin is not None:
+            # Typed only when a repo class shadows the builtin's name.
+            if builtin not in self._known_type_names:
+                return None
+            type_name = builtin
         if "::" in type_name:
             # A symbol id, recorded by ``_add_call_typed_locals``.
             return self._call_typed_receiver(file_path, call, caller_id, type_name)
@@ -365,13 +373,21 @@ class ReceiverTypingMixin:
         only a name neither binds reaches module scope.
         """
         body_types = self._declared_types_in(file_path, caller_id, language)
-        if receiver_name in body_types:
-            return body_types[receiver_name], "body"
+        # A builtin type answers only when nothing else does, so a local
+        # ``String data`` leaves ``this.data.m()``, which reaches here as
+        # ``data.m()``, to the field.
+        declared = body_types.get(receiver_name)
+        builtin_local = external_type_name(declared) is not None
+        if receiver_name in body_types and not builtin_local:
+            return declared, "body"
         if language in IMPLICIT_FIELD_LANGUAGES:
             class_id = self._caller_class_id(caller_id)
             fields = self._field_types_in(file_path, language).get(class_id, {})
-            if receiver_name in fields:
-                return fields[receiver_name], "field"
+            field = fields.get(receiver_name)
+            if receiver_name in fields and not (builtin_local and external_type_name(field)):
+                return field, "field"
+        if builtin_local:
+            return declared, "body"
         # Third scope: a module-level def a framework decorator turned into an
         # instance, which is neither in the body nor a field.
         if language in FRAMEWORK_DECORATOR_LANGUAGES:
@@ -701,6 +717,36 @@ class ReceiverTypingMixin:
         if self._method_name_set is None:
             self._method_name_set = frozenset(method for _, method in self._global_methods)
         return self._method_name_set
+
+    def _receiver_type_is_external(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Is ``x.m()``'s receiver declared with a type the repository does not own?
+
+        Then the method is that type's and no name match in the repo is the
+        callee. External means a builtin (``ArrayList``, ``Map.Entry``) or a name
+        an import binds outside the repo; a type the repo also declares is
+        never external, since an unresolved import or a shadowing ``class
+        List`` may mean it. A name that merely resolves nowhere (a generic
+        parameter, a wildcard import's member) is unknown, not external.
+
+        The declared type decides, not the runtime one: ``List<E> l`` calling
+        ``l.add()`` names ``List.add`` even when a repo class implements
+        ``List``, and that override is a dispatch edge, not this call's target.
+        """
+        receiver_name = call.receiver_name or ""
+        if "." in receiver_name:
+            return False
+        language = self._typed_receiver_language(file_path, call)
+        if language not in EXTERNAL_TYPE_LANGUAGES:
+            return False
+        type_name, _ = self._receiver_type_and_scope(file_path, caller_id, language, receiver_name)
+        if type_name is None or "::" in type_name:
+            return False
+        builtin = external_type_name(type_name)
+        # ``Map.Entry``: the builtin head settles it, unless the repo owns the head.
+        head = type_qualifier(builtin or type_name) or builtin or type_name
+        if head in self._known_type_names:
+            return False
+        return builtin is not None or head in self._externally_bound_names(file_path)
 
     def _externally_bound_names(self, file_path: str) -> frozenset[str]:
         """Simple names this file imports from outside the repo.
