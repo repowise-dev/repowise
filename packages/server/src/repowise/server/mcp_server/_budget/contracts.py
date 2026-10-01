@@ -318,12 +318,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         protected=(
             "mode",
-            "directive",
-            # Both pillar leads are bounded by construction and are the only
-            # actionable content a bare dashboard carries for them, so shedding
-            # one would leave that pillar with counts and nothing to do.
-            "performance_directive",
-            "refactoring_directive",
+            # The one lead, bounded by construction (at most five compact
+            # items): shedding it would leave the dashboard with nothing to do.
+            "fix_first",
+            "fix_id",
             "opportunity_id",
             "model_state",
             "targets",

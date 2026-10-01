@@ -290,15 +290,16 @@ async def test_expected_sits_out_of_the_default_queue_but_not_the_facet(
     assert only_expected["items"][0]["actionability_reason"] == "inherent_to_boundary"
 
 
-async def test_an_expected_row_never_leads_the_directive(app, client: AsyncClient) -> None:
-    from repowise.server.services.performance_health import PerformanceHealthService
+async def test_an_expected_row_never_leads(app, client: AsyncClient) -> None:
+    import json
 
     finding = _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"])
     repo_id, _ = await _seed(app, client, [finding])
     async with app.state.session_factory() as session:
-        directive = await PerformanceHealthService(session, repo_id, "repo").directive()
-    assert directive["status"] == "clear"
-    assert directive["expected_total"] == 1
+        row = await crud.get_performance_summary(session, repo_id)
+    summary = json.loads(row.summary_json)
+    assert summary["lead"] is None
+    assert summary["actionability"] == {"expected": 1}
 
 
 async def test_an_id_from_an_older_model_reports_stale_rather_than_no_plan(

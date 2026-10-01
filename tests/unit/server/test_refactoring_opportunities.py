@@ -370,21 +370,21 @@ async def test_a_files_opportunities_are_one_indexed_lookup(client, app, test_en
 
 
 @pytest.mark.asyncio
-async def test_bare_get_health_carries_one_bounded_refactoring_directive(client, app):
+async def test_bare_get_health_leads_with_fix_first_and_links_the_opportunity(client, app):
     repo_id = await _seed(client, app, files=12)
     get_health = await _mcp(app)
     result = await get_health()
-    directive = result["refactoring_directive"]
-    assert directive["status"] == "available"
-    assert directive["opportunity_id"].startswith("refop3_")
-    assert directive["next_action"]["arguments"]["opportunity_id"] == directive["opportunity_id"]
-    assert directive["opportunities_total"] == 12
-    # Level 0 is a lead, not a queue: it must stay small enough to survive.
-    assert len(str(directive)) < 1536
+    assert "refactoring_directive" not in result
     assert "refactoring_opportunities" not in result
+    lead = result["fix_first"]["lead"]
+    assert lead["kind"] == "refactor"
+    opportunity_id = lead["next_call"]["arguments"]["opportunity_id"]
+    assert opportunity_id.startswith("refop3_")
+    # Level 0 is a lead, not a queue: it must stay small enough to survive.
+    assert len(str(result["fix_first"])) < 6000
 
     # And the id it names resolves in one call.
-    detail = await get_health(opportunity_id=directive["opportunity_id"])
+    detail = await get_health(opportunity_id=opportunity_id)
     assert detail["found"] is True
     # The lookup flag never shares a name with the lifecycle it sits beside:
     # ``resolved: true`` next to ``status: "open"`` read as a contradiction.
@@ -396,13 +396,15 @@ async def test_bare_get_health_carries_one_bounded_refactoring_directive(client,
 
 
 @pytest.mark.asyncio
-async def test_the_directive_is_clear_rather_than_absent_with_no_opportunities(client, app):
+async def test_the_rest_rollup_lead_is_clear_rather_than_absent_with_no_opportunities(
+    client, app
+):
     repo_id = await _repo(client)
     async with app.state.session_factory() as session:
         await crud.finalize_refactoring_opportunities(session, repo_id)
         await session.commit()
-    get_health = await _mcp(app)
-    assert (await get_health())["refactoring_directive"]["status"] == "clear"
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert body["directive"]["status"] == "clear"
 
 
 @pytest.mark.asyncio

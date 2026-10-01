@@ -79,67 +79,39 @@ class _Statements:
         self.n += 1
 
 
+async def _lead_id(get_health) -> str:
+    """The top performance opportunity, from the queue the dashboard links to."""
+    page = await get_health(include=["performance"], only=["performance_opportunities"], limit=1)
+    return page["performance_opportunities"][0]["opportunity_id"]
+
+
 @pytest.mark.asyncio
 async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materialized):
-    """Performance carries no defect impact, so it never won the main lead.
+    """Performance carries no defect impact, so it used to lead nowhere.
 
-    The dashboard reported counts and nothing an agent could act on. The
-    additive lead is one primary-key read of the current summary row.
+    Fix first ranks the intervention beside the code-shape work, with the call
+    that opens its plan.
     """
     from repowise.server.mcp_server import get_health
 
     result = await get_health()
-    directive = result["performance_directive"]
-    # A fan-out at a db boundary is advisory until something bounds it.
-    assert directive["status"] == "advisory"
-    assert directive["prerequisites"] == ["bounded_concurrency"]
-    assert directive["validation"]["basis"] in {"measured", "inferred", "mixed", "unknown"}
-    assert directive["opportunity_id"].startswith("perf")
-    assert directive["plan_state"] == "available"
-    assert directive["next_action"] == {
-        "tool": "get_health",
-        "arguments": {"opportunity_id": directive["opportunity_id"]},
-    }
-    assert 0 < len(json.dumps(directive)) <= 1500
-    # The existing lead is untouched.
-    assert "directive" in result
+    assert "performance_directive" not in result
+    perf = [i for i in result["fix_first"]["items"] if i["kind"] == "perf_fix"]
+    assert perf, result["fix_first"]
+    # The five callers behind one shared helper are one intervention, one item.
+    shared = [i for i in perf if i["target"]["symbol"] == "load"]
+    assert len(shared) == 1, perf
+    assert shared[0]["next_call"]["arguments"]["opportunity_id"].startswith("perf")
+    assert 0 < len(json.dumps(shared[0])) <= 1500
 
 
 @pytest.mark.asyncio
 async def test_the_cheapest_documented_call_stays_cheap(setup_mcp, materialized):
-    """``only=["directive"]`` must not start paying for the second lead."""
+    """``only=["fix_first"]`` pays for the lead and nothing else."""
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(only=["directive"])
-    assert "performance_directive" not in result
-    assert "directive" in result
-
-
-@pytest.mark.asyncio
-async def test_a_clear_repository_never_reports_that_it_is_fast(setup_mcp, health_data):
-    """No supported pattern is not a measurement of how the code runs."""
-    from repowise.core.persistence.crud import finalize_performance_opportunities as finalize
-    from repowise.server.mcp_server import _state, get_health
-
-    async with _state._session_factory() as session:
-        await session.execute(
-            HealthFinding.__table__.delete().where(HealthFinding.dimension == "performance")
-        )
-        await finalize(session, health_data)
-        await session.commit()
-    directive = (await get_health())["performance_directive"]
-    assert directive["status"] == "clear"
-    assert "fast" not in directive["detail"].lower()
-
-
-@pytest.mark.asyncio
-async def test_an_unanalyzed_index_is_unavailable_not_clear(setup_mcp, health_data):
-    """A missing materialization must not read as a clean repository."""
-    from repowise.server.mcp_server import get_health
-
-    directive = (await get_health())["performance_directive"]
-    assert directive["status"] == "unavailable"
-    assert directive["reason"] == "no_materialized_analysis"
+    result = await get_health(only=["fix_first"])
+    assert set(result) == {"fix_first", "mode", "_meta"}
 
 
 @pytest.mark.asyncio
@@ -283,7 +255,7 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
 ):
     from repowise.server.mcp_server import get_health
 
-    lead = (await get_health())["performance_directive"]["opportunity_id"]
+    lead = await _lead_id(get_health)
     result = await get_health(opportunity_id=lead)
 
     assert result["mode"] == "performance_opportunity"
@@ -314,7 +286,7 @@ async def test_evidence_pages_to_exhaustion_with_no_duplicate_or_missing_row(
 ):
     from repowise.server.mcp_server import get_health
 
-    lead = (await get_health())["performance_directive"]["opportunity_id"]
+    lead = await _lead_id(get_health)
     seen: list[str] = []
     cursor: int | None = 0
     while cursor is not None:
@@ -333,7 +305,7 @@ async def test_every_evidence_reference_round_trips_through_the_finding_selector
     """Evidence used to carry the storage row id, which a reindex replaces."""
     from repowise.server.mcp_server import get_health
 
-    lead = (await get_health())["performance_directive"]["opportunity_id"]
+    lead = await _lead_id(get_health)
     page = await get_health(opportunity_id=lead, only=["performance_evidence"], limit=50)
     for item in page["evidence"]:
         resolved = await get_health(finding_id=item["finding_id"])
@@ -351,7 +323,7 @@ async def test_asking_for_no_rows_returns_no_rows(setup_mcp, materialized):
     """
     from repowise.server.mcp_server import get_health
 
-    lead = (await get_health())["performance_directive"]["opportunity_id"]
+    lead = await _lead_id(get_health)
     page = await get_health(
         opportunity_id=lead, only=["performance_evidence"], limit=0
     )
@@ -419,17 +391,14 @@ async def test_two_detail_selectors_conflict_explicitly(setup_mcp, materialized)
 
 
 @pytest.mark.asyncio
-async def test_the_lede_links_the_exact_plan_for_the_exact_lead(setup_mcp, materialized):
+async def test_the_lead_links_the_exact_plan_for_the_exact_lead(setup_mcp, materialized):
     """This used to match on a key the plan writer never wrote, so it was null."""
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(
-        include=["performance", "refactoring"], only=["recommendation_lede"]
-    )
-    lede = result["recommendation_lede"]
-    assert lede["performance_plan_id"] is not None
-    assert lede["performance_plan_id"].startswith("refac3_")
-    plan = await get_health(plan_id=lede["performance_plan_id"])
+    page = await get_health(include=["performance"], only=["performance_opportunities"], limit=1)
+    lead = page["performance_opportunities"][0]
+    assert lead["plan_reference"].startswith("refac3_")
+    plan = await get_health(plan_id=lead["plan_reference"])
     assert plan["resolved"] is True
 
 
@@ -531,9 +500,8 @@ async def test_a_plan_is_validated_by_a_test_named_for_its_file_when_no_edge_rea
     await finalize_performance_opportunities(session, health_data, analyzed_commit="c" * 40)
     await session.commit()
 
-    lead = (await get_health())["performance_directive"]
-    assert lead["validation"]["via"] == "name-match"
-    opportunity = await get_health(opportunity_id=lead["opportunity_id"])
+    opportunity = await get_health(opportunity_id=await _lead_id(get_health))
+    assert opportunity["validation"]["via"] == "name-match"
     plan = (await get_health(plan_id=opportunity["plan_reference"]))["plan"]
 
     assert "tests/test_a.py" in opportunity["validation"]["tests"]

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.core.persistence.crud import get_health_finding_by_public_id
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_health.analysis_meta import _attach_repository_analysis_meta
@@ -39,6 +40,7 @@ async def _detail_response(
     finding_id: str | None,
     plan_id: str | None,
     opportunity_id: str | None,
+    fix_id: str | None = None,
     only_set: set[str],
     limit: int,
     cursor: int,
@@ -48,6 +50,8 @@ async def _detail_response(
     At most one selector is set by the time this runs: ``_selector_conflict``
     refuses two before any read.
     """
+    if fix_id:
+        return await _fix_detail_response(session, repository, fix_id)
     if finding_id:
         return await _finding_detail_response(
             session, repository, reference_repository, finding_id
@@ -93,6 +97,24 @@ async def _finding_detail_response(
             targets=[match.file_path] if match else None,
         ),
     }
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> dict[str, Any]:
+    """One Fix-first item in full: action steps, verify, risk, context."""
+    item = (await load_fix_first(session, repository.id, limit=None)).find(fix_id)
+    result = {
+        "mode": "fix_item",
+        "fix_id": fix_id,
+        "item": item.as_dict() if item else None,
+        "resolved": item is not None,
+        "_meta": _build_meta(
+            repository=repository, targets=[item.target.file_path] if item else None
+        ),
+    }
+    if item is None:
+        result["next_action"] = "get_health() lists the current fix_first ids"
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
 
@@ -145,7 +167,7 @@ def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:
         "resolved": False,
         "reason": "mutually_exclusive_selectors",
         "selectors": named,
-        "detail": "Pass exactly one of finding_id, plan_id, opportunity_id.",
+        "detail": "Pass exactly one of fix_id, finding_id, plan_id, opportunity_id.",
     }
 
 

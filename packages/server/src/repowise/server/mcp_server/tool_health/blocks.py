@@ -20,7 +20,6 @@ from repowise.server.mcp_server.tool_health.coverage import _coverage_block
 from repowise.server.mcp_server.tool_health.loading import HealthData
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.pillars import (
-    _recommendation_lede,
     _render_performance,
     _render_refactoring,
 )
@@ -41,10 +40,6 @@ def add_optional_blocks(
         result["trend"] = _trend_block(data, req, pager)
     _render_refactoring(result, data.refactoring, req, pager)
     _render_performance(result, data.performance, req, pager)
-    if req.wants_lede:
-        result["recommendation_lede"] = _recommendation_lede(
-            data.performance, data.refactoring_recommendations, data.reference_repository, req
-        )
     if "coverage" in include:
         result["coverage"] = _coverage_block(
             data.coverage_rows,
@@ -164,8 +159,7 @@ def _suggestion_legend(data: HealthData) -> dict[str, str]:
     change what a surviving key contains.
 
     The legend explains the findings, not ``refactoring_plans``, so an entry can
-    describe a biomarker no plan addresses. ``directive.plan_addresses_reason``
-    reports that mismatch.
+    describe a biomarker no plan addresses.
     """
     present_types = {getattr(r, "biomarker_type", None) for r in data.findings.legend_rows}
     return {bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)}

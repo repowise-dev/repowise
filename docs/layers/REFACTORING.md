@@ -161,8 +161,8 @@ repowise health --refactoring-targets            # ranked table
 ```
 
 ```python
-# MCP. A bare call already carries one bounded refactoring_directive.
-get_health()
+# MCP. A bare call leads with fix_first, which ranks refactorings beside the rest.
+get_health(only=["fix_first"])
 get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
 get_health(include=["refactoring"], only=["refactoring_summary"])
 get_health(opportunity_id="refop2_...")                      # steps, plans, validation

@@ -386,73 +386,6 @@ class PerformanceHealthService:
         grouped = await performance_facet_counts(self._session, self._repository_id)
         return _rescope(base, grouped, contexts)
 
-    async def directive(self) -> dict[str, Any]:
-        """One bounded next action for a bare dashboard call.
-
-        Selection is the best concrete next action rather than the highest raw
-        rank: the materialized order already sorts actionable work above
-        high-volume evidence, so the lead is the first row.
-
-        The lead and the counts come off the same row read, because the lead is
-        the reason the row exists.
-        """
-        row = await get_performance_summary(self._session, self._repository_id)
-        summary = _summary_of(row)
-        if summary["status"] == "unavailable":
-            return {
-                "status": "unavailable",
-                "reason": summary["reason"],
-                "detail": summary["detail"],
-            }
-        lead = _loads(row.summary_json).get("lead")
-        counts = summary["actionability"]
-        base = {
-            "performance_model_version": PERFORMANCE_MODEL_VERSION,
-            "opportunities_total": summary["total"],
-            "plan_ready_total": counts.get("plan_ready", 0),
-            "advisory_total": counts.get("advisory", 0),
-            "investigate_total": counts.get("investigate", 0),
-            "expected_total": counts.get("expected", 0),
-        }
-        if summary["status"] == "stale_model":
-            return {
-                **base,
-                "status": "unavailable",
-                "reason": "stale_model",
-                "detail": (
-                    "The stored performance analysis predates the current model. "
-                    "Run repowise update to rescore."
-                ),
-            }
-        if lead is None:
-            return {
-                **base,
-                "status": "clear",
-                # Never "fast": the analysis found no supported pattern, which
-                # is not a measurement of how this code runs.
-                "detail": "No supported open pattern surfaced.",
-            }
-        return {
-            **base,
-            "status": lead["actionability_state"],
-            "opportunity_id": lead["opportunity_id"],
-            "title": _title(lead),
-            "file_path": lead["file_path"],
-            "execution_context": lead["execution_context"],
-            "boundary_kind": lead["boundary_kind"],
-            "affected_call_sites_total": lead["affected_call_sites_total"],
-            "observations_total": lead["observations_total"],
-            "why_ranked": lead["why_ranked"][:3],
-            "plan_state": lead["plan_state"],
-            "plan_reason": _PLAN_REASONS[lead["plan_state"]],
-            "prerequisites": lead["prerequisites"],
-            **_plan_brief(lead.get("plan"), economics=False),
-            "next_action": {
-                "tool": "get_health",
-                "arguments": {"opportunity_id": lead["opportunity_id"]},
-            },
-        }
-
     # -- detail ------------------------------------------------------------
 
     async def detail(
@@ -650,25 +583,19 @@ def evidence_block(
     return block
 
 
-def _plan_brief(plan: dict[str, Any] | None, *, economics: bool = True) -> dict[str, Any]:
-    """The stored plan's validation (and steps, economics), or nothing on an older store."""
+def _plan_brief(plan: dict[str, Any] | None) -> dict[str, Any]:
+    """The stored plan's validation, steps and economics, or nothing on an older store."""
     if not plan:
         return {}
     validation = plan.get("validation") or {}
-    keys = ("basis", "via", "total", "tests", "commands") if economics else ("basis", "via", "total")
-    brief: dict[str, Any] = {"validation": {key: validation.get(key) for key in keys}}
-    if economics:
-        brief["plan_steps"] = plan.get("steps", [])
-        brief["plan_economics"] = {
+    keys = ("basis", "via", "total", "tests", "commands")
+    return {
+        "validation": {key: validation.get(key) for key in keys},
+        "plan_steps": plan.get("steps", []),
+        "plan_economics": {
             key: plan.get(key) for key in ("effort_bucket", "benefit", "cost", "risk")
-        }
-    return brief
-
-
-def _title(lead: dict[str, Any]) -> str:
-    """A human cause, not a marker name."""
-    symbol = lead.get("intervention_symbol") or lead.get("terminal_sink") or lead["file_path"]
-    return f"{lead['biomarker_type']} reaching {symbol}"
+        },
+    }
 
 
 def _unresolved_detail(state: dict[str, Any]) -> str:

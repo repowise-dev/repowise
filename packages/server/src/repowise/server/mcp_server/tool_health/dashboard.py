@@ -12,11 +12,7 @@ from repowise.server.mcp_server.tool_health.loading import HealthData
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
-from repowise.server.mcp_server.tool_health.summary import (
-    _compute_kpis,
-    _directive,
-    _gap_analysis,
-)
+from repowise.server.mcp_server.tool_health.summary import _compute_kpis, _gap_analysis
 from repowise.server.mcp_server.tool_health.targeted import ModeTotals
 
 
@@ -43,26 +39,8 @@ def build_dashboard(
         coverage=data.perf_coverage,
     )
     result: dict[str, Any] = {
-        # Lead with the recommendation; every block below ranks and describes.
-        "directive": _directive(
-            data.by_leverage,
-            data.leads,
-            gap.get("weighted_gross_gap_points") or 0,
-            data.plan_biomarkers_by_path,
-            data.plan_count_by_path,
-        ),
-        # Additive leads for the refactoring and performance pillars, which
-        # the deficit-ranked directive above cannot express.
-        **(
-            {"refactoring_directive": data.refactoring.directive}
-            if data.refactoring.directive is not None
-            else {}
-        ),
-        **(
-            {"performance_directive": data.performance.directive}
-            if data.performance.directive is not None
-            else {}
-        ),
+        # The one lead; every block below ranks and describes.
+        **({"fix_first": _fix_first_block(data)} if data.fix_first is not None else {}),
         "mode": "dashboard",
         "scope": pop.reported_scope,
         "counts": pop.reported_counts,
@@ -112,6 +90,15 @@ def build_dashboard(
     return result, ModeTotals(metrics=None, trends=None, modules=len(all_modules))
 
 
+def _fix_first_block(data: HealthData) -> dict[str, Any]:
+    """Core's queue in the compact projection, with the call for one full item."""
+    queue = data.fix_first
+    block = queue.as_dict(compact=True)
+    if queue.lead is not None:
+        block["detail_call"] = f"get_health(fix_id={queue.lead.id!r})"
+    return block
+
+
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:
     return _serialize_metric(m, data.leads.get(m.file_path), is_test=m.file_path in data.test_paths)
 
@@ -119,8 +106,7 @@ def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:
 def _high_leverage_rows(data: HealthData, gap: dict[str, Any]) -> list[dict[str, Any]]:
     """The leverage ranking, each row with its share of the repository's gap.
 
-    The one place ``weighted_deficit`` gets a denominator, in the unit
-    ``directive`` speaks. The denominator is the gross deficit of below-target
+    The one place ``weighted_deficit`` gets a denominator. The denominator is the gross deficit of below-target
     files, so shares stay within 100%; the net gap would let above-target files
     shrink it and push one large file past 100% (issue #1437).
     """

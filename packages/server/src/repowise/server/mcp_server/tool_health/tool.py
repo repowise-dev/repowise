@@ -13,6 +13,7 @@ from typing import Any
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
+from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -59,8 +60,13 @@ __all__ = ["_ONLY_ALIASES", "get_health"]
     evidence_basis="measured",
     recipes=(
         ToolRecipe(
-            "health_directive",
-            'get_health(only=["directive"])',
+            "health_fix_first",
+            'get_health(only=["fix_first"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_fix_item",
+            'get_health(fix_id="fix1_...")',
             ("get_health",),
         ),
         ToolRecipe(
@@ -126,6 +132,7 @@ async def get_health(
     finding_id: str | None = None,
     plan_id: str | None = None,
     opportunity_id: str | None = None,
+    fix_id: str | None = None,
     performance_view: str | None = None,
     performance_context: str | None = None,
     performance_boundary: str | None = None,
@@ -137,16 +144,16 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets`` returns a dashboard; targets rank files and findings.
+    No ``targets``: a dashboard led by ``fix_first``, what to fix first;
+    targets rank files and findings.
     Never recomputes health: commit, then run ``repowise update``.
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; unmatched ones land in
-            ``unresolved``.
+        targets: file paths or ``module:<name>``; misses land in ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
-            ``accuracy``|``signals``|``churn_complexity``|``doc_drift``,
-            or a dimension incl. ``advisory``; ``performance`` and
+            ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
+            ``semantics``, or a dimension incl. ``advisory``; ``performance`` and
             ``refactoring`` add queues.
         only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
@@ -155,21 +162,20 @@ async def get_health(
         repo: usually omitted.
         limit: max rows per ranked list, ``0`` for none.
         cursor: zero-based offset into a ranked list.
-        finding_id/plan_id: stable ``id`` from a finding or plan.
+        fix_id/finding_id/plan_id: stable ``id`` of an item, finding or plan.
         opportunity_id: ``perf...``/``refop...``: the unit, its steps or
             plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default)|``canonical``|
             ``file_spread``; _type/_confidence/_effort filter.
         performance_view/_context/_boundary/_confidence/_actionability/_sort:
-            queue filters; a rejected value lists the accepted.
+            queue filters.
         scope / counts: default ``all``/``everything``. ``production`` drops
-            test files; ``code_shape`` drops the git-derived half of the
-            score and its findings.
+            test files; ``code_shape`` drops git-derived score and findings.
 
     """
     started = perf_counter()
     conflict = _selector_conflict(
-        finding_id=finding_id, plan_id=plan_id, opportunity_id=opportunity_id
+        fix_id=fix_id, finding_id=finding_id, plan_id=plan_id, opportunity_id=opportunity_id
     )
     if conflict is not None:
         return _note_inapplicable_controls(conflict, scope, counts)
@@ -208,11 +214,13 @@ async def get_health(
             finding_id=finding_id,
             plan_id=plan_id,
             opportunity_id=opportunity_id,
+            fix_id=fix_id,
             only_set=req.only_set,
             limit=req.limit,
             cursor=req.cursor,
         )
         if detail is not None:
+            _attach_semantics(detail, req)
             return _note_inapplicable_controls(detail, scope, counts)
         data = await load_health_data(
             session, repository, reference_repository, ctx.path, req
@@ -235,9 +243,16 @@ async def get_health(
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
         pager.report_omissions(result, omission_collector, reference_repository)
         omission_collector.attach(result)
+        _attach_semantics(result, req)
         # Server-side wall clock, as ``get_context`` reports.
         result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
         return result
+
+
+def _attach_semantics(result: dict[str, Any], req: HealthRequest) -> None:
+    """The unit legend, on request: it is the same on every call."""
+    if "semantics" in req.include_set:
+        result.setdefault("_meta", {})["health_semantics"] = health_semantics_contract()
 
 
 def _finish(

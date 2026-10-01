@@ -37,6 +37,8 @@ _KNOWN_INCLUDES = frozenset(
         "advisory",
         # Opts into provisional finding types, each labelled "unverified".
         "unverified",
+        # The shared legend for deficit points and percentiles, in ``_meta``.
+        "semantics",
     }
 )
 
@@ -125,19 +127,11 @@ class HealthRequest:
 
     @property
     def wants_performance_opportunities(self) -> bool:
-        return (
-            self.wants("performance_opportunities")
-            or self.wants("recommendation_lede")
-            or self.wants("performance_summary")
-        )
+        return self.wants("performance_opportunities") or self.wants("performance_summary")
 
     @property
     def wants_refactoring_opportunities(self) -> bool:
-        return (
-            self.wants("refactoring_opportunities")
-            or self.wants("recommendation_lede")
-            or self.wants("refactoring_summary")
-        )
+        return self.wants("refactoring_opportunities") or self.wants("refactoring_summary")
 
     @property
     def needs_test_paths(self) -> bool:
@@ -164,14 +158,4 @@ class HealthRequest:
         ``include=["refactoring"]`` leads with composed opportunities, and
         emitting plans too would ship the same work twice.
         """
-        return "refactoring" in self.include_set and (
-            "refactoring_plans" in self.only_set
-            # The cross-pillar lede quotes one plan.
-            or self.wants_lede
-        )
-
-    @property
-    def wants_lede(self) -> bool:
-        return {"performance", "refactoring"} <= self.include_set and self.wants(
-            "recommendation_lede"
-        )
+        return "refactoring" in self.include_set and "refactoring_plans" in self.only_set
