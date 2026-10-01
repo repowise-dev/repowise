@@ -407,7 +407,12 @@
       },
       "deletable_lines": null,
       "filtered_findings": null,
+      "filters": {
+        "excluded_kinds": [],
+        "min_confidence": null
+      },
       "safe_to_delete_count": null,
+      "scope": null,
       "total_findings": null
     },
     "tiers": {

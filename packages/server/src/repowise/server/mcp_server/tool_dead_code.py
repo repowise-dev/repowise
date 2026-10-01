@@ -65,6 +65,38 @@ class _FindingFilters:
         shown = [f for f in findings if f.kind not in self.withheld_kinds]
         return shown, withheld_summary(counts, self.withheld_kinds)
 
+    def applied(self) -> dict[str, Any]:
+        """The filters that differ from the defaults, as the summary echoes them."""
+        applied: dict[str, Any] = {}
+        if self.kind:
+            applied["kind"] = self.kind
+        elif self.excluded_kinds != _DEFAULT_EXCLUDED_KINDS:
+            applied["excluded_kinds"] = sorted(self.excluded_kinds)
+        if self.safe_only:
+            applied["safe_only"] = True
+        if self.min_confidence != RISK_CAP_CONFIDENCE:
+            applied["min_confidence"] = self.min_confidence
+        if self.directory:
+            applied["directory"] = self.directory
+        if self.owner:
+            applied["owner"] = self.owner
+        return applied
+
+    def summarize(self, summary: dict[str, Any]) -> None:
+        """Say which counts the filters touched, so empty tiers beside a
+        non-zero ``total_findings`` do not read as a contradiction."""
+        summary["scope"] = _SUMMARY_SCOPE
+        applied = self.applied()
+        if applied:
+            summary["filters"] = applied
+
+
+_SUMMARY_SCOPE = (
+    "total_findings, by_kind, deletable_lines and safe_to_delete_count cover every "
+    "open finding; filtered_findings and tiers cover what the filters kept "
+    f"(min_confidence defaults to {RISK_CAP_CONFIDENCE})"
+)
+
 
 def _compute_excluded_kinds(
     *,
@@ -84,6 +116,14 @@ def _compute_excluded_kinds(
     if not include_zombie_packages:
         excluded.add("zombie_package")
     return excluded
+
+
+_DEFAULT_EXCLUDED_KINDS = _compute_excluded_kinds(
+    no_unreachable=False,
+    no_unused_exports=False,
+    include_internals=False,
+    include_zombie_packages=True,
+)
 
 
 def _apply_finding_filters(findings: list, filters: _FindingFilters) -> list:
@@ -163,6 +203,7 @@ async def _get_dead_code_all_repos(
         "safe_to_delete_count": total_safe,
         "by_kind": merged_by_kind,
     }
+    filters.summarize(summary)
     if merged_withheld:
         summary["withheld_types"] = merged_withheld
 
@@ -458,6 +499,7 @@ async def get_dead_code(
         "safe_to_delete_count": sum(1 for f in all_findings if _effective_safe(f)),
         "by_kind": by_kind,
     }
+    filters.summarize(summary)
     if withheld:
         summary["withheld_types"] = withheld
 
