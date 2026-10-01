@@ -630,6 +630,55 @@ opportunity links by its exact stable `opportunity_id` to the matching
 nearby plan. When no safe plan exists, Code Health says so and keeps the raw
 evidence available.
 
+## Fix first
+
+**Fix first** is one ranked list of what to fix in a repository, built once in
+core (`analysis/health/fix_first/`) from stored rows and rendered the same way by
+`get_health()`, `repowise health`, the Code Health page, the Overview's Do next and
+the generated CLAUDE.md. An item is one unit of work: a file's composed
+refactoring, one performance intervention (the loop you change), or the strongest
+code-shape finding of a file that has no plan. Each item says what to change and
+where (file and line), why it matters there, the first concrete edit, the gain, the
+effort and the tests to run after.
+
+**What may be an item.** A unit must be shipped code with a concrete first edit
+that is worth doing. Everything else is left out and counted in
+`totals.excluded`, one reason per unit:
+
+| Reason | What it leaves out |
+|---|---|
+| `test` | Test files. `scope=all` keeps them, labelled. |
+| `tooling` | Scripts, tools, benchmarks, build and CI files, migrations, and code under a directory whose role is unknown (docs, demos). |
+| `generated` | Generated files. |
+| `vendored` | Third-party code: `vendor/`, `third_party/`, `node_modules/` and similar directories, minified files, and a library with its own license header among served assets. |
+| `docs_example` | Documentation code and examples: `docs/`, `docs_src/`, `examples/`, tutorials, samples. |
+| `unknown` | A performance cause whose code context could not be classified. |
+| `expected` | A performance cause whose repetition is expected. |
+| `no_strategy` | A performance cause with no supported fix strategy. |
+| `no_plan` | A performance cause with no stored safe plan to quote. |
+| `below_min_worth` | A refactoring that recovers under 0.5 health on its file, or has no steps; a string built in a loop that is bounded or not in production code. |
+| `history_only` | A file whose only findings come from git history (churn, ownership, co-change). History is context on an item, never the item. |
+| `deprecated` | A function marked deprecated. |
+| `inherent_dispatch` | A function where one dispatch on one value holds 60% or more of its decision points, unless a duplicate also sits in it. On the dev labels that share held 9 complexity rows, 8 of them rejected. |
+| `small_function` | A complexity unit under 30 code lines and under CCN 15. On the 67 labelled dev rows that cut drops 13 rejected and 4 accepted. |
+| `no_concrete_step` | No first edit with a file and a line or a named group: a cycle with no import line to cut, a move with no destination, a split with no named groups, a class finding with no member groups. |
+| `low_value_kind` | A kind raters found not worth doing: Extract Class (0 of 14), Move Method (0 of 34), low cohesion (0 of 46), long method (0 of 10), and long parameter lists (0 of 2, thinly measured). |
+
+**Order.** Items rank by value first: the larger of the health they recover and
+the size of the problem (CCN 20, 40, 80 and 150; 100, 200, 400 and 800 lines;
+nesting 5, 6 and 8; a critical or brain-method finding; one more on a hot file),
+so a function far past every bar leads ahead of tidy work. A performance fix's
+value is its cost: a production, entry-reachable database or network call in a
+loop that grows with the data shares the top band. Then tier: `now` (worth doing,
+and the plan is safe to start), `next` (worth doing, the fix needs judgment),
+`later`. No kind takes more than 3 of the first 5 places while another has an item
+worth doing.
+
+**Verify.** Each item carries up to 5 tests from its stored validation profile,
+each with how it reaches the changed code (call graph, import graph, a matching
+name or a coverage report), and the command that runs them. A finding with no
+plan says so and names none.
+
 ## Refactoring targets
 
 ```bash

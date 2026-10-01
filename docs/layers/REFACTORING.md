@@ -154,6 +154,33 @@ Both older values keep working. The same parameter also selects the legacy
 `refactoring_plans` list's view, where `diversified` resolves to that list's
 historical `canonical` default.
 
+## Fix first, and the default scope
+
+Fix first ([CODE_HEALTH.md](CODE_HEALTH.md#fix-first)) ranks refactorings beside
+performance fixes and code-shape findings. A refactoring opportunity is a Fix-first
+candidate when its file ships, it recovers at least 0.5 health, its lead step is a
+kind raters found worth doing, and that step names a concrete edit (lines to lift,
+a destination, the import to cut, named groups); a complexity step also needs a
+function of at least 30 code lines or CCN 15 that is not mostly one dispatch on one
+value.
+
+**The refactoring view lists those by default.** On this repository's index that is
+94 of 702 open opportunities: 507 fall below the worth floor, 42 are in tests, 41
+are small functions, and 18 are tooling, low-value kinds, docs, generated or
+without a concrete step. The eligibility is read from the Fix-first builder itself,
+so the view and the queue cannot disagree.
+
+| `scope` | Lists |
+|---|---|
+| `fix_first` *(default for the open, repository-wide queue)* | Only what Fix first would take. `hidden` counts the rest of the filtered set, `{"total": n, "by_reason": {...}}`, by the same exclusion reasons. |
+| `all` | The full inventory. The default when the call names a file, or lists a triaged status, which Fix first never reads. |
+
+The REST route takes `scope`, MCP `get_health` takes `refactoring_scope` and reports
+`refactoring_opportunities_scope` and `refactoring_opportunities_hidden`, and facet
+counts follow the scope. The web board's Scope control switches between **Worth
+doing** and **Full inventory**, and its count line reads "Showing N worth doing; M
+more in the full inventory", with the reasons beneath it.
+
 ## Surfaces
 
 ```bash
@@ -176,6 +203,7 @@ get_health(targets=["src/api/server.py"])                    # one file
 # REST. Both surfaces read services/refactoring_health.py, so they cannot
 # answer differently; a parity suite asserts order, filters, totals and detail.
 GET /api/repos/{repo_id}/refactoring/opportunities?view=diversified&limit=20
+GET /api/repos/{repo_id}/refactoring/opportunities?scope=all       # the full inventory
 GET /api/repos/{repo_id}/refactoring/opportunities?file_path=src/api/server.py
 GET /api/repos/{repo_id}/refactoring/opportunities/{opportunity_id}
 GET /api/repos/{repo_id}/refactoring/summary
