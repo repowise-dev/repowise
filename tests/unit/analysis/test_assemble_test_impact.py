@@ -88,6 +88,27 @@ def test_without_the_test_files_a_conftest_drops_out() -> None:
     assert impact["unknown_files"] == ["src/c.py"]
 
 
+def test_a_root_conftest_expansion_is_ranked_and_capped_per_file() -> None:
+    """A root conftest stands for every test; it must not flood the result."""
+    from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+
+    many = {f"tests/aaa/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 20)}
+    impact = assemble_test_impact(
+        ["src/core.py"],
+        {},
+        {"src/core.py": {"tests": ["conftest.py"], "via": "call-graph"}},
+        {},
+        repository_id="r1",
+        repository_test_files={"conftest.py", "tests/unit/test_core.py", *many},
+    )
+    row = impact["files"][0]
+    assert len(row["inferred_tests"]) == MAX_TESTS_PER_TARGET
+    assert row["inferred_tests_total"] == MAX_TESTS_PER_TARGET + 21
+    assert "tests/unit/test_core.py" in row["inferred_tests"]  # nearest kept, not first
+    assert impact["recommendations_total"] == MAX_TESTS_PER_TARGET
+    assert impact["inference"]["candidates_before_dedup"] == MAX_TESTS_PER_TARGET + 21
+
+
 def test_expand_test_scopes_replaces_only_scope_files() -> None:
     from repowise.core.analysis.test_selection import expand_test_scopes
 

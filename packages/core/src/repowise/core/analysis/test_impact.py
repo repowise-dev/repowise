@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
+from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_tests
 from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.exclusion import is_excluded
 from repowise.core.persistence.models import Repository
@@ -217,7 +218,8 @@ def assemble_test_impact(
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
-    paths outside *changed_files* are ignored. *coverage_summary* carries
+    paths outside *changed_files* are ignored. That list is used as the walk
+    found it, except where a scope file expanded (below). *coverage_summary* carries
     ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
     ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
     are the exception type names of a failed read; each marks the analysis degraded.
@@ -230,7 +232,11 @@ def assemble_test_impact(
 
     *repository_test_files* are the repository's test files, which an inferred
     ``conftest.py`` or test-package ``__init__.py`` expands into (the runnable
-    ones under its directory). Without them such a file drops out.
+    ones under its directory). Without them such a file drops out. An expanded
+    list is ranked nearest-first and capped at ``MAX_TESTS_PER_TARGET`` per
+    changed file, so ``files[*].inferred_tests`` and the recommendations it
+    feeds are bounded; ``inferred_tests_total`` and
+    ``inference.candidates_before_dedup`` keep the count before the cap.
     """
     changed = _changed_paths(changed_files, exclude_spec)
     repository = repository or repository_id
@@ -321,12 +327,17 @@ def assemble_test_impact(
     for path, reached in inferred_by_file.items():
         if path not in inferred_tests_by_file:
             continue
+        expanded = expand_test_scopes(reached["tests"], repository_test_files)
         kept_tests = [
             test_id
-            for test_id in expand_test_scopes(reached["tests"], repository_test_files)
+            for test_id in expanded
             if not (exclude_spec and is_excluded(test_id, exclude_spec))
         ]
         inferred_totals_by_file[path] = len(kept_tests)
+        if expanded != list(reached["tests"]):
+            # A root conftest stands for every test in the repository: rank the
+            # expansion nearest-first and keep the walk's own per-target cap.
+            kept_tests = rank_tests(path, kept_tests)[:MAX_TESTS_PER_TARGET]
         for test_id in kept_tests:
             inferred_tests_by_file[path].append(test_id)
             key = (repository_id, test_id)
@@ -429,7 +440,7 @@ def assemble_test_impact(
                 "measured_tests": measured_tests,
                 "measured_tests_total": len(measured_tests),
                 "inferred_tests": inferred_tests,
-                "inferred_tests_total": len(inferred_tests),
+                "inferred_tests_total": inferred_totals_by_file.get(path, len(inferred_tests)),
             }
         )
 

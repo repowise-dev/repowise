@@ -27,6 +27,7 @@ from repowise.core.analysis.test_reachability import (
     ReachedBy,
     imported_names_by_test,
     load_test_files,
+    rank_tests,
     reach_into_symbols,
     tests_matching_by_name,
     tests_reaching_by_tier,
@@ -1040,26 +1041,35 @@ async def _validation_inputs(
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
         inferred.update(tests_matching_by_name(unreached, test_files))
-    inferred = {path: _expand_scopes(reached, test_files) for path, reached in inferred.items()}
+    inferred = {
+        path: _expand_scopes(path, reached, test_files) for path, reached in inferred.items()
+    }
     return ValidationInputs(measured=measured, inferred=inferred, test_files=test_files)
 
 
-def _expand_scopes(reached: ReachedBy, test_files: set[str]) -> ReachedBy:
+def _expand_scopes(path: str, reached: ReachedBy, test_files: set[str]) -> ReachedBy:
     """*reached* with a conftest or test package it stopped at replaced by the tests under it.
 
     A validation command must name tests a runner collects; ``pytest
     tests/conftest.py`` runs nothing. A scope with no runnable test under it
     drops out, so a target reached only through one can end up unknown.
+
+    A root conftest stands for every test in the repository, so the expansion
+    is ranked nearest-first and capped like the walk's own list. ``all_tests``
+    is cleared rather than left uncapped: plan ranking then scores at most the
+    cap per target, and ``total`` keeps the true count, so a capped target
+    reads as incomplete instead of as the whole answer.
     """
     found = reached.all_tests or tuple(reached.tests)
-    expanded = tuple(expand_test_scopes(found, test_files))
-    if expanded == found:
+    expanded = expand_test_scopes(found, test_files)
+    if tuple(expanded) == tuple(found):
         return reached
+    ranked = rank_tests(path, expanded)
     return dataclasses.replace(
         reached,
-        tests=list(expanded[:MAX_TESTS_PER_TARGET]),
-        total=len(expanded),
-        all_tests=expanded,
+        tests=ranked[:MAX_TESTS_PER_TARGET],
+        total=len(ranked),
+        all_tests=None,
     )
 
 

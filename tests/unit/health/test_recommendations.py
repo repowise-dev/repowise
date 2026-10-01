@@ -205,11 +205,32 @@ def test_a_reached_conftest_validates_with_the_tests_under_it() -> None:
         ["tests/unit/conftest.py"], "call-graph", 1, ("tests/unit/conftest.py",)
     )
     validation = build_validation_plan(
-        _plan("fixture"), {}, {"src/core.py": _expand_scopes(reached, test_files)}
+        _plan("fixture"), {}, {"src/core.py": _expand_scopes("src/core.py", reached, test_files)}
     )
     assert validation.basis == "inferred"
     assert validation.tests == ["tests/unit/test_core.py"]
     assert validation.commands == ["pytest tests/unit/test_core.py"]
+
+
+def test_a_root_conftest_expansion_is_ranked_before_it_is_capped() -> None:
+    """A root conftest stands for every test; the cut keeps the nearest, not the first."""
+    from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
+    from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+
+    many = {f"tests/aaa/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 20)}
+    test_files = {"conftest.py", "tests/unit/test_core.py", *many}
+    reached = ReachedBy(["conftest.py"], "call-graph", 1, ("conftest.py",))
+
+    expanded = _expand_scopes("src/core.py", reached, test_files)
+
+    assert expanded.total == MAX_TESTS_PER_TARGET + 21
+    assert len(expanded.tests) == MAX_TESTS_PER_TARGET
+    assert expanded.tests[0] == "tests/unit/test_core.py"  # named for the target
+    assert expanded.all_tests is None  # plan ranking scores the capped list only
+    validation = build_validation_plan(_plan("fixture"), {}, {"src/core.py": expanded})
+    assert validation.total == MAX_TESTS_PER_TARGET + 21
+    assert validation.truncated is True
+    assert validation.tests[0] == "tests/unit/test_core.py"
 
 
 def test_aggregate_validation_total_deduplicates_tests_across_targets() -> None:
