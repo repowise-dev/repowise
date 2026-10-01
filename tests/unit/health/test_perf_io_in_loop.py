@@ -352,6 +352,21 @@ def test_python_fixture_counts():
     assert {"requests", "httpx", "subprocess"} <= set(fc.io_boundary_names)
 
 
+@pytest.mark.parametrize(
+    "use_block,expected",
+    [
+        (b"use {std::fs, reqwest::Client};\n", "filesystem"),
+        (b"use {reqwest::Client, std::fs};\n", "network"),
+    ],
+)
+def test_a_use_block_naming_two_io_modules_takes_the_first(use_block, expected):
+    # Picking from an unordered set made the kind follow PYTHONHASHSEED. Under
+    # any seed the old pick agreed for both orders, so one case failed.
+    fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
+    assert fc.io_boundary_names
+    assert set(fc.io_boundary_names.values()) == {expected}
+
+
 def test_typescript_fixture_counts():
     fc = _walk("typescript/perf_io_in_loop.ts", "typescript")
     counts = _kinds(fc.perf_hits)

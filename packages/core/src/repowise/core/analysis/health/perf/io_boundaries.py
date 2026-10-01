@@ -97,21 +97,24 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     Over-binding is deliberate and harmless: an imported name only becomes a
     finding when it is later *called as an execution sink*, which a non-I/O
     symbol never is.
+
+    When a statement names several I/O modules (a Rust ``use { ... }`` block),
+    the first one in source order wins, and within one token its most specific
+    (longest) variant. The order is fixed so the result never depends on set
+    iteration, which varies with ``PYTHONHASHSEED``.
     """
     text = _decode(node)
-    candidates: set[str] = set()
-    # TS / JS module sources are quoted string literals.
-    for m in re.findall(r"""["']([^"']+)["']""", text):
-        candidates |= _candidate_variants(m)
-    # Python / Java / ... dotted modules / bare identifiers.
-    for tok in re.findall(r"[A-Za-z0-9_.:@/]+", text):
-        candidates |= _candidate_variants(tok)
+    # TS / JS module sources are quoted string literals, tried first; then
+    # Python / Java / ... dotted modules and bare identifiers.
+    tokens = re.findall(r"""["']([^"']+)["']""", text) + re.findall(r"[A-Za-z0-9_.:@/]+", text)
 
     kind: str | None = None
-    for cand in candidates:
-        resolved = classify_io_kind(cand)
-        if resolved:
-            kind = resolved
+    for tok in tokens:
+        for cand in sorted(_candidate_variants(tok), key=lambda c: (-len(c), c)):
+            kind = classify_io_kind(cand)
+            if kind:
+                break
+        if kind:
             break
     if kind is None:
         return None, []
@@ -178,7 +181,7 @@ def _io_visit(
         # (``uses SysUtils, Classes, IdHTTP;``), unlike Go's grouped
         # import which nests a per-line ``import_spec`` leaf. Classifying
         # the whole node would pick whichever unit's kind resolves first
-        # out of an unordered set and bind ALL of them to it (so
+        # and bind ALL of them to it (so
         # ``IdHTTP`` could inherit ``db`` from a ``FireDAC`` listed in the
         # same clause) -- so each ``moduleName`` child is classified on
         # its own instead.
