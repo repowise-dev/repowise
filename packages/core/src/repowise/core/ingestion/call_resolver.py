@@ -56,7 +56,13 @@ from .models import (
 )
 from .resolved_call import ResolvedCall
 from .resolvers.cpp import _SOURCE_TU_EXTS
-from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
+from .return_types import (
+    declared_return_type,
+    normalize_return_type,
+    signature_parameter_count,
+    signature_parameter_range,
+)
+from .symbol_identity import id_segment_name, split_symbol_id
 from .type_names import (
     csharp_extension_receiver,
     is_resolvable_type_name,
@@ -77,8 +83,8 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 # absent because `java.scm`'s bare-call pattern also matches `this.field.m()`,
 # which then arrives here indistinguishable from a real implicit receiver.
 #
-# C# is present: a name's overloads all share one symbol id, so a declaration
-# line read back out of the graph may name another overload of the right id.
+# C# is present: the tier answers with a name's overload set, and
+# ``resolve_file`` narrows it to the member the argument count names.
 _INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
 # Languages where a bare name is scoped lexically: it can only mean the
@@ -272,6 +278,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
+
+        # Overload sets whose members have their own ids. Every index above
+        # holds a set by its representative, the first declared member, so the
+        # tiers answer exactly as for one id and ``resolve_file`` narrows the
+        # answer by argument count: {member id: representative} and
+        # {representative: ((member id, (fewest, most) arguments), ...)}.
+        self._overload_rep: dict[str, str] = {}
+        self._overload_members: dict[str, tuple[tuple[str, tuple[int, int | None]], ...]] = {}
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
@@ -457,9 +471,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
         """Fold each declaration onto the definition it was paired with.
 
-        Two ids naming one symbol must not read as an ambiguity.
+        Two ids naming one symbol must not read as an ambiguity, and neither
+        must the members of one overload set, which fold to its representative.
         """
-        return {self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids}
+        return {
+            self._overload_rep.get(target, target)
+            for target in (self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids)
+        }
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
         """Build symbol lookup indices from parsed file data.
@@ -492,11 +510,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Index one file's symbols, collecting what is settled repo-wide later."""
         file_syms: dict[str, str] = {}
         file_methods: dict[tuple[str, str], str] = {}
+        representatives = self._index_overload_sets(parsed)
 
         for sym in parsed.symbols:
+            # An overload set is indexed once, under its representative.
+            index_id = representatives.get(sym.id, sym.id)
             decl_key = (sym.parent_name, sym.name)
             if sym.is_declaration:
-                declarations.append((path, sym.id, decl_key))
+                declarations.append((path, index_id, decl_key))
                 # A declaration must never displace a definition already
                 # indexed under this name — a .cpp that forward-declares a
                 # helper above its own body holds both.
@@ -506,23 +527,23 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 # can legally reach a method. The (class, method) index
                 # below still takes it.
                 if sym.parent_name is None:
-                    file_syms.setdefault(sym.name, sym.id)
+                    file_syms.setdefault(sym.name, index_id)
             else:
-                definitions[decl_key].append((path, sym.id))
+                definitions[decl_key].append((path, index_id))
                 # File-level symbol index (top-level symbols and methods)
-                file_syms[sym.name] = sym.id
+                file_syms[sym.name] = index_id
 
             # Method index: (class_name, method_name) → symbol_id
             if sym.parent_name:
                 key = (sym.parent_name, sym.name)
-                file_methods[key] = sym.id
-                self._global_methods[key].append((path, sym.id))
+                file_methods[key] = index_id
+                self._global_methods[key].append((path, index_id))
 
                 extended = self._csharp_extended_type(sym)
                 if extended is not None:
-                    extensions[(extended, sym.name)].add((path, sym.id))
+                    extensions[(extended, sym.name)].add((path, index_id))
 
-            self._index_globally(path, sym)
+            self._index_globally(path, sym, index_id)
 
         self._file_symbols[path] = file_syms
         self._file_methods[path] = file_methods
@@ -536,16 +557,41 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return extended if extended in self._csharp_type_names else None
 
-    def _index_globally(self, path: str, sym: Symbol) -> None:
+    def _index_globally(self, path: str, sym: Symbol, index_id: str) -> None:
         if _has_internal_linkage(path, sym):
-            self._tu_local_ids.add(sym.id)
+            self._tu_local_ids.add(index_id)
         if sym.kind in _NON_CALLABLE_KINDS:
-            self._non_callable_ids.add(sym.id)
+            self._non_callable_ids.add(index_id)
         if _is_property_accessor(sym):
-            self._property_accessor_ids.add(sym.id)
+            self._property_accessor_ids.add(index_id)
         # Same rule as the per-file index, for the global-unique tier.
         if not (sym.is_declaration and sym.parent_name is not None):
-            self._global_symbols[sym.name].append(sym.id)
+            self._global_symbols[sym.name].append(index_id)
+
+    def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
+        """Record *parsed*'s overload sets; ``{member id: representative}``.
+
+        Only parameter-count members are narrowed: a build-variant member
+        (``#cfg(...)``) is not chosen by its arguments.
+        """
+        members: dict[str, list[Symbol]] = defaultdict(list)
+        for sym in parsed.symbols:
+            base, payload = split_symbol_id(sym.id)
+            if payload is not None and payload.isdigit():
+                members[base].append(sym)
+        representatives: dict[str, str] = {}
+        for overloads in members.values():
+            overloads.sort(key=lambda sym: sym.start_line)
+            rep = overloads[0].id
+            ranges: dict[str, tuple[int, int | None]] = {}
+            for sym in overloads:
+                representatives[sym.id] = rep
+                admitted = signature_parameter_range(sym.signature or "", sym.language)
+                if admitted is not None:
+                    ranges.setdefault(sym.id, admitted)
+            self._overload_members[rep] = tuple(ranges.items())
+        self._overload_rep.update(representatives)
+        return representatives
 
     def _index_extension_methods(
         self, candidates: dict[tuple[str, str], set[tuple[str, str]]]
@@ -557,8 +603,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         costs an edge; guessing costs correctness.
 
         An overload set is not this case -- every overload of one method in one
-        class shares a symbol id. A ``partial`` class split across files is,
-        and stays refused.
+        class is indexed under one representative id. A ``partial`` class split
+        across files is, and stays refused.
         """
         for key, sites in candidates.items():
             if len({sym_id for _, sym_id in sites}) != 1:
@@ -752,9 +798,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 # Module-level call — assign to synthetic __module__ symbol
                 call = replace(call, caller_symbol_id=f"{file_path}::__module__")
 
-            resolved = self._resolve_one(file_path, call)
+            resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
-                resolved = self._redirect_to_definition(resolved)
+                resolved = self._narrow_overload(self._redirect_to_definition(resolved), call)
+            if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
@@ -762,6 +809,58 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 results.append(resolved)
 
         return results
+
+    def _narrow_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
+        """Move an edge on an overload set onto the member its arguments call.
+
+        Every tier answers with the set's representative; this is the one place
+        a member is chosen. A count no member admits, a tie, or an unknown count
+        (a method reference, a C# method group) keeps the representative. An
+        overload calling itself is recursion, which draws no edge.
+        """
+        rep = self._overload_rep.get(resolved.callee_id)
+        if rep is None:
+            return resolved
+        target = self._pick_overload(rep, call.argument_count) or rep
+        if target == resolved.caller_id:
+            return None
+        return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
+
+    def _pick_overload(self, rep: str, argument_count: int | None) -> str | None:
+        """The one member of *rep*'s set a call with *argument_count* arguments means.
+
+        Asked in the order the languages apply: a member of exactly that arity,
+        then one whose defaults admit the count (Java's first phase, C#'s normal
+        form), then one whose varargs or ``params`` expand to it. The first
+        phase with any candidate decides, and two candidates there are a tie.
+        """
+        if argument_count is None:
+            return None
+        members = self._overload_members.get(rep, ())
+        phases = (
+            [m for m, (fewest, most) in members if fewest == most == argument_count],
+            [m for m, (fewest, most) in members if most is not None and fewest <= argument_count <= most],
+            [m for m, (fewest, most) in members if most is None and fewest <= argument_count],
+        )
+        found = next((phase for phase in phases if phase), [])
+        return found[0] if len(found) == 1 else None
+
+    def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
+        """An overload calling another member of its own set, ``f(a)`` inside ``f(a, b)``.
+
+        The tiers answer such a call with the set's representative, which is
+        refused as recursion when the caller is that representative itself.
+        """
+        caller_id = call.caller_symbol_id or ""
+        rep = self._overload_rep.get(caller_id)
+        if rep is None or call.receiver_name not in (None, "this", "self"):
+            return None
+        if self._symbols_by_id[caller_id].name != call.target_name:
+            return None
+        target = self._pick_overload(rep, call.argument_count)
+        if target is None or target == caller_id:
+            return None
+        return ResolvedCall(caller_id, target, 0.95, call.line, "same_file")
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""
@@ -1656,7 +1755,7 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     its own ``Entry``.
     """
     parts = symbol_id.split("::")
-    return len(parts) >= 3 and parts[-1] != parts[-2]
+    return len(parts) >= 3 and id_segment_name(parts[-1]) != id_segment_name(parts[-2])
 
 
 def _is_super_receiver(receiver: CallReceiver | None) -> bool:

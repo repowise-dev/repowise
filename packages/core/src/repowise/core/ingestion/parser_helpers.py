@@ -203,6 +203,27 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     return f"{module}.{name}"
 
 
+_CSHARP_TYPE_NODES = frozenset(
+    {
+        "class_declaration",
+        "interface_declaration",
+        "struct_declaration",
+        "record_declaration",
+        "delegate_declaration",
+    }
+)
+
+
+def _csharp_type_parameter_count(def_node: Node) -> int | None:
+    """How many type parameters a C# type declares (0 if none); None for a non-type."""
+    if def_node.type not in _CSHARP_TYPE_NODES:
+        return None
+    for child in def_node.children:
+        if child.type == "type_parameter_list":
+            return sum(1 for param in child.children if param.type == "type_parameter")
+    return 0
+
+
 def _count_arguments(arg_node: Node) -> int:
     """Count the number of arguments in an argument/argument_list node.
 

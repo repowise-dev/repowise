@@ -19,31 +19,68 @@ def declared_return_type(signature: str) -> str | None:
     return value or None
 
 
-def signature_parameter_count(signature: str) -> int | None:
-    """Count top-level parameters in a stored callable signature."""
+_PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
 
+
+def _top_level_parameters(signature: str) -> list[str] | None:
+    """The top-level parameter texts of a stored callable signature.
+
+    ``[]`` for an empty list, None when the signature has no closed list.
+    """
     start = signature.find("(")
     if start < 0:
         return None
-    depth = 0
-    commas = 0
+    pieces: list[str] = []
+    current: list[str] = []
     content = False
-    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
     closers: list[str] = []
     for char in signature[start + 1 :]:
         if char == ")" and not closers:
-            return commas + 1 if content else 0
-        if char in pairs:
-            closers.append(pairs[char])
-            depth += 1
+            pieces.append("".join(current))
+            return pieces if content else []
+        if char in _PAIRS:
+            closers.append(_PAIRS[char])
         elif closers and char == closers[-1]:
             closers.pop()
-            depth -= 1
-        elif char == "," and depth == 0:
-            commas += 1
-        elif not char.isspace() and depth == 0:
+        elif char == "," and not closers:
+            pieces.append("".join(current))
+            current = []
+            continue
+        elif not char.isspace() and not closers:
             content = True
+        current.append(char)
     return None
+
+
+def signature_parameter_count(signature: str) -> int | None:
+    """Count top-level parameters in a stored callable signature."""
+    parameters = _top_level_parameters(signature)
+    return None if parameters is None else len(parameters)
+
+
+def signature_parameter_range(signature: str, language: str) -> tuple[int, int | None] | None:
+    """``(fewest, most)`` arguments a call may pass; ``most`` is None when open.
+
+    Java ``T...`` and C# ``params`` leave the top open, a C# default lowers
+    the floor, and a C# extension method is also called on its receiver, one
+    argument short of its declared list.
+    """
+    parameters = _top_level_parameters(signature)
+    if parameters is None:
+        return None
+    texts = [text.strip() for text in parameters]
+    fewest = most = len(texts)
+    if not texts:
+        return 0, 0
+    if language == "java" and "..." in texts[-1]:
+        fewest, most = fewest - 1, None
+    if language == "csharp":
+        if texts[-1].startswith("params "):
+            fewest, most = fewest - 1, None
+        fewest -= sum(1 for text in texts if "=" in text)
+        if texts[0].startswith("this "):
+            fewest -= 1
+    return max(fewest, 0), most
 
 
 def go_first_result(value: str) -> str:

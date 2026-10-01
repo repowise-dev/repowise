@@ -195,7 +195,9 @@ class RepoStructure:
 class Symbol:
     """A code symbol (function, class, method, …) extracted from a file."""
 
-    id: str  # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
+    # "<rel_path>::<name>" or "<rel_path>::<class>::<method>", plus a
+    # discriminator when a scope declares the name twice (see symbol_identity).
+    id: str
     name: str
     qualified_name: str  # dotted full name, e.g. "myapp.calc.Calculator.add"
     kind: SymbolKind
@@ -221,6 +223,9 @@ class Symbol:
     # stubs and TypeScript overload signatures are declarations too: they share
     # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
+    # C# type declarations only: how many type parameters it declares, which is
+    # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
+    type_parameter_count: int | None = None
 
 
 @dataclass

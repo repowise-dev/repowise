@@ -39,7 +39,11 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; One pattern, modifiers optional: two overlapping patterns kept whichever
+; matched first, which dropped either the modifiers or the parameters that
+; name an overload.
 (method_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
@@ -47,12 +51,6 @@
 (constructor_declaration
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
-) @symbol.def
-
-; Public modifier capture
-(method_declaration
-  (modifiers) @symbol.modifiers
-  name: (identifier) @symbol.name
 ) @symbol.def
 
 ; ---------------------------------------------------------------------------

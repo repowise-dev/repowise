@@ -33,6 +33,7 @@ from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import id_segment_name
 from repowise.core.persistence.crud import (
     coverage_row_dict,
     doc_drift_references_stored,
@@ -196,7 +197,7 @@ async def _resolve_call_graph(
     node = await get_graph_node(session, repo_id, target)
     if node is None and "::" in target:
         # Fuzzy: try bare name
-        bare_name = target.split("::")[-1]
+        bare_name = id_segment_name(target.split("::")[-1])
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,

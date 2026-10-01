@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from sqlalchemy import or_, select
 
+from repowise.core.ingestion.symbol_identity import base_symbol_id, id_segment_name
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.core.support_paths import is_support_path
@@ -94,11 +95,15 @@ def symbol_id_variants(symbol_id: str) -> list[str]:
 
 
 def bare_name(name: str) -> str:
-    """Return the last name segment regardless of separator style."""
+    """Return the last name segment regardless of separator style.
+
+    An overload or generic-arity discriminator (``notNull#1``, ``IFoo`1``) is
+    part of the id, never of the name, so it is dropped.
+    """
     tail = name
     for sep in NAME_SEPARATORS:
         tail = tail.rsplit(sep, 1)[-1]
-    return tail
+    return id_segment_name(tail)
 
 
 # Kinds a bare name most likely means, best first; everything else (variables,
@@ -196,14 +201,27 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
     """
     file_path, name = parse_symbol_id(symbol_id)
 
-    # 1. Exact symbol_id — try every separator variant.
+    # 1. Exact symbol_id — try every separator variant. The same query also
+    #    reads the members of an overload set the id names, which carry a
+    #    discriminator (``Validate.java::Validate::notNull`` -> ``notNull#1``,
+    #    ``notNull#2``); they answer only when no row matches exactly.
+    variants = symbol_id_variants(symbol_id)
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.symbol_id.in_(symbol_id_variants(symbol_id)),
+            or_(
+                WikiSymbol.symbol_id.in_(variants),
+                *(
+                    WikiSymbol.symbol_id.like(f"{escape_like(sid)}#%", escape=LIKE_ESCAPE)
+                    for sid in variants
+                ),
+            ),
         )
     )
-    rows = list(res.scalars().all())
+    found = list(res.scalars().all())
+    rows = [row for row in found if row.symbol_id in variants] or [
+        row for row in found if base_symbol_id(row.symbol_id) in variants
+    ]
     if rows:
         return order_candidates(rows, file_path)
 

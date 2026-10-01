@@ -19,6 +19,7 @@ from ..languages.python_modules import dotted_module_for
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
@@ -256,11 +257,21 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
+            existing = self._graph.nodes.get(sym.id)
             if sym.is_declaration:
-                existing = self._graph.nodes.get(sym.id)
                 if existing is not None and existing.get("is_declaration") is False:
                     self._graph.add_edge(path, sym.id, edge_type="defines")
                     continue
+            # Where overloads get their own ids, two definitions still sharing
+            # one are overloads of one arity: the first declared keeps the node,
+            # so its span does not depend on how many follow it.
+            elif (
+                existing is not None
+                and existing.get("is_declaration") is False
+                and has_overload_identity(sym.language)
+            ):
+                self._graph.add_edge(path, sym.id, edge_type="defines")
+                continue
 
             self._graph.add_node(
                 sym.id,

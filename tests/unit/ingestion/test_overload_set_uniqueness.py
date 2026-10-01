@@ -1,9 +1,11 @@
 """Behaviour pins for tier 3 counting symbols rather than declaration rows.
 
 ``_global_symbols`` holds one entry per declaration, so an overload set is
-several rows under one id and ``len(candidates) == 1`` read it as an ambiguity
-that does not exist. C#'s ``AddRetry`` is two rows and one symbol; the tier
-refused it and the call reached nothing.
+several rows under one indexed id and ``len(candidates) == 1`` read it as an
+ambiguity that does not exist. C#'s ``AddRetry`` is two rows and one symbol; the
+tier refused it and the call reached nothing. Overloads of different arity now
+carry their own ids (``Widen#1``, ``Widen#2``), indexed under the first, and the
+call narrows to the one its arguments name.
 
 The controls are what make the collapse safe, and each is a shape that reads
 like the same defect and is not: a name two DIFFERENT symbols declare stays two
@@ -62,7 +64,7 @@ def _edges(
     ]
 
 
-# Two declarations, one symbol id: the shape the row count read as ambiguous.
+# Two declarations, one indexed name: the shape the row count read as ambiguous.
 CS_OVERLOADS = """
 namespace App;
 
@@ -163,8 +165,8 @@ class TestOverloadSetIsOneSymbol:
         )
         edges = _edges(parsed, tmp_path)
         hits = [e for e in edges if e[0].endswith("::Caller::Run")]
-        assert [e[1].split("::")[-2:] for e in hits] == [["Helpers", "Widen"]], (
-            f"Widen's two declarations are one symbol and must resolve; edges: {edges}"
+        assert [e[1].split("::")[-2:] for e in hits] == [["Helpers", "Widen#2"]], (
+            f"Widen's overload set must resolve, to the two-argument member; edges: {edges}"
         )
 
     def test_two_different_symbols_of_one_name_stay_refused(self, tmp_path: Path) -> None:

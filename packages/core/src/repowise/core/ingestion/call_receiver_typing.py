@@ -40,6 +40,7 @@ from .languages.receiver_types import (
 from .models import CallSite, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type, go_first_result
+from .symbol_identity import id_segment_name
 from .type_names import POINTER_LIKE_MEMBERS, bare_type_name
 
 # Which symbols own a class scope, and which of them swallow one. A class span
@@ -231,19 +232,39 @@ class ReceiverTypingMixin:
         The scope is returned rather than an edge so that each caller stamps
         its own origin literal, which is what keeps a field-typed edge separable
         from a body-typed one after the build.
+
+        A C# generic spelling (``IFoo`1``) first asks for the type that carries
+        that arity in its id, which exists only beside a same-file ``IFoo``;
+        a repo-wide guess under it is not taken over the bare name's answer.
         """
+        bare = id_segment_name(type_name)
+        if bare != type_name:
+            found = self._typed_receiver_lookup(file_path, call, caller_id, type_name)
+            if found is not None and found[1] != "global":
+                return found
+        return self._typed_receiver_lookup(file_path, call, caller_id, bare)
+
+    def _typed_receiver_lookup(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+    ) -> tuple[str, str] | None:
         key = (type_name, call.target_name)
+        # What an import binds is the written name, never its arity.
+        written = id_segment_name(type_name)
 
         # An import statement binds the name outright, so it settles which type
         # this is before any scope search.
-        bound = self._import_names.get(file_path, {}).get(type_name)
+        bound = self._import_names.get(file_path, {}).get(written)
         if bound is not None and not bound.startswith("external:"):
             sym_id = self._import_bound_method(file_path, bound, key)
             return None if sym_id is None else (sym_id, "import")
 
         # Bound to something outside the repo: there is no edge to find,
         # however many local classes share the simple name.
-        if type_name in self._externally_bound_names(file_path):
+        if written in self._externally_bound_names(file_path):
             return None
 
         # The caller's own file first: a nested class here outranks a
@@ -510,6 +531,8 @@ class ReceiverTypingMixin:
         or declared in *file_path* itself, and name exactly one type there:
         no repo-wide guess, since every hop of a chain rests on this.
         """
+        # A chain hop asks for the type by its written name, arity aside.
+        type_name = id_segment_name(type_name)
         bound = self._import_names.get(file_path, {}).get(type_name)
         if bound is not None:
             if bound.startswith("external:"):
@@ -577,7 +600,9 @@ class ReceiverTypingMixin:
     ) -> ResolvedCall | None:
         if language != "csharp":
             return None
-        extension = self._extension_target(file_path, (type_name, call.target_name))
+        # Extensions are indexed by the type they name, written without arity.
+        key = (id_segment_name(type_name), call.target_name)
+        extension = self._extension_target(file_path, key)
         if extension is None:
             return None
         return self._extension_typed_call(caller_id, *extension, call.line)

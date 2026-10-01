@@ -24,6 +24,7 @@ import structlog
 
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
+from ...ingestion.symbol_identity import base_symbol_id, overload_sets
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
@@ -840,6 +841,8 @@ class DeadCodeAnalyzer:
         # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
         # disk and parsed by tree-sitter at most once per analysis run.
         self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
+        # {base id: overload member ids}, built on first use.
+        self._overload_units: dict[str, list[str]] | None = None
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
@@ -1673,7 +1676,27 @@ class DeadCodeAnalyzer:
 
         return findings
 
+    def _overload_unit(self, node: str) -> list[str]:
+        """The members of the overload set *node* belongs to or names, else ``[]``.
+
+        A plain id names its set when the set's members carry discriminators,
+        which is how a composed constructor id ``path::X::X`` still finds
+        ``X::X#0`` and ``X::X#2``.
+        """
+        if self._overload_units is None:
+            self._overload_units = overload_sets(
+                n for n in self.graph.nodes if isinstance(n, str)
+            )
+        return self._overload_units.get(base_symbol_id(node), [])
+
     def _has_inbound_use(self, node: str) -> bool:
+        """Whether any reachability-use edge lands on *node* or its overload set."""
+        members = self._overload_unit(node)
+        if members:
+            return any(self._lands_on(member) for member in members)
+        return self._lands_on(node)
+
+    def _lands_on(self, node: str) -> bool:
         """Whether any reachability-use edge lands on *node* (False if absent)."""
         if not self.graph.has_node(node):
             return False

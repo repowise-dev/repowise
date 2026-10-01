@@ -365,10 +365,9 @@ def test_a_csharp_bare_call_reaches_an_inherited_method(tmp_path: Path) -> None:
     )
 
 
-def test_a_csharp_overload_set_resolves_to_the_one_id_it_shares(tmp_path: Path) -> None:
-    """Overloads of one name in one class carry one symbol id, so a call
-    reaching any of them lands on the same node. Pins the property the
-    inherited tier relies on: there is nothing to choose between."""
+def test_a_csharp_inherited_overload_call_lands_on_the_member_it_names(tmp_path: Path) -> None:
+    """The inherited tier answers with the overload set, and the call narrows
+    to the member whose arity its arguments match."""
     graph = _build(
         tmp_path,
         {
@@ -385,9 +384,9 @@ def test_a_csharp_overload_set_resolves_to_the_one_id_it_shares(tmp_path: Path) 
         },
         "csharp",
     )
-    assert ("Test.cs::Test::Run", "Steps.cs::Steps::Given") in _calls_by_origin(
-        graph, "enclosing_inherited"
-    )
+    assert _calls_by_origin(graph, "enclosing_inherited") == {
+        ("Test.cs::Test::Run", "Steps.cs::Steps::Given#2")
+    }
 
 
 # ``super().m()`` walks the caller's MRO past its own class. It used to reach

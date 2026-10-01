@@ -31,6 +31,7 @@ from ..type_names import (
     bare_type_name,
     is_resolvable_type_name,
     strip_type_arguments,
+    type_argument_count,
     type_qualifier,
     unwrap_pointer_like,
 )
@@ -651,7 +652,9 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     """``(bare name, unwrapped)`` for *raw*, or ``(None, False)``.
 
     Only C++ looks inside the spelling: ``shared_ptr<Foo>`` is a ``Foo`` behind
-    the arrow. Elsewhere the generic head is the value's real type.
+    the arrow. Elsewhere the generic head is the value's real type. A C# head
+    keeps its arity, ``IFoo`1``, since a same-file ``IFoo`` may be another type;
+    the lookup falls back to the bare name.
     """
     if _nests_in_a_builtin(raw, language):
         return None, False
@@ -659,6 +662,8 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
     name = inner or (raw if raw.isidentifier() else bare_type_name(raw))
     if not is_resolvable_type_name(name, language):
         return None, False
+    if language == "csharp" and (arity := type_argument_count(raw)):
+        name = f"{name}`{arity}"
     return name, inner is not None
 
 

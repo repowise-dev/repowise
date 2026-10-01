@@ -89,6 +89,7 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
     _elixir_call_is_definitional,
@@ -119,6 +120,7 @@ from .parser_helpers import (
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
+from .symbol_identity import disambiguate_colliding_ids, symbol_discriminator
 
 log = structlog.get_logger(__name__)
 
@@ -1330,8 +1332,14 @@ class ASTParser:
         # without a registered extractor.
         synthetic = extract_synthetic_symbols(root, src, file_info)
         if synthetic:
-            existing_ids = {s.id for s in symbols}
-            symbols.extend(s for s in synthetic if s.id not in existing_ids)
+            # Keyed with the discriminator too, so a record's synthetic
+            # canonical constructor survives beside an explicit overload of
+            # another arity. A language without one dedupes on the id alone.
+            existing = {(s.id, symbol_discriminator(s)) for s in symbols}
+            symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
+        # Before calls and references are extracted, so both attribute to the
+        # final ids.
+        disambiguate_colliding_ids(symbols, lang)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
         # An SFC instantiates a component by writing its tag in the markup
@@ -1566,6 +1574,9 @@ class ASTParser:
             parent_name=parent_name,
             is_exported_symbol=is_exported_symbol,
             is_declaration=_is_declaration(def_node, config, language, export_type, src),
+            type_parameter_count=(
+                _csharp_type_parameter_count(def_node) if language == "csharp" else None
+            ),
         )
         return symbol, def_node
 

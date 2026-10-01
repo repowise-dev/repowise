@@ -583,8 +583,15 @@ async def persist_incremental_symbols(
     """
     if not parsed_files:
         return
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_symbols_for_files
 
+    # An extraction change can re-key symbols in files git did not touch (an
+    # overload gaining its own id), so it widens to the whole parsed set on the
+    # same check that widens edges. The stamp is written once, by
+    # :func:`persist_incremental_edges`, which runs after this.
+    if await _stored_edges_parser_fingerprint(session, repo_id) != parser_fingerprint():
+        changed_paths = [pf.file_info.path for pf in parsed_files]
     reconcile_paths, symbols = _changed_file_symbols(parsed_files, changed_paths)
     if not reconcile_paths:
         return
@@ -804,7 +811,51 @@ async def persist_incremental_edges(
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
     if parser_changed:
+        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, parsed_files)
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _prune_vanished_symbol_nodes(
+    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any]
+) -> None:
+    """Delete symbol ``graph_nodes`` a re-extraction no longer produces.
+
+    ``persist_graph_nodes`` upserts the current graph and never deletes, so a
+    symbol whose id changed under a new parser (an overload gaining its own id)
+    would otherwise keep its old row beside the new ones. Scoped to files this
+    run parsed; a file that is gone is :func:`_prune_stale_file_rows`'s job.
+    Membership rows prune themselves on their next write, and ``graph_metrics``
+    holds files only.
+    """
+    from sqlalchemy import delete, or_, select
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    graph = graph_builder.graph()
+    paths = [pf.file_info.path for pf in parsed_files]
+    stale: list[str] = []
+    for i in range(0, len(paths), _PRUNE_CHUNK):
+        rows = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type != "file",
+                GraphNode.file_path.in_(paths[i : i + _PRUNE_CHUNK]),
+            )
+        )
+        stale.extend(node_id for node_id in rows.scalars() if node_id not in graph)
+    for i in range(0, len(stale), _PRUNE_CHUNK):
+        batch = stale[i : i + _PRUNE_CHUNK]
+        await session.execute(
+            delete(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                or_(GraphEdge.source_node_id.in_(batch), GraphEdge.target_node_id.in_(batch)),
+            )
+        )
+        await session.execute(
+            delete(GraphNode).where(GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch))
+        )
+    if stale:
+        logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
 
 
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
