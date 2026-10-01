@@ -88,6 +88,9 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 # ``resolve_file`` narrows it to the member the argument count names.
 _INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
+# VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
+_VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
+
 # Languages where a bare name is scoped lexically: it can only mean the
 # caller's own module, an explicit ``import`` or ``open``, or the prelude, so
 # repo-wide uniqueness is no evidence and only wildcard imports may merge names.
@@ -1670,7 +1673,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         can hold the match, so index straight into those instead of scanning
         every file's method dict.
         """
-        if call.receiver_name not in ("self", "this"):
+        if not self._is_self_receiver(file_path, call.receiver_name):
             return None
         caller_class = _extract_class_from_symbol_id(caller_id)
         if not caller_class:
@@ -1681,6 +1684,21 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if sym_id is None or sym_id == caller_id:
             return None
         return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+
+    def _is_self_receiver(self, file_path: str, receiver_name: str | None) -> bool:
+        """Whether a receiver names the enclosing class's own instance.
+
+        VB.NET spells it ``Me``, and ``MyClass`` for a call that skips an
+        override, in any case since the language is case-insensitive. Asked
+        of VB.NET files only: elsewhere ``Me`` is an ordinary identifier.
+        """
+        if receiver_name in ("self", "this"):
+            return True
+        return (
+            receiver_name is not None
+            and receiver_name.lower() in _VBNET_SELF_RECEIVERS
+            and self._language_of(file_path) == "vbnet"
+        )
 
     def _self_inherited_call(
         self,
