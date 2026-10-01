@@ -31,7 +31,7 @@ function renderList(overrides: Partial<React.ComponentProps<typeof FixFirstList>
 describe("Fix first header", () => {
   it("states shown of eligible and every nonzero exclusion with its count", () => {
     expect(fixFirstScopeSentence(FIX_FIRST_QUEUE)).toBe(
-      "3 of 423 eligible items. Excluded: 612 in tests, 91 tooling, 5 generated or vendored, " +
+      "3 of 423 eligible items. Excluded: 612 in tests, 91 tooling, 5 generated, " +
         "158 expected repetition, 12 with no safe fix, 505 below the worth floor, 167 history only.",
     );
   });

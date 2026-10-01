@@ -600,7 +600,14 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "no_strategy": 0,
       "no_plan": 12,
       "below_min_worth": 505,
-      "history_only": 167
+      "history_only": 167,
+      "vendored": 0,
+      "docs_example": 0,
+      "deprecated": 0,
+      "inherent_dispatch": 0,
+      "small_function": 0,
+      "no_concrete_step": 0,
+      "low_value_kind": 0
     }
   },
   "by_improves": {

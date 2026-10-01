@@ -33,25 +33,39 @@ export function tierReason(item: Pick<FixItem, "why_ranked">): string | null {
 export const EXCLUSION_LABEL: Record<FixExclusion, string> = {
   test: "in tests",
   tooling: "tooling",
-  generated: "generated or vendored",
+  generated: "generated",
+  vendored: "vendored",
+  docs_example: "docs and examples",
   expected: "expected repetition",
   unknown: "where the code's context is unknown",
   no_strategy: "with no fix strategy",
   no_plan: "with no safe fix",
   below_min_worth: "below the worth floor",
   history_only: "history only",
+  deprecated: "deprecated",
+  inherent_dispatch: "one long dispatch on a value",
+  small_function: "small functions",
+  no_concrete_step: "with no concrete first edit",
+  low_value_kind: "of a kind rarely worth doing",
 };
 
 const EXCLUSION_ORDER: FixExclusion[] = [
   "test",
   "tooling",
   "generated",
+  "vendored",
+  "docs_example",
   "expected",
   "unknown",
   "no_strategy",
   "no_plan",
   "below_min_worth",
   "history_only",
+  "deprecated",
+  "inherent_dispatch",
+  "small_function",
+  "no_concrete_step",
+  "low_value_kind",
 ];
 
 /**
