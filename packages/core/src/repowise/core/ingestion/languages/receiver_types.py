@@ -267,6 +267,28 @@ _CPP_DECLARATION = re.compile(
 )
 
 
+# Rust annotates after the name: parameters, `let x: Foo`, closure parameters.
+# A path is kept only when it starts inside the crate (`crate::`, `self::`,
+# `super::`): `std::process::Child` bares to a `Child` the repo may also
+# declare. A borrow (`&Foo`, `&'a mut Foo`) and a `Box<Foo>` still reach
+# `Foo` by auto-deref, so both are read through; `dyn`/`impl` heads are
+# lowercase and match nothing. A bare `Foo` path is still refused downstream
+# when a `use` binds it outside the repo.
+_RUST_TYPE = r"(?:(?:crate|self|super)::(?:\w+::)*)?[A-Z]\w*"
+_RUST_ANNOTATED = re.compile(
+    rf"(?<![\w.:'])(?P<name>[a-z_]\w*)\s*:\s*(?:&(?:'\w+\s+)?(?:mut\s+)?)?(?P<box>Box<)?"
+    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=[=,;)|])"
+)
+
+# `let x = Foo::new(..)` and the other constructor-named associated functions,
+# the Rust spelling of `_KT_CONSTRUCTED`. A chain is refused as there
+# (`Foo::new().build()` is whatever `build` returns); a `?` is read through,
+# since it unwraps the `Result<Foo>` a fallible constructor returns.
+_RUST_CONSTRUCTED = re.compile(
+    rf"(?<![\w.])let\s+(?:mut\s+)?(?P<name>[a-z_]\w*)\s*=\s*(?P<type>{_RUST_TYPE})"
+    r"::(?:new|default|from|with_\w+)\s*\((?![^()]*\)\s*\??\s*\.)"
+)
+
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
 # Only the field shapes reach class scope. Go is still not in
 # IMPLICIT_FIELD_LANGUAGES: a field is read through its receiver (``c.parent``),
@@ -284,6 +306,7 @@ _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "java": _C_FAMILY,
     "kotlin": _KT_FAMILY,
     "python": _PY_FAMILY,
+    "rust": (_RUST_ANNOTATED, _RUST_CONSTRUCTED),
     "swift": _SWIFT_FAMILY,
     "typescript": _TS_FAMILY,
 }
@@ -578,6 +601,7 @@ _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
     "go": _LINE_COMMENT,
     "java": _LINE_COMMENT,
     "kotlin": _LINE_COMMENT,
+    "rust": _LINE_COMMENT,
     "swift": _LINE_COMMENT,
     "python": _HASH_COMMENT,
     "typescript": _LINE_COMMENT,

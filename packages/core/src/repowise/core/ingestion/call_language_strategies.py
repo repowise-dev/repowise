@@ -75,6 +75,9 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # Rust types a local or parameter only; a `self.field` receiver is not
+    # walked, since Rust has no `_CHAIN_SELF` row.
+    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }

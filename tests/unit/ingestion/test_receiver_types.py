@@ -736,6 +736,7 @@ def test_the_language_set_is_what_the_patterns_declare() -> None:
         "java",
         "kotlin",
         "python",
+        "rust",
         "swift",
         "typescript",
     }
@@ -853,3 +854,67 @@ def test_c_has_no_shapes_of_its_own() -> None:
     """
     assert "c" not in RECEIVER_TYPE_LANGUAGES
     assert scan_declarations("Widget* w;", "c") == ()
+
+
+class TestRustShapes:
+    """Rust annotates after the name, and a constructor is an associated fn."""
+
+    def test_a_parameter(self) -> None:
+        assert declared_types("fn run(searcher: Searcher) {}", "rust") == {"searcher": "Searcher"}
+
+    def test_a_borrowed_parameter_is_its_referent(self) -> None:
+        body = "fn run(a: &Searcher, b: &mut Printer, c: &'a mut Sink<'a>) {}"
+        assert declared_types(body, "rust") == {"a": "Searcher", "b": "Printer", "c": "Sink"}
+
+    def test_a_boxed_parameter_is_its_contents(self) -> None:
+        assert declared_types("fn run(m: Box<Matcher>) {}", "rust") == {"m": "Matcher"}
+
+    def test_a_typed_let_and_a_closure_parameter(self) -> None:
+        body = "fn run() {\n    let w: Walker = make();\n    let f = |p: Printer| p.go();\n}"
+        assert declared_types(body, "rust") == {"w": "Walker", "p": "Printer"}
+
+    def test_a_constructor_local(self) -> None:
+        body = (
+            "fn run() {\n    let b = IgnoreBuilder::new();\n"
+            "    let mut e = PartialErrorBuilder::default();\n"
+            "    let g = GlobSet::from(x)?;\n    let v = Buf::with_capacity(8);\n}"
+        )
+        assert declared_types(body, "rust") == {
+            "b": "IgnoreBuilder",
+            "e": "PartialErrorBuilder",
+            "g": "GlobSet",
+            "v": "Buf",
+        }
+
+    def test_a_crate_relative_path_is_kept(self) -> None:
+        assert declared_types("fn run(m: crate::walk::Walker) {}", "rust") == {"m": "Walker"}
+
+
+class TestRustRefusals:
+    def test_a_path_from_outside_the_crate_is_refused(self) -> None:
+        """``std::process::Child`` would bare to a ``Child`` the repo may declare."""
+        body = "fn run(c: &mut std::process::Child) {\n    let p = io::Path::new(x);\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_a_trait_object_or_impl_type_is_refused(self) -> None:
+        body = "fn run(w: &mut dyn Write, b: Box<dyn Sink>, i: impl Matcher) {}"
+        assert declared_types(body, "rust") == {}
+
+    def test_builtins_and_type_parameters_are_refused(self) -> None:
+        body = "fn run<M>(v: Vec<Foo>, s: String, m: M, me: Self) {\n    let x = Self::new();\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_a_chained_constructor_types_nothing(self) -> None:
+        body = "fn run() {\n    let w = WalkBuilder::new(p).hidden(false).build();\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_an_associated_fn_not_named_as_a_constructor_types_nothing(self) -> None:
+        """``Glob::compile(..)`` may return anything; only constructor names are read."""
+        assert declared_types("fn run() {\n    let g = Glob::compile(p);\n}", "rust") == {}
+
+    def test_a_declaration_in_a_comment_is_ignored(self) -> None:
+        assert declared_types("fn run() {\n    // let w: Walker = x;\n}", "rust") == {}
+
+    def test_rust_is_not_a_field_language(self) -> None:
+        """A field is read through ``self.``, a dotted receiver not walked yet."""
+        assert "rust" not in IMPLICIT_FIELD_LANGUAGES
