@@ -11,6 +11,7 @@ import type {
   NextAction,
 } from "@repowise-dev/types/actions";
 
+import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
@@ -25,12 +26,6 @@ const TIER_HEADING: Record<ActionTier, string> = {
   act_now: "Now",
   plan: "Worth planning",
   improve_signal: "Improve what Repowise can see",
-};
-
-const EFFORT_LABEL: Record<NextAction["effort"], string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
 };
 
 export interface NextActionsProps {
@@ -266,6 +261,20 @@ export function NextActions({
   );
 }
 
+/**
+ * `path:line` for an action whose title does not already name its file, so a
+ * row like a Fix-first item ("Extract lines 60-122 of quick_repo_scan") says
+ * where without opening it. The line is the first piece of evidence in that
+ * file; titles that carry the path in backticks keep their own.
+ */
+export function actionLocation(action: NextAction): string | null {
+  const { kind, path } = action.target;
+  if ((kind !== "file" && kind !== "symbol") || !path) return null;
+  if (action.title.includes(path)) return null;
+  const line = action.details.find((d) => d.path === path && d.line)?.line;
+  return line ? `${path}:${line}` : path;
+}
+
 function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
   const out: [ActionTier, NextAction[]][] = [];
   for (const a of actions) {
@@ -289,6 +298,7 @@ export function ActionRow({
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
 }) {
   const plainTitle = action.title.replace(/`/g, "");
+  const location = actionLocation(action);
   const items = [
     { label: "Open details", icon: PanelRight, onSelect: onOpen },
     ...(onAnswer
@@ -329,6 +339,11 @@ export function ActionRow({
             {renderActionTitle(action.title)}
           </p>
         </div>
+        {location ? (
+          <p className="mt-0.5 font-mono text-xs text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+            {location}
+          </p>
+        ) : null}
         <p className="mt-1 max-w-[72ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           {renderActionTitle(action.impact)}
         </p>
