@@ -30,7 +30,8 @@ from ._constants import (
 )
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
-from .file_history import DECAY_REFRESH_KEYS, index_file
+from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
+from .function_blame import build_blame_index
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import (
     GitHistoryCoverage,
@@ -1148,6 +1149,28 @@ class GitIndexer:
             return float(repo.head.commit.committed_date)
         except Exception:
             return None
+
+    def blame_indexes(self, file_paths: Sequence[str]) -> dict[str, Any]:
+        """Per-line ``BlameIndex`` for *file_paths*, anchored as an index run
+        anchors it. For a re-score that must recover what only an index built;
+        files the size cap or a git error skips are left out."""
+        if not file_paths:
+            return {}
+        repo = self._get_repo()
+        if repo is None:
+            return {}
+        try:
+            anchor = int(_window_anchor(self._resolve_as_of_ts(repo)).timestamp())
+            out: dict[str, Any] = {}
+            for path in file_paths:
+                idx = build_blame_index(repo, path, repo_path=self.repo_path)
+                if idx.lines:
+                    idx.as_of_ts = anchor
+                    out[path] = idx
+            return out
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
 
     def _thread_repo_pool(self) -> tuple[Callable[[], Any], Callable[[], None]]:
         """Return ``(get_thread_repo, close_all)`` for per-thread Repo reuse.

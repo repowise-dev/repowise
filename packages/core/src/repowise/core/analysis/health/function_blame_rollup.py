@@ -65,7 +65,8 @@ def build_function_blame_rows(
     for pf, fcx in walked:
         path = pf.file_info.path
         meta = git_meta_map.get(path) or {}
-        idx = meta.get("blame_index")
+        # ``commit_set_blame``: a re-score's blame for a file stored without sets.
+        idx = meta.get("blame_index") or meta.get("commit_set_blame")
         if not isinstance(idx, BlameIndex) or not idx.lines:
             continue
         since = (now_ts if now_ts is not None else blame_as_of(idx)) - recent_window_days * 86400

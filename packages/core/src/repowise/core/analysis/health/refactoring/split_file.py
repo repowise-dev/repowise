@@ -134,6 +134,16 @@ def _is_skippable_path(path: str, language: str | None = None) -> bool:
     return is_test_related_path(path, language) or _is_generated_path(path)
 
 
+def may_split(path: str, language: str | None, line_count: int, top_level_symbols: int) -> bool:
+    """A necessary condition for a plan, from what a parse knows: lets a caller
+    skip work only a candidate file needs."""
+    return (
+        not _is_skippable_path(path, language)
+        and line_count >= _MIN_FILE_NLOC
+        and top_level_symbols >= _MIN_SYMBOLS
+    )
+
+
 def _line_range(data: dict) -> tuple[int, int] | None:
     start = data.get("start_line")
     end = data.get("end_line")

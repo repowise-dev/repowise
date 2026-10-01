@@ -515,6 +515,15 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
+def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
+    """Split File's per-function commit sets: from the blame index, the stored
+    rows, or the blame a re-score took for a file stored without them."""
+    idx = git_meta.get("blame_index") or git_meta.get("commit_set_blame")
+    if isinstance(idx, BlameIndex):
+        return blame_commit_entries(fcx.functions, idx)
+    return list(git_meta.get("function_commit_shas") or ())
+
+
 def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
@@ -1635,12 +1644,7 @@ class HealthAnalyzer:
             ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
             # Stored sets when no blame index, so a re-score matches the index.
-            commit_spans=commit_spans(
-                fcx.functions,
-                blame_commit_entries(fcx.functions, blame_index)
-                if blame_index is not None
-                else file_git_meta.get("function_commit_shas") or (),
-            ),
+            commit_spans=commit_spans(fcx.functions, _commit_entries(fcx, file_git_meta)),
             # The Extract Helper snippet; ``None`` unless the file carries clones.
             source_lines=source_lines,
         )

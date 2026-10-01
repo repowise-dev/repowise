@@ -217,8 +217,9 @@ def test_split_file_graph_and_plan_match_across_init_and_update(
     assert _split_plans(incremental) == full_plans
 
 
+@pytest.mark.parametrize("stored_before_sets", [False, True], ids=["current", "upgraded"])
 def test_split_file_cochange_matches_across_init_and_stored_rescore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored_before_sets: bool
 ) -> None:
     graphs = _record_graphs(monkeypatch)
     runner = CliRunner()
@@ -228,6 +229,12 @@ def test_split_file_cochange_matches_across_init_and_stored_rescore(
     _commit_group_history(repo)
     _use_store(monkeypatch, repo)
     _invoke(runner, repo, *_INIT_ARGS)
+    if stored_before_sets:
+        # A store written before the commit sets existed: the re-score has to
+        # blame the candidate itself, or it mints ids that move again later.
+        with closing(sqlite3.connect(repo / ".repowise" / "wiki.db")) as connection:
+            connection.execute("UPDATE git_function_blame SET commit_shas_json = NULL")
+            connection.commit()
     # An analyzer change forces the full re-score, which reads git metadata
     # from the store and so has no blame index. big.py itself is untouched.
     state_path = repo / ".repowise" / "state.json"
@@ -255,3 +262,11 @@ def test_split_file_cochange_matches_across_init_and_stored_rescore(
     assert full_plans
     assert _split_plans(repo) == full_plans
     assert _cochange_edges(repo) == _cochange_edges(full)
+    if stored_before_sets:
+        # Written back, so the next re-score reads them instead of blaming again.
+        with closing(sqlite3.connect(repo / ".repowise" / "wiki.db")) as connection:
+            filled = connection.execute(
+                "SELECT COUNT(*) FROM git_function_blame "
+                "WHERE file_path = 'big.py' AND commit_shas_json IS NOT NULL"
+            ).fetchone()[0]
+        assert filled > 0

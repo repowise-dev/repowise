@@ -18,7 +18,14 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, head_commit_ts, load_config, run_async, save_state
+from repowise.cli.helpers import (
+    console,
+    head_commit_ts,
+    load_config,
+    load_state,
+    run_async,
+    save_state,
+)
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
 
@@ -1417,13 +1424,19 @@ async def _rescore_health_from_db(
             init_db,
             upsert_repository,
         )
-        from repowise.core.persistence.crud import save_coverage_files
+        from repowise.core.persistence.crud import (
+            save_coverage_files,
+            upsert_git_function_blame_bulk,
+        )
         from repowise.core.persistence.models import GitMetadata, HealthFinding
         from repowise.core.pipeline.persist import (
             persist_graph_nodes,
             save_full_health_report,
         )
-        from repowise.core.pipeline.resume.rehydrate import attach_stored_commit_shas
+        from repowise.core.pipeline.resume.rehydrate import (
+            attach_commit_set_blame,
+            attach_stored_commit_shas,
+        )
         from repowise.core.workspace.update import get_head_commit
 
         url = get_db_url_for_repo(repo_path)
@@ -1460,8 +1473,15 @@ async def _rescore_health_from_db(
                 for gm in git_rows
                 if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
             )
-            # No blame index here, so Split File reads the stored commit sets.
+            # No blame index here, so Split File reads the stored commit sets,
+            # and blames once the candidates stored before the sets existed.
             await attach_stored_commit_shas(session, repo_id, git_meta_map)
+            attach_commit_set_blame(
+                repo_path,
+                git_meta_map,
+                parsed_files,
+                git_tier=load_state(Path(repo_path)).get("git_tier"),
+            )
             stored_blame_findings: dict[str, list[HealthFinding]] = {}
             for finding in (
                 await session.execute(
@@ -1511,6 +1531,9 @@ async def _rescore_health_from_db(
             await save_full_health_report(
                 session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
             )
+            # Rows for the files blamed above, so the next re-score reads them.
+            if report.function_blame_rows:
+                await upsert_git_function_blame_bulk(session, repo_id, report.function_blame_rows)
             if coverage.authoritative:
                 # Stamp the live HEAD from disk, not the stored
                 # ``repo.head_commit`` column. The column names the last
