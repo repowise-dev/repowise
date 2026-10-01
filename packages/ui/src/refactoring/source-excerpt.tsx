@@ -16,11 +16,17 @@ export function SourceExcerpt({
   start,
   end,
   readSource,
+  widen,
 }: {
   path: string;
   start: number;
   end: number;
   readSource: (path: string) => Promise<string>;
+  /**
+   * Move the start up once the file is read, e.g. to the loop header above a
+   * call. Returns the new first line and a note to print under the block.
+   */
+  widen?: ((fileLines: string[]) => { start: number; note: string | null }) | undefined;
 }) {
   const [state, setState] = React.useState<
     { status: "loading" } | { status: "done"; text: string } | { status: "error" }
@@ -46,7 +52,10 @@ export function SourceExcerpt({
       </p>
     );
   }
-  const lines = state.text.split("\n").slice(start - 1, end);
+  const fileLines = state.text.split("\n");
+  const widened = widen ? widen(fileLines) : null;
+  const first = widened ? Math.min(widened.start, start) : start;
+  const lines = fileLines.slice(first - 1, end);
   const shown = lines.slice(0, EXCERPT_MAX_LINES);
   if (shown.length === 0) {
     return (
@@ -58,11 +67,14 @@ export function SourceExcerpt({
   }
   return (
     <div className="space-y-1">
-      <CodeBlock code={shown.join("\n")} startLine={start} />
+      <CodeBlock code={shown.join("\n")} startLine={first} />
       {lines.length > shown.length ? (
         <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
           First {shown.length} of {lines.length} lines shown.
         </p>
+      ) : null}
+      {widened?.note ? (
+        <p className="text-[11.5px] text-[var(--color-text-tertiary)]">{widened.note}</p>
       ) : null}
     </div>
   );

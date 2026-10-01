@@ -32,8 +32,8 @@ import {
   humanizeToken,
   INTERVENTION_KIND_LABEL,
   interventionKind,
+  loopHeaderAbove,
   moduleScopeLabel,
-  opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
   siblingFixLabel,
@@ -393,9 +393,7 @@ export function OpportunityDrawer({
       {current ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-7 overflow-y-auto px-5 py-5">
-            <p className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-              {opportunityEvidenceLine(current)}
-            </p>
+            <WhereToEdit opportunity={current} />
 
             {unresolved ? <ModelStateNotice state={unresolved.model_state} /> : null}
             {resolved ? <ModelStateNotice state={resolved.model_state} /> : null}
@@ -581,9 +579,23 @@ export function OpportunityDrawer({
  * The fix in three facts a person decides on: what it buys (core's words),
  * how big the change is, and where it goes.
  */
-function FixSummary({ opportunity }: { opportunity: PerformanceOpportunity }) {
+/**
+ * Under the title: where the edit goes. The sink is not repeated here; it is
+ * named once, under the code it is reached from.
+ */
+function WhereToEdit({ opportunity }: { opportunity: PerformanceOpportunity }) {
   const kind = interventionKind(opportunity);
   const symbol = opportunity.intervention_symbol?.trim();
+  const where = symbol ? (moduleScopeLabel(symbol) ?? symbol) : opportunity.file_path;
+  return (
+    <p className="text-xs text-[var(--color-text-tertiary)]">
+      Edit {kind ? `${INTERVENTION_KIND_LABEL[kind].toLowerCase()}, ` : ""}
+      <span className="break-all font-mono text-[var(--color-text-secondary)]">{where}</span>
+    </p>
+  );
+}
+
+function FixSummary({ opportunity }: { opportunity: PerformanceOpportunity }) {
   const effort = opportunity.plan_economics?.effort_bucket;
   const effortLabel =
     effort && effort in EFFORT_LABEL ? EFFORT_LABEL[effort as keyof typeof EFFORT_LABEL] : null;
@@ -599,19 +611,6 @@ function FixSummary({ opportunity }: { opportunity: PerformanceOpportunity }) {
           label="Effort"
           value={effortLabel ?? "Not sized"}
           {...(effortLabel ? {} : { detail: "No stored plan, so the change was not sized." })}
-        />
-        {/* The kind leads when the store has it; an older store still names
-            the symbol, which is the answer a person needs. */}
-        <Field
-          label="Where to edit"
-          value={
-            kind
-              ? INTERVENTION_KIND_LABEL[kind]
-              : symbol
-                ? (moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol)
-                : "Not recorded"
-          }
-          {...(symbol ? { detail: moduleScopeLabel(symbol) ?? symbol } : {})}
         />
       </dl>
     </Section>
@@ -638,7 +637,7 @@ function CodeSection({
       {first ? (
         <div className="space-y-1.5">
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            The call inside the loop,{" "}
+            Where the loop makes the call,{" "}
             <span className="break-all font-mono text-[var(--color-text-secondary)]">
               {first.file_path}:{first.line_start}
             </span>
@@ -646,9 +645,10 @@ function CodeSection({
           {adapter.readSource ? (
             <SourceExcerpt
               path={first.file_path}
-              start={Math.max(1, first.line_start! - 2)}
+              start={first.line_start!}
               end={(first.line_end ?? first.line_start!) + 2}
               readSource={adapter.readSource}
+              widen={(fileLines) => loopHeaderAbove(fileLines, first.line_start!)}
             />
           ) : null}
         </div>

@@ -89,6 +89,32 @@ export function interventionKind(opportunity: PerformanceOpportunity): Intervent
   return kind && kind in INTERVENTION_KIND_LABEL ? (kind as InterventionKind) : null;
 }
 
+/** How far above a call the excerpt looks for the loop that repeats it. */
+export const LOOP_SEARCH_LINES = 15;
+
+const LOOP_HEADER = /^\s*(?:async\s+for|for|while)\b/;
+
+/**
+ * The loop header above a call, for the excerpt. The evidence stores the
+ * call's line, not the loop's, so this scans upward for the nearest
+ * `for` / `while` / `async for` line and says so when there is none in range.
+ */
+export function loopHeaderAbove(
+  fileLines: string[],
+  callLine: number,
+  maxUp = LOOP_SEARCH_LINES,
+): { start: number; note: string | null } {
+  for (let line = callLine; line >= Math.max(1, callLine - maxUp); line -= 1) {
+    if (LOOP_HEADER.test(fileLines[line - 1] ?? "")) {
+      return { start: line, note: `The loop starts at line ${line}.` };
+    }
+  }
+  return {
+    start: callLine,
+    note: `No for or while line within ${maxUp} lines above the call; the loop is further up or in a caller.`,
+  };
+}
+
 const MODULE_SCOPE = "::__module__";
 
 /**
