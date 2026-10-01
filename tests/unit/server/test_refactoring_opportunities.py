@@ -128,7 +128,7 @@ async def test_finalizer_composes_one_opportunity_per_file(client, app):
     assert body["total"] == 5
     assert len({item["file_path"] for item in body["items"]}) == 5
     for item in body["items"]:
-        assert item["opportunity_id"].startswith("refop3_")
+        assert item["opportunity_id"].startswith("refop4_")
         assert item["step_count"] == 1
         # The lead was supplied, so this is a real answer rather than unknown.
         assert item["addresses_primary_problem"] is True
@@ -472,7 +472,7 @@ async def test_bare_get_health_leads_with_fix_first_and_links_the_opportunity(cl
     lead = result["fix_first"]["lead"]
     assert lead["kind"] == "refactor"
     opportunity_id = lead["next_call"]["arguments"]["opportunity_id"]
-    assert opportunity_id.startswith("refop3_")
+    assert opportunity_id.startswith("refop4_")
     # Level 0 is a lead, not a queue: it must stay small enough to survive.
     assert len(str(result["fix_first"])) < 6000
 
@@ -606,7 +606,7 @@ async def test_a_plan_id_resolves_to_the_opportunity_that_owns_it(client, app):
 async def test_an_unknown_opportunity_id_says_which_kind_of_unknown(client, app):
     await _seed(client, app, files=2)
     get_health = await _mcp(app)
-    missing = await get_health(opportunity_id="refop3_" + "0" * 20)
+    missing = await get_health(opportunity_id="refop4_" + "0" * 20)
     assert missing["found"] is False
     assert missing["model_state"]["state"] == "current"
     stale = await get_health(opportunity_id="refop1_" + "0" * 20)

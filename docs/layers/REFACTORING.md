@@ -133,6 +133,8 @@ for a file at one commit, so its `split_file` plan id is the same on every path:
 the co-change edge reads each function's commit set (its 50 most recent
 distinct commits) from `git_function_blame` when no blame index is at hand.
 Rows stored before that column existed carry no set until the next full index.
+This moved Split File groups, so refactoring model 4 re-mints every plan id
+once on upgrade; a held `refac3_` id reports `stale_model`.
 
 ### Ordering, and `refactoring_view`
 

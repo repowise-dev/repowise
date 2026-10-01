@@ -109,7 +109,15 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v37): schema migrations are ``tooling`` in the performance
+# Current stamp (v38): Split File's co-change edge reads per-function commit
+# sets (the 50 newest distinct commits of each function, stored on
+# ``git_function_blame``), and a class takes the union of its methods' sets
+# instead of blame over its whole span. Group membership is a kernel input to
+# the ``split_file`` id, so ``REFACTORING_MODEL_VERSION`` moved 3 -> 4 with it:
+# every refactoring id now carries the ``refac4_`` prefix, and a held ``refac3_``
+# id reports ``stale_model``.
+#
+# v37: schema migrations are ``tooling`` in the performance
 # ``execution_context`` (any ``migrations/`` directory, Rails ``db/migrate``,
 # Alembic ``alembic/versions``). The context is stored on every performance
 # opportunity and is a kernel input to its id, so ``PERFORMANCE_MODEL_VERSION``
@@ -371,7 +379,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 37
+HEALTH_ANALYZER_VERSION = 38
 
 
 def _mark_deprecated(
