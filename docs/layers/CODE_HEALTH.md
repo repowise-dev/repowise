@@ -611,13 +611,14 @@ so one loop reaching three sinks is one opportunity with three
 function are one edit site today, because findings carry the sink's line and not
 the loop's.
 
-**The default queue** (MCP `get_health`, the REST list, and the Overview's Do
-next) holds production opportunities with a strategy: `plan_ready` and
-`advisory`. Test, tooling and unclassified code, `expected` repetition and
-`investigate` causes (no supported strategy, so no safe plan) are one filter
-away, and the summary's `default_queue` block counts each reason it leaves out,
-so nothing is dropped silently. The dashboard directive leads with the head of
-that queue.
+**The default queue** (MCP `get_health` and the REST list) holds production
+opportunities with a strategy: `plan_ready` and `advisory`. Test, tooling and
+unclassified code, `expected` repetition and `investigate` causes (no
+supported strategy, so no safe plan) are one filter away, and the summary's
+`default_queue` block counts each reason it leaves out, so nothing is dropped
+silently. Fix first (the dashboard lead, `repowise health` and the Overview's
+Do next) takes its performance items through the same predicate and counts the
+same reasons in `totals.excluded`.
 
 **Order.** The queue is ranked by value (`rank_score`) first; actionability only
 breaks a tie, so at equal value a plan-ready cause comes before an advisory one,
