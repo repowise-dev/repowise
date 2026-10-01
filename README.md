@@ -163,7 +163,7 @@ toward the modules you and your agent ask about most, with no switch needed.
 | **Docs** | A wiki for every module and file, rebuilt incrementally with freshness and confidence scoring plus hybrid search |
 | **Documentation drift** | Your own markdown checked against the tree: the claims each document makes, resolved against the graph, and the ones the code refutes |
 | **Decisions** | Architectural rationale mined from five index-time sources plus human and agent capture, each claim traced to evidence |
-| **Code health** | 51 deterministic detectors across defect risk, maintainability, and performance, followed by concrete refactoring plans |
+| **Code health** | 53 deterministic detectors across defect risk, maintainability, and performance, followed by concrete refactoring plans |
 
 The structural wiki needs no model. Model-written prose is an optional upgrade, one
 page or directory at a time. Six of the seven decision sources are deterministic too;
@@ -314,7 +314,7 @@ every file, locates where the risk concentrates, and then names the specific fix
 <img src=".github/assets/health-loop.svg" alt="repowise code-health loop: deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
 </div>
 
-Every file is scored 1-10 by **51 deterministic detectors** (McCabe complexity, brain
+Every file is scored 1-10 by **53 deterministic detectors** (McCabe complexity, brain
 methods, LCOM4 cohesion, god classes, native Rabin-Karp clone detection, untested
 hotspots, change entropy, prior-defect history and more), split into three lenses:
 **defect risk**, **maintainability**, and **performance**: static N+1 and I/O-in-loop
@@ -851,7 +851,7 @@ August 2026. Unmarked rows are capability presence, not measurements.</sub>
 | | repowise | CodeScene |
 |---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
-| Code health score (1-10) | ✅ 51 detectors, 26 scoring | ✅ 25-30 |
+| Code health score (1-10) | ✅ 53 detectors, 26 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
