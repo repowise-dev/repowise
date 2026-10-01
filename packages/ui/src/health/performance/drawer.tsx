@@ -49,6 +49,7 @@ function toRecommendationValidation(
     affected_symbols: [],
     commands: validation.commands,
     targets: [],
+    ...(validation.reasons ? { reasons: validation.reasons } : {}),
   };
 }
 

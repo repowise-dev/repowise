@@ -147,3 +147,60 @@ export function refactoringPlanSteps(plan: RefactoringPlan): string {
   const render = PLAN_STEPS.get(plan.refactoring_type);
   return render ? render(plan) : "Apply the refactoring described above.";
 }
+
+/** The validation fields the Verify block reads; refactoring plans, opportunity
+ *  profiles and the performance queue all carry them. */
+export interface VerifyValidation {
+  total: number;
+  tests: string[];
+  reasons?: Record<string, string> | null | undefined;
+  commands: string[];
+}
+
+/** What a missing test should exercise: the changed symbol, or the file for a
+ *  plan that changes a whole file (a split, a cycle). Stored ids lose their path. */
+export function verifySubject(plan: RefactoringPlan): string {
+  if (plan.refactoring_type === "split_file" || plan.refactoring_type === "break_cycle") {
+    return plan.file_path;
+  }
+  return plan.target_symbol.split("::").pop() || plan.file_path;
+}
+
+/** The tests to run after the change, most direct first, each with why it is
+ *  listed, then the command. With no guarding test, the instruction to add one. */
+export function verifyLines(validation: VerifyValidation, subjects: string[]): string[] {
+  if (validation.tests.length === 0) {
+    return validation.total > 0
+      ? [`Guarding tests: ${validation.total}, but none were included in this payload.`]
+      : [
+          `No guarding tests found: add a test for ${subjects.map((s) => `\`${s}\``).join(", ")} before changing it.`,
+        ];
+  }
+  const rows = validation.tests.map((test) => {
+    const reason = validation.reasons?.[test];
+    return `- \`${test}\`${reason ? ` (${reason})` : ""}`;
+  });
+  const shown =
+    validation.total > validation.tests.length
+      ? [`${validation.tests.length} of ${validation.total} guarding tests shown.`]
+      : [];
+  const run = validation.commands.length
+    ? ["", "Run:", "", "```", ...validation.commands, "```"]
+    : [];
+  return [
+    "Run these after the change. The tests that exercise it most directly come first:",
+    "",
+    ...rows,
+    ...shown,
+    ...run,
+  ];
+}
+
+/** A `## Verify` section, or nothing when the payload carries no validation. */
+export function verifySection(
+  validation: VerifyValidation | null | undefined,
+  subjects: string[],
+): string {
+  if (!validation) return "";
+  return ["## Verify", "", ...verifyLines(validation, subjects)].join("\n");
+}

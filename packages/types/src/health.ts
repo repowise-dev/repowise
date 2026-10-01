@@ -414,6 +414,8 @@ export interface PerformanceOpportunityValidation {
   via: ValidationVia | null;
   total: number;
   tests: string[];
+  /** Why each test is listed, keyed by test id. Null on a store written before it. */
+  reasons?: Record<string, string> | null;
   commands: string[];
 }
 

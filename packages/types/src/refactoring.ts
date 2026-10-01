@@ -35,6 +35,9 @@ export interface RecommendationValidation {
   affected_symbols: string[];
   commands: string[];
   targets: RecommendationValidationTarget[];
+  /** Why each shown test is listed where it is ("calls walk_file", "covers lines
+   *  94-208"), keyed by test id. Absent on a payload from an older server. */
+  reasons?: Record<string, string>;
 }
 
 export interface RefactoringPlan {

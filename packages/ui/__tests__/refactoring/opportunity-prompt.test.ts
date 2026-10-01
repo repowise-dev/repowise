@@ -222,7 +222,7 @@ describe("buildRefactoringOpportunityPrompt", () => {
 
   it("carries the runnable validation commands", () => {
     const text = buildRefactoringOpportunityPrompt({ opportunity: detail() });
-    expect(text).toContain("## Validation plan");
+    expect(text).toContain("## Verify");
     expect(text).toContain("pytest tests/test_big.py");
     expect(text).toMatch(/3 guarding tests via coverage/);
   });
@@ -234,7 +234,7 @@ describe("buildRefactoringOpportunityPrompt", () => {
     const text = buildRefactoringOpportunityPrompt({
       opportunity: detail({ validation_profiles: profiles }),
     });
-    expect(text).toMatch(/treat this as a validation gap/);
+    expect(text).toMatch(/No guarding tests found: add a test for `[^`]+`.* before changing it\./);
   });
 
   it("tells the agent to keep the co-affected files consistent", () => {
