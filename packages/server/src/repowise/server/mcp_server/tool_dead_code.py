@@ -21,11 +21,9 @@ from repowise.core.analysis.finding_registry import (
     verification_label,
     withheld_summary,
 )
+from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import (
-    DeadCodeFinding,
-    GitMetadata,
-)
+from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._basis import call_resolution_bases
@@ -129,13 +127,10 @@ async def _get_dead_code_all_repos(
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
 
-            all_query = select(DeadCodeFinding).where(
-                DeadCodeFinding.repository_id == repository.id,
-                DeadCodeFinding.status == "open",
-            )
-            all_result = await session.execute(all_query)
             repo_findings = filter_rows_by_attr(
-                list(all_result.scalars().all()), "file_path", _get_exclude_spec(ctx.path)
+                await get_dead_code_findings(session, repository.id, include_withheld=True),
+                "file_path",
+                _get_exclude_spec(ctx.path),
             )
             repo_findings, repo_withheld = filters.split_withheld(repo_findings)
             for name, entry in repo_withheld.items():
@@ -399,13 +394,11 @@ async def get_dead_code(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-        # Fetch all open findings for summary computation
-        all_query = select(DeadCodeFinding).where(
-            DeadCodeFinding.repository_id == repository.id,
-            DeadCodeFinding.status == "open",
+        # Fetch all open findings for summary computation. Withheld kinds are
+        # read too, so the summary can count what it leaves out.
+        all_findings, withheld = filters.split_withheld(
+            await get_dead_code_findings(session, repository.id, include_withheld=True)
         )
-        all_result = await session.execute(all_query)
-        all_findings, withheld = filters.split_withheld(list(all_result.scalars().all()))
 
         # Phase 4: load git metadata for "last meaningful change" enrichment
         git_meta_map = await _load_git_meta_map(session, repository.id, all_findings)

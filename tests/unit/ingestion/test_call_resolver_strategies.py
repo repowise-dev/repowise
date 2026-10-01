@@ -419,6 +419,101 @@ class TestFieldTypedReceiver:
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
 
+    def test_a_nested_class_field_types_its_receiver(self, tmp_path: Path) -> None:
+        """A nested class's id carries its outer class; its methods' ids do not."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "p/Token.java": (
+                    "java",
+                    "package p;\n"
+                    "abstract class Token {\n"
+                    "    static final class Chars extends Token {\n"
+                    "        final TokenData data = new TokenData();\n"
+                    "        Chars data(String str) { data.set(str); return this; }\n"
+                    "    }\n"
+                    "}\n",
+                ),
+                "p/TokenData.java": (
+                    "java",
+                    "package p;\nclass TokenData {\n    void set(String str) { }\n}\n",
+                ),
+                "p/Tag.java": (
+                    "java",
+                    "package p;\npublic class Tag {\n    public Tag set(int option) { return this; }\n}\n",
+                ),
+            },
+        )
+        assert (
+            "p/Token.java::Chars::data",
+            "p/TokenData.java::TokenData::set",
+            0.90,
+            "receiver_field_same_package",
+        ) in _edges(parsed, tmp_path)
+
+    def test_two_nested_classes_sharing_a_name_type_no_field(self, tmp_path: Path) -> None:
+        """Both ``Holder.run`` bodies mint one id, so which class it is stays open."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "p/Pair.java": (
+                    "java",
+                    "package p;\n"
+                    "class First {\n"
+                    "    static class Holder {\n"
+                    "        Finder f;\n"
+                    "        int run() { return f.find(); }\n"
+                    "    }\n"
+                    "}\n"
+                    "class Second {\n"
+                    "    static class Holder {\n"
+                    "        Other f;\n"
+                    "        int run() { return f.find(); }\n"
+                    "    }\n"
+                    "}\n",
+                ),
+                "p/Finder.java": (
+                    "java",
+                    "package p;\nclass Finder {\n    int find() { return 1; }\n}\n",
+                ),
+                "p/Other.java": (
+                    "java",
+                    "package p;\nclass Other {\n    int find() { return 2; }\n}\n",
+                ),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
+
+    def test_a_nested_class_reaches_an_inherited_method(self, tmp_path: Path) -> None:
+        """The hierarchy is keyed on the nested class's own id, outer name and all."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Token.cs": (
+                    "csharp",
+                    "class Token\n{\n"
+                    "    class Chars : Base\n    {\n"
+                    "        void Clear() { this.Reset(); }\n"
+                    "    }\n}\n",
+                ),
+                "Base.cs": ("csharp", "class Base\n{\n    public void Reset() { }\n}\n"),
+                # A second declaration keeps the bare-name tiers from answering,
+                # so only the hierarchy can.
+                "Other.cs": ("csharp", "class Other\n{\n    public void Reset() { }\n}\n"),
+            },
+        )
+        resolver = CallResolver(
+            parsed,
+            {p: set() for p in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"Token.cs::Token::Chars": {"Base.cs::Base"}},
+        )
+        edges = [
+            (rc.caller_id, rc.callee_id, rc.origin)
+            for rc in resolver.resolve_file("Token.cs", parsed["Token.cs"].calls)
+        ]
+        assert ("Token.cs::Chars::Clear", "Base.cs::Base::Reset", "self_inherited") in edges
+
 
 class TestPythonTypedReceiver:
     """Python reaches the same strategy through its own declaration shapes."""

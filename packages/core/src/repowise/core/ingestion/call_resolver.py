@@ -55,6 +55,7 @@ from .models import (
     symbol_id_language,
 )
 from .resolved_call import ResolvedCall
+from .resolvers.cpp import _SOURCE_TU_EXTS
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
 from .type_names import (
     csharp_extension_receiver,
@@ -88,6 +89,10 @@ _LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
 
+# The graph's prefix for an import target outside the repository. Also marks a
+# Python base class the repository does not declare, in an MRO walk.
+_EXTERNAL_PREFIX = "external:"
+
 # Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
 # reach, so 3 reaches 4.
 _MAX_ANCESTOR_EXPAND_DEPTH = 3
@@ -119,11 +124,11 @@ def _is_property_accessor(sym: Any) -> bool:
 
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp", "go"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
-_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript"})
+_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go"})
 
 
 def _overload_return_types(
@@ -177,6 +182,21 @@ def _renames_on_the_way(binding: NamedBinding | None, name: str) -> bool:
     return binding is not None and (binding.exported_name or name) != name
 
 
+def _has_internal_linkage(path: str, sym: Symbol) -> bool:
+    """Is *sym* a C/C++ free symbol only its own translation unit can name?
+
+    The parser records ``static`` and anonymous-namespace linkage as
+    ``private``. A header's copy is compiled into every file that includes it,
+    so only a source file keeps the symbol to itself.
+    """
+    return (
+        sym.language in ("c", "cpp")
+        and sym.parent_name is None
+        and sym.visibility == "private"
+        and path.lower().endswith(_SOURCE_TU_EXTS)
+    )
+
+
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     """Are these two paths the same C++ translation unit?
 
@@ -224,6 +244,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             else return_type_chain_languages
         )
         self._ancestors: dict[str, tuple[str, ...]] = {}
+        self._mros: dict[str, tuple[str, ...] | None] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
 
@@ -272,6 +293,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Held as an id set rather than a full id->kind map: it is the only
         # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        # C/C++ symbols with internal linkage; see ``_reachable_by_name``.
+        self._tu_local_ids: set[str] = set()
         self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
@@ -498,7 +521,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 if extended is not None:
                     extensions[(extended, sym.name)].add((path, sym.id))
 
-            self._index_globally(sym)
+            self._index_globally(path, sym)
 
         self._file_symbols[path] = file_syms
         self._file_methods[path] = file_methods
@@ -512,7 +535,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return extended if extended in self._csharp_type_names else None
 
-    def _index_globally(self, sym: Symbol) -> None:
+    def _index_globally(self, path: str, sym: Symbol) -> None:
+        if _has_internal_linkage(path, sym):
+            self._tu_local_ids.add(sym.id)
         if sym.kind in _NON_CALLABLE_KINDS:
             self._non_callable_ids.add(sym.id)
         if _is_property_accessor(sym):
@@ -744,6 +769,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         language = self._language_of(file_path) or ""
         receiver_call = call.receiver_call
+        if language == "python" and _is_super_receiver(receiver_call):
+            return self._with_props(self._super_call(call, caller_id), call)
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
         if receiver_call is not None and (
@@ -813,6 +840,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             # methods, so the repository cannot declare its method: the
             # bare-name answer is disproved, not merely unevidenced.
             return from_table
+        if language == "go":
+            # A go method is declared in its receiver type's package and go has
+            # no extension methods, so a head type with no repository method,
+            # declared here or not, leaves nothing for the bare name to find.
+            return True
         if language in ("csharp", "typescript"):
             return False
         return type_name in self._known_type_names
@@ -959,6 +991,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Every tier keys on the target name, so a name the repo declares
         # nowhere can only be matched under an import alias (2a below).
         declared = target_name in self._global_symbols
+        # A parameter or local of that name hides every tier below.
+        if self._shadowed_by_local(file_path, call, caller_id):
+            return None
 
         # Tier 1: same-file
         handled, resolved = self._same_file_free_call(file_path, call, caller_id)
@@ -979,6 +1014,18 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A Python name imported from outside the repository is that module's,
+        # not a same-named repo symbol a later tier would find. Python only:
+        # Python resolves a repo's own absolute imports by dotted path, while
+        # another language's import of the repo's own package by its published
+        # name may still be marked external and mean repo code. Ceiling: an
+        # in-repo ``except ImportError:`` fallback definition is not linked.
+        if (
+            binding is not None
+            and (binding.source_file or "").startswith(_EXTERNAL_PREFIX)
+            and self._language_of(file_path) == "python"
+        ):
+            return None
         if not declared:
             return None
         return (
@@ -1089,9 +1136,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Tier 3 and what follows it: answers not grounded in this file or its imports."""
         target_name = call.target_name
         # Tier 3: global unique match, only within the same language.
-        # Uniqueness is judged on the unfiltered list on purpose: filtering data
-        # members out first would re-uniquify a name a field and a method share.
-        candidates = self._global_symbols.get(target_name, [])
+        # Uniqueness is judged before filtering data members, on purpose: filtering
+        # them out first would re-uniquify a name a field and a method share. A
+        # symbol the caller cannot name at all is no rival, so that one is dropped.
+        candidates = [
+            sym_id
+            for sym_id in self._global_symbols.get(target_name, ())
+            if self._reachable_by_name(file_path, sym_id)
+        ]
         if len(candidates) == 1 and candidates[0] != caller_id:
             return self._global_unique_match(
                 file_path, call, caller_id, target_name, candidates[0]
@@ -1111,6 +1163,16 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if only == caller_id or only in self._property_accessor_ids:
             return None
         return self._global_unique_match(file_path, call, caller_id, target_name, only)
+
+    def _reachable_by_name(self, file_path: str, sym_id: str) -> bool:
+        """Can a bare name in *file_path* reach *sym_id* with no include in between?
+
+        Not when *sym_id* has internal linkage in another translation unit: a
+        ``static`` function in one .c file cannot be linked from any other. The
+        include-grounded tiers need no check, since an included file is part of
+        the includer's translation unit.
+        """
+        return sym_id not in self._tu_local_ids or self._symbol_paths_by_id.get(sym_id) == file_path
 
     def _implicit_inherited_call(
         self,
@@ -1345,6 +1407,83 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
 
+    def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
+        """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
+
+        Never handed to the bare-name tiers, which answered with whichever
+        same-named method the file declared last. A base outside the
+        repository ends the walk unresolved: it may declare ``m`` itself.
+
+        Ceiling: ``super(C, self)`` is read as the caller's own class, since
+        the call site keeps no argument text. A ``C`` naming another class
+        starts the walk in the wrong place; reading the first argument would
+        close it.
+        """
+        class_id = _extract_class_id(caller_id)
+        mro = self._mro(class_id) if class_id is not None else None
+        for ancestor in (mro or ())[1:]:
+            if ancestor.startswith(_EXTERNAL_PREFIX):
+                return None
+            sym_id = self._declares(ancestor, call.target_name)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
+        return None
+
+    def _mro(self, class_id: str, visiting: frozenset[str] = frozenset()) -> tuple[str, ...] | None:
+        """Python's C3 linearization of *class_id*, or None when it cannot be built.
+
+        A base outside the repository is kept as an opaque leaf, so the walk
+        can tell where in the order it sits without knowing its own bases.
+        """
+        if class_id in self._mros:
+            return self._mros[class_id]
+        bases = self._declared_bases(class_id)
+        mro: tuple[str, ...] | None = None
+        if bases is not None and class_id not in visiting:
+            inner = visiting | {class_id}
+            chains: list[tuple[str, ...]] = []
+            for base in bases:
+                external = base.startswith(_EXTERNAL_PREFIX)
+                chain = (base,) if external else self._mro(base, inner)
+                if chain is None:
+                    break
+                chains.append(chain)
+            else:
+                merged = _c3_merge([*chains, tuple(bases)])
+                mro = None if merged is None else (class_id, *merged)
+        self._mros[class_id] = mro
+        return mro
+
+    def _declared_bases(self, class_id: str) -> list[str] | None:
+        """*class_id*'s bases in declaration order, each an in-repo class id or an external marker.
+
+        The resolved heritage is an unordered id set, so each declared name is
+        matched back to its id through the symbol's name, or the name an import
+        alias stands for. None when a name matches two ids, or the file
+        declares two classes of this name.
+        """
+        symbol = self._symbols_by_id.get(class_id)
+        file_path = self._symbol_paths_by_id.get(class_id)
+        parsed = self._parsed_files.get(file_path) if file_path else None
+        if symbol is None or file_path is None or parsed is None:
+            return None
+        relations = [r for r in parsed.heritage if r.child_name == symbol.name]
+        if len({r.line for r in relations}) > 1:
+            return None
+        parents = self._heritage_parents.get(class_id, ())
+        bindings = self._import_bindings.get(file_path, {})
+        bases: list[str] = []
+        for relation in relations:
+            binding = bindings.get(relation.parent_name)
+            names = {relation.parent_name, binding.exported_name if binding else None}
+            hits = [
+                p for p in parents if (s := self._symbols_by_id.get(p)) is not None and s.name in names
+            ]
+            if len(hits) > 1:
+                return None
+            bases.append(hits[0] if hits else _EXTERNAL_PREFIX + relation.parent_name)
+        return bases
+
     def _language_of(self, file_path: str) -> str | None:
         parsed = self._parsed_files.get(file_path)
         return parsed.file_info.language if parsed else None
@@ -1359,9 +1498,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """
         if not self._heritage_parents:
             return None
-        class_id = _extract_class_id(caller_id)
-        if class_id is None:
+        if _extract_class_id(caller_id) is None:
             return None
+        class_id = self._caller_class_id(caller_id)
         # The caller's own class answers even when Strategy 3 declined it for
         # recursion; an ancestor's declaration of the name is not the target.
         if self._declares(class_id, method_name) is not None:
@@ -1487,6 +1626,27 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     """
     parts = symbol_id.split("::")
     return len(parts) >= 3 and parts[-1] != parts[-2]
+
+
+def _is_super_receiver(receiver: CallReceiver | None) -> bool:
+    """Is this chained call's receiver Python's ``super(...)``?"""
+    return receiver is not None and receiver.target_name == "super" and receiver.receiver_name is None
+
+
+def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:
+    """The C3 merge step of Python's MRO; None when no consistent order exists."""
+    pending = [list(seq) for seq in sequences if seq]
+    merged: list[str] = []
+    while pending:
+        head = next(
+            (seq[0] for seq in pending if not any(seq[0] in other[1:] for other in pending)),
+            None,
+        )
+        if head is None:
+            return None
+        merged.append(head)
+        pending = [rest for seq in pending if (rest := seq[1:] if seq[0] == head else seq)]
+    return merged
 
 
 def _extract_class_id(symbol_id: str) -> str | None:

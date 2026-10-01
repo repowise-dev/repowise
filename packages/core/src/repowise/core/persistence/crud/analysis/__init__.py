@@ -41,6 +41,7 @@ from .coverage_map import (
     tests_covering_files,
 )
 from .dead_code import (
+    finding_data_from_row,
     get_dead_code_findings,
     get_dead_code_summary,
     replace_dead_code_findings,
@@ -143,6 +144,7 @@ __all__ = [
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
+    "finding_data_from_row",
     "get_average_health",
     "get_coverage_summary",
     "get_dead_code_findings",

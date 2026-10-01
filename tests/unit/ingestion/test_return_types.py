@@ -34,6 +34,8 @@ def test_signature_parameter_count(signature: str, expected: int | None) -> None
         ("const seastar::future<Result>&", "cpp", "future"),
         ("global::System.Threading.Tasks.Task<Result>?", "csharp", "Task"),
         ("Promise<Result> | null", "typescript", "Promise"),
+        ("*Event", "go", "Event"),
+        ("*zerolog.Event", "go", "Event"),
     ],
 )
 def test_normalize_return_type_keeps_the_declared_wrapper(

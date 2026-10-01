@@ -490,7 +490,7 @@ ResolutionOrigin = Literal[
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method
     # the language would not actually dispatch to.
-    "self_inherited",  # 0.90 — explicit self/this receiver
+    "self_inherited",  # 0.90 — explicit self/this receiver, or Python super()
     "enclosing_inherited",  # 0.90 — implicit receiver, bare call
 ]
 

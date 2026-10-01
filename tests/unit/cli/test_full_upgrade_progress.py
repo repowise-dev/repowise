@@ -87,8 +87,8 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
                 raise RuntimeError("temporary FTS failure")
             deleted.append(page_ids)
 
-        async def index(self, page_id: str, *_args, **_kwargs) -> None:
-            indexed.append(page_id)
+        async def index_pages(self, pages) -> None:
+            indexed.extend(page.page_id for page in pages)
 
     import repowise.core.persistence.search as search
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -32,6 +32,7 @@ from repowise.core.fts_query import build_fts5_query as _build_fts5_query
 from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
+from .batches import chunked
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -450,6 +451,21 @@ class FullTextSearch:
         untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
         await self.index_many([(page_id, title, content, summary, target_path)])
+
+    async def index_pages(self, pages: Iterable[Any]) -> None:
+        """Index generated pages, one :meth:`index_many` transaction per chunk.
+
+        Each entry needs ``page_id``, ``title``, ``content``, ``summary`` and
+        ``target_path``. Use this, not :meth:`index` in a loop: a write deletes
+        by ``page_id``, which FTS5 stores unindexed, so every delete scans the
+        whole index. Per page that is quadratic in wiki size (18 GB of reads
+        for a 2,300-page rebuild); chunked it is one scan per chunk, while a
+        failure loses at most one chunk and memory holds one chunk's copies.
+        """
+        for chunk in chunked(list(pages)):
+            await self.index_many(
+                [(p.page_id, p.title, p.content, p.summary, p.target_path) for p in chunk]
+            )
 
     async def index_many(
         self,

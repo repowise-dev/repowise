@@ -388,3 +388,129 @@ def test_a_csharp_overload_set_resolves_to_the_one_id_it_shares(tmp_path: Path) 
     assert ("Test.cs::Test::Run", "Steps.cs::Steps::Given") in _calls_by_origin(
         graph, "enclosing_inherited"
     )
+
+
+# ``super().m()`` walks the caller's MRO past its own class. It used to reach
+# the bare-name tiers as ``m()``, which bound it to whichever same-named method
+# the file declared last.
+
+
+def _calls_from(graph, caller: str) -> set[str]:
+    return {
+        v for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls" and u == caller
+    }
+
+
+def test_super_call_resolves_to_the_base_not_the_file_last_same_name(tmp_path: Path) -> None:
+    graph = _build(
+        tmp_path,
+        {
+            "base.py": "class Base:\n    def __init__(self, m):\n        self.m = m\n",
+            "impl.py": (
+                "from base import Base\n\n\n"
+                "class Child(Base):\n"
+                "    def __init__(self, m):\n"
+                "        super().__init__(m)\n\n\n"
+                "class Unrelated:\n"
+                "    def __init__(self):\n"
+                "        pass\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "impl.py::Child::__init__") == {"base.py::Base::__init__"}
+
+
+def test_super_call_skips_a_base_that_does_not_declare_the_method(tmp_path: Path) -> None:
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Root:\n    def run(self):\n        return 0\n\n\n"
+                "class Middle(Root):\n    def other(self):\n        return 1\n\n\n"
+                "class Leaf(Middle):\n    def run(self):\n        return super().run()\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Leaf::run") == {"a.py::Root::run"}
+
+
+def test_super_call_follows_c3_order_through_a_diamond(tmp_path: Path) -> None:
+    """C3 puts ``Right`` before the shared ``Top``; a depth-first walk would
+    reach ``Top`` through ``Left`` first."""
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Top:\n    def m(self):\n        return 0\n\n\n"
+                "class Left(Top):\n    pass\n\n\n"
+                "class Right(Top):\n    def m(self):\n        return 1\n\n\n"
+                "class Bottom(Left, Right):\n    def m(self):\n        return super().m()\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Bottom::m") == {"a.py::Right::m"}
+
+
+def test_super_call_takes_the_first_declared_base_that_answers(tmp_path: Path) -> None:
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Mixin:\n    def greet(self):\n        return 2\n\n\n"
+                "class Base:\n    def greet(self):\n        return 1\n\n\n"
+                "class Both(Mixin, Base):\n"
+                "    def greet(self):\n        return super(Both, self).greet()\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Both::greet") == {"a.py::Mixin::greet"}
+
+
+def test_super_call_on_an_external_base_resolves_to_nothing(tmp_path: Path) -> None:
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Failure(Exception):\n"
+                "    def __init__(self, message):\n"
+                "        super().__init__(message)\n\n\n"
+                "class Unrelated:\n    def __init__(self):\n        pass\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Failure::__init__") == set()
+
+
+def test_super_call_stops_at_an_external_base_ahead_of_a_repo_one(tmp_path: Path) -> None:
+    """``dict`` comes first in the MRO and declares ``get`` itself."""
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Store:\n    def get(self, key):\n        return None\n\n\n"
+                "class Cache(dict, Store):\n"
+                "    def get(self, key):\n        return super().get(key)\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Cache::get") == set()
+
+
+def test_super_call_in_a_class_without_bases_resolves_to_nothing(tmp_path: Path) -> None:
+    graph = _build(
+        tmp_path,
+        {
+            "a.py": (
+                "class Plain:\n    def __init__(self):\n        super().__init__()\n\n\n"
+                "class Other:\n    def __init__(self):\n        pass\n"
+            ),
+        },
+        "python",
+    )
+    assert _calls_from(graph, "a.py::Plain::__init__") == set()

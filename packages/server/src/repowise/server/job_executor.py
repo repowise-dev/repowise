@@ -667,14 +667,7 @@ async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list) -> None:
         return
     if swept_page_ids:
         await fts.delete_many(swept_page_ids)
-    for page in pages:
-        await fts.index(
-            page.page_id,
-            page.title,
-            page.content,
-            summary=page.summary,
-            target_path=page.target_path,
-        )
+    await fts.index_pages(pages)
 
 
 async def _record_index_completion(

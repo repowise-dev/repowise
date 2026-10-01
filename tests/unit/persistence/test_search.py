@@ -311,3 +311,47 @@ async def test_full_text_search_repository_id_filter(async_engine, async_session
     b_hits = await fts.search("queue", repository_id="repo-b-id")
     assert [r.page_id for r in b_hits] == ["p-b"]
 
+
+
+# ---------------------------------------------------------------------------
+# Batched page writes
+# ---------------------------------------------------------------------------
+
+
+async def test_index_pages_scans_the_index_once_per_id_chunk(async_engine, fts):
+    """A delete by the unindexed ``page_id`` scans the whole index, so a wiki
+    written page by page is quadratic. ``index_pages`` must issue one delete
+    per id chunk, not one per page, and leave the same rows the loop did."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import event
+    from sqlalchemy.sql import text
+
+    pages = [
+        SimpleNamespace(
+            page_id=f"file_page:m{i}.py",
+            title=f"File: m{i}.py",
+            content=f"Module {i} documents widget number {i}.",
+            summary=f"summary {i}",
+            target_path=f"m{i}.py",
+        )
+        for i in range(1100)
+    ]
+    deletes: list[str] = []
+
+    def _count(conn, cursor, statement, *_):
+        if statement.startswith("DELETE FROM page_fts"):
+            deletes.append(statement)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        await fts.index_pages(pages)
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _count)
+
+    assert len(deletes) == 3  # 1100 ids in chunks of 500
+    async with async_engine.connect() as conn:
+        rows = (
+            await conn.execute(text("SELECT page_id, title, summary, target_path FROM page_fts"))
+        ).fetchall()
+    assert sorted(rows) == sorted((p.page_id, p.title, p.summary, p.target_path) for p in pages)

@@ -149,6 +149,35 @@ _GO_SHORT_DECL = re.compile(
 # ``var x Foo`` / ``var x *Foo``: rare, but no pattern above reaches it.
 _GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})")
 
+# A struct field is the rest of its line: a type, its type arguments (two levels,
+# the ``_TYPE`` ceiling) and a tag. A field is typed only as ``T`` or ``*T``, as
+# ``_GO_SHORT_DECL`` types a value: ``[]T``, ``map[K]T`` and ``chan T`` hold a
+# ``T`` but are not one. Exported fields are capitalised, so the name is too.
+#
+# The type is unqualified: ``fd *sftp.File`` is never the ``File`` the file
+# itself declares, and a chain hop can only look a type up in its own file.
+# Ceiling: a field typed from another repo package stays untyped until a hop
+# can follow a Go import to a package.
+_GO_FIELD_NAME = r"[A-Za-z_]\w*"
+_GO_FIELD_END = r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?[ \t]*(?:`[^`\n]*`?)?[ \t]*$"
+
+# ``parent *Command``, and each name of ``a, b Foo``: a name opens the line or
+# follows a comma, and the lookahead leaves the next name unconsumed. Both field
+# shapes set ``member`` to their whole match, so they reach class scope whatever
+# closed them and never type a local: a body line such as ``return err`` matches
+# too, but lies in no struct. That holds while a Go struct span never contains a
+# function body; ``test_a_field_never_types_a_local`` guards it.
+_GO_FIELD = re.compile(
+    rf"(?m)(?:^[ \t]*|,[ \t]*)(?P<member>(?P<name>{_GO_FIELD_NAME}))"
+    rf"(?=(?:[ \t]*,[ \t]*{_GO_FIELD_NAME})*[ \t]+\*?(?P<type>{_GO_FIELD_NAME}){_GO_FIELD_END})"
+)
+
+# An embedded ``Base`` or ``*Base`` is a field named ``Base``, the name
+# ``c.Base.Method()`` reads it by.
+_GO_EMBEDDED_FIELD = re.compile(
+    rf"(?m)^[ \t]*\*?(?P<member>(?P<type>(?P<name>{_GO_FIELD_NAME}))){_GO_FIELD_END}"
+)
+
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
 # and `class A(val x: Foo)` are all `name: Type`.
 #
@@ -231,9 +260,10 @@ _CPP_DECLARATION = re.compile(
 
 
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
-# No Go shape captures a closer, so class scope drops every Go declaration:
-# intended, since Go is not in IMPLICIT_FIELD_LANGUAGES.
-_GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL)
+# Only the field shapes reach class scope. Go is still not in
+# IMPLICIT_FIELD_LANGUAGES: a field is read through its receiver (``c.parent``),
+# so it types a chain hop and never a bare name.
+_GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL, _GO_FIELD, _GO_EMBEDDED_FIELD)
 _KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
 _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONSTRUCTED)
@@ -296,12 +326,11 @@ _PY_BINDINGS = (
     # `with ... as n`, `except ... as n`, `import x as n`.
     re.compile(r"\bas\s+(?P<name>[a-z_]\w*)\b"),
     re.compile(r"\b(?P<name>[a-z_]\w*)\s*:="),
-    re.compile(r"\b(?:global|nonlocal)\s+(?P<name>[a-z_]\w*)"),
 )
 
 # Every parameter of any `def` or `lambda` in the span, the enclosing one
-# included: its signature starts its own span. Each lowercase identifier in the
-# list counts, a default's names too, since over-matching only refuses.
+# included: its signature starts its own span. Each lowercase identifier the
+# list binds counts; an annotation or a default binds nothing.
 # Ceiling: a `def` list ends at its first `)`, so a default that calls hides
 # the parameters after it.
 _PY_PARAMETER_LISTS = (
@@ -315,15 +344,16 @@ _PY_NAME = re.compile(r"(?<![\w.])[a-z_]\w*")
 
 _PY_IDENTIFIER = re.compile(r"^[a-z_]\w*$")
 
-# The TypeScript shapes that bind a name, typed or not. Over-matching only
-# refuses, so every identifier in a destructuring pattern or a parameter list
-# counts, a type name or a renamed key included. Ceiling: a parameter list
-# holding parentheses (a default that calls, a function type) is not read.
+# The TypeScript shapes that bind a name, typed or not. Every identifier in a
+# destructuring pattern counts, a renamed key included; a parameter's type
+# annotation and default do not. Ceiling: a parameter list holding
+# parentheses (a default that calls, a function type) is not read.
 _TS_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
 _TS_BINDINGS = (
     re.compile(r"(?<![\w$.])(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"),
     re.compile(r"(?<![\w$.])(?:function\*?|class)\s+(?P<name>[A-Za-z_$][\w$]*)"),
-    re.compile(r"(?<![\w$.])(?P<name>[A-Za-z_$][\w$]*)\s*=>"),
+    # A lone arrow parameter; ``): Foo =>`` is a return type, not one.
+    re.compile(r"(?<![\w$.:])(?<!:\s)(?P<name>[A-Za-z_$][\w$]*)\s*=>"),
     # An assignment at the start of a statement, plain or compound.
     re.compile(
         r"(?m)^[ \t]*(?P<name>[A-Za-z_$][\w$]*)\s*"
@@ -331,9 +361,15 @@ _TS_BINDINGS = (
     ),
 )
 _TS_TARGET_LISTS = (
-    re.compile(r"(?<![\w$.])(?:const|let|var)\s*(?P<lhs>\{[^;=]*\}|\[[^;=]*\])\s*(?:=|of\b|in\b)"),
-    # A parameter list: a function, a method, an arrow, a catch clause.
-    re.compile(r"(?P<head>[\w$]*)\s*(?P<lhs>\([^()]*\))\s*(?::[^=;{}()]*?)?\s*(?:=>|\{)"),
+    # Lazy, so a pattern ends at its own bracket, not at one lines later.
+    re.compile(
+        r"(?<![\w$.])(?:const|let|var)\s*(?P<lhs>\{[^;=]*?\}|\[[^;=]*?\])\s*(?:=|of\b|in\b)"
+    ),
+    # A parameter list: a function, a method, an arrow, a catch clause. Not
+    # one after a colon: ``cb: (x: T) => void`` is a function type.
+    re.compile(
+        r"(?<!:)(?<!:\s)(?P<head>[\w$]*)\s*(?P<lhs>\([^()]*\))\s*(?::[^=;{}()]*?)?\s*(?:=>|\{)"
+    ),
 )
 # Heads whose parenthesised part is a condition, not a parameter list.
 _TS_CONDITION_HEADS = frozenset({"if", "for", "while", "switch", "with", "return", "await"})
@@ -350,13 +386,37 @@ def _named_bindings(
     }
 
 
+def _without_annotations(names: str) -> str:
+    """*names* with each top-level item's annotation and default blanked.
+
+    ``(a: Foo, b = make)`` binds ``a`` and ``b``, never ``Foo`` or ``make``: a
+    bare call to either is still the module's. Blanked, not cut, so every name
+    kept stays at its offset. A bracket opens a nested pattern or a generic,
+    whose commas and colons are not the list's own.
+    """
+    out: list[str] = []
+    depth = 0
+    blanking = False
+    for ch in names:
+        if ch in "{[<":
+            depth += 1
+        elif ch in "}]>":
+            depth = max(depth - 1, 0)
+        elif depth == 0 and ch in ":=":
+            blanking = True
+        elif depth == 0 and ch == ",":
+            blanking = False
+        out.append(" " if blanking and ch != "\n" else ch)
+    return "".join(out)
+
+
 def _listed_bindings(
     patterns: Iterable[re.Pattern[str]],
     identifier: re.Pattern[str],
     cleaned: str,
     starts: list[int],
 ) -> set[tuple[int, str]]:
-    """``(line, name)`` for every identifier in each pattern's ``lhs`` list."""
+    """``(line, name)`` for every identifier each pattern's ``lhs`` list binds."""
     found: set[tuple[int, str]] = set()
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
@@ -364,7 +424,7 @@ def _listed_bindings(
             if match.groupdict().get("head") in _TS_CONDITION_HEADS:
                 continue
             offset = match.start("lhs")
-            for name in identifier.finditer(match.group("lhs")):
+            for name in identifier.finditer(_without_annotations(match.group("lhs"))):
                 found.add((bisect_right(starts, offset + name.start()), name.group()))
     return found
 
@@ -383,14 +443,16 @@ def _python_target_bindings(cleaned: str, starts: list[int]) -> set[tuple[int, s
 
 
 # The languages ``scan_bindings`` reads: only there can a scope be shown not
-# to bind a name.
-BINDING_LANGUAGES = frozenset({"python", "typescript"})
+# to bind a name. JavaScript binds with TypeScript's shapes, less annotations.
+BINDING_LANGUAGES = frozenset({"javascript", "python", "typescript"})
+_BINDING_SCAN_AS = {"javascript": "typescript"}
 
 
 def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
     """Every ``(line, name)`` *text* binds, in line order."""
     if language not in BINDING_LANGUAGES:
         return ()
+    language = _BINDING_SCAN_AS.get(language, language)
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     if language == "typescript":
@@ -401,6 +463,76 @@ def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
         found |= _named_bindings(_PY_BINDINGS, cleaned, starts)
         found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_NAME, cleaned, starts)
     return tuple(sorted(found))
+
+
+# What a scope binds beyond its positional bindings. A TypeScript/JavaScript
+# ``function`` declaration is hoisted, so it binds from the top of its scope
+# whatever its line. A Python ``global`` name is the module's in that scope,
+# however the body assigns it.
+_HOISTED = {"typescript": re.compile(r"(?<![\w$.])function\*?\s+(?P<name>[A-Za-z_$][\w$]*)")}
+_ESCAPES = {"python": re.compile(r"\bglobal\s+(?P<names>\w+(?:\s*,\s*\w+)*)")}
+
+
+class ScopeMarks(NamedTuple):
+    """Names a scope treats specially, each in line order.
+
+    A hoisted entry is ``(line, name, brace depth)``: a declaration hoists
+    only into the function whose body holds it directly, one brace below the
+    line that function starts on (``line_depths``, indexed by line). A block
+    declaration is block-scoped in a module, so it hoists nowhere.
+    """
+
+    hoisted: tuple[tuple[int, str, int], ...]
+    escaped: tuple[tuple[int, str], ...]
+    line_depths: tuple[int, ...]
+
+
+def _brace_depths(cleaned: str) -> tuple[list[int], list[int]]:
+    """Brace depth at every offset of *cleaned*, and at each line's first character."""
+    at: list[int] = []
+    lines = [0]
+    depth = 0
+    seen_code = False
+    for ch in cleaned:
+        at.append(depth)
+        if ch == "\n":
+            lines.append(depth)
+            seen_code = False
+            continue
+        if not seen_code and not ch.isspace():
+            lines[-1] = depth
+            seen_code = True
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(depth - 1, 0)
+    return at, lines
+
+
+def scan_scope_marks(text: str, language: str) -> ScopeMarks:
+    """The hoisted and module-escaped names *text* declares."""
+    language = _BINDING_SCAN_AS.get(language, language)
+    hoisted, escapes = _HOISTED.get(language), _ESCAPES.get(language)
+    if hoisted is None and escapes is None:
+        return ScopeMarks((), (), ())
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found_hoisted: set[tuple[int, str, int]] = set()
+    line_depths: list[int] = []
+    if hoisted is not None:
+        at, line_depths = _brace_depths(cleaned)
+        found_hoisted = {
+            (bisect_right(starts, match.start("name")), match.group("name"), at[match.start()])
+            for match in hoisted.finditer(cleaned)
+        }
+    found_escaped = {
+        (bisect_right(starts, match.start("names")), name.strip())
+        for match in (escapes.finditer(cleaned) if escapes else ())
+        for name in match.group("names").split(",")
+    }
+    return ScopeMarks(
+        tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)), (0, *line_depths)
+    )
 
 
 def names_in_span(
@@ -469,7 +601,8 @@ class Declaration(NamedTuple):
     operator refuses these names.
 
     ``member`` marks a field of the enclosing class declared from inside a
-    method (``self.x = T()``, a constructor parameter property). It belongs
+    method (``self.x = T()``, a constructor parameter property) or, in Go, a
+    struct field, which no closer tells from a local. It belongs
     to the class wherever it sits, and never to the body.
     """
 
