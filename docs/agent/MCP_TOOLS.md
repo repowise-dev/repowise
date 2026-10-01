@@ -572,6 +572,8 @@ When `changed_files` is passed, the exact serialized response starts with a `dir
 - `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
 - `dependency_cycles`: circular service dependencies involving this repo, each with the participating `nodes` and `length`.
 
+`directive.next_calls` names what to call next, built from this response alone: `get_change_risk()` for the diff itself, then `get_context(targets=<first five may_break>, include=["callers"])` when `may_break` is non-empty. `tests_to_run` is already the answer to which tests, so it gets no call. Each entry has the shape every next call has (see `get_health`'s `fix_first`).
+
 > **Output-schema change.** `directive.will_break` is now `directive.may_break`,
 > and `directive.will_break_tests` is now `directive.may_break_tests`. Both are
 > a reverse-import reachability walk: `get_risk` is given a file list, never a
@@ -1184,7 +1186,14 @@ The opt-in enrichments:
 - A refactoring reaches a bare `get_health()` through `fix_first`, whose
   `next_call` is the exact `opportunity_id` call that opens it. **`refactoring_summary`**
   (`only=["refactoring_summary"]`) is the rollup by type, effort, confidence,
-  lifecycle and mechanical-vs-judgment, with facets.
+  lifecycle and mechanical-vs-judgment, with facets, and a `next_call` that
+  lists the opportunities.
+- Every next call (Fix first's `next_call`, the refactoring and performance
+  summaries' `next_call`, actions' `commands`, `get_risk`'s
+  `directive.next_calls`) has one shape: `purpose`, `mcp` (the call as text,
+  e.g. `get_health(opportunity_id="refop3_...")`), `cli` (the terminal line
+  that gives the same answer, or null), and `tool` + `arguments`, the same call
+  structured.
 - **`refactoring_plans`** is the raw per-detector list, unchanged and still
   addressable by `plan_id`, but **opt-in**: name it in `only` to get it. It
   returns ranked, structured refactoring plans (not template

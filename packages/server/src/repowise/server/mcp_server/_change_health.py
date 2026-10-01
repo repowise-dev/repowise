@@ -244,5 +244,6 @@ def _skipped(skipped: dict[str, str]) -> dict[str, Any]:
 
 
 def _call(revspec: str | None, *, extra: str) -> str:
+    # Single-quoted by contract (tests and clients pin it); new calls use next_call.render_call.
     ref = f"revspec={revspec!r}, " if revspec else ""
     return f"get_change_risk({ref}{extra})"

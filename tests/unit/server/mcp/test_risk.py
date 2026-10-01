@@ -178,6 +178,22 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_risk_pr_directive_names_its_next_calls(setup_mcp):
+    """The diff first, then the callers of what may break; tests_to_run gets no call."""
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+    diff, callers = directive["next_calls"]
+
+    assert diff["mcp"] == "get_change_risk()"
+    assert diff["cli"] == "repowise risk"
+    assert callers["tool"] == "get_context"
+    assert callers["arguments"] == {"targets": directive["may_break"][:5], "include": ["callers"]}
+    assert callers["mcp"].startswith('get_context(targets=["')
+
+
+@pytest.mark.asyncio
 async def test_get_risk_changed_files_alone_is_pr_mode(setup_mcp):
     """The documented get_risk(changed_files=[...]) call assesses the changed set."""
     from repowise.server.mcp_server import get_risk
