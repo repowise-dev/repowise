@@ -19,7 +19,7 @@ not just *bigger*.
 
 ## Pick the mode by what you pass
 
-- **Dashboard** — `get_health()` (no targets): `fix_first`, the ranked list of
+- **Dashboard**: `get_health()` (no targets): `fix_first`, the ranked list of
   what to fix first, then repo-level KPIs and the lowest-scoring files. Start here for "how
   healthy is this codebase?" or "what should we clean up?".
 - **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score

@@ -103,12 +103,12 @@ async def _finding_detail_response(
 
 async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> dict[str, Any]:
     """One Fix-first item in full: action steps, verify, risk, context."""
-    item = (await load_fix_first(session, repository.id, limit=None)).find(fix_id)
+    item = (await load_fix_first(session, repository.id, item_id=fix_id)).find(fix_id)
     result = {
         "mode": "fix_item",
         "fix_id": fix_id,
         "item": item.as_dict() if item else None,
-        "resolved": item is not None,
+        "found": item is not None,
         "_meta": _build_meta(
             repository=repository, targets=[item.target.file_path] if item else None
         ),

@@ -55,7 +55,7 @@ def _load_fix_first(repo_path: object, *, limit: int) -> Any:
     """The stored Fix-first queue, or ``None`` when the store cannot answer.
 
     Best-effort like the coverage read: a missing repo row or an older store
-    leaves the report without the section rather than failing it.
+    leaves the report without the section; the report itself still prints.
     """
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.persistence import create_engine, create_session_factory, get_session
@@ -127,7 +127,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
     overwrite the health tables for this repo with the freshly computed
     values. Coverage tables are left untouched (owned by ``coverage add``).
     Best-effort — a missing repo row or a DB error logs to stderr and
-    returns rather than crashing the CLI.
+    returns; the CLI does not crash.
     """
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.analysis.health.trends import snapshot_file_maps

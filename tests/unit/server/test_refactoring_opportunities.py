@@ -396,7 +396,7 @@ async def test_bare_get_health_leads_with_fix_first_and_links_the_opportunity(cl
 
 
 @pytest.mark.asyncio
-async def test_the_rest_rollup_lead_is_clear_rather_than_absent_with_no_opportunities(
+async def test_the_rest_rollup_lead_is_clear_not_absent_with_no_opportunities(
     client, app
 ):
     repo_id = await _repo(client)

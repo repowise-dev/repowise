@@ -57,7 +57,7 @@ async def get_fix_first_item(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One item by its stable id, wherever it ranks."""
-    queue = await load_fix_first(session, repo_id, limit=None, scope=_scope(scope))
+    queue = await load_fix_first(session, repo_id, scope=_scope(scope), item_id=fix_id)
     item = queue.find(fix_id)
     if item is None:
         raise HTTPException(status_code=404, detail="No open Fix-first item with that id")

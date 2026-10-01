@@ -385,7 +385,9 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         members = sorted(
             fixed_files[folder], key=lambda p: -production[p].fix_commits_90d
         )
-        includes = tuple(p for p in members if _is_fragile(production[p], ctx))
+        includes = tuple(
+            p for p in members if _is_fragile(production[p], ctx) and p not in named
+        )
         actions.append(
             Action(
                 rule=rule,
