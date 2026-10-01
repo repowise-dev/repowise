@@ -14,6 +14,32 @@
   )
 ) @symbol.def
 
+; A declarator that returns a pointer wraps the function_declarator:
+; ``client *createClient(...)``, ``char **argv(...)``, and a function returning
+; a function pointer, ``int (*handler(int k))(int)``. Queries cannot recurse,
+; so each wrapper depth is listed (three pointer levels, ``T ***f()``, are not
+; matched; none occur in the C codebases checked). A function-pointer variable
+; (``void (*cb)(int);``) has no inner function_declarator and never matches.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 (struct_specifier
   name: (type_identifier) @symbol.name
 ) @symbol.def
@@ -64,6 +90,27 @@
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
   )
+) @symbol.def
+
+; ... returning a pointer, the same shapes as the definitions above
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
 ) @symbol.def
 
 ; ---------------------------------------------------------------------------

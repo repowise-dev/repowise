@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import posixpath
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from pathlib import Path
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
@@ -16,6 +16,7 @@ from .languages.receiver_types import (
     RECEIVER_TYPE_LANGUAGES,
     CallAssignment,
     Declaration,
+    ScopeMarks,
     bound_types,
     framework_decorated_type,
     in_spans,
@@ -25,6 +26,7 @@ from .languages.receiver_types import (
     scan_bindings,
     scan_call_assignments,
     scan_declarations,
+    scan_scope_marks,
     types_by_class,
     types_in_span,
     unwrapped_names_in_span,
@@ -43,11 +45,11 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 _SOURCE_CACHE_FILES = 4
 
 # Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
-# receiver, every segment after the head a field. Go's selector receiver is
-# absent: ``pkg.Var`` and ``s.field`` are one shape there. Each maps to the
-# name that means the caller's own instance; TypeScript's ``self`` is a
-# global, not ``this``.
-_CHAIN_SELF = {"python": "self", "typescript": "this"}
+# receiver, every segment after the head a field. Each maps to the name that
+# means the caller's own instance; TypeScript's ``self`` is a global, not
+# ``this``. Go has no such name: its receiver is a parameter, typed from the
+# body, and a ``pkg.Var`` head types nothing, so it cannot pass for ``s.field``.
+_CHAIN_SELF: dict[str, str | None] = {"python": "self", "typescript": "this", "go": None}
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
@@ -56,6 +58,7 @@ _BODY_TYPE_CACHE_ENTRIES = 2048
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
+_T = TypeVar("_T", bound=tuple)
 
 
 def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
@@ -63,6 +66,43 @@ def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
     if len(cache) >= cap:
         cache.clear()
     cache[key] = value
+
+
+class _Scope(NamedTuple):
+    """What one symbol's span binds, less the symbol's own name."""
+
+    first_bound: dict[str, int]  # name -> first line a positional binding binds it
+    hoisted: frozenset[str]
+    escaped: frozenset[str]
+
+
+def _in_lines(pairs: tuple[_T, ...], start: int, end: int) -> tuple[_T, ...]:
+    """The entries (each led by its line) on lines *start* through *end*."""
+    lo = bisect_left(pairs, start, key=lambda pair: pair[0])
+    return pairs[lo : bisect_right(pairs, end, lo=lo, key=lambda pair: pair[0])]
+
+
+def _scope_of(symbol: Symbol, bindings: tuple[tuple[int, str], ...], marks: ScopeMarks) -> _Scope:
+    start, end, own = symbol.start_line, symbol.end_line, symbol.name
+    first_bound: dict[str, int] = {}
+    for line, name in _in_lines(bindings, start, end):
+        if name != own:
+            first_bound.setdefault(name, line)
+    return _Scope(
+        first_bound,
+        frozenset(
+            name
+            for _, name, depth in _in_lines(marks.hoisted, start, end)
+            if name != own and depth == _body_depth(marks, start)
+        ),
+        frozenset(name for _, name in _in_lines(marks.escaped, start, end)),
+    )
+
+
+def _body_depth(marks: ScopeMarks, start_line: int) -> int:
+    """The brace depth of the statements directly in the body opening on *start_line*."""
+    depths = marks.line_depths
+    return (depths[start_line] if start_line < len(depths) else 0) + 1
 
 
 def _is_module_level_function(symbol: Symbol) -> bool:
@@ -104,6 +144,7 @@ class ReceiverTypingMixin:
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        self._scope_chain_cache: dict[str, dict[str, tuple[_Scope, ...]]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
@@ -297,7 +338,7 @@ class ReceiverTypingMixin:
         if receiver_name in body_types:
             return body_types[receiver_name], "body"
         if language in IMPLICIT_FIELD_LANGUAGES:
-            class_id = _enclosing_id(caller_id)
+            class_id = self._caller_class_id(caller_id)
             fields = self._field_types_in(file_path, language).get(class_id, {})
             if receiver_name in fields:
                 return fields[receiver_name], "field"
@@ -325,25 +366,73 @@ class ReceiverTypingMixin:
         if language not in BINDING_LANGUAGES:
             return None
         type_name = self._module_types_in(file_path, language).get(receiver_name)
-        if type_name is None:
+        if type_name is None or self._binds_locally(file_path, caller_id, language, receiver_name):
             return None
-        span = self._spans_for(file_path).get(caller_id)
-        if span is not None:
-            bindings = self._bindings_for(file_path, language)
-            for start, end in (span, *self._enclosing_function_spans(file_path, span)):
-                if receiver_name in names_in_span(bindings, start, end):
-                    return None
         return type_name
 
-    def _enclosing_function_spans(
-        self, file_path: str, span: tuple[int, int]
-    ) -> list[tuple[int, int]]:
+    def _shadowed_by_local(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Is a bare call's name a parameter or local of the calling function?
+
+        Then no module, import or repo-wide symbol of that name is the callee.
+        """
+        language = self._language_of(file_path) or ""
+        return language in BINDING_LANGUAGES and self._binds_locally(
+            file_path, caller_id, language, call.target_name, call.line
+        )
+
+    def _binds_locally(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        name: str,
+        through_line: int | None = None,
+    ) -> bool:
+        """Does the caller, or a function enclosing it, bind *name* itself?
+
+        Scopes are asked innermost first, so a ``global`` stops the walk. When
+        *through_line* is given only positional bindings at or before it count:
+        a callback's parameter further down cannot shadow a use above, while a
+        hoisted declaration binds its whole scope.
+        """
+        for scope in self._scope_chains(file_path, language).get(caller_id, ()):
+            if name in scope.escaped:
+                return False
+            line = scope.first_bound.get(name)
+            if name in scope.hoisted or (
+                line is not None and (through_line is None or line <= through_line)
+            ):
+                return True
+        return False
+
+    def _scope_chains(self, file_path: str, language: str) -> dict[str, tuple[_Scope, ...]]:
+        """``{symbol_id: scopes}``, the symbol's own then each enclosing function's.
+
+        Built once per file in one sweep over the symbols in span order, so a
+        call site's question is a few dict hits however many it asks.
+        """
+        chains = self._scope_chain_cache.get(file_path)
+        if chains is not None:
+            return chains
         parsed = self._parsed_files.get(file_path)
-        return [
-            (s.start_line, s.end_line)
-            for s in (parsed.symbols if parsed else ())
-            if s.kind in _FUNCTION_KINDS and s.start_line <= span[0] and span[1] <= s.end_line
-        ]
+        text = self._text_of(file_path)
+        bindings = self._bindings_for(file_path, language)
+        marks = scan_scope_marks(text, language)
+        chains = {}
+        open_functions: list[tuple[Symbol, _Scope]] = []
+        symbols = sorted(parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line))
+        for symbol in symbols:
+            while open_functions and open_functions[-1][0].end_line < symbol.start_line:
+                open_functions.pop()
+            own = _scope_of(symbol, bindings, marks)
+            enclosing = tuple(
+                scope for outer, scope in reversed(open_functions) if symbol.end_line <= outer.end_line
+            )
+            chains[symbol.id] = (own, *enclosing)
+            if symbol.kind in _FUNCTION_KINDS:
+                open_functions.append((symbol, own))
+        _store_capped(self._scope_chain_cache, file_path, chains, _SOURCE_CACHE_FILES)
+        return chains
 
     def _resolve_chained_receiver(
         self,
@@ -386,7 +475,7 @@ class ReceiverTypingMixin:
     ) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for a chain's head name."""
         if head == _CHAIN_SELF[language]:
-            class_id = _enclosing_id(caller_id)
+            class_id = self._caller_class_id(caller_id)
             symbol = self._symbols_by_id.get(class_id)
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
@@ -434,6 +523,24 @@ class ReceiverTypingMixin:
             }
         ids = self._type_ids.get(file_path, {}).get(type_name, ())
         return ids[0] if len(ids) == 1 else None
+
+    def _caller_class_id(self, caller_id: str) -> str:
+        """The id of the type whose method *caller_id* is.
+
+        A method id names only its own class (``path::Inner::m``) while a
+        nested class's id also names the outer one (``path::Outer::Inner``),
+        so the id prefix finds no nested class. The file's one type of that
+        name is the class; two of them leave the method id ambiguous, and a
+        method declared away from its type (a Go receiver, a C++ out-of-line
+        body) has none, so both keep the prefix.
+        """
+        caller = self._symbols_by_id.get(caller_id)
+        file_path = self._symbol_paths_by_id.get(caller_id)
+        if caller is not None and caller.parent_name and file_path is not None:
+            class_id = self._only_type_in(file_path, caller.parent_name)
+            if class_id is not None:
+                return class_id
+        return _enclosing_id(caller_id)
 
     def _framework_receiver_type(
         self,

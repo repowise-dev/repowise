@@ -178,6 +178,29 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_risk_changed_files_alone_is_pr_mode(setup_mcp):
+    """The documented get_risk(changed_files=[...]) call assesses the changed set."""
+    from repowise.server.mcp_server import get_risk
+
+    alone = await get_risk(changed_files=["src/auth/service.py"])
+    explicit = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+
+    assert next(iter(alone)) == "directive"
+    assert alone["directive"] == explicit["directive"]
+    assert list(alone["targets"]) == ["src/auth/service.py"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_without_targets_or_changed_files_is_an_error(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk()
+
+    assert result["error"] == "targets or changed_files is required"
+    assert "targets" not in result
+
+
+@pytest.mark.asyncio
 async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup_mcp, session):
     """PR directive carries coverage-backed tests_to_run from the per-test map."""
     from repowise.core.analysis.health.coverage import TestCoverage

@@ -44,6 +44,11 @@ class VSCodeSetup:
     ) -> None:
         if self.project_file_id in options.disabled_project_files:
             return
+        # A refresh keeps a wired workspace current; it never creates one. An
+        # init that skipped editor setup would otherwise get .vscode files
+        # from its first update.
+        if not vscode_target.detect(repo_path):
+            return
         _write_vscode_files(console_obj, repo_path)
 
 

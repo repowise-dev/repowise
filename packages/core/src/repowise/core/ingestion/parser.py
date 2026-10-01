@@ -64,6 +64,7 @@ from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
     refine_csharp_visibility,
+    refine_java_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -112,6 +113,7 @@ from .parser_helpers import (
     _qualified_pascal_parent,
     _run_query,
     _rust_shadowed_by_type_param,
+    _ts_nested_object_method_owner,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -180,6 +182,7 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
                 function.child_by_field_name("expression")
                 or function.child_by_field_name("object")
                 or function.child_by_field_name("argument")
+                or function.child_by_field_name("operand")
             )
 
     if target is None:
@@ -827,6 +830,10 @@ def _refine_visibility(
     # it, which the modifier-text fn cannot see.
     if language == "csharp":
         return refine_csharp_visibility(def_node, visibility), False
+    # Java: no access keyword means package-private, except inside an
+    # interface or annotation body, which the modifier-text fn cannot see.
+    if language == "java":
+        return refine_java_visibility(def_node), False
     # TS/JS: a top-level declaration is only public when exported —
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:
@@ -1442,7 +1449,21 @@ class ASTParser:
         def_node, name_nodes, name, export_type, start_line = identity
 
         node_type = def_node.type
-        kind = self._symbol_kind(def_node, config, language, src, cpp_exports.parent_ids)
+        # A TS/JS object-literal method inside an anonymous callback is kept,
+        # qualified by the binding that owns its object.
+        object_owner = (
+            _ts_nested_object_method_owner(def_node, src, config.symbol_node_types)
+            if language in _TS_JS_LANGUAGES
+            else None
+        )
+        kind = self._symbol_kind(
+            def_node,
+            config,
+            language,
+            src,
+            cpp_exports.parent_ids,
+            keep_nested=object_owner is not None,
+        )
         if kind is None:
             return None
 
@@ -1465,7 +1486,7 @@ class ASTParser:
             src,
         )
 
-        parent_name = self._resolve_parent_name(
+        parent_name = object_owner or self._resolve_parent_name(
             def_node,
             config,
             capture_dict.get("symbol.receiver", []),
@@ -1526,6 +1547,8 @@ class ASTParser:
         language: str,
         src: str,
         export_type_parent_ids: frozenset[int],
+        *,
+        keep_nested: bool = False,
     ) -> str | None:
         """The symbol kind for *def_node*, or None when it is not a symbol here."""
         node_type = def_node.type
@@ -1535,9 +1558,12 @@ class ASTParser:
 
         # Only module-level and class-body members are symbols; the query is
         # recursive, so defs nested in a callable are dropped. Module-anchored
-        # node types only match at module level and skip the check.
-        if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-            def_node, config.symbol_node_types, export_type_parent_ids
+        # node types only match at module level and skip the check, as does a
+        # def the caller has placed already (``keep_nested``).
+        if (
+            not keep_nested
+            and node_type not in _MODULE_ANCHORED_NODE_TYPES
+            and _has_callable_ancestor(def_node, config.symbol_node_types, export_type_parent_ids)
         ):
             return None
 

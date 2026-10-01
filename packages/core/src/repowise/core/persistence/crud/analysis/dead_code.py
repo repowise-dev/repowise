@@ -8,10 +8,12 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeKind
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
     effective_safe_to_delete,
+    path_risk_factors,
 )
 from repowise.core.analysis.finding_registry import excluded_types
 
@@ -56,6 +58,34 @@ def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
             if k not in ("id", "repository_id") and hasattr(DeadCodeFinding, k)
         },
     }
+
+
+def finding_data_from_row(row: DeadCodeFinding) -> DeadCodeFindingData:
+    """The analyzer's finding for a stored row: the inverse of ``_dead_code_row_kwargs``.
+
+    Risk factors are not stored, so they are re-derived from the path, and
+    deletion-readiness is re-derived the way every read surface does it.
+    """
+    return DeadCodeFindingData(
+        kind=DeadCodeKind(row.kind),
+        file_path=row.file_path,
+        symbol_name=row.symbol_name,
+        symbol_kind=row.symbol_kind,
+        confidence=row.confidence,
+        reason=row.reason,
+        last_commit_at=row.last_commit_at,
+        commit_count_90d=row.commit_count_90d,
+        lines=row.lines,
+        evidence=json.loads(row.evidence_json or "[]"),
+        safe_to_delete=effective_safe_to_delete(
+            row.confidence, row.file_path, row.safe_to_delete, row.kind
+        ),
+        primary_owner=row.primary_owner,
+        age_days=row.age_days,
+        risk_factors=list(path_risk_factors(row.file_path)),
+        start_line=row.start_line,
+        end_line=row.end_line,
+    )
 
 
 async def _lines_column_rejects_null(session: AsyncSession) -> bool:

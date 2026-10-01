@@ -267,12 +267,7 @@ async def persist_result(
         if fts is not None and swept_page_ids:
             await fts.delete_many(swept_page_ids)
         if fts is not None and result.generated_pages:
-            await fts.index_many(
-                [
-                    (page.page_id, page.title, page.content, page.summary, page.target_path)
-                    for page in result.generated_pages
-                ]
-            )
+            await fts.index_pages(result.generated_pages)
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that

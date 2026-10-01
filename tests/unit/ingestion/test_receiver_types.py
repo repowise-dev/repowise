@@ -574,6 +574,72 @@ class TestGoShapes:
         assert declared_types(body, "go")["r"] is None
 
 
+def go_fields(source: str) -> dict[str, str | None]:
+    """The fields of one struct spanning the whole text; Go methods sit outside it."""
+    lines = source.count("\n") + 1
+    return types_by_class(
+        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
+    ).get("f.go::C", {})
+
+
+class TestGoFields:
+    """A struct field ends at its line, so no closer marks it: it is a ``member``."""
+
+    def test_a_pointer_and_a_value_field(self) -> None:
+        source = "type C struct {\n\tparent *Command\n\tcfg    Config\n}"
+        assert go_fields(source) == {"parent": "Command", "cfg": "Config"}
+
+    def test_an_exported_field(self) -> None:
+        assert go_fields("type C struct {\n\tCmd *GitCmd\n}") == {"Cmd": "GitCmd"}
+
+    def test_every_name_of_a_shared_type(self) -> None:
+        source = "type C struct {\n\tleft, right *Node\n}"
+        assert go_fields(source) == {"left": "Node", "right": "Node"}
+
+    def test_a_tag_is_not_part_of_the_type(self) -> None:
+        source = 'type C struct {\n\tCmd GitCmd `json:"cmd,omitempty"`\n}'
+        assert go_fields(source) == {"Cmd": "GitCmd"}
+
+    def test_a_generic_keeps_its_head(self) -> None:
+        source = "type C struct {\n\tstore Store[K, V]\n\tdeep Store[Pair[K, V]]\n}"
+        assert go_fields(source) == {"store": "Store", "deep": "Store"}
+
+    def test_an_embedded_type_is_a_field_of_its_own_name(self) -> None:
+        source = "type C struct {\n\t*Base\n\tLogger\n}"
+        assert go_fields(source) == {"Base": "Base", "Logger": "Logger"}
+
+    def test_a_package_qualified_type_is_refused(self) -> None:
+        """``sftp.File`` is not the ``File`` this file declares, so it types nothing."""
+        source = "type C struct {\n\tfd *sftp.File\n\tsync.Mutex\n}"
+        assert go_fields(source) == {}
+
+    def test_a_trailing_comment_is_ignored(self) -> None:
+        assert go_fields("type C struct {\n\tcfg Config // the config\n}") == {"cfg": "Config"}
+
+    def test_a_container_does_not_type_its_element(self) -> None:
+        """``c.commands`` is a slice of Command, not a Command."""
+        source = (
+            "type C struct {\n\tcommands []*Command\n\tbyName map[string]*Command\n"
+            "\tch chan Command\n\tgen map[string]Store[K]\n}"
+        )
+        assert go_fields(source) == {}
+
+    def test_a_predeclared_type_is_refused(self) -> None:
+        assert go_fields("type C struct {\n\tname string\n\terr error\n}") == {}
+
+    def test_an_interface_method_is_not_a_field(self) -> None:
+        source = "type C interface {\n\tDo(a, b Command) error\n\tClose() error\n}"
+        assert go_fields(source) == {}
+
+    def test_a_function_typed_field_is_not_typed_by_its_parameters(self) -> None:
+        assert go_fields("type C struct {\n\tcb func(a, b Command) error\n}") == {}
+
+    def test_a_field_never_types_a_local(self) -> None:
+        """A body line of the same shape (``return err``) must not bind a local."""
+        body = "func f() {\n\tcfg Config\n\treturn err\n}"
+        assert declared_types(body, "go") == {}
+
+
 class TestGoCallAssignments:
     """``x := f(..)``: the call the resolver reads a return type from."""
 
@@ -676,11 +742,11 @@ def test_the_language_set_is_what_the_patterns_declare() -> None:
 
 
 def test_go_is_not_a_field_language() -> None:
-    """Go declares no field this mechanism can read, and must not claim to.
+    """A Go field is read through its receiver, never as a bare name.
 
-    Its shapes capture no closer, so class scope would drop every one of them
-    anyway — but the set is the contract, and a package-level ``var`` is a
-    wider scope than a field rather than the same one.
+    Its struct fields reach class scope, where only a chain hop
+    (``c.parent.M()``) reads them; the set is the contract that a bare
+    ``parent.M()`` does not.
     """
     assert "go" not in IMPLICIT_FIELD_LANGUAGES
 

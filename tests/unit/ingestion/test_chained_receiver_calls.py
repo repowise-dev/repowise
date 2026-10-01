@@ -427,3 +427,66 @@ class TestPyChainedFieldCalls:
             },
         )
         assert [(c.receiver_name, c.target_name) for c in parsed["m.py"].calls] == [(None, "make")]
+
+
+# --- go_chained_field_calls --------------------------------------------------
+
+_GO_COMMAND = (
+    "package cmd\n\n"
+    "type GitCmd struct{}\n\n"
+    "func (g *GitCmd) DiffFilesCh() {}\n\n"
+    "type Base struct{}\n\n"
+    "func (b *Base) Close() {}\n\n"
+    "type Command struct {\n"
+    "\t*Base\n"
+    "\tCmd      *GitCmd `json:\"cmd\"`\n"
+    "\tcommands []*GitCmd\n"
+    "}\n\n"
+)
+
+
+class TestGoChainedFieldCalls:
+    """Go names its receiver, so the head is a parameter; each hop a struct field."""
+
+    def _edges(self, tmp_path: Path, body: str) -> list[tuple[str, str, float, str]]:
+        return _chained(_edges(tmp_path, {"cmd/command.go": ("go", _GO_COMMAND + body)}))
+
+    def test_a_field_types_the_chain(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Cmd.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == [
+            (
+                "cmd/command.go::Command::Run",
+                "cmd/command.go::GitCmd::DiffFilesCh",
+                0.93,
+                "receiver_chain_same_file",
+            )
+        ]
+
+    def test_an_embedded_field_is_read_by_its_type_name(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Base.Close()\n}\n"
+        assert [e[:2] for e in self._edges(tmp_path, body)] == [
+            ("cmd/command.go::Command::Run", "cmd/command.go::Base::Close")
+        ]
+
+    def test_a_slice_field_yields_no_edge(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.commands.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_method_missing_on_the_field_type_yields_no_edge(self, tmp_path: Path) -> None:
+        body = "func (c *Command) Run() {\n\tc.Cmd.Close()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_package_qualified_head_yields_no_edge(self, tmp_path: Path) -> None:
+        """``pkg.Var.M()`` has the same shape as ``c.field.M()``, but ``pkg`` types nothing."""
+        body = "func run() {\n\tconfig.Cmd.DiffFilesCh()\n}\n"
+        assert self._edges(tmp_path, body) == []
+
+    def test_a_package_qualified_field_type_is_not_the_local_type(self, tmp_path: Path) -> None:
+        """``fd *sftp.File`` wraps a foreign ``File``; its ``Write`` is not this file's."""
+        source = (
+            "package sftpfs\n\n"
+            "type File struct {\n\tfd *sftp.File\n}\n\n"
+            "func (f *File) Write(b []byte) {}\n\n"
+            "func (f *File) WriteString(s string) {\n\tf.fd.Write([]byte(s))\n}\n"
+        )
+        assert _chained(_edges(tmp_path, {"sftpfs/file.go": ("go", source)})) == []
