@@ -171,6 +171,11 @@ def _comment_lines(header: str) -> list[str]:
     return lines
 
 
+def _squash(text: str) -> str:
+    """Lowercase alphanumerics only, so ``my-lib`` and ``MyLib`` compare equal."""
+    return re.sub(r"[^0-9a-z]", "", text.lower())
+
+
 def _third_party_header(header: str, project: str | None) -> bool:
     """Whether the leading comments carry another project's license banner.
 
@@ -182,25 +187,38 @@ def _third_party_header(header: str, project: str | None) -> bool:
     comments = "\n".join(_comment_lines(header))
     if not comments or not _LICENSE_RE.search(comments) or not _BANNER_RE.search(comments):
         return False
-    return not (project and project.lower() in comments.lower())
+    return not (project and _squash(project) in _squash(comments))
 
 
 # --------------------------------------------------------------------------
 # Docs, examples, tooling
 # --------------------------------------------------------------------------
 
+# Docs roots count at any depth. Docs are the plural and FastAPI's ``docs_src``
+# only: a singular ``doc/`` is as often a shipped package (cobra's ``doc``
+# generates man pages) as a documentation tree.
+_DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
-# run the system (tooling below). Docs are the plural and FastAPI's
-# ``docs_src`` only: a singular ``doc/`` is as often a shipped package (cobra's
-# ``doc`` generates man pages) as a documentation tree.
-_DOCS_EXAMPLE_DIR_TOKENS = (EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}) | {
-    "docs",
-    "docs_src",
-}
+# run the system (tooling below). Unlike ``support_paths`` these count only as
+# the first segment or directly under a docs root: ``src/pkg/examples/`` is
+# as often shipped code (an example registry, a runner) as a sample.
+_EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
 _TUTORIAL_PREFIX = "tutorial"
 
-# The execution-context tooling set from ``perf/causal.py``, plus migrations,
-# which run once at deploy time and are append-only by design.
+
+def _is_example_dir(segment: str) -> bool:
+    return segment in _EXAMPLE_TOKENS or segment.startswith(_TUTORIAL_PREFIX)
+
+
+def _is_docs_example(dirs: list[str]) -> bool:
+    # Anything under a docs root already counts, examples beneath it included.
+    return any(d in _DOCS_ROOT_TOKENS for d in dirs) or bool(dirs and _is_example_dir(dirs[0]))
+
+
+# Close to ``perf/causal.py``'s tooling parts, with two differences: the
+# benchmark spellings ``bench`` / ``benches`` join ``benchmarks``, and there is
+# no ``/cli/`` rule, since a CLI's source ships and its findings are real work.
+# Migrations join too: they run once at deploy time and are append-only.
 _TOOLING_DIR_TOKENS = frozenset(
     {
         ".github",
@@ -284,7 +302,7 @@ def code_origin(
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
 
-    if any(d in _DOCS_EXAMPLE_DIR_TOKENS or d.startswith(_TUTORIAL_PREFIX) for d in dirs):
+    if _is_docs_example(dirs):
         return "docs_example"
 
     if (

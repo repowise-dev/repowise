@@ -50,6 +50,11 @@ _OWN_HEADER = (
         ("docs_src/tutorial/first_steps.py", "docs_example"),
         ("docs/conf.py", "docs_example"),
         ("doc/man_docs.go", "production"),  # cobra's doc/ is a shipped package
+        ("src/x/examples/a.py", "production"),  # a nested examples/ can ship
+        ("pkg/samples/registry.go", "production"),
+        ("src/tutorials/steps.py", "production"),
+        ("examples/a.py", "docs_example"),
+        ("docs/examples/a.py", "docs_example"),
         ("examples/tutorial/app.py", "docs_example"),
         ("example/main.go", "docs_example"),
         ("samples/hello/Program.cs", "docs_example"),
@@ -128,6 +133,12 @@ def test_own_release_banner_is_not_vendored() -> None:
     banner = "/*! acme v1.2.0 | (c) Acme | MIT License */\n"
     assert code_origin("static/acme.js", banner, project="acme") == "production"
     assert code_origin("static/acme.js", banner, project="other") == "vendored"
+
+
+def test_own_banner_matches_the_project_name_loosely() -> None:
+    banner = "/*! MyLib v2.0.1 | (c) Someone | MIT License */\n"
+    assert code_origin("static/mylib.js", banner, project="my-lib") == "production"
+    assert code_origin("static/mylib.js", banner, project="my_lib") == "production"
 
 
 def test_header_banner_must_sit_in_a_comment() -> None:
