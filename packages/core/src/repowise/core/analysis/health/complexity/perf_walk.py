@@ -19,13 +19,14 @@ registered.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.io_boundaries import collect_io_names
 from ..perf.loop_facts import LoopFacts
-from .ast_utils import _dart_signature_sibling, _find_name
+from .ast_utils import _dart_signature_sibling, _find_function_entry_name, _find_name
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
 
@@ -110,6 +111,28 @@ def _perf_func_name(node: Node) -> str | None:
     # it already handles that chain (and every other irregular shape).
     name = _find_name(node)
     return name if name != "<anonymous>" else None
+
+
+def _name_lambda_hits(hits: list[PerfHit], spans: list[tuple[int, int, str]]) -> list[PerfHit]:
+    """Name a hit with no enclosing named function after the lambda holding it.
+
+    The innermost span wins, and the name is the one the complexity walker gives
+    that lambda (its binding, ``<callee> callback``, or ``<anonymous@line>``), so
+    the two passes agree. A hit outside every lambda is top-level code and keeps
+    ``None``. Only the hit is renamed: the per-function facts stay keyed to
+    module scope, where the cross-function bridge resolves them.
+    """
+    if not spans:
+        return hits
+    named: list[PerfHit] = []
+    for hit in hits:
+        if hit.function is None:
+            inside = [span for span in spans if span[0] <= hit.line <= span[1]]
+            if inside:
+                innermost = min(inside, key=lambda span: span[1] - span[0])
+                hit = replace(hit, function=innermost[2])
+        named.append(hit)
+    return named
 
 
 def _enclosing_loop_iterables(
@@ -297,6 +320,9 @@ def _collect_perf_hits(
     ] = {}
     # func_start -> {call_line: facts} for the loop-call targets above.
     call_facts: dict[int, dict[int, LoopFacts]] = {}
+    # ``(first_line, last_line, name)`` of each lambda with no named function
+    # around it, so a hit inside one is named for it rather than left blank.
+    lambda_spans: list[tuple[int, int, str]] = []
 
     def _acc(
         func_start: int, func_name: str | None
@@ -359,6 +385,14 @@ def _collect_perf_hits(
         if t in fn_kinds:
             next_func = _perf_func_name(node) or func_name
             next_start = node.start_point[0] + 1
+        elif t in lambda_kinds and func_name is None:
+            lambda_spans.append(
+                (
+                    node.start_point[0] + 1,
+                    node.end_point[0] + 1,
+                    _find_function_entry_name(node, lmap),
+                )
+            )
 
         # A data-dependent loop nested inside another (``loop_depth`` only counts
         # non-constant loops) is an O(n^2) shape. Record the site as a fact; the
@@ -618,7 +652,7 @@ def _collect_perf_hits(
     # one logical query, one finding. Collapse per (kind, line, function).
     seen: set[tuple[str, int, str | None]] = set()
     deduped: list[PerfHit] = []
-    for h in hits:
+    for h in _name_lambda_hits(hits, lambda_spans):
         key = (h.kind, h.line, h.function)
         if key in seen:
             continue

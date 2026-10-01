@@ -146,6 +146,10 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v37: a perf hit inside a lambda with no named function around it is named for
+# that lambda (``build``, ``it callback``), so its stored ``function_name`` and
+# public id change; top-level script code still carries none.
+#
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
 # entry points, so perf findings reachable from them are marked so.

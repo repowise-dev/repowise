@@ -440,3 +440,47 @@ def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
     assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
     finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
     assert finding.details.get("chunked_iteration", False) is chunked
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A function bound to a name is named for it.
+        (
+            "const build = (parts: string[]) => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "}\n",
+            "build",
+        ),
+        # A callback is named for the call it is passed to, as the walker names it.
+        (
+            "it('reads', () => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "})\n",
+            "it callback",
+        ),
+        # A lambda inside a named function keeps that function's name.
+        (
+            "function render(parts: string[]) {\n"
+            "  return parts.map((p) => {\n"
+            "    for (const c of p) {\n"
+            "      fs.readFileSync(c)\n"
+            "    }\n"
+            "  })\n"
+            "}\n",
+            "render",
+        ),
+        # Top-level script code has no function to name.
+        ("for (const p of parts) {\n  fs.readFileSync(p)\n}\n", None),
+    ],
+)
+def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | None):
+    fc = walk_file("f.ts", "typescript", source.encode())
+    hits = [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+    if not hits:
+        pytest.skip("typescript grammar unavailable")
+    assert {h.function for h in hits} == {expected}
