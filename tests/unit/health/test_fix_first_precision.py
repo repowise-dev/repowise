@@ -193,8 +193,8 @@ def test_a_size_finding_with_no_concrete_step_is_no_candidate() -> None:
 
 
 def test_a_class_finding_without_a_plan_is_no_candidate() -> None:
-    cohesion = {**_finding(), "biomarker_type": "low_cohesion", "function_name": "Store"}
-    assert _queue([cohesion]).totals.excluded["no_concrete_step"] == 1
+    god = {**_finding(), "biomarker_type": "god_class", "function_name": "Store"}
+    assert _queue([god]).totals.excluded["no_concrete_step"] == 1
 
 
 def test_a_line_finding_names_its_line() -> None:
@@ -219,11 +219,16 @@ def _refactor_queue(kind: str, plan: dict | None):
     return build_fix_first(metrics=[_metric()], refactoring=[row], plans=plans)
 
 
-def test_move_method_needs_a_destination() -> None:
-    assert _refactor_queue("move_method", {"method": "save"}).totals.excluded[
-        "no_concrete_step"] == 1
-    moved = _refactor_queue("move_method", {"to_class": "Ledger", "to_file": "src/ledger.py"})
-    assert moved.lead.action.steps[0].text == "Move Store.save to Ledger"
+def _step_text(kind: str, plan: dict) -> str:
+    """A step's text as an opportunity lists it, led by any step."""
+    from repowise.core.analysis.health.fix_first.build import _refactor_step
+
+    row, _plans = _opportunity(kind, plan)
+    return _refactor_step(1, row["details"]["steps"][0], {"plan": plan}).text
+
+
+def test_a_move_step_names_its_destination() -> None:
+    assert _step_text("move_method", {"to_class": "Ledger"}) == "Move Store.save to Ledger"
 
 
 def test_break_cycle_needs_the_import_line() -> None:
@@ -464,8 +469,7 @@ def test_without_reach_it_stays_below_the_top_band() -> None:
 def test_an_extract_class_step_names_the_members_it_moves() -> None:
     plan = {"groups": [{"methods": ["load", "save", "flush"], "fields": ["db"]},
                        {"methods": ["render"], "fields": ["tpl"]}]}
-    step = _refactor_queue("extract_class", plan).lead.action.steps[0]
-    assert step.text == "Move render out of Store.save into a new class"
+    assert _step_text("extract_class", plan) == "Move render out of Store.save into a new class"
 
 
 def test_only_a_size_finding_is_titled_break_up() -> None:
@@ -477,3 +481,25 @@ def test_only_a_size_finding_is_titled_break_up() -> None:
 def test_a_one_line_block_reads_as_one_line() -> None:
     item = _queue([_finding(deepest_block={"start": 42, "end": 42})]).lead
     assert item.action.steps[0].text.startswith("Start with line 42, where it nests 4 deep")
+
+
+# --- kinds the baseline raters found not worth doing -------------------------------
+
+
+def test_extract_class_and_move_method_plans_are_low_value() -> None:
+    plan = {"groups": [{"methods": ["load", "save"], "fields": ["db"]}]}
+    assert _refactor_queue("extract_class", plan).totals.excluded["low_value_kind"] == 1
+    moved = _refactor_queue("move_method", {"to_class": "Ledger"})
+    assert moved.items == () and moved.totals.excluded["low_value_kind"] == 1
+
+
+def test_large_method_and_low_cohesion_findings_are_low_value() -> None:
+    for marker in ("large_method", "low_cohesion"):
+        queue = _queue([{**_finding(), "biomarker_type": marker}])
+        assert queue.items == () and queue.totals.excluded["low_value_kind"] == 1
+
+
+def test_a_split_file_plan_and_a_complex_method_stay() -> None:
+    named = {"groups": [{"name": "io", "symbols": ["read"]}]}
+    assert len(_refactor_queue("split_file", named).items) == 1
+    assert len(_queue([_finding()]).items) == 1

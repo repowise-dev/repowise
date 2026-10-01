@@ -54,6 +54,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "inherent_dispatch": 0,
         "small_function": 0,
         "no_concrete_step": 0,
+        "low_value_kind": 0,
     }
     assert queue.totals.eligible == 3
     assert queue.totals.candidates == 3 + 7

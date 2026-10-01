@@ -37,7 +37,8 @@ export type FixExclusion =
   | "deprecated"
   | "inherent_dispatch"
   | "small_function"
-  | "no_concrete_step";
+  | "no_concrete_step"
+  | "low_value_kind";
 
 /** `all` keeps test files, labelled in `context`. */
 export type FixScope = "production" | "all";

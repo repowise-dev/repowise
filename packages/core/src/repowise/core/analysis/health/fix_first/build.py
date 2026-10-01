@@ -143,6 +143,16 @@ SMALL_NLOC = 30
 SMALL_CCN = 15
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
+#: Kinds the baseline raters found not worth doing: a refactoring led by one
+#: of these steps, or a plan-less finding led by one of these markers, is no
+#: candidate (it stays in the refactoring tab). Worth over rater labels, dev
+#: repos first, then all 17 baseline repos.
+LOW_VALUE_KINDS: dict[str, str] = {
+    "extract_class": "dev 0/6, all 0/14",
+    "move_method": "dev 0/14, all 0/34",
+    "low_cohesion": "dev 0/26, all 0/46",
+    "large_method": "dev 0/4, all 0/10",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1101,6 +1111,8 @@ def _small(shape: Mapping[str, int]) -> bool:
 
 
 def _finding_exclusion(finding: Any, files: _Files) -> str | None:
+    if field(finding, "biomarker_type") in LOW_VALUE_KINDS:
+        return "low_value_kind"
     reason = files.unit_exclusion(
         field(finding, "file_path"),
         field(finding, "function_name"),
@@ -1297,10 +1309,14 @@ def build_fix_first(
         if not steps:
             excluded["below_min_worth"] += 1
             continue
-        reason = files.unit_exclusion(
-            path,
-            steps[0].get("target_symbol"),
-            complexity=steps[0].get("refactoring_type") == "extract_method",
+        reason = (
+            "low_value_kind"
+            if steps[0].get("refactoring_type") in LOW_VALUE_KINDS
+            else files.unit_exclusion(
+                path,
+                steps[0].get("target_symbol"),
+                complexity=steps[0].get("refactoring_type") == "extract_method",
+            )
         )
         if reason is None and not _concrete(steps[0], plan_rows.get(steps[0].get("plan_id"))):
             reason = "no_concrete_step"
@@ -1387,6 +1403,7 @@ __all__ = [
     "GROWS_ONLY_MARKERS",
     "HEAD",
     "HEAD_PER_KIND",
+    "LOW_VALUE_KINDS",
     "MIN_WORTH",
     "SIZE_MARKERS",
     "SMALL_CCN",
