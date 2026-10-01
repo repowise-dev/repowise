@@ -36,7 +36,12 @@ from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_sco
 from repowise.core.analysis.health.scoring import compute_kpis
 
 from .codegen import _generate_refactoring_code
-from .persist import _load_persisted_coverage_map, _load_recommendations, _persist_health
+from .persist import (
+    _load_fix_first,
+    _load_persisted_coverage_map,
+    _load_recommendations,
+    _persist_health,
+)
 from .refactoring_targets import (
     _render_refactoring_targets,
     _render_stored_refactoring_targets,
@@ -45,10 +50,14 @@ from .summary import (
     _render_badge,
     _render_defect_accuracy_line,
     _render_distribution_line,
+    _render_fix_first,
     _render_performance_section,
     _render_split_line,
 )
 from .trends import _render_trend
+
+#: Items the report leads with; the full queue is one REST or MCP call away.
+FIX_FIRST_ROWS = 3
 
 
 @click.command("health")
@@ -456,6 +465,10 @@ def health_command(
     from repowise.core.analysis.health.grading import (
         distribution as health_distribution,
     )
+
+    # Lead with what to fix; a narrowed run is an inspection, not the worklist.
+    if not file_filter and not module_filter:
+        _render_fix_first(_load_fix_first(repo_path, limit=FIX_FIRST_ROWS))
 
     kpis = report.kpis
     avg = kpis.get("average_health")

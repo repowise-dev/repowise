@@ -94,7 +94,9 @@ class CodeHealthBlock:
     performance_coverage_pct: float | None = None
     performance_skipped_files: int = 0
     performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
-    critical_biomarkers: list[dict] = field(default_factory=list)
+    # The lead of the shared Fix-first queue: ``title``, ``where``
+    # (``path:line``) and ``why`` per item, at most three.
+    fix_first: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

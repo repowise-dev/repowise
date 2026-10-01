@@ -1,7 +1,7 @@
 """Console renderers for the top-of-report summary lines.
 
-Performance-risk headline, band distribution, README badge, and the
-"does the score find the bugs?" defect-accuracy line.
+The Fix-first lead, performance-risk headline, band distribution, README
+badge, and the "does the score find the bugs?" defect-accuracy line.
 """
 
 from __future__ import annotations
@@ -9,6 +9,33 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.cli.helpers import console
+
+
+def _render_fix_first(queue: Any) -> None:
+    """What to fix first, as core ranks it: title, where, why, effort, how to verify."""
+    from rich.markup import escape
+
+    if queue is None:
+        return
+    if not queue.items:
+        console.print("\n[bold]Fix first[/bold]: nothing eligible in the stored analysis.")
+        return
+    totals = queue.totals
+    console.print(
+        f"\n[bold]Fix first[/bold] [dim]({totals.shown} of {totals.eligible} eligible; "
+        "tests, tooling and history-only files left out)[/dim]"
+    )
+    for item in queue.items:
+        target = item.target
+        where = target.file_path + (f":{target.line_start}" if target.line_start else "")
+        console.print(
+            f" {item.rank + 1}. [bold]{escape(item.title)}[/bold] "
+            f"[dim]{item.tier} · effort {item.effort.bucket} · {item.gain.text}[/dim]"
+        )
+        console.print(f"    [cyan]{escape(where)}[/cyan]")
+        console.print(f"    {escape(item.why)}")
+        if item.verify.command:
+            console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
 
 
 def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:

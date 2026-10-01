@@ -607,7 +607,7 @@ async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_p
 
 
 async def test_code_health_names_production_files_only(session, repo, tmp_path):
-    """The worst file and the critical list are a worklist: tests stay out."""
+    """The worst file and Fix first are a worklist: tests stay out."""
     from repowise.core.persistence.crud import save_health_findings
     from repowise.core.persistence.models import HealthFileMetric
 
@@ -639,4 +639,5 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.code_health.worst_path == "src/a.py"
-    assert [b["path"] for b in data.code_health.critical_biomarkers] == ["src/a.py"]
+    assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
+    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"

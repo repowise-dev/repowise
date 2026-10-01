@@ -51,6 +51,34 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
         return {}
 
 
+def _load_fix_first(repo_path: object, *, limit: int) -> Any:
+    """The stored Fix-first queue, or ``None`` when the store cannot answer.
+
+    Best-effort like the coverage read: a missing repo row or an older store
+    leaves the report without the section rather than failing it.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+
+    async def _do() -> Any:
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            return await load_fix_first(session, repo.id, limit=limit)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
 def _load_recommendations(
     repo_path: Path, suggestions: Sequence[Any], metrics: Sequence[Any]
 ) -> list[dict[str, Any]]:
