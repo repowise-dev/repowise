@@ -126,7 +126,7 @@ class PerformanceQuery:
 
     @property
     def actionabilities(self) -> frozenset[str]:
-        """The set the queue is filtered to: one explicit state, or the default three."""
+        """The set the queue is filtered to: one explicit state, or the default queue states (plan_ready, advisory)."""
         if self.actionability is None:
             return _DEFAULT_ACTIONABILITIES
         return frozenset({self.actionability})
