@@ -812,6 +812,11 @@ def save_config(
     existing["embedder"] = embedder
     if embedding_model:
         existing["embedding_model"] = embedding_model
+    else:
+        # No model was resolved this run: dropping the key beats leaving a
+        # stale one that names a different provider's model, or one this
+        # embedder was not actually built with (#2627).
+        existing.pop("embedding_model", None)
     if exclude_patterns is not None:
         existing["exclude_patterns"] = exclude_patterns
     if commit_limit is not None:
@@ -853,8 +858,19 @@ def save_config_partial(
     keyword arguments. ``None`` values are skipped so callers can forward
     optional flags without clobbering existing keys.
 
-    No scalar-only fallback like :func:`save_config`: it would silently drop
-    ``exclude_patterns``, and PyYAML is a hard dependency anyway.
+    ``embedding_model`` is the one exception to "None is skipped": passed
+    explicitly as ``None``, it clears any pinned model instead of leaving it
+    alone, because that is the caller saying the model changed (or is no
+    longer known) for whatever embedder this call names. Merely *omitting*
+    ``embedding_model`` is not the same claim, so it does not clear anything
+    on its own -- ``reindex_cmd`` calls this after every reindex with only
+    ``embedder=``, having never had a model to pass, and a bare ``in extra``
+    check on ``embedder`` used to read that silence as "no model" and wipe a
+    real pin on every routine reindex (#2627, caught in review on the fix
+    itself). Distinguishing "not passed" from "passed as ``None``" needs the
+    raw ``extra`` dict, since a keyword default cannot do it: ``in extra``
+    only reports that once, but ``get`` cannot tell the two shapes apart
+    afterwards.
     """
     import yaml  # type: ignore[import-untyped]
 
@@ -864,13 +880,16 @@ def save_config_partial(
     if commit_limit is not None:
         updates["commit_limit"] = commit_limit
     updates.update({k: v for k, v in extra.items() if v is not None})
-    if not updates:
+    clear_embedding_model = "embedding_model" in extra and extra["embedding_model"] is None
+    if not updates and not clear_embedding_model:
         return
 
     ensure_repowise_dir(repo_path)
     config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
     existing = load_config(repo_path)
     existing.update(updates)
+    if clear_embedding_model:
+        existing.pop("embedding_model", None)
 
     config_path.write_text(
         yaml.dump(existing, default_flow_style=False, sort_keys=False),
