@@ -130,6 +130,12 @@ SIZE_MARKERS = frozenset(
 #: decision points is usually fine as it is. Fitted on the dev labels only:
 #: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
 DISPATCH_SHARE = 0.6
+#: A function-level complexity unit needs this many code lines or this CCN.
+#: Picked on the dev labels (67 complexity rows): 30 / 15 drops 13 rejected
+#: small functions and 4 accepted ones; no cut that keeps every accepted row
+#: drops more than 4 rejected.
+SMALL_NLOC = 30
+SMALL_CCN = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,7 +349,8 @@ class _Files:
 
         A deprecated function is on its way out. A complexity unit on a
         function that is mostly one dispatch on one value is usually fine as
-        it is, unless a duplicate also sits in it.
+        it is, unless a duplicate also sits in it; one on a small function is
+        not worth an item.
         """
         shape = self.shape(path, symbol)
         if shape.get("deprecated"):
@@ -352,6 +359,8 @@ class _Files:
             return None
         if shape.get("dispatch_pct", 0) >= DISPATCH_SHARE * 100 and not self.cloned(path, shape):
             return "inherent_dispatch"
+        if _small(shape):
+            return "small_function"
         return None
 
     def why(
@@ -890,6 +899,18 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
     )
 
 
+def _small(shape: Mapping[str, int]) -> bool:
+    """Under both size floors. A function whose size findings carry no line
+    count is measured by its span, which bounds its code lines from above; one
+    with neither is not judged small."""
+    nloc = shape.get("nloc")
+    if not nloc and shape.get("start") and shape.get("end"):
+        nloc = shape["end"] - shape["start"] + 1
+    if not nloc:
+        return False
+    return nloc < SMALL_NLOC and shape.get("ccn", 0) < SMALL_CCN
+
+
 def _finding_exclusion(finding: Any, files: _Files) -> str | None:
     return files.unit_exclusion(
         field(finding, "file_path"),
@@ -1162,6 +1183,8 @@ __all__ = [
     "HEAD_PER_KIND",
     "MIN_WORTH",
     "SIZE_MARKERS",
+    "SMALL_CCN",
+    "SMALL_NLOC",
     "build_fix_first",
     "hot_cut",
     "hot_cut_offset",

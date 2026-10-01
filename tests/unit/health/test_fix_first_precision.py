@@ -116,3 +116,29 @@ def test_a_dispatch_function_plan_is_no_candidate() -> None:
     )
     # The plan and then the finding it leaves behind: both on the dispatch.
     assert queue.items == () and queue.totals.excluded["inherent_dispatch"] == 2
+
+
+# --- F3: small functions --------------------------------------------------------
+
+
+def test_a_small_simple_function_is_no_candidate() -> None:
+    queue = _queue([_finding(ccn=12, nloc=22)])
+    assert queue.items == () and queue.totals.excluded["small_function"] == 1
+
+
+def test_either_floor_keeps_a_function() -> None:
+    assert len(_queue([_finding(ccn=12, nloc=30)]).items) == 1
+    assert len(_queue([_finding(ccn=15, nloc=12)]).items) == 1
+
+
+def test_a_finding_with_no_line_count_is_measured_by_its_span() -> None:
+    short = {**_finding(ccn=6), "line_start": 10, "line_end": 25}
+    del short["details"]["nloc"]
+    assert _queue([short]).totals.excluded["small_function"] == 1
+    long = {**short, "line_end": 70}
+    assert len(_queue([long]).items) == 1
+
+
+def test_a_small_function_outside_the_size_markers_is_judged_by_its_own_rule() -> None:
+    condition = {**_finding(ccn=6, nloc=10), "biomarker_type": "complex_conditional"}
+    assert _queue([condition]).totals.excluded["small_function"] == 0
