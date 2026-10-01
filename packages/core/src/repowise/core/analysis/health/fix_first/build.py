@@ -152,6 +152,10 @@ LOW_VALUE_KINDS: dict[str, str] = {
     "move_method": "dev 0/14, all 0/34",
     "low_cohesion": "dev 0/26, all 0/46",
     "large_method": "dev 0/4, all 0/10",
+    # Thinly measured: one held-out item (two labels), none on the dev repos.
+    # A low-value maintainability nudge that otherwise fills a small repo's
+    # whole top three; revisit when more of it is labelled.
+    "primitive_obsession": "dev 0/0, all 0/2",
 }
 
 

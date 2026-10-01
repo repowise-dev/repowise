@@ -473,9 +473,9 @@ def test_an_extract_class_step_names_the_members_it_moves() -> None:
 
 
 def test_only_a_size_finding_is_titled_break_up() -> None:
-    wide = {**_finding(ccn=12, nloc=40, max_nesting=8), "biomarker_type": "primitive_obsession"}
+    wide = {**_finding(ccn=12, nloc=40, max_nesting=8), "biomarker_type": "complex_conditional"}
     item = _queue([wide]).lead
-    assert item.title == "Group the parameters of run"
+    assert item.title == "Simplify the condition in run"
 
 
 def test_a_one_line_block_reads_as_one_line() -> None:

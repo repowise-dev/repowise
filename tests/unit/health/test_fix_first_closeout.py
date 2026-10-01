@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from repowise.core.analysis.health.fix_first import build_fix_first
+from repowise.core.analysis.health.fix_first.build import LOW_VALUE_KINDS
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
-from tests.unit.health.fix_first_rows import METRICS, _perf
+from tests.unit.health.fix_first_rows import FINDINGS, METRICS, _perf
 
 # --- a performance item names the loop it changes -----------------------------------
 
@@ -68,3 +69,14 @@ def test_plan_steps_carry_the_loop_line_of_their_site() -> None:
     sites = [s for s in steps if s.get("line")]
     assert sites[0]["loop_line"] == 31
     assert "loop_line" not in sites[1]
+
+
+# --- a long parameter list is a low-value nudge ---------------------------------------
+
+
+def test_a_long_parameter_list_is_no_candidate() -> None:
+    finding = {**FINDINGS[1], "biomarker_type": "primitive_obsession", "public_id": "f_po"}
+    queue = build_fix_first(metrics=[METRICS[0]], findings=[finding])
+    assert queue.items == ()
+    assert queue.totals.excluded["low_value_kind"] == 1
+    assert LOW_VALUE_KINDS["primitive_obsession"] == "dev 0/0, all 0/2"
