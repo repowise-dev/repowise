@@ -177,3 +177,67 @@ def test_cycle_edges_matches_full_edge_scan():
     assert cycle_edges(g, members) == reference(g, members)
     assert cycle_edges(g, ()) == []
     assert cycle_edges(None, members) == []
+
+
+_PHP_IDENTITY = (
+    "<?php\nnamespace App\\Identity;\nuse App\\Validation\\HostValidator;\n"
+    "class HostIdentity { public function check() { return new HostValidator(); } }\n"
+)
+
+
+def _php_break_cycles(tmp_path, validator_src: str) -> list:
+    from datetime import datetime
+
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    files = {
+        "src/Identity/HostIdentity.php": _PHP_IDENTITY,
+        "src/Validation/HostValidator.php": validator_src,
+    }
+    builder, parser = GraphBuilder(), ASTParser()
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        info = FileInfo(
+            path=rel,
+            abs_path=str(path),
+            language="php",
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        builder.add_file(parser.parse_file(info, text.encode()))
+    return _detect(builder.build(), "src/Identity/HostIdentity.php")
+
+
+def test_php_docblock_only_reference_does_not_close_a_cycle(tmp_path):
+    # HostValidator names HostIdentity only in comments; no code depends on it.
+    validator = (
+        "<?php\nnamespace App\\Validation;\n"
+        "/** Validates a host, see \\App\\Identity\\HostIdentity. */\n"
+        "class HostValidator {\n"
+        "    /** @param \\App\\Identity\\HostIdentity $host */\n"
+        "    public function ok($host) { return true; } // not HostIdentity-specific\n"
+        "}\n"
+    )
+    assert _php_break_cycles(tmp_path, validator) == []
+
+
+def test_php_use_both_ways_is_a_cycle(tmp_path):
+    validator = (
+        "<?php\nnamespace App\\Validation;\nuse App\\Identity\\HostIdentity;\n"
+        "class HostValidator { public function ok(HostIdentity $host) { return true; } }\n"
+    )
+    out = _php_break_cycles(tmp_path, validator)
+    assert len(out) == 1
+    assert out[0].plan["cycle"] == [
+        "src/Identity/HostIdentity.php",
+        "src/Validation/HostValidator.php",
+    ]
