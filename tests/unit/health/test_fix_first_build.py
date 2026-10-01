@@ -62,12 +62,14 @@ def test_each_exclusion_is_counted_by_reason() -> None:
 
 def test_history_never_leads_and_rides_along_as_context() -> None:
     queue = _build()
+    # The production, entry-reachable, growing database loop shares the top
+    # band with the refactor and leads it on score.
     assert [i.target.file_path for i in queue.items] == [
-        "src/core.py",
         "src/repo.py",
+        "src/core.py",
         "src/plain.py",
     ]
-    core = queue.lead
+    core = queue.items[1]
     assert core.kind == "refactor"
     assert "change" not in core.title.lower() and "entropy" not in core.why
     assert [(c.label, c.value) for c in core.context] == [
@@ -79,7 +81,7 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
 
 
 def test_text_quotes_the_stored_numbers() -> None:
-    core = _build().lead
+    core = next(i for i in _build().items if i.kind == "refactor")
     assert core.title == "Extract lines 20-35 of run into sum_rows (+1 more step)"
     # The size is a fact; the why says why it matters here.
     assert core.why == (
@@ -191,14 +193,14 @@ def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     """A function far past every bar outranks tidy work that is safer to start."""
     huge = {**FINDINGS[1], "file_path": "src/plain.py", "function_name": "walk",
             "public_id": "finding_huge", "details": {"ccn": 249, "nloc": 1280, "max_nesting": 5}}
-    queue = _build(findings=[*FINDINGS, huge])
+    queue = _build(findings=[*FINDINGS, huge], performance=[])
     lead = queue.lead
     assert (lead.kind, lead.tier, lead.target.file_path) == ("finding", "next", "src/plain.py")
     assert lead.title == "Break up walk (CCN 249, 1,280 lines)"
     assert ("problem size", "4") in [(f.factor, f.value) for f in lead.why_ranked]
     # With a plan, the title names the problem and the first concrete step.
     big = {**FINDINGS[1], "details": {"ccn": 120, "nloc": 900, "max_nesting": 6}}
-    planned = _build(findings=[big]).lead
+    planned = _build(findings=[big], performance=[]).lead
     assert planned.title == (
         "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35 into sum_rows"
     )

@@ -330,7 +330,7 @@ def test_a_cause_that_may_not_lead_is_listed_second() -> None:
         performance=[_lazy(False)],
     )
     assert [i.kind for i in queue.items] == ["finding", "perf_fix"]
-    assert next(f.value for f in queue.items[1].why_ranked if f.factor == "value") == "3"
+    assert next(f.value for f in queue.items[1].why_ranked if f.factor == "value") == "4"
 
 
 def test_a_cause_that_may_lead_still_leads() -> None:
@@ -411,3 +411,28 @@ def test_a_module_scope_cause_reads_module_scope_of_its_file() -> None:
     assert item.title == "Batch the database calls loops make in module scope of repo.py"
     assert "__module__" not in item.why and "__module__" not in item.action.steps[0].text
     assert item.target.symbol is None
+
+
+# --- the strongest performance fixes share the top value band ---------------------
+
+
+def test_a_production_reachable_growing_db_loop_is_in_the_top_band() -> None:
+    from repowise.core.analysis.health.fix_first.build import VALUE_MAX
+
+    assert _value(loop_magnitude="grows_with_data", exposure="entry_reachable") == str(VALUE_MAX)
+
+
+def test_it_outranks_a_large_function_that_needs_judgment_on_score() -> None:
+    from tests.unit.health.fix_first_rows import _perf
+
+    huge = _finding(ccn=249, nloc=1280, max_nesting=7)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[huge],
+        performance=[_perf("perf3_top", "src/db.py::fetch")],
+    )
+    # Both sit in the top band; the perf fix is listed beside the large function.
+    assert {i.kind for i in queue.items[:2]} == {"finding", "perf_fix"}
+
+
+def test_without_reach_it_stays_below_the_top_band() -> None:
+    assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"

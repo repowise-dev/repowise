@@ -1016,7 +1016,7 @@ performance cause enters only from the performance default queue, whose reasons
 `unknown`, `expected` and `no_strategy` are), `by_improves`, `model_version`, `basis`, and `detail_call`,
 the `get_health(fix_id=...)` call that returns the lead in full. `tier` is
 `now` (worth doing, and the plan is safe to start), `next` (worth doing, needs
-judgment) or `later`. Items are ordered by value first, the larger of the recoverable health and the size of the problem (CCN, lines and nesting past their bars, a critical or brain-method finding, a hot file), then by tier, so a function far past every bar leads as "Break up ..." ahead of tidy work that is safer to start. `kind` is `refactor` (one file's composed refactoring),
+judgment) or `later`. Items are ordered by value first, the larger of the recoverable health and the size of the problem (CCN, lines and nesting past their bars, a critical or brain-method finding, a hot file), then by tier, so a function far past every bar leads as "Break up ..." ahead of tidy work that is safer to start. A performance fix's value is its cost: a production, entry-reachable database or network call in a loop that grows with the data shares the top band with the largest functions, and a loop of unknown size that no entry point reaches drops one step. A cause whose marker has not cleared the bar for leading is listed, never first. `kind` is `refactor` (one file's composed refactoring),
 `perf_fix` (one intervention, its sinks listed under it) or `finding` (a file's
 strongest code-shape finding with no plan). Always the production population,
 whatever `scope` says. `limit` caps the items, never which one leads.

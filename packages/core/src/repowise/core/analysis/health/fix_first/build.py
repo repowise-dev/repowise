@@ -839,6 +839,10 @@ def _perf_worth(row: Any) -> bool:
 
 
 def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
+    """0 to :data:`VALUE_MAX`. A production, entry-reachable database or
+    network call in a loop that grows with the data is the costliest kind of
+    work Fix first holds, so it shares the top band with the largest
+    functions; capped below it, it never reached a top ten that size fills."""
     production = field(row, "execution_context") == "production"
     grows = facets.get("loop_magnitude") == "grows_with_data"
     unknown = facets.get("loop_magnitude") in (None, "unknown")
@@ -848,7 +852,7 @@ def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
         and grows
         and field(row, "boundary_kind") in ("db", "network")
     ):
-        return 3
+        return VALUE_MAX
     value = 2 if production and (grows or unknown) else 1
     # No traffic data: a loop of unknown size that no entry point reaches is
     # most often an admin or maintenance path, where an N+1 is cheap.
