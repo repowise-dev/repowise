@@ -70,7 +70,10 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
     core = queue.lead
     assert core.kind == "refactor"
     assert "change" not in core.title.lower() and "entropy" not in core.why
-    assert [c.label for c in core.context] == ["changes in 90 days", "change entropy"]
+    assert [(c.label, c.value) for c in core.context] == [
+        ("recent changes", "changed 12 times in 90 days"),
+        ("scattered changes", "its changes are spread across many unrelated commits"),
+    ]
     # The history-only file is no item at all.
     assert all(i.target.file_path != "src/hist.py" for i in queue.items)
 
@@ -78,7 +81,12 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
 def test_text_quotes_the_stored_numbers() -> None:
     core = _build().lead
     assert core.title == "Extract lines 20-35 of run into sum_rows (+1 more step)"
-    assert core.why == "run: CCN 14, 50 lines, nests 4 deep; 9 files import it, changed 12 times in 90 days."
+    # The size is a fact; the why says why it matters here.
+    assert core.why == (
+        "run has many independent paths through it; 9 files import it, "
+        "changed 12 times in 90 days."
+    )
+    assert ("size", "CCN 14, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
     assert core.action.steps[1].text == "Extract lines 40-41 of run into a helper"
     # The model's credit is the gain, with one decimal; the builder does not re-judge it.

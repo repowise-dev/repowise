@@ -70,7 +70,9 @@ async def _metrics(session: AsyncSession, repo_id: str, paths: set[str]) -> list
                 HealthFileMetric.nloc,
                 HealthFileMetric.is_test,
                 HealthFileMetric.code_origin,
+                HealthFileMetric.line_coverage_pct,
                 GitMetadata.commit_count_90d,
+                GitMetadata.contributor_count,
                 GraphMetric.in_degree.label("dependents"),
             )
             .outerjoin(
@@ -209,10 +211,8 @@ async def _findings(
                 f.public_id,
                 f.dimension,
                 f.status,
-                # Only a code-shape finding's numbers are quoted.
-                case((f.biomarker_type.in_(history), None), else_=f.details_json).label(
-                    "details_json"
-                ),
+                # History numbers become plain context sentences.
+                f.details_json,
             ).where(
                 _eligible_findings(repo_id),
                 or_(

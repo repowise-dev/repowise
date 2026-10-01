@@ -11,8 +11,9 @@ Row shapes (field names are the SQL columns):
 
 ``metrics``
     ``file_path``, ``score``, ``nloc``, ``is_test``, ``code_origin``,
-    ``analyzed_commit``, ``updated_at``, plus ``commit_count_90d`` (git) and
-    ``dependents`` (graph in-degree).
+    ``line_coverage_pct``, ``analyzed_commit``, ``updated_at``, plus
+    ``commit_count_90d`` and ``contributor_count`` (git) and ``dependents``
+    (graph in-degree).
 ``findings``
     Hidden types are never items; ``dry_violation`` rows are read for where
     duplicates sit. ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
@@ -320,6 +321,10 @@ class _Files:
     def commits(self, path: str) -> int:
         return int(field(self.by_path.get(path), "commit_count_90d") or 0)
 
+    def coverage(self, path: str) -> float | None:
+        """Measured line coverage in percent; ``None`` when no report has it."""
+        return field(self.by_path.get(path), "line_coverage_pct")
+
     def dependents(self, path: str) -> int | None:
         return field(self.by_path.get(path), "dependents")
 
@@ -427,26 +432,29 @@ class _Files:
         dependents: int | None = None,
         cloned: bool = False,
     ) -> str:
-        """One sentence: the measured problem, then who depends on the file."""
+        """One sentence: the problem, then why it matters here (who imports
+        the file, how often it changes, how much of it tests run)."""
         deps = dependents if dependents is not None else self.dependents(path)
         head = measured or fallback.rstrip(". ")
         if cloned:
             head += f", {text.CLONED}"
-        return f"{head}{text.exposure(deps, self.commits(path))}."
+        return f"{head}{text.exposure(deps, self.commits(path), self.coverage(path))}."
 
     def context(self, path: str) -> tuple[FixContext, ...]:
         """History is context: shown beside the item, never ranked on."""
         out: list[FixContext] = []
         commits = self.commits(path)
         if commits:
-            out.append(FixContext("changes in 90 days", str(commits)))
+            people = field(self.by_path.get(path), "contributor_count")
+            out.append(FixContext("recent changes", text.changes(commits, people)))
         if self.is_test(path):
             out.append(FixContext("file kind", "test"))
         ranked = sorted(self.history.get(path, ()), key=lambda f: -_num(field(f, "health_impact")))
         for f in ranked:
-            out.append(
-                FixContext(text.humanize(field(f, "biomarker_type") or ""), field(f, "reason") or "")
-            )
+            marker = field(f, "biomarker_type") or ""
+            sentence = text.history_fact(marker, detail_map(f), field(f, "function_name"))
+            if sentence:
+                out.append(FixContext(text.HISTORY_LABEL.get(marker, "history"), sentence))
         return tuple(out[:MAX_CONTEXT])
 
     def common_facts(self, path: str, dependents: int | None = None) -> list[FixFact]:
@@ -695,8 +703,10 @@ def _refactor_unit(
         fix_steps = tuple(
             _refactor_step(i + 1, s, plans.get(s.get("plan_id"))) for i, s in enumerate(steps)
         )
+        size_text = text.size_line(shape)
         facts = [
             FixFact("health recoverable", f"+{gain:.1f}", "inferred"),
+            *([FixFact("size", size_text)] if size_text else []),
             FixFact("steps", f"{len(steps)} ({mechanical_n} mechanical)"),
             *files.common_facts(path, dependents),
         ]
@@ -869,10 +879,11 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         # A cause with no intervention symbol is named by the function its plan edits.
         first = plan_steps[0] if plan_steps else {}
         name = (
-            text.short_symbol(symbol)
-            or text.short_symbol(first.get("symbol"))
+            text.scope_name(symbol, path)
+            or text.scope_name(first.get("symbol"), path)
             or text.basename(path)
         )
+        module = name.startswith("module scope of ")
         noun = text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "")
         call_sites = int(field(lead, "affected_call_sites_total") or 0)
         files_n = int(field(lead, "affected_files_total") or 1)
@@ -881,7 +892,7 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         if shaped:
             title = shaped[0].format(name=name)
         elif noun and call_sites > 1:
-            title = f"Batch the {noun} calls loops make through {name}"
+            title = f"Batch the {noun} calls loops make {'in' if module else 'through'} {name}"
         elif noun:
             title = f"Move the {noun} call in {name} out of its loop"
         else:
@@ -921,7 +932,7 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
             FixStep(
                 int(s.get("order") or i + 1),
                 s.get("action", "")
-                + (f" ({text.short_symbol(s.get('symbol'))})" if s.get("symbol") else ""),
+                + (f" ({text.scope_name(s.get('symbol'), path)})" if s.get("symbol") else ""),
                 s.get("file_path") or path,
                 s.get("line"),
                 s.get("applicability") == "mechanical",
@@ -932,7 +943,9 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         return {
             "title": text.clip(title),
             "target": FixTarget(
-                path, name if symbol or first.get("symbol") else None, first.get("line")
+                path,
+                name if (symbol or first.get("symbol")) and not module else None,
+                first.get("line"),
             ),
             "why": f"{what}; {', '.join(reach) or 'the loop size is unknown'}.",
             "facts": tuple(facts[:MAX_FACTS]),
@@ -975,8 +988,8 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         improves="performance",
         rank_inputs=lambda: [
             FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
-            FixRankFact("entry reachable", exposure or "unknown"),
-            FixRankFact("loop size", magnitude or "unknown"),
+            FixRankFact("entry reachable", text.humanize(exposure or "unknown")),
+            FixRankFact("loop size", text.humanize(magnitude or "unknown")),
             FixRankFact("boundary", field(lead, "boundary_kind") or "none"),
         ],
         fields=fields,
@@ -1013,13 +1026,14 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
             "target": FixTarget(path, function, line, field(lead, "line_end")),
             "why": files.why(
                 path,
-                measured=text.measured(where, files.shape(path, function)),
-                fallback=field(lead, "reason") or text.problem(marker, where),
+                measured=text.measured(where, shape),
+                fallback=text.problem(marker, where),
                 cloned=cloned,
             ),
             "facts": tuple(
                 [
-                    FixFact("finding", marker),
+                    FixFact("finding", text.marker_label(marker)),
+                    *([FixFact("size", size_text)] if (size_text := text.size_line(shape)) else []),
                     FixFact("severity", field(lead, "severity") or "unknown"),
                     *files.common_facts(path),
                 ][:MAX_FACTS]

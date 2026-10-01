@@ -345,3 +345,69 @@ def test_a_cause_that_may_lead_still_leads() -> None:
 def test_a_lone_cause_that_may_not_lead_is_still_shown() -> None:
     queue = build_fix_first(metrics=[_metric("src/repo.py")], performance=[_lazy(False)])
     assert [i.kind for i in queue.items] == ["perf_fix"]
+
+
+# --- wording: why, context, labels ----------------------------------------------
+
+
+def test_why_says_why_it_matters_not_the_titles_size() -> None:
+    huge = _finding(ccn=249, nloc=1280, max_nesting=7)
+    item = _queue([huge]).lead
+    assert item.title == "Break up run (CCN 249, 1,280 lines)"
+    assert "249" not in item.why and "1,280" not in item.why and "CCN" not in item.why
+    assert item.why == (
+        "run has many independent paths through it; 9 files import it, "
+        "changed 12 times in 90 days."
+    )
+
+
+def test_why_names_coverage_when_a_report_measured_it() -> None:
+    covered = _queue([_finding()], [_metric(line_coverage_pct=41.6)]).lead
+    assert covered.why.endswith("tests run 42% of its lines.")
+    bare = _queue([_finding()], [_metric(line_coverage_pct=0.0)]).lead
+    assert bare.why.endswith("no test runs it.")
+    assert "test" not in _queue([_finding()]).lead.why
+
+
+def test_context_is_short_plain_sentences() -> None:
+    scatter = {"file_path": "src/core.py", "biomarker_type": "co_change_scatter",
+               "severity": "high", "health_impact": 2.0, "public_id": "finding_s",
+               "dimension": "defect", "reason": "co-changes with 35 distinct files (top 3.7%)",
+               "details": {"scatter": 35, "co_change_scatter_pct": 96.3}}
+    hotspot = {**scatter, "biomarker_type": "function_hotspot", "function_name": "run",
+               "health_impact": 1.0, "public_id": "finding_fh",
+               "reason": "run has been modified across 3 commits (repo p80=2)",
+               "details": {"modification_count": 3, "repo_p80": 2, "ccn": 14}}
+    item = _queue([_finding(), scatter, hotspot], [_metric(contributor_count=3)]).lead
+    assert [(c.label, c.value) for c in item.context] == [
+        ("recent changes", "changed 12 times in 90 days; 3 people have worked on it"),
+        ("ripple", "it changes together with 35 other files"),
+        ("keeps changing", "run changed in 3 commits"),
+    ]
+    for c in item.context:
+        assert "%" not in c.value and "p80" not in c.value and "top " not in c.value
+
+
+def test_no_text_field_carries_a_marker_id() -> None:
+    from repowise.core.analysis.health.scoring import _BIOMARKER_CATEGORY
+
+    queue = _queue([_finding(), {**_finding("src/b.py"), "biomarker_type": "error_handling",
+                                 "line_start": 9}])
+    for item in queue.items:
+        texts = [item.title, item.why, item.gain.text, item.action.summary,
+                 *(s.text for s in item.action.steps), *(f.value for f in item.facts),
+                 *(c.value for c in item.context), *(r.value for r in item.why_ranked)]
+        for value in texts:
+            assert not any(m in value for m in _BIOMARKER_CATEGORY if "_" in m), value
+    assert ("finding", "Complex method") in [(f.label, f.value) for f in queue.items[0].facts]
+
+
+def test_a_module_scope_cause_reads_module_scope_of_its_file() -> None:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf("perf3_mod", "src/db.py::fetch", intervention_symbol="src/repo.py::__module__")
+    row["details"]["plan"]["steps"][0]["symbol"] = "src/repo.py::__module__"
+    item = _perf_queue(row).lead
+    assert item.title == "Batch the database calls loops make in module scope of repo.py"
+    assert "__module__" not in item.why and "__module__" not in item.action.steps[0].text
+    assert item.target.symbol is None
