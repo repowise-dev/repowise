@@ -628,7 +628,7 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
                 "function_name": "f",
                 "line_start": 1,
                 "line_end": 130,
-                "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": [40, 52]},
+                "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 2.0,
                 "reason": "brain method",
             }

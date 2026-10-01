@@ -161,3 +161,39 @@ async def test_loader_reads_hidden_duplicates_as_a_fact(async_session) -> None:
     loaded = await load_fix_first(async_session, rid)
     assert loaded.lead.target.file_path == "src/core.py"
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
+
+
+async def test_loader_reads_extractions_for_a_finding_without_a_plan(async_session) -> None:
+    """A size finding takes its first step from an Extract Method plan stored
+    for its function, though no opportunity carries that plan."""
+    rid = await seed_fix_first(async_session)
+    extraction = {
+        "public_id": "refac2_walk", "refactoring_type": "extract_method",
+        "file_path": "src/plain.py", "target_symbol": "walk",
+        "evidence": {"slice_nloc": 8, "ccn_removed": 2},
+        "plan": {"span": {"start": 12, "end": 20}, "suggested_name": "step"},
+    }
+    async_session.add(
+        RefactoringSuggestion(
+            repository_id=rid,
+            public_id=extraction["public_id"],
+            refactoring_type="extract_method",
+            file_path="src/plain.py",
+            target_symbol="walk",
+            status="open",
+            evidence_json=json.dumps(extraction["evidence"]),
+            plan_json=json.dumps(extraction["plan"]),
+        )
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
+    assert walk.action.steps[0].text == "Extract lines 12-20 of walk into step()"
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=[*PLANS, extraction],
+    )
+    assert (loaded.items, loaded.totals) == (built.items, built.totals)

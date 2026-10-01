@@ -32,8 +32,10 @@ Row shapes (field names are the SQL columns):
 ``plans``
     Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
     ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
-    ``params``, ``returns``, ``suggested_name``). A step whose plan is absent
-    is kept, with less to say.
+    ``params``, ``returns``, ``suggested_name``; a move's destination; a
+    split's named groups). A plan row that also carries ``refactoring_type``
+    ``extract_method``, ``file_path`` and ``target_symbol`` can give a finding
+    with no plan of its own its first concrete step.
 """
 
 from __future__ import annotations
@@ -136,6 +138,8 @@ DISPATCH_SHARE = 0.6
 #: drops more than 4 rejected.
 SMALL_NLOC = 30
 SMALL_CCN = 15
+#: Class-level findings: a fix names member groups, which only a plan holds.
+CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,10 +291,12 @@ class _Files:
         functions: Mapping[tuple[str, str], list[Any]],
         cuts: tuple[float, float] | None,
         clones: Mapping[str, list[tuple[int, int]]] | None = None,
+        extractions: Mapping[tuple[str, str], list[Any]] | None = None,
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
         self.functions = functions
         self.clones = clones or {}
+        self.extractions = extractions or {}
         if cuts is None:
             production = [m for m in self.by_path.values() if not field(m, "is_test")]
             cuts = (
@@ -343,6 +349,52 @@ class _Files:
         if not start or not end:
             return False
         return any(a <= end and b >= start for a, b in self.clones.get(path, ()))
+
+    def first_step(self, finding: Any) -> FixStep | None:
+        """The concrete first edit for a finding with no plan of its own.
+
+        A function-size finding starts at the best stored Extract Method span
+        inside the function, else at its deepest nested block. Any other
+        finding names its own line or function. ``None`` when there is no
+        such edit to name: a class-level finding with no member groups, or a
+        size finding with neither fact stored.
+        """
+        path = field(finding, "file_path")
+        marker = field(finding, "biomarker_type") or ""
+        function = field(finding, "function_name")
+        line = field(finding, "line_start")
+        if marker in CLASS_MARKERS:
+            return None
+        if marker not in SIZE_MARKERS:
+            if line or function:
+                summary = text.first_sentence(suggestion_for(marker))
+                return FixStep(1, summary, path, line, False)
+            return None
+        tail = (function or "").rsplit(".", 1)[-1]
+        plans = self.extractions.get((path, tail)) or ()
+        best = max(plans, key=_extraction_worth, default=None)
+        if best is not None:
+            start, end = _span(best)
+            body = _plan_body(best)
+            into = text.signature(
+                body.get("suggested_name"),
+                list(body.get("params") or []),
+                list(body.get("returns") or []),
+            )
+            return FixStep(1, f"Extract lines {start}-{end} of {tail} into {into}", path, start)
+        shape = self.shape(path, function)
+        start, end = shape.get("deep_start"), shape.get("deep_end")
+        if start and end:
+            depth = shape.get("max_nesting")
+            block = f"the {depth}-deep block" if depth else "the deepest block"
+            return FixStep(
+                1,
+                f"Start with lines {start}-{end}, {block}: return early or move it into a "
+                "helper",
+                path,
+                start,
+            )
+        return None
 
     def unit_exclusion(self, path: str, symbol: str | None, complexity: bool) -> str | None:
         """Why a unit on ``symbol`` is not a candidate, or ``None``.
@@ -489,15 +541,85 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
     elif kind == "extract_class":
         line_text = f"Move a cohesive group of {sym}'s methods into a new class"
     elif kind == "split_file":
-        line_text = f"Split {text.basename(path)} along its independent groups"
+        names = [g.get("name") for g in _plan_body(plan).get("groups") or [] if g.get("name")]
+        line_text = (
+            f"Split {text.basename(path)} into {', '.join(names[:4])}"
+            + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+            if names
+            else f"Split {text.basename(path)} along its independent groups"
+        )
     elif kind == "break_cycle":
-        line_text = f"Break the import cycle at {text.basename(path)}"
+        edge = _cut_edge(plan)
+        line_text = (
+            f"Cut the import of {text.basename(edge['to'])} in "
+            f"{text.basename(edge['from'])} (line {edge['line']})"
+            if edge
+            else f"Break the import cycle at {text.basename(path)}"
+        )
     elif kind == "move_method":
-        line_text = f"Move {sym} to the class it uses most"
+        dest = _plan_body(plan).get("to_class") or text.basename(
+            _plan_body(plan).get("to_file") or ""
+        )
+        line_text = (
+            f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
+        )
     else:
         line_text = f"Apply the {text.humanize(kind)} step to {sym}"
     mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
     return FixStep(order, line_text, path, start or step.get("line_start"), mechanical)
+
+
+def _cut_edge(plan: Any) -> dict[str, Any] | None:
+    """The first cut edge whose import line is stored."""
+    for edge in _plan_body(plan).get("cut_edges") or ():
+        if isinstance(edge, dict) and edge.get("line") and edge.get("from") and edge.get("to"):
+            return edge
+    return None
+
+
+def _concrete(step: Mapping[str, Any], plan: Any) -> bool:
+    """Whether a refactoring step names an edit someone can make: lines to
+    lift, a destination, the import to cut, or named groups."""
+    kind = step.get("refactoring_type") or ""
+    body = _plan_body(plan)
+    if kind == "extract_method":
+        start, end = _span(plan)
+        return bool(start and end)
+    if kind == "extract_helper":
+        return any(
+            isinstance(o, dict) and o.get("line_start") for o in body.get("occurrences") or ()
+        )
+    if kind == "move_method":
+        return bool(body.get("to_class") or body.get("to_file"))
+    if kind == "break_cycle":
+        return _cut_edge(plan) is not None
+    if kind in ("split_file", "extract_class"):
+        members = "symbols" if kind == "split_file" else "methods"
+        return any(
+            isinstance(g, dict) and g.get(members) and (g.get("name") or kind == "extract_class")
+            for g in body.get("groups") or ()
+        )
+    return bool(step.get("line_start"))
+
+
+def _extraction_worth(plan: Any) -> tuple[int, int]:
+    evidence = _evidence(plan)
+    return int(evidence.get("ccn_removed") or 0), int(evidence.get("slice_nloc") or 0)
+
+
+def _extractions(plans: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
+    """Extract Method plans with a span, by (file, function name)."""
+    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for plan in plans:
+        symbol = field(plan, "target_symbol")
+        if field(plan, "refactoring_type") != "extract_method" or not symbol:
+            continue
+        start, end = _span(plan)
+        if start and end:
+            out[(field(plan, "file_path"), text.short_symbol(symbol).rsplit(".", 1)[-1])].append(
+                plan
+            )
+    return dict(out)
 
 
 def _refactor_unit(
@@ -828,7 +950,7 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
 # --- findings with no plan ----------------------------------------------------------
 
 
-def _finding_unit(lead: Any, files: _Files) -> _Unit:
+def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
     path = field(lead, "file_path")
     marker = field(lead, "biomarker_type") or ""
     function = field(lead, "function_name")
@@ -864,7 +986,7 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
                     *files.common_facts(path),
                 ][:MAX_FACTS]
             ),
-            "action": FixAction(summary, (FixStep(1, summary, path, line, False),), 1, False),
+            "action": FixAction(summary, (first,), 1, False),
             "gain": FixGain(
                 "health_points", round(impact, 3), text.health_gain(impact, ceiling=True)
             ),
@@ -912,11 +1034,14 @@ def _small(shape: Mapping[str, int]) -> bool:
 
 
 def _finding_exclusion(finding: Any, files: _Files) -> str | None:
-    return files.unit_exclusion(
+    reason = files.unit_exclusion(
         field(finding, "file_path"),
         field(finding, "function_name"),
         complexity=field(finding, "biomarker_type") in SIZE_MARKERS,
     )
+    if reason is None and files.first_step(finding) is None:
+        return "no_concrete_step"
+    return reason
 
 
 def _clone_spans(findings: Iterable[Any], plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
@@ -989,8 +1114,9 @@ def _measure(findings: Iterable[Any]) -> dict[str, int]:
 
     ``severe`` is set when any of them is critical or a brain method,
     ``deprecated`` when any sits in a function marked deprecated,
-    ``dispatch_pct`` is the largest stored dispatch share in percent, and
-    ``start`` / ``end`` span the function as its size findings place it.
+    ``dispatch_pct`` is the largest stored dispatch share in percent,
+    ``start`` / ``end`` span the function as its size findings place it, and
+    ``deep_start`` / ``deep_end`` are its deepest nested block's lines.
     """
     shape: dict[str, int] = {}
     for f in findings:
@@ -999,6 +1125,10 @@ def _measure(findings: Iterable[Any]) -> dict[str, int]:
         details = detail_map(f)
         if details.get("deprecated"):
             shape["deprecated"] = 1
+        deepest = details.get("deepest_block")
+        if isinstance(deepest, dict) and deepest.get("start") and "deep_start" not in shape:
+            shape["deep_start"] = int(deepest["start"])
+            shape["deep_end"] = int(deepest.get("end") or deepest["start"])
         share = details.get("dispatch_share")
         if isinstance(share, (int, float)):
             shape["dispatch_pct"] = max(shape.get("dispatch_pct", 0), round(share * 100))
@@ -1071,6 +1201,7 @@ def build_fix_first(
         _by_function(f for shape, _hist in split.values() for f in shape),
         hot_cuts,
         _clone_spans((f for f in findings if _open(f)), plans),
+        _extractions(plans),
     )
 
     def out_of_scope(path: str, context: str | None = None) -> bool:
@@ -1104,6 +1235,8 @@ def build_fix_first(
             steps[0].get("target_symbol"),
             complexity=steps[0].get("refactoring_type") == "extract_method",
         )
+        if reason is None and not _concrete(steps[0], plan_rows.get(steps[0].get("plan_id"))):
+            reason = "no_concrete_step"
         if reason is not None:
             excluded[reason] += 1
             continue
@@ -1153,7 +1286,7 @@ def build_fix_first(
         if eligible is None:
             excluded[reasons[id(lead)] or next(r for r in reasons.values() if r)] += 1
             continue
-        units.append(_finding_unit(eligible, files))
+        units.append(_finding_unit(eligible, files, files.first_step(eligible)))
 
     ordered = _order(units)
     if item_id is not None:
@@ -1176,6 +1309,7 @@ def build_fix_first(
 
 
 __all__ = [
+    "CLASS_MARKERS",
     "DEFAULT_LIMIT",
     "DISPATCH_SHARE",
     "GAIN_CUTS",

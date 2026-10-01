@@ -18,7 +18,7 @@ def _finding(path: str = "src/core.py", **details) -> dict:
         **_COMPLEX,
         "file_path": path,
         "public_id": f"finding_{path}",
-        "details": {"ccn": 14, "nloc": 50, "max_nesting": 4, "deepest_block": [20, 30],
+        "details": {"ccn": 14, "nloc": 50, "max_nesting": 4, "deepest_block": {"start": 20, "end": 30},
                     **details},
     }
 
@@ -142,3 +142,92 @@ def test_a_finding_with_no_line_count_is_measured_by_its_span() -> None:
 def test_a_small_function_outside_the_size_markers_is_judged_by_its_own_rule() -> None:
     condition = {**_finding(ccn=6, nloc=10), "biomarker_type": "complex_conditional"}
     assert _queue([condition]).totals.excluded["small_function"] == 0
+
+
+# --- F4: every item names a concrete edit ----------------------------------------
+
+
+def _extraction(start: int = 22, end: int = 34, ccn_removed: int = 3) -> dict:
+    return {"public_id": f"refac2_x{start}", "refactoring_type": "extract_method",
+            "file_path": "src/core.py", "target_symbol": "run",
+            "evidence": {"slice_nloc": end - start, "ccn_removed": ccn_removed},
+            "plan": {"span": {"start": start, "end": end}, "params": ["rows"],
+                     "suggested_name": "total_rows"}}
+
+
+def test_a_size_finding_starts_at_the_best_stored_extraction() -> None:
+    plans = [_extraction(22, 34, 3), _extraction(40, 44, 1)]
+    item = _queue([_finding()], plans=plans).lead
+    assert item.action.steps[0].text == "Extract lines 22-34 of run into total_rows(rows)"
+    assert item.action.steps[0].line == 22
+
+
+def test_without_an_extraction_it_starts_at_the_deepest_block() -> None:
+    item = _queue([_finding()]).lead
+    assert item.action.steps[0].text == (
+        "Start with lines 20-30, the 4-deep block: return early or move it into a helper"
+    )
+    assert (item.action.steps[0].file_path, item.action.steps[0].line) == ("src/core.py", 20)
+
+
+def test_a_size_finding_with_no_concrete_step_is_no_candidate() -> None:
+    bare = _finding()
+    bare["details"] = {k: v for k, v in bare["details"].items() if k != "deepest_block"}
+    queue = _queue([bare])
+    assert queue.items == () and queue.totals.excluded["no_concrete_step"] == 1
+
+
+def test_a_class_finding_without_a_plan_is_no_candidate() -> None:
+    cohesion = {**_finding(), "biomarker_type": "low_cohesion", "function_name": "Store"}
+    assert _queue([cohesion]).totals.excluded["no_concrete_step"] == 1
+
+
+def test_a_line_finding_names_its_line() -> None:
+    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 77}
+    step = _queue([handler]).lead.action.steps[0]
+    assert (step.line, step.file_path) == (77, "src/core.py")
+
+
+def _opportunity(kind: str, plan: dict | None) -> tuple[dict, list[dict]]:
+    from tests.unit.health.fix_first_rows import REFACTORING
+
+    row = {**REFACTORING[0], "lead_refactoring_type": kind, "lead_biomarker": None,
+           "details": {**REFACTORING[0]["details"], "steps": [
+               {**REFACTORING[0]["details"]["steps"][0], "refactoring_type": kind,
+                "plan_id": "refac2_k", "target_symbol": "Store.save"}]}}
+    plans = [{"public_id": "refac2_k", "refactoring_type": kind, "plan": plan}] if plan else []
+    return row, plans
+
+
+def _refactor_queue(kind: str, plan: dict | None):
+    row, plans = _opportunity(kind, plan)
+    return build_fix_first(metrics=[_metric()], refactoring=[row], plans=plans)
+
+
+def test_move_method_needs_a_destination() -> None:
+    assert _refactor_queue("move_method", {"method": "save"}).totals.excluded[
+        "no_concrete_step"] == 1
+    moved = _refactor_queue("move_method", {"to_class": "Ledger", "to_file": "src/ledger.py"})
+    assert moved.lead.action.steps[0].text == "Move Store.save to Ledger"
+
+
+def test_break_cycle_needs_the_import_line() -> None:
+    edges = [{"from": "src/a.py", "to": "src/b.py"}]
+    assert _refactor_queue("break_cycle", {"cut_edges": edges}).totals.excluded[
+        "no_concrete_step"] == 1
+    lined = _refactor_queue("break_cycle", {"cut_edges": [{**edges[0], "line": 7}]})
+    assert lined.lead.action.steps[0].text == "Cut the import of b.py in a.py (line 7)"
+
+
+def test_split_file_needs_named_groups() -> None:
+    unnamed = {"groups": [{"symbols": ["a", "b"]}]}
+    assert _refactor_queue("split_file", unnamed).totals.excluded["no_concrete_step"] == 1
+    named = {"groups": [{"name": "io", "symbols": ["read"]}, {"name": "ui", "symbols": ["draw"]}]}
+    assert _refactor_queue("split_file", named).lead.action.steps[0].text == (
+        "Split core.py into io, ui"
+    )
+
+
+def test_an_extract_method_step_without_a_span_is_no_candidate() -> None:
+    assert _refactor_queue("extract_method", {"params": []}).totals.excluded[
+        "no_concrete_step"] == 1

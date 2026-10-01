@@ -44,7 +44,11 @@ def _plan(path: str, symbol: str, **over: Any) -> dict[str, Any]:
         "target_symbol": symbol,
         "line_start": 10,
         "line_end": 30,
-        "plan": {"extracted_name": f"_{symbol}_part", "local_scope": True},
+        "plan": {
+            "extracted_name": f"_{symbol}_part",
+            "local_scope": True,
+            "span": {"start": 12, "end": 28},
+        },
         "evidence": {"ccn_removed": 6, "slice_nloc": 20},
         "impact_delta": 1.0,
         "effort_bucket": "S",
@@ -66,7 +70,8 @@ def _finding(
         "function_name": function_name,
         "line_start": 10,
         "line_end": 30,
-        "details": {},
+        # Past Fix first's size floor, so the composed plan is a candidate.
+        "details": {"ccn": 16},
         "health_impact": impact,
         "reason": "seeded",
         "dimension": "defect",

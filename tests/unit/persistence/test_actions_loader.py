@@ -34,6 +34,8 @@ from repowise.core.persistence.models import (
 from tests.unit.persistence.helpers import insert_repo
 
 ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+#: A size finding's deepest nested block: Fix first's first concrete step.
+DEEP = json.dumps({"deepest_block": {"start": 20, "end": 30}, "max_nesting": 4})
 NOW = ANCHOR + timedelta(days=1)
 
 
@@ -66,7 +68,8 @@ async def _seed(session) -> str:
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="change_entropy",
                           severity="high", health_impact=3.0),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="complex_method",
-                          severity="high", function_name="run", health_impact=1.0),
+                          severity="high", function_name="run", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
         ]
     )
     add(
@@ -97,7 +100,8 @@ async def _seed(session) -> str:
                                    file_path="src/hist.py", symbol=None,
                                    attribution_basis="added_lines"),
             HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
-                          severity="high", function_name="build", health_impact=1.0),
+                          severity="high", function_name="build", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
             HealthFinding(repository_id=rid, file_path="src/touched.py", biomarker_type="long_method",
                           severity="high", function_name="x", health_impact=1.0),
         ]

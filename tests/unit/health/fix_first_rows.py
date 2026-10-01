@@ -29,10 +29,12 @@ FINDINGS = [
     {"file_path": "src/core.py", "biomarker_type": "complex_method", "severity": "high",
      "function_name": "run", "line_start": 10, "line_end": 60, "health_impact": 1.0,
      "reason": "run has cyclomatic complexity 14", "public_id": "finding_c1",
-     "dimension": "defect", "details": {"ccn": 14, "nloc": 50, "max_nesting": 4}},
+     "dimension": "defect",
+     "details": {"ccn": 14, "nloc": 50, "max_nesting": 4, "deepest_block": {"start": 30, "end": 44}}},
     {"file_path": "src/plain.py", "biomarker_type": "nested_complexity", "severity": "medium",
      "function_name": "walk", "line_start": 5, "line_end": 40, "health_impact": 0.6,
-     "reason": "walk nests 5 levels deep", "public_id": "finding_n1", "dimension": "defect"},
+     "reason": "walk nests 5 levels deep", "public_id": "finding_n1", "dimension": "defect",
+     "details": {"max_nesting": 5, "deepest_block": {"start": 18, "end": 26}}},
     # Only history: context, never an item.
     {"file_path": "src/hist.py", "biomarker_type": "co_change_scatter", "severity": "high",
      "health_impact": 1.2, "reason": "co-changes with 20 files", "public_id": "finding_h2",
@@ -90,6 +92,8 @@ PLANS = [
               "suggested_name": "sum_rows"}},
     {"public_id": "refac2_tiny", "refactoring_type": "extract_method",
      "evidence": {"slice_nloc": 2, "ccn_removed": 1}, "plan": {"span": {"start": 40, "end": 41}}},
+    {"public_id": "refac2_t", "refactoring_type": "extract_method",
+     "evidence": {"slice_nloc": 9, "ccn_removed": 2}, "plan": {"span": {"start": 30, "end": 45}}},
 ]
 
 

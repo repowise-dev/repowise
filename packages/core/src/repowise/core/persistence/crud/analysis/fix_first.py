@@ -327,21 +327,33 @@ def _steps(refactoring: list[Any]) -> list[dict[str, Any]]:
     return [s for r in refactoring if r.details for s in r.details.get("steps") or []]
 
 
-async def _plans(session: AsyncSession, repo_id: str, steps: list[dict[str, Any]]) -> list[Any]:
-    """The plans those steps name: span, signature, evidence."""
+async def _plans(
+    session: AsyncSession, repo_id: str, steps: list[dict[str, Any]], files: set[str]
+) -> list[Any]:
+    """The plans those steps name (span, signature, evidence), and the open
+    Extract Method plans in ``files``, where a finding with no plan of its own
+    takes its first concrete step from."""
     ids = {s.get("plan_id") for s in steps if s.get("plan_id")}
-    if not ids:
+    s = RefactoringSuggestion
+    named = s.public_id.in_(ids) if ids else None
+    extractions = (
+        and_(s.refactoring_type == "extract_method", s.status == "open", s.file_path.in_(files))
+        if files
+        else None
+    )
+    wanted = [c for c in (named, extractions) if c is not None]
+    if not wanted:
         return []
     return _plain(
         await session.execute(
             select(
-                RefactoringSuggestion.public_id,
-                RefactoringSuggestion.evidence_json,
-                RefactoringSuggestion.plan_json,
-            ).where(
-                RefactoringSuggestion.repository_id == repo_id,
-                RefactoringSuggestion.public_id.in_(ids),
-            )
+                s.public_id,
+                s.refactoring_type,
+                s.file_path,
+                s.target_symbol,
+                s.evidence_json,
+                s.plan_json,
+            ).where(s.repository_id == repo_id, or_(*wanted))
         )
     )
 
@@ -438,7 +450,7 @@ async def _build(
         ],
         refactoring=refactoring,
         performance=performance,
-        plans=await _plans(session, repository_id, steps),
+        plans=await _plans(session, repository_id, steps, full),
         limit=limit,
         scope=scope,
         item_id=item_id,

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from repowise.core.analysis.actions.build import ABSENT, build_repo_facts
 from repowise.core.persistence.crud.analysis.actions import load_repo_facts
 from repowise.core.persistence.models import DeadCodeFinding
-from tests.unit.persistence.test_actions_loader import ANCHOR, _seed
+from tests.unit.persistence.test_actions_loader import ANCHOR, DEEP, _seed
 
 # SQLite hands datetimes back naive; the rows match it, and the column defaults.
 _T = ANCHOR.replace(tzinfo=None)
@@ -50,9 +50,11 @@ HEALTH_FINDINGS = [
     {"file_path": "src/core.py", "biomarker_type": "change_entropy", "severity": "high",
      "health_impact": 3.0},
     {"file_path": "src/core.py", "biomarker_type": "complex_method", "severity": "high",
-     "function_name": "run", "health_impact": 1.0},
+     "function_name": "run", "health_impact": 1.0, "line_start": 10, "line_end": 60,
+     "details_json": DEEP},
     {"file_path": "src/new.py", "biomarker_type": "complex_method", "severity": "high",
-     "function_name": "build", "health_impact": 1.0},
+     "function_name": "build", "health_impact": 1.0, "line_start": 10, "line_end": 60,
+     "details_json": DEEP},
     {"file_path": "src/touched.py", "biomarker_type": "long_method", "severity": "high",
      "function_name": "x", "health_impact": 1.0},
 ]

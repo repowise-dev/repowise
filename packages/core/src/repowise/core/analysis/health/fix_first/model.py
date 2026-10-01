@@ -51,6 +51,7 @@ FixExclusion = Literal[
     "deprecated",
     "inherent_dispatch",
     "small_function",
+    "no_concrete_step",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 
