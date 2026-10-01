@@ -69,7 +69,7 @@ async def test_an_unchanged_plan_keeps_its_row_and_its_public_id(async_session):
 
     assert len(before) == 2
     assert after == before, "a second analysis of unchanged source must not mint new rows"
-    assert all(key.startswith("refac2_") for key in after)
+    assert all(key.startswith("refac3_") for key in after)
 
 
 @pytest.mark.asyncio

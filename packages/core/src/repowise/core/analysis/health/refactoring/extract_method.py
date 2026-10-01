@@ -7,16 +7,29 @@ changing behaviour, and infers that helper's signature (IN parameters,
 OUT return). This detector turns the best such span into one structured
 ``RefactoringSuggestion`` per flagged function.
 
-``impact_delta`` is what the extraction itself recovers, not the whole
-finding. The residual method keeps ``ccn - ccn_removed`` decision points and
-``nloc - slice_nloc + 1`` lines (the call replaces the span), the new helper
-carries ``ccn_removed + 1`` and ``slice_nloc``, and each is re-graded with the
-source biomarker's own severity rule. The finding's impact is credited in
-proportion to the severity deduction that disappears: all of it when both
-shapes fall below the biomarker's bar, the band difference when the residual
-only drops a band, and nothing when a CCN 209 method sheds 6 and stays
-critical. A function that needs several extractions therefore shows several
-partial steps rather than one step claiming the full finding.
+``impact_delta`` is the share of the finding the extraction itself removes,
+not the whole finding: the share of what the finding measures that moves into
+the helper, applied to the finding's ``health_impact``. That is
+``ccn_removed / ccn`` for ``complex_method``, ``slice_nloc / nloc`` for
+``large_method`` and the larger of the two for ``brain_method``, capped at 1
+(:func:`recovered_share`). Both line counts follow the walker's NLOC rule, so
+comments credit nothing. Crediting the whole finding whenever the residual and
+the helper both fell under the biomarker's bar let a two-line span in a
+function barely over the bar claim all of it, and rank first on the repo.
+
+A span is only offered when it is worth doing (:func:`_worth_extracting`): it
+removes at least two decision points, or, for a ``large_method`` finding, lifts
+at least 12 code lines, and the helper it creates would not carry the finding
+at the function's own severity or worse (lifting nearly the whole body moves
+the smell, it does not split it).
+When the best span misses that floor the next-best one that clears it is
+offered instead.
+
+A JSX function component whose decision points sit mostly in its markup
+(conditional spreads, ``&&`` and ternaries in attributes or children, template
+ternaries) is not offered one: that branching is prop plumbing, and a helper
+would only move it. CCN is left alone because it feeds the calibrated defect
+score; the gate is on eligibility.
 
 The candidate spans + IN/OUT come from ``dataflow.find_extractions``; this
 module only matches each analysed function to the biomarker finding that flags
@@ -33,7 +46,7 @@ Plan shape (open dict, no migration):
   value: a name derived from the enclosing function described the context
   rather than the span, and collided with every sibling plan in the file.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
-  complexity the residual method sheds.
+  complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
   private helper, the public method's signature is unchanged), so nothing
   outside the file moves. This is a *categorical* statement, not a count: it
@@ -51,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 from ..biomarkers.brain_method import BrainMethodDetector
 from ..biomarkers.complex_method import ComplexMethodDetector
 from ..biomarkers.large_method import LargeMethodDetector
+from ..complexity.cyclomatic import _is_boolean_operator
 from ..complexity.languages import get_language_map
 from ..dataflow import find_extractions
 from ..scoring import severity_deduction
@@ -59,6 +73,7 @@ from .naming import identifier_slug
 from .registry import RefactoringDetector, effort_bucket, register
 
 if TYPE_CHECKING:
+    from ..complexity.languages import LanguageNodeMap
     from ..dataflow import Extraction, FunctionAnalysis
     from ..models import Severity
 
@@ -73,12 +88,31 @@ _UNINFORMATIVE_OUT = frozenset(
 # list never exceeds (and stays consistent with) what health surfaces.
 _SOURCE_BIOMARKERS = ("brain_method", "large_method", "complex_method")
 
-# Each source biomarker's own ``(ccn, nloc) -> severity`` rule.
+# Each source biomarker's own ``(ccn, nloc) -> severity`` rule, for the helper.
 _SEVERITY_RULE: dict[str, Callable[[int, int], Severity | None]] = {
     "brain_method": BrainMethodDetector.severity_for,
     "large_method": LargeMethodDetector.severity_for,
     "complex_method": ComplexMethodDetector.severity_for,
 }
+
+# Minimum worth. Census of the 1,162 stored plans on this repo's index: the best
+# span of 408 missed this floor (2 code lines lifting 2 decision points out of
+# ``walk_file`` was the #1 plan), 187 of those had a next-best span that clears
+# it and 221 were dropped. A size-only bar for ``large_method`` keeps big
+# low-branching spans that do shrink the finding. Table in the commit that set
+# it.
+_MIN_CCN_REMOVED = 2
+_MIN_LARGE_SPAN_NLOC = 12
+
+# ``high`` confidence also needs the helper to take a real share of the
+# function: below a tenth (a 2-point span out of a CCN 249 function) the step
+# is safe but moves almost nothing.
+_HIGH_MIN_SHARE = 0.1
+
+# Ancestors that make a decision point JSX prop plumbing.
+_JSX_PLUMBING = frozenset(
+    {"jsx_expression", "jsx_attribute", "spread_element", "template_substitution"}
+)
 
 
 @register
@@ -99,11 +133,21 @@ class ExtractMethodDetector(RefactoringDetector):
             if not matched:
                 # Only suggest where a method biomarker actually fired.
                 continue
-            candidates = find_extractions(analysis, lmap)
-            if not candidates:
+            if jsx_plumbing_dominates(analysis.fn_node, lmap):
                 continue
-            best = candidates[0]  # already best-first
-            impact, source = self._impact_for(analysis, best, matched)
+            markers = {getattr(f, "biomarker_type", "") for f in matched}
+            # Best-first, so the first span worth doing is the strongest one.
+            best = next(
+                (
+                    c
+                    for c in find_extractions(analysis, lmap)
+                    if _worth_extracting(analysis, c, markers)
+                ),
+                None,
+            )
+            if best is None:
+                continue
+            impact, share, source = self._impact_for(analysis, best, matched)
             out.append(
                 RefactoringSuggestion(
                     refactoring_type=self.name,
@@ -124,7 +168,7 @@ class ExtractMethodDetector(RefactoringDetector):
                     impact_delta=round(float(impact), 3),
                     effort_bucket=effort_bucket(best.slice_nloc),
                     blast_radius={"scope": "local"},
-                    confidence=self._confidence(best),
+                    confidence=self._confidence(best, share),
                     source_biomarker=source,
                 )
             )
@@ -153,17 +197,17 @@ class ExtractMethodDetector(RefactoringDetector):
     @staticmethod
     def _impact_for(
         analysis: FunctionAnalysis, extraction: Extraction, findings: list[Any]
-    ) -> tuple[float, str]:
-        """Impact *extraction* recovers + the source biomarker it recovers it
-        from. The finding recovering the most wins; when none recovers
-        anything, the largest finding still names the cause."""
-        best: tuple[float, float, str] = (-1.0, -1.0, "")
+    ) -> tuple[float, float, str]:
+        """Impact *extraction* recovers, its share of the finding, and the source
+        biomarker. One finding is credited, the one recovering the most: the
+        composer counts a finding once across steps."""
+        best: tuple[float, float, float, str] = (-1.0, 0.0, -1.0, "")
         for f in findings:
             biomarker = getattr(f, "biomarker_type", "")
             full = float(getattr(f, "health_impact", 0.0) or 0.0)
-            recovered = full * _recovered_fraction(biomarker, analysis, extraction)
-            best = max(best, (recovered, full, biomarker))
-        return best[0], best[2]
+            share = recovered_share(biomarker, analysis, extraction)
+            best = max(best, (full * share, share, full, biomarker))
+        return best[0], best[1], best[3]
 
     @staticmethod
     def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str | None:
@@ -196,34 +240,81 @@ class ExtractMethodDetector(RefactoringDetector):
         return None
 
     @staticmethod
-    def _confidence(extraction: Extraction) -> str:
-        """High when the extraction is unambiguous -- it removes several decision
-        points with a clean signature; medium otherwise. (Every emitted span is
+    def _confidence(extraction: Extraction, share: float) -> str:
+        """High when the extraction is unambiguous and worth handing off: it
+        removes several decision points with a clean signature and takes a real
+        share of the function. Medium otherwise. (Every emitted span is
         single-exit with at most one return by construction.)"""
-        if extraction.ccn_removed >= 2 and len(extraction.params) <= 4:
+        if (
+            extraction.ccn_removed >= _MIN_CCN_REMOVED
+            and len(extraction.params) <= 4
+            and share >= _HIGH_MIN_SHARE
+        ):
             return "high"
         return "medium"
 
 
-def _recovered_fraction(
+def recovered_share(
     biomarker: str, analysis: FunctionAnalysis, extraction: Extraction
 ) -> float:
-    """Share of *biomarker*'s deduction that applying *extraction* removes.
+    """Share of what *biomarker* measures that *extraction* moves into the helper.
 
-    Both post-extraction shapes (the residual method and the new helper) are
-    graded with the biomarker's own rule; whatever deduction they still earn
-    is subtracted. Brain Method's file-level centrality gate is unchanged by a
-    local extraction, so only its size/complexity bar is re-checked.
+    Decision points for ``complex_method``, code lines for ``large_method``
+    (the walker's NLOC rule on both sides), the larger of the two for
+    ``brain_method``, capped at 1. Per biomarker because the plain maximum let
+    2 decision points out of a CCN 3, 292-line method claim two thirds of a
+    size finding.
     """
-    rule = _SEVERITY_RULE[biomarker]
-    before = rule(analysis.ccn, analysis.nloc)
-    if before is None:
-        # These metrics do not reproduce the finding, so there is no band to
-        # re-grade against; keep the finding's own impact.
-        return 1.0
-    residual = rule(
-        analysis.ccn - extraction.ccn_removed, analysis.nloc - extraction.slice_nloc + 1
-    )
-    helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
-    remaining = sum(severity_deduction(s) for s in (residual, helper) if s is not None)
-    return max(0.0, 1.0 - remaining / severity_deduction(before))
+    ccn_share = extraction.ccn_removed / analysis.ccn if analysis.ccn > 0 else 0.0
+    nloc_share = extraction.slice_nloc / analysis.nloc if analysis.nloc > 0 else 0.0
+    if biomarker == "complex_method":
+        return min(1.0, ccn_share)
+    if biomarker == "large_method":
+        return min(1.0, nloc_share)
+    return min(1.0, max(ccn_share, nloc_share))
+
+
+def _worth_extracting(
+    analysis: FunctionAnalysis, extraction: Extraction, markers: set[str]
+) -> bool:
+    """The minimum-worth floor (the slicer already demands 5 code lines)."""
+    for marker in markers:
+        rule = _SEVERITY_RULE[marker]
+        helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
+        before = rule(analysis.ccn, analysis.nloc)
+        # The helper inherits the finding undiminished: the smell moved.
+        if helper is not None and (
+            before is None or severity_deduction(helper) >= severity_deduction(before)
+        ):
+            return False
+    if extraction.ccn_removed >= _MIN_CCN_REMOVED:
+        return True
+    return "large_method" in markers and extraction.slice_nloc >= _MIN_LARGE_SPAN_NLOC
+
+
+def jsx_plumbing_dominates(fn_node: Any, lmap: LanguageNodeMap) -> bool:
+    """True for a function rendering JSX whose decision points sit mostly in it.
+
+    Counts decision points the way the CCN walker does (nested functions are
+    their own; arrow functions count toward this one) and the share of them
+    under a JSX expression or attribute, an object spread or a template
+    substitution.
+    """
+    if fn_node is None:
+        return False
+    body = fn_node.child_by_field_name("body") or fn_node
+    kinds = lmap.branch_kinds | lmap.loop_kinds | lmap.case_kinds | lmap.catch_kinds
+    total = plumbing = 0
+    has_jsx = False
+    stack = [(child, False) for child in body.children]
+    while stack:
+        node, inside = stack.pop()
+        if node.type in lmap.function_kinds:
+            continue
+        has_jsx = has_jsx or node.type.startswith("jsx_")
+        if (node.is_named and node.type in kinds) or _is_boolean_operator(node, lmap):
+            total += 1
+            plumbing += inside
+        inside = inside or node.type in _JSX_PLUMBING
+        stack.extend((child, inside) for child in node.children)
+    return has_jsx and plumbing * 2 > total

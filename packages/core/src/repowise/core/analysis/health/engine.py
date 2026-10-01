@@ -111,6 +111,12 @@ log = structlog.get_logger(__name__)
 # moved 2 -> 3 with it: every performance id now carries the ``perf3_`` prefix,
 # and a held ``perf2_`` id reports ``stale_model`` instead of a silent miss.
 #
+# v37 (also): refactoring plans credit what they remove. Extract Method, Extract
+# Class (``god_class``) and Extract Helper claim the share of the finding that
+# moves, a span must clear a minimum-worth floor, ``slice_nloc`` counts code
+# lines only, and JSX prop plumbing earns no Extract Method. Stored plans and
+# opportunities change, and ``REFACTORING_MODEL_VERSION`` moved with this.
+#
 # v36 (also): which files are tests changed (``repowise.core.test_paths``).
 # Compound directories headed by a test word (``e2e-tests/``, ``pkg_tests/``,
 # ``integration_test/``) became test trees, and ``test``/``.test.`` filenames

@@ -51,7 +51,7 @@ For Extract Method:
   single informative OUT value, else absent). It is an editable starting point
   and is not unique within a file.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
-  complexity the residual method sheds.
+  complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is
   categorical rather than counted: extraction adds a private helper and changes
   no signature, so nothing outside the file moves. It replaced a hardcoded

@@ -13,7 +13,7 @@
       "lead_biomarker": null,
       "lead_refactoring_type": "split_file",
       "mechanical_steps": 0,
-      "opportunity_id": "refop2_f8df0afac1fe67c55d05",
+      "opportunity_id": "refop3_f99fabfc0113b941a05f",
       "rank_factors": {
         "benefit": 1.6931,
         "cost": 3.0,
@@ -23,7 +23,7 @@
       },
       "rank_score": 0.4233,
       "recoverable_health": 0.0,
-      "refactoring_model_version": 2,
+      "refactoring_model_version": 3,
       "step_count": 1,
       "steps": [
         {
@@ -50,7 +50,7 @@
           "effort_bucket": "L",
           "file_path": "inventory.go",
           "impact_delta": 0.0,
-          "plan_id": "refac2_396717806264bd16aab8",
+          "plan_id": "refac3_396717806264bd16aab8",
           "refactoring_type": "split_file",
           "relocated_by": null,
           "source_biomarker": "",
@@ -84,17 +84,17 @@
       "lead_biomarker": "complex_method",
       "lead_refactoring_type": "extract_method",
       "mechanical_steps": 1,
-      "opportunity_id": "refop2_d82fe75fc83659cefa14",
+      "opportunity_id": "refop3_6e81e602a1892b6fa13d",
       "rank_factors": {
-        "benefit": 0.605,
+        "benefit": 0.256,
         "cost": 1.0,
         "mechanical_share": 0.5,
         "primary_problem": 0.5,
         "risk": 0.0
       },
-      "rank_score": 0.605,
-      "recoverable_health": 0.605,
-      "refactoring_model_version": 2,
+      "rank_score": 0.256,
+      "recoverable_health": 0.256,
+      "refactoring_model_version": 3,
       "step_count": 1,
       "steps": [
         {
@@ -115,8 +115,8 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "account.ts",
-          "impact_delta": 0.605,
-          "plan_id": "refac2_a5f94bcfa0d5e0e24f37",
+          "impact_delta": 0.256,
+          "plan_id": "refac3_a5f94bcfa0d5e0e24f37",
           "refactoring_type": "extract_method",
           "relocated_by": null,
           "source_biomarker": "complex_method",
@@ -129,11 +129,11 @@
           "value": 1.0
         },
         {
-          "factor": "benefit",
-          "value": 0.605
+          "factor": "mechanical_share",
+          "value": 0.5
         },
         {
-          "factor": "mechanical_share",
+          "factor": "primary_problem",
           "value": 0.5
         }
       ]
@@ -151,17 +151,17 @@
       "lead_biomarker": "complex_method",
       "lead_refactoring_type": "extract_method",
       "mechanical_steps": 1,
-      "opportunity_id": "refop2_443f00cfefc5d4f86685",
+      "opportunity_id": "refop3_508583d74573db062900",
       "rank_factors": {
-        "benefit": 0.605,
+        "benefit": 0.256,
         "cost": 1.0,
         "mechanical_share": 0.5,
         "primary_problem": 0.5,
         "risk": 0.0
       },
-      "rank_score": 0.605,
-      "recoverable_health": 0.605,
-      "refactoring_model_version": 2,
+      "rank_score": 0.256,
+      "recoverable_health": 0.256,
+      "refactoring_model_version": 3,
       "step_count": 1,
       "steps": [
         {
@@ -182,8 +182,8 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "workspace.ts",
-          "impact_delta": 0.605,
-          "plan_id": "refac2_b21dea1501a82eec255a",
+          "impact_delta": 0.256,
+          "plan_id": "refac3_b21dea1501a82eec255a",
           "refactoring_type": "extract_method",
           "relocated_by": null,
           "source_biomarker": "complex_method",
@@ -196,11 +196,11 @@
           "value": 1.0
         },
         {
-          "factor": "benefit",
-          "value": 0.605
+          "factor": "mechanical_share",
+          "value": 0.5
         },
         {
-          "factor": "mechanical_share",
+          "factor": "primary_problem",
           "value": 0.5
         }
       ]
@@ -216,7 +216,7 @@
       "effort_bucket": "S",
       "evidence": [
         {
-          "plan_id": "refac2_aa609dc289a6e9572306",
+          "plan_id": "refac3_aa609dc289a6e9572306",
           "refactoring_type": "extract_helper",
           "source_biomarker": "dry_violation",
           "summary": {
@@ -229,7 +229,7 @@
           "target_symbol": "handlers.py:25-45"
         },
         {
-          "plan_id": "refac2_8ea65569516929f43f5b",
+          "plan_id": "refac3_8ea65569516929f43f5b",
           "refactoring_type": "extract_helper",
           "source_biomarker": "dry_violation",
           "summary": {
@@ -247,17 +247,17 @@
       "lead_biomarker": "dry_violation",
       "lead_refactoring_type": "extract_method",
       "mechanical_steps": 3,
-      "opportunity_id": "refop2_1a90a90d31e0cde5d50b",
+      "opportunity_id": "refop3_a0a4fa71a224c520f90b",
       "rank_factors": {
-        "benefit": 0.75,
+        "benefit": 0.249,
         "cost": 3.0,
         "mechanical_share": 0.5,
         "primary_problem": 0.0,
         "risk": 0.0
       },
-      "rank_score": 0.2812,
-      "recoverable_health": 0.75,
-      "refactoring_model_version": 2,
+      "rank_score": 0.0934,
+      "recoverable_health": 0.249,
+      "refactoring_model_version": 3,
       "step_count": 3,
       "steps": [
         {
@@ -278,8 +278,8 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "handlers.py",
-          "impact_delta": 0.25,
-          "plan_id": "refac2_cdc5177783ea57d763e5",
+          "impact_delta": 0.083,
+          "plan_id": "refac3_cdc5177783ea57d763e5",
           "refactoring_type": "extract_method",
           "relocated_by": null,
           "source_biomarker": "complex_method",
@@ -303,8 +303,8 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "handlers.py",
-          "impact_delta": 0.25,
-          "plan_id": "refac2_48c888afc5af0d975522",
+          "impact_delta": 0.083,
+          "plan_id": "refac3_48c888afc5af0d975522",
           "refactoring_type": "extract_method",
           "relocated_by": null,
           "source_biomarker": "complex_method",
@@ -328,8 +328,8 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "handlers.py",
-          "impact_delta": 0.25,
-          "plan_id": "refac2_4ecbf32a9c6419829a56",
+          "impact_delta": 0.083,
+          "plan_id": "refac3_4ecbf32a9c6419829a56",
           "refactoring_type": "extract_method",
           "relocated_by": null,
           "source_biomarker": "complex_method",
@@ -342,12 +342,12 @@
           "value": 3.0
         },
         {
-          "factor": "benefit",
-          "value": 0.75
-        },
-        {
           "factor": "mechanical_share",
           "value": 0.5
+        },
+        {
+          "factor": "benefit",
+          "value": 0.249
         }
       ]
     }

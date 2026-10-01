@@ -321,7 +321,7 @@ def test_the_id_is_built_over_the_member_plan_ids() -> None:
     assert opportunity.opportunity_id == opportunity_public_id(
         [step.plan_id for step in opportunity.steps], "svc/orders.py"
     )
-    assert opportunity.opportunity_id.startswith("refop2_")
+    assert opportunity.opportunity_id.startswith("refop3_")
 
 
 def test_the_id_survives_a_uniform_line_shift() -> None:

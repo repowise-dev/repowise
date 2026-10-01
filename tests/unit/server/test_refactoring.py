@@ -694,7 +694,7 @@ async def test_plan_status_round_trips_and_hides_the_row(client: AsyncClient, ap
     assert body["status"] == "acknowledged"
     assert body["status_reason"] == "user"
     assert body["status_changed_at"] is not None
-    assert body["public_id"].startswith("refac2_")
+    assert body["public_id"].startswith("refac3_")
 
     resp = await client.patch(
         f"/api/repos/{repo_id}/refactoring/{target['id']}/status",

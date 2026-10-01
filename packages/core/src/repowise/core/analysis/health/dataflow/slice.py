@@ -31,6 +31,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..complexity.nloc import _code_line_numbers
+
 if TYPE_CHECKING:
     from tree_sitter import Node
 
@@ -40,7 +42,9 @@ if TYPE_CHECKING:
 
 # Gates (precision-first; tuned to suppress trivial or unwieldy extractions).
 _MIN_STMTS = 2  # at least two statements
-_MIN_SLICE_NLOC = 6  # the extracted helper is substantial
+# The extracted helper is substantial: code lines, the walker's NLOC rule, so a
+# span padded with comments does not clear it.
+_MIN_SLICE_NLOC = 5
 _MIN_CCN_REMOVED = 1  # extraction must remove a real decision point
 _MAX_PARAMS = 5  # too many ins => the span is not cohesive
 _MAX_RETURNS = 1  # a single clean return (v1); multi-output is future work
@@ -54,9 +58,10 @@ class Extraction:
 
     ``start_line`` / ``end_line`` bound the span (1-indexed, inclusive).
     ``params`` are the inferred IN variables, ``returns`` the inferred OUT
-    variable(s). ``slice_nloc`` is the span's statement line count and
-    ``ccn_removed`` the decision points it carries (the complexity the residual
-    method sheds).
+    variable(s). ``slice_nloc`` is the span's code lines, counted with the
+    walker's NLOC rule (blank, comment-only and docstring lines excluded, as in
+    the function's own ``nloc``), and ``ccn_removed`` the decision points it
+    carries (the complexity the residual method sheds).
     """
 
     start_line: int
@@ -114,6 +119,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         else None
     )
 
+    lines = _function_lines(fn_node)
     out: list[Extraction] = []
     evaluated = 0
     for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
@@ -132,12 +138,16 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             # same reason: the check is a subtree walk, and asking it per
             # candidate span would put the O(n^2 * subtree) cost straight back.
             nested_prefix = [0]
+            code_prefix = [0]
             for st in stmts:
                 d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
                 nested_prefix.append(
                     nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
+                )
+                code_prefix.append(
+                    code_prefix[-1] + len(_code_line_numbers(st, lines, drop_docstrings=True))
                 )
         for i in range(n):
             for j in range(i, n):
@@ -160,10 +170,10 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 has_jump = jump_prefix[j + 1] > jump_prefix[i]
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
-                span = stmts[i : j + 1]
-                slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
+                slice_nloc = code_prefix[j + 1] - code_prefix[i]
                 if slice_nloc < _MIN_SLICE_NLOC:
                     continue
+                span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
                 params, returns = _infer_in_out(def_lines, use_lines, s, e)
@@ -190,6 +200,16 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                     )
                 )
     return _sorted(out)
+
+
+def _function_lines(fn_node: Node) -> list[str]:
+    """Source rows indexed by absolute row, rebuilt from the function's own text.
+
+    Lets the walker's NLOC rule (``_code_line_numbers``) run here without the
+    file's bytes; rows above the function are never read, so they stay empty.
+    """
+    text = (fn_node.text or b"").decode("utf-8", errors="replace")
+    return [""] * fn_node.start_point[0] + text.splitlines()
 
 
 def _sorted(candidates: list[Extraction]) -> list[Extraction]:

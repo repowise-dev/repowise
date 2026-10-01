@@ -12,14 +12,14 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
-from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.refactoring import detect_refactorings
 from repowise.core.analysis.health.refactoring.extract_method import (
     ExtractMethodDetector,
-    _recovered_fraction,
+    _worth_extracting,
+    jsx_plumbing_dominates,
+    recovered_share,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
-from repowise.core.analysis.health.scoring import severity_deduction
 
 # A long function whose tail (compute-average loop) is a clean extraction.
 _PROCESS = """
@@ -89,7 +89,7 @@ def test_finds_clean_extraction_with_inferred_signature():
     # Single clean return, bounded params.
     assert len(best.returns) <= 1
     assert best.ccn_removed >= 1
-    assert best.slice_nloc >= 6
+    assert best.slice_nloc >= 5
 
 
 def test_no_extraction_when_every_span_has_a_jump():
@@ -357,7 +357,11 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert s.refactoring_type == "extract_method"
     assert s.target_symbol == "process"
     assert s.source_biomarker == "complex_method"
-    assert s.impact_delta == 1.5
+    # Credited the share of the function's decision points the span moves.
+    fn = _first(_PROCESS)
+    share = s.evidence["ccn_removed"] / fn.ccn
+    assert 0 < share < 1
+    assert s.impact_delta == round(1.5 * share, 3)
     # Plan shape is the locked schema.
     assert set(s.plan) == {"span", "params", "returns", "suggested_name"}
     assert set(s.plan["span"]) == {"start", "end"}
@@ -449,7 +453,7 @@ def test_detector_is_deterministic():
         assert run() == first
 
 
-# -- honest impact --------------------------------------------------------------
+# -- proportional impact and minimum worth ---------------------------------------
 
 
 @dataclass
@@ -464,44 +468,143 @@ class _Span:
     slice_nloc: int
 
 
-def test_extraction_that_clears_the_bar_recovers_the_whole_finding():
-    # CCN 12 -> 6 residual, helper CCN 7: both below complex_method's bar of 9.
-    assert _recovered_fraction("complex_method", _Shape(12, 40), _Span(6, 15)) == 1.0
+def test_share_follows_what_the_biomarker_measures():
+    fn, span = _Shape(12, 40), _Span(6, 10)
+    assert recovered_share("complex_method", fn, span) == 0.5
+    assert recovered_share("large_method", fn, span) == 0.25
+    assert recovered_share("brain_method", fn, span) == 0.5
+    # Capped: a span cannot recover more than the whole finding.
+    assert recovered_share("large_method", _Shape(3, 10), _Span(2, 20)) == 1.0
 
 
-def test_extraction_that_only_drops_a_band_recovers_the_band_difference():
-    # CCN 15 (high) -> 12 (medium): still a complex method, one band lower.
-    got = _recovered_fraction("complex_method", _Shape(15, 40), _Span(3, 8))
-    expected = 1 - severity_deduction(Severity.MEDIUM) / severity_deduction(Severity.HIGH)
-    assert got == pytest.approx(expected)
+def test_two_decision_points_out_of_a_tiny_size_finding_claim_little():
+    # 2 decision points out of a CCN 3, 292-line method: the plain maximum of
+    # the two shares claimed two thirds of a size finding for 16 lines.
+    share = recovered_share("large_method", _Shape(3, 292), _Span(2, 16))
+    assert share == pytest.approx(16 / 292)
 
 
-def test_extraction_that_stays_in_band_recovers_nothing():
-    # CCN 209 -> 203 stays critical for both brain_method and complex_method.
-    assert _recovered_fraction("brain_method", _Shape(209, 900), _Span(6, 20)) == 0.0
-    assert _recovered_fraction("complex_method", _Shape(209, 900), _Span(6, 20)) == 0.0
+def test_floor_drops_a_one_point_span_unless_it_is_a_large_size_lift():
+    fn = _Shape(12, 80)
+    assert not _worth_extracting(fn, _Span(1, 8), {"complex_method"})
+    assert _worth_extracting(fn, _Span(2, 5), {"complex_method"})
+    assert not _worth_extracting(fn, _Span(1, 11), {"large_method"})
+    assert _worth_extracting(fn, _Span(1, 12), {"large_method"})
 
 
-def test_helper_that_inherits_the_smell_is_charged_against_the_recovery():
-    # 130-line method (high) lifts 100 lines out: the residual clears the bar
-    # but the helper is itself a 100-line large_method (medium).
-    got = _recovered_fraction("large_method", _Shape(12, 130), _Span(6, 100))
-    assert 0.0 < got < 1.0
+def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
+    # CCN 13 -> helper CCN 13: the complex method moved, it did not split.
+    assert not _worth_extracting(_Shape(13, 36), _Span(12, 30), {"complex_method"})
+    # CCN 25 (critical) -> helper CCN 9 (medium): a real partial step.
+    assert _worth_extracting(_Shape(25, 117), _Span(8, 40), {"complex_method"})
 
 
-def test_detector_credits_only_what_the_best_extraction_recovers():
-    # The finding claims a CCN far above what _PROCESS's best span can clear,
-    # so the plan still stands but recovers nothing.
-    fns = _analyses(_PROCESS)
-    fn = fns[0]
-    fn.ccn, fn.nloc = 40, 18
+def test_detector_offers_the_next_best_span_when_the_best_misses_the_floor():
+    fn = _first(_PROCESS)
+    lmap = get_language_map("python")
+    candidates = find_extractions(fn, lmap)
+    worth = [c for c in candidates if _worth_extracting(fn, c, {"complex_method"})]
+    assert worth
+    findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
+    (s,) = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))
+    assert s.plan["span"] == {"start": worth[0].start_line, "end": worth[0].end_line}
+
+
+def test_slice_nloc_counts_code_lines_not_comments():
+    src = """
+        def tally(items, limit):
+            total = 0
+            # Comments inside the span are documentation, not code to move.
+            # They used to count toward the span's size and its credit.
+            for x in items:
+                # skip what is over the limit
+                if x > limit:
+                    total += limit
+                else:
+                    total += x
+            return total
+        """
+    fn = _first(src)
+    lmap = get_language_map("python")
+    loop = [c for c in find_extractions(fn, lmap) if c.end_line - c.start_line >= 7]
+    assert loop
+    assert all(c.slice_nloc <= c.end_line - c.start_line + 1 - 2 for c in loop)
+
+
+def test_confidence_high_needs_a_real_share():
+    findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
+    fn = _first(_PROCESS)
+    (s,) = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))
+    assert s.confidence == "high"
+    # The same span out of a much larger function moves almost nothing.
+    fn.ccn = 250
     ctx = RefactoringContext(
-        file_path="m.py",
-        language="python",
-        nloc=100,
-        findings=[_Finding("complex_method", "process", line_start=2, health_impact=2.0)],
-        function_analyses=[fn],
+        file_path="m.py", language="python", nloc=100, findings=findings, function_analyses=[fn]
     )
     (s,) = ExtractMethodDetector().detect(ctx)
-    assert s.source_biomarker == "complex_method"
-    assert s.impact_delta == 0.0
+    assert s.confidence == "medium"
+
+
+def _parse(lang: str, src: str):
+    try:
+        from tree_sitter import Parser
+
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip("tree-sitter missing")
+    grammar = _get_language(lang)
+    if grammar is None:
+        pytest.skip(f"tree-sitter language pack missing for {lang}")
+    root = Parser(grammar).parse(textwrap.dedent(src).encode()).root_node
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "function_declaration":
+            return node
+        stack.extend(node.children)
+    raise AssertionError("no function")
+
+
+def test_jsx_prop_plumbing_is_not_offered_an_extraction():
+    # TriageTab's shape: the branching is conditional spreads and template
+    # ternaries wiring props, not logic a helper would simplify.
+    node = _parse(
+        "tsx",
+        """
+        function Tab({ id, scope, counts, lens }) {
+          const key = `${id}${scope ? `:${scope}` : ""}`;
+          return (
+            <View
+              k={key}
+              {...(scope ? { scope } : {})}
+              {...(counts ? { counts } : {})}
+              {...(lens ? { lens } : {})}
+            />
+          );
+        }
+        """,
+    )
+    assert jsx_plumbing_dominates(node, get_language_map("tsx"))
+
+
+def test_component_with_real_logic_is_still_eligible():
+    node = _parse(
+        "tsx",
+        """
+        function Lede({ a, b, items }) {
+          let n = 0;
+          for (const x of items) {
+            if (x > a) {
+              n += 1;
+            } else if (x < b) {
+              n -= 1;
+            }
+          }
+          return <p>{n > 0 && <b>{n}</b>}</p>;
+        }
+        """,
+    )
+    assert not jsx_plumbing_dominates(node, get_language_map("tsx"))
+    # No JSX at all: never gated, whatever the shape.
+    plain = _parse("typescript", "function f(a) { return a ? { ...(a && { a }) } : {}; }")
+    assert not jsx_plumbing_dominates(plain, get_language_map("typescript"))
