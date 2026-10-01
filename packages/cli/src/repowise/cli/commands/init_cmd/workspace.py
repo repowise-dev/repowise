@@ -99,6 +99,7 @@ def _run_workspace_generation(
     onboarding: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
+    reuse_prior_pages: bool = True,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -106,6 +107,9 @@ def _run_workspace_generation(
     the user declines the cost gate (caller persists the index without docs);
     other errors propagate so the caller can log per-repo failures without
     aborting the whole workspace run.
+
+    ``reuse_prior_pages=False`` is ``--force``: every page is regenerated
+    instead of reused from the prior run (issue #1089).
     """
     from repowise.core.generation import GenerationConfig
 
@@ -168,6 +172,7 @@ def _run_workspace_generation(
         verbose=False,
         test_run=test_run,
         timings=timings,
+        reuse_prior_pages=reuse_prior_pages,
     )
 
 
@@ -434,6 +439,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                 onboarding=ctx.onboarding,
                 wiki_style=ctx.wiki_style,
                 language=ctx.language,
+                reuse_prior_pages=not ctx.force,
             )
             result.generated_pages = generated_pages
             # (result.vector_store is set inside _run_workspace_generation
