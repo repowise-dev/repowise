@@ -69,6 +69,25 @@ BOUNDARY_NOUN = {
     "subprocess": "subprocess",
 }
 
+#: Performance causes whose cost is not a boundary call: (title, problem, gain).
+PERF_SHAPE: dict[str, tuple[str, str, str]] = {
+    "string_concat_in_loop": (
+        "Build the string in {name} with one join after the loop",
+        "{name} grows a string by concatenation inside a loop",
+        "one string copy per loop iteration",
+    ),
+    "membership_test_against_list_in_loop": (
+        "Use a set for the membership test in {name}",
+        "{name} searches a list once per loop iteration",
+        "one list scan per loop iteration",
+    ),
+    "unbounded_read_reduced_in_memory": (
+        "Let the query reduce the rows {name} reads",
+        "{name} reads every row and reduces them in memory",
+        "rows the database could have reduced, read on every call",
+    ),
+}
+
 FIX_STRATEGY: dict[str, str] = {
     "batch_or_prefetch_io": "Batch the calls, or fetch the data once before the loop",
     "replace_membership_collection": "Use a set or dict for the membership test",
@@ -112,6 +131,11 @@ def health_gain(value: float, *, ceiling: bool) -> str:
 
 def measured(subject: str, shape: dict[str, int]) -> str | None:
     """``walk_file: CCN 12, 60 lines, nests 4 deep`` from stored findings, or ``None``."""
+    if shape.get("lcom4") and shape.get("method_count"):
+        return (
+            f"{subject}: {plural(shape['method_count'], 'method')} in "
+            f"{shape['lcom4']} groups that share little state"
+        )
     parts = []
     if shape.get("ccn"):
         parts.append(f"CCN {shape['ccn']}")
@@ -148,6 +172,7 @@ __all__ = [
     "BOUNDARY_NOUN",
     "FINDING_TITLE",
     "FIX_STRATEGY",
+    "PERF_SHAPE",
     "PROBLEM",
     "REFACTOR_TITLE",
     "TITLE_MAX",

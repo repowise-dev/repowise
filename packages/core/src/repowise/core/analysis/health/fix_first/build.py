@@ -593,19 +593,30 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
     effort = plan.get("effort_bucket")
 
     def fields() -> dict[str, Any]:
-        name = text.short_symbol(symbol) or text.basename(path)
+        # A cause with no intervention symbol is named by the function its plan edits.
+        first = plan_steps[0] if plan_steps else {}
+        name = (
+            text.short_symbol(symbol)
+            or text.short_symbol(first.get("symbol"))
+            or text.basename(path)
+        )
         noun = text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "")
         call_sites = int(field(lead, "affected_call_sites_total") or 0)
         files_n = int(field(lead, "affected_files_total") or 1)
         amplification = facets.get("amplification")
         call = f"{noun} call" if noun else "costly call"
-        if noun and call_sites > 1:
+        shaped = text.PERF_SHAPE.get(field(lead, "biomarker_type") or "")
+        if shaped:
+            title = shaped[0].format(name=name)
+        elif noun and call_sites > 1:
             title = f"Batch the {noun} calls loops make through {name}"
         elif noun:
             title = f"Move the {noun} call in {name} out of its loop"
         else:
             title = f"Fix the repeated work in {name}"
-        if amplification == "quadratic":
+        if shaped:
+            what, gain_text = shaped[1].format(name=name), shaped[2]
+        elif amplification == "quadratic":
             what = f"{name} runs nested loops over the same data"
             gain_text = "nested loop work that grows with the square of the data"
         elif amplification == "per_call":
@@ -657,7 +668,9 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         strategy = field(lead, "fix_strategy") or ""
         return {
             "title": text.clip(title),
-            "target": FixTarget(path, name if symbol else None),
+            "target": FixTarget(
+                path, name if symbol or first.get("symbol") else None, first.get("line")
+            ),
             "why": f"{what}; {', '.join(reach) or 'the loop size is unknown'}.",
             "facts": tuple(facts[:MAX_FACTS]),
             "action": FixAction(
@@ -825,7 +838,7 @@ def _measure(findings: Iterable[Any]) -> dict[str, int]:
     shape: dict[str, int] = {}
     for f in findings:
         details = detail_map(f)
-        for k in ("ccn", "nloc", "max_nesting"):
+        for k in ("ccn", "nloc", "max_nesting", "lcom4", "method_count"):
             v = details.get(k)
             if isinstance(v, (int, float)) and v > shape.get(k, 0):
                 shape[k] = int(v)
