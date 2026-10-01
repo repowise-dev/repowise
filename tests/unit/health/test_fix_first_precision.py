@@ -262,3 +262,25 @@ def test_other_causes_keep_an_unknown_loop() -> None:
     row = _perf("perf3_db", "src/db.py::fetch")
     row["details"] = {**row["details"], "facets": {"loop_magnitude": "unknown"}}
     assert len(_perf_queue(row).items) == 1
+
+
+# --- F8: unknown loops no entry point reaches -----------------------------------
+
+
+def _value(**facets) -> str:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf("perf3_v", "src/db.py::fetch")
+    row["details"] = {**row["details"], "facets": facets}
+    item = _perf_queue(row).lead
+    return next(f.value for f in item.why_ranked if f.factor == "value")
+
+
+def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:
+    assert _value(loop_magnitude="unknown", exposure="not_entry_reachable") == "1"
+    assert _value(loop_magnitude="unknown") == "1"
+
+
+def test_reach_or_a_known_loop_keeps_the_step() -> None:
+    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "2"
+    assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"

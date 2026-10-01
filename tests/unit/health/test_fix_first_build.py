@@ -132,9 +132,13 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    # Same value as the refactors (production, loop size unknown), lower tier.
+    # Same value as the refactors (production, loop size unknown, reachable),
+    # lower tier.
     perf = _perf("perf2_a", "s")
-    perf["details"] = {**perf["details"], "facets": {"loop_magnitude": "unknown"}}
+    perf["details"] = {
+        **perf["details"],
+        "facets": {"loop_magnitude": "unknown", "exposure": "entry_reachable"},
+    }
     queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
     # since no other kind has anything left at value 2 or above.

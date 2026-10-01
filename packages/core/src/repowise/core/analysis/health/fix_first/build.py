@@ -823,9 +823,12 @@ def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
         and field(row, "boundary_kind") in ("db", "network")
     ):
         return 3
-    if production and (grows or unknown):
-        return 2
-    return 1
+    value = 2 if production and (grows or unknown) else 1
+    # No traffic data: a loop of unknown size that no entry point reaches is
+    # most often an admin or maintenance path, where an N+1 is cheap.
+    if unknown and facets.get("exposure") != "entry_reachable":
+        value -= 1
+    return value
 
 
 def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
