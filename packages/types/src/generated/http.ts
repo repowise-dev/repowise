@@ -13,6 +13,8 @@ export interface ActionCommand {
   purpose: string;
   mcp?: string | null;
   cli?: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
 }
 
 export interface ActionContext {

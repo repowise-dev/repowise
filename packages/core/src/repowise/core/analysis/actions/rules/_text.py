@@ -23,8 +23,3 @@ def plural(n: int, noun: str) -> str:
 
 def humanize(token: str) -> str:
     return token.replace("_", " ")
-
-
-def py_list(items: list[str]) -> str:
-    """A list literal for an MCP call line: ``["a.py", "b.py"]``."""
-    return "[" + ", ".join(f'"{i}"' for i in items) + "]"
