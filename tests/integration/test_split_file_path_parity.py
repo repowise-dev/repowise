@@ -5,10 +5,15 @@ community label. A path that hands the analyzer no labels keys by raw file path
 instead, so the same file on the same commit gets a sparser graph, a different
 partition and a different plan id depending on whether ``init`` or ``update``
 wrote it.
+
+The co-change signal has the same hazard: its commit sets came from a blame
+index only a full index builds, so a re-score from stored git metadata dropped
+the edges.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -21,6 +26,7 @@ from click.testing import CliRunner
 from repowise.cli.helpers import release_update_lock
 from repowise.cli.main import cli
 from repowise.core.analysis.change_health.analyzer import RevisionHealthAnalyzer
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.health.refactoring import split_file
 
 _GROUPS = ("ledger", "mailer")
@@ -84,6 +90,21 @@ def _make_repo(path: Path) -> None:
     _git(path, "commit", "-q", "-m", "initial")
 
 
+def _commit_group_history(path: Path, revisions: int = 5) -> None:
+    # Each revision touches one line in every function of one group, so a
+    # group's functions share their commits and the co-change edge forms.
+    big = path / "big.py"
+    for rev in range(1, revisions + 1):
+        group = _GROUPS[rev % 2]
+        lines = big.read_text(encoding="utf-8").split("\n")
+        for n, line in enumerate(lines):
+            if line.startswith(f"    y = {group}_step_"):
+                lines[n] = f"{line.split(')')[0]}) + {rev}"
+        big.write_text("\n".join(lines), encoding="utf-8")
+        _git(path, "add", "big.py")
+        _git(path, "commit", "-q", "-m", f"touch {group} ({rev})")
+
+
 def _invoke(runner: CliRunner, repo: Path, *args: str) -> None:
     try:
         result = runner.invoke(cli, [*args, str(repo)], catch_exceptions=False)
@@ -100,9 +121,7 @@ def _split_plans(repo: Path) -> list[tuple[str, str]]:
         ).fetchall()
 
 
-def test_split_file_graph_and_plan_match_across_init_and_update(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _record_graphs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple[str, str, float], ...]]:
     graphs: list[tuple[tuple[str, str, float], ...]] = []
     original = split_file._weighted_graph
     original_revision = RevisionHealthAnalyzer.analyze
@@ -125,30 +144,58 @@ def test_split_file_graph_and_plan_match_across_init_and_update(
 
     monkeypatch.setattr(split_file, "_weighted_graph", _recording)
     monkeypatch.setattr(RevisionHealthAnalyzer, "analyze", _revision)
-    init_args = (
-        "init",
-        "--no-prose",
-        "--embedder",
-        "mock",
-        "--no-editor-setup",
-        "--no-hook",
-        "--no-onboarding",
-        "--no-seed",
-        "--no-agents",
-        "--no-codex",
-        "--no-claude-md",
-        "--no-cost-tracking",
-        "--no-workspace",
-        "-y",
-    )
+    return graphs
+
+
+_INIT_ARGS = (
+    "init",
+    "--no-prose",
+    "--embedder",
+    "mock",
+    "--no-editor-setup",
+    "--no-hook",
+    "--no-onboarding",
+    "--no-seed",
+    "--no-agents",
+    "--no-codex",
+    "--no-claude-md",
+    "--no-cost-tracking",
+    "--no-workspace",
+    "-y",
+)
+
+
+def _use_store(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+
+
+def _init_clone(
+    runner: CliRunner, source: Path, full: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subprocess.run(["git", "clone", "-q", str(source), str(full)], check=True)
+    _use_store(monkeypatch, full)
+    _invoke(runner, full, *_INIT_ARGS)
+
+
+def _cochange_edges(repo: Path) -> list[int]:
+    with closing(sqlite3.connect(repo / ".repowise" / "wiki.db")) as connection:
+        rows = connection.execute(
+            "SELECT evidence_json FROM refactoring_suggestions "
+            "WHERE refactoring_type = 'split_file' AND status = 'open'"
+        ).fetchall()
+    return [json.loads(raw).get("cochange_edges", 0) for (raw,) in rows]
+
+
+def test_split_file_graph_and_plan_match_across_init_and_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graphs = _record_graphs(monkeypatch)
     runner = CliRunner()
 
     incremental = tmp_path / "incremental" / "repo"
     _make_repo(incremental)
-    monkeypatch.setenv(
-        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
-    )
-    _invoke(runner, incremental, *init_args)
+    _use_store(monkeypatch, incremental)
+    _invoke(runner, incremental, *_INIT_ARGS)
     with (incremental / "big.py").open("a", encoding="utf-8") as source:
         source.write("\n# harmless incremental edit\n")
     _git(incremental, "add", "big.py")
@@ -158,10 +205,8 @@ def test_split_file_graph_and_plan_match_across_init_and_update(
     update_graphs = list(graphs)
 
     full = tmp_path / "full" / "repo"
-    subprocess.run(["git", "clone", "-q", str(incremental), str(full)], check=True)
-    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{full / '.repowise' / 'wiki.db'}")
     graphs.clear()
-    _invoke(runner, full, *init_args)
+    _init_clone(runner, incremental, full, monkeypatch)
     full_graphs = list(graphs)
 
     assert update_graphs, "the update never rebuilt big.py's split graph"
@@ -170,3 +215,43 @@ def test_split_file_graph_and_plan_match_across_init_and_update(
     full_plans = _split_plans(full)
     assert full_plans
     assert _split_plans(incremental) == full_plans
+
+
+def test_split_file_cochange_matches_across_init_and_stored_rescore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graphs = _record_graphs(monkeypatch)
+    runner = CliRunner()
+
+    repo = tmp_path / "rescore" / "repo"
+    _make_repo(repo)
+    _commit_group_history(repo)
+    _use_store(monkeypatch, repo)
+    _invoke(runner, repo, *_INIT_ARGS)
+    # An analyzer change forces the full re-score, which reads git metadata
+    # from the store and so has no blame index. big.py itself is untouched.
+    state_path = repo / ".repowise" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION - 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (repo / "NOTES.md").write_text("notes\n", encoding="utf-8")
+    _git(repo, "add", "NOTES.md")
+    _git(repo, "commit", "-q", "-m", "notes")
+    graphs.clear()
+    _invoke(runner, repo, "update", "--no-workspace", "--no-agents")
+    rescore_graphs = list(graphs)
+
+    full = tmp_path / "full" / "repo"
+    graphs.clear()
+    _init_clone(runner, repo, full, monkeypatch)
+    full_graphs = list(graphs)
+
+    assert rescore_graphs, "the re-score never rebuilt big.py's split graph"
+    assert full_graphs
+    # The fixture's shared history must reach the graph, or this proves nothing.
+    assert all(count > 0 for count in _cochange_edges(full))
+    assert set(rescore_graphs) == set(full_graphs)
+    full_plans = _split_plans(full)
+    assert full_plans
+    assert _split_plans(repo) == full_plans
+    assert _cochange_edges(repo) == _cochange_edges(full)

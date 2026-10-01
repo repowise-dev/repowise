@@ -30,6 +30,7 @@ from ..progress import emit_warning
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
 from .rehydrate import (
+    attach_stored_commit_shas,
     rehydrate_dead_code_report,
     rehydrate_decision_report,
     rehydrate_git_meta_map,
@@ -104,6 +105,8 @@ class ResumeController:
         async with get_session(self._sf) as session:
             graph_builder = await rehydrate_graph_builder(session, self._repo_id, repo_path)
             git_meta_map = await rehydrate_git_meta_map(session, self._repo_id)
+            # The analysis phase re-scores without a blame index.
+            await attach_stored_commit_shas(session, self._repo_id, git_meta_map)
         # The index is, by definition, already persisted (we just read it).
         self._index_persisted = True
         return graph_builder, git_meta_map

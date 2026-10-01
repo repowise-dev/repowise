@@ -1423,6 +1423,7 @@ async def _rescore_health_from_db(
             persist_graph_nodes,
             save_full_health_report,
         )
+        from repowise.core.pipeline.resume.rehydrate import attach_stored_commit_shas
         from repowise.core.workspace.update import get_head_commit
 
         url = get_db_url_for_repo(repo_path)
@@ -1459,6 +1460,8 @@ async def _rescore_health_from_db(
                 for gm in git_rows
                 if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
             )
+            # No blame index here, so Split File reads the stored commit sets.
+            await attach_stored_commit_shas(session, repo_id, git_meta_map)
             stored_blame_findings: dict[str, list[HealthFinding]] = {}
             for finding in (
                 await session.execute(

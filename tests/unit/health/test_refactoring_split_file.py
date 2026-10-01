@@ -10,8 +10,14 @@ partition — are explicit.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import networkx as nx
 
+from repowise.core.analysis.health.function_blame_rollup import (
+    blame_commit_entries,
+    commit_spans,
+)
 from repowise.core.analysis.health.refactoring import (
     RefactoringContext,
     detect_refactorings,
@@ -73,12 +79,19 @@ def _ctx(
     blame_index: BlameIndex | None = None,
     community_label_map: dict[str, str] | None = None,
 ) -> RefactoringContext:
+    # The file's symbols stand in for the walker's functions, and the spans go
+    # through the projection the engine uses on a full index.
+    functions = [
+        SimpleNamespace(name=d["name"], start_line=d["start_line"], end_line=d["end_line"])
+        for _n, d in g.nodes(data=True)
+        if d.get("file_path") == file_path and d.get("start_line") is not None
+    ]
     return RefactoringContext(
         file_path=file_path,
         language=language,
         nloc=nloc,
         graph=g,
-        blame_index=blame_index,
+        commit_spans=commit_spans(functions, blame_commit_entries(functions, blame_index)),
         community_label_map=community_label_map or {},
     )
 
@@ -408,6 +421,61 @@ def test_signals_are_deterministic():
     second = _detect(g, "big.py", blame_index=blame)
     assert first[0].plan["groups"] == second[0].plan["groups"]
     assert first[0].evidence == second[0].evidence
+
+
+def test_cochange_unions_a_classes_methods():
+    # Each class collects the commit sets of the methods inside its span, so
+    # the co-change edge sees the class even though no row is keyed by it.
+    g = nx.DiGraph()
+    for i in range(8):
+        _add_class(g, "big.py", f"Cls{i}", start=10 * i + 1, end=10 * i + 10)
+    functions = [
+        SimpleNamespace(name=f"m{i}", start_line=10 * i + 2, end_line=10 * i + 5) for i in range(8)
+    ]
+    ctx = RefactoringContext(
+        file_path="big.py",
+        language="python",
+        nloc=600,
+        graph=g,
+        commit_spans=commit_spans(
+            functions,
+            [(f"m{i}", 10 * i + 2, 10 * i + 5, ["ca" if i < 4 else "cb"]) for i in range(8)],
+        ),
+    )
+    detector = SplitFileDetector()
+    nodes = [f"big.py::Cls{i}" for i in range(8)]
+    sets = detector._commit_sets(ctx, detector._defined_symbols(g, "big.py"), nodes)
+    assert sets["big.py::Cls0"] == {"ca"}
+    assert sets["big.py::Cls7"] == {"cb"}
+
+
+def test_stored_commit_sets_split_like_the_blame_index():
+    # A re-score reads the stored rows instead of a blame index; the plan must
+    # be the one the full index produced.
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    live = _detect(g, "big.py", blame_index=blame)
+    stored = [
+        s
+        for s in detect_refactorings(
+            RefactoringContext(
+                file_path="big.py",
+                language="python",
+                nloc=600,
+                graph=g,
+                commit_spans=[
+                    (10 * i + 1, 10 * i + 10, frozenset({"ca" if i < 4 else "cb"}))
+                    for i in range(8)
+                ],
+            )
+        )
+        if s.refactoring_type == "split_file"
+    ]
+    assert live and stored
+    assert stored[0].plan == live[0].plan
+    assert stored[0].evidence == live[0].evidence
 
 
 def test_empty_blame_index_is_silent():

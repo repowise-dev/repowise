@@ -39,6 +39,7 @@ __all__ = [
     "median_author_time_in_range",
     "owner_in_range",
     "recent_commits_in_range",
+    "recent_distinct_commits_in_range",
 ]
 
 # Files with fewer than this many total commits have no useful signal — the
@@ -258,6 +259,24 @@ def distinct_commits_in_range(idx: BlameIndex, start_line: int, end_line: int) -
         if entry is not None:
             out.add(entry[0])
     return out
+
+
+def recent_distinct_commits_in_range(
+    idx: BlameIndex, start_line: int, end_line: int, *, limit: int
+) -> list[str]:
+    """The *limit* most recent distinct shas touching the range, newest first.
+
+    Recency is the blame author time; ties break on the sha so the cut is
+    deterministic. Empty when the range has no blame coverage.
+    """
+    if not idx.lines or start_line > end_line or limit <= 0:
+        return []
+    times: dict[str, int] = {}
+    for ln in range(start_line, end_line + 1):
+        entry = idx.lines.get(ln)
+        if entry is not None:
+            times[entry[0]] = max(entry[1], times.get(entry[0], 0))
+    return sorted(times, key=lambda sha: (-times[sha], sha))[:limit]
 
 
 def median_author_time_in_range(idx: BlameIndex, start_line: int, end_line: int) -> int | None:

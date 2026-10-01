@@ -910,6 +910,37 @@ async def get_git_function_mod_counts(session: AsyncSession, repository_id: str)
     return [int(mod_count) for (mod_count,) in result.all()]
 
 
+async def get_function_commit_shas(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, int, int, list[str]]]]:
+    """Each file's stored ``(name, start_line, end_line, shas)`` commit sets.
+
+    One query for the repository. Rows written before the column existed carry
+    no set and are left out.
+    """
+    result = await session.execute(
+        select(
+            GitFunctionBlame.file_path,
+            GitFunctionBlame.function_name,
+            GitFunctionBlame.start_line,
+            GitFunctionBlame.end_line,
+            GitFunctionBlame.commit_shas_json,
+        ).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.commit_shas_json.isnot(None),
+        )
+    )
+    out: dict[str, list[tuple[str, int, int, list[str]]]] = {}
+    for path, name, start, end, raw in result.all():
+        try:
+            shas = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(shas, list) and shas:
+            out.setdefault(path, []).append((name, start, end, [str(s) for s in shas]))
+    return out
+
+
 async def get_git_function_blame(
     session: AsyncSession, repository_id: str, symbol_id: str
 ) -> GitFunctionBlame | None:

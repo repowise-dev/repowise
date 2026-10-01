@@ -182,14 +182,13 @@ class RefactoringContext:
     # a re-parse of its own. Empty for files with no such finding -- the
     # detector then yields nothing.
     function_analyses: list[Any] = field(default_factory=list)
-    # This file's per-line blame index (``git_indexer.function_blame.BlameIndex``,
-    # typed ``Any`` to avoid importing the ingestion layer into the model). A
-    # shared read-only reference the engine already materialised for the
-    # function-level biomarkers; Split File projects each top-level symbol's line
-    # range through it for a co-change "keep-together" edge. ``None`` (or an empty
-    # index) is the documented "no signal" outcome — the detector degrades to its
+    # Each modified function's ``(start_line, end_line, commit shas)``, from the
+    # live blame index on a full index and from ``git_function_blame`` on a
+    # re-score, through the same projection so both see the same sets. Split
+    # File unions the spans inside each top-level symbol for its co-change
+    # edge. Empty is the "no signal" outcome: the detector falls back to its
     # call/import signals only.
-    blame_index: Any = None
+    commit_spans: list[tuple[int, int, frozenset[str]]] = field(default_factory=list)
     # This file's source as 1-indexed lines (``source_lines[0]`` is line 1). The
     # engine reads it only for files that carry clone pairs, so the cost stays
     # proportional to clone-bearing files rather than the whole repo. The Extract

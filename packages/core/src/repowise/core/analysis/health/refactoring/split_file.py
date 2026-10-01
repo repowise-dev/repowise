@@ -19,8 +19,8 @@ Algorithm (all signals from ``ctx.graph``):
   1. direct intra-file call (A calls B) -> ``w = 3`` — they belong together;
   2. co-change affinity (A and B's line ranges are touched by overlapping
      commits) -> ``w = 2 x Jaccard(commits_a, commits_b)`` — "these always
-     change together, keep them together". Read from the file's blame index
-     at zero index cost; absent when no ``blame_index`` is threaded in.
+     change together, keep them together". Read from the per-function
+     commit sets in ``ctx.commit_spans``; absent when there are none.
   3. shared local helper (A and B both call a third local symbol) ->
      ``w = 2`` per shared helper — cohesion without a direct A<->B edge;
   4. shared external-import surface (A and B lean on the same *imported
@@ -689,23 +689,21 @@ class SplitFileDetector(RefactoringDetector):
         defined: dict[str, dict],
         cluster_nodes: list[str],
     ) -> dict[str, set[str]]:
-        """Project each node's ``(start_line, end_line)`` through the file's
-        blame index to its set of touching commits — the raw material for the
-        co-change edge. Empty (the documented "no signal" outcome) when no
-        ``blame_index`` was threaded in or the index has no coverage."""
-        idx = ctx.blame_index
-        if idx is None or not getattr(idx, "lines", None):
-            return {}
-        try:
-            from repowise.core.ingestion.git_indexer.function_blame import (
-                distinct_commits_in_range,
-            )
-        except Exception:
+        """Each node's commits: the union of the function commit sets whose
+        span overlaps the node's, so a class collects its methods. The raw
+        material for the co-change edge; empty (the "no signal" outcome) when
+        the context carries no commit spans."""
+        if not ctx.commit_spans:
             return {}
         out: dict[str, set[str]] = {}
         for nid in cluster_nodes:
             span = _line_range(defined.get(nid, {}))
-            commits = distinct_commits_in_range(idx, *span) if span else None
+            if span is None:
+                continue
+            commits: set[str] = set()
+            for start, end, shas in ctx.commit_spans:
+                if start <= span[1] and end >= span[0]:
+                    commits |= shas
             if commits:
                 out[nid] = commits
         return out

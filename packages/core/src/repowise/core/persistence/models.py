@@ -1044,6 +1044,10 @@ class GitFunctionBlame(Base):
     owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_line_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # JSON list of the most recent distinct commits over the range, capped at
+    # ``function_blame_rollup.COMMIT_SET_LIMIT``. Split File's co-change edge
+    # reads it when a re-score has no blame index. NULL on rows written before.
+    commit_shas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

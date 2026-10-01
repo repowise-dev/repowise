@@ -10,7 +10,8 @@ persisted (see ``phases/git.py: drop_transient_git_signals``), so a
 rehydrated ``git_meta_map`` carries every durable signal but no
 ``blame_index``. Blame-dependent biomarkers treat its absence as "no
 signal" — which is exactly the case for FAST/ESSENTIAL-tier runs that
-never computed blame in the first place.
+never computed blame in the first place. Split File's per-function commit sets
+are the exception: :func:`attach_stored_commit_shas` puts the stored ones back.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from ..upgrade import rehydrate_graph_builder
 logger = structlog.get_logger(__name__)
 
 __all__ = [
+    "attach_stored_commit_shas",
     "rehydrate_dead_code_report",
     "rehydrate_decision_report",
     "rehydrate_git_meta_map",
@@ -65,6 +67,28 @@ async def rehydrate_git_meta_map(session: Any, repo_id: str) -> dict[str, dict[s
         logger.debug("rehydrate_git_meta_failed", error=str(exc))
         return {}
     return {path: _git_metadata_to_dict(row) for path, row in rows.items()}
+
+
+async def attach_stored_commit_shas(
+    session: Any, repo_id: str, git_meta_map: dict[str, dict[str, Any]]
+) -> None:
+    """Put each file's stored per-function commit sets under
+    ``"function_commit_shas"``, where a score without a blame index reads them.
+
+    Only files already in *git_meta_map* get them. Best effort: a failed read
+    leaves the map as it was.
+    """
+    from repowise.core.persistence.crud import get_function_commit_shas
+
+    try:
+        stored = await get_function_commit_shas(session, repo_id)
+    except Exception as exc:
+        logger.debug("stored_commit_shas_failed", error=str(exc))
+        return
+    for path, entries in stored.items():
+        meta = git_meta_map.get(path)
+        if meta is not None:
+            meta["function_commit_shas"] = entries
 
 
 # ---------------------------------------------------------------------------

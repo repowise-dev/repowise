@@ -51,6 +51,7 @@ from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
+from .function_blame_rollup import blame_commit_entries, commit_spans
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
@@ -1625,7 +1626,13 @@ class HealthAnalyzer:
                 methods_by_file.get(file_path, ()) if methods_by_file is not None else None
             ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
-            blame_index=blame_index,
+            # Stored sets when no blame index, so a re-score matches the index.
+            commit_spans=commit_spans(
+                fcx.functions,
+                blame_commit_entries(fcx.functions, blame_index)
+                if blame_index is not None
+                else file_git_meta.get("function_commit_shas") or (),
+            ),
             # The Extract Helper snippet; ``None`` unless the file carries clones.
             source_lines=source_lines,
         )
