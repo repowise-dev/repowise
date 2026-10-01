@@ -203,3 +203,16 @@ async def test_governance_triage_survives_its_rewrite(async_session):
 
     rows = await _rows(async_session, repo.id)
     assert [(r.id, r.status) for r in rows] == [(row.id, "acknowledged")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writer", ["save", "upsert"])
+async def test_two_findings_colliding_on_a_triaged_id_are_both_kept(async_session, writer):
+    repo = await insert_repo(async_session)
+    await _write(async_session, repo.id, writer, [_finding("f")])
+    await _triage(async_session, repo.id, {"f": "acknowledged"})
+
+    await _write(async_session, repo.id, writer, [_finding("f"), _finding("f", reason="twin")])
+
+    rows = await _rows(async_session, repo.id)
+    assert sorted(r.status for r in rows) == ["acknowledged", "open"]

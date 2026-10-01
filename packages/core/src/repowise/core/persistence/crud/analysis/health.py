@@ -102,8 +102,8 @@ async def _insert_keeping_triage(
     matches a triaged row in *scope* is folded into that row: its detection
     fields are refreshed and ``acknowledged`` / ``false_positive`` stand, while
     ``resolved`` reopens because the finding said to be fixed is still there.
-    Extra triaged rows sharing that id are deleted, so one id names one row.
-    Every other finding is inserted open.
+    Extra triaged rows sharing that id are deleted. Every other finding, a
+    second one on an already claimed id included, is inserted open.
     """
     triaged: dict[str, list[HealthFinding]] = {}
     rows = await session.execute(
@@ -122,12 +122,11 @@ async def _insert_keeping_triage(
             matches = triaged and (
                 triaged.get(values["public_id"]) or triaged.get(legacy_finding_public_id(f))
             )
-            if not matches:
+            kept, *extra = matches or [None]
+            if kept is None or kept.id in claimed:
+                # A second finding on a claimed id is inserted open: two
+                # findings colliding on one id must not lose either.
                 session.add(HealthFinding(**values))
-                continue
-            kept, *extra = matches
-            if kept.id in claimed:
-                # The detector emitted this finding twice; one row holds it.
                 continue
             claimed.add(kept.id)
             for row in extra:
