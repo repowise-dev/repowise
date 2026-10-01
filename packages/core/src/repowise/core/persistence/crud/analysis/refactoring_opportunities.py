@@ -93,9 +93,16 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
 
     Deterministic, and a repository with one cause in one area degrades to
     plain rank order rather than inventing a difference.
+
+    Only opportunities that recover health are interleaved. The rest (rank
+    order already puts them last) follow in rank order, so a zero-credit cycle
+    never takes a head slot from real work.
     """
+    from ....analysis.health.refactoring.opportunity_rank import has_credit
+
+    credited = sum(1 for item in opportunities if has_credit(item))
     groups: dict[tuple[str, str, str], list[int]] = {}
-    for position, item in enumerate(opportunities):
+    for position, item in enumerate(opportunities[:credited]):
         parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
         area = "/".join(parent.split("/")[:2])
         groups.setdefault(
@@ -107,7 +114,7 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
         for members in ordered_groups:
             if round_index < len(members):
                 order.append(members[round_index])
-    return order
+    return order + list(range(credited, len(opportunities)))
 
 
 def _finding_ids_by_file(findings: list[HealthFinding]) -> dict[str, dict[str, list[str]]]:

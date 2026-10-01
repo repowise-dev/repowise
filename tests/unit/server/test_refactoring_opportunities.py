@@ -913,3 +913,32 @@ async def test_a_transition_that_writes_nothing_is_not_reported_as_success(clien
         assert row is not None
         # Untouched, rather than silently reset to open.
         assert row.status == "open"
+
+
+def test_the_diversified_queue_never_gives_a_zero_credit_group_a_head_slot():
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+        _diversified_order,
+    )
+
+    def item(path, kind, health):
+        return SimpleNamespace(
+            file_path=path,
+            lead_biomarker="complex_method" if health else None,
+            lead_refactoring_type=kind,
+            recoverable_health=health,
+        )
+
+    # Rank order: credited first, zero-credit after (``rank_sort_key``).
+    ranked = [
+        item("pkg/a/x.py", "extract_method", 0.9),
+        item("pkg/a/y.py", "extract_method", 0.8),
+        item("pkg/b/z.py", "extract_method", 0.3),
+        item("pkg/c/cycle.py", "break_cycle", 0.0),
+        item("pkg/d/split.py", "split_file", 0.0),
+    ]
+    order = _diversified_order(ranked)
+    assert order[:3] != [0, 1, 2]  # still interleaves the credited work
+    assert sorted(order[:3]) == [0, 1, 2]
+    assert order[3:] == [3, 4]

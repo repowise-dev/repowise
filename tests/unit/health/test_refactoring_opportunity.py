@@ -450,3 +450,23 @@ def test_a_finding_several_steps_answer_is_recovered_once() -> None:
     assert without.recoverable_health == pytest.approx(2.2)
     assert deduped.recoverable_health == pytest.approx(1.7)
     assert deduped.rank_factors["benefit"] == pytest.approx(1.7)
+
+
+def test_work_that_recovers_health_ranks_ahead_of_zero_credit_work():
+    """A cycle's detector-native benefit outscored every proportionally credited
+    extraction on this repo. It stays listed, after the credited work."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.health.refactoring.opportunity_rank import rank_sort_key
+
+    cycle = SimpleNamespace(
+        rank_score=0.78, recoverable_health=0.0, file_path="a.py", opportunity_id="o1"
+    )
+    small = SimpleNamespace(
+        rank_score=0.21, recoverable_health=0.21, file_path="b.py", opportunity_id="o2"
+    )
+    split = SimpleNamespace(
+        rank_score=0.42, recoverable_health=0.0, file_path="c.py", opportunity_id="o3"
+    )
+    ordered = sorted([cycle, small, split], key=rank_sort_key)
+    assert [o.opportunity_id for o in ordered] == ["o2", "o1", "o3"]

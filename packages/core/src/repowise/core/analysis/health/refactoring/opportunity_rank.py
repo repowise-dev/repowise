@@ -133,14 +133,31 @@ def why_ranked(factors: dict[str, float], *, limit: int = 3) -> list[dict[str, A
     return [{"factor": name, "value": value} for name, value in ordered[:limit]]
 
 
-def rank_sort_key(opportunity: Any) -> tuple[float, str, str]:
-    """A total order. The id tail is what stops ties floating between runs."""
-    return (-opportunity.rank_score, opportunity.file_path, opportunity.opportunity_id)
+def rank_sort_key(opportunity: Any) -> tuple[bool, float, str, str]:
+    """A total order. The id tail is what stops ties floating between runs.
+
+    Work that recovers health comes first. A detector-native benefit (a cycle's
+    size, a split's group count) is not health, and on this repo it outranked
+    every real extraction once those were credited proportionally; those
+    opportunities stay listed, after the credited ones, in their own order.
+    """
+    return (
+        not has_credit(opportunity),
+        -opportunity.rank_score,
+        opportunity.file_path,
+        opportunity.opportunity_id,
+    )
+
+
+def has_credit(opportunity: Any) -> bool:
+    """Whether the opportunity recovers any health at all."""
+    return float(opportunity.recoverable_health or 0.0) > 0.0
 
 
 __all__ = [
     "MECHANICAL_SHARE_WEIGHT",
     "PRIMARY_PROBLEM_WEIGHT",
+    "has_credit",
     "opportunity_benefit",
     "opportunity_risk",
     "rank_factors",
