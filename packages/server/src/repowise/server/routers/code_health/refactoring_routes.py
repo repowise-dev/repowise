@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.impact_effort import best_tiers, build_impact_effort
+from repowise.core.analysis.health.impact_effort import build_impact_effort, fix_first_marks
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
@@ -308,11 +308,11 @@ async def health_impact_effort(
             session, repo_id, file_paths=paths, limit=len(paths)
         )
     # The Fix-first card on the same page builds this queue too, so this is
-    # normally a cache hit. Tiers are known only for the items it shows.
+    # normally a cache hit. Only the items it shows are marked on the plane.
     queue = await load_fix_first(
         session,
         repo_id,
         scope="production" if parse_scope(filters.scope) == "production" else "all",
     )
-    plane = build_impact_effort(targets, opportunities, best_tiers(queue.items))
+    plane = build_impact_effort(targets, opportunities, fix_first_marks(queue.items))
     return {**plane.as_dict(), "history_only_excluded": history_only}

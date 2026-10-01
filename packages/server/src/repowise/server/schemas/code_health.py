@@ -225,8 +225,10 @@ class ImpactEffortPoint(BaseModel):
     effort_basis: str
     #: Health points the plan credits, or the open findings' deduction.
     recoverable_health: float
-    #: The file's best Fix-first tier, when it holds a Fix-first item.
+    #: The tier of the file's first Fix-first item, when it holds one.
     tier: str | None = None
+    #: That item's place in the Fix-first list, from 1.
+    fix_rank: int | None = None
 
 
 class ImpactEffortResponse(BaseModel):

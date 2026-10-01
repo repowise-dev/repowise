@@ -24,9 +24,11 @@ import type { ImpactEffortPoint, ImpactEffortResponse } from "@repowise-dev/type
  * move a file between quadrants.
  *
  * One mark per file and no colour ramp. A filled dot is placed by a refactoring
- * plan, a ring by the file itself (see `effort_basis`); orange marks only the
- * point under the pointer, the keyboard, or the reader's selection. Legend,
- * quadrant names and the coverage line sit outside the SVG.
+ * plan, a ring by the file itself (see `effort_basis`). Files holding a
+ * Fix-first item are drawn as numbered ink markers carrying their Fix-first
+ * rank, over a lighter field, so the plot points at what to do first. Orange
+ * marks only the point under the pointer, the keyboard, or the reader's
+ * selection. Legend, quadrant names and the coverage line sit outside the SVG.
  *
  * The dot field is memoised away from the hover state: a large repository
  * brings thousands of points, and hover must redraw one overlay mark, not the
@@ -67,6 +69,8 @@ export interface ImpactEffortQuadrantProps {
 }
 
 const PAD = { l: 40, r: 16, t: 20, b: 30 };
+/** Clear space inside the axes, so no mark sits on the tick labels. */
+const INSET = { l: 14, b: 8 };
 
 /** A round value at or above *v*, so the top tick reads cleanly. */
 function niceCeil(v: number): number {
@@ -132,8 +136,10 @@ export function ImpactEffortQuadrant({
     }
     const decades = Math.max(1, Math.ceil(Math.log10(maxEffort)));
     const yMax = niceCeil(maxGain);
-    const x = (lines: number) => PAD.l + (Math.log10(Math.max(1, lines)) / decades) * plotW;
-    const y = (gain: number) => PAD.t + (1 - Math.sqrt(Math.max(0, gain) / yMax)) * plotH;
+    const x = (lines: number) =>
+      PAD.l + INSET.l + (Math.log10(Math.max(1, lines)) / decades) * (plotW - INSET.l);
+    const y = (gain: number) =>
+      PAD.t + (1 - Math.sqrt(Math.max(0, gain) / yMax)) * (plotH - INSET.b);
     const xs = new Float64Array(points.length);
     const ys = new Float64Array(points.length);
     points.forEach((p, i) => {
@@ -232,7 +238,7 @@ export function ImpactEffortQuadrant({
             <line x1={PAD.l} y1={PAD.t + plotH} x2={PAD.l + plotW} y2={PAD.t + plotH} className="stroke-[var(--color-border-default)]" />
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + plotH} className="stroke-[var(--color-border-default)]" />
             {xTicks.map((t, i) => (
-              <text key={`x${t}`} x={x(t)} y={PAD.t + plotH + 14} textAnchor={i === xTicks.length - 1 ? "end" : i === 0 ? "start" : "middle"} fontSize={10} className="fill-[var(--color-text-tertiary)] font-mono">
+              <text key={`x${t}`} x={x(t)} y={PAD.t + plotH + 14} textAnchor={i === xTicks.length - 1 ? "end" : "middle"} fontSize={10} className="fill-[var(--color-text-tertiary)] font-mono">
                 {fmt(t)}
               </text>
             ))}
@@ -260,10 +266,15 @@ export function ImpactEffortQuadrant({
             <PointField points={points} xs={xs} ys={ys} onHover={setActive} onPick={select} />
 
             {selectedIndex >= 0 ? (
-              <circle cx={xs[selectedIndex]} cy={ys[selectedIndex]} r={5.5} className="fill-[var(--color-accent-primary)] stroke-[var(--color-bg-root)]" strokeWidth={1.5} pointerEvents="none" />
+              points[selectedIndex]?.fix_rank != null ? (
+                // A ring, so the rank number under it stays readable.
+                <circle cx={xs[selectedIndex]} cy={ys[selectedIndex]} r={8.5} className="fill-none stroke-[var(--color-accent-primary)]" strokeWidth={2.5} pointerEvents="none" />
+              ) : (
+                <circle cx={xs[selectedIndex]} cy={ys[selectedIndex]} r={5.5} className="fill-[var(--color-accent-primary)] stroke-[var(--color-bg-root)]" strokeWidth={1.5} pointerEvents="none" />
+              )
             ) : null}
             {active != null && active !== selectedIndex ? (
-              <circle cx={xs[active]} cy={ys[active]} r={5.5} className="fill-none stroke-[var(--color-accent-primary)]" strokeWidth={2} pointerEvents="none" />
+              <circle cx={xs[active]} cy={ys[active]} r={points[active]?.fix_rank != null ? 9 : 5.5} className="fill-none stroke-[var(--color-accent-primary)]" strokeWidth={2} pointerEvents="none" />
             ) : null}
           </svg>
         </div>
@@ -273,7 +284,9 @@ export function ImpactEffortQuadrant({
               <span className="font-mono text-[var(--color-text-primary)] break-all">{shown.file_path}</span>
               <br />
               {describe(shown)}
-              {shown.tier ? ` · Fix first: ${TIER_LABEL[shown.tier] ?? shown.tier}` : ""}
+              {shown.fix_rank != null
+                ? ` · Fix first #${shown.fix_rank}${shown.tier ? `, ${TIER_LABEL[shown.tier] ?? shown.tier}` : ""}`
+                : ""}
               {" · "}
               {IMPACT_EFFORT_QUADRANTS.find((q) => q.key === impactEffortQuadrantOf(shown, effortMid, gainMid))?.name}
             </>
@@ -308,6 +321,15 @@ export function ImpactEffortQuadrant({
           <svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="3" className="fill-none stroke-[var(--color-text-tertiary)]" strokeWidth={1.25} /></svg>
           No plan recovers health: code lines, and what its findings deduct
         </li>
+        {points.some((p) => p.fix_rank != null) ? (
+          <li className="inline-flex items-center gap-1.5">
+            <svg width="16" height="16" aria-hidden="true">
+              <circle cx="8" cy="8" r="7" className="fill-[var(--color-bg-root)] stroke-[var(--color-text-primary)]" strokeWidth={1.25} />
+              <text x="8" y="11" textAnchor="middle" fontSize={9} fontWeight={600} className="fill-[var(--color-text-primary)] font-mono">1</text>
+            </svg>
+            A Fix-first item, numbered by its place in Fix first
+          </li>
+        ) : null}
         <li className="inline-flex items-center gap-1.5">
           <svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="4" className="fill-[var(--color-accent-primary)]" /></svg>
           Selected
@@ -351,10 +373,22 @@ const PointField = memo(function PointField({ points, xs, ys, onHover, onPick }:
       }}
     >
       {points.map((p, i) =>
-        p.effort_basis === "plan" ? (
-          <circle key={p.file_path} data-i={i} data-file={p.file_path} cx={xs[i]} cy={ys[i]} r={3} className="fill-[var(--color-text-tertiary)]" fillOpacity={0.55} />
+        p.fix_rank != null ? null : p.effort_basis === "plan" ? (
+          <circle key={p.file_path} data-i={i} data-file={p.file_path} cx={xs[i]} cy={ys[i]} r={3} className="fill-[var(--color-text-tertiary)]" fillOpacity={0.35} />
         ) : (
-          <circle key={p.file_path} data-i={i} data-file={p.file_path} cx={xs[i]} cy={ys[i]} r={2.75} className="fill-transparent stroke-[var(--color-text-tertiary)]" strokeOpacity={0.7} strokeWidth={1.25} />
+          <circle key={p.file_path} data-i={i} data-file={p.file_path} cx={xs[i]} cy={ys[i]} r={2.75} className="fill-transparent stroke-[var(--color-text-tertiary)]" strokeOpacity={0.45} strokeWidth={1.25} />
+        ),
+      )}
+      {/* Fix-first items last, so they sit on top of the field. Ink weight,
+          not colour: orange stays for selection. */}
+      {points.map((p, i) =>
+        p.fix_rank == null ? null : (
+          <g key={p.file_path} data-rank={p.fix_rank}>
+            <circle data-i={i} data-file={p.file_path} cx={xs[i]} cy={ys[i]} r={7} className="fill-[var(--color-bg-root)] stroke-[var(--color-text-primary)]" strokeWidth={1.25} />
+            <text x={xs[i]} y={(ys[i] ?? 0) + 3} textAnchor="middle" fontSize={9} fontWeight={600} pointerEvents="none" className="fill-[var(--color-text-primary)] font-mono">
+              {p.fix_rank}
+            </text>
+          </g>
         ),
       )}
     </g>

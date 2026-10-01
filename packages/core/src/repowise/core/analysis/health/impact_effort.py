@@ -49,8 +49,10 @@ class ImpactEffortPoint:
     effort_basis: EffortBasis
     #: Health points the plan credits, or the open findings' deduction.
     recoverable_health: float
-    #: The file's best Fix-first tier, when it holds a Fix-first item.
+    #: The tier of the file's first Fix-first item, when it holds one.
     tier: str | None
+    #: That item's place in the Fix-first list, from 1.
+    fix_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,22 +85,29 @@ def plan_lines(details: Mapping[str, Any]) -> int:
     return total
 
 
-def best_tiers(items: Iterable[Any]) -> dict[str, str]:
-    """Each file's best Fix-first tier among *items* (``FixItem`` or dicts)."""
-    out: dict[str, str] = {}
+def fix_first_marks(items: Iterable[Any]) -> dict[str, tuple[str, int]]:
+    """Each file's first Fix-first item among *items*: its tier and 1-based rank.
+
+    *items* are ``FixItem`` objects or their dicts, ``rank`` 0-based as the
+    queue writes it. A file holding several items is marked by the highest.
+    """
+    out: dict[str, tuple[str, int]] = {}
     for item in items:
         target = field(item, "target")
         path = field(target, "file_path") if target is not None else None
         tier = field(item, "tier")
-        if path and tier in TIER_RANK and TIER_RANK[tier] < TIER_RANK.get(out.get(path), 99):
-            out[path] = tier
+        rank = field(item, "rank")
+        if not path or tier not in TIER_RANK or not isinstance(rank, int):
+            continue
+        if path not in out or rank + 1 < out[path][1]:
+            out[path] = (tier, rank + 1)
     return out
 
 
 def build_impact_effort(
     files: Iterable[Any],
     opportunities: Iterable[Any] = (),
-    tiers: Mapping[str, str] | None = None,
+    marks: Mapping[str, tuple[str, int]] | None = None,
     *,
     cap: int = PLOT_CAP,
 ) -> ImpactEffortPlane:
@@ -108,7 +117,8 @@ def build_impact_effort(
     deduction under the caller's filters); the caller has already left out
     history-only files. *opportunities* are open refactoring opportunity rows
     (``file_path``, ``recoverable_health``, ``details``/``details_json``).
-    *tiers* maps a path to its Fix-first tier where one is known.
+    *marks* maps a path to its Fix-first ``(tier, rank)`` where it holds an item
+    (:func:`fix_first_marks`).
     """
     plans: dict[str, tuple[int, float]] = {}
     for row in opportunities:
@@ -119,11 +129,12 @@ def build_impact_effort(
         if gain > 0 and lines > 0:
             plans[field(row, "file_path")] = (lines, gain)
 
-    tiers = tiers or {}
+    marks = marks or {}
     points: list[ImpactEffortPoint] = []
     for row in files:
         path = field(row, "file_path")
         plan = plans.get(path)
+        mark = marks.get(path)
         if plan is not None:
             lines, gain = plan
             basis: EffortBasis = "plan"
@@ -137,7 +148,8 @@ def build_impact_effort(
                 effort_lines=max(1, lines),
                 effort_basis=basis,
                 recoverable_health=round(gain, 3),
-                tier=tiers.get(path),
+                tier=mark[0] if mark else None,
+                fix_rank=mark[1] if mark else None,
             )
         )
 
@@ -159,7 +171,7 @@ __all__ = [
     "PLOT_CAP",
     "ImpactEffortPlane",
     "ImpactEffortPoint",
-    "best_tiers",
     "build_impact_effort",
+    "fix_first_marks",
     "plan_lines",
 ]

@@ -9,7 +9,7 @@ import {
 function plane(partial: Partial<ImpactEffortResponse> = {}): ImpactEffortResponse {
   return {
     points: [
-      { file_path: "a.py", effort_lines: 20, effort_basis: "plan", recoverable_health: 1.4, tier: "now" },
+      { file_path: "a.py", effort_lines: 20, effort_basis: "plan", recoverable_health: 1.4, tier: "now", fix_rank: 1 },
       { file_path: "b.py", effort_lines: 900, effort_basis: "file", recoverable_health: 3.0, tier: null },
       { file_path: "c.py", effort_lines: 40, effort_basis: "file", recoverable_health: 0.2, tier: null },
       { file_path: "d.py", effort_lines: 300, effort_basis: "plan", recoverable_health: 0.1, tier: null },
@@ -59,7 +59,7 @@ describe("ImpactEffortQuadrant", () => {
     render(<ImpactEffortQuadrant data={plane()} />);
     const marks = screen.getByTestId("impact-effort-points").querySelectorAll("circle");
     expect(marks).toHaveLength(4);
-    const plan = [...marks].find((c) => c.getAttribute("data-file") === "a.py")!;
+    const plan = [...marks].find((c) => c.getAttribute("data-file") === "d.py")!;
     const file = [...marks].find((c) => c.getAttribute("data-file") === "b.py")!;
     expect(plan.getAttribute("class")).toContain("fill-[var(--color-text-tertiary)]");
     expect(file.getAttribute("class")).toContain("fill-transparent");
@@ -95,10 +95,35 @@ describe("ImpactEffortQuadrant", () => {
 
     fireEvent.keyDown(plot, { key: "ArrowRight" });
     expect(screen.getByText("a.py")).toBeInTheDocument();
-    expect(screen.getByText(/Plan changes 20 lines and recovers 1.40 points · Fix first: Now · Quick wins/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan changes 20 lines and recovers 1.40 points · Fix first #1, Now · Quick wins/)).toBeInTheDocument();
 
     fireEvent.keyDown(plot, { key: "End" });
     fireEvent.keyDown(plot, { key: "Enter" });
     expect(onSelect).toHaveBeenCalledWith("d.py");
+  });
+
+  it("numbers Fix-first items in ink over a lighter field, with no orange", () => {
+    render(<ImpactEffortQuadrant data={plane()} />);
+    const ranked = document.querySelector('[data-rank="1"]')!;
+    expect(ranked.textContent).toBe("1");
+    const ring = ranked.querySelector("circle")!;
+    expect(ring.getAttribute("data-file")).toBe("a.py");
+    expect(ring.getAttribute("class")).toContain("stroke-[var(--color-text-primary)]");
+    expect(ranked.innerHTML).not.toContain("accent");
+    const other = document.querySelector('[data-file="d.py"]')!;
+    expect(Number(other.getAttribute("fill-opacity"))).toBeLessThan(0.5);
+    expect(screen.getByLabelText("Legend").textContent).toMatch(/numbered by its place in Fix first/);
+  });
+
+  it("keeps marks clear of the y-axis tick labels", () => {
+    render(<ImpactEffortQuadrant data={plane()} />);
+    const leftmost = Math.min(
+      ...[...screen.getByTestId("impact-effort-points").querySelectorAll("circle")].map((c) =>
+        Number(c.getAttribute("cx")),
+      ),
+    );
+    const yAxis = Number(svg().querySelectorAll("line")[1]!.getAttribute("x1"));
+    // A rank marker has radius 7; the inset keeps it off the axis and its labels.
+    expect(leftmost - 7).toBeGreaterThan(yAxis);
   });
 });

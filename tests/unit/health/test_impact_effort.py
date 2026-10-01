@@ -7,8 +7,8 @@ import json
 from repowise.core.analysis.health.impact_effort import (
     EFFORT_MIDLINE_LINES,
     GAIN_MIDLINE_POINTS,
-    best_tiers,
     build_impact_effort,
+    fix_first_marks,
     plan_lines,
 )
 
@@ -74,17 +74,18 @@ def test_midlines_are_fixed_whatever_the_data() -> None:
         assert plane.gain_midline_points == GAIN_MIDLINE_POINTS
 
 
-def test_tier_is_the_best_one_a_file_holds() -> None:
+def test_a_file_is_marked_by_its_first_fix_first_item() -> None:
     items = [
-        {"tier": "later", "target": {"file_path": "a.py"}},
-        {"tier": "now", "target": {"file_path": "a.py"}},
-        {"tier": "next", "target": {"file_path": "b.py"}},
+        {"rank": 0, "tier": "now", "target": {"file_path": "a.py"}},
+        {"rank": 1, "tier": "next", "target": {"file_path": "b.py"}},
+        {"rank": 4, "tier": "later", "target": {"file_path": "a.py"}},
     ]
-    tiers = best_tiers(items)
-    assert tiers == {"a.py": "now", "b.py": "next"}
+    marks = fix_first_marks(items)
+    assert marks == {"a.py": ("now", 1), "b.py": ("next", 2)}
 
-    plane = build_impact_effort([_file("a.py"), _file("c.py")], tiers=tiers)
-    assert {p.file_path: p.tier for p in plane.points} == {"a.py": "now", "c.py": None}
+    plane = build_impact_effort([_file("a.py"), _file("c.py")], marks=marks)
+    got = {p.file_path: (p.tier, p.fix_rank) for p in plane.points}
+    assert got == {"a.py": ("now", 1), "c.py": (None, None)}
 
 
 def test_as_dict_carries_the_scope_fields() -> None:

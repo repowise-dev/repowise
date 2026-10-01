@@ -41,6 +41,7 @@ async def test_the_plane_holds_every_file_the_queue_counts(client, session, tmp_
         "effort_basis": "file",
         "recoverable_health": 7.0,
         "tier": first["tier"],
+        "fix_rank": first["fix_rank"],
     }
 
 

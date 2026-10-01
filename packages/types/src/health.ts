@@ -1299,8 +1299,10 @@ export interface ImpactEffortPoint {
   effort_basis: "plan" | "file";
   /** Health points. */
   recoverable_health: number;
-  /** The file's best Fix-first tier, when it holds a Fix-first item. */
+  /** The tier of the file's first Fix-first item, when it holds one. */
   tier?: "now" | "next" | "later" | null;
+  /** That item's place in the Fix-first list, from 1. */
+  fix_rank?: number | null;
 }
 
 /** Every file the work queue's filters keep, history-only files excluded. */

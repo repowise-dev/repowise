@@ -2045,6 +2045,7 @@ export interface ImpactEffortPoint {
   effort_basis: string;
   recoverable_health: number;
   tier?: string | null;
+  fix_rank?: number | null;
 }
 
 /** Every file the work queue's filters keep, up to ``cap``. */
