@@ -214,3 +214,31 @@ async def test_loader_reads_extractions_for_a_finding_without_a_plan(async_sessi
         plans=[*PLANS, extraction],
     )
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
+
+
+async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import fix_first as loader
+
+    rid = await seed_fix_first(async_session)
+    builds = 0
+    original = loader._build
+
+    async def counting(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_build", counting)
+    loader.clear_fix_first_cache()
+    rows = {"metrics": METRICS, "findings": FINDINGS, "refactoring": REFACTORING,
+            "performance": PERFORMANCE, "plans": PLANS}
+
+    full = await load_fix_first(async_session, rid, limit=None)
+    assert full == build_fix_first(**rows, limit=None)
+    assert await load_fix_first(async_session, rid, limit=1) == build_fix_first(**rows, limit=1)
+    assert await load_fix_first(async_session, rid) == build_fix_first(**rows)
+    second = full.items[1].id
+    assert await load_fix_first(async_session, rid, item_id=second) == build_fix_first(
+        **rows, item_id=second
+    )
+    assert builds == 1

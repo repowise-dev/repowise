@@ -22,6 +22,7 @@ one aggregate read.
 from __future__ import annotations
 
 from collections import OrderedDict, namedtuple
+from dataclasses import replace
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
@@ -404,24 +405,51 @@ async def load_fix_first(
     """The Fix-first queue for one repository, from its stored analysis.
 
     ``item_id`` keeps only that item, at its rank, for a lookup by id.
+
+    The full queue is built once per store write and every ``limit`` and id
+    is a slice of it: the reads are the same whatever is kept, and writing
+    every item costs little next to them.
     """
-    key = (
+    base = (
         str(session.bind.url) if session.bind is not None else None,
         repository_id,
-        limit,
         scope,
-        item_id,
         await _stamp(session, repository_id),
     )
-    cached = _cache.get(key)
-    if cached is not None:
+    key = (*base, limit, item_id)
+    queue = _cached(key)
+    if queue is not None:
+        return queue
+    full = _cached((*base, None, None))
+    if full is None:
+        full = await _build(session, repository_id, limit=None, scope=scope, item_id=None)
+        _remember((*base, None, None), full)
+    queue = full if key[-2:] == (None, None) else _view(full, limit=limit, item_id=item_id)
+    _remember(key, queue)
+    return queue
+
+
+def _cached(key: tuple[Any, ...]) -> FixFirstQueue | None:
+    queue = _cache.get(key)
+    if queue is not None:
         _cache.move_to_end(key)
-        return cached
-    queue = await _build(session, repository_id, limit=limit, scope=scope, item_id=item_id)
+    return queue
+
+
+def _remember(key: tuple[Any, ...], queue: FixFirstQueue) -> None:
     _cache[key] = queue
     while len(_cache) > CACHE_SIZE:
         _cache.popitem(last=False)
-    return queue
+
+
+def _view(full: FixFirstQueue, *, limit: int | None, item_id: str | None) -> FixFirstQueue:
+    """What ``build_fix_first`` returns for this limit or id, from the full
+    queue: the same items at the same ranks, ``shown`` recounted."""
+    if item_id is not None:
+        items = tuple(i for i in full.items if i.id == item_id)
+    else:
+        items = full.items if limit is None else full.items[: max(limit, 0)]
+    return replace(full, items=items, totals=replace(full.totals, shown=len(items)))
 
 
 async def _build(
