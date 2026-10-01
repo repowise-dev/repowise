@@ -23,6 +23,7 @@ from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
+    runnable_tests,
     tests_reaching_by_tier,
 )
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
@@ -357,7 +358,9 @@ async def _analyze_consumer(
                 continue
             # The walk trims its own list per target; the join caps per consumer
             # and provider pair below and reports the cut, so start from all of them.
-            reached_tests = list(hit.all_tests or hit.tests)
+            reached_tests = runnable_tests(hit.all_tests or hit.tests)
+            if not reached_tests:
+                continue
             file_tests.update(reached_tests)
             if file_via is None or _TIER_PRIORITY.get(hit.via, 99) < _TIER_PRIORITY.get(file_via, 99):
                 file_via = hit.via

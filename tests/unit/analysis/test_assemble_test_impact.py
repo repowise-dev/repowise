@@ -56,6 +56,31 @@ def test_read_failures_mark_each_side_degraded() -> None:
     assert impact["analysis"]["status"] == "degraded"
 
 
+def test_a_conftest_the_walk_reached_is_not_a_recommendation() -> None:
+    """A fixture plugin is not a test to run; a real test beside it still is."""
+    impact = assemble_test_impact(
+        ["src/b.py", "src/c.py"],
+        {},
+        {
+            "src/b.py": {"tests": ["tests/conftest.py", "tests/test_b.py"], "via": "imports"},
+            "src/c.py": {"tests": ["tests/conftest.py"], "via": "call-graph"},
+        },
+        {},
+        repository_id="r1",
+    )
+    assert [r["test_id"] for r in impact["recommendations"]] == ["tests/test_b.py"]
+    # Reached only through the conftest: no runnable candidate is known.
+    assert impact["unknown_files"] == ["src/c.py"]
+
+
+def test_runnable_tests_drops_only_conftest() -> None:
+    from repowise.core.analysis.test_reachability import runnable_tests
+
+    assert runnable_tests(
+        ["conftest.py", "tests/a/conftest.py", "tests/test_conftest.py", "tests/helpers.py"]
+    ) == ["tests/test_conftest.py", "tests/helpers.py"]
+
+
 def test_nothing_changed() -> None:
     impact = assemble_test_impact([], {}, {}, {}, repository_id="r1")
     assert impact["files"] == []

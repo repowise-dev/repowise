@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
+from repowise.core.analysis.test_reachability import runnable_tests
 from repowise.core.exclusion import is_excluded
 from repowise.core.persistence.models import Repository
 
@@ -312,7 +313,7 @@ def assemble_test_impact(
             continue
         kept_tests = [
             test_id
-            for test_id in reached["tests"]
+            for test_id in runnable_tests(reached["tests"])
             if not (exclude_spec and is_excluded(test_id, exclude_spec))
         ]
         inferred_totals_by_file[path] = len(kept_tests)

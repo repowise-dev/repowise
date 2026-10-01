@@ -267,6 +267,22 @@ async def test_inferred_tests_treat_a_failed_graph_walk_as_no_reach(
 
 
 @pytest.mark.asyncio
+async def test_inferred_tests_never_list_a_conftest_to_run(monkeypatch, session, repo_id, tmp_path):
+    """The walk reports a conftest it stopped at; pytest collects nothing from one."""
+    import repowise.core.analysis.test_reachability as reach
+
+    async def _reaching(*_a, **_k):
+        return {"a.py": ["tests/unit/conftest.py", "tests/unit/test_a.py"]}
+
+    monkeypatch.setattr(reach, "tests_reaching", _reaching)
+    block = await tool._inferred_impacted(
+        session, repo_id, ["a.py"], OmissionCollector("get_change_risk", repo_root=tmp_path)
+    )
+    assert block["tests_to_run"] == ["tests/unit/test_a.py"]
+    assert block["total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_independent_changes_are_silent_for_one_file_or_an_unreadable_index(
     monkeypatch, factory, tmp_path
 ):
