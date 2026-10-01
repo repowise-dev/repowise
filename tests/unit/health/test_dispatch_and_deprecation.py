@@ -295,19 +295,37 @@ def plain():
 
 def finder(c):
     return find_deprecated_settings(c)
+
+def opt(x, old_opt=None):
+    warnings.warn("old_opt is deprecated, use new_opt", DeprecationWarning)
+    return x
+
+def late(x):
+    prepare(x)
+    check(x)
+    warnings.warn("late is deprecated", DeprecationWarning)
+
+def generic():
+    """Old."""
+    # Kept for one release.
+    warnings.warn("deprecated", DeprecationWarning)
 '''
 
 
-@pytest.mark.parametrize("name", ["old", "decorated", "bare_decorated"])
+@pytest.mark.parametrize("name", ["old", "decorated", "bare_decorated", "generic"])
 def test_python_deprecated(name: str) -> None:
     assert _functions("python", _PY_DEPRECATED)[name].deprecated is True
 
 
-@pytest.mark.parametrize("name", ["param", "warn_deprecated", "plain", "finder"])
+@pytest.mark.parametrize(
+    "name", ["param", "warn_deprecated", "plain", "finder", "opt", "late"]
+)
 def test_python_not_deprecated(name: str) -> None:
     # A warning in a branch deprecates a parameter, a helper that warns for
     # others is not itself deprecated, another warning category is not one, and
-    # returning a value from a deprecation helper is not a warning.
+    # returning a value from a deprecation helper is not a warning. A message
+    # naming a parameter deprecates the option, and a warning below the top of
+    # the body is not the function announcing itself.
     assert _functions("python", _PY_DEPRECATED)[name].deprecated is False
 
 

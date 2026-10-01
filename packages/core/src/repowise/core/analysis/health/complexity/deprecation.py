@@ -10,10 +10,12 @@ first thing to fix. This reads the two ways code says so:
   (``warnings.warn(..., DeprecationWarning)``, ``console.warn("... deprecated")``,
   a ``warn_deprecated(...)`` helper).
 
-Only a top-level warning counts. One inside a branch usually deprecates a
-parameter or a code path, not the function. A function whose own name says it
-warns (``warn_deprecated`` itself) is a helper for other deprecations and is
-not read as deprecated by its body.
+Only an unconditional warning at the top of the body counts (the first two
+statements after a docstring). One inside a branch, or one whose message
+names a parameter (``"old_opt is deprecated"``), deprecates an option or a
+code path, not the function. A function whose own name says it warns
+(``warn_deprecated`` itself) is a helper for other deprecations and is not
+read as deprecated by its body.
 """
 
 from __future__ import annotations
@@ -78,11 +80,39 @@ def _declaration_text(fn_node: Node, body: Node, source: bytes) -> list[str]:
     return texts
 
 
+_TOP_STATEMENTS = 2
+_IGNORED_PARAMETERS = frozenset({"self", "cls", "this"})
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _top_level_statements(body: Node) -> list[Node]:
-    named = body.named_children
+    """The first statements of the body, after a leading docstring."""
+    named = [c for c in body.named_children if "comment" not in c.type]
     if len(named) == 1 and named[0].type in _STATEMENT_LISTS:
-        named = named[0].named_children
-    return named
+        named = [c for c in named[0].named_children if "comment" not in c.type]
+    if named and named[0].type == "expression_statement" and named[0].named_children and (
+        named[0].named_children[0].type == "string"
+    ):
+        named = named[1:]
+    return named[:_TOP_STATEMENTS]
+
+
+def _parameter_names(fn_node: Node) -> set[str]:
+    params = fn_node.child_by_field_name("parameters") or next(
+        (c for c in fn_node.children if "parameter" in c.type), None
+    )
+    names: set[str] = set()
+    for param in params.named_children if params is not None else ():
+        name = (
+            param
+            if param.type == "identifier"
+            else param.child_by_field_name("name")
+            or param.child_by_field_name("pattern")
+            or next((c for c in param.named_children if c.type == "identifier"), None)
+        )
+        if name is not None and name.text:
+            names.add(name.text.decode("utf-8", errors="replace"))
+    return names - _IGNORED_PARAMETERS
 
 
 def _call_in(statement: Node, lmap: LanguageNodeMap) -> Node | None:
@@ -121,8 +151,11 @@ def is_deprecated(
         return True
     if _HELPER_NAME_RE.search(name) or body is fn_node:
         return False
+    parameters = _parameter_names(fn_node)
     for statement in _top_level_statements(body):
         call = _call_in(statement, lmap)
-        if call is not None and _warns_deprecation(call, source):
-            return True
+        if call is None or not _warns_deprecation(call, source):
+            continue
+        message = set(_WORD_RE.findall(_text(call.child_by_field_name("arguments"))))
+        return not (message & parameters)
     return False
