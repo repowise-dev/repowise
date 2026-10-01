@@ -7,7 +7,7 @@ nullable; where it coerces to a number they are not.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -245,3 +245,48 @@ class ImpactEffortResponse(BaseModel):
     gain_midline_points: float = 0.0
     #: Files left out because every finding on them is a history marker.
     history_only_excluded: int = 0
+
+
+class RelatedWorkRequest(BaseModel):
+    """The files to look up, repo-relative. Validated by the route."""
+
+    file_paths: list[str]
+
+
+class RelatedWorkItem(BaseModel):
+    """One row another lens holds for the file, compact enough to list."""
+
+    lens: Literal["findings", "fix_first", "refactoring", "performance", "dead_code"]
+    id: str
+    #: Biomarker, refactoring type, Fix-first kind or dead-code kind.
+    kind: str | None = None
+    title: str | None = None
+    symbol: str | None = None
+    severity: str | None = None
+    #: Fix-first tier, refactoring effort, performance actionability, or the
+    #: dead-code verdict (``safe_to_delete`` / ``review``).
+    tier: str | None = None
+    rank: int | None = None
+    line: int | None = None
+    #: Sent only when the stored row carries them.
+    code_origin: str | None = None
+    deprecated: bool | None = None
+
+
+class RelatedWorkLens(BaseModel):
+    items: list[RelatedWorkItem] = []
+    #: Every row the lens holds for the file; ``items`` stops at the limit.
+    total: int = 0
+
+
+class RelatedWorkFile(BaseModel):
+    file_path: str
+    #: Keyed by lens; a lens with nothing for the file is absent.
+    lenses: dict[str, RelatedWorkLens] = {}
+
+
+class RelatedWorkResponse(BaseModel):
+    """``RelatedWork.as_dict()``: files in request order."""
+
+    files: list[RelatedWorkFile] = []
+    per_lens_limit: int = 0

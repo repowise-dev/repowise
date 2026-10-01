@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -432,6 +433,7 @@ async def get_health_findings(
     min_severity: str | None = None,
     severity: str | None = None,
     file_path: str | None = None,
+    file_paths: Sequence[str] | None = None,
     dimension: str | None = None,
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
@@ -455,6 +457,9 @@ async def get_health_findings(
     ``open`` / ``acknowledged`` / ``resolved`` / ``false_positive``, or ``all``
     to drop the filter, so a triage surface can show what it has already
     reviewed without a second read.
+
+    ``file_paths`` scopes to a set of files in one read; an empty sequence
+    matches nothing.
     """
     q = select(HealthFinding).where(HealthFinding.repository_id == repository_id)
     statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -477,6 +482,8 @@ async def get_health_findings(
         q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
+    if file_paths is not None:
+        q = q.where(HealthFinding.file_path.in_(list(file_paths)))
     if dimension is not None:
         # Older rows predate the split and carry a NULL dimension that homes
         # under "defect"; fold those in so a defect filter never drops them.

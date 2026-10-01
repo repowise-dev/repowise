@@ -1080,6 +1080,18 @@ export type {
 } from "./generated/http.js";
 
 /**
+ * What the other lenses hold for the same files: per file, findings, Fix
+ * first, refactoring, performance and dead code, each capped with its total.
+ * A lens with nothing for a file is absent from `lenses`.
+ */
+export type {
+  RelatedWorkFile,
+  RelatedWorkItem,
+  RelatedWorkLens,
+  RelatedWorkResponse,
+} from "./generated/http.js";
+
+/**
  * Which signal answered "is this tested". `measured` is a coverage report: it
  * records the lines a test really executed. `inferred` is the dependency graph:
  * a test whose calls reach this file, which says control *can* flow there, not

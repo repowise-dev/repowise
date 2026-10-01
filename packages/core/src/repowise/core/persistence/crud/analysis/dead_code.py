@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select, text
@@ -228,6 +229,7 @@ async def get_dead_code_findings(
     safe_to_delete: bool | None = None,
     limit: int | None = None,
     include_withheld: bool = False,
+    file_paths: Sequence[str] | None = None,
 ) -> list[DeadCodeFinding]:
     """Return dead code findings filtered by kind, confidence, and status.
 
@@ -237,7 +239,8 @@ async def get_dead_code_findings(
     ``safe_to_delete`` and ``limit`` exist so a caller that wants a short
     preview does not have to load every open finding in the repository and
     then throw most of them away in Python. Overview does exactly that for a
-    five-row list.
+    five-row list. ``file_paths`` scopes to a set of files (an empty sequence
+    matches nothing), on the repository/path index.
     """
     q = select(DeadCodeFinding).where(
         DeadCodeFinding.repository_id == repository_id,
@@ -250,6 +253,8 @@ async def get_dead_code_findings(
         q = q.where(DeadCodeFinding.kind.not_in(excluded_types(requested=[kind] if kind else ())))
     if safe_to_delete is not None:
         q = q.where(DeadCodeFinding.safe_to_delete.is_(safe_to_delete))
+    if file_paths is not None:
+        q = q.where(DeadCodeFinding.file_path.in_(list(file_paths)))
     q = q.order_by(DeadCodeFinding.confidence.desc())
     if limit is not None:
         q = q.limit(limit)

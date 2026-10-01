@@ -2784,6 +2784,42 @@ export interface RefactoringTypeCount {
   count: number;
 }
 
+export interface RelatedWorkFile {
+  file_path: string;
+  lenses?: Record<string, RelatedWorkLens>;
+}
+
+/** One row another lens holds for the file, compact enough to list. */
+export interface RelatedWorkItem {
+  lens: "findings" | "fix_first" | "refactoring" | "performance" | "dead_code";
+  id: string;
+  kind?: string | null;
+  title?: string | null;
+  symbol?: string | null;
+  severity?: string | null;
+  tier?: string | null;
+  rank?: number | null;
+  line?: number | null;
+  code_origin?: string | null;
+  deprecated?: boolean | null;
+}
+
+export interface RelatedWorkLens {
+  items?: RelatedWorkItem[];
+  total?: number;
+}
+
+/** The files to look up, repo-relative. Validated by the route. */
+export interface RelatedWorkRequest {
+  file_paths: string[];
+}
+
+/** ``RelatedWork.as_dict()``: files in request order. */
+export interface RelatedWorkResponse {
+  files?: RelatedWorkFile[];
+  per_lens_limit?: number;
+}
+
 export interface RepoCreate {
   name: string;
   local_path: string;
