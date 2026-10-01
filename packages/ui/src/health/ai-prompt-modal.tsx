@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, MessageCircleQuestion, Sparkles } from "lucide-react";
 import type { ChatContext } from "@repowise-dev/types/chat";
 import {
@@ -88,34 +88,45 @@ function usePromptSource(source: PromptSource | undefined, flavor: AiPromptFlavo
 
 /** The text, or while a fetched prompt is pending or failed, a stand-in for it. */
 function PromptText({ text, load }: { text: string; load: PromptLoad | null }) {
-  if (load?.status === "loading") {
-    return (
-      <SkeletonRegion className="space-y-2" label="Loading the prompt">
-        <Skeleton className="h-3 w-3/4" />
-        <Skeleton className="h-3 w-full" />
-        <Skeleton className="h-3 w-5/6" />
-        <Skeleton className="h-3 w-2/3" />
-      </SkeletonRegion>
-    );
-  }
-  if (load?.status === "failed") {
-    return (
-      <p className="text-xs text-[var(--color-text-secondary)]">
-        Couldn't load the prompt.{" "}
-        <button
-          type="button"
-          onClick={load.retry}
-          className="rounded font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-        >
-          Retry
-        </button>
-      </p>
-    );
-  }
-  return (
+  const pre = (
     <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
       {text}
     </pre>
+  );
+  return load ? <FetchedPromptText load={load} pre={pre} /> : pre;
+}
+
+/** A fetched prompt's states in one wrapper that outlives them, so Retry can
+ *  park focus on it before the button unmounts rather than drop it to the page. */
+function FetchedPromptText({ load, pre }: { load: PromptLoad; pre: ReactNode }) {
+  const pane = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={pane} tabIndex={-1} className="min-w-0 outline-none">
+      {load.status === "loading" ? (
+        <SkeletonRegion className="space-y-2" label="Loading the prompt">
+          <Skeleton className="h-3 w-3/4" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-5/6" />
+          <Skeleton className="h-3 w-2/3" />
+        </SkeletonRegion>
+      ) : load.status === "failed" ? (
+        <p role="alert" className="text-xs text-[var(--color-text-secondary)]">
+          Couldn't load the prompt.{" "}
+          <button
+            type="button"
+            onClick={() => {
+              pane.current?.focus();
+              load.retry();
+            }}
+            className="rounded font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          >
+            Retry
+          </button>
+        </p>
+      ) : (
+        pre
+      )}
+    </div>
   );
 }
 

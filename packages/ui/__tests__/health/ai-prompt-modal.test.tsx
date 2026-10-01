@@ -172,8 +172,12 @@ describe("AiPromptModal with a fetched prompt", () => {
       .mockRejectedValueOnce(new Error("down"))
       .mockResolvedValueOnce("Second try");
     renderFetched(source);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Couldn't load the prompt.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     expect(await screen.findByText("Second try")).toBeTruthy();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     expect(source).toHaveBeenCalledTimes(2);
   });
 
