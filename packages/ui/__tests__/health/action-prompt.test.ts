@@ -62,4 +62,12 @@ describe("buildActionPrompt", () => {
     expect(generic).toContain("repowise health --file src/a.py");
     expect(generic).not.toContain("working on one file");
   });
+
+  // The core renderer is parity-tested against this text, so a change to the
+  // shared preamble must not move a byte of it.
+  it("keeps every flavor's text unchanged", () => {
+    for (const flavor of ["generic", "claude-code", "claude-code-mcp", "cursor"] as const) {
+      expect(buildActionPrompt({ action: rollup, flavor, repoName: "repo" })).toMatchSnapshot(flavor);
+    }
+  });
 });

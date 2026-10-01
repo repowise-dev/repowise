@@ -139,4 +139,14 @@ describe("Fix first agent prompt", () => {
     const prompt = buildFixItemPrompt({ item: FINDING });
     expect(prompt).toContain("No guarding tests found.");
   });
+
+  // The core renderer is parity-tested against this text, so a change to the
+  // shared preamble must not move a byte of it.
+  it("keeps every flavor's text unchanged", () => {
+    for (const flavor of ["generic", "claude-code", "claude-code-mcp", "cursor"] as const) {
+      for (const item of [REFACTOR, FINDING, PERF]) {
+        expect(buildFixItemPrompt({ item, flavor, repoName: "repo" })).toMatchSnapshot(`${item.id} ${flavor}`);
+      }
+    }
+  });
 });

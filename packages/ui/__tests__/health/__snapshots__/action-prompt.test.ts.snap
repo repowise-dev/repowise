@@ -1,0 +1,117 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildActionPrompt > keeps every flavor's text unchanged > claude-code 1`] = `
+"You are Claude Code in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: read the code with Read and Grep, confirm it, and use TodoWrite to track the files you work through.
+## Action (\`repo\`)
+**Clean up what this week's commits left: 3 serious findings in 2 files**
+2 commits in the last 7 days added or worsened them.
+## Why it is on the list
+- critical: 1
+- Effort estimate: M; confidence in the facts: high
+## Evidence (1 of 3, worst first)
+- \`src/a.py:40\`: \`build\`, Complex method, critical (commit abc1234def)
+  - build has cyclomatic complexity 31
+
+…and 2 more. The first call under "Look closer" returns them.
+## Look closer (Repowise CLI)
+- Every open finding in these files:
+  \`repowise health --file src/a.py\`
+## Done when
+The findings close on the next update.
+## Hard constraints
+- **Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.
+- **Stay inside what the action names.** Work only on the files and functions listed. If the right fix is elsewhere, stop and say where and why.
+- **Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the tests that cover each file before and after.
+- **Say when an item is wrong.** If a finding does not hold, or its fix would cost more than it saves, report that rather than forcing an edit.
+## What I expect back
+1. For each item you looked at: whether it held, and what you changed or why you left it.
+2. The tests you ran, before and after.
+3. What remains against the done condition."
+`;
+
+exports[`buildActionPrompt > keeps every flavor's text unchanged > claude-code-mcp 1`] = `
+"You are Claude Code in this repository, which Repowise indexes and serves over MCP. The action below comes from Repowise's stored analysis. Use the MCP calls listed under "Look closer" before reading files by hand: they return the full evidence with line numbers, reasons and history. Treat each item as a lead to confirm against the code.
+## Action (\`repo\`)
+**Clean up what this week's commits left: 3 serious findings in 2 files**
+2 commits in the last 7 days added or worsened them.
+## Why it is on the list
+- critical: 1
+- Effort estimate: M; confidence in the facts: high
+## Evidence (1 of 3, worst first)
+- \`src/a.py:40\`: \`build\`, Complex method, critical (commit abc1234def)
+  - build has cyclomatic complexity 31
+
+…and 2 more. The first call under "Look closer" returns them.
+## Look closer (Repowise MCP)
+- Every open finding in these files:
+  \`get_health(targets=["src/a.py", "src/b.py"], include=["biomarkers"])\`
+## Done when
+The findings close on the next update.
+## Hard constraints
+- **Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.
+- **Stay inside what the action names.** Work only on the files and functions listed. If the right fix is elsewhere, stop and say where and why.
+- **Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the tests that cover each file before and after.
+- **Say when an item is wrong.** If a finding does not hold, or its fix would cost more than it saves, report that rather than forcing an edit.
+## What I expect back
+1. For each item you looked at: whether it held, and what you changed or why you left it.
+2. The tests you ran, before and after.
+3. What remains against the done condition."
+`;
+
+exports[`buildActionPrompt > keeps every flavor's text unchanged > cursor 1`] = `
+"Work in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: open the file with @file, confirm it, then act.
+## Action (\`repo\`)
+**Clean up what this week's commits left: 3 serious findings in 2 files**
+2 commits in the last 7 days added or worsened them.
+## Why it is on the list
+- critical: 1
+- Effort estimate: M; confidence in the facts: high
+## Evidence (1 of 3, worst first)
+- \`src/a.py:40\`: \`build\`, Complex method, critical (commit abc1234def)
+  - build has cyclomatic complexity 31
+
+…and 2 more. The first call under "Look closer" returns them.
+## Look closer (Repowise CLI)
+- Every open finding in these files:
+  \`repowise health --file src/a.py\`
+## Done when
+The findings close on the next update.
+## Hard constraints
+- **Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.
+- **Stay inside what the action names.** Work only on the files and functions listed. If the right fix is elsewhere, stop and say where and why.
+- **Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the tests that cover each file before and after.
+- **Say when an item is wrong.** If a finding does not hold, or its fix would cost more than it saves, report that rather than forcing an edit.
+## What I expect back
+1. For each item you looked at: whether it held, and what you changed or why you left it.
+2. The tests you ran, before and after.
+3. What remains against the done condition."
+`;
+
+exports[`buildActionPrompt > keeps every flavor's text unchanged > generic 1`] = `
+"You are a senior engineer in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis of the repository (git history, code health, the dependency graph). Its evidence is listed in full or in part; treat each item as a lead to verify against the code, not as ground truth.
+## Action (\`repo\`)
+**Clean up what this week's commits left: 3 serious findings in 2 files**
+2 commits in the last 7 days added or worsened them.
+## Why it is on the list
+- critical: 1
+- Effort estimate: M; confidence in the facts: high
+## Evidence (1 of 3, worst first)
+- \`src/a.py:40\`: \`build\`, Complex method, critical (commit abc1234def)
+  - build has cyclomatic complexity 31
+
+…and 2 more. The first call under "Look closer" returns them.
+## Look closer (Repowise CLI)
+- Every open finding in these files:
+  \`repowise health --file src/a.py\`
+## Done when
+The findings close on the next update.
+## Hard constraints
+- **Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.
+- **Stay inside what the action names.** Work only on the files and functions listed. If the right fix is elsewhere, stop and say where and why.
+- **Keep behaviour unless the action is about behaviour.** Refactors and test additions must not change what the code does; run the tests that cover each file before and after.
+- **Say when an item is wrong.** If a finding does not hold, or its fix would cost more than it saves, report that rather than forcing an edit.
+## What I expect back
+1. For each item you looked at: whether it held, and what you changed or why you left it.
+2. The tests you ran, before and after.
+3. What remains against the done condition."
+`;
