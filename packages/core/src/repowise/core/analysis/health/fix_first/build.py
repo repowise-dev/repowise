@@ -796,6 +796,22 @@ def _has_plan(row: Any) -> bool:
     return field(row, "plan_state") == "available" and bool(field(row, "fix_strategy"))
 
 
+#: Causes whose cost is real only in shipped code over a loop that grows: a
+#: string built in a bounded loop, or in a script, costs nothing a user sees.
+GROWS_ONLY_MARKERS = frozenset({"string_concat_in_loop"})
+
+
+def _perf_worth(row: Any) -> bool:
+    """Whether a planned cause is worth an item at all."""
+    if field(row, "biomarker_type") not in GROWS_ONLY_MARKERS:
+        return True
+    facets = detail_map(row).get("facets") or {}
+    return (
+        field(row, "execution_context") == "production"
+        and facets.get("loop_magnitude") == "grows_with_data"
+    )
+
+
 def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     production = field(row, "execution_context") == "production"
     grows = facets.get("loop_magnitude") == "grows_with_data"
@@ -1266,7 +1282,11 @@ def build_fix_first(
         if not ready:
             excluded["no_plan" if queued else reasons[0] or "no_plan"] += 1
             continue
-        units.append(_perf_unit(ready, files))
+        worth = [r for r in ready if _perf_worth(r)]
+        if not worth:
+            excluded["below_min_worth"] += 1
+            continue
+        units.append(_perf_unit(worth, files))
 
     for path, (shape, history) in split.items():
         if path in planned_files:
@@ -1313,6 +1333,7 @@ __all__ = [
     "DEFAULT_LIMIT",
     "DISPATCH_SHARE",
     "GAIN_CUTS",
+    "GROWS_ONLY_MARKERS",
     "HEAD",
     "HEAD_PER_KIND",
     "MIN_WORTH",

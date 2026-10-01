@@ -231,3 +231,34 @@ def test_split_file_needs_named_groups() -> None:
 def test_an_extract_method_step_without_a_span_is_no_candidate() -> None:
     assert _refactor_queue("extract_method", {"params": []}).totals.excluded[
         "no_concrete_step"] == 1
+
+
+# --- F7: string building in a bounded loop -------------------------------------
+
+
+def _concat(**facets) -> dict:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf("perf3_concat", "", biomarker_type="string_concat_in_loop", boundary_kind=None,
+                fix_strategy="buffer_string_accumulation")
+    row["details"] = {**row["details"], "facets": {**row["details"]["facets"], **facets}}
+    return row
+
+
+def _perf_queue(*rows):
+    return build_fix_first(metrics=[_metric("src/repo.py")], performance=list(rows))
+
+
+def test_string_concat_needs_a_loop_that_grows() -> None:
+    assert len(_perf_queue(_concat()).items) == 1
+    for magnitude in ("bounded", "unknown"):
+        queue = _perf_queue(_concat(loop_magnitude=magnitude))
+        assert queue.items == () and queue.totals.excluded["below_min_worth"] == 1
+
+
+def test_other_causes_keep_an_unknown_loop() -> None:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf("perf3_db", "src/db.py::fetch")
+    row["details"] = {**row["details"], "facets": {"loop_magnitude": "unknown"}}
+    assert len(_perf_queue(row).items) == 1
