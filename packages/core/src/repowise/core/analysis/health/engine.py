@@ -26,6 +26,7 @@ from typing import Any
 import structlog
 
 from ...code_origin import CodeOrigin, code_origin
+from ...git_refs import remote_name
 from ...ingestion.git_indexer.enrich import count_active_contributors
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
@@ -118,6 +119,11 @@ log = structlog.get_logger(__name__)
 # moves, a span must clear a minimum-worth floor, ``slice_nloc`` counts code
 # lines only, and JSX prop plumbing earns no Extract Method. Stored plans and
 # opportunities change, and ``REFACTORING_MODEL_VERSION`` moved with this.
+# v37 (also): the walker records ``dispatch_share`` and ``deprecated`` per
+# function, which a cached v36 walk does not carry, and each file metric gains
+# ``code_origin``. Complexity findings copy ``dispatch_share`` into their
+# details and findings on a deprecated function gain ``deprecated: true``. No
+# CCN, threshold, weight or score moves.
 #
 # v36 (also): which files are tests changed (``repowise.core.test_paths``).
 # Compound directories headed by a test word (``e2e-tests/``, ``pkg_tests/``,
@@ -134,12 +140,6 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
-#
-# v37: the walker records ``dispatch_share`` and ``deprecated`` per function,
-# which a cached v36 walk does not carry, and each file metric gains
-# ``code_origin``. Complexity findings copy ``dispatch_share`` into their
-# details and findings on a deprecated function gain ``deprecated: true``. No
-# CCN, threshold, weight or score moves.
 #
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
@@ -622,11 +622,10 @@ class HealthAnalyzer:
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
-        # The repository's name, so its own release banner is never read as a
-        # vendored library's. Origins are decided in ``_walk``, which holds the
-        # bytes, and kept by path: the walk cache keys on content alone, so a
-        # path-dependent answer cannot live on the cached walk.
-        self._project = Path(str(repo_root)).name if repo_root is not None else None
+        # Origins are decided in ``_walk``, which holds the bytes, and kept by
+        # path: the walk cache keys on content alone, so a path-dependent
+        # answer cannot live on the cached walk.
+        self._project_name: str | None = None
         self._origins: dict[str, CodeOrigin] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
@@ -1307,12 +1306,22 @@ class HealthAnalyzer:
             self._walk_cache.put(key, fcx)
         return fcx
 
+    def _project(self) -> str | None:
+        """The repository's name, so its own release banner is never read as a
+        vendored library's. The ``origin`` remote names it even in a worktree;
+        the checkout folder is the fallback. One git call per pass, on first use.
+        """
+        if self._project_name is None and self.repo_root is not None:
+            root = str(self.repo_root)
+            self._project_name = remote_name(root) or Path(root).name
+        return self._project_name
+
     def _origin(self, pf: Any, source: bytes | None = None) -> CodeOrigin:
         return code_origin(
             pf.file_info.path,
             source,
             is_test=bool(pf.file_info.is_test),
-            project=self._project,
+            project=self._project(),
         )
 
     def _save_walk_cache(self) -> None:

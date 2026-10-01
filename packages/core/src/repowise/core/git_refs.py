@@ -72,6 +72,17 @@ def toplevel(repo_path: str) -> str:
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
 
 
+def remote_name(repo_path: str) -> str:
+    """The repository's name on its ``origin`` remote, ``""`` when it has none.
+
+    The checkout folder is not the name in a worktree or a renamed clone; the
+    remote URL's last segment is, for every host's URL shape.
+    """
+    url = _read(repo_path, ["config", "--get", "remote.origin.url"]).rstrip("/")
+    name = url.replace("\\", "/").replace(":", "/").rsplit("/", 1)[-1]
+    return name[: -len(".git")] if name.endswith(".git") else name
+
+
 def tracked_paths(repo_path: str) -> frozenset[str]:
     """Every path git tracks, repo-relative POSIX, or empty when git cannot answer."""
     return frozenset(p for p in _read(repo_path, ["ls-files", "-z"]).split("\0") if p)
