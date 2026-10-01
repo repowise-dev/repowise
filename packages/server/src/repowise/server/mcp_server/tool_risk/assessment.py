@@ -555,7 +555,10 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dependency_population = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
+    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    dependency_population = _dependency_population(
+        lookup_path, reverse_deps, node_meta, exclude_spec
+    )
     dependents = dependency_population[:_RELATIONSHIP_LIMIT]
     # If both distances exist, protect one transitive row from a large direct
     # fan-in. Otherwise the totals would say transitive reach exists while the
@@ -654,8 +657,6 @@ async def _assess_one_target(
     # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
     # once and key every file-path lookup on it, but keep the response keyed by
     # what the caller asked for.
-    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
-
     # Git metadata
     res = await session.execute(
         select(GitMetadata).where(
