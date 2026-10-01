@@ -7,6 +7,7 @@ export default defineConfig({
   // deterministic: no index is present, so activation never spawns a server or
   // touches a live store.
   workspaceFolder: "src/test/fixtures/empty-workspace",
+  launchArgs: ["--disable-gpu", "--disable-dev-shm-usage"],
   mocha: {
     ui: "bdd",
     timeout: 20000,

@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
 
+const EDIT_DEBOUNCE_MS = 300;
+
 /** One Problems-panel feature, as a configuration of the shared lifecycle. */
 export interface EditorDiagnosticsSpec<T> {
   /** Diagnostic collection name. */
@@ -15,7 +17,9 @@ export interface EditorDiagnosticsSpec<T> {
   load(ctx: RepowiseContext, rel: string): Promise<T[]>;
   /** Per-item key; a file is republished only when its sorted set changes. */
   signature(item: T): string;
-  toDiagnostic(doc: vscode.TextDocument, item: T): vscode.Diagnostic;
+  toDiagnostic(doc: vscode.TextDocument, item: T): vscode.Diagnostic | null | undefined;
+  /** When true, recomputes diagnostic ranges on document edits without refetching. */
+  recomputeOnEdit?: boolean;
 }
 
 /**
@@ -32,6 +36,10 @@ export function registerEditorDiagnostics<T>(
 
   /** Last published item-set signature per document URI, for diff-only set. */
   const signatures = new Map<string, string>();
+  /** Cached items per document URI for recomputation on edit. */
+  const cachedItems = new Map<string, T[]>();
+  /** Active debounce timers per document URI. */
+  const editTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Lazily created freshness subscription, so activate() does no watching. */
   let watcherSub: vscode.Disposable | null = null;
   /** Bumped per refresh run; a run that sees a newer value stops publishing. */
@@ -43,14 +51,29 @@ export function registerEditorDiagnostics<T>(
   function clearAll(): void {
     collection.clear();
     signatures.clear();
+    cachedItems.clear();
+    for (const timer of editTimers.values()) {
+      clearTimeout(timer);
+    }
+    editTimers.clear();
   }
 
-  function publish(doc: vscode.TextDocument, items: T[]): void {
-    const signature = items.map(spec.signature).sort().join("|");
+  function publish(doc: vscode.TextDocument, items: T[], force = false): void {
     const uriKey = doc.uri.toString();
-    if (signatures.get(uriKey) === signature) return;
-    signatures.set(uriKey, signature);
-    collection.set(doc.uri, items.map((item) => spec.toDiagnostic(doc, item)));
+    cachedItems.set(uriKey, items);
+
+    if (!force) {
+      const signature = items.map(spec.signature).sort().join("|");
+      if (signatures.get(uriKey) === signature) return;
+      signatures.set(uriKey, signature);
+    }
+
+    const diagnostics: vscode.Diagnostic[] = [];
+    for (const item of items) {
+      const d = spec.toDiagnostic(doc, item);
+      if (d) diagnostics.push(d);
+    }
+    collection.set(doc.uri, diagnostics);
   }
 
   async function refreshAll(): Promise<void> {
@@ -75,10 +98,17 @@ export function registerEditorDiagnostics<T>(
     }
 
     // Drop entries for documents that are no longer visible.
-    for (const uriKey of [...signatures.keys()]) {
+    const trackedKeys = new Set([...signatures.keys(), ...cachedItems.keys()]);
+    for (const uriKey of trackedKeys) {
       if (!visible.has(uriKey)) {
         collection.delete(vscode.Uri.parse(uriKey));
         signatures.delete(uriKey);
+        cachedItems.delete(uriKey);
+        const timer = editTimers.get(uriKey);
+        if (timer) {
+          clearTimeout(timer);
+          editTimers.delete(uriKey);
+        }
       }
     }
   }
@@ -95,6 +125,33 @@ export function registerEditorDiagnostics<T>(
       void ctx.refreshRepo().then(() => refreshAll());
     });
     disposables.push(watcherSub);
+  }
+
+  if (spec.recomputeOnEdit) {
+    disposables.push(
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (!active()) return;
+        const doc = event.document;
+        if (spec.accept && !spec.accept(doc)) return;
+        const isVisible = vscode.window.visibleTextEditors.some(
+          (e) => e.document.uri.toString() === doc.uri.toString(),
+        );
+        if (!isVisible) return;
+        const uriKey = doc.uri.toString();
+        const items = cachedItems.get(uriKey);
+        if (!items) return;
+
+        const existing = editTimers.get(uriKey);
+        if (existing) clearTimeout(existing);
+
+        const timer = setTimeout(() => {
+          editTimers.delete(uriKey);
+          if (!active()) return;
+          publish(doc, items, true);
+        }, EDIT_DEBOUNCE_MS);
+        editTimers.set(uriKey, timer);
+      }),
+    );
   }
 
   disposables.push(
@@ -118,5 +175,11 @@ export function registerEditorDiagnostics<T>(
   }
 
   // Reads the array at dispose time, so the lazily pushed watcher is included.
-  return new vscode.Disposable(() => disposables.forEach((d) => d.dispose()));
+  return new vscode.Disposable(() => {
+    for (const timer of editTimers.values()) {
+      clearTimeout(timer);
+    }
+    editTimers.clear();
+    disposables.forEach((d) => d.dispose());
+  });
 }
