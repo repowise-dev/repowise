@@ -71,8 +71,26 @@ NON_LEADING_MARKERS = frozenset({"lazy_load_in_loop"})
 
 ``lazy_load_in_loop`` measured 81% on held-out Django (47/58, 2026-09-26), inside the
 80-90% tier whose pre-registered rule is "advisory, never leads". Remove a marker once a
-held-out sample puts it at 90% or above.
+held-out sample puts it at 90% or above, or list the ORM that cleared it below.
 """
+
+LEADING_ORMS = {"lazy_load_in_loop": frozenset({"django"})}
+"""ORMs a non-leading marker may lead for, read off each finding's ``details["orm"]``.
+
+Django cleared the bar on a fresh held-out sample after narrowing (29/32 = 90.6%,
+Wilson LB 75.8%); SQLAlchemy has fewer than 30 labels and stays non-leading.
+"""
+
+
+def may_lead(marker: str, orms: set[Any]) -> bool:
+    """Whether a group of *marker* with members on *orms* may lead the directive.
+
+    Every member has to be on an ORM that cleared the bar: one unmeasured member
+    is enough to keep the group from leading.
+    """
+    if marker not in NON_LEADING_MARKERS:
+        return True
+    return bool(orms) and orms <= LEADING_ORMS.get(marker, frozenset())
 
 UNKNOWN_MULTIPLIER_POINTS = 1
 """A detector added without a weight under-ranks rather than jumps the queue."""
@@ -312,8 +330,10 @@ __all__ = [
     "DEFAULT_QUEUE_CONTEXTS",
     "DEFAULT_QUEUE_EXCLUSIONS",
     "DEFAULT_QUEUE_STATES",
+    "LEADING_ORMS",
     "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
+    "NON_LEADING_MARKERS",
     "PROVENANCE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
     "amplification",
@@ -325,6 +345,7 @@ __all__ = [
     "exposure",
     "leverage",
     "loop_magnitude",
+    "may_lead",
     "observation_rank",
     "rank_factors",
     "rank_sort_key",

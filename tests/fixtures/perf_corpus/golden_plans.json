@@ -1182,6 +1182,130 @@
         "call_sites": 1,
         "file_count": 1,
         "files": [
+          "app/incidents/service.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "lazy_load_in_loop",
+        "biomarker_types": [
+          "lazy_load_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 1,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "app/incidents/service.py",
+      "impact_delta": 0.0,
+      "line_end": 50,
+      "line_start": 50,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "app/incidents/service.py",
+            "function_name": "notify_owners",
+            "line_end": 50,
+            "line_start": 50
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": null,
+        "evidence_truncated": false,
+        "intervention_symbol": "app/incidents/service.py::notify_owners",
+        "judgment_steps": 0,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf3_93a53323a7db0544017f",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "steps": [],
+        "strategy": "eager_load_relationship"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "lazy_load_in_loop",
+      "target_symbol": "app/incidents/service.py::notify_owners"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "app/issues/views.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "lazy_load_in_loop",
+        "biomarker_types": [
+          "lazy_load_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 1,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "app/issues/views.py",
+      "impact_delta": 0.0,
+      "line_end": 30,
+      "line_start": 30,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "app/issues/views.py",
+            "function_name": "issue_list",
+            "line_end": 30,
+            "line_start": 30
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": null,
+        "evidence_truncated": false,
+        "intervention_symbol": "app/issues/views.py::issue_list",
+        "judgment_steps": 0,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf3_942cceadc50a644175e4",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "steps": [],
+        "strategy": "eager_load_relationship"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "lazy_load_in_loop",
+      "target_symbol": "app/issues/views.py::issue_list"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
           "src/app/orders.py"
         ]
       },

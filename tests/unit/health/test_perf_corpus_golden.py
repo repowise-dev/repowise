@@ -163,6 +163,8 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         ("one_loop_many_sinks", 1, {"batch_or_prefetch_io"}),
         # A direct sink, its nested co-signal and a helper call in one loop: one edit.
         ("one_loop_mixed_shapes", 1, {"batch_or_prefetch_io"}),
+        # One marker, two ORMs: the ORM is a fact on the finding, not an identity.
+        ("lazy_load_by_orm", 2, {"eager_load_relationship"}),
     ],
 )
 def test_case_membership_and_actionability(case, expected_groups, expected_strategies) -> None:
@@ -310,3 +312,11 @@ def test_the_default_queue_counts_everything_it_leaves_out() -> None:
             assert item.fix is not None
         elif reason == "no_strategy":
             assert item.fix is None and item.actionability_state == "investigate"
+
+
+def test_a_lazy_load_leads_only_where_its_orm_cleared_the_bar() -> None:
+    by_orm = {
+        item.evidence[0]["file_path"]: item.may_lead
+        for item in build_performance_opportunities(rows_for("lazy_load_by_orm"))
+    }
+    assert by_orm == {"app/issues/views.py": True, "app/incidents/service.py": False}

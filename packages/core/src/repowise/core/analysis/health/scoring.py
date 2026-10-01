@@ -465,8 +465,17 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "sql_cartesian_join": 0.6,
     # Advisory pending a corpus precision gate, like every new perf marker.
     "unbounded_read_reduced_in_memory": 0.4,
-    # Advisory until the pre-registered precision tiers are measured (2026-09-26).
+    # Advisory for an ORM without a held-out measurement; see the per-ORM table below.
     "lazy_load_in_loop": 0.4,
+}
+
+# Per-finding weight for a marker whose precision differs by ORM, keyed by the
+# finding's ``details["orm"]``. One marker, one id: the ORM is a fact on the
+# finding, not a second marker. Django measured 29/32 = 90.6% (Wilson LB 75.8%)
+# on a fresh held-out sample (2026-09-26), which clears the 90% bar; SQLAlchemy
+# (20/24, n < 30) has no tier yet and keeps the marker weight above.
+_PERFORMANCE_ORM_WEIGHT: dict[str, dict[str, float]] = {
+    "lazy_load_in_loop": {"django": 0.7},
 }
 
 # All perf biomarkers share one ``performance`` category, so the single cap
@@ -596,8 +605,15 @@ def maintainability_category(name: str) -> str:
     return _MAINTAINABILITY_CATEGORY.get(name, "size_and_complexity")
 
 
-def performance_weight(name: str) -> float:
-    """Performance multiplier; 1.0 for unknown biomarkers."""
+def performance_weight(name: str, orm: str | None = None) -> float:
+    """Performance multiplier; 1.0 for unknown biomarkers.
+
+    *orm* is the finding's ``details["orm"]``: a marker measured per ORM carries
+    that ORM's weight, and falls back to the marker's own for any other.
+    """
+    by_orm = _PERFORMANCE_ORM_WEIGHT.get(name, {})
+    if orm in by_orm:
+        return by_orm[orm]
     return _PERFORMANCE_WEIGHT_MULTIPLIER.get(name, 1.0)
 
 
@@ -608,7 +624,7 @@ def performance_category(name: str) -> str:
 
 def _score_dimension(
     results_list: list[BiomarkerResult],
-    weight_fn: Callable[[str], float],
+    weight_fn: Callable[[BiomarkerResult], float],
     category_fn: Callable[[str], str],
     caps: dict[str, float],
     conditioned_cap: tuple[str, Callable[[float], float]] | None = None,
@@ -631,7 +647,7 @@ def _score_dimension(
         # both paths are then weighted and category-capped identically, so the
         # per-finding ``health_impact`` stays linear and attributable.
         base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
-        weighted = base * weight_fn(r.biomarker_type)
+        weighted = base * weight_fn(r)
         raw.setdefault(cat, []).append((idx, weighted))
 
     per_result = [0.0] * len(results_list)
@@ -720,7 +736,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     defect_results = [results_list[i] for i in defect_idx]
     defect_score, defect_sub = _score_dimension(
         defect_results,
-        biomarker_weight,
+        lambda r: biomarker_weight(r.biomarker_type),
         biomarker_category,
         CATEGORY_CAPS,
         conditioned_cap=(HISTORY_CATEGORY, history_cap),
@@ -734,7 +750,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     ]
     maint_score, _ = _score_dimension(
         maint_results,
-        maintainability_weight,
+        lambda r: maintainability_weight(r.biomarker_type),
         maintainability_category,
         _MAINTAINABILITY_CATEGORY_CAPS,
     )
@@ -744,7 +760,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     perf_results = [r for r in results_list if "performance" in dimensions_for(r.biomarker_type)]
     perf_score, _ = _score_dimension(
         perf_results,
-        performance_weight,
+        lambda r: performance_weight(r.biomarker_type, (r.details or {}).get("orm")),
         performance_category,
         _PERFORMANCE_CATEGORY_CAPS,
     )

@@ -25,7 +25,10 @@ from repowise.core.analysis.health.perf.opportunities import (
     PERFORMANCE_MODEL_VERSION,
     model_state,
 )
-from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    DEFAULT_QUEUE_STATES,
+    NON_LEADING_MARKERS,
+)
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.persistence.crud import (
     get_performance_opportunity,
@@ -472,6 +475,8 @@ class PerformanceHealthService:
             "rank_score": row.rank_score,
             "rank_position": row.rank_position,
             "why_ranked": details.get("why_ranked", []),
+            # An older store has no per-group answer; its marker gives the old one.
+            "may_lead": details.get("may_lead", row.biomarker_type not in NON_LEADING_MARKERS),
             "plan_id": link.row_id,
             "plan_reference": link.public_id,
             "plan_status": link.state,

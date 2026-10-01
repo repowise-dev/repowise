@@ -776,6 +776,44 @@
       "reason": "one_loop_mixed_shapes: io_in_loop at src/app/jobs.py:44 repeats work per iteration.",
       "reliable_entry_reachability": true,
       "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "lazy_load_in_loop",
+      "boundary_kind": "db",
+      "case": "lazy_load_by_orm",
+      "extra": {
+        "eager_load": "select_related(\"project\")",
+        "orm": "django",
+        "relationship": "Issue.project"
+      },
+      "file_path": "app/issues/views.py",
+      "finding_ref": "lazy_load_by_orm-00",
+      "function_name": "issue_list",
+      "line_end": 30,
+      "line_start": 30,
+      "path": [],
+      "reason": "lazy_load_by_orm: lazy_load_in_loop at app/issues/views.py:30 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "lazy_load_in_loop",
+      "boundary_kind": "db",
+      "case": "lazy_load_by_orm",
+      "extra": {
+        "eager_load": "selectinload(Incident.owner)",
+        "orm": "sqlalchemy",
+        "relationship": "Incident.owner"
+      },
+      "file_path": "app/incidents/service.py",
+      "finding_ref": "lazy_load_by_orm-01",
+      "function_name": "notify_owners",
+      "line_end": 50,
+      "line_start": 50,
+      "path": [],
+      "reason": "lazy_load_by_orm: lazy_load_in_loop at app/incidents/service.py:50 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
     }
   ]
 }

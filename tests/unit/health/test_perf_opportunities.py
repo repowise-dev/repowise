@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import (
     build_performance_opportunities,
@@ -432,3 +434,28 @@ def test_a_plan_lists_its_edits_and_marks_only_proven_ones_mechanical():
     assert batch_plan["steps"][1]["line"] == 2
     assert (batch_plan["mechanical_steps"], batch_plan["judgment_steps"]) == (0, 2)
     assert (parallel_plan["mechanical_steps"], parallel_plan["judgment_steps"]) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("orms", "leads"),
+    [
+        (("django",), True),
+        (("sqlalchemy",), False),
+        # One unmeasured member keeps the group from leading.
+        (("django", "sqlalchemy"), False),
+        # A store written before the ORM was recorded.
+        ((None,), False),
+    ],
+)
+def test_a_lazy_load_may_lead_only_on_an_orm_that_cleared_the_bar(orms, leads):
+    rows = [
+        _finding("app/views.py", 10 + index, marker="lazy_load_in_loop", orm=orm)
+        for index, orm in enumerate(orms)
+    ]
+    (opportunity,) = build_performance_opportunities(rows)
+    assert opportunity.may_lead is leads
+
+
+def test_every_other_marker_may_lead():
+    (opportunity,) = build_performance_opportunities([_finding("a.py", 1)])
+    assert opportunity.may_lead is True

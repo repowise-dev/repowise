@@ -86,6 +86,7 @@ def opportunity_details(
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        "may_lead": opportunity.may_lead,
         **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
     }
@@ -140,7 +141,6 @@ def _summary_payload(
 ) -> dict:
     """The compact current headline, written once and read by primary key."""
     from ....analysis.health.perf.opportunity_rank import (
-        NON_LEADING_MARKERS,
         default_queue_counts,
         default_queue_exclusion,
     )
@@ -159,7 +159,7 @@ def _summary_payload(
         (
             o
             for o in opportunities
-            if default_queue_exclusion(o) is None and o.biomarker_type not in NON_LEADING_MARKERS
+            if default_queue_exclusion(o) is None and o.may_lead
         ),
         None,
     )

@@ -30,7 +30,8 @@
         "bounded_fan_out",
         "retry_loop",
         "one_loop_many_sinks",
-        "one_loop_mixed_shapes"
+        "one_loop_mixed_shapes",
+        "lazy_load_by_orm"
       ],
       "note": "Database boundary through a shared session/query helper."
     },

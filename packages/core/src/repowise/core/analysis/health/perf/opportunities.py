@@ -54,6 +54,7 @@ from .opportunity_rank import (
     exposure,
     leverage,
     loop_magnitude,
+    may_lead,
     rank_factors,
     rank_sort_key,
     weakest_provenance,
@@ -102,6 +103,8 @@ class PerformanceOpportunity:
     rank_factors: dict[str, int]
     why_ranked: tuple[dict[str, Any], ...]
     fix: PerformanceFix | None
+    # Whether this group may lead the directive; see ``opportunity_rank.may_lead``.
+    may_lead: bool
     # Other causes observed on the same lines; see :mod:`.siblings`.
     siblings: tuple[dict[str, Any], ...] = ()
 
@@ -135,6 +138,7 @@ class PerformanceOpportunity:
             "rank_factors": dict(self.rank_factors),
             "why_ranked": [dict(entry) for entry in self.why_ranked],
             "fix": self.fix.as_dict() if self.fix else None,
+            "may_lead": self.may_lead,
             "siblings": [dict(entry) for entry in self.siblings],
         }
 
@@ -231,6 +235,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             },
         ),
         fix=acted.fix,
+        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}),
     )
 
 

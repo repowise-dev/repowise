@@ -480,6 +480,9 @@ export interface PerformanceOpportunity {
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];
   fix: PerformanceOpportunityFix | null;
+  /** Whether this cause may lead the dashboard. False for a marker below the
+   *  leading bar (lazy loads outside Django). Absent on an older store. */
+  may_lead?: boolean;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
