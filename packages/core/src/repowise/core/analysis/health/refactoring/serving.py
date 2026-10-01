@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.rows import detail_map, field
 
 from .recommendations import _loads_dict
@@ -88,24 +89,6 @@ SORTS: dict[str, tuple[tuple[str, bool], ...]] = {
 }
 DEFAULT_ORDER = "queue"
 CANONICAL_ORDERS = tuple(SORTS)
-
-FilterOp = Literal["eq", "in", "contains", "prefix", "positive", "is"]
-
-
-@dataclass(frozen=True, slots=True)
-class FilterRule:
-    """One queue filter: the parameter it reads, the field it tests, and how.
-
-    ``applies`` is when the parameter narrows at all: ``set`` for anything but
-    ``None`` (an empty ``in`` list is a scope that matches nothing), ``truthy``
-    when an empty value means "no filter".
-    """
-
-    param: str
-    field: str
-    op: FilterOp
-    applies: Literal["always", "set", "truthy"]
-
 
 #: In the order the store has always emitted its predicates.
 FILTERS: tuple[FilterRule, ...] = (
@@ -574,7 +557,6 @@ __all__ = [
     "SCOPES",
     "SORTS",
     "UNAVAILABLE",
-    "FilterRule",
     "RefactoringQuery",
     "active_filters",
     "directive_from_summary",

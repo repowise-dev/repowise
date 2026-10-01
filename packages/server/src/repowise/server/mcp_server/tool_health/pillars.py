@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.server.mcp_server.tool_health.paging import Pager
@@ -12,7 +13,6 @@ from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
     PerformanceHealthService,
     PerformancePage,
-    parse_query,
 )
 from repowise.server.services.refactoring_health import RefactoringHealthService
 
