@@ -172,6 +172,17 @@ def _shape_stale_server(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _shape_broken_install(exc: Exception) -> dict[str, Any]:
+    """The same failure in a process that imported fresh: the install itself is broken."""
+    return {
+        "error": f"This repowise install is incomplete or mixed ({exc}).",
+        "remedy": (
+            "Reinstall repowise, or repair the environment it runs from, and "
+            "retry. That is the user's step: ask them once."
+        ),
+    }
+
+
 def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     """Success-shaped response for an unexpected internal failure."""
     return {
@@ -184,7 +195,8 @@ def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
+def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
+    """*long_running* is False for a process that imports fresh on every run (the CLI)."""
     if isinstance(exc, LookupError):
         if _NOT_INDEXED_MARKER in str(exc):
             return _shape_not_indexed()
@@ -196,7 +208,7 @@ def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
     if _is_stale_index_error(exc):
         return _shape_stale_index(exc)
     if is_stale_server_import(exc):
-        return _shape_stale_server(exc)
+        return _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
     return _shape_internal_error(tool, exc)
 
 

@@ -136,6 +136,19 @@ def test_an_unindexed_repo_gets_the_shields_run_init_advice(wired):
     assert "repowise init" in result["remedy"]
 
 
+def test_a_failed_repowise_import_points_at_the_install_not_a_server(wired):
+    """The CLI imports fresh each run, so no older server is holding stale code."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        from repowise.core.ingestion.type_names import name_missing_from_install  # noqa: F401
+
+    result = tool_bridge.call_tool(repo, _tool, "get_change_risk")
+    assert "install is incomplete" in result["error"]
+    assert "Reinstall repowise" in result["remedy"]
+    assert "MCP server" not in repr(result)
+
+
 def test_a_store_that_fails_to_open_still_disposes_the_engine(wired, monkeypatch):
     """Building the embedder happens before the tool call and can raise."""
     engine, _store, _published, repo = wired
