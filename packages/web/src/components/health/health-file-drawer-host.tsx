@@ -13,6 +13,7 @@ import {
   getFileOpportunity,
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 import { useFileBreakdown } from "./use-file-breakdown";
 import type { HealthCounts } from "@repowise-dev/types/health";
 
@@ -65,11 +66,20 @@ export function HealthFileDrawerHost({
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
+  // What the other lenses hold for this file. One request, one read per lens.
+  const { data: related } = useSWR(
+    filePath ? `related-work:${repoId}:${filePath}` : null,
+    () => getRelatedWork(repoId, [filePath as string]),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+
   return (
     <HealthFileDrawer
       open={filePath !== null}
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
+      related={related?.files?.[0]}
+      relatedWorkHref={(item) => relatedWorkHref(repoId, filePath as string, item)}
       onClose={onClose}
       loading={isLoading}
       metric={data?.metric ?? null}

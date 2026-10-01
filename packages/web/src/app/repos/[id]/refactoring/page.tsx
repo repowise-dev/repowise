@@ -15,6 +15,7 @@
 
 import { use, useCallback, useDeferredValue, useMemo, useState } from "react";
 import useSWR from "swr";
+import { useRouter } from "next/navigation";
 import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Wrench, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -59,6 +60,7 @@ import {
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 
 const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
@@ -75,6 +77,7 @@ function leadTypeFor(type: TypeFilter): string | undefined {
 
 export default function RefactoringPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: repoId } = use(params);
+  const router = useRouter();
   const [type, setType] = useQueryState(
     "type",
     parseAsStringLiteral(TYPE_VALUES).withDefault("all"),
@@ -153,6 +156,14 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const { data: openDetail, isLoading: detailLoading } = useSWR<RefactoringOpportunityDetail>(
     openId ? ["refactoring-opportunity", repoId, openId] : null,
     () => getRefactoringOpportunity(repoId, openId!, { stepLimit: 50, evidenceLimit: 20 }),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+
+  // What the other lenses hold for the open opportunity's file.
+  const openFile = openDetail?.found ? openDetail.file_path : null;
+  const { data: related } = useSWR(
+    openFile ? ["related-work", repoId, openFile] : null,
+    () => getRelatedWork(repoId, [openFile!]),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
@@ -348,6 +359,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         fileHref={fileHref}
         readSource={readSource}
         onGenerateCode={onGenerateCode}
+        related={related?.files?.[0]}
+        relatedWorkHref={(item) => (openFile ? relatedWorkHref(repoId, openFile, item) : null)}
+        onNavigate={(href) => router.push(href)}
       />
 
       <RefactoringDrawer
