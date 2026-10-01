@@ -332,3 +332,24 @@ async def test_imported_names_are_read_per_test_and_file(async_session):
     )
     # A production importer is not a test, so it never appears.
     assert found == {"src/walk.py": {"tests/test_walk.py": frozenset({"walk"})}}
+
+
+async def test_a_seed_that_calls_another_seed_does_not_shorten_its_distance(async_session):
+    """Walked together, ``load`` (a seed) calls ``parse`` (another seed). A test
+    calling ``load`` is two hops from ``parse``, however the batch is ordered."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_load.py": True, "src/io.py": False},
+        edges=[
+            ("tests/test_load.py", "tests/test_load.py::test_it", "defines"),
+            ("tests/test_load.py::test_it", "src/io.py::load", "calls"),
+            ("src/io.py::load", "src/io.py::parse", "calls"),
+        ],
+    )
+    found = await reach_into_symbols(
+        async_session, repo.id, ["src/io.py::load", "src/io.py::parse"], {"tests/test_load.py"}
+    )
+    assert found["src/io.py::load"] == {"tests/test_load.py": ReachDistance(1, 1)}
+    assert found["src/io.py::parse"] == {"tests/test_load.py": ReachDistance(2, 1)}

@@ -536,6 +536,7 @@ async def _call_reaching(
     max_depth: int,
     *,
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
+    strict: bool = False,
 ) -> dict[str, dict[str, ReachDistance]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
@@ -544,10 +545,18 @@ async def _call_reaching(
     declares, and the walk carries the seed from there.
 
     Each test carries the fewest call hops it took and how many of its symbols
-    made a call at that depth. Breadth-first, a seed first reaches a test at
-    its shortest distance, so the first record is the minimum.
+    made a call at that depth. Every node records each seed's distance, not
+    the level it was found at: one level's batch can carry a seed through a
+    node another seed entered, so the level alone overstates how close a test
+    is. A shorter distance found later re-queues the node; which tests reach
+    which seed is unchanged by that, only how far.
+
+    *strict* reads each level against the distances it started with, so a seed
+    moves one hop per level and its answer does not depend on which other
+    seeds share the walk. The file tiers keep the historical batch semantics.
     """
-    origins: dict[str, set[str]] = {}
+    # node -> seed -> call hops from the node to the seed.
+    origins: dict[str, dict[str, int]] = {}
     # A caller that knows which symbol in the file it cares about enters there,
     # so a test reaching an unrelated symbol in the same file does not count.
     # An empty entry names no symbol, so that file is unseeded and keeps the
@@ -559,22 +568,23 @@ async def _call_reaching(
     }
     for seed, symbol_ids in seeded.items():
         for symbol in symbol_ids:
-            origins.setdefault(symbol, set()).add(seed)
+            origins.setdefault(symbol, {})[seed] = 0
     unseeded = [seed for seed in seeds if seed not in seeded]
     if unseeded:
         declared = await _edges_from(session, repo_id, unseeded, ["defines"])
         for seed, symbol in declared:
-            origins.setdefault(symbol, set()).add(seed)
+            origins.setdefault(symbol, {})[seed] = 0
     if not origins:
         return {}
 
     found: dict[str, dict[str, tuple[int, set[str]]]] = {}
     frontier = list(origins)
-    for hops in range(1, max_depth + 1):
+    for _ in range(max_depth):
         if not frontier:
             break
         level, frontier = frontier, []
         queued: set[str] = set()
+        start = {node: dict(origins[node]) for node in level} if strict else origins
         for caller, callee in await _edges_into(
             session,
             repo_id,
@@ -582,24 +592,31 @@ async def _call_reaching(
             sorted(EXECUTION_EDGE_TYPES),
             UNRELIABLE_CALL_ORIGINS,
         ):
-            carried = origins.get(callee)
+            carried = start.get(callee)
             if not carried:
                 continue
             owner = file_of_symbol(caller)
             if owner in test_files:
-                for seed in carried:
+                for seed, distance in carried.items():
+                    hops = distance + 1
                     by_test = found.setdefault(seed, {})
-                    first = by_test.setdefault(owner, (hops, set()))
-                    if first[0] == hops:
-                        first[1].add(caller)
+                    best = by_test.get(owner)
+                    if best is None or hops < best[0]:
+                        by_test[owner] = (hops, {caller})
+                    elif hops == best[0]:
+                        best[1].add(caller)
                 # A test is a leaf. Walking through one would let "test A calls
                 # shared helper B" drag B's unrelated targets in.
                 continue
-            known = origins.setdefault(caller, set())
-            fresh = carried - known
-            if not fresh:
+            known = origins.setdefault(caller, {})
+            closer = {
+                seed: distance + 1
+                for seed, distance in carried.items()
+                if seed not in known or distance + 1 < known[seed]
+            }
+            if not closer:
                 continue
-            known |= fresh
+            known.update(closer)
             if caller not in queued:
                 queued.add(caller)
                 frontier.append(caller)
@@ -633,6 +650,7 @@ async def reach_into_symbols(
         test_files,
         max_depth,
         symbol_seeds={symbol: (symbol,) for symbol in seeds},
+        strict=True,
     )
 
 
