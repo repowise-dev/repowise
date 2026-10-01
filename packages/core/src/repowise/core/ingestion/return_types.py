@@ -25,9 +25,11 @@ _PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
 def _top_level_parameters(signature: str) -> list[str] | None:
     """The top-level parameter texts of a stored callable signature.
 
-    ``[]`` for an empty list, None when the signature has no closed list.
+    ``[]`` for an empty list, None when the signature has no closed list. A
+    C/C++ ``(void)`` list is empty, and ``operator()(int)`` lists ``int``.
     """
-    start = signature.find("(")
+    operator = signature.find("operator()")
+    start = signature.find("(", 0 if operator < 0 else operator + len("operator()"))
     if start < 0:
         return None
     pieces: list[str] = []
@@ -37,7 +39,7 @@ def _top_level_parameters(signature: str) -> list[str] | None:
     for char in signature[start + 1 :]:
         if char == ")" and not closers:
             pieces.append("".join(current))
-            return pieces if content else []
+            return pieces if content and [p.strip() for p in pieces] != ["void"] else []
         if char in _PAIRS:
             closers.append(_PAIRS[char])
         elif closers and char == closers[-1]:
@@ -61,9 +63,9 @@ def signature_parameter_count(signature: str) -> int | None:
 def signature_parameter_range(signature: str, language: str) -> tuple[int, int | None] | None:
     """``(fewest, most)`` arguments a call may pass; ``most`` is None when open.
 
-    Java ``T...`` and C# ``params`` leave the top open, a C# default lowers
-    the floor, and a C# extension method is also called on its receiver, one
-    argument short of its declared list.
+    Java ``T...``, C# ``params``, C ``...`` and a C++ parameter pack leave the
+    top open, a C# or C++ default lowers the floor, and a C# extension method
+    is also called on its receiver, one argument short of its declared list.
     """
     parameters = _top_level_parameters(signature)
     if parameters is None:
@@ -72,12 +74,13 @@ def signature_parameter_range(signature: str, language: str) -> tuple[int, int |
     fewest = most = len(texts)
     if not texts:
         return 0, 0
-    if language == "java" and "..." in texts[-1]:
+    if language in ("java", "cpp") and "..." in texts[-1]:
         fewest, most = fewest - 1, None
+    if language in ("csharp", "cpp"):
+        fewest -= sum(1 for text in texts if "=" in text)
     if language == "csharp":
         if texts[-1].startswith("params "):
             fewest, most = fewest - 1, None
-        fewest -= sum(1 for text in texts if "=" in text)
         if texts[0].startswith("this "):
             fewest -= 1
     return max(fewest, 0), most

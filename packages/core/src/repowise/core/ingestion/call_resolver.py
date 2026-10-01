@@ -497,6 +497,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             self._index_file(path, parsed, definitions, declarations, extensions)
 
         self._decl_to_def = self._link_declarations(declarations, definitions)
+        self._pair_overload_members()
         self._index_extension_methods(extensions)
 
     def _index_file(
@@ -592,6 +593,32 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             self._overload_members[rep] = tuple(ranges.items())
         self._overload_rep.update(representatives)
         return representatives
+
+    def _pair_overload_members(self) -> None:
+        """Pair each member of a declared overload set with its definition.
+
+        ``_link_declarations`` pairs a declared set with a defined one by their
+        representatives; the other members pair here by parameter count, so
+        each declaration records its definition. The definition also admits
+        the defaults its declaration writes: C++ writes them on the header
+        declaration only, so ``f(int, int)`` alone would refuse the one-argument
+        call ``f(int, int = 0)`` admits.
+        """
+        for declared, defined in list(self._decl_to_def.items()):
+            declared_members = self._overload_members.get(declared, ())
+            defined_members = self._overload_members.get(defined, ())
+            by_count = {split_symbol_id(member)[1]: member for member, _ in defined_members}
+            floors: dict[str, int] = {}
+            for member, (fewest, _most) in declared_members:
+                target = by_count.get(split_symbol_id(member)[1])
+                if target is not None:
+                    self._decl_to_def.setdefault(member, target)
+                    floors[target] = min(fewest, floors.get(target, fewest))
+            if floors:
+                self._overload_members[defined] = tuple(
+                    (member, (min(fewest, floors.get(member, fewest)), most))
+                    for member, (fewest, most) in defined_members
+                )
 
     def _index_extension_methods(
         self, candidates: dict[tuple[str, str], set[tuple[str, str]]]

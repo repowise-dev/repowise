@@ -66,9 +66,10 @@ STORE_FORMAT_VERSION: int = 2
 #: v6: a member call a bare-call pattern also matched (Java ``obj.m()``, Ruby
 #: ``obj.m(x)``) is kept once, with its receiver and ``bare_name_fallback``, so
 #: a cached receiver-less copy no longer resolves by bare name beside it. Also,
-#: Java and C# overloads of different arity get their own ids (``notNull#1``,
+#: Java, C# and C++ overloads of different arity get their own ids (``notNull#1``,
 #: ``notNull#2``) and a C# generic type beside a same-named one gets its arity
-#: (``IFoo`1``); the first update re-keys symbols and graph nodes repo-wide.
+#: (``IFoo`1``); the first update re-keys symbols and graph nodes repo-wide. A
+#: C++ template function is one ``function`` symbol, no longer also a ``class``.
 PARSER_SCHEMA_VERSION: int = 6
 
 #: state.json key holding the store format version that wrote the store.

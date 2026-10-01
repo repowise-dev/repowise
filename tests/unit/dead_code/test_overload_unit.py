@@ -78,3 +78,30 @@ def test_a_constructor_overload_rescues_its_class() -> None:
     found = _unused(_graph(symbols, [("src/Main.cs::Main::Run", "Inner::Inner#2")]))
     assert ("Inner", 3) not in found
     assert ("Spare", 30) in found
+
+
+def test_a_call_to_one_cpp_overload_uses_the_exported_set() -> None:
+    """C++ free functions are exports; a call to ``pad#3`` uses ``pad#1`` too."""
+    g = nx.DiGraph()
+    g.add_node("util.cpp", language="cpp")
+    g.add_node("main.cpp", language="cpp")
+    for sym_id, line in (("util.cpp::pad#1", 2), ("util.cpp::pad#3", 3), ("util.cpp::spare", 4)):
+        g.add_node(
+            sym_id,
+            node_type="symbol",
+            file_path="util.cpp",
+            name=sym_id.rpartition("::")[2].partition("#")[0],
+            kind="function",
+            language="cpp",
+            visibility="public",
+            decorators=[],
+            start_line=line,
+            end_line=line,
+        )
+        g.add_edge("util.cpp", sym_id, edge_type="defines")
+    g.add_edge("main.cpp::main", "util.cpp::pad#3", edge_type="calls")
+    config = {**_CONFIG, "detect_unused_exports": True}
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(config)
+    assert sorted(f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT) == [
+        "spare"
+    ]

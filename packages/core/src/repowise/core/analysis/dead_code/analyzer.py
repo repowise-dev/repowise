@@ -1404,15 +1404,9 @@ class DeadCodeAnalyzer:
         # ``method_implements`` / ``reads`` / ``extends`` /
         # ``implements`` / ``type_use`` edge means somewhere in
         # the codebase actually uses this symbol — even if the
-        # file-level ``imported_names`` machinery missed it
-        if (
-            unsatisfied_guard is None
-            and self.graph.has_node(sym_id)
-            and any(
-                self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
-                for pred in self.graph.predecessors(sym_id)
-            )
-        ):
+        # file-level ``imported_names`` machinery missed it. A use of one
+        # member of an overload set uses the set.
+        if unsatisfied_guard is None and self._has_inbound_use(sym_id):
             return True, None
 
         if self._member_is_used(sym_id, sym.get("language")):

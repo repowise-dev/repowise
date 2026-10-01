@@ -1,6 +1,6 @@
 """Overloads and same-named generic siblings get their own symbol ids.
 
-Java and C# let one scope declare a name more than once. The ids used to
+Java, C# and C++ let one scope declare a name more than once. The ids used to
 collide, so the graph kept one node per overload set (whichever declaration was
 written last) and every call to any overload drew an edge to that one line. A
 colliding member now carries a discriminator, ``#<parameter count>``, and a C#
@@ -163,6 +163,12 @@ class TestIdGrammar:
             ("Ext(this Order o, bool round) -> int", "csharp", (1, 2)),
             ("f(Map<K, V> m) -> void", "java", (1, 1)),
             ("noparens", "java", None),
+            ("f(int a, int b = 2) -> void", "cpp", (1, 2)),
+            ("log(const char* fmt, ...) -> void", "cpp", (1, None)),
+            ("emit(int level, Args&&... args) -> void", "cpp", (1, None)),
+            ("v(void) -> void", "cpp", (0, 0)),
+            ("operator()(int a, int b) -> bool", "cpp", (2, 2)),
+            ("operator<<(std::ostream& os, const A& a) -> std::ostream", "cpp", (2, 2)),
         ],
     )
     def test_parameter_range(self, signature: str, language: str, expected) -> None:
@@ -326,12 +332,157 @@ class TestCSharpGenericSiblings:
         assert ("C.cs::C::Four", "H.cs::H::Sum#2") in edges
 
 
+SHAPES_H = """namespace geo {
+class Shape {
+ public:
+  Shape();
+  Shape(int w, int h = 1);
+  void scale(int f);
+  void scale(int fx, int fy);
+  int area() const;
+  int area();
+  template <typename T> void put(T x);
+  template <typename T> void put(T* x);
+  void reset(void);
+  void reset(int to);
+  void once();
+};
+inline void Shape::scale(int f) { scale(f, f); }
+inline void Shape::reset() {}
+}
+"""
+
+SHAPES_CPP = """#include "shapes.h"
+namespace geo {
+Shape::Shape() {}
+Shape::Shape(int w, int h) {}
+void Shape::scale(int fx, int fy) {}
+int Shape::area() const { return 0; }
+int Shape::area() { return 1; }
+}
+"""
+
+
+class TestCppOverloads:
+    def test_colliding_members_get_their_parameter_count(self) -> None:
+        ids = set(_ids(_parse("shapes.h", "cpp", SHAPES_H)))
+        base = "shapes.h::Shape::"
+        assert {base + "Shape#0", base + "Shape#2", base + "scale#1", base + "scale#2"} <= ids
+        # Same arity stays one id: template overloads and const overloads.
+        assert {base + "put", base + "area"} <= ids
+        assert base + "once" in ids
+
+    def test_an_in_class_declaration_and_its_inline_definition_share_an_id(self) -> None:
+        """``(void)`` and ``()`` both declare no parameters."""
+        parsed = _parse("shapes.h", "cpp", SHAPES_H)
+        by_id: dict[str, list[bool]] = {}
+        for symbol in parsed.symbols:
+            by_id.setdefault(symbol.id, []).append(symbol.is_declaration)
+        assert sorted(by_id["shapes.h::Shape::scale#1"]) == [False, True]
+        assert sorted(by_id["shapes.h::Shape::reset#0"]) == [False, True]
+        graph = _graph({"shapes.h": ("cpp", SHAPES_H)})
+        assert graph.nodes["shapes.h::Shape::scale#1"]["is_declaration"] is False
+
+    def test_a_header_declared_set_resolves_to_its_out_of_line_definitions(self, tmp_path: Path) -> None:
+        header = (
+            "class Pen {\n public:\n  void shift(int x);\n  void shift(int x, int y = 0, int z = 0);\n"
+            "  void lift();\n};\n"
+        )
+        source = (
+            '#include "pen.h"\n'
+            "void Pen::shift(int x) {}\n"
+            "void Pen::shift(int x, int y, int z) {}\n"
+            "void Pen::lift() {}\n"
+        )
+        caller = '#include "pen.h"\nvoid draw(Pen& p) {\n  p.shift(1);\n  p.shift(1, 2);\n  p.lift();\n}\n'
+        edges = _edges(
+            tmp_path, {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)}
+        )
+        assert {
+            ("draw.cpp::draw", "pen.cpp::Pen::shift#1"),
+            ("draw.cpp::draw", "pen.cpp::Pen::shift#3"),
+            ("draw.cpp::draw", "pen.cpp::Pen::lift"),
+        } == {edge for edge in edges if edge[0] == "draw.cpp::draw"}
+
+    def test_each_declared_member_records_its_definition(self, tmp_path: Path) -> None:
+        """Defaults written on the declaration carry to the out-of-line definition."""
+        (tmp_path / "util.h").write_text("int pad(int a);\nint pad(int a, int b = 0, int c = 0);\n")
+        (tmp_path / "util.cpp").write_text(
+            '#include "util.h"\nint pad(int a) { return a; }\nint pad(int a, int b, int c) { return a; }\n'
+        )
+        (tmp_path / "main.cpp").write_text('#include "util.h"\nint main() { return pad(1, 2); }\n')
+        builder = GraphBuilder(repo_path=tmp_path)
+        for info in FileTraverser(tmp_path).traverse():
+            builder.add_file(_PARSER.parse_file(info, Path(info.abs_path).read_bytes()))
+        graph = builder.build()
+        assert graph.nodes["util.h::pad#1"]["defined_by"] == "util.cpp::pad#1"
+        assert graph.nodes["util.h::pad#3"]["defined_by"] == "util.cpp::pad#3"
+        assert graph.has_edge("main.cpp::main", "util.cpp::pad#3")
+
+    def test_a_set_split_between_header_and_source_keeps_its_pairing(self, tmp_path: Path) -> None:
+        """One overload inline in the header, one in the .cpp: the .cpp body takes the call."""
+        caller = '#include "shapes.h"\nvoid draw(geo::Shape& s) {\n  s.scale(2, 3);\n}\n'
+        edges = _edges(
+            tmp_path,
+            {"shapes.h": ("cpp", SHAPES_H), "shapes.cpp": ("cpp", SHAPES_CPP), "draw.cpp": ("cpp", caller)},
+        )
+        assert ("draw.cpp::draw", "shapes.cpp::Shape::scale") in edges
+
+    def test_defaults_and_variadics_admit_their_argument_counts(self, tmp_path: Path) -> None:
+        source = (
+            "int pad(int a, int b = 0) { return a; }\n"
+            "int pad(int a, int b, int c) { return a; }\n"
+            "void log(const char* fmt, ...) {}\n"
+            "void log(int level) {}\n"
+            "template <typename... Args> void emit(int level, Args&&... args) {}\n"
+            "void emit() {}\n"
+            "void run() {\n  pad(1);\n  pad(1, 2, 3);\n  log(1);\n  log(\"x\", 1, 2);\n"
+            "  emit();\n  emit(1, 2, 3);\n}\n"
+        )
+        edges = _edges(tmp_path, {"u.cpp": ("cpp", source)})
+        assert {
+            ("u.cpp::run", "u.cpp::pad#2"),
+            ("u.cpp::run", "u.cpp::pad#3"),
+            ("u.cpp::run", "u.cpp::log#1"),
+            ("u.cpp::run", "u.cpp::log#2"),
+            ("u.cpp::run", "u.cpp::emit#0"),
+            ("u.cpp::run", "u.cpp::emit#2"),
+        } <= edges
+
+    def test_a_template_function_is_a_function(self) -> None:
+        """A one-line template definition used to come out as a ``class``."""
+        source = (
+            "template <typename T> T two(T x, T y) { return x; }\n"
+            "template <typename T> T two(T x) { return x; }\n"
+            "template <typename T>\nT one(T x) { return x; }\n"
+        )
+        parsed = _parse("t.h", "cpp", source)
+        assert [(s.id, s.kind) for s in parsed.symbols] == [
+            ("t.h::two#2", "function"),
+            ("t.h::two#1", "function"),
+            ("t.h::one", "function"),
+        ]
+
+    def test_operator_overloads(self) -> None:
+        source = (
+            "V V::operator-() const { return *this; }\n"
+            "V V::operator-(const V& o) const { return o; }\n"
+            "bool Cmp::operator()(int a) const { return a; }\n"
+            "bool Cmp::operator()(int a, int b) const { return a < b; }\n"
+            "bool Cmp::operator==(const Cmp& o) const { return true; }\n"
+        )
+        ids = set(_ids(_parse("v.cpp", "cpp", source)))
+        assert {"v.cpp::V::operator-#0", "v.cpp::V::operator-#1"} <= ids
+        assert {"v.cpp::Cmp::operator()#1", "v.cpp::Cmp::operator()#2"} <= ids
+        assert "v.cpp::Cmp::operator==" in ids
+
+
 class TestOtherLanguagesAreUntouched:
     @pytest.mark.parametrize(
         ("rel", "language", "text"),
         [
             ("m.py", "python", "def f(a):\n    pass\n\ndef f(a, b):\n    pass\n"),
-            ("m.cpp", "cpp", "int f(int a) { return a; }\nint f(int a, int b) { return a; }\n"),
+            ("m.c", "c", "int f(int a) { return a; }\nint f(int a, int b) { return a; }\n"),
             ("m.kt", "kotlin", "class K {\n  fun f(a: Int) {}\n  fun f(a: Int, b: Int) {}\n}\n"),
         ],
     )
@@ -356,7 +507,7 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
                 checked += 1
                 if symbol.id == base and "`" not in symbol.id:
                     continue
-                assert symbol.language in ("java", "csharp"), symbol.id
+                assert symbol.language in ("java", "csharp", "cpp"), symbol.id
                 assert bases.count(base) > 1 or "`" in symbol.id, symbol.id
     assert checked > 500
 

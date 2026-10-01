@@ -193,16 +193,6 @@
   )
 ) @symbol.def
 
-; Template function: template<typename T> T func(T x) { ... }
-(template_declaration
-  (function_definition
-    declarator: (function_declarator
-      declarator: (identifier) @symbol.name
-      parameters: (parameter_list) @symbol.params
-    )
-  )
-) @symbol.def
-
 ; typedef struct { ... } MyType;
 (type_definition
   type: (struct_specifier)

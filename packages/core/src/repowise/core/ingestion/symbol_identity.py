@@ -88,6 +88,7 @@ def _parameter_count(symbol: Symbol) -> str | None:
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
     "csharp": _parameter_count,
+    "cpp": _parameter_count,
 }
 
 # Languages where a type may share its name with a sibling of another arity.
