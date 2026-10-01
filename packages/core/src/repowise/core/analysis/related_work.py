@@ -23,14 +23,13 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
 
-from repowise.core.analysis.health.aggregation import SEVERITY_ORDER
+from repowise.core.analysis.change_health.identity import severity_rank
 from repowise.core.analysis.health.rows import detail_map, field
 
 #: Items kept per file per lens. The total still counts every row, so a hot
 #: file reports "5 of 40" rather than shipping 40.
 DEFAULT_PER_LENS_LIMIT = 5
 
-_SEVERITY_RANK = {name: i for i, name in enumerate(SEVERITY_ORDER)}
 _LAST = 1 << 30
 
 
@@ -144,7 +143,7 @@ def _finding_item(row: Any) -> RelatedItem:
 
 def _finding_key(row: Any) -> tuple[Any, ...]:
     return (
-        _SEVERITY_RANK.get(str(field(row, "severity", "")).lower(), len(SEVERITY_ORDER)),
+        -severity_rank(field(row, "severity", "")),
         _or_last(field(row, "line_start")),
         str(field(row, "id", "")),
     )

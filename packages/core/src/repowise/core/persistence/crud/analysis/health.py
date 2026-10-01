@@ -438,6 +438,7 @@ async def get_health_findings(
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    limit: int | None = None,
 ) -> list[HealthFinding]:
     """Findings for one repository, ordered by health impact.
 
@@ -459,7 +460,7 @@ async def get_health_findings(
     reviewed without a second read.
 
     ``file_paths`` scopes to a set of files in one read; an empty sequence
-    matches nothing.
+    matches nothing. ``limit`` caps the rows read, highest impact first.
     """
     q = select(HealthFinding).where(HealthFinding.repository_id == repository_id)
     statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -503,6 +504,8 @@ async def get_health_findings(
         allowed = [k for k, v in order.items() if v >= threshold]
         q = q.where(HealthFinding.severity.in_(allowed))
     q = q.order_by(HealthFinding.health_impact.desc())
+    if limit is not None:
+        q = q.limit(limit)
     result = await session.execute(q)
     return _filter_excluded_paths(
         list(result.scalars().all()),

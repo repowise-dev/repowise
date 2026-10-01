@@ -28,11 +28,11 @@ MAX_FILES = 200
 """Files one request may name. A drawer asks about one; a selection, a few."""
 
 _ROWS_CEILING = 10_000
-"""Ceiling on rows one paged lens read returns for the whole request.
+"""Ceiling on the rows any one lens read returns for the whole request.
 
-The per-file totals need every row for the named files, and the paged readers
-always take a limit. 200 files never come near it on a real index; past it
-the totals undercount. Upgrade path: a grouped count per file.
+The per-file totals need every row for the named files, so each read is
+bounded here rather than per file. 200 files never come near it on a real
+index; past it the totals undercount. Upgrade path: a grouped count per file.
 """
 
 
@@ -84,7 +84,10 @@ async def get_related_work(
         # Performance findings are the evidence behind the performance lens's
         # opportunities; listing them as findings would show one cause twice.
         exclude_dimensions=("performance",),
+        limit=_ROWS_CEILING,
     )
+    # Production scope, unlike the other lenses: the link lands on the default
+    # Fix-first view, which is production scope.
     queue = await load_fix_first(session, repo_id, limit=None)
     refactoring, _ = await crud.list_refactoring_opportunities(
         session, repo_id, file_paths=paths, order="rank", limit=_ROWS_CEILING
@@ -94,7 +97,9 @@ async def get_related_work(
     performance, _ = await list_performance_opportunities(
         session, repo_id, file_paths=tuple(paths), limit=_ROWS_CEILING
     )
-    dead_code = await crud.get_dead_code_findings(session, repo_id, file_paths=paths)
+    dead_code = await crud.get_dead_code_findings(
+        session, repo_id, file_paths=paths, limit=_ROWS_CEILING
+    )
     return related_work(
         paths,
         findings=findings,
