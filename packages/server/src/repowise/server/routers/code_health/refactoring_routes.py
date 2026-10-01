@@ -6,17 +6,21 @@ not structured refactoring plans.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.impact_effort import best_tiers, build_impact_effort
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.server.deps import get_db_session
-from repowise.server.schemas import HealthWorkQueueResponse
+from repowise.server.schemas import HealthWorkQueueResponse, ImpactEffortResponse
 
 from ._router import router
 from .counts import CountsQuery, project
@@ -57,14 +61,26 @@ def _effort_for_nloc(nloc: int) -> str:
     return "XL"
 
 
-@router.get(
-    "/api/repos/{repo_id}/health/refactoring-targets",
-    response_model=HealthWorkQueueResponse,
-)
-async def health_work_queue(
-    repo_id: str,
-    limit: int = Query(200, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+@dataclass(frozen=True, slots=True)
+class QueueFilters:
+    """The narrowing the work queue and its impact / effort plane share."""
+
+    module: str | None
+    biomarker: str | None
+    min_severity: str | None
+    severity: str | None
+    dimension: str | None
+    status: str
+    search: str | None
+    only_hotspots: bool
+    only_untested: bool
+    only_failing: bool
+    max_effort: str | None
+    scope: str
+    counts: str
+
+
+def queue_filters(
     module: str | None = Query(None, description="Filter to files in this module path"),
     biomarker: str | None = Query(None, description="Filter to one biomarker type"),
     min_severity: str | None = Query(None, description="Severity floor"),
@@ -80,31 +96,30 @@ async def health_work_queue(
     only_untested: bool = Query(False),
     only_failing: bool = Query(False, description=FAILING_DESCRIPTION),
     max_effort: str | None = Query(None, description="S | M | L | XL"),
-    sort: str = Query(
-        "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
-    ),
-    history: str = Query(
-        "exclude",
-        pattern="^(exclude|include)$",
-        description=(
-            "exclude (default) leaves out files whose only findings are history "
-            "markers: context, not work an edit can do. include keeps them."
-        ),
-    ),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
-    session: AsyncSession = Depends(get_db_session),
-) -> dict:
-    """Health work items ranked by impact / effort.
+) -> QueueFilters:
+    return QueueFilters(
+        module=module,
+        biomarker=biomarker,
+        min_severity=min_severity,
+        severity=severity,
+        dimension=dimension,
+        status=status,
+        search=search,
+        only_hotspots=only_hotspots,
+        only_untested=only_untested,
+        only_failing=only_failing,
+        max_effort=max_effort,
+        scope=scope,
+        counts=counts,
+    )
 
-    A target carries its *primary* finding plus ``finding_count``, not the
-    findings themselves. Serializing every file's full finding list here cost
-    1.8 MB at the default ``limit=200`` (2.9 MB at 500) to render a list that
-    shows none of it — the work was done for all ~2,400 files with findings,
-    before the ``[:limit]`` slice, and ~90% was then discarded. The two
-    consumers both sit behind a click and fetch what they need from
-    ``GET /health/findings?file_path=``.
-    """
+
+async def _queue_targets(
+    session: AsyncSession, repo_id: str, q: QueueFilters, *, history: str
+) -> tuple[list[dict], int]:
+    """Every work item the filters keep, unsorted, and the history-only count."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -118,46 +133,46 @@ async def health_work_queue(
     findings = await crud.get_health_findings(
         session,
         repo_id,
-        dimension=dimension,
-        status=parse_status_filter(status),
+        dimension=q.dimension,
+        status=parse_status_filter(q.status),
         exclude_dimensions=(
-            tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if biomarker is None else None
+            tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if q.biomarker is None else None
         ),
     )
-    metrics, findings = narrow(scope, metrics, findings)
-    metrics, findings, _unscored = project(counts, metrics, findings)
+    metrics, findings = narrow(q.scope, metrics, findings)
+    metrics, findings, _unscored = project(q.counts, metrics, findings)
 
     keep_metric = metric_filter(
-        search=search,
-        module=module,
-        only_hotspots=only_hotspots,
-        only_untested=only_untested,
-        only_failing=only_failing,
-        hotspots=await hotspot_paths(session, repo_id) if only_hotspots else None,
+        search=q.search,
+        module=q.module,
+        only_hotspots=q.only_hotspots,
+        only_untested=q.only_untested,
+        only_failing=q.only_failing,
+        hotspots=await hotspot_paths(session, repo_id) if q.only_hotspots else None,
     )
     metric_by_path = {m.file_path: m for m in metrics if keep_metric(m)}
 
     # An all-empty list (","; " ") means the caller selected nothing, not that
     # nothing matches — falling through to ``min_severity`` keeps a stray
     # serialization from silently emptying the queue behind a 200.
-    picked = {v.strip().lower() for v in (severity or "").split(",") if v.strip()}
+    picked = {v.strip().lower() for v in (q.severity or "").split(",") if v.strip()}
     exact_severities = picked or None
 
     by_file: dict[str, list[Any]] = {}
     for f in findings:
-        if biomarker and f.biomarker_type != biomarker:
+        if q.biomarker and f.biomarker_type != q.biomarker:
             continue
         if exact_severities is not None:
             if (f.severity or "").lower() not in exact_severities:
                 continue
-        elif min_severity:
+        elif q.min_severity:
             order = _SEVERITY_ORDER
-            if order.get(f.severity, 0) < order.get(min_severity, 0):
+            if order.get(f.severity, 0) < order.get(q.min_severity, 0):
                 continue
         by_file.setdefault(f.file_path, []).append(f)
 
     effort_rank = {"S": 1, "M": 2, "L": 3, "XL": 5}
-    max_effort_rank = effort_rank.get(max_effort or "", 99)
+    max_effort_rank = effort_rank.get(q.max_effort or "", 99)
 
     targets: list[dict] = []
     history_only = 0
@@ -171,7 +186,7 @@ async def health_work_queue(
             continue
         # Naming a marker reaches it whatever its origin, as with the
         # zero-impact dimensions above.
-        if history == "exclude" and biomarker is None and not split_by_origin(fs)[0]:
+        if history == "exclude" and q.biomarker is None and not split_by_origin(fs)[0]:
             history_only += 1
             continue
         nloc = m.nloc
@@ -201,6 +216,7 @@ async def health_work_queue(
                 "score": round(score, 2),
                 "nloc": nloc,
                 "module": m.module if (m and m.module) else None,
+                "is_test": bool(getattr(m, "is_test", False)),
                 "primary_biomarker": primary.biomarker_type,
                 "primary_severity": primary.severity,
                 "primary_reason": primary.reason,
@@ -217,7 +233,45 @@ async def health_work_queue(
                 "impact_per_effort": ratio,
             }
         )
+    return targets, history_only
 
+
+_HISTORY_QUERY = Query(
+    "exclude",
+    pattern="^(exclude|include)$",
+    description=(
+        "exclude (default) leaves out files whose only findings are history "
+        "markers: context, not work an edit can do. include keeps them."
+    ),
+)
+
+
+@router.get(
+    "/api/repos/{repo_id}/health/refactoring-targets",
+    response_model=HealthWorkQueueResponse,
+)
+async def health_work_queue(
+    repo_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sort: str = Query(
+        "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
+    ),
+    history: str = _HISTORY_QUERY,
+    filters: QueueFilters = Depends(queue_filters),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Health work items ranked by impact / effort.
+
+    A target carries its *primary* finding plus ``finding_count``, not the
+    findings themselves. Serializing every file's full finding list here cost
+    1.8 MB at the default ``limit=200`` (2.9 MB at 500) to render a list that
+    shows none of it — the work was done for all ~2,400 files with findings,
+    before the ``[:limit]`` slice, and ~90% was then discarded. The two
+    consumers both sit behind a click and fetch what they need from
+    ``GET /health/findings?file_path=``.
+    """
+    targets, history_only = await _queue_targets(session, repo_id, filters, history=history)
     targets.sort(key=_SORT_KEYS[sort])
     # Both counts, because the view lists files but triages findings: "50 of
     # 812 files" alone leaves the size of the work unsaid.
@@ -229,3 +283,36 @@ async def health_work_queue(
         "offset": offset,
         "limit": limit,
     }
+
+
+@router.get(
+    "/api/repos/{repo_id}/health/impact-effort",
+    response_model=ImpactEffortResponse,
+)
+async def health_impact_effort(
+    repo_id: str,
+    filters: QueueFilters = Depends(queue_filters),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Every file the work queue's filters keep, placed by effort and gain.
+
+    The whole filtered set, not a page, so the plane and the queue's header
+    count describe the same files. History-only files are always left out:
+    nothing in their code can be changed to recover the health they cost.
+    """
+    targets, history_only = await _queue_targets(session, repo_id, filters, history="exclude")
+    paths = [t["file_path"] for t in targets]
+    opportunities: list[Any] = []
+    if paths:
+        opportunities, _n = await crud.list_refactoring_opportunities(
+            session, repo_id, file_paths=paths, limit=len(paths)
+        )
+    # The Fix-first card on the same page builds this queue too, so this is
+    # normally a cache hit. Tiers are known only for the items it shows.
+    queue = await load_fix_first(
+        session,
+        repo_id,
+        scope="production" if parse_scope(filters.scope) == "production" else "all",
+    )
+    plane = build_impact_effort(targets, opportunities, best_tiers(queue.items))
+    return {**plane.as_dict(), "history_only_excluded": history_only}

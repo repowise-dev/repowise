@@ -66,6 +66,8 @@ if TYPE_CHECKING:
         HealthTrendSummary,
         HealthWorkItem,
         HealthWorkQueueResponse,
+        ImpactEffortPoint,
+        ImpactEffortResponse,
     )
     from .code_quality import (
         DeadCodeAnalyzeResponse,
@@ -370,6 +372,8 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "HealthTrendSummary",
         "HealthWorkItem",
         "HealthWorkQueueResponse",
+        "ImpactEffortPoint",
+        "ImpactEffortResponse",
     ),
     "code_quality": (
         "DeadCodeAnalyzeResponse",
@@ -733,6 +737,8 @@ __all__ = [
     "HotFilesGraphResponse",
     "HotFilesNodeResponse",
     "HotspotResponse",
+    "ImpactEffortPoint",
+    "ImpactEffortResponse",
     "JobAcceptedResponse",
     "JobResponse",
     "KnowledgeMapOwner",

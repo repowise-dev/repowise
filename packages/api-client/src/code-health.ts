@@ -21,6 +21,8 @@ import type {
   PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   HealthScope,
   HealthCounts,
 } from "@repowise-dev/types/health";
@@ -59,6 +61,9 @@ export type {
   HealthWorkItem,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortPoint,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   ModuleCoverageRow,
   PerformanceActionabilityState,
   PerformanceExecutionContext,
@@ -244,6 +249,20 @@ export async function getHealthWorkQueue(
 ): Promise<HealthWorkQueueResponse> {
   return apiGet<HealthWorkQueueResponse>(
     `/api/repos/${repoId}/health/refactoring-targets`,
+    opts as Record<string, string | number | boolean | undefined>,
+  );
+}
+
+/**
+ * Every file the work queue's filters keep, placed by effort and recoverable
+ * health. Takes the queue's own filters so the plane and the list agree.
+ */
+export async function getHealthImpactEffort(
+  repoId: string,
+  opts?: ImpactEffortQuery,
+): Promise<ImpactEffortResponse> {
+  return apiGet<ImpactEffortResponse>(
+    `/api/repos/${repoId}/health/impact-effort`,
     opts as Record<string, string | number | boolean | undefined>,
   );
 }

@@ -1956,6 +1956,7 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: string;
   primary_reason?: string | null;
@@ -2035,6 +2036,26 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+}
+
+/** One file on the impact / effort plane. */
+export interface ImpactEffortPoint {
+  file_path: string;
+  effort_lines: number;
+  effort_basis: string;
+  recoverable_health: number;
+  tier?: string | null;
+}
+
+/** Every file the work queue's filters keep, up to ``cap``. */
+export interface ImpactEffortResponse {
+  points?: ImpactEffortPoint[];
+  plotted?: number;
+  total?: number;
+  cap?: number;
+  effort_midline_lines?: number;
+  gain_midline_points?: number;
+  history_only_excluded?: number;
 }
 
 /**

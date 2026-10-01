@@ -179,6 +179,8 @@ class HealthWorkItem(BaseModel):
     score: float
     nloc: int
     module: str | None = None
+    #: A test file, labelled on the row; ``scope=production`` leaves these out.
+    is_test: bool = False
     primary_biomarker: str
     primary_severity: str
     primary_reason: str | None = None
@@ -211,3 +213,33 @@ class HealthWorkQueueResponse(BaseModel):
     history_only_excluded: int = 0
     offset: int = 0
     limit: int = 0
+
+
+class ImpactEffortPoint(BaseModel):
+    """One file on the impact / effort plane."""
+
+    file_path: str
+    #: Lines the planned change spans (``effort_basis="plan"``) or the file's
+    #: code lines (``"file"``, when no plan recovers anything).
+    effort_lines: int
+    effort_basis: str
+    #: Health points the plan credits, or the open findings' deduction.
+    recoverable_health: float
+    #: The file's best Fix-first tier, when it holds a Fix-first item.
+    tier: str | None = None
+
+
+class ImpactEffortResponse(BaseModel):
+    """Every file the work queue's filters keep, up to ``cap``."""
+
+    points: list[ImpactEffortPoint] = []
+    #: Points in this response; less than ``total`` only past ``cap``.
+    plotted: int = 0
+    #: Files the filters keep, history-only files excluded.
+    total: int = 0
+    cap: int = 0
+    #: Fixed quadrant midlines from core, never derived from the data.
+    effort_midline_lines: int = 0
+    gain_midline_points: float = 0.0
+    #: Files left out because every finding on them is a history marker.
+    history_only_excluded: int = 0
