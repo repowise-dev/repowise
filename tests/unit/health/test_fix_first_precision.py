@@ -284,3 +284,29 @@ def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:
 def test_reach_or_a_known_loop_keeps_the_step() -> None:
     assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "2"
     assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"
+
+
+# --- lift: a duplicate inside the function ---------------------------------------
+
+
+def _ranked(item, factor: str) -> str:
+    return next(f.value for f in item.why_ranked if f.factor == factor)
+
+
+def test_a_duplicate_inside_lifts_a_complexity_unit_one_step() -> None:
+    plain = _queue([_finding()]).lead
+    lifted = _queue([_finding(), _dry()]).lead
+    assert int(_ranked(lifted, "value")) == int(_ranked(plain, "value")) + 1
+    assert _ranked(lifted, "duplicate inside") == "yes"
+    assert "duplicated" in lifted.why and "duplicated" not in plain.why
+
+
+def test_a_duplicate_elsewhere_in_the_file_does_not_lift() -> None:
+    item = _queue([_finding(), _dry(start=200, end=220)]).lead
+    assert _ranked(item, "duplicate inside") == "no"
+
+
+def test_a_duplicate_does_not_lift_a_line_finding() -> None:
+    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 30}
+    item = _queue([handler, _dry()]).lead
+    assert _ranked(item, "duplicate inside") == "no"

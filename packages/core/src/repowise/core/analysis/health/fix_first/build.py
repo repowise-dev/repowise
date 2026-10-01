@@ -422,10 +422,13 @@ class _Files:
         measured: str | None,
         fallback: str,
         dependents: int | None = None,
+        cloned: bool = False,
     ) -> str:
         """One sentence: the measured problem, then who depends on the file."""
         deps = dependents if dependents is not None else self.dependents(path)
         head = measured or fallback.rstrip(". ")
+        if cloned:
+            head += f", {text.CLONED}"
         return f"{head}{text.exposure(deps, self.commits(path))}."
 
     def context(self, path: str) -> tuple[FixContext, ...]:
@@ -646,6 +649,7 @@ def _refactor_unit(
     dimension = biomarker_dimension(marker) if marker else "maintainability"
     shape = files.shape(path, lead.get("target_symbol"))
     size = _size_value(shape, hot)
+    cloned = lead_type == "extract_method" and files.cloned(path, shape)
 
     def fields() -> dict[str, Any]:
         lead_plan = plans.get(lead.get("plan_id"))
@@ -713,6 +717,7 @@ def _refactor_unit(
                 measured=_refactor_measure(lead_type, sym, path, lead, lead_plan, files),
                 fallback=text.problem(marker, sym),
                 dependents=dependents,
+                cloned=cloned,
             ),
             "facts": tuple(facts[:MAX_FACTS]),
             "action": FixAction(
@@ -748,7 +753,7 @@ def _refactor_unit(
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
-        value=max(_gain_value(gain, hot), size),
+        value=_lifted(max(_gain_value(gain, hot), size), cloned),
         ready=mechanical or confidence == "high",
         score=_num(field(row, "rank_score")),
         confidence=confidence if confidence in LEVEL_RANK else "medium",
@@ -758,9 +763,16 @@ def _refactor_unit(
             FixRankFact("health gain", f"{gain:.2f}"),
             FixRankFact("problem size", str(size)),
             FixRankFact("hot file", "yes" if hot else "no"),
+            FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
     )
+
+
+def _lifted(value: int, cloned: bool) -> int:
+    """A complexity unit with a duplicate in the same function is one step
+    more worth doing: raters accepted that shape almost every time."""
+    return min(VALUE_MAX, value + 1) if cloned else value
 
 
 def _refactor_measure(
@@ -979,6 +991,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
     dimension = biomarker_dimension(marker)
     shape = files.shape(path, function)
     size = _size_value(shape, hot)
+    cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
@@ -997,6 +1010,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
                 path,
                 measured=text.measured(where, files.shape(path, function)),
                 fallback=field(lead, "reason") or text.problem(marker, where),
+                cloned=cloned,
             ),
             "facts": tuple(
                 [
@@ -1025,7 +1039,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
-        value=max(_gain_value(impact, hot), size),
+        value=_lifted(max(_gain_value(impact, hot), size), cloned),
         ready=False,
         score=impact,
         confidence="medium",
@@ -1035,6 +1049,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
             FixRankFact("health gain", f"{impact:.2f}"),
             FixRankFact("problem size", str(size)),
             FixRankFact("hot file", "yes" if hot else "no"),
+            FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
     )

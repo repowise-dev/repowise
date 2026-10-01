@@ -62,6 +62,9 @@ REFACTOR_TITLE: dict[str, str] = {
     "move_method": "Move {sym} next to the code it uses",
 }
 
+#: Appended to a why when a duplicate sits in the function being split.
+CLONED = "and part of it is duplicated, so splitting it also removes a copy"
+
 BOUNDARY_NOUN = {
     "db": "database",
     "filesystem": "file system",
@@ -217,6 +220,7 @@ def first_sentence(text: str) -> str:
 
 __all__ = [
     "BOUNDARY_NOUN",
+    "CLONED",
     "FINDING_TITLE",
     "FIX_STRATEGY",
     "PERF_SHAPE",
