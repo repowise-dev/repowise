@@ -923,7 +923,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
 | `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
-**Returns:** Dead code findings grouped by confidence tier (high >= 0.7, medium 0.4 to 0.7, low < 0.4). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import. `summary.call_resolution_basis` lists, per language, how many call edges the index resolved and what share are guesses, which is the graph the findings rest on.
+**Returns:** Dead code findings grouped by confidence tier (high >= 0.7, medium 0.4 to 0.7, low < 0.4). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import. `summary.call_resolution_basis` lists, per language, how many call edges the index resolved and what share are guesses, which is the graph the findings rest on. `summary.scope` says the totals cover every open finding while `filtered_findings` and the tiers cover what the filters kept; `summary.filters` echoes each non-default filter.
 
 **When to use:** Cleanup tasks, not a targeted fix. Conservative by design: `safe_only` excludes dynamically-loaded patterns and framework-decorated functions.
 

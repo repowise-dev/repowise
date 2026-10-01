@@ -118,6 +118,8 @@ def _compute_excluded_kinds(
     return excluded
 
 
+# These literals must match get_dead_code()'s default parameters below;
+# test_get_dead_code_summary_says_what_it_counts catches drift between them.
 _DEFAULT_EXCLUDED_KINDS = _compute_excluded_kinds(
     no_unreachable=False,
     no_unused_exports=False,
