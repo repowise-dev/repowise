@@ -11,7 +11,7 @@ export type ActionRule =
   | "fresh_regressions"
   | "fragile_file"
   | "fix_concentration"
-  | "hot_path_perf"
+  | "fix_first"
   | "stale_decision"
   | "knowledge_loss"
   | "broken_doc_refs"

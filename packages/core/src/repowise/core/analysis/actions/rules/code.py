@@ -1,4 +1,4 @@
-"""Rules about the code itself: what got worse, what keeps breaking, what is slow."""
+"""Rules about the code itself: what got worse, what keeps breaking, what to fix first."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from datetime import datetime
 from ..context import RepoContext
 from ..facts import FileFacts, RepoFacts
 from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
-from ._text import code, humanize, plural, py_list
+from ._text import code, plural, py_list
 
 #: Files that tell the week's story as well as the quarter's: busy fragile
 #: files someone touched this week, strongest first.
@@ -30,6 +30,9 @@ CONCENTRATION_MIN_LIFT = 4.0
 CONCENTRATION_MIN_REPEAT_FILES = 3
 CONCENTRATION_MAX_ACTIONS = 2
 
+
+#: Fix-first items Do next reads; the queue is ranked, so these are its head.
+FIX_FIRST_ACTIONS = 3
 
 #: Up to this many files, each gets its own action; beyond it, one action
 #: carries the week and names the worst files. A heavy week of feature work can
@@ -233,8 +236,10 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
     if ctx.fix_commits_90d == 0:
         return RuleOutcome(rule, "not_applicable", "No bug-fix commits in the last 90 days.")
+    # A file Fix first already names carries one action, not two.
+    named = fix_first_paths(facts)
     fragile = sorted(
-        (f for f in facts.files.values() if _is_fragile(f, ctx)),
+        (f for f in facts.files.values() if _is_fragile(f, ctx) and f.path not in named),
         key=lambda f: -(f.fix_commits_90d * f.commits_90d),
     )
     touched = [f for f in fragile if ctx.in_week(f.last_commit_at)]
@@ -354,6 +359,7 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             if f.fix_commits_90d >= 3:
                 fixed_files[folder].append(path)
     n_prod = len(production)
+    named = fix_first_paths(facts)
 
     def lift(folder: str) -> float:
         return (len(shas_per_folder[folder]) / total) / (files_per_folder[folder] / n_prod)
@@ -362,7 +368,9 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         folder
         for folder, shas in shas_per_folder.items()
         if len(shas) / total >= CONCENTRATION_MIN_SHARE
-        and len(fixed_files[folder]) >= CONCENTRATION_MIN_REPEAT_FILES
+        # Files Fix first names do not make a folder an area of work twice.
+        and len([p for p in fixed_files[folder] if p not in named])
+        >= CONCENTRATION_MIN_REPEAT_FILES
         and lift(folder) >= CONCENTRATION_MIN_LIFT
     ]
     chosen: list[str] = []
@@ -440,88 +448,68 @@ def _ancestors(path: str) -> list[str]:
     return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
 
-_BOUNDARY_NOUN = {
-    "db": "database",
-    "filesystem": "file system",
-    "network": "network",
-    "subprocess": "subprocess",
-}
+#: Fix-first tiers that become actions; ``later`` stays on the Code Health page.
+_FIX_FIRST_TIER = {"now": "act_now", "next": "plan"}
 
 
-def hot_path_perf(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
-    """Repeated I/O an entry point can reach, whose cost grows with the data.
+def fix_first_paths(facts: RepoFacts) -> set[str]:
+    """Files the ``fix_first`` rule emits, so file-level rules do not repeat them."""
+    return {i.target.file_path for i in facts.fix_first if i.tier in _FIX_FIRST_TIER}
 
-    Strict on purpose: on the repowise index 4 of 491 production opportunities
-    clear it. The rest stay on the Performance tab as an inventory.
+
+def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
+    """The head of the shared Fix-first queue: one ranking for every surface.
+
+    Code health, refactoring and performance work all reach this list through
+    it, so Do next and the Code Health lead cannot disagree about what to fix.
     """
-    rule = "hot_path_perf"
-    if "performance" in facts.unavailable:
-        return RuleOutcome(rule, "unavailable", facts.unavailable["performance"])
+    rule = "fix_first"
+    if "fix_first" in facts.unavailable:
+        return RuleOutcome(rule, "unavailable", facts.unavailable["fix_first"])
     actions = []
-    for p in facts.perf:
-        if p.actionability not in ("plan_ready", "advisory"):
+    for item in facts.fix_first:
+        tier = _FIX_FIRST_TIER.get(item.tier)
+        if tier is None:
             continue
-        if p.exposure != "entry_reachable":
-            continue
-        if p.loop_magnitude != "grows_with_data" and p.call_sites < 3:
-            continue
-        where = code(p.symbol.rsplit("::", 1)[-1] if p.symbol else p.file_path)
-        noun = _BOUNDARY_NOUN.get(p.boundary or "")
-        if noun and p.call_sites > 1:
-            title = f"Batch the {noun} calls loops make through {where}"
-        elif noun:
-            title = f"Move the {noun} call in {where} out of its loop"
-        else:
-            title = f"Fix the {humanize(p.biomarker)} in {where}"
+        target = item.target
+        symbol = target.symbol
         actions.append(
             Action(
                 rule=rule,
-                tier="plan",
-                horizons=("quarter",),
-                severity="medium",
-                title=title,
-                impact=(
-                    f"{plural(p.call_sites, 'loop')} across {plural(p.files, 'file')} "
-                    f"{'reaches' if p.call_sites == 1 else 'reach'} it from code an entry "
-                    "point calls, once per item."
-                ),
+                tier=tier,
+                horizons=("week", "quarter") if tier == "act_now" else ("quarter",),
+                severity="high" if tier == "act_now" else "medium",
+                title=item.title,
+                impact=item.why,
                 why=(
-                    WhyFact("file", posixpath.basename(p.file_path)),
-                    WhyFact("call sites", str(p.call_sites)),
-                    WhyFact("reachable from an entry point", "Yes", "inferred"),
-                    WhyFact(
-                        "cost",
-                        "Grows with the data"
-                        if p.loop_magnitude == "grows_with_data"
-                        else "Repeated per call site",
-                        "inferred",
-                    ),
+                    WhyFact("gain", item.gain.text, "inferred"),
+                    *(WhyFact(f.label, f.value, f.basis) for f in item.facts[:3]),
                 ),
-                target_kind="symbol" if p.symbol else "file",
-                target_path=p.file_path,
-                target_symbol=p.symbol,
-                identity=p.opportunity_id,
-                surface="performance",
-                effort=_effort(p.effort),
-                confidence="high" if p.actionability == "plan_ready" else "medium",
-                done_when="The opportunity closes on the next update.",
-                marker=p.biomarker,
-                weight=float(p.call_sites),
-                evidence_ids=(p.opportunity_id,),
-                evidence_total=p.call_sites,
+                target_kind="symbol" if symbol else "file",
+                target_path=target.file_path,
+                target_symbol=symbol,
+                identity=item.id,
+                surface="performance" if item.kind == "perf_fix" else "findings",
+                effort=_effort(item.effort.bucket),
+                confidence="high" if item.confidence.level == "high" else "medium",
+                done_when="It leaves Fix first on the next update.",
+                weight=float(len(facts.fix_first) - item.rank),
+                evidence_ids=tuple(
+                    x for x in (item.source.opportunity_id, *item.source.finding_ids) if x
+                ),
+                fingerprint=fingerprint(item.tier, item.gain.text),
+                details=tuple(
+                    ActionDetail(path=step.file_path, line=step.line, reason=step.text)
+                    for step in item.action.steps
+                ),
+                details_total=item.action.steps_total,
                 commands=(
                     ActionCommand(
-                        "Every call site, the fix strategy and the tests to run",
-                        mcp=f'get_health(opportunity_id="{p.opportunity_id}")',
-                        cli=f"repowise health --file {p.file_path}",
-                    ),
-                    ActionCommand(
-                        "The function's body and its callers",
-                        mcp=f'get_symbol("{p.symbol or p.file_path}", depth=1)',
-                        cli=f"repowise symbol {p.symbol or p.file_path}",
+                        "The full item: steps, tests to run, risk",
+                        mcp=f'get_health(fix_id="{item.id}")',
+                        cli="repowise health",
                     ),
                 ),
-                fingerprint=fingerprint(p.call_sites, p.actionability),
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))

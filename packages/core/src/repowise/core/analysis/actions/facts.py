@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+from repowise.core.analysis.health.fix_first import FixItem
+
 CoverageStatus = Literal["measured", "stale", "unknown"]
 
 
@@ -61,21 +63,6 @@ class RecentFinding:
     change_kind: str
     line: int | None
     reason: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class PerfFacts:
-    opportunity_id: str
-    biomarker: str
-    boundary: str | None
-    file_path: str
-    symbol: str | None
-    call_sites: int
-    files: int
-    actionability: str
-    exposure: str | None
-    loop_magnitude: str | None
-    effort: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +127,8 @@ class RepoFacts:
     fix_shas_by_file: Mapping[str, frozenset[str]] = field(default_factory=dict)
     fix_commits_90d: int = 0
     recent_findings: tuple[RecentFinding, ...] = ()
-    perf: tuple[PerfFacts, ...] = ()
+    #: The head of the shared Fix-first queue, built by the same core builder.
+    fix_first: tuple[FixItem, ...] = ()
     secrets: tuple[SecretFacts, ...] = ()
     drift: tuple[DriftFacts, ...] = ()
     dead: tuple[DeadFacts, ...] = ()

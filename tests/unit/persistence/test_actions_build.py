@@ -69,14 +69,17 @@ COMMIT_HEALTH = [
 
 PERFORMANCE = [
     {"opportunity_id": "perf1", "execution_context": "production",
-     "actionability_state": "plan_ready", "boundary_kind": "db", "biomarker_type": "n_plus_one",
+     "actionability_state": "plan_ready", "plan_state": "available",
+     "fix_strategy": "batch_or_prefetch_io", "boundary_kind": "db",
+     "biomarker_type": "n_plus_one", "rank_position": 0,
      "file_path": "src/repo.py", "intervention_symbol": "src/repo.py::Repo.load",
      "affected_call_sites_total": 4, "affected_files_total": 2,
-     "details": {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data"},
+     "details": {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                            "actionability_confidence": "medium"},
                  "plan": {"effort_bucket": "S"}}},
     {"opportunity_id": "perf2", "execution_context": "production",
      "actionability_state": "plan_ready", "boundary_kind": "db", "biomarker_type": "",
-     "file_path": "src/other.py",
+     "file_path": "src/other.py", "rank_position": 0,
      "affected_call_sites_total": 9,
      "details_json": json.dumps({"facets": {"exposure": "internal"}})},
 ]
@@ -107,7 +110,13 @@ def _rows(dead_ids: list[str], **overrides):
         "health_findings": HEALTH_FINDINGS,
         "authors": COMMITS,
         "commit_health": COMMIT_HEALTH,
-        "performance": PERFORMANCE,
+        "fix_first": {
+            "metrics": FILES,
+            "findings": HEALTH_FINDINGS,
+            "refactoring": [],
+            "performance": PERFORMANCE,
+            "plans": [],
+        },
         "security": SECURITY,
         "doc_drift": DOC_DRIFT,
         "known_paths": ["src/old.py"],
@@ -151,11 +160,14 @@ async def test_builder_on_rows_matches_the_sql_loader(async_session) -> None:
         {"file_path": "src/core.py", "biomarker_type": "long_method", "severity": "critical",
          "function_name": "gone", "health_impact": 9.0, "status": "resolved"},
     ]
-    rows["performance"] = [
-        *PERFORMANCE,
-        {**PERFORMANCE[0], "opportunity_id": "perf3", "execution_context": "test"},
-        {**PERFORMANCE[0], "opportunity_id": "perf4", "status": "resolved"},
-    ]
+    rows["fix_first"] = {
+        **rows["fix_first"],
+        "findings": rows["health_findings"],
+        "performance": [
+            *PERFORMANCE,
+            {**PERFORMANCE[0], "opportunity_id": "perf4", "status": "resolved"},
+        ],
+    }
     rows["security"] = [*SECURITY, {**SECURITY[0], "commit_sha": "abc"},
                         {**SECURITY[0], "severity": "medium"}]
     rows["dead_code"] = [
@@ -174,13 +186,14 @@ async def test_builder_on_rows_matches_the_sql_loader(async_session) -> None:
     assert built.files["src/core.py"].lead.biomarker == "complex_method"
     assert [f.file_path for f in built.recent_findings] == ["src/new.py"]
     assert [s.file_path for s in built.secrets] == ["src/settings.py"]
+    assert [i.target.file_path for i in built.fix_first] == ["src/repo.py", "src/core.py", "src/new.py"]
     assert (built.fix_commits_90d, built.active_authors_90d, len(built.dead)) == (4, 3, 3)
 
 
 def test_a_store_passed_as_none_is_unavailable() -> None:
-    facts = build_repo_facts(**_rows([], performance=None, security=None))
-    assert facts.unavailable == {"performance": ABSENT, "security": ABSENT}
-    assert facts.perf == () and facts.secrets == ()
+    facts = build_repo_facts(**_rows([], fix_first=None, security=None))
+    assert facts.unavailable == {"fix_first": ABSENT, "security": ABSENT}
+    assert facts.fix_first == () and facts.secrets == ()
     assert facts.drift
 
 

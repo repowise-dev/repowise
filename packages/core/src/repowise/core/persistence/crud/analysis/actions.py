@@ -30,13 +30,13 @@ from repowise.core.analysis.actions.build import (
     build_decisions,
     build_drift,
     build_files,
-    build_perf,
     build_recent,
     build_secrets,
     lead_paths,
     with_leads,
 )
 from repowise.core.analysis.actions.facts import FileFacts
+from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
@@ -55,9 +55,9 @@ from ...models import (
     GraphMetric,
     HealthFileMetric,
     HealthFinding,
-    PerformanceOpportunity,
     SecurityFinding,
 )
+from .fix_first import load_fix_first
 
 logger = logging.getLogger(__name__)
 
@@ -218,22 +218,8 @@ async def _recent(
     return build_recent(rows, week=since, open_findings=open_findings, files=files)
 
 
-async def _perf(session: AsyncSession, repo_id: str) -> dict[str, Any]:
-    rows = (
-        (
-            await session.execute(
-                select(PerformanceOpportunity).where(
-                    PerformanceOpportunity.repository_id == repo_id,
-                    PerformanceOpportunity.status == "open",
-                    PerformanceOpportunity.execution_context == "production",
-                    PerformanceOpportunity.actionability_state.in_(("plan_ready", "advisory")),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return build_perf(rows)
+async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+    return {"fix_first": (await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS)).items}
 
 
 async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
@@ -401,7 +387,7 @@ async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
     files: dict[str, FileFacts] = values.get("files") or {}
     await read("authors", lambda: _authors(session, repo_id, since))
     await read("commit_health", lambda: _recent(session, repo_id, week, files))
-    await read("performance", lambda: _perf(session, repo_id))
+    await read("fix_first", lambda: _fix_first(session, repo_id))
     await read("security", lambda: _secrets(session, repo_id, files))
     await read("doc_drift", lambda: _drift(session, repo_id))
     await read("dead_code", lambda: _dead(session, repo_id, files))

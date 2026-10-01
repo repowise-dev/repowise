@@ -22,7 +22,7 @@ RULES: tuple[Rule, ...] = (
     code.fresh_regressions,
     code.fragile_file,
     code.fix_concentration,
-    code.hot_path_perf,
+    code.fix_first,
     hygiene.stale_decision,
     hygiene.knowledge_loss,
     hygiene.broken_doc_refs,

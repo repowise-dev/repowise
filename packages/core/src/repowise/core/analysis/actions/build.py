@@ -29,12 +29,10 @@ Row shapes (the field names are the SQL columns):
     ``sha``, ``subject``, ``committed_at`` (the commit's), ``file_path``,
     ``symbol``, ``biomarker_type``, ``severity``, ``change_kind``,
     ``line_start``, ``reason``, ``attribution_basis``.
-``performance``
-    ``opportunity_id``, ``biomarker_type``, ``boundary_kind``, ``file_path``,
-    ``intervention_symbol``, ``affected_call_sites_total``,
-    ``affected_files_total``, ``actionability_state``, ``execution_context``,
-    ``status`` (absent = open), and ``details`` (a dict) or ``details_json``
-    carrying ``facets`` and ``plan``.
+``fix_first``
+    One mapping of the Fix-first builder's own inputs (``metrics``,
+    ``findings``, ``refactoring``, ``performance``, ``plans``); shapes in
+    ``repowise.core.analysis.health.fix_first.build``.
 ``security``
     ``file_path``, ``kind``, ``line_number``, ``snippet``, ``severity``,
     ``commit_sha`` (empty for the working tree).
@@ -63,8 +61,9 @@ from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.rows import detail_map, field
+from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
 
@@ -76,11 +75,11 @@ from .facts import (
     DriftFacts,
     FileFacts,
     LeadFinding,
-    PerfFacts,
     RecentFinding,
     RepoFacts,
     SecretFacts,
 )
+from .rules.code import FIX_FIRST_ACTIONS
 from .rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 
 logger = logging.getLogger(__name__)
@@ -309,35 +308,9 @@ def build_recent(
     return {"recent_findings": tuple(recent)}
 
 
-def build_perf(rows: Rows) -> dict[str, Any]:
-    """Open production opportunities that are ready to plan or advise on."""
-    out = []
-    for r in rows:
-        if not (
-            _open(r)
-            and field(r, "execution_context") == "production"
-            and field(r, "actionability_state") in ("plan_ready", "advisory")
-        ):
-            continue
-        details = detail_map(r)
-        facets = details.get("facets") or {}
-        plan = details.get("plan") or {}
-        out.append(
-            PerfFacts(
-                opportunity_id=field(r, "opportunity_id"),
-                biomarker=field(r, "biomarker_type"),
-                boundary=field(r, "boundary_kind"),
-                file_path=field(r, "file_path"),
-                symbol=field(r, "intervention_symbol"),
-                call_sites=field(r, "affected_call_sites_total") or 0,
-                files=field(r, "affected_files_total") or 0,
-                actionability=field(r, "actionability_state"),
-                exposure=facets.get("exposure"),
-                loop_magnitude=facets.get("loop_magnitude"),
-                effort=plan.get("effort_bucket"),
-            )
-        )
-    return {"perf": tuple(out)}
+def build_fix_first_store(rows: Mapping[str, Rows]) -> dict[str, Any]:
+    """The head of the Fix-first queue, from the rows its own builder reads."""
+    return {"fix_first": build_fix_first(**rows, limit=FIX_FIRST_ACTIONS).items}
 
 
 def build_secrets(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
@@ -441,7 +414,7 @@ def build_repo_facts(
     health_findings: Rows = (),
     authors: Rows | None = None,
     commit_health: Rows | None = None,
-    performance: Rows | None = None,
+    fix_first: Mapping[str, Rows] | None = None,
     security: Rows | None = None,
     doc_drift: Rows | None = None,
     known_paths: Iterable[str] = (),
@@ -491,7 +464,7 @@ def build_repo_facts(
             rows, week=week, open_findings=health_findings, files=known_files
         ),
     )
-    build("performance", performance, build_perf)
+    build("fix_first", fix_first, build_fix_first_store)
     build("security", security, lambda rows: build_secrets(rows, known_files))
     build("doc_drift", doc_drift, lambda rows: build_drift(rows, known_paths))
     build("dead_code", dead_code, lambda rows: build_dead(rows, known_files))
@@ -513,7 +486,7 @@ __all__ = [
     "build_decisions",
     "build_drift",
     "build_files",
-    "build_perf",
+    "build_fix_first_store",
     "build_recent",
     "build_repo_facts",
     "build_secrets",

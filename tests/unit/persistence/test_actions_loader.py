@@ -108,11 +108,13 @@ async def _seed(session) -> str:
             PerformanceOpportunity(
                 repository_id=rid, opportunity_id="perf1", status="open",
                 execution_context="production", actionability_state="plan_ready",
+                plan_state="available", fix_strategy="batch_or_prefetch_io",
                 boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
                 intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
                 affected_files_total=2,
                 details_json=json.dumps(
-                    {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data"},
+                    {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),
             ),
@@ -177,15 +179,14 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     assert view["context"]["fix_commits_90d"] == 4
     rules = _by_rule(view)
 
-    (fragile,) = rules["fragile_file"]
-    assert fragile["target"]["path"] == "src/core.py"
-    assert fragile["title"].startswith("Add tests around `src/core.py`")
-    # The code-shape finding leads, not the higher-impact history marker.
-    assert fragile["marker"] == "complex_method"
-
-    (perf,) = rules["hot_path_perf"]
-    assert perf["title"] == "Batch the database calls loops make through `Repo.load`"
-    assert perf["effort"] == "S"
+    # Fix first names the busy bug magnet by its code-shape finding, not the
+    # higher-impact history marker, and the plan-ready loop; the fragile-file
+    # rule does not repeat the file it already names.
+    fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
+    assert fixes["src/core.py"]["title"] == "Reduce the branching in run"
+    assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
+    assert fixes["src/repo.py"]["effort"] == "S"
+    assert "fragile_file" not in rules
 
     (secret,) = rules["live_secret"]
     assert secret["target"]["path"] == "src/settings.py"
@@ -206,12 +207,12 @@ async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session
     await async_session.commit()
 
     view = await load_actions_view(async_session, rid, now=NOW)
-    assert set(view["unavailable"]) == {"performance"}
+    assert set(view["unavailable"]) == {"fix_first"}
     status = {r["rule"]: r["status"] for r in view["rules"]}
-    assert status["hot_path_perf"] == "unavailable"
+    assert status["fix_first"] == "unavailable"
     assert status["live_secret"] == "evaluated"
     rules = _by_rule(view)
-    assert "hot_path_perf" not in rules
+    assert "fix_first" not in rules
     assert {"fragile_file", "live_secret", "broken_doc_refs"} <= set(rules)
 
 
