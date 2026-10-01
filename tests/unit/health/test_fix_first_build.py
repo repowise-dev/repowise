@@ -123,7 +123,10 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    queue = _build(refactoring=refactors, performance=[_perf("perf2_a", "s")], findings=[])
+    # Same value as the refactors (production, loop size unknown), lower tier.
+    perf = _perf("perf2_a", "s")
+    perf["details"] = {**perf["details"], "facets": {"loop_magnitude": "unknown"}}
+    queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
     # since no other kind has anything left at value 2 or above.
     assert [i.kind for i in queue.items[:5]] == [*["refactor"] * 3, "perf_fix", "refactor"]
@@ -161,3 +164,20 @@ def test_cli_code_ships_for_code_shape_but_not_for_performance() -> None:
     finding = {**FINDINGS[1], "file_path": path}
     queue = _build(metrics=[cli], findings=[finding], refactoring=[], performance=[])
     assert [i.target.file_path for i in queue.items] == [path]
+
+
+def test_value_leads_tier_and_a_huge_function_says_so() -> None:
+    """A function far past every bar outranks tidy work that is safer to start."""
+    huge = {**FINDINGS[1], "file_path": "src/plain.py", "function_name": "walk",
+            "public_id": "finding_huge", "details": {"ccn": 249, "nloc": 1280, "max_nesting": 5}}
+    queue = _build(findings=[*FINDINGS, huge])
+    lead = queue.lead
+    assert (lead.kind, lead.tier, lead.target.file_path) == ("finding", "next", "src/plain.py")
+    assert lead.title == "Break up walk (CCN 249, 1,280 lines)"
+    assert ("problem size", "4") in [(f.factor, f.value) for f in lead.why_ranked]
+    # With a plan, the title names the problem and the first concrete step.
+    big = {**FINDINGS[1], "details": {"ccn": 120, "nloc": 900, "max_nesting": 6}}
+    planned = _build(findings=[big]).lead
+    assert planned.title == (
+        "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35 into sum_rows"
+    )

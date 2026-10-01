@@ -7,11 +7,21 @@ opportunities and ready performance fixes, the files carrying the most
 code-shape deduction, and the history-only files. Explanatory JSON is read
 only for rows that can become an item, so the payload stays proportional to
 the queue, not the repository.
+
+Ceiling: plain finding items come only from the :data:`FINDING_FILES` files
+with the most open code-shape deduction, so a file below that line never
+becomes a finding item (a file with a plan or a performance fix still does).
+Upgrade path: materialize each file's lead finding and its size at index
+time, as refactoring and performance already are, and rank them in SQL.
+
+The built queue is cached in process, keyed by the repository and the
+newest write to each store it reads, so repeated calls between updates cost
+one aggregate read.
 """
 
 from __future__ import annotations
 
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
@@ -312,6 +322,37 @@ async def _plans(session: AsyncSession, repo_id: str, steps: list[dict[str, Any]
     )
 
 
+#: Built queues kept in process. A handful covers the shapes one surface asks
+#: for (dashboard, CLI, Do next, one id), per repository a server holds.
+CACHE_SIZE = 32
+_cache: OrderedDict[tuple[Any, ...], FixFirstQueue] = OrderedDict()
+
+
+async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
+    """The newest write and the row count of every store the queue reads.
+
+    A rewrite, a triage change (``updated_at`` moves) or a deletion (the
+    count moves) changes it; git and graph rows are rewritten with the
+    health rows that read them.
+    """
+    stamps: list[Any] = []
+    for model in (HealthFileMetric, HealthFinding, RefactoringOpportunity, PerformanceOpportunity):
+        stamps.extend(
+            (
+                await session.execute(
+                    select(func.max(model.updated_at), func.count()).where(
+                        model.repository_id == repo_id
+                    )
+                )
+            ).one()
+        )
+    return tuple(stamps)
+
+
+def clear_fix_first_cache() -> None:
+    _cache.clear()
+
+
 async def load_fix_first(
     session: AsyncSession,
     repository_id: str,
@@ -324,6 +365,33 @@ async def load_fix_first(
 
     ``item_id`` keeps only that item, at its rank, for a lookup by id.
     """
+    key = (
+        str(session.bind.url) if session.bind is not None else None,
+        repository_id,
+        limit,
+        scope,
+        item_id,
+        await _stamp(session, repository_id),
+    )
+    cached = _cache.get(key)
+    if cached is not None:
+        _cache.move_to_end(key)
+        return cached
+    queue = await _build(session, repository_id, limit=limit, scope=scope, item_id=item_id)
+    _cache[key] = queue
+    while len(_cache) > CACHE_SIZE:
+        _cache.popitem(last=False)
+    return queue
+
+
+async def _build(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int | None,
+    scope: str,
+    item_id: str | None,
+) -> FixFirstQueue:
     refactoring = _decoded(await _refactoring(session, repository_id))
     performance = _decoded(await _performance(session, repository_id))
     steps = _steps(refactoring)
@@ -351,4 +419,4 @@ async def load_fix_first(
     )
 
 
-__all__ = ["FINDING_FILES", "load_fix_first"]
+__all__ = ["CACHE_SIZE", "FINDING_FILES", "clear_fix_first_cache", "load_fix_first"]

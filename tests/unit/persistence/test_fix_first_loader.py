@@ -81,3 +81,22 @@ async def test_loader_on_an_empty_repository(async_session) -> None:
     rid = (await insert_repo(async_session)).id
     queue = await load_fix_first(async_session, rid)
     assert queue.items == () and queue.totals.candidates == 0
+
+
+async def test_the_queue_is_cached_until_a_store_changes(async_session) -> None:
+    from sqlalchemy import select
+
+    rid = await seed_fix_first(async_session)
+    first = await load_fix_first(async_session, rid)
+    assert await load_fix_first(async_session, rid) is first
+    # Triage moves a finding's updated_at, so the next read rebuilds.
+    row = (
+        await async_session.execute(
+            select(HealthFinding).where(HealthFinding.public_id == "finding_n1")
+        )
+    ).scalar_one()
+    row.status = "acknowledged"
+    await async_session.flush()
+    rebuilt = await load_fix_first(async_session, rid)
+    assert rebuilt is not first
+    assert all(i.target.file_path != "src/plain.py" for i in rebuilt.items)

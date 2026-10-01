@@ -88,6 +88,23 @@ Rows = Iterable[Any]
 MIN_WORTH = 0.5
 #: Credited health gain cut points for value 1, 2 and 3.
 GAIN_CUTS = (0.5, 1.5, 3.0)
+#: Problem-size cut points for value 1 to 4. Health credit is calibrated per
+#: finding and saturates, so a function far past every bar would rank with a
+#: tidy one without these. Each cut is a multiple of the detector's own bar.
+#: CCN 20 is twice the complex_method bar; 40, 80 and 150 double on from it.
+SIZE_CCN = (20, 40, 80, 150)
+#: 100 lines is past the large_method bar; 800 is a module living in one body.
+SIZE_NLOC = (100, 200, 400, 800)
+#: Nesting 5 is one past the nested_complexity bar; 8 is unreadable.
+SIZE_NESTING = (5, 6, 8, 99)
+#: A critical finding or a brain method is at least this size.
+SIZE_SEVERE = 2
+#: Measured size (CCN, lines or nesting alone, before the severity floor and
+#: the hot-file bonus) from which an item leads as "break up", naming the whole
+#: problem: CCN 40, 200 lines or nesting 6.
+SIZE_BREAK_UP = 2
+#: The highest value any unit reaches.
+VALUE_MAX = 4
 #: A file in the top fifth of production files by churn or dependents is hot.
 HOT_QUANTILE = 0.8
 MAX_FACTS = 5
@@ -178,6 +195,21 @@ def _quantile_cut(values: list[int]) -> float:
 
 def _gain_value(gain: float, hot: bool) -> int:
     return min(3, sum(gain >= cut for cut in GAIN_CUTS) + int(hot))
+
+
+def _magnitude(shape: Mapping[str, int]) -> int:
+    """How far the measured CCN, size or nesting sits past its bar, 0 to 4."""
+    return max(
+        sum(shape.get("ccn", 0) >= c for c in SIZE_CCN),
+        sum(shape.get("nloc", 0) >= c for c in SIZE_NLOC),
+        sum(shape.get("max_nesting", 0) >= c for c in SIZE_NESTING),
+    )
+
+
+def _size_value(shape: Mapping[str, int], hot: bool) -> int:
+    """How big the problem is, 0 to 4; a hot file counts one more."""
+    base = max(_magnitude(shape), SIZE_SEVERE if shape.get("severe") else 0)
+    return min(VALUE_MAX, base + int(hot and base > 0))
 
 
 def _risk(files_touched: int, dependents: int | None) -> FixRisk:
@@ -424,22 +456,43 @@ def _refactor_unit(
     confidence = field(row, "confidence") or "medium"
     hot = files.hot(path)
     dimension = biomarker_dimension(marker) if marker else "maintainability"
+    shape = files.shape(path, lead.get("target_symbol"))
+    size = _size_value(shape, hot)
 
     def fields() -> dict[str, Any]:
         lead_plan = plans.get(lead.get("plan_id"))
         start, end = _span(lead_plan)
-        key = (
-            "extract_method_span" if lead_type == "extract_method" and start and end else lead_type
-        )
-        title = text.REFACTOR_TITLE.get(key, "Refactor {file}").format(
-            sym=sym,
-            file=text.basename(path),
-            start=start,
-            end=end,
-            name=_plan_body(lead_plan).get("suggested_name") or "a helper",
-        )
-        if len(steps) > 1:
-            title += f" (+{text.plural(len(steps) - 1, 'more step')})"
+        body = _plan_body(lead_plan)
+        if (
+            _magnitude(shape) >= SIZE_BREAK_UP
+            and lead_type == "extract_method"
+            and start
+            and end
+        ):
+            # The helper's signature is in the step; the title keeps its name,
+            # or drops it when the problem and the span fill the line.
+            title = (
+                f"Start breaking up {sym} ({text.size_brief(shape)}): first lift lines "
+                f"{start}-{end}"
+            )
+            into = f" into {body.get('suggested_name') or 'a helper'}"
+            if len(title + into) <= text.TITLE_MAX:
+                title += into
+        else:
+            key = (
+                "extract_method_span"
+                if lead_type == "extract_method" and start and end
+                else lead_type
+            )
+            title = text.REFACTOR_TITLE.get(key, "Refactor {file}").format(
+                sym=sym,
+                file=text.basename(path),
+                start=start,
+                end=end,
+                name=body.get("suggested_name") or "a helper",
+            )
+            if len(steps) > 1:
+                title += f" (+{text.plural(len(steps) - 1, 'more step')})"
         dependents = details.get("dependents")
         if dependents is None:
             dependents = files.dependents(path)
@@ -507,7 +560,7 @@ def _refactor_unit(
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
-        value=_gain_value(gain, hot),
+        value=max(_gain_value(gain, hot), size),
         ready=mechanical or confidence == "high",
         score=_num(field(row, "rank_score")),
         confidence=confidence if confidence in LEVEL_RANK else "medium",
@@ -515,6 +568,7 @@ def _refactor_unit(
         improves=dimension if dimension in FIX_IMPROVES else "maintainability",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{gain:.2f}"),
+            FixRankFact("problem size", str(size)),
             FixRankFact("hot file", "yes" if hot else "no"),
         ],
         fields=fields,
@@ -730,17 +784,21 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
     hot = files.hot(path)
     public_id = field(lead, "public_id")
     dimension = biomarker_dimension(marker)
+    shape = files.shape(path, function)
+    size = _size_value(shape, hot)
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
         summary = text.first_sentence(suggestion_for(marker))
         line = field(lead, "line_start")
+        if _magnitude(shape) >= SIZE_BREAK_UP and function:
+            title = f"Break up {where} ({text.size_brief(shape)})"
+        else:
+            title = text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(
+                where=where
+            )
         return {
-            "title": text.clip(
-                text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(
-                    where=where
-                )
-            ),
+            "title": text.clip(title),
             "target": FixTarget(path, function, line, field(lead, "line_end")),
             "why": files.why(
                 path,
@@ -774,7 +832,7 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
-        value=_gain_value(impact, hot),
+        value=max(_gain_value(impact, hot), size),
         ready=False,
         score=impact,
         confidence="medium",
@@ -782,6 +840,7 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
         improves=dimension if dimension in FIX_IMPROVES else "defect",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{impact:.2f}"),
+            FixRankFact("problem size", str(size)),
             FixRankFact("hot file", "yes" if hot else "no"),
         ],
         fields=fields,
@@ -795,8 +854,8 @@ def _order(units: list[_Unit]) -> list[_Unit]:
     ranked = sorted(
         units,
         key=lambda u: (
-            TIER_RANK[u.tier],
             -u.value,
+            TIER_RANK[u.tier],
             -LEVEL_RANK.get(u.confidence, 0),
             EFFORT_RANK.get(u.effort, 1),
             -u.score,
@@ -834,9 +893,14 @@ def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
 
 
 def _measure(findings: Iterable[Any]) -> dict[str, int]:
-    """A function's largest measured CCN, size and nesting across its findings."""
+    """A function's largest measured CCN, size and nesting across its findings.
+
+    ``severe`` is set when any of them is critical or a brain method.
+    """
     shape: dict[str, int] = {}
     for f in findings:
+        if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
+            shape["severe"] = 1
         details = detail_map(f)
         for k in ("ccn", "nloc", "max_nesting", "lcom4", "method_count"):
             v = details.get(k)

@@ -146,6 +146,18 @@ def measured(subject: str, shape: dict[str, int]) -> str | None:
     return f"{subject}: {', '.join(parts)}" if parts else None
 
 
+def size_brief(shape: dict[str, int]) -> str:
+    """``CCN 249, 1,280 lines``: the two numbers a title has room for."""
+    parts = []
+    if shape.get("ccn"):
+        parts.append(f"CCN {shape['ccn']}")
+    if shape.get("nloc"):
+        parts.append(plural(shape["nloc"], "line"))
+    if not parts and shape.get("max_nesting"):
+        parts.append(f"nests {shape['max_nesting']} deep")
+    return ", ".join(parts) or "large"
+
+
 def exposure(dependents: int | None, commits: int) -> str:
     """``; 7 files import it, changed 15 times in 90 days``, or nothing."""
     parts = []
@@ -187,4 +199,5 @@ __all__ = [
     "problem",
     "short_symbol",
     "signature",
+    "size_brief",
 ]
