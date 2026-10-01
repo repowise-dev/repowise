@@ -295,8 +295,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
 def test_the_flagship_set_is_a_real_subset_of_the_default_surface() -> None:
     """The published flagship count is exactly the registry canonical tier."""
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import resolve_enabled_tools
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import resolve_enabled_tools
 
     ensure_full_surface()
     entries = mcp_tool_registry.entries()

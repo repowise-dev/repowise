@@ -9,10 +9,8 @@ import json
 import pytest
 
 from repowise.core.registry import ToolEntry, ToolRecipe
-from repowise.server.mcp_server._tool_selection import (
-    registry_tool_rows,
-    resolve_enabled_tools,
-)
+from repowise.core.registry.tool_selection import resolve_enabled_tools
+from repowise.server.mcp_server._tool_selection import registry_tool_rows
 from repowise.server.mcp_server.tool_overview import _tool_surface_guide
 
 
