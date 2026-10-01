@@ -359,3 +359,61 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
                 assert symbol.language in ("java", "csharp"), symbol.id
                 assert bases.count(base) > 1 or "`" in symbol.id, symbol.id
     assert checked > 500
+
+
+class TestNarrowingShapes:
+    """Call shapes the narrowing step must read by argument count alone."""
+
+    def test_csharp_named_arguments_and_explicit_type_arguments(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static int Sum(int a) => a;\n"
+            "  public static int Sum(int a, int b) => a + b;\n"
+            "  public static T Make<T>(T v) => v;\n"
+            "  public static T Make<T>(T v, int n) => v;\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public int Named() => H.Sum(b: 2, a: 1);\n"
+            "  public int Typed() => H.Make<int>(1, 2);\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Named", "H.cs::H::Sum#2") in edges
+        assert ("C.cs::C::Typed", "H.cs::H::Make#2") in edges
+
+    def test_java_explicit_type_arguments(self, tmp_path: Path) -> None:
+        util = (
+            "package app;\npublic class U {\n"
+            "  public static <T> T make(T v) { return v; }\n"
+            "  public static <T> T make(T v, int n) { return v; }\n"
+            "}\n"
+        )
+        caller = 'package app;\npublic class K {\n  public void go() { U.<String>make("x", 2); }\n}\n'
+        edges = _edges(tmp_path, {"app/U.java": ("java", util), "app/K.java": ("java", caller)})
+        assert ("app/K.java::K::go", "app/U.java::U::make#2") in edges
+
+    def test_an_interface_default_method_calls_into_its_overload_set(self, tmp_path: Path) -> None:
+        shape = (
+            "package app;\npublic interface Shape {\n"
+            "  default double area() { return scale(1.0); }\n"
+            "  default double scale(double f) { return scale(f, 1.0); }\n"
+            "  double scale(double f, double g);\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"app/Shape.java": ("java", shape)})
+        base = "app/Shape.java::Shape::"
+        assert (base + "area", base + "scale#1") in edges
+        assert (base + "scale#1", base + "scale#2") in edges
+
+    def test_overloads_split_across_a_superclass_keep_plain_ids(self, tmp_path: Path) -> None:
+        """Ids collide per class, so a base and a subclass overload stay plain."""
+        base = "package app;\npublic class Base {\n  public void f(int a) { }\n}\n"
+        derived = (
+            "package app;\npublic class Derived extends Base {\n"
+            "  public void f(int a, int b) { f(a); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"app/Base.java": ("java", base), "app/Derived.java": ("java", derived)})
+        assert edges == {("app/Derived.java::Derived::f", "app/Base.java::Base::f")}
