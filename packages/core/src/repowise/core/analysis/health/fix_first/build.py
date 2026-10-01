@@ -395,10 +395,10 @@ class _Files:
         if start and end:
             depth = shape.get("max_nesting")
             block = f"the {depth}-deep block" if depth else "the deepest block"
+            lines = f"line {start}" if start == end else f"lines {start}-{end}"
             return FixStep(
                 1,
-                f"Start with lines {start}-{end}, {block}: return early or move it into a "
-                "helper",
+                f"Start with {lines}, {block}: return early or move it into a helper",
                 path,
                 start,
             )
@@ -554,7 +554,15 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
     elif kind == "extract_helper":
         line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
     elif kind == "extract_class":
-        line_text = f"Move a cohesive group of {sym}'s methods into a new class"
+        groups = [g for g in _plan_body(plan).get("groups") or [] if g.get("methods")]
+        members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"] if groups else []
+        line_text = (
+            f"Move {', '.join(members[:4])}"
+            + (f" and {len(members) - 4} more" if len(members) > 4 else "")
+            + f" out of {sym} into a new class"
+            if members
+            else f"Move a cohesive group of {sym}'s methods into a new class"
+        )
     elif kind == "split_file":
         names = [g.get("name") for g in _plan_body(plan).get("groups") or [] if g.get("name")]
         line_text = (
@@ -1019,7 +1027,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
         where = function or text.basename(path)
         summary = text.first_sentence(suggestion_for(marker))
         line = field(lead, "line_start")
-        if _magnitude(shape) >= SIZE_BREAK_UP and function:
+        if _magnitude(shape) >= SIZE_BREAK_UP and function and marker in SIZE_MARKERS:
             title = f"Break up {where} ({text.size_brief(shape)})"
         else:
             title = text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(

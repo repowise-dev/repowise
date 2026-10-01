@@ -436,3 +436,24 @@ def test_it_outranks_a_large_function_that_needs_judgment_on_score() -> None:
 
 def test_without_reach_it_stays_below_the_top_band() -> None:
     assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"
+
+
+# --- titles and steps name what they mean -----------------------------------------
+
+
+def test_an_extract_class_step_names_the_members_it_moves() -> None:
+    plan = {"groups": [{"methods": ["load", "save", "flush"], "fields": ["db"]},
+                       {"methods": ["render"], "fields": ["tpl"]}]}
+    step = _refactor_queue("extract_class", plan).lead.action.steps[0]
+    assert step.text == "Move render out of Store.save into a new class"
+
+
+def test_only_a_size_finding_is_titled_break_up() -> None:
+    wide = {**_finding(ccn=12, nloc=40, max_nesting=8), "biomarker_type": "primitive_obsession"}
+    item = _queue([wide]).lead
+    assert item.title == "Group the parameters of run"
+
+
+def test_a_one_line_block_reads_as_one_line() -> None:
+    item = _queue([_finding(deepest_block={"start": 42, "end": 42})]).lead
+    assert item.action.steps[0].text.startswith("Start with line 42, the 4-deep block")
