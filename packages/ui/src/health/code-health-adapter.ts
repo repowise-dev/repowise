@@ -13,12 +13,12 @@ import type {
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
   PerformanceOpportunityQuery,
-  RelatedWorkItem,
   RelatedWorkResponse,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
 import type { CodeHealthOverlay } from "./map/types";
+import type { RelatedWorkHref } from "./related-work";
 import type {
   RefactoringOpportunity,
   RefactoringPlan,
@@ -142,7 +142,7 @@ export interface CodeHealthAdapter {
    */
   getRelatedWork?(filePaths: string[]): Promise<RelatedWorkResponse>;
   /** Where one related item lives, or null when it has nowhere to go. */
-  relatedWorkHref?(item: RelatedWorkItem, filePath: string): string | null;
+  relatedWorkHref?: RelatedWorkHref;
   /**
    * Where this cause lives on the one map. Optional: a host without a galaxy
    * offers no link rather than a second map.

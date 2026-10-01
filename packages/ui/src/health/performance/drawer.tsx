@@ -19,7 +19,7 @@ import { performancePlanDetail } from "../../refactoring/types";
 import { SourceExcerpt } from "../../refactoring/source-excerpt";
 import { ValidationSummary } from "../../refactoring/validation-summary";
 import { EFFORT_LABEL, WORK_UNIT_LABEL } from "../labels";
-import { RelatedWork } from "../related-work";
+import { RelatedWork, useRelatedWork } from "../related-work";
 import type { PerformanceViewAdapter } from "./adapter";
 import { RawObservations } from "./evidence";
 import {
@@ -677,19 +677,13 @@ function RelatedSection({
   adapter: PerformanceViewAdapter;
   filePath: string;
 }) {
-  const fetcher = adapter.getRelatedWork;
-  const { data } = useSWR(
-    fetcher && filePath ? `related-work:${adapter.cacheKey}:${filePath}` : null,
-    () => fetcher!([filePath]),
-    { revalidateOnFocus: false, shouldRetryOnError: false },
-  );
-  const toHref = adapter.relatedWorkHref;
+  const data = useRelatedWork(adapter.getRelatedWork, [filePath]);
   return (
     <RelatedWork
-      file={data?.files?.[0]}
-      exclude={["performance"]}
-      href={toHref ? (item) => toHref(item, filePath) : undefined}
+      related={data?.files?.[0]}
+      relatedWorkHref={adapter.relatedWorkHref}
       onNavigate={adapter.navigate}
+      exclude={["performance"]}
       headingLevel="h4"
     />
   );

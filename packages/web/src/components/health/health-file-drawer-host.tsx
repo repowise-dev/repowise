@@ -1,9 +1,10 @@
 "use client";
 
+import { useCallback, useMemo } from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { HealthFileDrawer } from "@repowise-dev/ui/health";
+import { HealthFileDrawer, useRelatedWork } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getPerformanceOpportunities,
@@ -67,11 +68,12 @@ export function HealthFileDrawerHost({
   );
 
   // What the other lenses hold for this file. One request, one read per lens.
-  const { data: related } = useSWR(
-    filePath ? `related-work:${repoId}:${filePath}` : null,
-    () => getRelatedWork(repoId, [filePath as string]),
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
   );
+  const related = useRelatedWork(fetchRelated, [filePath]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
 
   return (
     <HealthFileDrawer
@@ -79,7 +81,8 @@ export function HealthFileDrawerHost({
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
       related={related?.files?.[0]}
-      relatedWorkHref={(item) => relatedWorkHref(repoId, filePath as string, item)}
+      relatedWorkHref={toRelated}
+      onNavigate={(href) => router.push(href)}
       onClose={onClose}
       loading={isLoading}
       metric={data?.metric ?? null}

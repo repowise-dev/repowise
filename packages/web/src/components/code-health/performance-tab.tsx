@@ -46,7 +46,7 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
       symbolHref: (symbolId) => symbolEntityPath(prefix, symbolId),
       readSource: (path) => getFileContent(repoId, path),
       getRelatedWork: (filePaths) => getRelatedWork(repoId, filePaths),
-      relatedWorkHref: (item, filePath) => relatedWorkHref(repoId, filePath, item),
+      relatedWorkHref: relatedWorkHref(repoId),
       navigate: (href) => router.push(href),
     };
   }, [repoId, router]);

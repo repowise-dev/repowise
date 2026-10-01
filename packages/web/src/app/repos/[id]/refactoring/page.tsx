@@ -46,6 +46,7 @@ import type {
   RefactoringScope,
 } from "@repowise-dev/types/refactoring";
 import {
+  useRelatedWork,
   AiPromptModal,
   buildRefactoringOpportunityPrompt,
   buildRefactoringPlanPrompt,
@@ -161,11 +162,12 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
 
   // What the other lenses hold for the open opportunity's file.
   const openFile = openDetail?.found ? openDetail.file_path : null;
-  const { data: related } = useSWR(
-    openFile ? ["related-work", repoId, openFile] : null,
-    () => getRelatedWork(repoId, [openFile!]),
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
   );
+  const related = useRelatedWork(fetchRelated, [openFile]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
 
   const { data: openPlan } = useSWR<RefactoringPlan>(
     openPlanId ? ["refactoring-plan", repoId, openPlanId] : null,
@@ -360,7 +362,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         readSource={readSource}
         onGenerateCode={onGenerateCode}
         related={related?.files?.[0]}
-        relatedWorkHref={(item) => (openFile ? relatedWorkHref(repoId, openFile, item) : null)}
+        relatedWorkHref={toRelated}
         onNavigate={(href) => router.push(href)}
       />
 

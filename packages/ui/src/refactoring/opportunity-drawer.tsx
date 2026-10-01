@@ -34,7 +34,7 @@ import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
 import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
-import { RelatedWork } from "../health/related-work";
+import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
 import { extractHelperDetail } from "./types";
 import {
@@ -53,7 +53,6 @@ import type {
   RefactoringOpportunityDetailResolved,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
-import type { RelatedWorkFile, RelatedWorkItem } from "@repowise-dev/types/health";
 
 
 /** The drill-down an agent should call. Same shape the performance drawer uses,
@@ -62,7 +61,7 @@ export function opportunityHandoffCall(opportunityId: string): string {
   return `get_health(opportunity_id="${opportunityId}")`;
 }
 
-export interface OpportunityDrawerProps {
+export interface OpportunityDrawerProps extends RelatedWorkSlotProps {
   detail: RefactoringOpportunityDetail | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -85,11 +84,6 @@ export interface OpportunityDrawerProps {
   readSource?: ((path: string) => Promise<string>) | undefined;
   /** Opt-in model drafting of one step's diff. Omit when generation is off. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
-  /** What the other lenses hold for this file, from `getRelatedWork`. */
-  related?: RelatedWorkFile | null | undefined;
-  /** Where one related item lives; omit and the items are plain text. */
-  relatedWorkHref?: ((item: RelatedWorkItem) => string | null) | undefined;
-  onNavigate?: ((href: string) => void) | undefined;
 }
 
 export function OpportunityDrawer({
@@ -198,10 +192,7 @@ function DrawerBody({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
-  related?: RelatedWorkFile | null | undefined;
-  relatedWorkHref?: ((item: RelatedWorkItem) => string | null) | undefined;
-  onNavigate?: ((href: string) => void) | undefined;
-}) {
+} & RelatedWorkSlotProps) {
   const meta = typeMeta(detail.lead_refactoring_type || "");
   const plansById = React.useMemo(
     () => new Map(detail.plans.map((plan) => [plan.id, plan])),
@@ -394,10 +385,10 @@ function DrawerBody({
         </section>
 
         <RelatedWork
-          file={related?.file_path === detail.file_path ? related : null}
-          exclude={["refactoring"]}
-          href={relatedWorkHref}
+          related={related?.file_path === detail.file_path ? related : null}
+          relatedWorkHref={relatedWorkHref}
           onNavigate={onNavigate}
+          exclude={["refactoring"]}
           headingLevel="h4"
         />
 

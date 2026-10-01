@@ -25,7 +25,7 @@ import { AiPromptModal } from "./ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
 import { FindingOpportunityLink } from "./file-opportunity";
-import { RelatedWork } from "./related-work";
+import { RelatedWork, type RelatedWorkSlotProps } from "./related-work";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
@@ -46,8 +46,6 @@ import type {
   FileHealthTrend,
   FileSignals,
   PerformanceOpportunity,
-  RelatedWorkFile,
-  RelatedWorkItem,
 } from "@repowise-dev/types/health";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
@@ -93,7 +91,7 @@ export interface HealthDrawerMetric {
   total_deduction?: number | null;
 }
 
-export interface HealthFileDrawerProps {
+export interface HealthFileDrawerProps extends RelatedWorkSlotProps {
   open: boolean;
   onClose: () => void;
   loading?: boolean;
@@ -112,13 +110,6 @@ export interface HealthFileDrawerProps {
    */
   opportunity?: RefactoringOpportunity | null | undefined;
   refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
-  /**
-   * What the other lenses hold for this file, from `getRelatedWork`. Absent:
-   * no "elsewhere" section, rather than one that reads as a clean file.
-   */
-  related?: RelatedWorkFile | null | undefined;
-  /** Where one related item lives; omit and the items are plain text. */
-  relatedWorkHref?: ((item: RelatedWorkItem) => string | null) | undefined;
   /** Per-file score trajectory; renders a compact sparkline when populated. */
   trend?: FileHealthTrend | null;
   /** Process / people / topology signals; the panel is silent when absent. */
@@ -181,6 +172,7 @@ export function HealthFileDrawer({
   refactoringOpportunityHref,
   related,
   relatedWorkHref,
+  onNavigate,
   trend,
   signals,
   fileViewHref,
@@ -581,9 +573,10 @@ export function HealthFileDrawer({
               {/* Findings are this drawer's own list, and the performance lens
                   already leads with the file's causes. */}
               <RelatedWork
-                file={related}
+                related={related}
+                relatedWorkHref={relatedWorkHref}
+                onNavigate={onNavigate}
                 exclude={lens === "performance" ? ["findings", "performance"] : ["findings"]}
-                href={relatedWorkHref}
               />
 
               {/* Collapsed by default. This is the audit trail for a number
