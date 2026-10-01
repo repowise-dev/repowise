@@ -47,3 +47,4 @@ export * from "./coverage-view";
 export * from "./inferred-tests-view";
 export * from "./tests-reaching-list";
 export * from "./trend-view";
+export * from "./fix-first";

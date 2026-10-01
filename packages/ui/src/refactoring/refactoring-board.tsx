@@ -36,7 +36,7 @@ import { PaginationControls } from "../shared/pagination-controls";
 import { OpportunityRows } from "./opportunity-rows";
 import { RefactoringLede } from "./refactoring-lede";
 import { StartHere } from "./start-here";
-import { CONFIDENCE_LABEL } from "./meta";
+import { CONFIDENCE_LABEL, EFFORT_LABEL } from "./meta";
 import { STATUS_LABEL, TRIAGE_STATUSES } from "./opportunity";
 import type {
   Confidence,
@@ -50,12 +50,6 @@ import type {
 const PAGE_SIZE = 60;
 
 const EFFORTS: EffortBucket[] = ["S", "M", "L", "XL"];
-const EFFORT_LABEL_LONG: Record<EffortBucket, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 const CONFIDENCE_ORDER: Confidence[] = ["high", "medium", "low"];
 
 const SORT_OPTIONS: { value: RefactoringOrder; label: string }[] = [
@@ -239,7 +233,7 @@ export function RefactoringBoard({
             }
             options={[
               { value: "", label: "Any" },
-              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL_LONG[e] })),
+              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL[e] })),
             ]}
           />
           {confidencesPresent.length > 1 ? (

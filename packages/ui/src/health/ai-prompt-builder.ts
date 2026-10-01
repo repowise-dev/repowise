@@ -10,6 +10,11 @@ export type { AiPromptFlavor } from "./ai-prompts/shared";
 export { buildAiPrompt, type BuildPromptOptions } from "./ai-prompts/refactor-prompt";
 export { buildActionPrompt, type BuildActionPromptOptions } from "./ai-prompts/action-prompt";
 export {
+  buildFixItemPrompt,
+  fixVerifyLines,
+  type BuildFixItemPromptOptions,
+} from "./ai-prompts/fix-first-prompt";
+export {
   buildCoverageAiPrompt,
   type BuildCoveragePromptOptions,
   type CoverageFilePromptInput,

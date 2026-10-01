@@ -12,6 +12,7 @@ import type {
 import { AiPromptBlock } from "../health/ai-prompt-modal";
 import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
 import { biomarkerLabel } from "../health/biomarker-glossary";
+import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
@@ -20,12 +21,6 @@ const TIER_LABEL: Record<NextAction["tier"], string> = {
   act_now: "Do now",
   plan: "Worth planning",
   improve_signal: "Improve what Repowise can see",
-};
-
-const EFFORT_LABEL: Record<NextAction["effort"], string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
 };
 
 /** What the evidence link opens, named for the place it lands. */

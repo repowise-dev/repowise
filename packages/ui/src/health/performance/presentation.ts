@@ -11,6 +11,7 @@ import {
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
+import { CONFIDENCE_LABEL } from "../labels";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -54,11 +55,7 @@ export const ACTIONABILITY_HINT: Record<PerformanceActionabilityState, string> =
   expected: "The repetition is real and there is no change to make.",
 };
 
-export const CONFIDENCE_LABEL: Record<PerformanceOpportunityConfidence, string> = {
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
+export { CONFIDENCE_LABEL };
 
 export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   context: "Context",
@@ -73,6 +70,55 @@ const PLAN_STATE_LABEL: Record<string, string> = {
   no_safe_plan: "No safe plan",
   not_persisted: "Needs an index refresh",
 };
+
+/**
+ * Where the edit goes. The wire type gains `intervention_kind` with the
+ * one-opportunity-per-intervention model (PR 2817); until that lands it is read
+ * as optional here, and a row without it simply shows no kind.
+ */
+export type InterventionKind = "function" | "shared_helper" | "module";
+
+export const INTERVENTION_KIND_LABEL: Record<InterventionKind, string> = {
+  function: "The loop's own function",
+  shared_helper: "A helper every caller shares",
+  module: "Top-level code",
+};
+
+export function interventionKind(opportunity: PerformanceOpportunity): InterventionKind | null {
+  const kind = (opportunity as { intervention_kind?: string | null }).intervention_kind;
+  return kind && kind in INTERVENTION_KIND_LABEL ? (kind as InterventionKind) : null;
+}
+
+const MODULE_SCOPE = "::__module__";
+
+/**
+ * `path::__module__` names top-level code, which has no function to call it
+ * by. It reads as "module scope of path"; `short` keeps only the file name,
+ * for a title.
+ */
+export function moduleScopeLabel(symbol: string, short = false): string | null {
+  if (!symbol.endsWith(MODULE_SCOPE)) return null;
+  const file = symbol.slice(0, -MODULE_SCOPE.length);
+  return `module scope of ${short ? (file.split("/").pop() ?? file) : file}`;
+}
+
+/**
+ * What each facet means, for the drawer's tooltips. The band edges mirror
+ * `_LEVERAGE_BANDS` and `_CHANGE_RISK_BANDS` in core's `opportunity_rank.py`;
+ * change both together.
+ */
+export const FACET_GLOSSARY = {
+  amplification:
+    "How the cost repeats. Per iteration: once per loop pass. Quadratic: nested loops over the same data. Per call: once each time the function runs.",
+  exposure:
+    "Whether an entry point reaches the loop's function in the call graph. Unknown when the graph could not say either way.",
+  leverage:
+    "How many call sites one fix settles. Isolated is 1, local up to 3, shared up to 9, broad 10 or more.",
+  change_risk:
+    "How many files holding evidence the edit reaches. Contained is 1, moderate up to 4, wide 5 or more.",
+  loop_magnitude:
+    "Whether the loop's trip count grows with the data. A bounded loop runs a fixed number of times.",
+} as const;
 
 /** The facet value used when an opportunity crosses no I/O boundary. */
 const NO_BOUNDARY = "none";
@@ -142,7 +188,7 @@ export function opportunityCause(opportunity: PerformanceOpportunity): string {
  */
 export function opportunitySubject(opportunity: PerformanceOpportunity): string {
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return symbol.split("::").pop() ?? symbol;
+  if (symbol) return moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol;
   const first = opportunity.evidence[0]?.function_name;
   if (first) return first;
   return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
@@ -165,7 +211,7 @@ export function opportunityEvidenceLine(opportunity: PerformanceOpportunity): st
   const sink = opportunity.terminal_sink?.trim();
   if (sink) return sink;
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return symbol;
+  if (symbol) return moduleScopeLabel(symbol) ?? symbol;
   const first = opportunity.evidence[0];
   if (first?.function_name) return `${opportunity.file_path}::${first.function_name}`;
   return opportunity.file_path;

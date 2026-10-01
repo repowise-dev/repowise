@@ -24,6 +24,7 @@ import type {
   HealthScope,
   HealthCounts,
 } from "@repowise-dev/types/health";
+import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
 import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
 
@@ -257,5 +258,31 @@ export async function getChurnComplexity(
   return apiGet<ChurnComplexityResponse>(
     `/api/repos/${repoId}/health/churn-complexity`,
     opts,
+  );
+}
+
+/**
+ * Fix first: the ranked queue core builds, its lead, and what each eligibility
+ * rule excluded. `scope: "all"` keeps test files in the queue.
+ */
+export async function getFixFirst(
+  repoId: string,
+  opts: { limit?: number; scope?: FixScope } = {},
+): Promise<FixFirstQueue> {
+  return apiGet<FixFirstQueue>(`/api/repos/${repoId}/health/fix-first`, {
+    limit: opts.limit,
+    scope: opts.scope,
+  });
+}
+
+/** One Fix-first item by its stable id, wherever it ranks. */
+export async function getFixFirstItem(
+  repoId: string,
+  fixId: string,
+  opts: { scope?: FixScope } = {},
+): Promise<FixItem> {
+  return apiGet<FixItem>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}`,
+    { scope: opts.scope },
   );
 }
