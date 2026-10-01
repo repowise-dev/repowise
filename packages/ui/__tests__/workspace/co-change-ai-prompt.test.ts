@@ -155,6 +155,17 @@ describe("co-change prompt Verify", () => {
     );
     expect(p.indexOf("## Verify")).toBeLessThan(p.indexOf("## Hard constraints"));
   });
+
+  it("points the read-first flavors at the files and at `git log` in each repository", () => {
+    for (const flavor of ["generic", "claude-code", "cursor"] as const) {
+      const opening = buildCoChangePairAiPrompt({ pair: pair(), flavor }).split("\n")[0]!;
+      expect(opening).toContain("Run `git log` on each file in its own repository");
+      expect(opening).not.toContain("the commits that touched them before");
+    }
+    expect(buildCoChangePairAiPrompt({ pair: pair(), flavor: "claude-code" })).toContain(
+      "Use Read, Grep and Glob on the files it names before planning edits",
+    );
+  });
 });
 
 describe("capRule", () => {

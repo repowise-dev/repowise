@@ -12,6 +12,7 @@ import {
   buildFileHealthAiPrompt,
   type FileHealthPromptFinding,
 } from "../../src/health/ai-prompt-builder.js";
+import { FLAVOR_PREAMBLE } from "../../src/health/ai-prompts/shared.js";
 import {
   HealthFileDrawer,
   type HealthDrawerMetric,
@@ -140,6 +141,14 @@ describe("buildFileHealthAiPrompt", () => {
     expect(mcp).toContain("get_health(['packages/cli/doctor_cmd.py'])");
     expect(mcp).toContain("get_risk(['packages/cli/doctor_cmd.py'])");
     expect(generic).not.toContain("get_health(");
+  });
+});
+
+// Every single-file prompt opens on this text, so pin each flavor of it.
+describe("FLAVOR_PREAMBLE", () => {
+  it("keeps every flavor's opening", () => {
+    expect(FLAVOR_PREAMBLE).toMatchSnapshot();
+    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to Read / Grep / Glob only");
   });
 });
 

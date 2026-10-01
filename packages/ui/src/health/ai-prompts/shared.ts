@@ -51,7 +51,7 @@ const READ_FIRST: Record<Exclude<AiPromptFlavor, "claude-code-mcp">, (open: stri
 };
 
 const MCP_FALLBACK =
-  "Fall back to Read / Grep only for what the index cannot serve, and flag any false positive. Use TodoWrite for non-trivial steps.";
+  "Fall back to Read / Grep / Glob only for what the index cannot serve, and flag any false positive. Use TodoWrite for non-trivial steps.";
 
 export type PreambleParts =
   | {

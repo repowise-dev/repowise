@@ -38,10 +38,24 @@ const PREAMBLE_PARTS: PreambleParts = {
   role: WORKSPACE_ROLE,
   source:
     "The evidence below is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. It is not a verified dependency.",
-  open: "the files it names and the commits that touched them",
+  open: "the files it names",
   mcpTail:
     "Pull what repowise already computed before re-reading by hand: `get_context([...])` for a file's skeleton, `get_risk([...])` for its co-change partners and test gaps, `get_why(...)` for the decision behind its shape, `search_codebase` to find a type or route by name, and `get_blast_radius` for which services a change reaches.",
 };
+
+/** Co-change evidence lives in history, so the read-first flavors also read
+ *  the commits; the MCP flavor gets them from `get_risk`. */
+const GIT_LOG: Record<AiPromptFlavor, string> = {
+  generic: "Run `git log` on each file in its own repository and read the commits that touched it before you conclude anything.",
+  "claude-code": "Run `git log` on each file in its own repository to read the commits that touched it.",
+  "claude-code-mcp": "",
+  cursor: "Run `git log` on each file in its own repository to read the commits that touched it.",
+};
+
+function coChangePreamble(flavor: AiPromptFlavor): string {
+  const lead = preamble(flavor, PREAMBLE_PARTS);
+  return GIT_LOG[flavor] ? `${lead} ${GIT_LOG[flavor]}` : lead;
+}
 
 function where(repo: string, file: string): string {
   return `\`${repo}\` \`${file}\``;
@@ -123,7 +137,7 @@ export function buildCoChangePairAiPrompt({
       : `Read both files, then run \`git log\` for each in its own repository around the shared dates. The session count is a symptom; find the shared concept driving it before you change anything.`;
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    coChangePreamble(flavor),
     "",
     "## Two files that change together across repositories",
     "",
@@ -232,7 +246,7 @@ export function buildCoChangeRepoPairAiPrompt({
       : "Start with the recurring files: they are usually where the shared concept lives. Read them in both repositories and the commits that changed them together before proposing anything.";
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    coChangePreamble(flavor),
     "",
     "## Two repositories that change together",
     "",
