@@ -23,9 +23,11 @@ from repowise.core.analysis.dead_code.serving import (
     dead_code_finding_id,
     excluded_kinds,
     last_meaningful_change,
+    merge_summary_counts,
     rollup_by_directory,
     rollup_by_owner,
     serialize_finding,
+    summary_counts,
 )
 
 
@@ -119,7 +121,7 @@ def test_applied_echoes_only_what_differs_from_the_defaults() -> None:
 
 
 def test_build_summary_counts_every_shown_finding() -> None:
-    summary = build_summary(_ROWS, 2, _filters(), {})
+    summary = build_summary(summary_counts(_ROWS), 2, _filters(), {})
     assert summary["total_findings"] == 5
     assert summary["filtered_findings"] == 2
     assert summary["by_kind"] == {"unused_export": 4, "unreachable_file": 1}
@@ -224,3 +226,11 @@ def test_adjust_cross_repo_without_data_or_alias_is_a_no_op() -> None:
     adjust_cross_repo(tiers, None, "api")
     adjust_cross_repo(tiers, _Lookup(), None)
     assert json.dumps(tiers, default=str) == before
+
+
+def test_merged_per_repo_counts_equal_counting_everything_at_once() -> None:
+    parts = [summary_counts(_ROWS[:2]), summary_counts([]), summary_counts(_ROWS[2:])]
+    merged = merge_summary_counts(parts)
+    whole = summary_counts(_ROWS)
+    assert merged == whole
+    assert list(merged["by_kind"]) == list(whole["by_kind"])

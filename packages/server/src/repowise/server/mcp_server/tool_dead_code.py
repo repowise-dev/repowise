@@ -21,9 +21,11 @@ from repowise.core.analysis.dead_code.serving import (
     compute_impact,
     dead_code_finding_id,
     excluded_kinds,
+    merge_summary_counts,
     rollup_by_directory,
     rollup_by_owner,
     serialize_finding,
+    summary_counts,
 )
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.persistence.crud import get_dead_code_findings
@@ -64,7 +66,7 @@ async def _get_dead_code_all_repos(
     """Aggregate dead-code findings across every repo in the workspace."""
     contexts = await _resolve_all_contexts()
     merged_findings: list[dict] = []
-    shown: list = []
+    count_parts: list[dict[str, Any]] = []
     merged_withheld: dict[str, dict] = {}
 
     for ctx in contexts:
@@ -87,9 +89,11 @@ async def _get_dead_code_all_repos(
             serialized = serialize_finding(f, git_meta_map, repository=ctx.alias)
             serialized["repo"] = ctx.alias
             merged_findings.append(serialized)
-        shown.extend(repo_findings)
+        count_parts.append(summary_counts(repo_findings))
 
-    summary = build_summary(shown, len(merged_findings), filters, merged_withheld)
+    summary = build_summary(
+        merge_summary_counts(count_parts), len(merged_findings), filters, merged_withheld
+    )
     tiers = build_tiers(merged_findings, limit, tier)
     adjust_cross_repo(tiers, _cross_repo_lookup())
 
@@ -311,7 +315,7 @@ async def get_dead_code(
         )
 
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    summary = build_summary(all_findings, len(filtered), filters, withheld)
+    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld)
     adjust_cross_repo(tiers, _cross_repo_lookup(), ctx.alias)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}

@@ -162,24 +162,47 @@ def apply_filters(findings: list, filters: FindingFilters) -> list:
     return [f for f in findings if all(check(f) for check in checks)]
 
 
-def build_summary(
-    shown: list,
-    filtered_count: int,
-    filters: FindingFilters,
-    withheld: dict[str, dict],
-) -> dict[str, Any]:
-    """Counts over every shown open finding, plus what the filters kept."""
+def summary_counts(shown: list) -> dict[str, Any]:
+    """Counts over every shown open finding; merge per-repo parts with
+    :func:`merge_summary_counts` so no caller holds every repo's rows at once."""
     by_kind: dict[str, int] = {}
     for f in shown:
         kind = field(f, "kind")
         by_kind[kind] = by_kind.get(kind, 0) + 1
     safe = [f for f in shown if is_safe(f)]
-    summary: dict[str, Any] = {
+    return {
         "total_findings": len(shown),
-        "filtered_findings": filtered_count,
         "deletable_lines": sum(field(f, "lines") or 0 for f in safe),
         "safe_to_delete_count": len(safe),
         "by_kind": by_kind,
+    }
+
+
+def merge_summary_counts(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum :func:`summary_counts` parts; ``by_kind`` keeps first-seen order."""
+    merged = summary_counts([])
+    for part in parts:
+        for key in ("total_findings", "deletable_lines", "safe_to_delete_count"):
+            merged[key] += part[key]
+        for kind, count in part["by_kind"].items():
+            merged["by_kind"][kind] = merged["by_kind"].get(kind, 0) + count
+    return merged
+
+
+def build_summary(
+    counts: dict[str, Any],
+    filtered_count: int,
+    filters: FindingFilters,
+    withheld: dict[str, dict],
+) -> dict[str, Any]:
+    """The summary block: *counts* from :func:`summary_counts`, plus what the
+    filters kept."""
+    summary: dict[str, Any] = {
+        "total_findings": counts["total_findings"],
+        "filtered_findings": filtered_count,
+        "deletable_lines": counts["deletable_lines"],
+        "safe_to_delete_count": counts["safe_to_delete_count"],
+        "by_kind": counts["by_kind"],
     }
     filters.summarize(summary)
     if withheld:
