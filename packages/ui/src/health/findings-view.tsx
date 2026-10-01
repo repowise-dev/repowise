@@ -27,7 +27,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Button } from "../ui/button";
 import { EmptyState } from "../shared/empty-state";
 
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { HotFunctionsPanel } from "./hot-functions-panel";
 import { HiddenCouplingList } from "./hidden-coupling-list";
 import {
@@ -734,6 +734,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           if (!open) setPromptTarget(null);
         }}
         filePath={promptTarget?.file_path ?? null}
+        chatContext={fileChatContext(promptTarget?.file_path)}
         title="AI fix prompt"
         description="A ready-to-paste prompt that gives your AI coding agent every marker, line range, score deduction, and constraint needed to refactor this file in one focused pass."
         getPrompt={

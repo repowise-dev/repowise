@@ -14,7 +14,7 @@ import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 import { ApiError } from "../../shared/api-error";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
-import { AiPromptModal } from "../ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import { buildFixItemPrompt } from "../ai-prompts/fix-first-prompt";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
 import { fixFirstScopeSentence, fixLocation } from "./scope";
@@ -135,6 +135,7 @@ export function FixFirstList({
             : null
         }
         filePath={promptFor ? fixLocation(promptFor) : null}
+        chatContext={fileChatContext(promptFor?.target.file_path)}
         title="Prompt for an agent"
         description="The change, why it ranks first, the steps in order, and how to verify it."
       />

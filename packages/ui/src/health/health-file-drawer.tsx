@@ -21,7 +21,7 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
 import { AiPromptButton } from "./ai-prompt-button";
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
 import { FindingOpportunityLink } from "./file-opportunity";
@@ -624,6 +624,7 @@ export function HealthFileDrawer({
           open={promptOpen}
           onOpenChange={setPromptOpen}
           filePath={metric?.file_path ?? null}
+          chatContext={fileChatContext(metric?.file_path)}
           title="AI prompt for this file"
           description="Every scored finding, category ceiling, open performance cause and change signal this drawer holds, written up so an agent can triage the file before it edits anything."
           getPrompt={
