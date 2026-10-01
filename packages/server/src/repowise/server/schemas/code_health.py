@@ -206,5 +206,8 @@ class HealthWorkQueueResponse(BaseModel):
     #: Findings across those files, so the page can size the work, not just
     #: the file count it is paging through.
     finding_total: int = 0
+    #: Files left out because every finding on them is a history marker
+    #: (``history=exclude``, the default). Not counted in ``total``.
+    history_only_excluded: int = 0
     offset: int = 0
     limit: int = 0

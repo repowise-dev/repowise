@@ -1976,6 +1976,7 @@ export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
   finding_total?: number;
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }

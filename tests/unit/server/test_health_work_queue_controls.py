@@ -304,3 +304,25 @@ async def test_exact_severity_beats_the_threshold_on_the_findings_list(
     both = (await client.get(f"{url}&severity=low&min_severity=critical")).json()
 
     assert [f["severity"] for f in both] == ["low"]
+
+
+async def test_history_only_files_are_left_out_and_counted(client, session, tmp_path) -> None:
+    """A file whose only findings are history has nothing an edit can fix."""
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [_metric("a.py", 4.0), _metric("b.py", 5.0)],
+        [_finding("a.py", "change_entropy"), _finding("b.py")],
+    )
+
+    body = await _queue(client, repo_id)
+    assert [t["file_path"] for t in body["targets"]] == ["b.py"]
+    assert (body["total"], body["history_only_excluded"]) == (1, 1)
+
+    kept = await _queue(client, repo_id, "history=include")
+    assert {t["file_path"] for t in kept["targets"]} == {"a.py", "b.py"}
+    assert kept["history_only_excluded"] == 0
+    # Naming the marker reaches it, as naming a zero-impact dimension does.
+    named = await _queue(client, repo_id, "biomarker=change_entropy")
+    assert [t["file_path"] for t in named["targets"]] == ["a.py"]

@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
@@ -83,6 +83,14 @@ async def health_work_queue(
     sort: str = Query(
         "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
     ),
+    history: str = Query(
+        "exclude",
+        pattern="^(exclude|include)$",
+        description=(
+            "exclude (default) leaves out files whose only findings are history "
+            "markers: context, not work an edit can do. include keeps them."
+        ),
+    ),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
@@ -152,6 +160,7 @@ async def health_work_queue(
     max_effort_rank = effort_rank.get(max_effort or "", 99)
 
     targets: list[dict] = []
+    history_only = 0
     for file_path, fs in by_file.items():
         m = metric_by_path.get(file_path)
         # Absent means either filtered out above, or a file this reading
@@ -159,6 +168,11 @@ async def health_work_queue(
         # Ranking that on a stand-in 10.0 would put an unmeasured file at the
         # top of a list ordered by how bad things are.
         if m is None:
+            continue
+        # Naming a marker reaches it whatever its origin, as with the
+        # zero-impact dimensions above.
+        if history == "exclude" and biomarker is None and not split_by_origin(fs)[0]:
+            history_only += 1
             continue
         nloc = m.nloc
         score = m.score
@@ -211,6 +225,7 @@ async def health_work_queue(
         "targets": targets[offset : offset + limit],
         "total": len(targets),
         "finding_total": sum(t["finding_count"] for t in targets),
+        "history_only_excluded": history_only,
         "offset": offset,
         "limit": limit,
     }

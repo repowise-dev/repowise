@@ -1226,6 +1226,11 @@ export interface HealthWorkQueueResponse {
    * inventing one.
    */
   finding_total?: number;
+  /**
+   * Files left out because every finding on them is a history marker
+   * (`history: "exclude"`, the default). Not counted in `total`.
+   */
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }
@@ -1251,6 +1256,8 @@ export interface HealthWorkQueueQuery {
   only_failing?: boolean;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
+  /** `"exclude"` (default) leaves out files whose only findings are history markers. */
+  history?: "exclude" | "include";
   /** Which half of the repository to describe. Defaults to `"all"`. */
   scope?: HealthScope;
 }
