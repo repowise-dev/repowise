@@ -1129,3 +1129,91 @@ class TestOwnerAwareModuleTier:
             0.88,
             "module_alias",
         ) in _edges(parsed, tmp_path)
+
+
+class TestPythonNameAliasAssignment:
+    """A plain-name alias must redirect onto the real definition, not its own line (#2791)."""
+
+    def test_a_non_chained_alias_resolves_to_the_real_definition(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                )
+            },
+        )
+        assert _edges(parsed, tmp_path) == [("mod.py::use_it", "mod.py::widget", 0.95, "same_file")]
+
+    def test_a_chained_alias_resolves_every_target_and_the_middle_name_exists(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = attributes = widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n"
+                    "    attributes()\n"
+                    "    widget()\n",
+                )
+            },
+        )
+        names = {sym.name for sym in parsed["mod.py"].symbols}
+        assert "attributes" in names  # the query alone drops this today
+
+        edges = _edges(parsed, tmp_path)
+        assert edges == [
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+        ]
+
+    def test_a_non_name_right_hand_side_is_unaffected(self, tmp_path: Path) -> None:
+        """A call or an attribute access is a real value, not an alias of a name."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = widget()\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                ),
+                "attr.py": (
+                    "python",
+                    "class C:\n"
+                    "    widget = None\n"
+                    "\n"
+                    "s = C.widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                ),
+            },
+        )
+        mod_symbol = next(sym for sym in parsed["mod.py"].symbols if sym.name == "s")
+        attr_symbol = next(sym for sym in parsed["attr.py"].symbols if sym.name == "s")
+        assert mod_symbol.alias_of is None
+        assert attr_symbol.alias_of is None
+
+        edges = _edges(parsed, tmp_path)
+        assert ("mod.py::use_it", "mod.py::s", 0.95, "same_file") in edges
+        assert ("attr.py::use_it", "attr.py::s", 0.95, "same_file") in edges

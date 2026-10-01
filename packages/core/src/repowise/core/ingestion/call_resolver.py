@@ -306,6 +306,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # on the body rather than the header line that announced it.
         self._decl_to_def: dict[str, str] = {}
 
+        # Plain-name alias → the real symbol it stands for (``s`` in
+        # ``s = widget``), same-file only. Populated by ``_index_file``,
+        # applied alongside ``_decl_to_def`` in ``_redirect_to_definition``
+        # (#2791).
+        self._alias_to_target: dict[str, str] = {}
+
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
 
@@ -492,6 +498,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """Index one file's symbols, collecting what is settled repo-wide later."""
         file_syms: dict[str, str] = {}
         file_methods: dict[tuple[str, str], str] = {}
+        # (alias symbol id, the bare name it aliases) — resolved against
+        # ``file_syms`` only once the whole file is indexed, so an alias
+        # written above the name it aliases is not missed by source order.
+        aliases: list[tuple[str, str]] = []
 
         for sym in parsed.symbols:
             decl_key = (sym.parent_name, sym.name)
@@ -512,6 +522,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 # File-level symbol index (top-level symbols and methods)
                 file_syms[sym.name] = sym.id
 
+            if sym.alias_of is not None:
+                aliases.append((sym.id, sym.alias_of))
+
             # Method index: (class_name, method_name) → symbol_id
             if sym.parent_name:
                 key = (sym.parent_name, sym.name)
@@ -523,6 +536,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                     extensions[(extended, sym.name)].add((path, sym.id))
 
             self._index_globally(path, sym)
+
+        for alias_id, alias_of_name in aliases:
+            target_id = file_syms.get(alias_of_name)
+            # No self-redirect: ``s = s`` names nothing beyond itself.
+            if target_id is not None and target_id != alias_id:
+                self._alias_to_target[alias_id] = target_id
 
         self._file_symbols[path] = file_syms
         self._file_methods[path] = file_methods
@@ -627,17 +646,22 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         return self._decl_to_def
 
     def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall:
-        """Move a call edge off a forward declaration onto its definition.
+        """Move a call edge off a forward declaration, or a name alias, onto the real thing.
 
-        No-op for every language but C/C++, and for the tiers that already
-        landed on a definition.
+        No-op for a tier that already landed on a definition. ``_decl_to_def``
+        is C/C++ only; ``_alias_to_target`` is the Python
+        ``s = widget`` / ``s = attributes = widget`` case (#2791) -- a
+        resolved call lands on whichever id the lookup actually used (``s``'s
+        own id, or ``attributes``'s), and this moves it onto ``widget``.
 
         The self-edge guard carries a recursive function whose prototype sits
         in a header: Tier 1 declines to link the call to the body it is
         already inside, Tier 2 then finds the header declaration, and the
         redirect would point the edge straight back at the caller.
         """
-        target = self._decl_to_def.get(resolved.callee_id)
+        target = self._decl_to_def.get(resolved.callee_id) or self._alias_to_target.get(
+            resolved.callee_id
+        )
         if target is None or target == resolved.caller_id:
             return resolved
         return ResolvedCall(
