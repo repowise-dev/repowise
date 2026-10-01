@@ -1002,11 +1002,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Still the caller's own class, declared in a sibling partial fragment.
         # Not asked when this file declares the name itself: Tier 1 declines a
         # call into the caller's own overload set (one id), and a same-named
-        # overload in another fragment is no better evidence than that.
-        if (
-            target_name not in self._file_symbols.get(file_path, {})
-            and (call.line, target_name) not in self._member_shaped_sites(file_path)
-        ):
+        # overload in another fragment is no better evidence than that. Nor for a
+        # member call on its bare fallback: its receiver is not the caller's class.
+        if not call.receiver_name and target_name not in self._file_symbols.get(file_path, {}):
             sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
