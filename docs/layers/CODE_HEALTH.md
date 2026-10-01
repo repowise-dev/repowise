@@ -686,6 +686,19 @@ the category caps are the calibrated constants the published accuracy numbers
 rest on, and they are deliberately not overridable — so a team's local policy can
 never silently change what those numbers mean.
 
+## Finding identity and triage
+
+Every finding carries a stable public id (`finding_<digest>`). Inside a known
+function or class it is anchored on that symbol's name plus the finding's line
+offset into it, so an edit above the symbol does not change the id; a
+file-level finding keeps its absolute lines.
+
+Triage survives re-indexing. Each index replaces the open findings, and a
+re-detected finding whose id matches a triaged row updates that row's evidence
+(lines, severity, reason, details, impact) in place: `acknowledged` and
+`false_positive` stay as they are, and `resolved` reopens, because the finding
+marked fixed was detected again.
+
 ## Incremental updates
 
 `repowise update` re-scores only changed files. Findings and metrics for

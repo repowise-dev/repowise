@@ -15,7 +15,10 @@ if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
 from ....analysis.finding_registry import excluded_types
-from ....analysis.health.finding_identity import finding_public_id
+from ....analysis.health.finding_identity import (
+    finding_public_id,
+    legacy_finding_public_id,
+)
 from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
 
 # The comparator is pure and lives with the health read models; only the SQL
@@ -84,6 +87,60 @@ def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
     }
 
 
+_NOT_REFRESHED = frozenset({"id", "repository_id", "status", "created_at"})
+
+
+async def _insert_keeping_triage(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+    scope: list[Any],
+) -> None:
+    """Insert *findings*, keeping the triage a person recorded on any of them.
+
+    Callers delete the open rows in *scope* first. A finding whose public id
+    matches a triaged row in *scope* is folded into that row: its detection
+    fields are refreshed and ``acknowledged`` / ``false_positive`` stand, while
+    ``resolved`` reopens because the finding said to be fixed is still there.
+    Extra triaged rows sharing that id are deleted, so one id names one row.
+    Every other finding is inserted open.
+    """
+    triaged: dict[str, list[HealthFinding]] = {}
+    rows = await session.execute(
+        select(HealthFinding)
+        .where(*scope, HealthFinding.status != "open", HealthFinding.public_id.is_not(None))
+        .order_by(HealthFinding.updated_at.desc())
+    )
+    for row in rows.scalars().all():
+        triaged.setdefault(row.public_id, []).append(row)
+
+    now = _now_utc()
+    claimed: set[str] = set()
+    for i in range(0, len(findings), _BATCH_SIZE):
+        for f in findings[i : i + _BATCH_SIZE]:
+            values = _health_finding_row_kwargs(f, repository_id)
+            matches = triaged and (
+                triaged.get(values["public_id"]) or triaged.get(legacy_finding_public_id(f))
+            )
+            if not matches:
+                session.add(HealthFinding(**values))
+                continue
+            kept, *extra = matches
+            if kept.id in claimed:
+                # The detector emitted this finding twice; one row holds it.
+                continue
+            claimed.add(kept.id)
+            for row in extra:
+                await session.delete(row)
+            for name, value in values.items():
+                if name not in _NOT_REFRESHED:
+                    setattr(kept, name, value)
+            if kept.status == "resolved":
+                kept.status = "open"
+            kept.updated_at = now
+        await session.flush()
+
+
 async def save_health_findings(
     session: AsyncSession,
     repository_id: str,
@@ -91,23 +148,19 @@ async def save_health_findings(
 ) -> None:
     """Replace open health findings for *repository_id* with *findings*.
 
-    Mirrors ``save_dead_code_findings`` — delete-then-insert. Accepts
-    either ``HealthFindingData`` dataclasses or plain dicts.
+    Delete-then-insert over the open rows; triaged rows carry over by public id
+    (``_insert_keeping_triage``). Accepts either ``HealthFindingData``
+    dataclasses or plain dicts.
     """
+    scope = [HealthFinding.repository_id == repository_id]
     existing = await session.execute(
-        select(HealthFinding).where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.status == "open",
-        )
+        select(HealthFinding).where(*scope, HealthFinding.status == "open")
     )
     for row in existing.scalars().all():
         await session.delete(row)
+    await session.flush()
 
-    for i in range(0, len(findings), _BATCH_SIZE):
-        batch = findings[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+    await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
 async def replace_governance_findings(
@@ -117,10 +170,10 @@ async def replace_governance_findings(
 ) -> None:
     """Idempotent additive write of governance-layer health findings.
 
-    Deletes any existing ``health_findings`` rows whose ``biomarker_type``
+    Deletes the open ``health_findings`` rows whose ``biomarker_type``
     is one of ``ungoverned_hotspot``, ``stale_governance``, or
     ``contradictory_decision`` for *repository_id*, then inserts the new
-    *findings* in batches.
+    *findings* in batches, keeping triage by public id like the other writers.
 
     This function deliberately does **not** recompute ``HealthFileMetric.score``
     — that pass has already completed in the upstream health-analysis phase.
@@ -137,25 +190,19 @@ async def replace_governance_findings(
     Accepts ``HealthFindingData`` dataclasses or plain dicts (same protocol
     as ``save_health_findings``).
     """
-    # Delete existing governance findings for this repo only.
+    # Delete existing open governance findings for this repo only.
+    scope = [
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
+    ]
     existing = await session.execute(
-        select(HealthFinding).where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
-        )
+        select(HealthFinding).where(*scope, HealthFinding.status == "open")
     )
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
 
-    if not findings:
-        return
-
-    for i in range(0, len(findings), _BATCH_SIZE):
-        batch = findings[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+    await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
 def _health_metric_row_data(metric: Any) -> dict:
@@ -1041,12 +1088,13 @@ async def upsert_health_findings(
         return
     predicates = [
         HealthFinding.repository_id == repository_id,
-        HealthFinding.status == "open",
         HealthFinding.file_path.in_(file_paths),
     ]
     if dimension is not None:
         predicates.append(HealthFinding.dimension == dimension)
-    existing = await session.execute(select(HealthFinding).where(*predicates))
+    existing = await session.execute(
+        select(HealthFinding).where(*predicates, HealthFinding.status == "open")
+    )
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
@@ -1067,11 +1115,7 @@ async def upsert_health_findings(
             == dimension
         )
     ]
-    for i in range(0, len(scoped), _BATCH_SIZE):
-        batch = scoped[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+    await _insert_keeping_triage(session, repository_id, scoped, predicates)
 
 
 async def upsert_health_metrics(

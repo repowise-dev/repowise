@@ -50,6 +50,7 @@ from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
+from .finding_identity import SYMBOL_LINE_KEY
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
@@ -140,6 +141,10 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v37: a finding inside a function or class records that symbol's first line
+# (``details["symbol_line"]``) and its public id is anchored on the symbol plus
+# the offset into it, so every stored finding id moves once.
 #
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
@@ -396,6 +401,28 @@ def walked_functions(
         return ()
     return tuple(sorted(fc_list, key=lambda fc: (fc.start_line, fc.end_line)))
 
+
+
+def _stamp_symbol_lines(findings: list[HealthFindingData], fcx: FileComplexity) -> None:
+    """Record the first line of the symbol each finding sits in.
+
+    The finding id is anchored on the symbol plus the offset into it, so an edit
+    above the symbol leaves the id alone. The innermost same-named function or
+    class holding the finding's line is the anchor; a finding with none keeps
+    absolute lines. A replayed stored finding already carries its anchor.
+    """
+    spans = [(fc.name, fc.start_line, fc.end_line) for fc in fcx.functions]
+    spans += [(c.name, c.start_line, c.end_line) for c in fcx.classes]
+    for f in findings:
+        if not f.function_name or f.line_start is None or SYMBOL_LINE_KEY in f.details:
+            continue
+        starts = [
+            start
+            for name, start, end in spans
+            if name == f.function_name and start <= f.line_start <= end
+        ]
+        if starts:
+            f.details = {**f.details, SYMBOL_LINE_KEY: max(starts)}
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -1485,6 +1512,7 @@ class HealthAnalyzer:
         for f in findings:
             f.file_path = file_path
         _mark_deprecated(findings, fc_list)
+        _stamp_symbol_lines(findings, fcx)
 
         # The overall surfaced score stays == the defect dimension (no blend
         # yet); the per-dimension scores ride alongside it, additively.
