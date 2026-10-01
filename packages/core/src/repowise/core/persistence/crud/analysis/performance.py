@@ -139,7 +139,11 @@ def _summary_payload(
     plans: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """The compact current headline, written once and read by primary key."""
-    from ....analysis.health.perf.opportunity_rank import NON_LEADING_MARKERS
+    from ....analysis.health.perf.opportunity_rank import (
+        NON_LEADING_MARKERS,
+        default_queue_counts,
+        default_queue_exclusion,
+    )
 
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
@@ -149,17 +153,18 @@ def _summary_payload(
         contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
         key = item.boundary_kind or "none"
         boundaries[key] = boundaries.get(key, 0) + 1
-    # ``expected`` rows rank last and offer nothing to do, so they never lead; nor does a
-    # marker whose measured precision is below the bar for leading.
+    # The lead is the head of the default queue, so it is production work with a
+    # strategy; never a marker whose measured precision is below the bar for leading.
     lead = next(
         (
             o
             for o in opportunities
-            if o.actionability_state != "expected" and o.biomarker_type not in NON_LEADING_MARKERS
+            if default_queue_exclusion(o) is None and o.biomarker_type not in NON_LEADING_MARKERS
         ),
         None,
     )
     return {
+        "default_queue": default_queue_counts(opportunities),
         "actionability": counts,
         "context": contexts,
         "boundary": boundaries,

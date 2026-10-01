@@ -581,6 +581,11 @@ export type PerformanceOpportunityQuery = {
   offset?: number;
 };
 
+export interface PerformanceDefaultQueue {
+  total: number;
+  excluded: Record<"test" | "tooling" | "unknown" | "expected" | "no_strategy", number>;
+}
+
 export interface PerformanceOpportunitySummary {
   /** `current` once materialized, `stale_model` after a model bump, or
    * `unavailable` when this index has not been analyzed yet. */
@@ -599,6 +604,9 @@ export interface PerformanceOpportunitySummary {
   context?: Partial<Record<PerformanceExecutionContext, number>>;
   boundary?: Record<string, number>;
   with_plan_total: number;
+  /** The queue a caller gets with no filter (production work with a strategy),
+   *  and how many causes it leaves out per reason. Absent on an older store. */
+  default_queue?: PerformanceDefaultQueue;
   /** Why the queue is not current, when it is not. */
   reason?: string;
   detail?: string;

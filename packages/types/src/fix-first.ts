@@ -25,8 +25,10 @@ export type FixFactBasis = "measured" | "inferred" | "unknown";
 export type FixExclusion =
   | "test"
   | "tooling"
+  | "unknown"
   | "generated"
   | "expected"
+  | "no_strategy"
   | "no_plan"
   | "below_min_worth"
   | "history_only";

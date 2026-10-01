@@ -46,7 +46,11 @@ from typing import Any
 
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.perf.causal import code_context, execution_context
+from repowise.core.analysis.health.perf.causal import code_context
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    DEFAULT_QUEUE_CONTEXTS,
+    default_queue_exclusion,
+)
 from repowise.core.analysis.health.refactoring.extract_helper import _is_generated_path
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -151,19 +155,17 @@ def _num(value: Any) -> float:
 #: The shared path rules, memoised: they are pure on the path and the test
 #: check dominates a cold build.
 _code_context = functools.lru_cache(maxsize=65536)(code_context)
-_perf_context = functools.lru_cache(maxsize=65536)(execution_context)
 
 
-def _path_exclusion(
-    path: str, is_test: bool | None, context: str | None = None, *, perf: bool = False
-) -> str | None:
+def _path_exclusion(path: str, is_test: bool | None, context: str | None = None) -> str | None:
     """Why a file is out of the queue, or ``None`` when it ships.
 
-    Code-shape work reads :func:`code_context`, where a CLI ships; a
-    performance fix reads the stored execution context, where a CLI loop is
-    off the request path. The stored ``is_test`` flag also marks a test.
+    Code-shape work reads :func:`code_context`, where a CLI ships. A
+    performance fix passes ``production``: its stored execution context is
+    judged by the performance default queue, so only the path rules apply.
+    The stored ``is_test`` flag also marks a test.
     """
-    ctx = context or (_perf_context(path) if perf else _code_context(path))
+    ctx = context or _code_context(path)
     if is_test or ctx == "test":
         return "test"
     parts = set(path.lower().split("/")[:-1])
@@ -604,12 +606,8 @@ def _refactor_measure(
 # --- performance ----------------------------------------------------------------
 
 
-def _perf_ready(row: Any) -> bool:
-    return (
-        field(row, "actionability_state") != "expected"
-        and field(row, "plan_state") == "available"
-        and bool(field(row, "fix_strategy"))
-    )
+def _has_plan(row: Any) -> bool:
+    return field(row, "plan_state") == "available" and bool(field(row, "fix_strategy"))
 
 
 def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
@@ -965,8 +963,8 @@ def build_fix_first(
         hot_cuts,
     )
 
-    def out_of_scope(path: str, context: str | None = None, *, perf: bool = False) -> bool:
-        reason = _path_exclusion(path, files.is_test(path), context, perf=perf)
+    def out_of_scope(path: str, context: str | None = None) -> bool:
+        reason = _path_exclusion(path, files.is_test(path), context)
         if reason is None or (reason == "test" and keep_tests):
             return False
         excluded[reason] += 1
@@ -1003,14 +1001,19 @@ def build_fix_first(
         if _open(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
+    # The performance default queue decides which causes are work (context and
+    # actionability, one predicate for every surface); Fix first adds its path
+    # rules and needs a stored plan to quote.
+    perf_contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if keep_tests else DEFAULT_QUEUE_CONTEXTS
     for (path, _symbol), rows in groups.items():
-        context = field(rows[0], "execution_context")
-        if out_of_scope(path, context, perf=True):
+        if out_of_scope(path, "production"):
             continue
-        ready = [r for r in rows if _perf_ready(r)]
+        rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
+        reasons = [default_queue_exclusion(r, perf_contexts) for r in rows]
+        queued = [r for r, reason in zip(rows, reasons, strict=True) if reason is None]
+        ready = [r for r in queued if _has_plan(r)]
         if not ready:
-            expected = any(field(r, "actionability_state") == "expected" for r in rows)
-            excluded["expected" if expected else "no_plan"] += 1
+            excluded["no_plan" if queued else reasons[0] or "no_plan"] += 1
             continue
         units.append(_perf_unit(ready, files))
 

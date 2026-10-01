@@ -34,8 +34,18 @@ FIX_LEVELS: tuple[str, ...] = get_args(FixLevel)
 FixFactBasis = Literal["measured", "inferred", "unknown"]
 FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 
+# ``unknown``, ``expected`` and ``no_strategy`` are the performance default
+# queue's own reasons (``opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS``).
 FixExclusion = Literal[
-    "test", "tooling", "generated", "expected", "no_plan", "below_min_worth", "history_only"
+    "test",
+    "tooling",
+    "unknown",
+    "generated",
+    "expected",
+    "no_strategy",
+    "no_plan",
+    "below_min_worth",
+    "history_only",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 

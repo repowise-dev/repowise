@@ -19,6 +19,8 @@ from __future__ import annotations
 from math import log2
 from typing import Any
 
+from ..rows import field
+
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
 """What one crossing of each boundary costs, as an order of magnitude.
 
@@ -110,6 +112,19 @@ should say "worth it". A plan-ready group is still never buried by an equal
 one, and the default queue leaves out what has no strategy at all, which is
 what kept a generic sink's volume from crowding out actionable work.
 """
+
+DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
+DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
+"""What the queue holds when a caller names no filter: production work with a strategy.
+
+Test, tooling and unclassified code, ``expected`` repetition, and causes with no
+supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)
+are true and stay one filter away, but none of them is work to schedule. Each is
+counted by :func:`default_queue_exclusion` so leaving it out is never silent.
+"""
+
+DEFAULT_QUEUE_EXCLUSIONS = ("test", "tooling", "unknown", "expected", "no_strategy")
+"""Every reason the default queue leaves a cause out, in the order it is checked."""
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
 _CHANGE_RISK_BANDS = ((1, "contained"), (4, "moderate"))
@@ -243,6 +258,38 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
+def default_queue_exclusion(
+    item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
+) -> str | None:
+    """Why the default queue leaves *item* out, or ``None`` when it is queued.
+
+    One reason per cause, context first, so the counts of every reason and the
+    queue add up to the whole. Reads an opportunity, an ORM row or a plain row.
+    *contexts* widens the queue for a caller that asked for more (Fix first's
+    ``scope="all"`` keeps test code); the state rule never moves.
+    """
+    context = field(item, "execution_context")
+    if context not in contexts:
+        return context
+    state = field(item, "actionability_state")
+    if state in DEFAULT_QUEUE_STATES:
+        return None
+    return "expected" if state == "expected" else "no_strategy"
+
+
+def default_queue_counts(items: list[Any]) -> dict[str, Any]:
+    """The default queue's size and what it leaves out, by reason."""
+    excluded = dict.fromkeys(DEFAULT_QUEUE_EXCLUSIONS, 0)
+    queued = 0
+    for item in items:
+        reason = default_queue_exclusion(item)
+        if reason is None:
+            queued += 1
+        else:
+            excluded[reason] = excluded.get(reason, 0) + 1
+    return {"total": queued, "excluded": excluded}
+
+
 def rank_sort_key(item: Any) -> tuple[int, int, int, str]:
     """A total order: value first, then actionability, leverage, and id.
 
@@ -262,6 +309,9 @@ __all__ = [
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
     "CROSS_FUNCTION_POINTS",
+    "DEFAULT_QUEUE_CONTEXTS",
+    "DEFAULT_QUEUE_EXCLUSIONS",
+    "DEFAULT_QUEUE_STATES",
     "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
     "PROVENANCE_POINTS",
@@ -269,6 +319,8 @@ __all__ = [
     "amplification",
     "band",
     "change_risk",
+    "default_queue_counts",
+    "default_queue_exclusion",
     "dominant_marker",
     "exposure",
     "leverage",

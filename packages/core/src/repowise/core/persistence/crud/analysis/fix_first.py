@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.fix_first import DEFAULT_LIMIT, FixFirstQueue, build_fix_first
 from repowise.core.analysis.health.fix_first.build import MIN_WORTH, hot_cut, hot_cut_offset
+from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
 
@@ -251,8 +252,9 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
 
 async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
     p = PerformanceOpportunity
+    # Details are decoded only for a cause the builder can make an item of.
     ready = and_(
-        p.actionability_state != "expected",
+        p.actionability_state.in_(DEFAULT_QUEUE_STATES),
         p.plan_state == "available",
         p.fix_strategy.is_not(None),
     )

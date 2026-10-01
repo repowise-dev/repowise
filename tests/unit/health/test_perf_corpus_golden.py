@@ -14,7 +14,12 @@ from repowise.core.analysis.health.perf.opportunities import (
     build_performance_opportunities,
     link_performance_findings,
 )
-from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    ACTIONABILITY_ORDER,
+    DEFAULT_QUEUE_EXCLUSIONS,
+    default_queue_counts,
+    default_queue_exclusion,
+)
 from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
 )
@@ -288,3 +293,20 @@ def test_a_loop_that_grows_with_data_outranks_a_bounded_one() -> None:
     assert grows.facets["loop_magnitude"] == "grows_with_data"
     assert bounded.facets["loop_magnitude"] == "bounded"
     assert grows.rank_factors["loop_magnitude"] > bounded.rank_factors["loop_magnitude"]
+
+
+def test_the_default_queue_counts_everything_it_leaves_out() -> None:
+    """Production work with a strategy is queued; every other cause has one reason."""
+    items = _opportunities()
+    counts = default_queue_counts(items)
+    assert counts["total"] + sum(counts["excluded"].values()) == len(items)
+    assert tuple(counts["excluded"]) == DEFAULT_QUEUE_EXCLUSIONS
+    # The corpus exercises each reason a real repository produces most.
+    assert all(counts["excluded"][reason] for reason in ("test", "expected", "no_strategy"))
+    for item in items:
+        reason = default_queue_exclusion(item)
+        if reason is None:
+            assert item.execution_context == "production"
+            assert item.fix is not None
+        elif reason == "no_strategy":
+            assert item.fix is None and item.actionability_state == "investigate"

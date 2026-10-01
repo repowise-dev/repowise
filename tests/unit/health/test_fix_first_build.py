@@ -40,9 +40,12 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         # The test file's plan and its own findings are two candidates.
         "test": 2,
         "tooling": 1,
+        "unknown": 0,
         "generated": 0,
         "expected": 1,
-        "no_plan": 1,
+        # An investigate cause has no strategy: the perf default queue's reason.
+        "no_strategy": 1,
+        "no_plan": 0,
         "below_min_worth": 1,
         "history_only": 1,
     }
