@@ -8,6 +8,8 @@ import type {
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
   PerformanceOpportunityQuery,
@@ -89,6 +91,12 @@ export interface CodeHealthAdapter {
   getHealthWorkQueue?(
     opts?: HealthWorkQueueQuery,
   ): Promise<HealthWorkQueueResponse>;
+  /**
+   * Every file the queue's filters keep, placed by effort and recoverable
+   * health. Optional: a host without it shows no impact / effort graph, since
+   * a graph of one page would contradict the count above it.
+   */
+  getImpactEffort?(opts?: ImpactEffortQuery): Promise<ImpactEffortResponse>;
   /** @deprecated Legacy adapter name; FindingsView accepts it during migration. */
   getRefactoringTargets?(
     opts?: HealthWorkQueueQuery,

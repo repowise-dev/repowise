@@ -41,6 +41,8 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  /** A test file; labelled on the card. */
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: Severity;
   primary_reason: string;
@@ -89,6 +91,13 @@ export interface HealthWorkItemCardProps {
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
   highlighted?: boolean;
+  /** Bulk triage: whether this row is in the selection. */
+  selected?: boolean;
+  /**
+   * Toggle this row in the bulk selection. The row stands for the finding it
+   * names (`primary_finding_id`), so a row without one offers no checkbox.
+   */
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
 
 const effortLabel: Record<EffortBucket, string> = {
@@ -109,6 +118,8 @@ export function HealthWorkItemCard({
   onLoadFindings,
   expandable = true,
   highlighted = false,
+  selected = false,
+  onToggleSelect,
 }: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
@@ -157,6 +168,15 @@ export function HealthWorkItemCard({
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
+          {onToggleSelect && target.primary_finding_id ? (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggleSelect(target)}
+              aria-label={`Select the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path}`}
+              className="h-3.5 w-3.5 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
+            />
+          ) : null}
           {watch ? (
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               {HISTORY_LABEL}
@@ -176,6 +196,11 @@ export function HealthWorkItemCard({
           {target.module ? (
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] rounded px-1.5 py-0.5 border border-[var(--color-border-default)]">
               {target.module}
+            </span>
+          ) : null}
+          {target.is_test ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              test
             </span>
           ) : null}
           <span
@@ -225,8 +250,12 @@ export function HealthWorkItemCard({
           ) : null}
         </button>
         <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">{target.primary_reason}</p>
+        {/* The action comes from core, per marker; the card never writes one. */}
         {target.primary_suggestion ? (
-          <p className="text-xs text-[var(--color-text-tertiary)] italic line-clamp-3">
+          <p className="text-xs text-[var(--color-text-primary)] line-clamp-3">
+            <span className="mr-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Action
+            </span>
             {target.primary_suggestion}
           </p>
         ) : null}
