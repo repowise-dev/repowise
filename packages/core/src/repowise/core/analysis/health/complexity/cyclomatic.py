@@ -298,12 +298,14 @@ def _walk_function_body(
 
         # Check if this is a case/arm inside a flat match — skip it.
         # In Rust the parent chain is match_arm → match_block → match_expression,
-        # so we check both parent and grandparent.
-        _parent = node.parent
+        # so we check both parent and grandparent. ``node.parent`` costs far
+        # more than the rest of this visit, so it is read only for a case node
+        # once a flat match exists for it to belong to.
         is_flat_match_arm = False
         if (
-            node.type in lmap.case_kinds
-            and _parent is not None
+            flat_match_ids
+            and node.type in lmap.case_kinds
+            and (_parent := node.parent) is not None
             and (
                 _parent.id in flat_match_ids
                 or (_parent.parent is not None and _parent.parent.id in flat_match_ids)

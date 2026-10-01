@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from .ast_utils import _IDENTIFIER_SUFFIX, _find_name
 from .languages import LanguageNodeMap
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
-from .nloc import _count_nloc
+from .nloc import CodeLineIndex
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -38,26 +38,6 @@ def _class_name(node: Node) -> str:
         if child is not None and child.text is not None:
             return child.text.decode("utf-8", errors="replace")
     return _find_name(node)
-
-
-def _collect_class_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
-    """All class-like grouping nodes in the file (pre-order).
-
-    Descends through the whole tree so nested classes are found too;
-    each becomes its own ``ClassComplexity``.
-    """
-    out: list[Node] = []
-    stack: list[Node] = [root]
-    while stack:
-        node = stack.pop()
-        # ``is_named`` filters out keyword tokens that share a type name
-        # with an expression node (e.g. the ``class`` keyword vs a
-        # ``class`` expression in tree-sitter-typescript).
-        if node.type in lmap.class_kinds and node.is_named:
-            out.append(node)
-        for child in node.children:
-            stack.append(child)
-    return out
 
 
 def _collect_class_methods(class_node: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -277,16 +257,21 @@ def _compute_lcom4(
 
 
 def _collect_classes(
-    root: Node,
+    class_nodes: list[Node],
     lmap: LanguageNodeMap,
     source: bytes,
     fc_by_node_id: dict[int, FunctionComplexity],
+    code_lines: CodeLineIndex,
 ) -> list[ClassComplexity]:
-    """Build ``ClassComplexity`` for every class-like node in the file."""
+    """Build ``ClassComplexity`` for every class-like node in the file.
+
+    *class_nodes* are every named ``class_kinds`` node in the file, nested
+    classes included, in the order ``file_scan`` found them.
+    """
     if not lmap.class_kinds:
         return []
     classes: list[ClassComplexity] = []
-    for class_node in _collect_class_nodes(root, lmap):
+    for class_node in class_nodes:
         method_nodes = _collect_class_methods(class_node, lmap)
         method_fcs = [fc_by_node_id[m.id] for m in method_nodes if m.id in fc_by_node_id]
         # Keep nodes and FCs aligned (a method missing from the function
@@ -299,7 +284,7 @@ def _collect_classes(
                 start_line=class_node.start_point[0] + 1,
                 end_line=class_node.end_point[0] + 1,
                 method_count=len(method_fcs),
-                total_nloc=_count_nloc(class_node, source),
+                total_nloc=code_lines.count(class_node, source),
                 methods=method_fcs,
                 lcom4=lcom4,
                 max_method_ccn=max((fc.ccn for fc in method_fcs), default=0),

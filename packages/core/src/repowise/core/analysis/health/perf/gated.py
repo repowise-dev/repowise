@@ -43,7 +43,7 @@ def _in_rust_test_range(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
 
     *ranges* is ``FileComplexity.rust_test_line_ranges``, computed once per
     file by the walker from the tree it already parsed (see
-    ``complexity.walker._rust_test_line_ranges``) — empty for every language
+    ``complexity.file_scan.scan_file``) — empty for every language
     but Rust, so this is a no-op everywhere else. Checked here, at the single
     choke point both centrality-gated markers share, so a function inside a
     ``#[cfg(test)] mod`` / ``#[test]`` fn — invisible to the file-level

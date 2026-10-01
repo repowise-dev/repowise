@@ -183,7 +183,7 @@ class ErrorHandlingHit:
     """One error-handling anti-pattern occurrence in a file.
 
     Collected by the walker's whole-tree pass (see
-    ``_collect_error_handling``) and consumed by the ``error_handling``
+    ``complexity.error_handling._eh_visit``) and consumed by the ``error_handling``
     biomarker. ``kind`` is one of:
 
     - ``swallowed_catch`` — a catch/except whose body has no real handling

@@ -3,9 +3,9 @@
 io_in_loop / string_concat_in_loop / blocking_sync_in_async and the Phase-7
 loop-level / centrality-gated markers.
 
-One whole-tree pass mirroring ``_collect_error_handling`` but carrying the
-per-node context the perf signal needs: loop depth, in-async, lock depth, and
-the enclosing function name. Two non-negotiable refinements (Phase-0 gate: they
+One whole-tree pass, kept apart from the walker's shared ``file_scan`` because
+it carries the per-node context the perf signal needs down the tree: loop depth,
+in-async, lock depth, and the enclosing function name. Two non-negotiable refinements (Phase-0 gate: they
 took precision from 49% to 79%) are baked in:
   1. Loop-BODY scoping — only calls under a loop node's ``body`` field run
      per-iteration; a call in the ``for x in <iterable>`` header runs once.
@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
-from ..perf.io_boundaries import collect_io_names
 from ..perf.loop_facts import LoopFacts
 from .ast_utils import _dart_signature_sibling, _find_function_entry_name, _find_name
 from .languages import LanguageNodeMap
@@ -207,8 +206,13 @@ def _is_block_loop_body_scope(
     return False
 
 
+def perf_pass_runs(language: str, lmap: LanguageNodeMap) -> bool:
+    """Whether ``_collect_perf_hits`` does anything for *language*."""
+    return bool(lmap.call_kinds) and language in PERF_DIALECTS
+
+
 def _collect_perf_hits(
-    root: Node, language: str, lmap: LanguageNodeMap
+    root: Node, language: str, lmap: LanguageNodeMap, io_names: dict[str, str]
 ) -> tuple[list[PerfHit], dict[str, str], list[PerfFnFacts]]:
     """Whole-tree perf pass → ``(hits, io_boundary_names, fn_facts)``.
 
@@ -220,16 +224,17 @@ def _collect_perf_hits(
     genuinely per-iteration calls are flagged. Returns nothing for languages
     that opt out of the perf pass (empty ``call_kinds``).
 
+    *io_names* is ``perf.io_boundaries.collect_io_names`` for *root*, which the
+    walker's shared file descent collects whenever ``perf_pass_runs``.
+
     Alongside the same-function ``hits``, it accumulates ``fn_facts`` (one
     :class:`PerfFnFacts` per enclosing function that has any loop-nested call
     or a bare sink) — the input to PR4's cross-function reachability.
     """
-    call_kinds = lmap.call_kinds
-    dialect = PERF_DIALECTS.get(language)
-    if not call_kinds or dialect is None:
+    if not perf_pass_runs(language, lmap):
         return [], {}, []
-
-    io_names = collect_io_names(root, language)
+    call_kinds = lmap.call_kinds
+    dialect = PERF_DIALECTS[language]
     has_db_import = any(k == "db" for k in io_names.values())
     markers = dialect.markers
     do_string_concat = "string_concat_in_loop" in markers

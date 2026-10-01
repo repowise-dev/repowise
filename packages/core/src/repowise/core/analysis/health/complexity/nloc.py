@@ -1,12 +1,13 @@
 """Non-blank / non-comment line counting over tree-sitter nodes and raw bytes.
 
 ``_count_nloc`` measures a single node's span; ``_count_file_nloc`` is the
-no-tree fallback (used when parsing is unavailable); ``_count_file_nloc_tree``
-excludes comment-only lines using the parsed tree.
+no-tree fallback (used when parsing is unavailable); ``CodeLineIndex`` answers
+file, function and class NLOC from the walker's single descent of the tree.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ def _count_nloc(node: Node, source: bytes) -> int:
 
     Blank, comment-only and docstring-only lines are excluded, so a function
     or class NLOC measures substance the same way file-level NLOC does
-    (``_count_file_nloc_tree``), rather than counting documentation as code.
+    (``CodeLineIndex.file_nloc``), rather than counting documentation as code.
     """
     start = node.start_point[0]
     end = node.end_point[0]
@@ -103,12 +104,86 @@ def _count_file_nloc(source: bytes) -> int:
     return sum(1 for line in text.splitlines() if line.strip())
 
 
-def _count_file_nloc_tree(root_node: Node, source: bytes) -> int:
-    """Count lines that have at least one non-comment token.
+class CodeLineIndex:
+    """Every NLOC a walk asks for, answered from one descent of the file.
 
-    Lines where all content is inside comment nodes are excluded; lines
-    with real code plus a trailing comment still count.
+    ``file_scan`` feeds it each code leaf once; function and class NLOC are then
+    prefix-sum lookups instead of a fresh subtree walk per node, which re-read
+    a nested function's leaves once per enclosing scope. ``file_nloc`` drops
+    comment-only lines but keeps module and class docstrings, as file-level
+    NLOC always has.
+
+    ``count`` matches ``_count_nloc`` exactly. A node's leaves are the code
+    leaves inside its byte span, so the lines strictly between its first and
+    last covered line hold no leaf from outside it and come from the prefix
+    sum; those two lines are covered by the node's own first and last leaf. A
+    node inside a comment or docstring, whose file-wide exclusion is not the
+    node's own, falls back to the subtree walk.
     """
-    # File-level NLOC keeps counting module/class docstrings (only comment-only
-    # lines are dropped), so ``drop_docstrings`` stays off here.
-    return len(_code_line_numbers(root_node, _source_lines(source), drop_docstrings=False))
+
+    __slots__ = (
+        "_code_prefix",
+        "_excluded_ends",
+        "_excluded_starts",
+        "_leaf_end_rows",
+        "_leaf_start_rows",
+        "_leaf_starts",
+        "_nonblank",
+        "file_nloc",
+    )
+
+    def __init__(
+        self,
+        nonblank: list[bool],
+        file_rows: set[int],
+        code_rows: set[int],
+        leaves: list[tuple[int, int, int]],
+        excluded: list[tuple[int, int]],
+    ) -> None:
+        # *leaves* (start byte, start row, end row) and *excluded* (start byte,
+        # end byte) arrive in the scan's right-to-left pre-order. Both are
+        # disjoint spans, so reversing sorts them by start byte.
+        leaves.reverse()
+        excluded.reverse()
+        self.file_nloc = len(file_rows)
+        self._nonblank = nonblank
+        self._leaf_starts = [leaf[0] for leaf in leaves]
+        self._leaf_start_rows = [leaf[1] for leaf in leaves]
+        self._leaf_end_rows = [leaf[2] for leaf in leaves]
+        self._excluded_starts = [span[0] for span in excluded]
+        self._excluded_ends = [span[1] for span in excluded]
+        prefix = [0] * (len(nonblank) + 1)
+        running = 0
+        for row in range(len(nonblank)):
+            if row in code_rows:
+                running += 1
+            prefix[row + 1] = running
+        self._code_prefix = prefix
+
+    def _code_rows_before(self, row: int) -> int:
+        prefix = self._code_prefix
+        return prefix[row] if row < len(prefix) else prefix[-1]
+
+    def _is_code_row(self, row: int) -> int:
+        return 1 if row < len(self._nonblank) and self._nonblank[row] else 0
+
+    def count(self, node: Node, source: bytes) -> int:
+        """``_count_nloc(node, source)`` without walking *node*'s subtree."""
+        start_byte = node.start_byte
+        end_byte = node.end_byte
+        k = bisect_right(self._excluded_starts, start_byte) - 1
+        if k >= 0 and self._excluded_ends[k] >= end_byte:
+            return _count_nloc(node, source)
+        if node.end_point[0] < node.start_point[0]:
+            return 0
+        first_leaf = bisect_left(self._leaf_starts, start_byte)
+        end_leaf = bisect_left(self._leaf_starts, end_byte)
+        if first_leaf >= end_leaf:
+            return 0
+        first = self._leaf_start_rows[first_leaf]
+        last = self._leaf_end_rows[end_leaf - 1]
+        count = self._is_code_row(first)
+        if last > first:
+            count += self._is_code_row(last)
+            count += self._code_rows_before(last) - self._code_rows_before(first + 1)
+        return count
