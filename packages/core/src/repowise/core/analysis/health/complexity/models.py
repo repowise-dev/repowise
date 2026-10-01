@@ -282,10 +282,16 @@ class PerfHit:
     promoted: bool = False
     # What the innermost enclosing loop proves (same-function hits only).
     loop: LoopFacts | None = None
+    # 1-indexed header line of the innermost data-dependent loop the hit runs
+    # in (for a cross-function hit, the loop around the call site); 0 when none.
+    loop_line: int = 0
 
     def loop_facts(self) -> dict[str, Any]:
         """Loop facts for ``details``; absent when unset so old findings are unchanged."""
-        return self.loop.as_details() if self.loop is not None else {}
+        facts = self.loop.as_details() if self.loop is not None else {}
+        if self.loop_line:
+            facts["loop_line"] = self.loop_line
+        return facts
 
 
 @dataclass(frozen=True)
@@ -334,6 +340,8 @@ class PerfFnFacts:
     # ``(call_line, facts)`` for loop-nested calls whose loop settles a fact, so a
     # cross-function hit reports the trip count and chunking of the loop that pays it.
     loop_call_facts: tuple[tuple[int, LoopFacts], ...] = ()
+    # ``(call_line, loop header line)`` for the same loop-nested calls.
+    loop_call_lines: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass

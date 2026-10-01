@@ -320,6 +320,8 @@ def _collect_perf_hits(
     ] = {}
     # func_start -> {call_line: facts} for the loop-call targets above.
     call_facts: dict[int, dict[int, LoopFacts]] = {}
+    # func_start -> {call_line: loop header line} for the same targets.
+    call_loop_lines: dict[int, dict[int, int]] = {}
     # ``(first_line, last_line, name)`` of each lambda with no named function
     # around it, so a hit inside one is named for it rather than left blank.
     lambda_spans: list[tuple[int, int, str]] = []
@@ -333,14 +335,18 @@ def _collect_perf_hits(
             fn_acc[func_start] = entry
         return entry[1], entry[2], entry[3], entry[4]
 
-    # (node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter)
-    # ``outer_iter`` is whether the OUTERMOST enclosing loop iterates a collection
-    # (vs a ``while``/cursor) — the precision gate for ``nested_loop_with_io``.
-    stack: list[tuple[Node, int, bool, str | None, int, int, bool]] = [
-        (root, 0, False, None, 0, 0, True)
+    # (node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter,
+    # loop_line). ``outer_iter`` is whether the OUTERMOST enclosing loop iterates
+    # a collection (vs a ``while``/cursor) — the precision gate for
+    # ``nested_loop_with_io``. ``loop_line`` is the innermost data-dependent
+    # loop's header line (0 outside one), so a reader can show the iteration.
+    stack: list[tuple[Node, int, bool, str | None, int, int, bool, int]] = [
+        (root, 0, False, None, 0, 0, True, 0)
     ]
     while stack:
-        node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter = stack.pop()
+        (
+            node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter, loop_line
+        ) = stack.pop()
         t = node.type
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
@@ -380,6 +386,7 @@ def _collect_perf_hits(
         )
         next_loop_depth = loop_depth if (body_scope or not entering_fn) else 0
         next_lock_depth = lock_depth if (body_scope or not entering_fn) else 0
+        next_loop_line = loop_line if (body_scope or not entering_fn) else 0
         next_func = func_name
         next_start = func_start
         if t in fn_kinds:
@@ -421,6 +428,9 @@ def _collect_perf_hits(
                 hits.append(
                     PerfHit(icm, node.start_point[0] + 1, next_func, "", func_start=next_start)
                 )
+        # Hits from here on sit in the loop the stack names; the iterable marker
+        # above is on the loop's own header line.
+        stamp_from = len(hits)
 
         call_node: Node | None = None
         if t in call_kinds:
@@ -532,6 +542,8 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
+                            if loop_line:
+                                call_loop_lines.setdefault(next_start, {})[line] = loop_line
                             facts = loop_facts(call_node, sink=False)
                             if facts is not None:
                                 call_facts.setdefault(next_start, {})[line] = facts
@@ -589,6 +601,9 @@ def _collect_perf_hits(
                             )
                         )
 
+        if loop_line and len(hits) > stamp_from:
+            hits[stamp_from:] = [replace(h, loop_line=loop_line) for h in hits[stamp_from:]]
+
         # A block-scoped lock (``lock``/``synchronized``) opens a held region.
         # Only its BLOCK body runs with the lock held — a sink in the lock-object
         # expression (``synchronized(repo.find(id)){…}``) runs before the lock is
@@ -605,13 +620,23 @@ def _collect_perf_hits(
             body = block_loop_body
             if body is None:
                 body = dialect.loop_body(node)
+            header = node.start_point[0] + 1
             if body is not None:
                 # NB: tree-sitter Node wrappers are not singletons, so compare
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
-                    cd = next_loop_depth + 1 if c == body else next_loop_depth
+                    inside = c == body
                     stack.append(
-                        (c, cd, next_async, next_func, next_start, next_lock_depth, next_outer_iter)
+                        (
+                            c,
+                            next_loop_depth + 1 if inside else next_loop_depth,
+                            next_async,
+                            next_func,
+                            next_start,
+                            next_lock_depth,
+                            next_outer_iter,
+                            header if inside else next_loop_line,
+                        )
                     )
             else:
                 for c in node.children:
@@ -624,6 +649,7 @@ def _collect_perf_hits(
                             next_start,
                             next_lock_depth,
                             next_outer_iter,
+                            header,
                         )
                     )
         elif entering_lock:
@@ -631,7 +657,16 @@ def _collect_perf_hits(
             for c in node.children:
                 cl = next_lock_depth + 1 if c.type in _LOCK_BODY_KINDS else next_lock_depth
                 stack.append(
-                    (c, next_loop_depth, next_async, next_func, next_start, cl, outer_iter)
+                    (
+                        c,
+                        next_loop_depth,
+                        next_async,
+                        next_func,
+                        next_start,
+                        cl,
+                        outer_iter,
+                        next_loop_line,
+                    )
                 )
         else:
             for c in node.children:
@@ -644,6 +679,7 @@ def _collect_perf_hits(
                         next_start,
                         next_lock_depth,
                         outer_iter,
+                        next_loop_line,
                     )
                 )
 
@@ -671,6 +707,7 @@ def _collect_perf_hits(
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
             loop_call_facts=tuple(sorted(call_facts.get(start, {}).items())),
+            loop_call_lines=tuple(sorted(call_loop_lines.get(start, {}).items())),
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
         if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
