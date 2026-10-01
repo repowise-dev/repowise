@@ -113,3 +113,15 @@ def test_fix_first_vocabularies_match_python() -> None:
     # Upper-case members fall outside the lower-case member regex.
     match = re.search(r'export type FixEffort =(.*?);', (_TYPES_SRC / "fix-first.ts").read_text(encoding="utf-8"))
     assert match and set(re.findall(r'"([A-Z]+)"', match.group(1))) == set(FIX_EFFORTS)
+
+
+def test_biomarker_labels_match_the_web_glossary() -> None:
+    """Core's copy of the glossary labels, which agent prompts print."""
+    from repowise.core.agent_prompts.markers import BIOMARKER_LABELS
+
+    text = (_PACKAGES / "ui/src/health/biomarker-glossary.ts").read_text(encoding="utf-8")
+    block = text[text.index("export const BIOMARKER_GLOSSARY") : text.index("export function biomarkerInfo")]
+    web = dict(re.findall(r'^  ([a-z0-9_]+): \{\n    label: "([^"]*)",', block, re.MULTILINE))
+    entries = re.findall(r"^  \S+: \{$", block, re.MULTILINE)
+    assert web and len(web) == len(entries), "the glossary's entry shape changed; update this reader"
+    assert web == BIOMARKER_LABELS
