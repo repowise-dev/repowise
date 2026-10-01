@@ -7,26 +7,33 @@ import { registerEditorDiagnostics } from "./editorDiagnostics";
 
 const CONFIG_PREFIX = `${CONFIG_SECTION}.docDrift`;
 const MARKDOWN_EXT = /\.(md|mdx|markdown)$/i;
+import { locateReference, type LocatedReference } from "./locateReference";
+
+export { locateReference, type LocatedReference };
 
 function isMarkdown(doc: vscode.TextDocument): boolean {
   return doc.languageId === "markdown" || MARKDOWN_EXT.test(doc.uri.path);
 }
 
-/** The finding's line, narrowed to the reference as written (else the target). */
-function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Range {
-  const line = Math.min(Math.max(0, f.line_number - 1), doc.lineCount - 1);
-  const text = doc.lineAt(line).text;
-  for (const needle of [f.raw, f.target]) {
-    const at = needle ? text.indexOf(needle) : -1;
-    if (at >= 0) return new vscode.Range(line, at, line, at + needle.length);
+/** The finding's line, narrowed to the reference as written (else the target), relocated in live buffer. */
+export function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Range | null {
+  if (doc.lineCount === 0) return null;
+  const lines: string[] = [];
+  for (let i = 0; i < doc.lineCount; i++) {
+    lines.push(doc.lineAt(i).text);
   }
-  return new vscode.Range(line, 0, line, text.length);
+  const recordedLine = Math.max(0, f.line_number - 1);
+  const loc = locateReference(lines, f.raw, f.target, recordedLine);
+  if (!loc) return null;
+  return new vscode.Range(loc.line, loc.start, loc.line, loc.end);
 }
 
-function toDiagnostic(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Diagnostic {
+export function toDiagnostic(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Diagnostic | null {
+  const range = rangeFor(doc, f);
+  if (!range) return null;
   const message = f.suggestion ? `${f.reason} Likely now: ${f.suggestion}.` : f.reason;
   const diagnostic = new vscode.Diagnostic(
-    rangeFor(doc, f),
+    range,
     message,
     f.confidence >= DOC_DRIFT_CONFIDENCE.HIGH
       ? vscode.DiagnosticSeverity.Warning
@@ -49,6 +56,7 @@ export function registerDocDriftDiagnostics(ctx: RepowiseContext): vscode.Dispos
     configPrefix: CONFIG_PREFIX,
     enabled: () => cfg().get<boolean>("diagnostics.enabled", true),
     accept: isMarkdown,
+    recomputeOnEdit: true,
     load: (c, rel) =>
       getDocDriftFindings(
         c,
@@ -60,3 +68,4 @@ export function registerDocDriftDiagnostics(ctx: RepowiseContext): vscode.Dispos
     toDiagnostic,
   });
 }
+

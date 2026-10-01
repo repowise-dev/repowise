@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 import * as vscode from "vscode";
 import { Commands, EXTENSION_ID } from "../constants";
+import { locateReference } from "../features/locateReference";
 
 /**
  * Fast, offline smoke suite. It runs inside a real VS Code process against an
@@ -89,3 +90,93 @@ describe("Repowise extension", () => {
     await vscode.commands.executeCommand(Commands.showLog);
   });
 });
+
+describe("locateReference", () => {
+  it("finds reference on the recorded line", () => {
+    const lines = ["# Intro", "See [guide](docs/guide.md) for details.", "End"];
+    const res = locateReference(lines, "docs/guide.md", "docs/guide.md", 1);
+    assert.deepStrictEqual(res, { line: 1, start: 12, end: 25 });
+  });
+
+  it("finds reference after lines were inserted above", () => {
+    const lines = [
+      "# Title",
+      "Extra line 1",
+      "Extra line 2",
+      "See [guide](docs/guide.md).",
+    ];
+    // Recorded line 1 before insertion, now at line 3 (+2 lines shifted)
+    const res = locateReference(lines, "docs/guide.md", "docs/guide.md", 1);
+    assert.deepStrictEqual(res, { line: 3, start: 12, end: 25 });
+  });
+
+  it("finds reference after lines were deleted above", () => {
+    const lines = ["See [guide](docs/guide.md).", "Next line"];
+    // Recorded line 3 before deletion, now at line 0 (-3 lines shifted)
+    const res = locateReference(lines, "docs/guide.md", "docs/guide.md", 3);
+    assert.deepStrictEqual(res, { line: 0, start: 12, end: 25 });
+  });
+
+  it("prefers the nearest match when multiple matches exist", () => {
+    // Match at line 3 (distance 2 from recorded line 5) vs match at line 6 (distance 1 from recorded line 5)
+    const lines = [
+      "line 0",
+      "line 1",
+      "line 2",
+      "docs/guide.md far",
+      "line 4",
+      "recorded line 5",
+      "docs/guide.md near",
+    ];
+    const res = locateReference(lines, "docs/guide.md", "docs/guide.md", 5);
+    assert.strictEqual(res?.line, 6);
+  });
+
+  it("prefers the line above on a distance tie", () => {
+    // Matches at line 4 (distance 1 above) and line 6 (distance 1 below)
+    const lines = [
+      "line 0",
+      "line 1",
+      "line 2",
+      "line 3",
+      "docs/guide.md above",
+      "recorded line 5",
+      "docs/guide.md below",
+    ];
+    const res = locateReference(lines, "docs/guide.md", "docs/guide.md", 5);
+    assert.strictEqual(res?.line, 4);
+  });
+
+  it("returns null when not found within the search window", () => {
+    // Missing completely
+    assert.strictEqual(
+      locateReference(["line 1", "line 2"], "docs/missing.md", "docs/missing.md", 0),
+      null,
+    );
+
+    // Farther than ±20 lines away (e.g. at line 35 when recorded line is 5)
+    const lines = new Array(50).fill("blank");
+    lines[35] = "See docs/guide.md";
+    assert.strictEqual(
+      locateReference(lines, "docs/guide.md", "docs/guide.md", 5),
+      null,
+    );
+  });
+
+  it("falls back to target when raw is missing or not present", () => {
+    const lines = ["Refer to docs/new_guide.md for info."];
+    // raw does not match text, but target does
+    const res = locateReference(
+      lines,
+      "docs/old_guide.md",
+      "docs/new_guide.md",
+      0,
+    );
+    assert.deepStrictEqual(res, { line: 0, start: 9, end: 26 });
+
+    // raw is empty string
+    const resEmptyRaw = locateReference(lines, "", "docs/new_guide.md", 0);
+    assert.deepStrictEqual(resEmptyRaw, { line: 0, start: 9, end: 26 });
+  });
+});
+
