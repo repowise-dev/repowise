@@ -127,6 +127,6 @@ def test_the_report_leads_with_fix_first() -> None:
         _render_fix_first(None)
     out = console.file.getvalue()
     assert out.startswith("\nFix first (3 of 3 eligible")
-    assert " 1. Extract a helper from run " in out
+    assert " 1. Extract lines 20-35 of run into sum_rows (+1 more step) " in out
     assert "src/core.py:20" in out
     assert "verify: pytest tests/test_core_0.py" in out

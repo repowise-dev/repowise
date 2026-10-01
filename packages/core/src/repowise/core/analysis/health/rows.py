@@ -14,6 +14,13 @@ from typing import Any
 
 def field(row: Any, name: str, default: Any = None) -> Any:
     """Read one attribute from a dataclass, an ORM row, or a mapping."""
+    # Exact-type fast paths first: the ``Mapping`` check is an ABC lookup,
+    # and a fold over a repository's rows calls this a hundred thousand times.
+    kind = type(row)
+    if kind is dict:
+        return row.get(name, default)
+    if isinstance(row, tuple):
+        return getattr(row, name, default)
     if isinstance(row, Mapping):
         return row.get(name, default)
     return getattr(row, name, default)

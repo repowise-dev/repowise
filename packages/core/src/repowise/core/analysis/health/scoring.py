@@ -554,6 +554,11 @@ def biomarker_category(name: str) -> str:
     return _BIOMARKER_CATEGORY.get(name, "size_and_complexity")
 
 
+def history_biomarkers() -> frozenset[str]:
+    """Every biomarker in :data:`HISTORY_CATEGORY`, for a query that filters by name."""
+    return frozenset(n for n, c in _BIOMARKER_CATEGORY.items() if c == HISTORY_CATEGORY)
+
+
 def dimensions_for(name: str) -> set[str]:
     """Dimensions a biomarker's deduction contributes to.
 

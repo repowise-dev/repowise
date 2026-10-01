@@ -16,7 +16,9 @@ Row shapes (field names are the SQL columns):
 ``findings``
     ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
     ``line_start``, ``line_end``, ``reason``, ``health_impact``, ``public_id``,
-    ``dimension``, ``status`` (absent = open).
+    ``dimension``, ``status`` (absent = open), and ``details`` /
+    ``details_json`` (``ccn``, ``nloc``, ``max_nesting``) for the numbers a
+    sentence quotes.
 ``refactoring``
     The ``refactoring_opportunities`` columns, ``details`` (or
     ``details_json``) carrying ``steps``, ``validation_profiles``,
@@ -27,9 +29,10 @@ Row shapes (field names are the SQL columns):
     ``details_json``) carrying ``facets``, ``plan`` and ``fix_rationale``. A
     row with no plan, or an expected one, may omit its details.
 ``plans``
-    Extract-method plan rows named by a refactoring step: ``public_id``,
-    ``evidence`` / ``evidence_json`` (``slice_nloc``) and ``plan`` /
-    ``plan_json`` (``span``). A step whose plan is absent is kept.
+    Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
+    ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
+    ``params``, ``returns``, ``suggested_name``). A step whose plan is absent
+    is kept, with less to say.
 """
 
 from __future__ import annotations
@@ -37,13 +40,13 @@ from __future__ import annotations
 import functools
 import math
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.perf.causal import execution_context
+from repowise.core.analysis.health.perf.causal import code_context, execution_context
 from repowise.core.analysis.health.refactoring.extract_helper import _is_generated_path
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -79,12 +82,10 @@ from .model import (
 
 Rows = Iterable[Any]
 
-#: A refactoring whose credited gain is under this is not worth an item.
-#: Ceiling: a stand-in until refactoring benefit is proportional to the
-#: complexity removed; then the floor moves into that model.
+#: A refactoring whose credited gain is under this is not worth an item. The
+#: refactoring model credits only the share of a finding a plan removes and
+#: drops trivial spans itself (minimum worth), so this floor is on the file.
 MIN_WORTH = 0.5
-#: Extract-method steps lifting fewer statement lines than this are dropped.
-MIN_SLICE_NLOC = 5
 #: Credited health gain cut points for value 1, 2 and 3.
 GAIN_CUTS = (0.5, 1.5, 3.0)
 #: A file in the top fifth of production files by churn or dependents is hot.
@@ -102,9 +103,21 @@ DEFAULT_LIMIT = 10
 
 @dataclass(frozen=True, slots=True)
 class _Unit:
-    item: FixItem
+    """What ranking reads, and how to write the item once it is shown.
+
+    Items are written only for the ranks a caller keeps: the copy, facts and
+    verify block cost more than the ranking, and most units are never shown.
+    """
+
+    id: str
+    kind: str
+    tier: str
     value: int
     score: float
+    confidence: str
+    effort: str
+    improves: str
+    write: Callable[[int], FixItem]
 
 
 _VENDORED = frozenset({"vendor", "third_party", "thirdparty", "node_modules"})
@@ -118,19 +131,22 @@ def _num(value: Any) -> float:
     return float(value or 0.0)
 
 
-#: The shared execution-context rule, memoised: it is pure on the path and
-#: its test check dominates a cold build.
-_context = functools.lru_cache(maxsize=65536)(execution_context)
+#: The shared path rules, memoised: they are pure on the path and the test
+#: check dominates a cold build.
+_code_context = functools.lru_cache(maxsize=65536)(code_context)
+_perf_context = functools.lru_cache(maxsize=65536)(execution_context)
 
 
-def _path_exclusion(path: str, is_test: bool | None, context: str | None = None) -> str | None:
+def _path_exclusion(
+    path: str, is_test: bool | None, context: str | None = None, *, perf: bool = False
+) -> str | None:
     """Why a file is out of the queue, or ``None`` when it ships.
 
-    The performance pillar's execution context decides test and tooling for
-    every kind of item; the stored ``is_test`` flag also marks a test.
-    ``context`` is a stored context, when the row carries one.
+    Code-shape work reads :func:`code_context`, where a CLI ships; a
+    performance fix reads the stored execution context, where a CLI loop is
+    off the request path. The stored ``is_test`` flag also marks a test.
     """
-    ctx = context or _context(path)
+    ctx = context or (_perf_context(path) if perf else _code_context(path))
     if is_test or ctx == "test":
         return "test"
     parts = set(path.lower().split("/")[:-1])
@@ -143,12 +159,21 @@ def _path_exclusion(path: str, is_test: bool | None, context: str | None = None)
     return None
 
 
+def hot_cut_offset(count: int) -> int:
+    """Where the top fifth starts in ``count`` ascending values."""
+    return min(int(count * HOT_QUANTILE), count - 1)
+
+
+def hot_cut(value_at_offset: float | None) -> float:
+    """The value at :func:`hot_cut_offset`, never below 1 (zero is not hot)."""
+    return math.inf if value_at_offset is None else max(value_at_offset, 1)
+
+
 def _quantile_cut(values: list[int]) -> float:
-    """The smallest value in the top fifth, never below 1 (zero is not hot)."""
+    """The smallest value in the top fifth of production files."""
     if not values:
         return math.inf
-    ordered = sorted(values)
-    return max(ordered[min(int(len(ordered) * HOT_QUANTILE), len(ordered) - 1)], 1)
+    return hot_cut(sorted(values)[hot_cut_offset(len(values))])
 
 
 def _gain_value(gain: float, hot: bool) -> int:
@@ -189,11 +214,22 @@ def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
 class _Files:
     """Per-file facts the units share: metrics, heat, history context."""
 
-    def __init__(self, metrics: Rows, history: Mapping[str, list[Any]]) -> None:
+    def __init__(
+        self,
+        metrics: Rows,
+        history: Mapping[str, list[Any]],
+        functions: Mapping[tuple[str, str], list[Any]],
+        cuts: tuple[float, float] | None,
+    ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
-        production = [m for m in self.by_path.values() if not field(m, "is_test")]
-        self.churn_cut = _quantile_cut([field(m, "commit_count_90d") or 0 for m in production])
-        self.deps_cut = _quantile_cut([field(m, "dependents") or 0 for m in production])
+        self.functions = functions
+        if cuts is None:
+            production = [m for m in self.by_path.values() if not field(m, "is_test")]
+            cuts = (
+                _quantile_cut([field(m, "commit_count_90d") or 0 for m in production]),
+                _quantile_cut([field(m, "dependents") or 0 for m in production]),
+            )
+        self.churn_cut, self.deps_cut = cuts
         self.history = history
 
     def is_test(self, path: str) -> bool | None:
@@ -212,15 +248,35 @@ class _Files:
     def hot(self, path: str) -> bool:
         return self.commits(path) >= self.churn_cut or (self.dependents(path) or 0) >= self.deps_cut
 
-    def matters(self, path: str, dependents: int | None = None) -> str:
-        """Why the problem matters here, from the file's own exposure."""
+    def shape(self, path: str, symbol: str | None) -> dict[str, int]:
+        """The measured size of ``symbol`` in ``path``, from its findings."""
+        if not symbol:
+            return {}
+        found = self.functions.get((path, symbol))
+        if found is None:
+            tail = symbol.rsplit(".", 1)[-1]
+            found = next(
+                (
+                    rows
+                    for (p, fn), rows in self.functions.items()
+                    if p == path and fn.rsplit(".", 1)[-1] == tail
+                ),
+                (),
+            )
+        return _measure(found)
+
+    def why(
+        self,
+        path: str,
+        *,
+        measured: str | None,
+        fallback: str,
+        dependents: int | None = None,
+    ) -> str:
+        """One sentence: the measured problem, then who depends on the file."""
         deps = dependents if dependents is not None else self.dependents(path)
-        commits = self.commits(path)
-        if self.hot(path) and deps and deps >= self.deps_cut:
-            return f"{text.plural(deps, 'file')} import it, so every caller inherits the risk"
-        if self.hot(path) and commits:
-            return f"it changed {text.plural(commits, 'time')} in 90 days, so the cost recurs"
-        return "fixing it makes the file easier to change safely"
+        head = measured or fallback.rstrip(". ")
+        return f"{head}{text.exposure(deps, self.commits(path))}."
 
     def context(self, path: str) -> tuple[FixContext, ...]:
         """History is context: shown beside the item, never ranked on."""
@@ -263,37 +319,54 @@ def _finish(
     value: int,
     ready: bool,
     score: float,
-    rank_inputs: list[FixRankFact],
-    **fields: Any,
+    confidence: str,
+    effort: str,
+    improves: str,
+    rank_inputs: Callable[[], list[FixRankFact]],
+    fields: Callable[[], dict[str, Any]],
 ) -> _Unit:
-    tier, why_tier = _tier(value, fields["confidence"].level, ready)
-    item = FixItem(
-        id=fix_id(kind, source_id),
-        rank=0,
-        tier=tier,
-        kind=kind,
-        why_ranked=(
-            FixRankFact("value", str(value)),
-            *rank_inputs,
-            FixRankFact("tier", why_tier),
-        ),
-        **fields,
-    )
-    return _Unit(item, value, score)
+    confidence = confidence if confidence in LEVEL_RANK else "low"
+    effort = effort if effort in FIX_EFFORTS else "M"
+    tier, why_tier = _tier(value, confidence, ready)
+    item_id = fix_id(kind, source_id)
+
+    def write(rank: int) -> FixItem:
+        return FixItem(
+            id=item_id,
+            rank=rank,
+            tier=tier,
+            kind=kind,
+            improves=improves,
+            why_ranked=(
+                FixRankFact("value", str(value)),
+                *rank_inputs(),
+                FixRankFact("tier", why_tier),
+            ),
+            **fields(),
+        )
+
+    return _Unit(item_id, kind, tier, value, score, confidence, effort, improves, write)
 
 
 # --- refactoring ----------------------------------------------------------------
 
 
-def _slice_nloc(plan: Any) -> int | None:
-    evidence = json_field(plan, "evidence", None) or json_field(plan, "evidence_json", {})
-    value = evidence.get("slice_nloc") if isinstance(evidence, dict) else None
-    return int(value) if isinstance(value, (int, float)) else None
+def _plan_body(plan: Any) -> dict[str, Any]:
+    if plan is None:
+        return {}
+    body = json_field(plan, "plan", None) or json_field(plan, "plan_json", {})
+    return body if isinstance(body, dict) else {}
+
+
+def _evidence(plan: Any) -> dict[str, Any]:
+    if plan is None:
+        return {}
+    found = json_field(plan, "evidence", None) or json_field(plan, "evidence_json", {})
+    return found if isinstance(found, dict) else {}
 
 
 def _span(plan: Any) -> tuple[int | None, int | None]:
-    body = json_field(plan, "plan", None) or json_field(plan, "plan_json", {})
-    span = body.get("span") if isinstance(body, dict) else None
+    span = _plan_body(plan).get("span")
     if isinstance(span, dict):
         return span.get("start"), span.get("end")
     return None, None
@@ -303,10 +376,16 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
     kind = step.get("refactoring_type") or ""
     path = step.get("file_path") or ""
     sym = text.short_symbol(step.get("target_symbol")) or text.basename(path)
-    start, end = _span(plan) if plan is not None else (None, None)
+    start, end = _span(plan)
     if kind == "extract_method":
+        body = _plan_body(plan)
+        into = text.signature(
+            body.get("suggested_name"),
+            list(body.get("params") or []),
+            list(body.get("returns") or []),
+        )
         where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
-        line_text = f"Extract {where} into a helper"
+        line_text = f"Extract {where} into {into}"
     elif kind == "extract_helper":
         line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
     elif kind == "extract_class":
@@ -338,88 +417,134 @@ def _refactor_unit(
     marker = field(row, "lead_biomarker") or (
         lead_type if lead_type in ("split_file", "break_cycle") else None
     )
-    title = text.REFACTOR_TITLE.get(lead_type, "Refactor {file}").format(
-        sym=sym, file=text.basename(path)
+    mechanical_n = sum(
+        (s.get("applicability") or {}).get("classification") == "mechanical" for s in steps
     )
-    if len(steps) > 1:
-        title += f" ({len(steps)} steps)"
-    dependents = details.get("dependents")
-    if dependents is None:
-        dependents = files.dependents(path)
-    fix_steps = tuple(
-        _refactor_step(i + 1, s, plans.get(s.get("plan_id"))) for i, s in enumerate(steps)
-    )
-    mechanical_n = sum(s.mechanical for s in fix_steps)
-    mechanical = mechanical_n == len(fix_steps)
+    mechanical = mechanical_n == len(steps)
     confidence = field(row, "confidence") or "medium"
     hot = files.hot(path)
-    facts = [
-        FixFact("health recoverable", f"+{gain:.1f}", "inferred"),
-        FixFact("steps", f"{len(steps)} ({mechanical_n} mechanical)"),
-        *files.common_facts(path, dependents),
-    ]
-    nloc = files.nloc(path)
-    if nloc:
-        facts.append(FixFact("file size", f"{nloc} lines"))
-    profiles = {p.get("id"): p for p in details.get("validation_profiles") or []}
-    profile = profiles.get(lead.get("validation_profile_id")) or next(iter(profiles.values()), None)
-    effort = field(row, "effort_bucket") or "M"
     dimension = biomarker_dimension(marker) if marker else "maintainability"
-    plan_ids = tuple(s.get("plan_id") for s in steps if s.get("plan_id"))
+
+    def fields() -> dict[str, Any]:
+        lead_plan = plans.get(lead.get("plan_id"))
+        start, end = _span(lead_plan)
+        key = (
+            "extract_method_span" if lead_type == "extract_method" and start and end else lead_type
+        )
+        title = text.REFACTOR_TITLE.get(key, "Refactor {file}").format(
+            sym=sym,
+            file=text.basename(path),
+            start=start,
+            end=end,
+            name=_plan_body(lead_plan).get("suggested_name") or "a helper",
+        )
+        if len(steps) > 1:
+            title += f" (+{text.plural(len(steps) - 1, 'more step')})"
+        dependents = details.get("dependents")
+        if dependents is None:
+            dependents = files.dependents(path)
+        fix_steps = tuple(
+            _refactor_step(i + 1, s, plans.get(s.get("plan_id"))) for i, s in enumerate(steps)
+        )
+        facts = [
+            FixFact("health recoverable", f"+{gain:.1f}", "inferred"),
+            FixFact("steps", f"{len(steps)} ({mechanical_n} mechanical)"),
+            *files.common_facts(path, dependents),
+        ]
+        nloc = files.nloc(path)
+        if nloc:
+            facts.append(FixFact("file size", f"{nloc} lines"))
+        profiles = {p.get("id"): p for p in details.get("validation_profiles") or []}
+        profile = profiles.get(lead.get("validation_profile_id")) or next(
+            iter(profiles.values()), None
+        )
+        plan_ids = tuple(s.get("plan_id") for s in steps if s.get("plan_id"))
+        return {
+            "title": text.clip(title),
+            "target": FixTarget(
+                path,
+                sym if lead.get("target_symbol") else None,
+                fix_steps[0].line,
+                lead.get("line_end"),
+            ),
+            "why": files.why(
+                path,
+                measured=_refactor_measure(lead_type, sym, path, lead, lead_plan, files),
+                fallback=text.problem(marker, sym),
+                dependents=dependents,
+            ),
+            "facts": tuple(facts[:MAX_FACTS]),
+            "action": FixAction(
+                f"{text.plural(len(steps), 'step')}, {mechanical_n} mechanical",
+                fix_steps[:MAX_STEPS],
+                len(fix_steps),
+                mechanical,
+            ),
+            "gain": FixGain(
+                "health_points", round(gain, 3), text.health_gain(gain, ceiling=False)
+            ),
+            "effort": FixEffortEstimate(effort_bucket, "sized by the stored plan"),
+            "risk": _risk(int(field(row, "affected_files_total") or 1), dependents),
+            "confidence": FixConfidence(
+                confidence if confidence in LEVEL_RANK else "medium",
+                f"{mechanical_n} of {text.plural(len(steps), 'step')} proven mechanical "
+                "by the plan",
+            ),
+            "verify": _verify(profile),
+            "context": files.context(path),
+            "source": FixSource(
+                field(row, "opportunity_id"),
+                plan_ids,
+                tuple(details.get("lead_finding_ids") or ()),
+            ),
+            "next_call": FixNextCall(
+                "get_health", {"opportunity_id": field(row, "opportunity_id")}
+            ),
+        }
+
+    effort_bucket = field(row, "effort_bucket") or "M"
+    effort_bucket = effort_bucket if effort_bucket in FIX_EFFORTS else "M"
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
         value=_gain_value(gain, hot),
         ready=mechanical or confidence == "high",
         score=_num(field(row, "rank_score")),
-        rank_inputs=[
+        confidence=confidence if confidence in LEVEL_RANK else "medium",
+        effort=effort_bucket,
+        improves=dimension if dimension in FIX_IMPROVES else "maintainability",
+        rank_inputs=lambda: [
             FixRankFact("health gain", f"{gain:.2f}"),
             FixRankFact("hot file", "yes" if hot else "no"),
         ],
-        improves=dimension if dimension in FIX_IMPROVES else "maintainability",
-        title=text.clip(title),
-        target=FixTarget(path, sym if lead.get("target_symbol") else None,
-                         fix_steps[0].line, lead.get("line_end")),
-        why=f"{text.problem(marker, sym)}; {files.matters(path, dependents)}.",
-        facts=tuple(facts[:MAX_FACTS]),
-        action=FixAction(
-            f"{text.plural(len(steps), 'step')}, {mechanical_n} mechanical",
-            fix_steps[:MAX_STEPS],
-            len(fix_steps),
-            mechanical,
-        ),
-        gain=FixGain("health_points", round(gain, 3), text.health_gain(gain, ceiling=False)),
-        effort=FixEffortEstimate(effort if effort in FIX_EFFORTS else "M", "sized by the stored plan"),
-        risk=_risk(int(field(row, "affected_files_total") or 1), dependents),
-        confidence=FixConfidence(
-            confidence if confidence in LEVEL_RANK else "medium",
-            f"{mechanical_n} of {text.plural(len(steps), 'step')} proven mechanical by the plan",
-        ),
-        verify=_verify(profile),
-        context=files.context(path),
-        source=FixSource(
-            field(row, "opportunity_id"),
-            plan_ids,
-            tuple(details.get("lead_finding_ids") or ()),
-        ),
-        next_call=FixNextCall("get_health", {"opportunity_id": field(row, "opportunity_id")}),
+        fields=fields,
     )
 
 
-def _credited_steps(
-    row: Any, details: Mapping[str, Any], plans: Mapping[str, Any]
-) -> tuple[list[Mapping[str, Any]], float]:
-    """The steps worth doing and the gain they credit (trivial extractions drop)."""
-    steps = list(details.get("steps") or [])
-    kept, dropped = [], 0.0
-    for s in steps:
-        plan = plans.get(s.get("plan_id"))
-        size = _slice_nloc(plan) if plan is not None else None
-        if s.get("refactoring_type") == "extract_method" and size is not None and size < MIN_SLICE_NLOC:
-            dropped += _num(s.get("impact_delta"))
-        else:
-            kept.append(s)
-    return kept, max(_num(field(row, "recoverable_health")) - dropped, 0.0)
+def _refactor_measure(
+    kind: str, sym: str, path: str, step: Mapping[str, Any], plan: Any, files: _Files
+) -> str | None:
+    """The numbers behind a refactoring, from its plan evidence or its findings."""
+    evidence = _evidence(plan)
+    name = text.basename(path)
+    if kind == "split_file" and evidence.get("file_nloc"):
+        return (
+            f"{name}: {text.plural(int(evidence['file_nloc']), 'line')} in "
+            f"{evidence.get('group_count') or 'several'} loosely coupled groups"
+        )
+    if kind == "break_cycle" and evidence.get("cycle_size"):
+        return f"{name} is in an import cycle of {evidence['cycle_size']} files"
+    if kind == "extract_class" and evidence.get("method_count"):
+        return (
+            f"{sym}: {evidence['method_count']} methods in "
+            f"{evidence.get('lcom4') or 'several'} groups that share little state"
+        )
+    if kind == "extract_helper" and evidence.get("duplicated_lines"):
+        return (
+            f"{sym}: {evidence['duplicated_lines']} lines duplicated across "
+            f"{evidence.get('occurrence_count') or 2} places"
+        )
+    return text.measured(sym, files.shape(path, step.get("target_symbol")))
 
 
 # --- performance ----------------------------------------------------------------
@@ -456,117 +581,128 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
     plan = details.get("plan") or {}
     path = field(lead, "file_path") or ""
     symbol = field(lead, "intervention_symbol")
-    name = text.short_symbol(symbol) or text.basename(path)
-    noun = text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "")
-    call_sites = int(field(lead, "affected_call_sites_total") or 0)
-    files_n = int(field(lead, "affected_files_total") or 1)
-    amplification = facets.get("amplification")
-    magnitude = facets.get("loop_magnitude")
     exposure = facets.get("exposure")
-    call = f"{noun} call" if noun else "costly call"
-
-    if noun and call_sites > 1:
-        title = f"Batch the {noun} calls loops make through {name}"
-    elif noun:
-        title = f"Move the {noun} call in {name} out of its loop"
-    else:
-        title = f"Fix the repeated work in {name}"
-
-    if amplification == "quadratic":
-        what, gain_text = (
-            f"{name} runs nested loops over the same data",
-            "nested loop work that grows with the square of the data",
-        )
-    elif amplification == "per_call":
-        what, gain_text = f"{name} repeats a {call} on every call", f"one fewer {call} per call"
-    else:
-        what = f"{name} makes a {call} once per loop iteration"
-        gain_text = f"one {call} per loop iteration" + (
-            ", grows with the data"
-            if magnitude == "grows_with_data"
-            else ", bounded by a fixed loop"
-            if magnitude == "bounded"
-            else "; loop size unknown"
-        )
-    reach = []
-    if call_sites > 1:
-        reach.append(f"{call_sites} call sites reach it")
-    if exposure == "entry_reachable":
-        reach.append("an entry point reaches it")
-    if magnitude == "grows_with_data":
-        reach.append("the loop grows with the data")
-
-    facts = [
-        FixFact("call sites", str(call_sites)),
-        FixFact("files", str(files_n)),
-        FixFact(
-            "reachable from an entry point",
-            {"entry_reachable": "Yes", "not_entry_reachable": "No"}.get(exposure or "", "Unknown"),
-            "inferred" if exposure in ("entry_reachable", "not_entry_reachable") else "unknown",
-        ),
-        FixFact(
-            "loop size",
-            text.humanize(magnitude) if magnitude and magnitude != "n/a" else "unknown",
-            "inferred" if magnitude in ("grows_with_data", "bounded") else "unknown",
-        ),
-    ]
-    sinks = sorted({field(r, "terminal_sink") for r in rows if field(r, "terminal_sink")})
-    if len(sinks) > 1:
-        facts.append(FixFact("sinks this fix covers", str(len(sinks))))
-    steps = tuple(
-        FixStep(
-            int(s.get("order") or i + 1),
-            s.get("action", "")
-            + (f" ({text.short_symbol(s.get('symbol'))})" if s.get("symbol") else ""),
-            s.get("file_path") or path,
-            s.get("line"),
-            s.get("applicability") == "mechanical",
-        )
-        for i, s in enumerate(plan.get("steps") or [])
+    magnitude = facets.get("loop_magnitude")
+    plan_steps = plan.get("steps") or []
+    mechanical = bool(plan_steps) and all(
+        s.get("applicability") == "mechanical" for s in plan_steps
     )
-    mechanical = bool(steps) and all(s.mechanical for s in steps)
-    confidence = facets.get("actionability_confidence") or "low"
-    ready = field(lead, "actionability_state") == "plan_ready" or field(lead, "fix_safety") == "proven"
+    ready = (
+        field(lead, "actionability_state") == "plan_ready" or field(lead, "fix_safety") == "proven"
+    )
     effort = plan.get("effort_bucket")
-    value = _perf_value(lead, facets)
-    strategy = field(lead, "fix_strategy") or ""
+
+    def fields() -> dict[str, Any]:
+        name = text.short_symbol(symbol) or text.basename(path)
+        noun = text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "")
+        call_sites = int(field(lead, "affected_call_sites_total") or 0)
+        files_n = int(field(lead, "affected_files_total") or 1)
+        amplification = facets.get("amplification")
+        call = f"{noun} call" if noun else "costly call"
+        if noun and call_sites > 1:
+            title = f"Batch the {noun} calls loops make through {name}"
+        elif noun:
+            title = f"Move the {noun} call in {name} out of its loop"
+        else:
+            title = f"Fix the repeated work in {name}"
+        if amplification == "quadratic":
+            what = f"{name} runs nested loops over the same data"
+            gain_text = "nested loop work that grows with the square of the data"
+        elif amplification == "per_call":
+            what, gain_text = f"{name} repeats a {call} on every call", f"one fewer {call} per call"
+        else:
+            what = f"{name} makes a {call} once per loop iteration"
+            gain_text = f"one {call} per loop iteration" + (
+                ", grows with the data"
+                if magnitude == "grows_with_data"
+                else ", bounded by a fixed loop"
+                if magnitude == "bounded"
+                else "; loop size unknown"
+            )
+        reach = []
+        if call_sites > 1:
+            reach.append(f"{call_sites} call sites in {text.plural(files_n, 'file')} reach it")
+        if exposure == "entry_reachable":
+            reach.append("an entry point reaches it")
+        if magnitude == "grows_with_data":
+            reach.append("the loop grows with the data")
+        facts = [
+            FixFact("call sites", str(call_sites)),
+            FixFact("files", str(files_n)),
+            FixFact(
+                "reachable from an entry point",
+                {"entry_reachable": "Yes", "not_entry_reachable": "No"}.get(exposure or "", "Unknown"),
+                "inferred" if exposure in ("entry_reachable", "not_entry_reachable") else "unknown",
+            ),
+            FixFact(
+                "loop size",
+                text.humanize(magnitude) if magnitude and magnitude != "n/a" else "unknown",
+                "inferred" if magnitude in ("grows_with_data", "bounded") else "unknown",
+            ),
+        ]
+        sinks = sorted({field(r, "terminal_sink") for r in rows if field(r, "terminal_sink")})
+        if len(sinks) > 1:
+            facts.append(FixFact("sinks this fix covers", str(len(sinks))))
+        steps = tuple(
+            FixStep(
+                int(s.get("order") or i + 1),
+                s.get("action", "")
+                + (f" ({text.short_symbol(s.get('symbol'))})" if s.get("symbol") else ""),
+                s.get("file_path") or path,
+                s.get("line"),
+                s.get("applicability") == "mechanical",
+            )
+            for i, s in enumerate(plan_steps)
+        )
+        strategy = field(lead, "fix_strategy") or ""
+        return {
+            "title": text.clip(title),
+            "target": FixTarget(path, name if symbol else None),
+            "why": f"{what}; {', '.join(reach) or 'the loop size is unknown'}.",
+            "facts": tuple(facts[:MAX_FACTS]),
+            "action": FixAction(
+                text.FIX_STRATEGY.get(strategy, text.humanize(strategy).capitalize()),
+                steps[:MAX_STEPS],
+                len(steps),
+                mechanical,
+            ),
+            "gain": FixGain("performance", None, gain_text),
+            "effort": FixEffortEstimate(
+                effort if effort in FIX_EFFORTS else "M",
+                "sized by the stored plan" if effort else "not sized; the plan has no estimate",
+            ),
+            "risk": _risk(files_n, None),
+            "confidence": FixConfidence(
+                confidence,
+                details.get("fix_rationale")
+                or f"{text.humanize(field(lead, 'actionability_state'))} plan",
+            ),
+            "verify": _verify(plan.get("validation")),
+            "context": files.context(path),
+            "source": FixSource(field(lead, "opportunity_id")),
+            "next_call": FixNextCall(
+                "get_health", {"opportunity_id": field(lead, "opportunity_id")}
+            ),
+        }
+
+    confidence = facets.get("actionability_confidence") or "low"
+    confidence = confidence if confidence in LEVEL_RANK else "low"
     return _finish(
         kind="perf_fix",
         source_id=f"{path}::{symbol or path}",
-        value=value,
+        value=_perf_value(lead, facets),
         ready=ready or mechanical,
         score=_num(field(lead, "rank_score")),
-        rank_inputs=[
+        confidence=confidence,
+        effort=effort or "M",
+        improves="performance",
+        rank_inputs=lambda: [
             FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
             FixRankFact("entry reachable", exposure or "unknown"),
             FixRankFact("loop size", magnitude or "unknown"),
             FixRankFact("boundary", field(lead, "boundary_kind") or "none"),
         ],
-        improves="performance",
-        title=text.clip(title),
-        target=FixTarget(path, name if symbol else None),
-        why=f"{what}; {', '.join(reach) or 'the loop size is unknown'}.",
-        facts=tuple(facts[:MAX_FACTS]),
-        action=FixAction(
-            text.FIX_STRATEGY.get(strategy, text.humanize(strategy).capitalize()),
-            steps[:MAX_STEPS],
-            len(steps),
-            mechanical,
-        ),
-        gain=FixGain("performance", None, gain_text),
-        effort=FixEffortEstimate(
-            effort if effort in FIX_EFFORTS else "M",
-            "sized by the stored plan" if effort else "not sized; the plan has no estimate",
-        ),
-        risk=_risk(files_n, None),
-        confidence=FixConfidence(
-            confidence if confidence in LEVEL_RANK else "low",
-            details.get("fix_rationale") or f"{text.humanize(field(lead, 'actionability_state'))} plan",
-        ),
-        verify=_verify(plan.get("validation")),
-        context=files.context(path),
-        source=FixSource(field(lead, "opportunity_id")),
-        next_call=FixNextCall("get_health", {"opportunity_id": field(lead, "opportunity_id")}),
+        fields=fields,
     )
 
 
@@ -577,47 +713,65 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
     path = field(lead, "file_path")
     marker = field(lead, "biomarker_type") or ""
     function = field(lead, "function_name")
-    where = function or text.basename(path)
     impact = _num(field(lead, "health_impact"))
     hot = files.hot(path)
-    summary = text.first_sentence(suggestion_for(marker))
-    line = field(lead, "line_start")
     public_id = field(lead, "public_id")
     dimension = biomarker_dimension(marker)
+
+    def fields() -> dict[str, Any]:
+        where = function or text.basename(path)
+        summary = text.first_sentence(suggestion_for(marker))
+        line = field(lead, "line_start")
+        return {
+            "title": text.clip(
+                text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(
+                    where=where
+                )
+            ),
+            "target": FixTarget(path, function, line, field(lead, "line_end")),
+            "why": files.why(
+                path,
+                measured=text.measured(where, files.shape(path, function)),
+                fallback=field(lead, "reason") or text.problem(marker, where),
+            ),
+            "facts": tuple(
+                [
+                    FixFact("finding", marker),
+                    FixFact("severity", field(lead, "severity") or "unknown"),
+                    *files.common_facts(path),
+                ][:MAX_FACTS]
+            ),
+            "action": FixAction(summary, (FixStep(1, summary, path, line, False),), 1, False),
+            "gain": FixGain(
+                "health_points", round(impact, 3), text.health_gain(impact, ceiling=True)
+            ),
+            "effort": FixEffortEstimate("M", "not sized; no stored plan covers this finding"),
+            "risk": _risk(1, files.dependents(path)),
+            "confidence": FixConfidence(
+                "medium", "Measured from the code; no stored plan has checked a fix."
+            ),
+            "verify": _verify(None),
+            "context": files.context(path),
+            "source": FixSource(None, (), (public_id,) if public_id else ()),
+            "next_call": FixNextCall(
+                "get_health", {"targets": [path], "include": ["biomarkers"]}
+            ),
+        }
+
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
         value=_gain_value(impact, hot),
         ready=False,
         score=impact,
-        rank_inputs=[
+        confidence="medium",
+        effort="M",
+        improves=dimension if dimension in FIX_IMPROVES else "defect",
+        rank_inputs=lambda: [
             FixRankFact("health gain", f"{impact:.2f}"),
             FixRankFact("hot file", "yes" if hot else "no"),
         ],
-        improves=dimension if dimension in FIX_IMPROVES else "defect",
-        title=text.clip(
-            text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(where=where)
-        ),
-        target=FixTarget(path, function, line, field(lead, "line_end")),
-        why=f"{text.problem(marker, where)}; {files.matters(path)}.",
-        facts=tuple(
-            [
-                FixFact("finding", marker),
-                FixFact("severity", field(lead, "severity") or "unknown"),
-                *files.common_facts(path),
-            ][:MAX_FACTS]
-        ),
-        action=FixAction(summary, (FixStep(1, summary, path, line, False),), 1, False),
-        gain=FixGain("health_points", round(impact, 3), text.health_gain(impact, ceiling=True)),
-        effort=FixEffortEstimate("M", "not sized; no stored plan covers this finding"),
-        risk=_risk(1, files.dependents(path)),
-        confidence=FixConfidence(
-            "medium", "Measured from the code; no stored plan has checked a fix."
-        ),
-        verify=_verify(None),
-        context=files.context(path),
-        source=FixSource(None, (), (public_id,) if public_id else ()),
-        next_call=FixNextCall("get_health", {"targets": [path], "include": ["biomarkers"]}),
+        fields=fields,
     )
 
 
@@ -628,33 +782,54 @@ def _order(units: list[_Unit]) -> list[_Unit]:
     ranked = sorted(
         units,
         key=lambda u: (
-            TIER_RANK[u.item.tier],
+            TIER_RANK[u.tier],
             -u.value,
-            -LEVEL_RANK.get(u.item.confidence.level, 0),
-            EFFORT_RANK.get(u.item.effort.bucket, 1),
+            -LEVEL_RANK.get(u.confidence, 0),
+            EFFORT_RANK.get(u.effort, 1),
             -u.score,
-            u.item.id,
+            u.id,
         ),
     )
     head: list[_Unit] = []
     taken: Counter[str] = Counter()
     while ranked and len(head) < HEAD:
         pick = ranked[0]
-        if taken[pick.item.kind] >= HEAD_PER_KIND:
+        if taken[pick.kind] >= HEAD_PER_KIND:
             pick = next(
                 (
                     u
                     for u in ranked
                     if u.value >= 2
-                    and u.item.kind != pick.item.kind
-                    and taken[u.item.kind] < HEAD_PER_KIND
+                    and u.kind != pick.kind
+                    and taken[u.kind] < HEAD_PER_KIND
                 ),
                 pick,
             )
         ranked.remove(pick)
         head.append(pick)
-        taken[pick.item.kind] += 1
+        taken[pick.kind] += 1
     return head + ranked
+
+
+def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
+    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for f in findings:
+        name = field(f, "function_name")
+        if name:
+            out[(field(f, "file_path"), name)].append(f)
+    return dict(out)
+
+
+def _measure(findings: Iterable[Any]) -> dict[str, int]:
+    """A function's largest measured CCN, size and nesting across its findings."""
+    shape: dict[str, int] = {}
+    for f in findings:
+        details = detail_map(f)
+        for k in ("ccn", "nloc", "max_nesting"):
+            v = details.get(k)
+            if isinstance(v, (int, float)) and v > shape.get(k, 0):
+                shape[k] = int(v)
+    return shape
 
 
 def _basis(metrics: Rows) -> dict[str, str | None]:
@@ -677,11 +852,19 @@ def build_fix_first(
     plans: Rows = (),
     limit: int | None = DEFAULT_LIMIT,
     scope: str = "production",
+    basis: Mapping[str, str | None] | None = None,
+    item_id: str | None = None,
+    hot_cuts: tuple[float, float] | None = None,
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
     ``scope="all"`` keeps test files (labelled in ``context``); ``limit=None``
-    keeps every eligible item.
+    keeps every eligible item. ``basis`` is the analysis stamp when the caller
+    read it apart; otherwise it comes from the metrics' ``updated_at``.
+    ``item_id`` keeps just that item, at its rank, for a lookup by id.
+    ``hot_cuts`` are the (churn, dependents) thresholds for a hot file when the
+    caller measured them over more files than it passed in ``metrics``; see
+    :func:`hot_cut` for the rule.
     """
     metrics = list(metrics)
     keep_tests = scope == "all"
@@ -698,10 +881,15 @@ def build_fix_first(
         ):
             by_file[field(f, "file_path")].append(f)
     split = {path: split_by_origin(rows) for path, rows in by_file.items()}
-    files = _Files(metrics, {p: hist for p, (_shape, hist) in split.items() if hist})
+    files = _Files(
+        metrics,
+        {p: hist for p, (_shape, hist) in split.items() if hist},
+        _by_function(f for shape, _hist in split.values() for f in shape),
+        hot_cuts,
+    )
 
-    def out_of_scope(path: str, context: str | None = None) -> bool:
-        reason = _path_exclusion(path, files.is_test(path), context)
+    def out_of_scope(path: str, context: str | None = None, *, perf: bool = False) -> bool:
+        reason = _path_exclusion(path, files.is_test(path), context, perf=perf)
         if reason is None or (reason == "test" and keep_tests):
             return False
         excluded[reason] += 1
@@ -715,18 +903,21 @@ def build_fix_first(
         key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")),
     ):
         path = field(row, "file_path")
-        planned_files.add(path)
         if out_of_scope(path):
             continue
         if _num(field(row, "recoverable_health")) < MIN_WORTH:
             excluded["below_min_worth"] += 1
             continue
         details = detail_map(row)
-        steps, gain = _credited_steps(row, details, plan_rows)
-        if not steps or gain < MIN_WORTH:
+        steps = list(details.get("steps") or [])
+        gain = _num(field(row, "recoverable_health"))
+        if not steps:
             excluded["below_min_worth"] += 1
             continue
         units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
+        # Only a plan that became an item speaks for the file's findings; an
+        # excluded one leaves them to compete on their own.
+        planned_files.add(path)
 
     # Ceiling: grouped by the intervention as stored, until persistence writes
     # one row per intervention.
@@ -737,7 +928,7 @@ def build_fix_first(
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
     for (path, _symbol), rows in groups.items():
         context = field(rows[0], "execution_context")
-        if out_of_scope(path, context):
+        if out_of_scope(path, context, perf=True):
             continue
         ready = [r for r in rows if _perf_ready(r)]
         if not ready:
@@ -760,10 +951,14 @@ def build_fix_first(
         units.append(_finding_unit(lead, files))
 
     ordered = _order(units)
-    shown = ordered if limit is None else ordered[: max(limit, 0)]
-    by_improves = Counter(u.item.improves for u in units)
+    if item_id is not None:
+        shown = [(i, u) for i, u in enumerate(ordered) if u.id == item_id]
+    else:
+        keep = ordered if limit is None else ordered[: max(limit, 0)]
+        shown = list(enumerate(keep))
+    by_improves = Counter(u.improves for u in units)
     return FixFirstQueue(
-        items=tuple(replace(u.item, rank=i) for i, u in enumerate(shown)),
+        items=tuple(u.write(rank) for rank, u in shown),
         totals=FixTotals(
             candidates=len(units) + sum(excluded.values()),
             eligible=len(units),
@@ -771,7 +966,7 @@ def build_fix_first(
             excluded=excluded,
         ),
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
-        basis=_basis(metrics),
+        basis=dict(basis) if basis is not None else _basis(metrics),
     )
 
 
@@ -780,7 +975,8 @@ __all__ = [
     "GAIN_CUTS",
     "HEAD",
     "HEAD_PER_KIND",
-    "MIN_SLICE_NLOC",
     "MIN_WORTH",
     "build_fix_first",
+    "hot_cut",
+    "hot_cut_offset",
 ]

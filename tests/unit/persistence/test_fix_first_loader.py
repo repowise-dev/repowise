@@ -39,7 +39,7 @@ async def seed_fix_first(session, rid: str | None = None) -> str:
                                 commit_count_90d=m["commit_count_90d"]))
         session.add(GraphMetric(repository_id=rid, node_id=m["file_path"],
                                 in_degree=m["dependents"]))
-    session.add_all(HealthFinding(repository_id=rid, **f) for f in FINDINGS)
+    session.add_all(HealthFinding(repository_id=rid, **_with_json(f, "details")) for f in FINDINGS)
     session.add_all(
         RefactoringOpportunity(repository_id=rid, **_with_json(r, "details")) for r in REFACTORING
     )

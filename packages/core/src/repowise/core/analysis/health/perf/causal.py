@@ -91,12 +91,11 @@ which is the one thing the fallback must not do.
 """
 
 
-def execution_context(file_path: str) -> ExecutionContext:
-    """Where this code runs. An identity input, so it is classified once.
+def code_context(file_path: str) -> ExecutionContext:
+    """Whether this code ships, without :func:`execution_context`'s CLI rule.
 
-    ``unknown`` is a positive answer, not a gap: a path with no directory, or
-    one under a directory whose execution role is genuinely ambiguous, carries
-    no evidence either way.
+    A CLI is product code an edit can improve, so code-shape surfaces read
+    this; only performance treats a CLI loop as off the request path.
     """
     normalized = file_path.replace("\\", "/")
     if not normalized:
@@ -105,13 +104,28 @@ def execution_context(file_path: str) -> ExecutionContext:
         return "test"
     segments = normalized.lower().split("/")
     parts = set(segments)
-    if parts & _TOOLING_PARTS or "/cli/" in f"/{normalized.lower()}/":
+    if parts & _TOOLING_PARTS:
         return "tooling"
     if any(pair in _TOOLING_DIR_PAIRS for pair in pairwise(segments[:-1])):
         return "tooling"
     if parts & _UNCLASSIFIABLE_PARTS or "/" not in normalized:
         return "unknown"
     return "production"
+
+
+def execution_context(file_path: str) -> ExecutionContext:
+    """Where this code runs. An identity input, so it is classified once.
+
+    ``unknown`` is a positive answer, not a gap: a path with no directory, or
+    one under a directory whose execution role is genuinely ambiguous, carries
+    no evidence either way. A CLI loop is not a request path, so CLI code is
+    ``tooling`` here.
+    """
+    context = code_context(file_path)
+    normalized = file_path.replace("\\", "/").lower()
+    if context in ("production", "unknown") and "/cli/" in f"/{normalized}/":
+        return "tooling"
+    return context
 
 
 def cost_shape(marker: str) -> str:

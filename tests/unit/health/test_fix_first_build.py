@@ -37,7 +37,8 @@ def test_each_exclusion_is_counted_by_reason() -> None:
     queue = _build()
     assert set(queue.totals.excluded) == set(FIX_EXCLUSIONS)
     assert queue.totals.excluded == {
-        "test": 1,
+        # The test file's plan and its own findings are two candidates.
+        "test": 2,
         "tooling": 1,
         "generated": 0,
         "expected": 1,
@@ -46,7 +47,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "history_only": 1,
     }
     assert queue.totals.eligible == 3
-    assert queue.totals.candidates == 3 + 6
+    assert queue.totals.candidates == 3 + 7
     assert queue.by_improves == {"defect": 2, "maintainability": 0, "performance": 1}
 
 
@@ -65,22 +66,27 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
     assert all(i.target.file_path != "src/hist.py" for i in queue.items)
 
 
-def test_trivial_extractions_drop_and_cost_their_credit() -> None:
+def test_text_quotes_the_stored_numbers() -> None:
     core = _build().lead
-    assert core.action.steps_total == 1
-    assert core.action.steps[0].text == "Extract lines 20-35 of run into a helper"
-    assert core.gain.value == 1.8
-    assert core.source.plan_ids == ("refac2_big",)
+    assert core.title == "Extract lines 20-35 of run into sum_rows (+1 more step)"
+    assert core.why == "run: CCN 14, 50 lines, nests 4 deep; 9 files import it, changed 12 times in 90 days."
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    assert core.action.steps[1].text == "Extract lines 40-41 of run into a helper"
+    # The model's credit is the gain, with one decimal; the builder does not re-judge it.
+    assert (core.gain.value, core.gain.text) == (2.0, "+2.0 health on this file")
+    assert core.source.plan_ids == ("refac2_big", "refac2_tiny")
     assert len(core.verify.tests) == 5 and core.verify.tests_total == 7
     assert core.verify.command == "pytest tests/test_core_0.py"
 
 
-def test_all_steps_trivial_is_below_min_worth() -> None:
-    tiny = copy.deepcopy(REFACTORING[0])
-    tiny["details"]["steps"] = tiny["details"]["steps"][1:]
-    queue = _build(refactoring=[tiny])
+def test_an_excluded_plan_leaves_the_files_findings_to_compete() -> None:
+    """Every candidate lands in exactly one bucket, whatever the other one decided."""
+    small = {**REFACTORING[1], "opportunity_id": "refop2_plain", "file_path": "src/plain.py"}
+    queue = _build(refactoring=[small], performance=[])
+    plain = [i for i in queue.items if i.target.file_path == "src/plain.py"]
+    assert [i.kind for i in plain] == ["finding"]
     assert queue.totals.excluded["below_min_worth"] == 1
-    assert all(i.kind != "refactor" for i in queue.items)
+    assert queue.totals.candidates == queue.totals.eligible + sum(queue.totals.excluded.values())
 
 
 def test_tiers_follow_value_confidence_and_readiness() -> None:
@@ -137,7 +143,21 @@ def test_limit_caps_items_not_totals() -> None:
 
 
 def test_titles_and_whys_carry_no_biomarker_ids() -> None:
+    from repowise.core.analysis.health.scoring import _BIOMARKER_CATEGORY
+
     for item in _build().items:
         for text in (item.title, item.why, item.gain.text):
-            assert "_" not in text.replace("load_all", ""), text
+            assert not any(marker in text for marker in _BIOMARKER_CATEGORY), text
         assert len(item.title) <= 90
+
+
+def test_cli_code_ships_for_code_shape_but_not_for_performance() -> None:
+    from repowise.core.analysis.health.perf.causal import code_context, execution_context
+
+    path = "packages/cli/src/app/cli/commands/update.py"
+    assert (code_context(path), execution_context(path)) == ("production", "tooling")
+    assert code_context("scripts/run.py") == execution_context("scripts/run.py") == "tooling"
+    cli = {**METRICS[0], "file_path": path}
+    finding = {**FINDINGS[1], "file_path": path}
+    queue = _build(metrics=[cli], findings=[finding], refactoring=[], performance=[])
+    assert [i.target.file_path for i in queue.items] == [path]
