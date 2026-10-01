@@ -83,6 +83,15 @@ def _order(actions: list[Action]) -> list[Action]:
     return out
 
 
+def find_action(facts: RepoFacts, action_id: str) -> Action | None:
+    """One action by id, whatever its rank or the person's answer to it."""
+    ctx = build_context(facts)
+    return next(
+        (a for rule in RULES for a in rule(facts, ctx).actions if a.action_id == action_id),
+        None,
+    )
+
+
 def compose_actions(
     facts: RepoFacts,
     states: Mapping[str, ActionStateRecord] | None = None,

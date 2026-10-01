@@ -8,7 +8,7 @@ loader that reads the stores lives in
 
 from __future__ import annotations
 
-from .engine import RULES, ActionStateRecord, compose_actions
+from .engine import RULES, ActionStateRecord, compose_actions, find_action
 from .facts import RepoFacts
 from .model import (
     ACTION_RULES,
@@ -38,4 +38,5 @@ __all__ = [
     "RepoFacts",
     "RuleOutcome",
     "compose_actions",
+    "find_action",
 ]

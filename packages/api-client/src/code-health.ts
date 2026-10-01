@@ -27,6 +27,7 @@ import type {
   HealthCounts,
 } from "@repowise-dev/types/health";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
 
@@ -303,5 +304,17 @@ export async function getFixFirstItem(
   return apiGet<FixItem>(
     `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}`,
     { scope: opts.scope },
+  );
+}
+
+/** One Fix-first item as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getFixFirstItemPrompt(
+  repoId: string,
+  fixId: string,
+  opts: { flavor?: AgentPromptFlavor; scope?: FixScope } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}/prompt`,
+    { flavor: opts.flavor, scope: opts.scope },
   );
 }

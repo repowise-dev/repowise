@@ -91,6 +91,11 @@ export interface ActiveProviderSelection {
   model?: string | null;
 }
 
+export interface AgentPromptResponse {
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  text: string;
+}
+
 /** One month of agent-vs-human commit volume. */
 export interface AgentTrendBucket {
   month: string;

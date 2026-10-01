@@ -18,7 +18,13 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.actions import ActionStateRecord, RepoFacts, compose_actions
+from repowise.core.analysis.actions import (
+    Action,
+    ActionStateRecord,
+    RepoFacts,
+    compose_actions,
+    find_action,
+)
 from repowise.core.analysis.actions.build import (
     ABSENT,
     AUTHORED_BASES,
@@ -454,3 +460,8 @@ async def load_actions_view(
     view = compose_actions(facts, states, now=now or datetime.now(UTC))
     view["unavailable"] = dict(facts.unavailable)
     return view
+
+
+async def load_action(session: AsyncSession, repo_id: str, action_id: str) -> Action | None:
+    """One action by id: the same facts the list reads, without ranking the view."""
+    return find_action(await load_repo_facts(session, repo_id), action_id)
