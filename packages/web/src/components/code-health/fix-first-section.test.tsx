@@ -52,6 +52,8 @@ function queue(items: FixItem[]): FixFirstQueue {
         tooling: 0,
         generated: 0,
         expected: 0,
+        unknown: 0,
+        no_strategy: 0,
         no_plan: 0,
         below_min_worth: 3,
         history_only: 0,

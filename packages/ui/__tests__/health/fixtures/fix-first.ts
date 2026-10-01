@@ -596,6 +596,8 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "tooling": 91,
       "generated": 5,
       "expected": 158,
+      "unknown": 0,
+      "no_strategy": 0,
       "no_plan": 12,
       "below_min_worth": 505,
       "history_only": 167
