@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import networkx as nx
 
-from repowise.core.analysis.test_reachability import call_graph_from_db, call_graph_from_graph
+from repowise.core.analysis.test_reachability import (
+    ReachDistance,
+    call_graph_from_db,
+    call_graph_from_graph,
+    imported_names_by_test,
+    reach_into_symbols,
+)
 from repowise.core.analysis.test_reachability import tests_reaching as reaching
 from repowise.core.analysis.test_reachability import tests_reaching_by_tier as by_tier
 from repowise.core.persistence.crud.graph import (
@@ -275,3 +281,54 @@ async def test_call_site_lines_round_trip_through_edge_persistence(async_session
     rows = await get_all_graph_edges(async_session, repo.id)
 
     assert rows[0]["call_lines"] == [4, 9]
+
+
+async def test_symbol_reach_keeps_the_fewest_hops_and_counts_direct_callers(async_session):
+    """Two test functions call the symbol directly; another test only reaches it
+    through a facade. The direct test is one hop away with two callers."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_walk.py": True, "tests/test_api.py": True, "src/walk.py": False},
+        edges=[
+            ("tests/test_walk.py", "tests/test_walk.py::test_one", "defines"),
+            ("tests/test_walk.py", "tests/test_walk.py::test_two", "defines"),
+            ("tests/test_api.py", "tests/test_api.py::test_it", "defines"),
+            ("src/walk.py", "src/walk.py::walk", "defines"),
+            ("src/walk.py", "src/walk.py::facade", "defines"),
+            ("tests/test_walk.py::test_one", "src/walk.py::walk", "calls"),
+            ("tests/test_walk.py::test_two", "src/walk.py::walk", "calls"),
+            ("tests/test_api.py::test_it", "src/walk.py::facade", "calls"),
+            ("src/walk.py::facade", "src/walk.py::walk", "calls"),
+        ],
+    )
+    found = await reach_into_symbols(
+        async_session, repo.id, ["src/walk.py::walk"], {"tests/test_walk.py", "tests/test_api.py"}
+    )
+    assert found == {
+        "src/walk.py::walk": {
+            "tests/test_walk.py": ReachDistance(hops=1, callers=2),
+            "tests/test_api.py": ReachDistance(hops=2, callers=1),
+        }
+    }
+
+
+async def test_imported_names_are_read_per_test_and_file(async_session):
+    repo = await insert_repo(async_session)
+    for source, names in (("tests/test_walk.py", '["walk"]'), ("src/other.py", '["walk"]')):
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id="src/walk.py",
+                edge_type="imports",
+                imported_names_json=names,
+            )
+        )
+    await async_session.flush()
+    found = await imported_names_by_test(
+        async_session, repo.id, ["src/walk.py"], {"tests/test_walk.py"}
+    )
+    # A production importer is not a test, so it never appears.
+    assert found == {"src/walk.py": {"tests/test_walk.py": frozenset({"walk"})}}

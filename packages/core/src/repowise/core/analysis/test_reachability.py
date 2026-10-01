@@ -151,7 +151,7 @@ import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, NamedTuple, TypeAlias
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -194,14 +194,17 @@ __all__ = [
     "MAX_TESTS_PER_TARGET",
     "UNRELIABLE_CALL_ORIGINS",
     "CallGraphView",
+    "ReachDistance",
     "ReachedBy",
     "call_graph_from_db",
     "call_graph_from_graph",
     "direct_dependents",
     "files_reached_by_tests",
     "files_with_paired_tests",
+    "imported_names_by_test",
     "load_test_files",
     "rank_tests",
+    "reach_into_symbols",
     "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
@@ -209,6 +212,14 @@ __all__ = [
 
 
 CallGraphView: TypeAlias = ExecutionGraphIndex
+
+
+class ReachDistance(NamedTuple):
+    """How a test reached a seed: the fewest call hops, and how many of the
+    test's symbols made a call at that depth."""
+
+    hops: int
+    callers: int
 
 
 @dataclass(frozen=True)
@@ -228,6 +239,9 @@ class ReachedBy:
     # Internal uncapped identities let downstream aggregators de-duplicate one
     # test that reaches several targets while public lists remain bounded.
     all_tests: tuple[str, ...] | None = None
+    # How close each test came, for the call tier only: the import and name
+    # tiers have no hop count to report.
+    reach: Mapping[str, ReachDistance] | None = None
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -497,10 +511,10 @@ async def tests_reaching_by_tier(
         found = await _call_reaching(
             session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
         )
-        for seed, tests in found.items():
-            ordered = tuple(rank_tests(seed.split("::", 1)[0], tests))
+        for seed, reach in found.items():
+            ordered = tuple(rank_tests(seed.split("::", 1)[0], reach))
             out[seed] = ReachedBy(
-                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
+                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered, reach
             )
 
     unanswered = [seed for seed in seeds if seed not in out]
@@ -522,12 +536,16 @@ async def _call_reaching(
     max_depth: int,
     *,
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
-) -> dict[str, set[str]]:
+) -> dict[str, dict[str, ReachDistance]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
     Starts one layer below the other walk: the seeds are files and call edges
     join symbols, so the first query resolves each seed to the symbols it
     declares, and the walk carries the seed from there.
+
+    Each test carries the fewest call hops it took and how many of its symbols
+    made a call at that depth. Breadth-first, a seed first reaches a test at
+    its shortest distance, so the first record is the minimum.
     """
     origins: dict[str, set[str]] = {}
     # A caller that knows which symbol in the file it cares about enters there,
@@ -550,9 +568,9 @@ async def _call_reaching(
     if not origins:
         return {}
 
-    found: dict[str, set[str]] = {}
+    found: dict[str, dict[str, tuple[int, set[str]]]] = {}
     frontier = list(origins)
-    for _ in range(max_depth):
+    for hops in range(1, max_depth + 1):
         if not frontier:
             break
         level, frontier = frontier, []
@@ -570,7 +588,10 @@ async def _call_reaching(
             owner = file_of_symbol(caller)
             if owner in test_files:
                 for seed in carried:
-                    found.setdefault(seed, set()).add(owner)
+                    by_test = found.setdefault(seed, {})
+                    first = by_test.setdefault(owner, (hops, set()))
+                    if first[0] == hops:
+                        first[1].add(caller)
                 # A test is a leaf. Walking through one would let "test A calls
                 # shared helper B" drag B's unrelated targets in.
                 continue
@@ -582,7 +603,74 @@ async def _call_reaching(
             if caller not in queued:
                 queued.add(caller)
                 frontier.append(caller)
-    return found
+    return {
+        seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
+        for seed, tests in found.items()
+    }
+
+
+async def reach_into_symbols(
+    session: AsyncSession,
+    repo_id: str,
+    symbol_ids: Collection[str],
+    test_files: set[str],
+    *,
+    max_depth: int = DEFAULT_CALL_DEPTH,
+) -> dict[str, dict[str, ReachDistance]]:
+    """Tests that call into each symbol id, keyed by the symbol, with their hops.
+
+    The file walk answers "does a test reach this file"; this one answers how
+    close each test gets to one symbol in it, which is what decides which of a
+    file's many tests to run first after changing that symbol.
+    """
+    seeds = sorted({symbol for symbol in symbol_ids if symbol})
+    if not seeds or not test_files:
+        return {}
+    return await _call_reaching(
+        session,
+        repo_id,
+        seeds,
+        test_files,
+        max_depth,
+        symbol_seeds={symbol: (symbol,) for symbol in seeds},
+    )
+
+
+async def imported_names_by_test(
+    session: AsyncSession, repo_id: str, files: Collection[str], test_files: set[str]
+) -> dict[str, dict[str, frozenset[str]]]:
+    """The names each test file imports from each of *files*, keyed by file then test.
+
+    An empty set is an import of the module itself. One query, one hop: what a
+    test names, not what it reaches.
+    """
+    targets = sorted({path for path in files if path})
+    if not targets or not test_files:
+        return {}
+    params: dict[str, Any] = {"repo_id": repo_id}
+    tgt = _in_clause("p", targets, params)
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
+    rows = await session.execute(
+        text(
+            "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
+            "WHERE repository_id = :repo_id "
+            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
+        ),
+        params,
+    )
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    for source, target, names_json in rows:
+        if source not in test_files:
+            continue
+        try:
+            names = json.loads(names_json or "[]")
+        except (TypeError, ValueError):
+            names = []
+        by_test = out.setdefault(target, {})
+        by_test[source] = by_test.get(source, frozenset()) | frozenset(
+            name for name in names if isinstance(name, str)
+        )
+    return out
 
 
 async def _import_reaching(

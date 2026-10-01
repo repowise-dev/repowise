@@ -11,14 +11,16 @@ from sqlalchemy.pool import StaticPool
 from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
+    ValidationEvidence,
     apply_view,
     build_recommendations,
     build_validation_plan,
     detector_native_benefit,
     hydrate_recommendations,
     rehydrate_suggestion,
+    target_symbol_ids,
 )
-from repowise.core.analysis.test_reachability import ReachedBy
+from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy
 from repowise.core.persistence.crud import save_test_coverage
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
@@ -388,3 +390,166 @@ def test_performance_fix_benefit_stays_detector_native() -> None:
     native = detector_native_benefit(rehydrate_suggestion(plan))
     assert item.benefit == round(native, 4)
     assert item.benefit > 0.0
+
+
+# The walker shape from the audit: a file reached by many tests, most of which
+# only pass through it. Alphabetical order used to lead with the bystanders.
+_WALKER = "src/health/walker.py"
+_WALK_FILE = f"{_WALKER}::walk_file"
+_WALKER_TESTS = [
+    "tests/health/conftest.py",
+    "tests/health/test_assertions.py",
+    "tests/health/test_bystander.py",
+    "tests/health/test_imports_it.py",
+    "tests/health/test_two_hops.py",
+    "tests/health/test_walker.py",
+    "tests/health/test_walks_a_lot.py",
+]
+
+
+def _walker_plan() -> RefactoringSuggestion:
+    return RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path=_WALKER,
+        target_symbol="walk_file",
+        line_start=94,
+        line_end=208,
+        plan={},
+        evidence={},
+        impact_delta=1.0,
+        effort_bucket="M",
+        blast_radius={},
+        confidence="high",
+        source_biomarker="long_function",
+    )
+
+
+def _walker_evidence() -> ValidationEvidence:
+    return ValidationEvidence(
+        symbols={_WALKER: [(_WALK_FILE, 94, 208), (f"{_WALKER}::helper", 210, 220)]},
+        symbol_reach={
+            _WALK_FILE: {
+                "tests/health/conftest.py": ReachDistance(1, 3),
+                "tests/health/test_assertions.py": ReachDistance(1, 1),
+                "tests/health/test_walks_a_lot.py": ReachDistance(1, 9),
+                "tests/health/test_two_hops.py": ReachDistance(2, 4),
+            }
+        },
+        imports={_WALKER: {"tests/health/test_imports_it.py": frozenset({"walk_file"})}},
+    )
+
+
+def _walker_reached() -> dict[str, ReachedBy]:
+    reach = {test: ReachDistance(1, 1) for test in _WALKER_TESTS}
+    return {
+        _WALKER: ReachedBy(
+            _WALKER_TESTS, "call-graph", len(_WALKER_TESTS), tuple(_WALKER_TESTS), reach
+        )
+    }
+
+
+def test_tests_that_call_the_changed_symbol_lead_the_list_with_reasons() -> None:
+    validation = build_validation_plan(
+        _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence()
+    )
+    assert validation.tests == [
+        # Calls walk_file directly, more of its functions first.
+        "tests/health/test_walks_a_lot.py",
+        "tests/health/test_assertions.py",
+        # Imports walk_file by name, no call edge.
+        "tests/health/test_imports_it.py",
+        # Two calls away from walk_file.
+        "tests/health/test_two_hops.py",
+        # Reaches the file only, the named test before the bystander.
+        "tests/health/test_walker.py",
+        "tests/health/test_bystander.py",
+        # Test support runs nothing on its own, however close it is.
+        "tests/health/conftest.py",
+    ]
+    assert validation.reasons == {
+        "tests/health/test_walks_a_lot.py": "calls walk_file from 9 test functions",
+        "tests/health/test_assertions.py": "calls walk_file",
+        "tests/health/test_imports_it.py": "imports walk_file",
+        "tests/health/test_two_hops.py": "reaches walk_file in 2 calls",
+        "tests/health/test_walker.py": "calls into walker.py",
+        "tests/health/test_bystander.py": "calls into walker.py",
+        "tests/health/conftest.py": "calls walk_file from 3 test functions",
+    }
+    assert validation.targets[0].tests == validation.tests
+    assert validation.as_dict()["reasons"] == validation.reasons
+
+
+def test_measured_coverage_of_the_changed_lines_outranks_every_graph_signal() -> None:
+    measured = {
+        _WALKER: [
+            {"test_id": "tests/health/test_bystander.py::test_x", "covered_lines": [100, 150]},
+            {"test_id": "tests/health/test_walker.py::test_y", "covered_lines": [99]},
+        ]
+    }
+    validation = build_validation_plan(
+        _walker_plan(), measured, _walker_reached(), evidence=_walker_evidence()
+    )
+    assert validation.tests == [
+        "tests/health/test_bystander.py::test_x",
+        "tests/health/test_walker.py::test_y",
+    ]
+    assert validation.reasons == {
+        "tests/health/test_bystander.py::test_x": "covers lines 100-150",
+        "tests/health/test_walker.py::test_y": "covers line 99",
+    }
+
+
+def test_the_cap_keeps_the_strongest_evidence_and_reasons_follow_it() -> None:
+    validation = build_validation_plan(
+        _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence(), test_limit=2
+    )
+    assert validation.tests == [
+        "tests/health/test_walks_a_lot.py",
+        "tests/health/test_assertions.py",
+    ]
+    assert list(validation.reasons) == validation.tests
+    assert validation.total == len(_WALKER_TESTS)
+    assert validation.truncated is True
+
+
+def test_without_graph_evidence_name_then_directory_reasons_are_given() -> None:
+    plan = _plan("Core", file_path="src/pkg/core.py")
+    reached = ReachedBy(
+        ["tests/other/test_misc.py", "tests/pkg/test_near.py", "tests/unit/test_core.py"],
+        "name-match",
+        3,
+    )
+    validation = build_validation_plan(plan, {}, {"src/pkg/core.py": reached})
+    assert validation.tests == [
+        "tests/unit/test_core.py",
+        "tests/pkg/test_near.py",
+        "tests/other/test_misc.py",
+    ]
+    assert validation.reasons == {
+        "tests/unit/test_core.py": "named for core.py",
+        "tests/pkg/test_near.py": "shares pkg",
+        "tests/other/test_misc.py": "reaches core.py",
+    }
+
+
+def test_a_line_range_target_resolves_to_its_enclosing_symbol() -> None:
+    plan = _walker_plan()
+    plan.target_symbol = "walker.py:120-130"
+    spans = [(f"{_WALKER}::__module__", 0, 0), (_WALK_FILE, 94, 208), (f"{_WALKER}::inner", 118, 140)]
+    assert target_symbol_ids(plan, _WALKER, set(range(120, 131)), spans) == [f"{_WALKER}::inner"]
+    # A full id, as a performance plan stores it, resolves as itself.
+    plan.target_symbol = _WALK_FILE
+    assert target_symbol_ids(plan, _WALKER, None, spans) == [_WALK_FILE]
+
+
+def test_a_test_file_the_plan_edits_is_listed_as_edited() -> None:
+    plan = _plan("Core", rtype="split_file", file_path="src/core.py")
+    plan.line_start = plan.line_end = None
+    plan.blast_radius = {"files": ["tests/test_user.py"]}
+    inferred = {
+        "src/core.py": ReachedBy(["tests/test_core.py"], "import-graph", 1),
+        "tests/test_user.py": ReachedBy(["tests/test_user.py"], "import-graph", 1),
+    }
+    validation = build_validation_plan(plan, {}, inferred)
+    assert validation.tests == ["tests/test_user.py", "tests/test_core.py"]
+    assert validation.reasons["tests/test_user.py"] == "edited by this plan"

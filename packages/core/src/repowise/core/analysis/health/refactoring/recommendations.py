@@ -8,6 +8,7 @@ batched across the complete plan set; adding plans never adds SQL statements.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -17,13 +18,18 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.grading import TARGET_SCORE
+from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
+    DEFAULT_CALL_DEPTH,
+    ReachDistance,
     ReachedBy,
+    imported_names_by_test,
     load_test_files,
-    rank_tests,
+    reach_into_symbols,
     tests_matching_by_name,
     tests_reaching_by_tier,
 )
+from repowise.core.test_paths import is_test_support_path, paired_test_names
 
 from .models import RefactoringSuggestion
 
@@ -282,6 +288,8 @@ class ValidationPlan:
     affected_symbols: list[str]
     commands: list[str]
     targets: list[ValidationTarget] = field(default_factory=list)
+    # Why each shown test is listed where it is, keyed by test id.
+    reasons: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -294,7 +302,209 @@ class ValidationPlan:
             "affected_symbols": self.affected_symbols,
             "commands": self.commands,
             "targets": [target.as_dict() for target in self.targets],
+            "reasons": self.reasons,
         }
+
+
+SymbolSpan = tuple[str, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationEvidence:
+    """Graph facts that order a plan's tests, read once for the whole plan set.
+
+    ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
+    how close each test gets to a symbol, and ``imports`` the names each test
+    imports from a file. Empty, the order falls back to name and directory.
+    """
+
+    symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
+    symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
+    imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+
+
+def target_symbol_ids(
+    suggestion: RefactoringSuggestion,
+    file_path: str,
+    lines: set[int] | None,
+    spans: Sequence[SymbolSpan],
+) -> list[str]:
+    """Graph ids of the symbols in *file_path* the plan changes.
+
+    Named symbols first: a full id, a bare name, or ``Class.method``. When none
+    name a symbol here, the innermost symbol enclosing the plan's lines, which
+    is how a line-range target (``extract_helper``) finds its function.
+    """
+    ids = {span[0] for span in spans}
+    found: set[str] = set()
+    for name in affected_symbols(suggestion):
+        candidates = (
+            (name,)
+            if "::" in name
+            else (f"{file_path}::{name}", f"{file_path}::{name.replace('.', '::')}")
+        )
+        found.update(candidate for candidate in candidates if candidate in ids)
+    if found or not lines:
+        return sorted(found)
+    first, last = min(lines), max(lines)
+    enclosing = [
+        (end - start, symbol)
+        for symbol, start, end in spans
+        if start <= first and last <= end and not symbol.endswith("::__module__")
+    ]
+    return [min(enclosing)[1]] if enclosing else []
+
+
+def _symbol_label(symbol_id: str) -> str:
+    return symbol_id.split("::", 1)[-1].replace("::", ".")
+
+
+def _line_span(lines: set[int]) -> str:
+    first, last = min(lines), max(lines)
+    return f"line {first}" if first == last else f"lines {first}-{last}"
+
+
+# Sort keys put a test with no call path behind every test with one: past the
+# deepest call hop, an import of the file, then nothing but a name.
+_IMPORT_ONLY = 2 * DEFAULT_CALL_DEPTH + 1
+_NO_PATH = 2 * DEFAULT_CALL_DEPTH + 2
+
+# The same few hundred test paths are classified once per plan they guard;
+# the classifier is the hot spot of a whole-repository hydration.
+_is_support = functools.lru_cache(maxsize=8192)(is_test_support_path)
+
+RankedTest = tuple[tuple[int, ...], str]
+
+
+def _test_reason(
+    *,
+    name: str,
+    lines: set[int] | None,
+    hits: set[int],
+    edited: bool,
+    nearest: tuple[int, int, str] | None,
+    named_import: str | None,
+    reach: ReachDistance | None,
+    imported: frozenset[str] | None,
+    named: bool,
+    shared: list[str],
+) -> str:
+    """The strongest single piece of evidence, in the order the key ranks it."""
+    if hits:
+        return f"covers {_line_span(hits)}" if lines is not None else f"covers {name}"
+    if edited:
+        return "edited by this plan"
+    if nearest is not None and nearest[0] == 1:
+        callers = -nearest[1]
+        suffix = f" from {callers} test functions" if callers > 1 else ""
+        return f"calls {_symbol_label(nearest[2])}{suffix}"
+    if named_import is not None:
+        return f"imports {_symbol_label(named_import)}"
+    if nearest is not None:
+        return f"reaches {_symbol_label(nearest[2])} in {nearest[0]} calls"
+    if reach is not None:
+        return f"calls into {name}" if reach.hops == 1 else f"reaches {name} in {reach.hops} calls"
+    if imported is not None:
+        return f"imports {name.rsplit('.', 1)[0]}"
+    if named:
+        return f"named for {name}"
+    if shared:
+        return f"shares {'/'.join(shared)}"
+    return f"reaches {name}"
+
+
+def _rank_target_tests(
+    file_path: str,
+    lines: set[int] | None,
+    labels: set[str],
+    covered: Mapping[str, set[int]],
+    reached: ReachedBy | None,
+    symbol_ids: Sequence[str],
+    evidence: ValidationEvidence,
+    *,
+    plan_has_symbols: bool,
+) -> dict[str, RankedTest]:
+    """Each test's sort key and reason for one target file.
+
+    Most direct evidence first: measured coverage of the changed lines, then a
+    test naming the changed symbol (a direct call or an import of it), then
+    fewer call hops to it, then more of the test's functions at that distance,
+    then a test named for the file, then directory overlap. Test support
+    (``conftest.py``) runs nothing on its own, so it goes last.
+    """
+    name = file_path.rsplit("/", 1)[-1]
+    named_for = paired_test_names(file_path)
+    target_dirs = file_path.split("/")[:-1]
+    file_reach = reached.reach if reached is not None and reached.reach else {}
+    imports = evidence.imports.get(file_path, {})
+    out: dict[str, RankedTest] = {}
+    for label in labels:
+        path = label.split("::", 1)[0]
+        hits = covered.get(label) or set()
+        nearest = min(
+            (
+                (reach.hops, -reach.callers, symbol)
+                for symbol in symbol_ids
+                if (reach := evidence.symbol_reach.get(symbol, {}).get(path)) is not None
+            ),
+            default=None,
+        )
+        imported = imports.get(path)
+        named_import = next(
+            (
+                symbol
+                for symbol in symbol_ids
+                if _symbol_label(symbol).split(".", 1)[0] in (imported or ())
+            ),
+            None,
+        )
+        reach = file_reach.get(path)
+        # A test the plan itself edits (an importer a split rewrites) runs the
+        # change by definition.
+        edited = path == file_path
+        if edited:
+            distance, callers = 0, 0
+        elif nearest is not None:
+            distance, callers = nearest[0], -nearest[1]
+        elif reach is not None:
+            # A test that reaches the file but not the changed symbol ranks
+            # behind every test that reaches the symbol.
+            distance = reach.hops + (DEFAULT_CALL_DEPTH if plan_has_symbols else 0)
+            callers = reach.callers
+        else:
+            distance, callers = (_IMPORT_ONLY if imported is not None else _NO_PATH), 0
+        test_dirs = set(path.split("/")[:-1])
+        shared = [segment for segment in target_dirs if segment in test_dirs]
+        named = path.rsplit("/", 1)[-1] in named_for
+        references = (
+            edited or named_import is not None or (nearest is not None and nearest[0] == 1)
+        )
+        key = (
+            int(_is_support(path)),
+            0 if hits else 1,
+            -len(hits),
+            0 if references else 1,
+            distance,
+            -callers,
+            0 if named else 1,
+            -len(shared),
+        )
+        out[label] = (
+            key,
+            _test_reason(
+                name=name,
+                lines=lines,
+                hits=hits,
+                edited=edited,
+                nearest=nearest,
+                named_import=named_import,
+                reach=reach,
+                imported=imported,
+                named=named,
+                shared=shared,
+            ),
+        )
+    return out
 
 
 def _commands(tests: list[str], files: list[str], *, total: int | None = None) -> list[str]:
@@ -347,16 +557,22 @@ def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None
     return ranges
 
 
-def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[str]:
-    labels: set[str] = set()
+def _measured_hits(rows: list[dict[str, Any]], lines: set[int] | None) -> dict[str, set[int]]:
+    """Measured tests and the lines of the target each one ran."""
+    hits: dict[str, set[int]] = {}
     for row in rows:
         covered = set(row.get("covered_lines") or [])
-        if lines is not None and not lines.intersection(covered):
+        ran = covered if lines is None else lines & covered
+        if not ran:
             continue
         label = row.get("test_id") or row.get("test_file")
         if isinstance(label, str) and label:
-            labels.add(label)
-    return labels
+            hits.setdefault(label, set()).update(ran)
+    return hits
+
+
+def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[str]:
+    return set(_measured_hits(rows, lines))
 
 
 def _validation_target(
@@ -365,8 +581,11 @@ def _validation_target(
     measured: Mapping[str, list[dict[str, Any]]],
     inferred: Mapping[str, ReachedBy],
     cap: int,
-) -> tuple[ValidationTarget, set[str], bool]:
-    labels = _measured_labels(measured.get(file_path, []), lines)
+    rank: Callable[[set[str], Mapping[str, set[int]], ReachedBy | None], dict[str, RankedTest]],
+) -> tuple[ValidationTarget, set[str], bool, dict[str, RankedTest]]:
+    covered = _measured_hits(measured.get(file_path, []), lines)
+    labels = set(covered)
+    reached = None
     if labels:
         basis: ValidationBasis = "measured"
         via: ValidationVia | None = "coverage"
@@ -381,7 +600,8 @@ def _validation_target(
         identities_complete = (
             reached is None or reached.all_tests is not None or total == len(labels)
         )
-    ordered = rank_tests(file_path, labels)
+    ranked = rank(labels, covered, reached)
+    ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (
         ValidationTarget(
             file_path=file_path,
@@ -393,6 +613,7 @@ def _validation_target(
         ),
         labels,
         identities_complete,
+        ranked,
     )
 
 
@@ -402,17 +623,53 @@ def build_validation_plan(
     inferred: Mapping[str, ReachedBy],
     *,
     test_limit: int = DEFAULT_TEST_LIMIT,
+    evidence: ValidationEvidence | None = None,
 ) -> ValidationPlan:
-    """Resolve target evidence in strict measured/call/import precedence."""
+    """Resolve target evidence in strict measured/call/import precedence.
+
+    Tests are ordered by how directly they exercise what the plan changes
+    (:func:`_rank_target_tests`). A test reaching several of the plan's files
+    keeps its best evidence, and ties go to the one reaching more of them.
+    """
     cap = max(0, test_limit)
+    facts = evidence or ValidationEvidence()
+    ranges = sorted(_line_ranges(suggestion).items())
+    symbols = {
+        path: target_symbol_ids(suggestion, path, lines, facts.symbols.get(path, ()))
+        for path, lines in ranges
+    }
+    plan_has_symbols = any(symbols.values())
     target_rows: list[ValidationTarget] = []
-    ranked: dict[str, None] = {}
+    best: dict[str, RankedTest] = {}
+    by_file: dict[str, set[str]] = {}
     identities_complete = True
-    for file_path, lines in sorted(_line_ranges(suggestion).items()):
-        target, labels, target_complete = _validation_target(
-            file_path, lines, measured, inferred, cap
+    for file_path, lines in ranges:
+
+        def rank(
+            labels: set[str],
+            covered: Mapping[str, set[int]],
+            reached: ReachedBy | None,
+            path: str = file_path,
+            span: set[int] | None = lines,
+        ) -> dict[str, RankedTest]:
+            return _rank_target_tests(
+                path,
+                span,
+                labels,
+                covered,
+                reached,
+                symbols[path],
+                facts,
+                plan_has_symbols=plan_has_symbols,
+            )
+
+        target, labels, target_complete, ranked = _validation_target(
+            file_path, lines, measured, inferred, cap, rank
         )
-        ranked.update(dict.fromkeys(rank_tests(file_path, labels)))
+        by_file[file_path] = labels
+        for test, scored in ranked.items():
+            if test not in best or scored[0] < best[test][0]:
+                best[test] = scored
         identities_complete = identities_complete and target_complete
         target_rows.append(target)
 
@@ -425,7 +682,8 @@ def build_validation_plan(
     aggregate_via: ValidationVia | None = (
         None if not vias else next(iter(vias)) if len(vias) == 1 else "mixed"
     )
-    ordered_tests = list(ranked)
+    reach_order = {test: index for index, test in enumerate(rank_tests_by_reach(by_file))}
+    ordered_tests = sorted(best, key=lambda test: (best[test][0], reach_order[test]))
     aggregate_total = (
         len(ordered_tests)
         if identities_complete
@@ -444,6 +702,7 @@ def build_validation_plan(
         affected_symbols=affected_symbols(suggestion),
         commands=_commands(ordered_tests[:cap], files, total=aggregate_total),
         targets=target_rows,
+        reasons={test: best[test][1] for test in ordered_tests[:cap]},
     )
 
 
@@ -654,18 +913,24 @@ async def hydrate_recommendations(
         for file_path, lines in _line_ranges(suggestion).items():
             if not _measured_labels(measured.get(file_path, []), lines):
                 unanswered.add(file_path)
+    test_files = await load_test_files(session, repository_id)
     inferred = (
-        await tests_reaching_by_tier(session, repository_id, sorted(unanswered))
+        await tests_reaching_by_tier(
+            session, repository_id, sorted(unanswered), test_files=test_files
+        )
         if unanswered
         else {}
     )
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
-        inferred.update(
-            tests_matching_by_name(unreached, await load_test_files(session, repository_id))
-        )
+        inferred.update(tests_matching_by_name(unreached, test_files))
+    evidence = await _validation_evidence(
+        session, repository_id, suggestions, target_files, test_files
+    )
     validations = {
-        index: build_validation_plan(suggestion, measured, inferred, test_limit=test_limit)
+        index: build_validation_plan(
+            suggestion, measured, inferred, test_limit=test_limit, evidence=evidence
+        )
         for index, suggestion in enumerate(suggestions)
     }
     recommendations = build_recommendations(
@@ -675,6 +940,46 @@ async def hydrate_recommendations(
         validations=validations,
     )
     return apply_view(recommendations, view)
+
+
+async def _validation_evidence(
+    session: AsyncSession,
+    repository_id: str,
+    suggestions: Sequence[RefactoringSuggestion],
+    target_files: Sequence[str],
+    test_files: set[str],
+) -> ValidationEvidence:
+    """Symbol spans, symbol-level reach and test imports for every plan at once.
+
+    Bounded reads over the whole plan set (the symbol walk is one ``IN`` query
+    per hop), so adding plans adds no statements.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GraphNode
+
+    if not target_files:
+        return ValidationEvidence()
+    rows = await session.execute(
+        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
+        .where(GraphNode.repository_id == repository_id)
+        .where(GraphNode.node_type == "symbol")
+        .where(GraphNode.file_path.in_(list(target_files)))
+    )
+    spans: dict[str, list[SymbolSpan]] = {}
+    for file_path, node_id, start, end in rows:
+        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    symbol_ids = {
+        symbol
+        for suggestion in suggestions
+        for file_path, lines in _line_ranges(suggestion).items()
+        for symbol in target_symbol_ids(suggestion, file_path, lines, spans.get(file_path, ()))
+    }
+    return ValidationEvidence(
+        symbols=spans,
+        symbol_reach=await reach_into_symbols(session, repository_id, symbol_ids, test_files),
+        imports=await imported_names_by_test(session, repository_id, target_files, test_files),
+    )
 
 
 def serialize_recommendations(
@@ -689,6 +994,7 @@ __all__ = [
     "EFFORT_COST",
     "Recommendation",
     "RecommendationView",
+    "ValidationEvidence",
     "ValidationPlan",
     "ValidationTarget",
     "affected_files",
@@ -705,4 +1011,5 @@ __all__ = [
     "rehydrate_suggestion",
     "serialize_recommendations",
     "surface_confidence_risk",
+    "target_symbol_ids",
 ]
