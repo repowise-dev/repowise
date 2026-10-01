@@ -131,6 +131,11 @@ export interface CodeHealthAdapter {
    * offers no link rather than a second map.
    */
   mapHref?(opportunityId: string, filePath: string): string;
+  /**
+   * The file's text from the checkout, for an inline excerpt. Optional: a host
+   * without it shows the location and no code.
+   */
+  readSource?(path: string): Promise<string>;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 

@@ -11,6 +11,7 @@ import {
   listHealthFindings,
 } from "@/lib/api/code-health";
 import { getRefactoringPlan } from "@/lib/api/refactoring";
+import { getFileContent } from "@/lib/api/files";
 
 /** The queue's own filter state, kept out of the page's `tab` and `lens`. */
 const FILTER_PARAM = "perf";
@@ -42,6 +43,7 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
         `/repos/${repoId}/code-health?lens=performance&opportunity=${encodeURIComponent(opportunityId)}&file=${encodeURIComponent(filePath)}`,
       fileHref: (path) => fileEntityPath(prefix, path),
       symbolHref: (symbolId) => symbolEntityPath(prefix, symbolId),
+      readSource: (path) => getFileContent(repoId, path),
       navigate: (href) => router.push(href),
     };
   }, [repoId, router]);

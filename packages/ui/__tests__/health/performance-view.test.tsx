@@ -857,3 +857,50 @@ describe("PerformanceView opened by a link", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+describe("PerformanceView drawer, the fix itself", () => {
+  it("names the unit a performance fix and states gain, effort and where to edit", async () => {
+    const getDetail = vi.fn(async () =>
+      resolvedDetail({
+        gain_text: "one database call per loop iteration, grows with the data",
+        plan_economics: { effort_bucket: "M", benefit: 1, cost: 1, risk: 1 },
+        // `intervention_kind` arrives with PR 2817; read as optional until then.
+        ...({ intervention_kind: "module" } as object),
+        intervention_symbol: "src/jobs.py::__module__",
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText("Performance fix")).toBeTruthy();
+    expect(
+      await within(panel).findByText("one database call per loop iteration, grows with the data"),
+    ).toBeTruthy();
+    expect(within(panel).getByText("Effort").closest("div")!.textContent).toContain("Medium");
+    expect(within(panel).getByText("Top-level code")).toBeTruthy();
+    expect(within(panel).getByText("module scope of src/jobs.py")).toBeTruthy();
+    expect(within(panel).queryByText(/__module__/)).toBeNull();
+  });
+
+  it("gives every facet a glossary tooltip", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    for (const facet of ["amplification", "exposure", "leverage", "change risk", "loop magnitude"]) {
+      expect(within(panel).getByRole("button", { name: `What ${facet} means` })).toBeTruthy();
+    }
+  });
+
+  it("excerpts the loop's call from the checkout and names the sink", async () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+    const readSource = vi.fn(async () => lines.join(String.fromCharCode(10)));
+    render(<PerformanceView adapter={adapter({ readSource })} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(await within(panel).findByText("line 10")).toBeTruthy();
+    expect(within(panel).getByText("line 8")).toBeTruthy();
+    expect(within(panel).queryByText("line 13")).toBeNull();
+    expect(within(panel).getByText(/It reaches/)).toBeTruthy();
+  });
+});
+

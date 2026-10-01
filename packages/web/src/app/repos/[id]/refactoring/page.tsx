@@ -57,6 +57,7 @@ import {
   updateRefactoringOpportunityStatus,
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
+import { getFileContent } from "@/lib/api/files";
 
 const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
@@ -138,6 +139,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const opportunities = useMemo(() => data?.items ?? [], [data?.items]);
   const prefix = `/repos/${repoId}`;
   const fileHref = useCallback((path: string) => fileEntityPath(prefix, path), [prefix]);
+  // The read the file view makes, for a step's inline excerpt.
+  const readSource = useCallback((path: string) => getFileContent(repoId, path), [repoId]);
 
   // The open opportunity comes from the URL, so a reload or a shared link lands
   // on the same drawer rather than the top of the list.
@@ -331,6 +334,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onStatusChange={onStatusChange}
         onOpenStep={(planId) => void setOpenPlanId(planId)}
         fileHref={fileHref}
+        readSource={readSource}
+        onGenerateCode={onGenerateCode}
       />
 
       <RefactoringDrawer

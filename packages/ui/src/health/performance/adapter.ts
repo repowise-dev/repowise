@@ -16,6 +16,7 @@ export type PerformanceViewAdapter = Pick<
   | "getRefactoringPlan"
   | "refactoringPlanHref"
   | "mapHref"
+  | "readSource"
   | "fileHref"
   | "symbolHref"
   | "navigate"
