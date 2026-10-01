@@ -161,6 +161,10 @@ class HealthFileMetricData:
     # path classifier and carried here so every surface that narrows to
     # production reads a column instead of re-deriving the answer.
     is_test: bool = False
+    # Where the file's code comes from: ``production``, ``test``, ``vendored``,
+    # ``docs_example``, ``generated`` or ``tooling``
+    # (:func:`repowise.core.code_origin.code_origin`). ``None`` when unknown.
+    code_origin: str | None = None
 
 
 @dataclass

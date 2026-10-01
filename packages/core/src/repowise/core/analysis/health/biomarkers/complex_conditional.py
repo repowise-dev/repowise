@@ -54,6 +54,7 @@ class ComplexConditionalDetector:
                         details={
                             "operator_count": cond.operator_count,
                             "enclosing_construct": cond.enclosing_construct,
+                            "dispatch_share": fc.dispatch_share,
                         },
                         reason=(
                             f"{cond.enclosing_construct} condition combines "

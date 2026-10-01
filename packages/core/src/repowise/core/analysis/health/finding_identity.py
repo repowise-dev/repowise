@@ -7,9 +7,10 @@ column, and safe to hand to an agent.
 
 The kernel holds structural coordinates and detector evidence. It deliberately
 excludes prose and derived values: ``reason`` is generated text that a wording
-change would churn, and two ``details`` keys are outputs of later passes rather
-than facts about the location, so leaving them in would make the id of a
-finding move whenever an unrelated model changed its mind.
+change would churn, and a few ``details`` keys are outputs of later passes or
+annotations of the enclosing function, not evidence for the finding, so
+leaving them in would make the id of a finding move whenever an unrelated
+model changed its mind.
 """
 
 from __future__ import annotations
@@ -33,13 +34,17 @@ value, and an id minted by an older kernel stops matching.
 
 _PREFIX = "finding"
 
-_DERIVED_DETAIL_KEYS = frozenset({"opportunity_id", "reliable_entry_reachability"})
+_DERIVED_DETAIL_KEYS = frozenset(
+    {"opportunity_id", "reliable_entry_reachability", "dispatch_share", "deprecated"}
+)
 """Detail keys written by later passes, not by the detector that found the row.
 
 ``opportunity_id`` is stamped by causal grouping, so leaving it in would make
 every finding id churn whenever the performance model version moved.
 ``reliable_entry_reachability`` is a repository-wide graph answer that flips
-when unrelated code changes.
+when unrelated code changes. ``dispatch_share`` and ``deprecated`` describe the
+function a finding sits in, not the finding, and joined after ids were already
+stored: counting them would have renamed every complexity finding at once.
 """
 
 

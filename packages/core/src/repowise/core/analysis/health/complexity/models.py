@@ -100,6 +100,14 @@ class FunctionComplexity:
     # a suppression path, and means a registered-but-never-invoked callback
     # contributes. In the direction that lane already errs.
     bare_called_names: frozenset[str] = frozenset()
+    # CCN points of the largest top-level ``switch`` / ``match`` / same-subject
+    # ``if`` chain, over ``ccn``, to two decimals. Near 1.0 the function is
+    # one dispatch on one value. Read beside CCN, never in place of it.
+    # ``complexity/dispatch.py``.
+    dispatch_share: float = 0.0
+    # True when the declaration is marked deprecated or the body's top level
+    # issues a deprecation warning. ``complexity/deprecation.py``.
+    deprecated: bool = False
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

@@ -27,6 +27,8 @@ drives the individual passes, each of which lives in its own sibling module:
 - ``cyclomatic``:     the CCN / cognitive / nesting engine
 - ``assertions``:     assertion blocks + per-function assertion totals
 - ``test_case``:      whether a walked function is a test case
+- ``dispatch``:       how much of the CCN is one dispatch on one value
+- ``deprecation``:    whether a function is marked deprecated
 - ``mock_walk``:      per-function mock-setup counting (test-quality)
 - ``error_handling``: error-handling anti-patterns
 - ``perf_walk``:      the performance-risk pass
@@ -49,6 +51,8 @@ from .ast_utils import (
 )
 from .class_analysis import _collect_classes
 from .cyclomatic import _walk_function_body
+from .deprecation import is_deprecated
+from .dispatch import dispatch_points, dispatch_share
 from .error_handling import _collect_error_handling, _eh_rust_attr_is_test
 from .languages import get_language_map
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
@@ -189,6 +193,8 @@ def walk_file(
             is_test_case=is_test_case(fn_node, name, language),
             called_names=called,
             bare_called_names=bare_called,
+            dispatch_share=dispatch_share(dispatch_points(body, lmap), ccn),
+            deprecated=is_deprecated(fn_node, body, name, lmap, source),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

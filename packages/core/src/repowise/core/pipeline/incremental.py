@@ -1248,6 +1248,7 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
         "structure_deduction": refreshed.structure_deduction,
         "history_deduction": refreshed.history_deduction,
         "is_test": stored.is_test,
+        "code_origin": getattr(stored, "code_origin", None),
     }
 
 

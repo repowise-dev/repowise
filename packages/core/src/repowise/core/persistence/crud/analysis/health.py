@@ -177,6 +177,7 @@ def _health_metric_row_data(metric: Any) -> dict:
         "structure_deduction": getattr(metric, "structure_deduction", None),
         "history_deduction": getattr(metric, "history_deduction", None),
         "is_test": bool(getattr(metric, "is_test", False)),
+        "code_origin": getattr(metric, "code_origin", None),
     }
 
 

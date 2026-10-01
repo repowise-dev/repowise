@@ -20,10 +20,12 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import structlog
 
+from ...code_origin import CodeOrigin, code_origin
 from ...ingestion.git_indexer.enrich import count_active_contributors
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
@@ -132,6 +134,12 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v37: the walker records ``dispatch_share`` and ``deprecated`` per function,
+# which a cached v36 walk does not carry, and each file metric gains
+# ``code_origin``. Complexity findings copy ``dispatch_share`` into their
+# details and findings on a deprecated function gain ``deprecated: true``. No
+# CCN, threshold, weight or score moves.
 #
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
@@ -347,6 +355,26 @@ log = structlog.get_logger(__name__)
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
 HEALTH_ANALYZER_VERSION = 37
+
+
+def _mark_deprecated(
+    findings: list[HealthFindingData], functions: list[FunctionComplexity]
+) -> None:
+    """Stamp ``deprecated: true`` on each function-level finding inside a
+    deprecated function. Absent, not false, everywhere else, so the details of
+    every other finding are byte-for-byte what they were."""
+    spans = [(fc.name, fc.start_line, fc.end_line) for fc in functions if fc.deprecated]
+    if not spans:
+        return
+    for finding in findings:
+        if finding.function_name is None:
+            continue
+        line = finding.line_start
+        if any(
+            name == finding.function_name and (line is None or start <= line <= end)
+            for name, start, end in spans
+        ):
+            finding.details["deprecated"] = True
 
 
 def walked_functions(
@@ -594,6 +622,12 @@ class HealthAnalyzer:
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
+        # The repository's name, so its own release banner is never read as a
+        # vendored library's. Origins are decided in ``_walk``, which holds the
+        # bytes, and kept by path: the walk cache keys on content alone, so a
+        # path-dependent answer cannot live on the cached walk.
+        self._project = Path(str(repo_root)).name if repo_root is not None else None
+        self._origins: dict[str, CodeOrigin] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
@@ -1247,6 +1281,7 @@ class HealthAnalyzer:
         source = self.read_source(path)
         if source is None:
             return FileComplexity(functions=[], classes=[])
+        self._origins[pf.file_info.path] = self._origin(pf, source)
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
@@ -1271,6 +1306,14 @@ class HealthAnalyzer:
         if key is not None and self._walk_cache is not None:
             self._walk_cache.put(key, fcx)
         return fcx
+
+    def _origin(self, pf: Any, source: bytes | None = None) -> CodeOrigin:
+        return code_origin(
+            pf.file_info.path,
+            source,
+            is_test=bool(pf.file_info.is_test),
+            project=self._project,
+        )
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
@@ -1432,6 +1475,7 @@ class HealthAnalyzer:
         findings = attach_impacts(biomarker_results, deductions)
         for f in findings:
             f.file_path = file_path
+        _mark_deprecated(findings, fc_list)
 
         # The overall surfaced score stays == the defect dimension (no blend
         # yet); the per-dimension scores ride alongside it, additively.
@@ -1464,6 +1508,7 @@ class HealthAnalyzer:
             structure_deduction=structure_deduction,
             history_deduction=history_deduction,
             is_test=bool(pf.file_info.is_test),
+            code_origin=self._origins.get(file_path) or self._origin(pf),
         )
 
         # Refactoring layer: reuse the data just computed (class cohesion
