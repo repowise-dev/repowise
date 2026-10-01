@@ -749,6 +749,26 @@ def _tests_under(inits: Collection[str], known_tests: Collection[str]) -> list[s
     ]
 
 
+def expand_test_scopes(tests: Iterable[str], test_files: Collection[str]) -> list[str]:
+    """*tests* as a run list: each scope file replaced by the tests under its directory.
+
+    A graph walk reports a ``conftest.py`` or test-package ``__init__.py`` it
+    stopped at, but pytest collects nothing from either; the tests they run for
+    are the runnable ones among *test_files* below their directory, the same
+    expansion the selection makes. Order is kept and duplicates dropped; a scope
+    with no runnable test under it drops out.
+    """
+    tests = list(tests)
+    if not any(scope_kind(t) for t in tests):
+        return list(dict.fromkeys(tests))
+    runnable = sorted(t for t in test_files if is_runnable_test(t))
+    out: dict[str, None] = {}
+    for test in tests:
+        for expanded in _tests_under([test], runnable) if scope_kind(test) else (test,):
+            out.setdefault(expanded)
+    return list(out)
+
+
 def _basis(
     path: str,
     covered: Mapping[str, Any],

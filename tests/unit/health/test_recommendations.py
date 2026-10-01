@@ -196,6 +196,22 @@ def test_the_test_named_for_the_file_survives_the_cap() -> None:
     assert validation.tests == ["tests/unit/test_core.py"]
 
 
+def test_a_reached_conftest_validates_with_the_tests_under_it() -> None:
+    """``pytest tests/unit/conftest.py`` collects nothing; the tests below it run."""
+    from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
+
+    test_files = {"tests/unit/conftest.py", "tests/unit/test_core.py", "tests/other/test_x.py"}
+    reached = ReachedBy(
+        ["tests/unit/conftest.py"], "call-graph", 1, ("tests/unit/conftest.py",)
+    )
+    validation = build_validation_plan(
+        _plan("fixture"), {}, {"src/core.py": _expand_scopes(reached, test_files)}
+    )
+    assert validation.basis == "inferred"
+    assert validation.tests == ["tests/unit/test_core.py"]
+    assert validation.commands == ["pytest tests/unit/test_core.py"]
+
+
 def test_aggregate_validation_total_deduplicates_tests_across_targets() -> None:
     plan = _plan("shared", file_path="src/a.py")
     plan.blast_radius = {"files": ["src/b.py"]}

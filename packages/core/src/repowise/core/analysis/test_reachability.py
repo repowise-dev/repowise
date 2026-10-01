@@ -148,7 +148,7 @@ over data already in the database.
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeAlias
@@ -205,7 +205,6 @@ __all__ = [
     "load_test_files",
     "rank_tests",
     "reach_into_symbols",
-    "runnable_tests",
     "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
@@ -243,17 +242,6 @@ class ReachedBy:
     # How close each test came, for the call tier only: the import and name
     # tiers have no hop count to report.
     reach: Mapping[str, ReachDistance] | None = None
-
-
-def runnable_tests(tests: Iterable[str]) -> list[str]:
-    """*tests* without pytest ``conftest.py`` files, for a list of tests to run.
-
-    The walk stops at a conftest like at any test material and reports it,
-    because ``impacted-tests`` expands one to every test under its directory and
-    a reach through one still means those tests run the target. A conftest is
-    a fixture plugin pytest collects nothing from, so a run list must drop it.
-    """
-    return [test for test in tests if test.rsplit("/", 1)[-1] != "conftest.py"]
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -462,6 +450,7 @@ async def tests_reaching(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    test_files: set[str] | None = None,
 ) -> dict[str, list[str]]:
     """Test files that reach each of *targets*, keyed by target path.
 
@@ -470,7 +459,12 @@ async def tests_reaching(
     or as unknown.
     """
     found = await tests_reaching_by_tier(
-        session, repo_id, targets, call_depth=call_depth, import_depth=import_depth
+        session,
+        repo_id,
+        targets,
+        call_depth=call_depth,
+        import_depth=import_depth,
+        test_files=test_files,
     )
     return {target: reached.tests for target, reached in found.items()}
 
