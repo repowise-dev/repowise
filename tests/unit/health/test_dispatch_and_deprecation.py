@@ -1,7 +1,7 @@
 """Two per-function walker facts: ``dispatch_share`` and ``deprecated``.
 
-``dispatch_share`` is the CCN of the largest top-level multiway branch on one
-subject over the function's CCN. ``deprecated`` is a declaration marker or a
+``dispatch_share`` is the share of a function's decision points that sit
+inside its largest top-level dispatch on one subject, arms and what they nest. ``deprecated`` is a declaration marker or a
 top-level deprecation warning. Neither moves a CCN, threshold or score.
 """
 
@@ -41,7 +41,7 @@ def _functions(language: str, source: str) -> dict:
 # dispatch_share
 # --------------------------------------------------------------------------
 
-_PY = '''
+_PY = """
 def visit(node):
     if isinstance(node, A):
         return 1
@@ -64,6 +64,19 @@ def matcher(tokens, flag):
     if flag:
         w()
 
+def guards(node, flag):
+    if flag:
+        prepare()
+    if node.type == "call" and strict:
+        return call(node)
+    if node.type == "name":
+        if node.text:
+            return node.text
+        return ""
+    if node.type in ("int", "float"):
+        return number(node)
+    return None
+
 def mixed(x, y):
     if x == 1:
         return 1
@@ -85,21 +98,29 @@ def nested(x, ready):
                 a()
             case 2:
                 b()
-'''
+"""
 
 
 def test_python_if_chain_on_one_subject() -> None:
+    # Every decision point (three arms plus one ``or``) is the dispatch.
     fns = _functions("python", _PY)
-    # Three arms plus one ``or`` out of CCN 5.
     assert fns["visit"].ccn == 5
-    assert fns["visit"].dispatch_share == 0.8
+    assert fns["visit"].dispatch_share == 1.0
 
 
 def test_python_match_inside_a_loop_counts() -> None:
+    # Five decision points (for, three cases, if); the match holds three.
     fns = _functions("python", _PY)
-    # for (1) + three cases (3) + if (1) + entry (1) = 6; the match is 3 of them.
     assert fns["matcher"].ccn == 6
-    assert fns["matcher"].dispatch_share == 0.5
+    assert fns["matcher"].dispatch_share == 0.6
+
+
+def test_python_guard_run_counts_what_its_arms_nest() -> None:
+    # Six decision points: the unrelated ``if flag``, then three guards on
+    # ``node.type`` holding one ``and`` and one nested ``if``: 5 of 6.
+    fns = _functions("python", _PY)
+    assert fns["guards"].ccn == 7
+    assert fns["guards"].dispatch_share == 0.83
 
 
 @pytest.mark.parametrize("name", ["mixed", "short_chain", "nested"])
@@ -108,11 +129,12 @@ def test_python_negatives(name: str) -> None:
     assert _functions("python", _PY)[name].dispatch_share == 0.0
 
 
-def test_typescript_switch_and_member_chain() -> None:
+def test_typescript_switch_chain_and_closure() -> None:
     fns = _functions(
         "typescript",
         """
 function sw(x: Node) {
+  if (ready) { go() }
   switch (x.kind) {
     case 1: if (a) { b(); } break;
     case 2: c(); break;
@@ -120,18 +142,26 @@ function sw(x: Node) {
   }
 }
 function chain(x) {
+  for (const k of ks) { use(k) }
   if (x.k === 1) {} else if (x.k === 2) {} else if (x.k === 3 || x.k === 4) {}
 }
 function two(x, y) {
   if (x.k === 1) {} else if (y.k === 2) {} else if (x.k === 3) {}
 }
+const mw = (target) => {
+  return async (c) => {
+    if (ready) { log() }
+    switch (target) { case "json": if (a) { b() } break; case "form": f(); break }
+  }
+}
 """,
     )
-    # Three counted arms + the nested if + entry = 5.
-    assert fns["sw"].ccn == 5
-    assert fns["sw"].dispatch_share == 0.6
+    # Three arms and the if nested in one, of five decision points.
+    assert fns["sw"].dispatch_share == 0.8
     assert fns["chain"].dispatch_share == 0.8
     assert fns["two"].dispatch_share == 0.0
+    # A middleware factory's dispatch sits in the closure it returns.
+    assert fns["mw"].dispatch_share == 0.75
 
 
 def test_go_switch_needs_a_subject() -> None:
@@ -139,6 +169,7 @@ def test_go_switch_needs_a_subject() -> None:
         "go",
         """package m
 func F(x int) int {
+	if ready { go() }
 	switch x {
 	case 1:
 		if a { return 1 }
@@ -150,6 +181,7 @@ func F(x int) int {
 	return 0
 }
 func H(x int) int {
+	if ready { go() }
 	switch {
 	case x > 1:
 		if a { return 1 }
@@ -160,7 +192,7 @@ func H(x int) int {
 }
 """,
     )
-    assert fns["F"].dispatch_share == 0.6
+    assert fns["F"].dispatch_share == 0.8
     assert fns["H"].dispatch_share == 0.0
 
 
@@ -168,33 +200,34 @@ def test_java_switch_and_equals_chain() -> None:
     fns = _functions(
         "java",
         """class A {
-  int f(int x) { switch (x) { case 1: if (a) return 1; case 2: return 2; } return 0; }
+  int f(int x) { if (r) go(); switch (x) { case 1: if (a) return 1; case 2: return 2; } return 0; }
   int g(String cmd) {
     if ("a".equals(cmd)) {} else if ("b".equals(cmd)) {} else if ("c".equals(cmd)) {}
     return 0;
   }
 }""",
     )
-    assert fns["f"].dispatch_share == 0.5
-    assert fns["g"].dispatch_share == 0.75
+    assert fns["f"].dispatch_share == 0.75
+    assert fns["g"].dispatch_share == 1.0
 
 
 def test_csharp_flat_switch_expression_is_one_point() -> None:
     fns = _functions(
         "csharp",
-        "class A { int F(int x) { return x switch { 1 => 1, 2 => 2, _ => 3 }; } }",
+        "class A { int F(int x) { if (r) Go(); return x switch { 1 => 1, 2 => 2, _ => 3 }; } }",
     )
     # A flat switch charges one point, so it is one point of the share too.
-    assert fns["F"].ccn == 2
+    assert fns["F"].ccn == 3
     assert fns["F"].dispatch_share == 0.5
 
 
 def test_rust_match() -> None:
     fns = _functions(
         "rust",
-        "fn f(x: E) -> i32 { match x { E::A => { if a { 1 } else { 2 } } E::B => 2, E::C => 3 } }",
+        "fn f(x: E) -> i32 { if r { go(); } "
+        "match x { E::A => { if a { 1 } else { 2 } } E::B => 2, E::C => 3 } }",
     )
-    assert fns["f"].dispatch_share == 0.6
+    assert fns["f"].dispatch_share == 0.8
 
 
 def test_kotlin_when_needs_a_subject() -> None:
@@ -203,7 +236,7 @@ def test_kotlin_when_needs_a_subject() -> None:
         """fun f(x: Int): Int { if (a) {}; return when (x) { 1 -> { if (b) 1 else 2 } 2 -> 3 else -> 4 } }
 fun g(x: Int): Int { return when { x > 1 -> { if (b) 1 else 2 } x < 0 -> 3 else -> 4 } }""",
     )
-    assert fns["f"].dispatch_share == 0.5
+    assert fns["f"].dispatch_share == 0.8
     assert fns["g"].dispatch_share == 0.0
 
 
@@ -211,12 +244,14 @@ def test_ruby_case_needs_a_subject() -> None:
     fns = _functions(
         "ruby",
         """def f(x)
+  go if ready
   case x
   when 1 then if a then 1 end
   when 2 then 2
   end
 end
 def g(x)
+  go if ready
   case
   when x > 1 then if a then 1 end
   when x < 0 then 2
@@ -224,7 +259,7 @@ def g(x)
 end
 """,
     )
-    assert fns["f"].dispatch_share == 0.5
+    assert fns["f"].dispatch_share == 0.75
     assert fns["g"].dispatch_share == 0.0
 
 
@@ -375,7 +410,8 @@ def _evaluate(path: str):
 def test_complexity_findings_carry_dispatch_share_and_deprecated() -> None:
     _, findings, _ = _evaluate("src/tangled.py")
     complex_method = next(f for f in findings if f.biomarker_type == "complex_method")
-    assert complex_method.details["dispatch_share"] == 0.9
+    # The chain holds all nine decision points.
+    assert complex_method.details["dispatch_share"] == 1.0
     assert complex_method.details["deprecated"] is True
 
 

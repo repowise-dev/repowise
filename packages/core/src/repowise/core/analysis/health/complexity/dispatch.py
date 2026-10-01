@@ -1,37 +1,39 @@
-"""How much of a function's CCN is one dispatch on one value.
+"""How much of a function's decision logic lives in one dispatch on one value.
 
-A ``match`` / ``switch`` / ``when`` over one subject, or an ``if`` / ``elif``
-chain whose every condition tests the same name, is long by construction: a
-token visitor or a per-node-type handler adds one arm per case it handles, and
-the arms are usually the clearest way to write it. ``dispatch_share`` lets a
-reader tell that shape apart from a function that is complex all over.
+A ``match`` / ``switch`` / ``when`` over one subject, an ``if`` / ``elif``
+chain whose every condition tests the same name, or a run of sibling ``if``
+guards that each test it (``if kind == "a": return ...``), is long by
+construction: a per-node-type handler adds one arm per case, and the arms are
+independent of each other. ``dispatch_share`` lets a reader tell that shape
+apart from a function that is complex all over.
 
-It is a fact about the function, read beside CCN; it changes no CCN, no
-threshold and no score. The count mirrors what :mod:`.cyclomatic` charged the
-same nodes, so the share is a true fraction of the CCN it is divided by:
-
-- a ``switch`` with arms charges one point per arm, a *flat* one (every arm a
-  single expression) one point in total;
-- an ``if`` chain charges one point per ``if`` / ``elif`` arm, plus each
-  boolean operator in those arms' conditions.
+The share is the decision points inside that one branch, arms and everything
+nested in them, over the function's decision points (CCN minus the entry
+path). It counts the same nodes :mod:`.cyclomatic` charged, so a flat switch
+that CCN charges one point is one point here too. It is a fact read beside
+CCN; it changes no CCN, threshold or score.
 
 "Top level" means not nested inside another branch, case or catch. Loops,
-``try`` and ``with`` blocks are walked through, since a visitor's dispatch
-usually sits inside the loop that reads the next token.
+``try`` / ``with`` blocks and closures are walked through, since a visitor's
+dispatch usually sits inside the loop that reads the next token, and a
+middleware factory's inside the closure it returns.
+
+The 0.6 cut a consumer reads it against was fitted on labelled dev repos (see
+the tests); it is not a property of the fact.
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from collections import Counter
+from typing import TYPE_CHECKING, NamedTuple
 
 from .cyclomatic import (
     _ELSE_IF_NODE_KINDS,
     _collect_case_children,
-    _count_boolean_ops_in_condition,
     _is_boolean_operator,
     _is_elif_continuation,
-    _is_flat_match,
+    _walk_function_body,
 )
 
 if TYPE_CHECKING:
@@ -39,8 +41,9 @@ if TYPE_CHECKING:
 
     from .languages import LanguageNodeMap
 
-# An ``if`` with one ``elif`` is a decision, not a dispatch.
-_MIN_CHAIN_ARMS = 3
+# An ``if`` with one ``elif`` is a decision, not a dispatch; the same holds for
+# a run of guards.
+_MIN_ARMS = 3
 
 _WRAPPER_KINDS = frozenset({"parenthesized_expression", "condition_clause"})
 _COMPARISON_KINDS = frozenset(
@@ -114,11 +117,11 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     if node is None:
         return None
     if _is_boolean_operator(node, lmap):
-        sides = [node.child_by_field_name("left"), node.child_by_field_name("right")]
-        if None in sides:
-            return None
-        subjects = {_subject(side, lmap) for side in sides}
-        return subjects.pop() if len(subjects) == 1 else None
+        # ``kind == "call" and lang == "ruby"`` dispatches on ``kind``: the
+        # first side that tests a name is the one the arm is keyed on.
+        return _subject(node.child_by_field_name("left"), lmap) or _subject(
+            node.child_by_field_name("right"), lmap
+        )
     if node.type in _COMPARISON_KINDS:
         named = node.named_children
         left = node.child_by_field_name("left") or (named[0] if named else None)
@@ -148,19 +151,21 @@ def _chain_arms(node: Node) -> list[Node]:
         current = continuations[-1]
 
 
-def _chain_points(node: Node, lmap: LanguageNodeMap) -> int:
-    if node.type not in _ELSE_IF_NODE_KINDS:
-        return 0
-    arms = _chain_arms(node)
-    if len(arms) < _MIN_CHAIN_ARMS:
-        return 0
-    conditions = [arm.child_by_field_name("condition") for arm in arms]
-    if any(c is None for c in conditions):
-        return 0
-    subjects = {_subject(c, lmap) for c in conditions}
-    if len(subjects) != 1 or None in subjects:
-        return 0
-    return len(arms) + sum(_count_boolean_ops_in_condition(c, lmap) for c in conditions)
+def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
+    """Whether every arm's condition tests the same single name."""
+    if len(arms) < _MIN_ARMS:
+        return False
+    subjects = Counter(_subject(arm.child_by_field_name("condition"), lmap) for arm in arms)
+    return len(subjects) == 1 and None not in subjects
+
+
+def _is_lone_if(node: Node) -> bool:
+    """An ``if`` that neither continues nor is continued by an ``elif``."""
+    return (
+        node.type in _ELSE_IF_NODE_KINDS
+        and not _is_elif_continuation(node)
+        and len(_chain_arms(node)) == 1
+    )
 
 
 def _has_subject(node: Node) -> bool:
@@ -174,36 +179,67 @@ def _has_subject(node: Node) -> bool:
     return True
 
 
-def _switch_points(node: Node, lmap: LanguageNodeMap) -> int:
-    if not _has_subject(node):
-        return 0
-    arms = [c for c in _collect_case_children(node, lmap) if c.is_named]
-    if not arms:
-        return 0
-    return 1 if _is_flat_match(node, lmap) else len(arms)
+class _Siblings(NamedTuple):
+    """A stand-in body holding just the nodes of one dispatch, for the walker."""
+
+    children: list[Node]
+
+
+def _points(nodes: list[Node], lmap: LanguageNodeMap) -> int:
+    """Decision points the CCN walk charges inside *nodes*."""
+    return _walk_function_body(_Siblings(nodes), lmap)[0] - 1  # type: ignore[arg-type]
+
+
+def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]:
+    """Runs of three or more consecutive sibling ``if`` guards on one subject."""
+    runs: list[list[Node]] = []
+    run: list[Node] = []
+    subject: str | None = None
+    for child in [*children, None]:
+        this = (
+            _subject(child.child_by_field_name("condition"), lmap)
+            if child is not None and _is_lone_if(child)
+            else None
+        )
+        if this is not None and this == subject:
+            run.append(child)  # type: ignore[arg-type]
+            continue
+        if len(run) >= _MIN_ARMS:
+            runs.append(run)
+        run, subject = ([child] if this is not None else []), this  # type: ignore[list-item]
+    return runs
 
 
 def dispatch_points(body: Node, lmap: LanguageNodeMap) -> int:
-    """CCN points of the largest top-level multiway branch on one subject."""
-    stop_kinds = lmap.case_kinds | lmap.catch_kinds | lmap.function_kinds | lmap.lambda_kinds
+    """Decision points inside the largest top-level dispatch on one subject."""
+    stop_kinds = lmap.case_kinds | lmap.catch_kinds | lmap.function_kinds
     best = 0
-    stack: list[Node] = list(body.children)
+    stack: list[Node] = [body]
     while stack:
-        node = stack.pop()
-        if not node.is_named:
-            continue
-        if node.type in lmap.switch_kinds:
-            best = max(best, _switch_points(node, lmap))
-            continue
-        if node.type in lmap.branch_kinds:
-            best = max(best, _chain_points(node, lmap))
-            continue
-        if node.type in stop_kinds:
-            continue
-        stack.extend(node.children)
+        parent = stack.pop()
+        children = [c for c in parent.children if c.is_named]
+        for run in _guard_runs(children, lmap):
+            best = max(best, _points(run, lmap))
+        for node in children:
+            if node.type in lmap.switch_kinds:
+                if _has_subject(node) and any(
+                    c.is_named for c in _collect_case_children(node, lmap)
+                ):
+                    best = max(best, _points([node], lmap))
+                continue
+            if node.type in lmap.branch_kinds:
+                if (
+                    node.type in _ELSE_IF_NODE_KINDS
+                    and not _is_elif_continuation(node)
+                    and _one_subject(_chain_arms(node), lmap)
+                ):
+                    best = max(best, _points([node], lmap))
+                continue
+            if node.type not in stop_kinds:
+                stack.append(node)
     return best
 
 
 def dispatch_share(points: int, ccn: int) -> float:
-    """*points* as a fraction of *ccn*, to two decimals."""
-    return round(points / ccn, 2) if ccn > 0 and points > 0 else 0.0
+    """*points* as a fraction of the function's decision points, to two decimals."""
+    return round(points / (ccn - 1), 2) if ccn > 1 and points > 0 else 0.0
