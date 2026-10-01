@@ -19,6 +19,7 @@ from repowise.core.persistence.crud.analysis.performance import (
     list_performance_opportunities,
 )
 from repowise.server.deps import get_db_session
+from repowise.server.repo_paths import normalize_target_path
 from repowise.server.schemas import RelatedWorkRequest, RelatedWorkResponse
 
 from ._router import router
@@ -36,16 +37,21 @@ the totals undercount. Upgrade path: a grouped count per file.
 
 
 def _validated(raw: list[str]) -> list[str]:
-    """Repo-relative slash paths, unique, 1..MAX_FILES; 422 on anything else."""
+    """Repo-relative slash paths, unique, 1..MAX_FILES; 422 on anything else.
+
+    The shared normalizer would quietly make an absolute path relative, so
+    absolute, drive-qualified and ``..`` paths are refused before it runs.
+    """
     if not 1 <= len(raw) <= MAX_FILES:
         raise HTTPException(status_code=422, detail=f"file_paths must name 1 to {MAX_FILES} files")
     paths: list[str] = []
     for value in raw:
-        path = value.strip().replace("\\", "/").removeprefix("./")
+        slashed = value.strip().replace("\\", "/")
+        path = normalize_target_path(slashed)
         if (
             not path
-            or path.startswith("/")
-            or (len(path) > 1 and path[1] == ":")
+            or slashed.startswith("/")
+            or slashed[1:2] == ":"
             or ".." in path.split("/")
         ):
             raise HTTPException(
