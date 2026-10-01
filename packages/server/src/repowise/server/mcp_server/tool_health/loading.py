@@ -21,6 +21,7 @@ from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_f
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
+    detail_recommendations,
     hydrate_recommendations,
 )
 from repowise.core.analysis.health.signals import file_signals
@@ -237,7 +238,17 @@ async def _read_refactoring_plans(
         rows,
         metric_rows=pop.all_metrics,
         view=plan_view(req.refactoring_view),
+        rank_only=True,
     )
+    # Every row is ranked; only the page the response emits, and the lede's
+    # lead plan, need the evidence that orders their tests.
+    shown = {0, *range(req.cursor, req.cursor + req.plans_cap)}
+    indexes = [index for index in sorted(shown) if index < len(recommendations)]
+    detailed = await detail_recommendations(
+        session, repository.id, [recommendations[index] for index in indexes]
+    )
+    for index, item in zip(indexes, detailed, strict=True):
+        recommendations[index] = item
     return rows, recommendations
 
 

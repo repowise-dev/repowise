@@ -109,6 +109,11 @@ class HealthRequest:
             t.replace("\\", "/") for t in self.raw_targets if not t.startswith("module:")
         ]
 
+    @property
+    def plans_cap(self) -> int:
+        """How many refactoring plans one response emits, whatever ``limit`` says."""
+        return min(self.limit, 6)
+
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.
 

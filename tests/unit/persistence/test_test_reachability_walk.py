@@ -334,6 +334,76 @@ async def test_imported_names_are_read_per_test_and_file(async_session):
     assert found == {"src/walk.py": {"tests/test_walk.py": frozenset({"walk"})}}
 
 
+async def test_a_detailed_page_matches_a_full_hydration(async_session):
+    """Paged surfaces rank every plan without symbol evidence and detail only
+    the rows they return; those rows must serialize exactly as before."""
+    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        detail_recommendations,
+        hydrate_recommendations,
+    )
+
+    repo = await insert_repo(async_session)
+    nodes = {"tests/test_bystander.py": True, "tests/test_walk.py": True, "src/walk.py": False}
+    for path, is_test in nodes.items():
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    for name, start, end in (("walk", 1, 20), ("other", 30, 40)):
+        async_session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=f"src/walk.py::{name}",
+                node_type="symbol",
+                file_path="src/walk.py",
+                start_line=start,
+                end_line=end,
+            )
+        )
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={},
+        edges=[
+            ("src/walk.py", "src/walk.py::walk", "defines"),
+            ("src/walk.py", "src/walk.py::other", "defines"),
+            ("tests/test_walk.py", "tests/test_walk.py::test_it", "defines"),
+            ("tests/test_bystander.py", "tests/test_bystander.py::test_it", "defines"),
+            ("tests/test_walk.py::test_it", "src/walk.py::walk", "calls"),
+            ("tests/test_bystander.py::test_it", "src/walk.py::other", "calls"),
+        ],
+    )
+
+    def plans():
+        return [
+            RefactoringSuggestion(
+                refactoring_type="extract_method",
+                file_path="src/walk.py",
+                target_symbol="walk",
+                line_start=1,
+                line_end=20,
+                plan={},
+                evidence={},
+                impact_delta=1.0,
+                effort_bucket="M",
+                blast_radius={},
+                confidence="high",
+                source_biomarker="long_function",
+            )
+        ]
+
+    full = await hydrate_recommendations(async_session, repo.id, plans())
+    ranked = await hydrate_recommendations(async_session, repo.id, plans(), rank_only=True)
+    detailed = await detail_recommendations(async_session, repo.id, ranked)
+
+    assert [item.as_dict() for item in detailed] == [item.as_dict() for item in full]
+    assert full[0].validation.tests == ["tests/test_walk.py", "tests/test_bystander.py"]
+    assert full[0].validation.reasons["tests/test_walk.py"] == "calls walk"
+    # The rank pass orders nothing it will not serve.
+    assert ranked[0].validation.reasons == {}
+    assert ranked[0].rank_score == full[0].rank_score
+
+
 async def test_a_seed_that_calls_another_seed_does_not_shorten_its_distance(async_session):
     """Walked together, ``load`` (a seed) calls ``parse`` (another seed). A test
     calling ``load`` is two hops from ``parse``, however the batch is ordered."""

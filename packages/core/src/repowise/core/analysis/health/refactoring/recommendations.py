@@ -8,6 +8,7 @@ batched across the complete plan set; adding plans never adds SQL statements.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import math
@@ -323,6 +324,15 @@ class ValidationEvidence:
     imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationInputs:
+    """The coverage rows and reachability walk one hydration read."""
+
+    measured: Mapping[str, list[dict[str, Any]]]
+    inferred: Mapping[str, ReachedBy]
+    test_files: set[str]
+
+
 def target_symbol_ids(
     suggestion: RefactoringSuggestion,
     file_path: str,
@@ -624,6 +634,7 @@ def build_validation_plan(
     *,
     test_limit: int = DEFAULT_TEST_LIMIT,
     evidence: ValidationEvidence | None = None,
+    order_tests: bool = True,
 ) -> ValidationPlan:
     """Resolve target evidence in strict measured/call/import precedence.
 
@@ -652,6 +663,9 @@ def build_validation_plan(
             path: str = file_path,
             span: set[int] | None = lines,
         ) -> dict[str, RankedTest]:
+            if not order_tests:
+                # A rank-only pass needs the evidence basis, not the order.
+                return {label: ((), "") for label in labels}
             return _rank_target_tests(
                 path,
                 span,
@@ -702,7 +716,7 @@ def build_validation_plan(
         affected_symbols=affected_symbols(suggestion),
         commands=_commands(ordered_tests[:cap], files, total=aggregate_total),
         targets=target_rows,
-        reasons={test: best[test][1] for test in ordered_tests[:cap]},
+        reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
     )
 
 
@@ -718,6 +732,8 @@ class Recommendation:
     file_nloc: int
     file_weighted_deficit: int
     validation: ValidationPlan
+    # The reads a rank-only pass made, so detailing a page reuses them.
+    inputs: ValidationInputs | None = field(default=None, repr=False, compare=False)
 
     @property
     def id(self) -> str:
@@ -878,15 +894,20 @@ async def hydrate_recommendations(
     metric_rows: Sequence[Any] | None = None,
     view: RecommendationView = "canonical",
     test_limit: int = DEFAULT_TEST_LIMIT,
+    rank_only: bool = False,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
 
     Query shape is constant in plan/test count: health metrics and graph metrics
     are bulk reads, measured coverage is one ``IN`` query, and inferred walks
     use their existing bounded level queries over the complete unanswered set.
+
+    *rank_only* skips the symbol-level evidence that orders each plan's tests:
+    rank and validation basis are unchanged, the test order falls back to name
+    and directory. A paged surface ranks every row this way, then passes the
+    rows it returns through :func:`detail_recommendations`.
     """
     from repowise.core.persistence import crud
-    from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 
     if not rows:
         return []
@@ -900,9 +921,101 @@ async def hydrate_recommendations(
     centrality = {
         node_id: float(metric.get("in_degree") or 0.0) for node_id, metric in graph_metrics.items()
     }
+    plans, inputs = await _validation_plans(
+        session, repository_id, suggestions, test_limit=test_limit, detailed=not rank_only
+    )
+    recommendations = build_recommendations(
+        suggestions,
+        metric_by_path={metric.file_path: metric for metric in metrics},
+        centrality=centrality,
+        validations=dict(enumerate(plans)),
+    )
+    if rank_only:
+        recommendations = [dataclasses.replace(item, inputs=inputs) for item in recommendations]
+    return apply_view(recommendations, view)
+
+
+async def detail_recommendations(
+    session: AsyncSession,
+    repository_id: str,
+    recommendations: Sequence[Recommendation],
+    *,
+    test_limit: int = DEFAULT_TEST_LIMIT,
+) -> list[Recommendation]:
+    """*recommendations* with their tests ordered by full evidence, same order.
+
+    Only the validation is rebuilt; rank, benefit and the rest come from the
+    pass that ranked them, so a page detailed here matches a full hydration.
+    """
+    if not recommendations:
+        return []
+    suggestions = [item.suggestion for item in recommendations]
+    shared = {id(item.inputs): item.inputs for item in recommendations}
+    plans, _ = await _validation_plans(
+        session,
+        repository_id,
+        suggestions,
+        test_limit=test_limit,
+        detailed=True,
+        inputs=next(iter(shared.values())) if len(shared) == 1 else None,
+    )
+    out = []
+    for item, plan in zip(recommendations, plans, strict=True):
+        item.suggestion.validation = plan.as_dict()
+        out.append(dataclasses.replace(item, validation=plan))
+    return out
+
+
+async def _validation_plans(
+    session: AsyncSession,
+    repository_id: str,
+    suggestions: Sequence[RefactoringSuggestion],
+    *,
+    test_limit: int,
+    detailed: bool,
+    inputs: ValidationInputs | None = None,
+) -> tuple[list[ValidationPlan], ValidationInputs]:
+    """One validation plan per suggestion, every read batched across the set.
+
+    *inputs* from an earlier pass over a superset of these suggestions skips
+    the coverage read and the reachability walk; only the symbol evidence is
+    read again, and only for these suggestions.
+    """
     target_files = sorted(
         {path for suggestion in suggestions for path in affected_files(suggestion)}
     )
+    if inputs is None:
+        inputs = await _validation_inputs(session, repository_id, suggestions, target_files)
+    evidence = (
+        await _validation_evidence(
+            session, repository_id, suggestions, target_files, inputs.test_files
+        )
+        if detailed
+        else None
+    )
+    plans = [
+        build_validation_plan(
+            suggestion,
+            inputs.measured,
+            inputs.inferred,
+            test_limit=test_limit,
+            evidence=evidence,
+            order_tests=detailed,
+        )
+        for suggestion in suggestions
+    ]
+    return plans, inputs
+
+
+async def _validation_inputs(
+    session: AsyncSession,
+    repository_id: str,
+    suggestions: Sequence[RefactoringSuggestion],
+    target_files: Sequence[str],
+) -> ValidationInputs:
+    """Measured coverage and the tiered reachability walk for every plan's files."""
+    from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
+
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
     # A measured row only answers a target when it intersects the plan's line
@@ -924,22 +1037,7 @@ async def hydrate_recommendations(
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
         inferred.update(tests_matching_by_name(unreached, test_files))
-    evidence = await _validation_evidence(
-        session, repository_id, suggestions, target_files, test_files
-    )
-    validations = {
-        index: build_validation_plan(
-            suggestion, measured, inferred, test_limit=test_limit, evidence=evidence
-        )
-        for index, suggestion in enumerate(suggestions)
-    }
-    recommendations = build_recommendations(
-        suggestions,
-        metric_by_path={metric.file_path: metric for metric in metrics},
-        centrality=centrality,
-        validations=validations,
-    )
-    return apply_view(recommendations, view)
+    return ValidationInputs(measured=measured, inferred=inferred, test_files=test_files)
 
 
 async def _validation_evidence(
@@ -1004,6 +1102,7 @@ __all__ = [
     "build_recommendations",
     "build_validation_plan",
     "canonical_order",
+    "detail_recommendations",
     "detector_native_benefit",
     "enrich_blast_radius",
     "hydrate_recommendations",

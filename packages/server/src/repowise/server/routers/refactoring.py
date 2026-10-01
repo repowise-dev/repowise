@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.refactoring.recommendations import (
     apply_view,
     blast_size,
+    detail_recommendations,
     hydrate_recommendations,
 )
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
@@ -276,12 +277,15 @@ async def get_refactoring_plan_page(
 ) -> RefactoringPlanPageResponse:
     """Bounded list with server-owned filters and deterministic ordering.
 
-    Hydration remains one batched pass over the repository plans so validation
-    and priority have exactly the Phase 3 semantics and a constant SQL shape.
-    Only the requested page crosses the wire.
+    Ranking is one batched pass over the repository plans, so priority keeps its
+    validation-basis input and a constant SQL shape. The symbol-level evidence
+    that orders each plan's tests is read only for the rows this response
+    returns.
     """
     rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
-    canonical = await hydrate_recommendations(session, repo_id, rows, view="canonical")
+    canonical = await hydrate_recommendations(
+        session, repo_id, rows, view="canonical", rank_only=True
+    )
     summary = _summary(canonical)
     structural_leads = [
         item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
@@ -310,6 +314,13 @@ async def get_refactoring_plan_page(
     total = len(ordered)
     page = ordered[offset : offset + limit]
     next_offset = offset + len(page) if offset + len(page) < total else None
+    shown = list({id(item): item for item in [*page, *structural_leads]}.values())
+    detailed = {
+        id(item.suggestion): item
+        for item in await detail_recommendations(session, repo_id, shown)
+    }
+    page = [detailed[id(item.suggestion)] for item in page]
+    structural_leads = [detailed[id(item.suggestion)] for item in structural_leads]
     return RefactoringPlanPageResponse(
         items=[_to_response(item.as_dict()) for item in page],
         total=total,
