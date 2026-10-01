@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
@@ -14,7 +16,7 @@ from ._base import (
     iter_embed_chunks,
 )
 
-__all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
+__all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore", "read_recorded_vector_dim", "record_vector_dim"]
 
 # DataFusion expands every literal in a large ``IN`` filter into native query
 # state. A several-thousand-path generation level can otherwise commit
@@ -32,6 +34,38 @@ _SUMMARY_PATH_BATCH_SIZE = 100
 # search sees was fixed when the row was written. So the row keeps enough
 # content for a window to exist inside it. A row written before the widening
 # holds 200 characters and simply windows to its opener.
+
+
+def _dim_record(db_path: str | Path, table_name: str) -> Path:
+    return Path(db_path) / f"{table_name}.vector_dim"
+
+
+def read_recorded_vector_dim(db_path: str | Path, table_name: str) -> int | None:
+    """The width last recorded for *table_name*, read without importing lancedb.
+
+    Importing lancedb costs well over a second, and the store-upgrade check
+    runs on every ``update``. ``None`` means "no usable record": no file, an
+    unparsable one, or a record whose table directory is gone.
+    """
+    if not (Path(db_path) / f"{table_name}.lance").is_dir():
+        return None
+    try:
+        dim = int(_dim_record(db_path, table_name).read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return dim if dim > 0 else None
+
+
+def record_vector_dim(db_path: str | Path, table_name: str, dim: int | None) -> None:
+    """Record (or with ``None``, forget) *table_name*'s width. Best-effort."""
+    path = _dim_record(db_path, table_name)
+    try:
+        if dim is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(str(dim), encoding="ascii")
+    except OSError:
+        pass
 
 
 def _evidence(stored: str, query: str | None) -> str:
@@ -90,6 +124,7 @@ class LanceDBVectorStore(VectorStore):
         self._table_name = table_name or self._TABLE_NAME
         self._db = None
         self._table = None
+        self._dim_recorded = False
 
     async def _ensure_connected(self) -> None:
         if self._db is not None:
@@ -147,8 +182,15 @@ class LanceDBVectorStore(VectorStore):
         if self._table is not None:
             existing_dim = self._existing_vector_dim(await self._table.schema())
             if existing_dim is None or existing_dim == dim:
+                # Re-stamped once per store so a missing or stale record heals
+                # on the next write instead of lingering.
+                if existing_dim is not None and not self._dim_recorded:
+                    record_vector_dim(self._db_path, self._table_name, existing_dim)
+                    self._dim_recorded = True
                 return
             # Embedder changed dimensions — the old vectors are unusable.
+            # Forget the record first so a crash mid-rebuild leaves none.
+            record_vector_dim(self._db_path, self._table_name, None)
             await self._db.drop_table(self._table_name)  # type: ignore[union-attr]
             self._table = None
 
@@ -165,6 +207,8 @@ class LanceDBVectorStore(VectorStore):
         self._table = await self._db.create_table(  # type: ignore[union-attr]
             self._table_name, schema=schema, exist_ok=True
         )
+        record_vector_dim(self._db_path, self._table_name, dim)
+        self._dim_recorded = True
 
     @staticmethod
     def _row(page_id: str, vector: list[float], metadata: dict) -> dict:

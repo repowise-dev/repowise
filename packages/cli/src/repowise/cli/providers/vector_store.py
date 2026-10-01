@@ -16,9 +16,22 @@ def existing_vector_dim(lance_dir: Path) -> int | None:
     directory, no lancedb installed, no table yet, or a schema without a
     fixed-width vector column — and every caller treats that as "do not act",
     never as a difference.
+
+    The width the writer recorded beside the table is read first, so the
+    steady state never imports lancedb. A store written before that record
+    existed is probed once and the answer recorded; the writer re-stamps it
+    on its next write, so a stale record cannot outlive one.
     """
     if not lance_dir.exists():
         return None
+    from repowise.core.persistence.vector_store.lancedb_store import (
+        read_recorded_vector_dim,
+        record_vector_dim,
+    )
+
+    recorded = read_recorded_vector_dim(lance_dir, _TABLE_NAME)
+    if recorded is not None:
+        return recorded
     try:
         import lancedb  # type: ignore[import]
 
@@ -30,7 +43,10 @@ def existing_vector_dim(lance_dir: Path) -> int | None:
     except Exception:
         return None
     # pyarrow reports -1 for variable-length lists, which tells us nothing.
-    return dim if isinstance(dim, int) and dim > 0 else None
+    if not (isinstance(dim, int) and dim > 0):
+        return None
+    record_vector_dim(lance_dir, _TABLE_NAME, dim)
+    return dim
 
 
 def _mock_would_clobber(lance_dir: Path, embedder: Any) -> bool:
