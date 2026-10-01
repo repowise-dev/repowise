@@ -130,6 +130,7 @@ async def _refactoring_blocks(
     lead_type: str | None = None,
     confidence: str | None = None,
     effort: str | None = None,
+    scope: str | None = None,
 ) -> _RefactoringBlocks:
     """Read the materialized queue and its rollup.
 
@@ -149,6 +150,7 @@ async def _refactoring_blocks(
             lead_type=lead_type,
             confidence=confidence,
             effort=effort,
+            scope=scope,
             file_paths=list(file_paths) if file_paths is not None else None,
             limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
             offset=cursor if emits_queue else 0,
@@ -179,6 +181,10 @@ def _render_refactoring(
         result["refactoring_opportunities"] = page.items
         result["refactoring_opportunities_total"] = page.total
         result["refactoring_opportunities_emitted"] = len(page.items)
+        result["refactoring_opportunities_scope"] = page.scope
+        if page.hidden is not None:
+            # What the default scope leaves out, by reason; ``all`` lists it.
+            result["refactoring_opportunities_hidden"] = page.hidden
         if len(page.items) < page.total:
             result["refactoring_opportunities_reduced_reason"] = (
                 "collection_cap" if req.limit > _REFACTORING_COLLECTION_CAP else "limit"

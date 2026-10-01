@@ -165,6 +165,7 @@ def _render_stored_refactoring_targets(
             return {
                 "summary": summary,
                 "total": page.total,
+                "hidden": page.hidden,
                 "details": details,
                 "metrics": metrics,
                 "findings": findings,
@@ -181,10 +182,15 @@ def _render_stored_refactoring_targets(
     analyzed_commit = stored["summary"].get("analyzed_commit")
     if fmt == "table":
         commit = f" at {analyzed_commit[:7]}" if analyzed_commit else ""
+        hidden = (stored["hidden"] or {}).get("total") or 0
+        scope = (
+            f"{stored['total']} worth doing ({hidden} more in the full inventory)"
+            if stored["hidden"] is not None
+            else f"{stored['total']} open opportunities"
+        )
         console.print(
-            f"[dim]Read from the index{commit}. Showing {len(rows)} of "
-            f"{stored['total']} open opportunities. Pass --recompute to analyze the "
-            "working tree instead.[/dim]"
+            f"[dim]Read from the index{commit}. Showing {len(rows)} of {scope}. "
+            "Pass --recompute to analyze the working tree instead.[/dim]"
         )
     _emit(
         targets,
@@ -198,6 +204,7 @@ def _render_stored_refactoring_targets(
             "source": "index",
             "analyzed_commit": analyzed_commit,
             "opportunities_total": stored["total"],
+            "opportunities_hidden": stored["hidden"],
             "targets": targets,
             "refactoring_opportunities": rows,
             "refactoring_plans": plans,

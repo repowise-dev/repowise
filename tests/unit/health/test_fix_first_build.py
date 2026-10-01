@@ -205,3 +205,15 @@ def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     assert planned.title == (
         "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35 into sum_rows"
     )
+
+
+def test_every_open_refactoring_opportunity_carries_its_reason() -> None:
+    queue = _build(limit=0)
+    assert queue.items == ()
+    assert queue.refactoring_reasons == {
+        "refop2_core": None,
+        "refop2_small": "below_min_worth",
+        "refop2_test": "test",
+    }
+    # Off the wire: the reasons are a read-model input, not part of the queue.
+    assert "refactoring_reasons" not in queue.as_dict()

@@ -2634,6 +2634,12 @@ export interface ProviderValidationResponse {
   error?: string | null;
 }
 
+/** What the ``fix_first`` scope leaves out of a page's filtered set. */
+export interface RefactoringHiddenCounts {
+  total?: number;
+  by_reason?: Record<string, number>;
+}
+
 /** One page of composed opportunities, with facets and the rollup. */
 export interface RefactoringOpportunitiesResponse {
   items?: Record<string, unknown>[];
@@ -2644,6 +2650,8 @@ export interface RefactoringOpportunitiesResponse {
   facets?: Record<string, Record<string, number>>;
   summary?: Record<string, unknown> | null;
   ignored_arguments?: Record<string, string> | null;
+  scope?: "fix_first" | "all";
+  hidden?: RefactoringHiddenCounts | null;
 }
 
 /**

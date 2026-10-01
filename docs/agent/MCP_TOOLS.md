@@ -978,6 +978,7 @@ representations of the same work in one response. The `include` **dimension** na
 | `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
 | `opportunity_id` | string | No | Resolve one opportunity `id` directly. The prefix picks the pillar: `perf...` is a performance cause, `refop...` a composed refactoring. Mutually exclusive with `fix_id` and the two above; passing more than one returns `mode: "conflict"` naming them, never answering about whichever was checked first. |
 | `refactoring_type` / `refactoring_confidence` / `refactoring_effort` | string | No | Queue filters over the same read model and vocabulary the REST route uses. An unrecognized value is reported back in `ignored_arguments` rather than silently narrowing to nothing. |
+| `refactoring_scope` | string | No | Which open opportunities `refactoring_opportunities` lists. `fix_first` (the default with no `targets`) keeps only what Fix first would take, by the same eligibility and exclusion rules; `refactoring_opportunities_hidden` then counts the rest of the filtered set, `{"total": n, "by_reason": {...}}`, by Fix first's exclusion reasons. `all` lists the full inventory, and is the default when `targets` name files. `refactoring_opportunities_scope` says which scope the total counts. |
 | `refactoring_view` | string | No | Named ordering for `refactoring_opportunities`. `diversified` (default) round-robins the rank order over cause, refactoring type and area, because the ranked head is a genuine run of ties; `canonical` is the published rank order verbatim, ties and all; `file_spread` asked for one row per file, which a composed opportunity satisfies by construction, so it resolves onto the diversified order. Both older values keep working. It also selects the legacy `refactoring_plans` list's view, where `diversified` resolves to that list's historical `canonical` default. |
 | `cursor` | int | No | Zero-based offset into a ranked collection; the `recovery` block names the exact next call. |
 | `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
@@ -1167,7 +1168,9 @@ The opt-in enrichments:
   actually addresses that diagnosis (`addresses_primary_problem`, tri-state -
   `null` means no dominant finding was recorded, which is not `false`), its
   ordered `steps` with a `mechanical` / `judgment` `applicability` each, and
-  counts for the evidence behind it. Ordered by `refactoring_view`. A step
+  counts for the evidence behind it. Ordered by `refactoring_view`. With no
+  `targets` it lists only what Fix first would take (`refactoring_scope`), and
+  `refactoring_opportunities_hidden` counts the rest by reason. A step
   carrying `relocated_by` names an earlier step that moves its symbol to another
   file: locate the symbol again before applying it, because the step's own
   `file_path` and span describe where the symbol was.

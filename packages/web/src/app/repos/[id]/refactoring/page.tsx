@@ -42,6 +42,7 @@ import type {
   RefactoringOpportunityPage,
   RefactoringOrder,
   RefactoringPlan,
+  RefactoringScope,
 } from "@repowise-dev/types/refactoring";
 import {
   AiPromptModal,
@@ -88,6 +89,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const [effort, setEffort] = useState<EffortBucket | null>(null);
   const [confidence, setConfidence] = useState<Confidence | null>(null);
   const [mechanicalOnly, setMechanicalOnly] = useState(false);
+  // What Fix first would take, by default; the full inventory on request.
+  const [scope, setScope] = useState<RefactoringScope>("fix_first");
   const [offset, setOffset] = useState(0);
 
   const { data, error, isLoading, mutate } = useSWR<RefactoringOpportunityPage>(
@@ -101,12 +104,14 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
       effort,
       confidence,
       mechanicalOnly,
+      scope,
       offset,
     ],
     () =>
       getRefactoringOpportunities(repoId, {
         refactoringType: leadTypeFor(type),
         status,
+        scope,
         search: deferredQuery || undefined,
         effort: effort ?? undefined,
         confidence: confidence ?? undefined,
@@ -123,12 +128,13 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
 
   // The structural head for "Start here". A separate bounded call rather than a
   // slice of the list above: the list is under whatever filter the reader chose,
-  // and Start here describes the whole repository.
+  // and Start here describes the whole repository, in the scope the list is in.
   const { data: structural } = useSWR<RefactoringOpportunityPage>(
-    type === "all" ? ["refactoring-structural", repoId] : null,
+    type === "all" ? ["refactoring-structural", repoId, scope] : null,
     () =>
       getRefactoringOpportunities(repoId, {
         refactoringType: STRUCTURAL_CSV,
+        scope,
         order: "rank",
         stepPreview: 0,
         limit: 100,
@@ -230,6 +236,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     effort,
     confidence,
     mechanicalOnly,
+    scope,
+    appliedScope: data?.scope ?? "all",
+    hidden: data?.hidden ?? null,
     total: data?.total ?? 0,
     offset,
     nextOffset: data?.next_offset ?? null,
@@ -297,6 +306,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
               if (change.effort !== undefined) setEffort(change.effort);
               if (change.confidence !== undefined) setConfidence(change.confidence);
               if (change.mechanicalOnly !== undefined) setMechanicalOnly(change.mechanicalOnly);
+              if (change.scope !== undefined) setScope(change.scope);
               if (change.offset !== undefined) setOffset(change.offset);
             }}
             onOpen={(o) => void setOpenId(o.opportunity_id)}
@@ -313,7 +323,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
             showLede={type === "all"}
             sectionTitle={
               type === "all"
-                ? "All opportunities"
+                ? serverState.appliedScope === "fix_first"
+                  ? "Opportunities worth doing"
+                  : "All opportunities"
                 : type === "structural"
                   ? "Structural opportunities"
                   : `${typeMeta(type).label} opportunities`

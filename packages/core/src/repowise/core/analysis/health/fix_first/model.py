@@ -231,6 +231,10 @@ class FixFirstQueue:
     basis: dict[str, str | None] = field(
         default_factory=lambda: {"analyzed_commit": None, "health_analyzed_at": None}
     )
+    #: Every open refactoring opportunity the builder read, by id: ``None``
+    #: when it is eligible, else the exclusion that kept it out. The
+    #: refactoring view's default scope reads it; never on the wire.
+    refactoring_reasons: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def lead(self) -> FixItem | None:

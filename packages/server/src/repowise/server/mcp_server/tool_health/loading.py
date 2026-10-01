@@ -276,6 +276,7 @@ async def _read_pillars(
         lead_type=req.refactoring_type,
         confidence=req.refactoring_confidence,
         effort=req.refactoring_effort,
+        scope=req.refactoring_scope,
     )
     performance = await _performance_blocks(
         performance_service,

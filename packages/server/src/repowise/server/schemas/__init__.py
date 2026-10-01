@@ -229,6 +229,7 @@ if TYPE_CHECKING:
         PatchCoverageTestHint,
     )
     from .refactoring import (
+        RefactoringHiddenCounts,
         RefactoringOpportunitiesResponse,
         RefactoringOpportunityDetailResponse,
         RefactoringOpportunityStatusResponse,
@@ -511,6 +512,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "PatchCoverageTestHint",
     ),
     "refactoring": (
+        "RefactoringHiddenCounts",
         "RefactoringOpportunitiesResponse",
         "RefactoringOpportunityDetailResponse",
         "RefactoringOpportunityStatusResponse",
@@ -778,6 +780,7 @@ __all__ = [
     "ProviderEntry",
     "ProviderStatusResponse",
     "ProviderValidationResponse",
+    "RefactoringHiddenCounts",
     "RefactoringOpportunitiesResponse",
     "RefactoringOpportunityDetailResponse",
     "RefactoringOpportunityStatusResponse",

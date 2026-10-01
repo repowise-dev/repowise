@@ -61,6 +61,7 @@ class HealthRequest:
     refactoring_type: str | None
     refactoring_confidence: str | None
     refactoring_effort: str | None
+    refactoring_scope: str | None
     performance_view: str | None
     performance_context: str | None
     performance_boundary: str | None

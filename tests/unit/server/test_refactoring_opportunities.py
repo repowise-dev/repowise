@@ -18,6 +18,7 @@ from httpx import AsyncClient
 from sqlalchemy import event
 
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
 
 
 async def _repo(client: AsyncClient) -> str:
@@ -187,6 +188,86 @@ async def test_lifecycle_rolls_up_from_the_member_plans(client, app):
 
 
 # ---------------------------------------------------------------------------
+# Scope: Fix first's eligible set by default, the inventory on request
+# ---------------------------------------------------------------------------
+
+
+async def _seed_mixed(client: AsyncClient, app) -> str:
+    """Two eligible opportunities, one in a test file, one under the worth floor."""
+    repo_id = await _repo(client)
+    paths = ["pkg/a.py", "pkg/b.py", "tests/test_c.py", "pkg/d.py"]
+    gains = [3.0, 2.0, 3.0, 0.2]
+    async with app.state.session_factory() as session:
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(p, function_name=f"sym{i}") for i, p in enumerate(paths)],
+        )
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [_plan(p, f"sym{i}", impact_delta=g) for i, (p, g) in enumerate(zip(paths, gains, strict=True))],
+        )
+        await crud.finalize_refactoring_opportunities(session, repo_id, analyzed_commit="c" * 40)
+        await session.commit()
+    return repo_id
+
+
+@pytest.mark.asyncio
+async def test_the_default_lists_what_fix_first_takes_and_counts_the_rest(client, app):
+    repo_id = await _seed_mixed(client, app)
+    url = f"/api/repos/{repo_id}/refactoring/opportunities"
+    body = (await client.get(url)).json()
+    assert body["scope"] == "fix_first"
+    assert sorted(i["file_path"] for i in body["items"]) == ["pkg/a.py", "pkg/b.py"]
+    assert body["total"] == 2
+    assert body["hidden"] == {"total": 2, "by_reason": {"test": 1, "below_min_worth": 1}}
+    assert sum(body["facets"]["effort"].values()) == 2
+
+    everything = (await client.get(url, params={"scope": "all"})).json()
+    assert everything["scope"] == "all" and everything["total"] == 4
+    assert "hidden" not in everything
+
+
+@pytest.mark.asyncio
+async def test_a_file_or_a_triaged_status_reads_the_inventory(client, app):
+    repo_id = await _seed_mixed(client, app)
+    url = f"/api/repos/{repo_id}/refactoring/opportunities"
+    own = (await client.get(url, params={"file_path": "tests/test_c.py"})).json()
+    assert own["scope"] == "all" and own["total"] == 1
+    resolved = (await client.get(url, params={"status": "resolved"})).json()
+    assert resolved["scope"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_hidden_counts_follow_the_filters(client, app):
+    repo_id = await _seed_mixed(client, app)
+    body = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities", params={"search": "tests/"}
+        )
+    ).json()
+    assert body["total"] == 0
+    assert body["hidden"] == {"total": 1, "by_reason": {"test": 1}}
+
+
+@pytest.mark.asyncio
+async def test_rest_and_mcp_agree_on_the_scope(client, app):
+    repo_id = await _seed_mixed(client, app)
+    get_health = await _mcp(app)
+    rest = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    mcp = await get_health(include=["refactoring"], only=["refactoring_opportunities"])
+    assert mcp["refactoring_opportunities_total"] == rest["total"]
+    assert mcp["refactoring_opportunities_scope"] == "fix_first"
+    assert mcp["refactoring_opportunities_hidden"] == rest["hidden"]
+    everything = await get_health(
+        include=["refactoring"], only=["refactoring_opportunities"], refactoring_scope="all"
+    )
+    assert everything["refactoring_opportunities_total"] == 4
+    assert "refactoring_opportunities_hidden" not in everything
+
+
+# ---------------------------------------------------------------------------
 # REST == MCP
 # ---------------------------------------------------------------------------
 
@@ -285,7 +366,11 @@ def _counter(engine) -> list[str]:
 async def test_queue_query_count_is_constant_in_page_size_and_row_count(
     client, app, test_engine
 ):
-    """The statement count must not move when the page or the repository grows."""
+    """The statement count must not move when the page or the repository grows.
+
+    Each request is measured cold: the default scope builds the Fix-first
+    queue, which is cached per store write, and a warm hit costs less.
+    """
     small = await _seed(client, app, files=4)
     large = await _seed(client, app, files=40)
     counts = {}
@@ -297,6 +382,7 @@ async def test_queue_query_count_is_constant_in_page_size_and_row_count(
         ("large-20", large, 20),
         ("large-100", large, 100),
     ):
+        clear_fix_first_cache()
         seen.clear()
         resp = await client.get(
             f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": limit}
@@ -310,11 +396,13 @@ async def test_queue_query_count_is_constant_in_page_size_and_row_count(
 async def test_a_deep_offset_costs_the_same_as_the_first_page(client, app, test_engine):
     repo_id = await _seed(client, app, files=40)
     seen = _counter(test_engine)
+    clear_fix_first_cache()
     seen.clear()
     await client.get(
         f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": 5, "offset": 0}
     )
     first = len(seen)
+    clear_fix_first_cache()
     seen.clear()
     await client.get(
         f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": 5, "offset": 30}

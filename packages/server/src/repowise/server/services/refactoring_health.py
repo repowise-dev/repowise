@@ -16,6 +16,7 @@ module reads what the finalizer wrote.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -23,11 +24,13 @@ from typing import Any, Literal
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
     refactoring_facet_counts,
+    refactoring_opportunity_ids,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
 
@@ -52,6 +55,17 @@ DEFAULT_VIEW = "diversified"
 # The legacy plan list has no notion of the diversified order, so the new
 # default resolves to the value that list has always defaulted to.
 _PLAN_VIEWS = {"canonical": "canonical", "file_spread": "file_spread", "diversified": "canonical"}
+
+# Which open opportunities a queue lists:
+#
+# - ``fix_first``  the default for a repository-wide open queue: only the
+#   opportunities Fix first would take (its eligibility and exclusion rules,
+#   read from the same builder), with the rest counted by reason.
+# - ``all``  the full inventory. The default when the caller names files (a
+#   file surface asks for its own work) or lists a triaged status, which Fix
+#   first never reads.
+SCOPES = ("fix_first", "all")
+DEFAULT_SCOPE = "fix_first"
 
 # The triage vocabulary, shared with health findings.
 _STATUSES = ("open", "acknowledged", "resolved", "false_positive")
@@ -92,6 +106,7 @@ class RefactoringQuery:
     order: str | None = None
     limit: int = 20
     offset: int = 0
+    scope: str = DEFAULT_SCOPE
 
     @property
     def resolved_order(self) -> str:
@@ -110,6 +125,10 @@ class RefactoringPage:
     facets: dict[str, dict[str, int]] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
     ignored_arguments: dict[str, str] = field(default_factory=dict)
+    scope: str = "all"
+    #: Under ``fix_first``: the opportunities the same filters match that Fix
+    #: first leaves out, ``{"total": n, "by_reason": {reason: n}}``.
+    hidden: dict[str, Any] | None = None
 
 
 def parse_query(
@@ -127,6 +146,7 @@ def parse_query(
     order: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    scope: str | None = None,
 ) -> tuple[RefactoringQuery, dict[str, str]]:
     """Normalize a caller's arguments, naming anything it had to discard.
 
@@ -165,10 +185,16 @@ def parse_query(
     if resolved_view not in _VIEW_ORDERS:
         ignored["refactoring_view"] = resolved_view
         resolved_view = DEFAULT_VIEW
+    resolved_status = admit("status", status, _STATUSES) or "open"
+    resolved_scope = admit("scope", scope, SCOPES) or (
+        "all" if file_paths is not None else DEFAULT_SCOPE
+    )
+    if resolved_status != "open":
+        resolved_scope = "all"  # Fix first reads open opportunities only.
     return (
         RefactoringQuery(
             lead_types=admit_many("refactoring_type", lead_type, _TYPES),
-            status=admit("status", status, _STATUSES) or "open",
+            status=resolved_status,
             confidence=admit("confidence", confidence, _CONFIDENCES),
             effort=admit("effort", effort, _EFFORTS),
             mechanical_only=bool(mechanical),
@@ -184,6 +210,7 @@ def parse_query(
             order=admit("order", order, CANONICAL_ORDERS),
             limit=max(int(limit), 0),
             offset=max(int(offset), 0),
+            scope=resolved_scope,
         ),
         ignored,
     )
@@ -238,19 +265,31 @@ class RefactoringHealthService:
         filters over the open set, so those two are bounded by the open row
         count rather than by the page. Neither has a consumer yet - index them
         when one exists, not before.
+
+        Under the ``fix_first`` scope the Fix-first queue (cached per store
+        write) says which opportunities it takes, and one id-only read of the
+        filtered set counts what it leaves out, by reason.
         """
+        filters: dict[str, Any] = {
+            "status": query.status,
+            "lead_types": list(query.lead_types) if query.lead_types else None,
+            "confidence": query.confidence,
+            "effort": query.effort,
+            "file_paths": list(query.file_paths) if query.file_paths is not None else None,
+            "path_contains": query.path_contains,
+            "path_prefix": query.path_prefix,
+            "mechanical_only": query.mechanical_only,
+            "addresses_primary": query.addresses_primary,
+        }
+        shown_ids: list[str] | None = None
+        hidden: dict[str, Any] | None = None
+        if query.scope == "fix_first":
+            shown_ids, hidden = await self._fix_first_scope(filters)
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
-            status=query.status,
-            lead_types=list(query.lead_types) if query.lead_types else None,
-            confidence=query.confidence,
-            effort=query.effort,
-            file_paths=list(query.file_paths) if query.file_paths is not None else None,
-            path_contains=query.path_contains,
-            path_prefix=query.path_prefix,
-            mechanical_only=query.mechanical_only,
-            addresses_primary=query.addresses_primary,
+            **filters,
+            opportunity_ids=shown_ids,
             order=query.resolved_order,
             limit=query.limit,
             offset=query.offset,
@@ -270,13 +309,39 @@ class RefactoringHealthService:
                 # set while the list shows the resolved one would put a badge on
                 # a tab that returns nothing.
                 await refactoring_facet_counts(
-                    self._session, self._repository_id, status=query.status
+                    self._session,
+                    self._repository_id,
+                    status=query.status,
+                    opportunity_ids=shown_ids,
                 )
                 if with_facets
                 else {}
             ),
             summary=await self.summary() if with_summary else None,
+            scope=query.scope,
+            hidden=hidden,
         )
+
+    async def _fix_first_scope(
+        self, filters: dict[str, Any]
+    ) -> tuple[list[str], dict[str, Any]]:
+        """The filtered ids Fix first takes, and what it leaves out by reason.
+
+        Ceiling: the shown ids go back to the page read as an ``IN`` list, one
+        entry per open opportunity Fix first takes (94 on this repository).
+        Upgrade path: store the eligibility on the opportunity row at index
+        time and filter on the column.
+        """
+        queue = await load_fix_first(self._session, self._repository_id, limit=0)
+        reasons = queue.refactoring_reasons
+        matched = await refactoring_opportunity_ids(
+            self._session, self._repository_id, **filters
+        )
+        # The queue is keyed on the stores' newest write, so it has read every
+        # open id; one written between the two reads is in neither count.
+        shown = [i for i in matched if i in reasons and reasons[i] is None]
+        left_out = Counter(r for i in matched if (r := reasons.get(i)))
+        return shown, {"total": sum(left_out.values()), "by_reason": dict(left_out.most_common())}
 
     # -- headline ---------------------------------------------------------
 

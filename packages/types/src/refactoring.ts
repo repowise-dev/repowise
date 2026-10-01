@@ -1,5 +1,6 @@
 /** Canonical wire contract for structured refactoring recommendations. */
 
+import type { FixExclusion } from "./fix-first.js";
 import type { Paginated } from "./pagination.js";
 
 export type RefactoringType =
@@ -315,6 +316,19 @@ export type RefactoringView = "diversified" | "canonical" | "file_spread";
  */
 export type RefactoringOrder = "queue" | "rank" | "health" | "effort" | "file";
 
+/**
+ * Which open opportunities a queue lists. ``fix_first`` (the default for the
+ * repository-wide open queue) keeps only what Fix first would take; ``all`` is
+ * the full inventory, and the default for a file or a triaged status.
+ */
+export type RefactoringScope = "fix_first" | "all";
+
+/** What the ``fix_first`` scope leaves out of the filtered set, by reason. */
+export interface RefactoringHiddenCounts {
+  total: number;
+  by_reason: Partial<Record<FixExclusion, number>>;
+}
+
 /** No stored analysis: the counts genuinely do not exist, so none are present. */
 export interface RefactoringRollupUnavailable {
   status: "unavailable";
@@ -400,6 +414,10 @@ export interface RefactoringOpportunityPage {
   summary: RefactoringOpportunityRollup | null;
   /** Values the server could not admit, named rather than dropped. */
   ignored_arguments?: Record<string, string>;
+  /** The scope the server applied, which `total` and `facets` count. */
+  scope?: RefactoringScope;
+  /** Under ``fix_first`` only. */
+  hidden?: RefactoringHiddenCounts;
 }
 
 /** ``GET /api/repos/{repo_id}/refactoring/summary``. */

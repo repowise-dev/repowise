@@ -1149,6 +1149,29 @@ def _small(shape: Mapping[str, int]) -> bool:
     return nloc < SMALL_NLOC and shape.get("ccn", 0) < SMALL_CCN
 
 
+def _refactor_exclusion(
+    gain: float,
+    steps: list[Mapping[str, Any]],
+    plans: Mapping[str, Any],
+    files: _Files,
+    path: str,
+) -> str | None:
+    """Why an open refactoring opportunity in scope is no candidate, or ``None``."""
+    if gain < MIN_WORTH or not steps:
+        return "below_min_worth"
+    lead = steps[0]
+    if lead.get("refactoring_type") in LOW_VALUE_KINDS:
+        return "low_value_kind"
+    reason = files.unit_exclusion(
+        path,
+        lead.get("target_symbol"),
+        complexity=lead.get("refactoring_type") == "extract_method",
+    )
+    if reason is None and not _concrete(lead, plans.get(lead.get("plan_id"))):
+        return "no_concrete_step"
+    return reason
+
+
 def _finding_exclusion(finding: Any, files: _Files) -> str | None:
     if field(finding, "biomarker_type") in LOW_VALUE_KINDS:
         return "low_value_kind"
@@ -1325,45 +1348,36 @@ def build_fix_first(
         _extractions(plans),
     )
 
-    def out_of_scope(path: str, context: str | None = None) -> bool:
+    def scope_reason(path: str, context: str | None = None) -> str | None:
+        """Why ``path`` is out of scope, counted; ``None`` when it is in."""
         reason = _path_exclusion(path, files.is_test(path), context, files.origin(path))
         if reason is None or (reason == "test" and keep_tests):
-            return False
+            return None
         excluded[reason] += 1
-        return True
+        return reason
+
+    def out_of_scope(path: str, context: str | None = None) -> bool:
+        return scope_reason(path, context) is not None
 
     plan_rows = {field(p, "public_id"): p for p in plans}
     units: list[_Unit] = []
     planned_files: set[str] = set()
+    refactoring_reasons: dict[str, str | None] = {}
     for row in sorted(
         (r for r in refactoring if _open(r)),
         key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")),
     ):
         path = field(row, "file_path")
-        if out_of_scope(path):
-            continue
-        if _num(field(row, "recoverable_health")) < MIN_WORTH:
-            excluded["below_min_worth"] += 1
-            continue
+        reason = scope_reason(path)
         details = detail_map(row)
         steps = list(details.get("steps") or [])
         gain = _num(field(row, "recoverable_health"))
-        if not steps:
-            excluded["below_min_worth"] += 1
-            continue
-        reason = (
-            "low_value_kind"
-            if steps[0].get("refactoring_type") in LOW_VALUE_KINDS
-            else files.unit_exclusion(
-                path,
-                steps[0].get("target_symbol"),
-                complexity=steps[0].get("refactoring_type") == "extract_method",
-            )
-        )
-        if reason is None and not _concrete(steps[0], plan_rows.get(steps[0].get("plan_id"))):
-            reason = "no_concrete_step"
+        if reason is None:
+            reason = _refactor_exclusion(gain, steps, plan_rows, files, path)
+            if reason is not None:
+                excluded[reason] += 1
+        refactoring_reasons[field(row, "opportunity_id")] = reason
         if reason is not None:
-            excluded[reason] += 1
             continue
         units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
         # Only a plan that became an item speaks for the file's findings; an
@@ -1434,6 +1448,7 @@ def build_fix_first(
         ),
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
         basis=dict(basis) if basis is not None else _basis(metrics),
+        refactoring_reasons=refactoring_reasons,
     )
 
 

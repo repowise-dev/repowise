@@ -511,11 +511,16 @@ def _opportunity_filters(
     path_prefix: str | None,
     mechanical_only: bool,
     addresses_primary: bool | None,
+    opportunity_ids: list[str] | None = None,
 ) -> list[Any]:
     predicates: list[Any] = [
         RefactoringOpportunity.repository_id == repository_id,
         RefactoringOpportunity.status == status,
     ]
+    if opportunity_ids is not None:
+        # A scope resolved in Python (Fix first's eligible set); an empty one
+        # matches nothing, as ``file_paths`` does.
+        predicates.append(RefactoringOpportunity.opportunity_id.in_(opportunity_ids))
     if lead_types:
         # One value is still one equality; a list is how the board's
         # "Structural" tab asks for its four types without four round trips.
@@ -571,6 +576,7 @@ async def list_refactoring_opportunities(
     path_prefix: str | None = None,
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
+    opportunity_ids: list[str] | None = None,
     order: str = DEFAULT_ORDER,
     limit: int = 20,
     offset: int = 0,
@@ -587,6 +593,7 @@ async def list_refactoring_opportunities(
         path_prefix=path_prefix,
         mechanical_only=mechanical_only,
         addresses_primary=addresses_primary,
+        opportunity_ids=opportunity_ids,
     )
     total = int(
         (
@@ -604,6 +611,37 @@ async def list_refactoring_opportunities(
     )
     rows = list((await session.execute(query)).scalars().all())
     return rows, total
+
+
+async def refactoring_opportunity_ids(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    lead_types: list[str] | None = None,
+    confidence: str | None = None,
+    effort: str | None = None,
+    file_paths: list[str] | None = None,
+    path_contains: str | None = None,
+    path_prefix: str | None = None,
+    mechanical_only: bool = False,
+    addresses_primary: bool | None = None,
+) -> list[str]:
+    """The ids the same filters match, unpaged: one narrow column."""
+    predicates = _opportunity_filters(
+        repository_id,
+        status=status,
+        lead_types=lead_types,
+        confidence=confidence,
+        effort=effort,
+        file_paths=file_paths,
+        path_contains=path_contains,
+        path_prefix=path_prefix,
+        mechanical_only=mechanical_only,
+        addresses_primary=addresses_primary,
+    )
+    rows = await session.execute(select(RefactoringOpportunity.opportunity_id).where(*predicates))
+    return [opportunity_id for (opportunity_id,) in rows.all()]
 
 
 async def get_refactoring_opportunity(
@@ -704,12 +742,17 @@ async def get_refactoring_summary(
 
 
 async def refactoring_facet_counts(
-    session: AsyncSession, repository_id: str, *, status: str = "open"
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    opportunity_ids: list[str] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Counts for every facet dimension, in one statement.
 
     Grouped by all three dimensions at once and folded here rather than one
     statement each, so adding a facet never adds a round trip.
+    ``opportunity_ids`` narrows the counts to a scope the list applies too.
     """
     columns = (
         RefactoringOpportunity.lead_refactoring_type,
@@ -721,6 +764,11 @@ async def refactoring_facet_counts(
         .where(
             RefactoringOpportunity.repository_id == repository_id,
             RefactoringOpportunity.status == status,
+            *(
+                [RefactoringOpportunity.opportunity_id.in_(opportunity_ids)]
+                if opportunity_ids is not None
+                else []
+            ),
         )
         .group_by(*columns)
     )
@@ -743,5 +791,6 @@ __all__ = [
     "get_refactoring_summary",
     "list_refactoring_opportunities",
     "refactoring_facet_counts",
+    "refactoring_opportunity_ids",
     "update_refactoring_opportunity_status",
 ]

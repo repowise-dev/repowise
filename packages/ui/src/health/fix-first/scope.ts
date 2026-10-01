@@ -78,10 +78,18 @@ export function fixFirstScopeSentence(queue: FixFirstQueue<unknown>): string {
   const head = `${formatNumber(shown)} of ${formatNumber(eligible)} eligible item${
     eligible === 1 ? "" : "s"
   }.`;
-  const parts = EXCLUSION_ORDER.filter((key) => (excluded[key] ?? 0) > 0).map(
-    (key) => `${formatNumber(excluded[key])} ${EXCLUSION_LABEL[key]}`,
-  );
-  return parts.length ? `${head} Excluded: ${parts.join(", ")}.` : head;
+  const parts = exclusionPhrase(excluded);
+  return parts ? `${head} Excluded: ${parts}.` : head;
+}
+
+/**
+ * `3 in tests, 12 below the worth floor`: each nonzero exclusion count with
+ * its words, in the sentence order. Empty when nothing was excluded.
+ */
+export function exclusionPhrase(counts: Partial<Record<FixExclusion, number>>): string {
+  return EXCLUSION_ORDER.filter((key) => (counts[key] ?? 0) > 0)
+    .map((key) => `${formatNumber(counts[key] ?? 0)} ${EXCLUSION_LABEL[key]}`)
+    .join(", ");
 }
 
 /** `path:60`, or the path alone when core stored no line. */
