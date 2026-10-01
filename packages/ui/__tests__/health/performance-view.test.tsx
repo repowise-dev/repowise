@@ -287,7 +287,7 @@ describe("PerformanceView drawer", () => {
 
   it("tells an unresolvable id apart from a stale one and from an empty index", async () => {
     const getDetail = vi.fn(async () => ({
-      resolved: false as const,
+      found: false as const,
       opportunity_id: "perf2_planready",
       model_state: {
         state: "unrecognized" as const,
@@ -834,7 +834,7 @@ describe("PerformanceView opened by a link", () => {
 
   it("says so when the link names a cause this index cannot resolve", async () => {
     const unresolved = {
-      resolved: false as const,
+      found: false as const,
       opportunity_id: "perf2_retired",
       model_state: {
         state: "stale_model" as const,

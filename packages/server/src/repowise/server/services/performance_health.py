@@ -465,7 +465,7 @@ class PerformanceHealthService:
         )
         if row is None:
             return {
-                "resolved": False,
+                "found": False,
                 "opportunity_id": opportunity_id,
                 "model_state": state,
                 "detail": _unresolved_detail(state),
@@ -480,7 +480,7 @@ class PerformanceHealthService:
         )
         payload.update(
             {
-                "resolved": True,
+                "found": True,
                 "lifecycle_status": row.status,
                 "analyzed_commit": row.analyzed_commit,
                 "model_state": state,

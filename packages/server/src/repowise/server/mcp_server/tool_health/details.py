@@ -233,7 +233,7 @@ async def _performance_detail_response(
         return {
             "mode": "performance_evidence",
             "opportunity_id": opportunity_id,
-            "resolved": total > 0,
+            "found": total > 0,
             **evidence_block(rows, total, cursor),
             "_meta": _build_meta(repository=repository),
         }

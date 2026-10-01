@@ -501,7 +501,7 @@ export interface PerformanceModelState {
  */
 export type PerformanceOpportunityDetail =
   | ({
-      resolved: true;
+      found: true;
       lifecycle_status: "open" | "resolved";
       analyzed_commit: string | null;
       model_state: PerformanceModelState;
@@ -510,7 +510,7 @@ export type PerformanceOpportunityDetail =
       evidence_next_cursor?: number;
     } & PerformanceOpportunity)
   | {
-      resolved: false;
+      found: false;
       opportunity_id: string;
       model_state: PerformanceModelState;
       detail: string;

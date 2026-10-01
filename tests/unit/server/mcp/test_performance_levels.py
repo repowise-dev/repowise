@@ -287,7 +287,9 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     result = await get_health(opportunity_id=lead)
 
     assert result["mode"] == "performance_opportunity"
-    assert result["resolved"] is True
+    assert result["found"] is True
+    # The lookup flag never shares a name with the lifecycle beside it.
+    assert "resolved" not in result
     assert result["opportunity_id"] == lead
     assert result["intervention_symbol"] == "src/shared.py::load"
     assert result["plan_status"] == "available"
@@ -396,7 +398,7 @@ async def test_an_id_from_an_older_model_reports_stale_and_how_to_refresh(
     from repowise.server.mcp_server import get_health
 
     result = await get_health(opportunity_id="perf_0123456789abcdef0123")
-    assert result["resolved"] is False
+    assert result["found"] is False
     assert result["model_state"]["state"] == "stale_model"
     assert result["model_state"]["refresh_required"] is True
     assert "repowise update" in result["detail"]

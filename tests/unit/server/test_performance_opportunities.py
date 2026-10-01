@@ -311,7 +311,7 @@ async def test_an_id_from_an_older_model_reports_stale_rather_than_no_plan(
             f"/api/repos/{repo_id}/health/performance-opportunities/perf_0123456789abcdef0123"
         )
     ).json()
-    assert body["resolved"] is False
+    assert body["found"] is False
     assert body["model_state"]["state"] == "stale_model"
     assert body["model_state"]["refresh_required"] is True
     assert "repowise update" in body["detail"]
@@ -327,7 +327,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
             params={"evidence_limit": 1},
         )
     ).json()
-    assert body["resolved"] is True
+    assert body["found"] is True
     assert body["lifecycle_status"] == "open"
     assert body["analyzed_commit"] == "a" * 40
     assert body["model_state"]["state"] == "current"
@@ -359,7 +359,7 @@ async def test_a_cause_that_stops_being_observed_is_resolved_not_deleted(
             f"/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}"
         )
     ).json()
-    assert detail["resolved"] is True
+    assert detail["found"] is True
     assert detail["lifecycle_status"] == "resolved"
 
 

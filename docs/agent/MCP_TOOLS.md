@@ -1308,7 +1308,8 @@ Ids are stable within a performance model version and are never translated
 across one, because grouping decides membership and two models disagree about
 it. An id from an older model resolves to `model_state.state: "stale_model"`
 with `refresh_required`, rather than failing to match and reading as "no plan".
-Evidence rows carry the finding's public `finding_id`, which round-trips through
+`found` says whether the id named a stored opportunity; `lifecycle_status` is
+its lifecycle (`open` or `resolved`). Evidence rows carry the finding's public `finding_id`, which round-trips through
 the `finding_id` selector; storage row ids are republished on every analysis and
 are never emitted.
 

@@ -363,8 +363,8 @@ export function OpportunityDrawer({
 
   // The row is the fallback body: a host without the detail call still reads
   // every field the queue carried, and simply learns nothing extra.
-  const resolved = detail && detail.resolved ? detail : null;
-  const unresolved = detail && !detail.resolved ? detail : null;
+  const resolved = detail && detail.found ? detail : null;
+  const unresolved = detail && !detail.found ? detail : null;
   const current: PerformanceOpportunity | null = resolved ?? opportunity;
   const plan = useVerifiedPlan(current, adapter, planEnabled);
 
