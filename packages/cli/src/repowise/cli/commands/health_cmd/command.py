@@ -162,6 +162,7 @@ def health_command(
 
     from pathlib import Path as PathlibPath
 
+    from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
@@ -276,6 +277,7 @@ def health_command(
         graph_builder.graph(),
         git_meta_map=git_meta_map,
         parsed_files=parsed_files,
+        community_label_map=file_community_labels(graph_builder),
         coverage_map=coverage_map,
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,

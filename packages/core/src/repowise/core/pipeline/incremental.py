@@ -711,6 +711,7 @@ def run_partial_analysis(
         # execution closure so a changed caller can still see an unchanged sink
         # and an unchanged caller can react to a changed sink. The index is
         # built once; this is a multi-source walk, not one walk per finding.
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
@@ -731,6 +732,7 @@ def run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            community_label_map=file_community_labels(graph_builder),
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
             coverage_map=coverage_map,

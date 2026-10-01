@@ -261,6 +261,7 @@ async def _run_health_analysis(
 ) -> Any | None:
     """Run code-health analysis (complexity + biomarkers + scoring)."""
     try:
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
 
@@ -271,21 +272,6 @@ async def _run_health_analysis(
             # the entire pre-walk — most of the phase's wall-clock.
             progress.on_phase_start("health", 2 * len(parsed_files))
 
-        # Build a {file_path → community label} map for the refactoring
-        # detectors. Community detection is already computed for the graph
-        # view, so this is essentially free. It is not the ``module`` column:
-        # that is a path, written from the package boundaries.
-        community_label_map: dict[str, str] = {}
-        try:
-            cd = graph_builder.community_detection()
-            ci = graph_builder.community_info()
-            for node_id, comm_id in cd.items():
-                info = ci.get(comm_id)
-                label = getattr(info, "label", None) if info else None
-                if label:
-                    community_label_map[node_id] = label
-        except Exception as exc:
-            logger.debug("health_community_label_map_failed", error=str(exc))
 
         # Ingest coverage (auto-discovered or explicitly passed) so biomarkers
         # see real line/branch coverage instead of the has_test_file fallback.
@@ -307,7 +293,7 @@ async def _run_health_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
-            community_label_map=community_label_map,
+            community_label_map=file_community_labels(graph_builder),
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
             repo_root=repo_path,

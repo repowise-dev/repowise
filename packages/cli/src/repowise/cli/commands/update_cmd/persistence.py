@@ -1403,6 +1403,7 @@ async def _rescore_health_from_db(
         from sqlalchemy import delete, select
 
         from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
         from repowise.core.analysis.health.history_refresh import (
@@ -1480,6 +1481,7 @@ async def _rescore_health_from_db(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
+                community_label_map=file_community_labels(graph_builder),
                 coverage_map=coverage.coverage_map,
                 duplication_cache_dir=Path(repo_path) / ".repowise",
                 repo_root=repo_path,
