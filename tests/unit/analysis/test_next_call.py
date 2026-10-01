@@ -83,3 +83,11 @@ def test_render_call_literals() -> None:
 
 def test_a_hand_written_command_keeps_its_old_wire_shape() -> None:
     assert ActionCommand("p", mcp="m").as_dict() == {"purpose": "p", "mcp": "m", "cli": None}
+
+
+def test_a_command_hashes_and_equal_commands_hash_equal() -> None:
+    a = ActionCommand.call("p", "get_health", {"targets": ["a.py"], "include": ["biomarkers"]})
+    b = ActionCommand.call("p", "get_health", {"targets": ["a.py"], "include": ["biomarkers"]})
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b, ActionCommand("p", mcp="m")}) == 2

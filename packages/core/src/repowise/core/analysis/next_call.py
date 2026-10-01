@@ -66,3 +66,9 @@ class ActionCommand:
             out["tool"] = self.tool
             out["arguments"] = dict(self.arguments or {})
         return out
+
+    def __hash__(self) -> int:
+        # ``arguments`` is a dict; the rendered call stands in for it, so equal
+        # commands still hash equal and ``Action``/``FixItem`` stay hashable.
+        args = render_call("", self.arguments) if self.arguments is not None else None
+        return hash((self.purpose, self.mcp, self.cli, self.tool, args))
