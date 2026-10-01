@@ -27,7 +27,7 @@ offered instead.
 
 A JSX function component whose decision points sit mostly in its markup
 (conditional spreads, ``&&`` and ternaries in attributes or children, template
-ternaries) is not offered one: that branching is prop plumbing, and a helper
+ternaries, all under a ``jsx_*`` node) is not offered one: that branching is prop plumbing, and a helper
 would only move it. CCN is left alone because it feeds the calibrated defect
 score; the gate is on eligibility.
 
@@ -108,11 +108,6 @@ _MIN_LARGE_SPAN_NLOC = 12
 # function: below a tenth (a 2-point span out of a CCN 249 function) the step
 # is safe but moves almost nothing.
 _HIGH_MIN_SHARE = 0.1
-
-# Ancestors that make a decision point JSX prop plumbing.
-_JSX_PLUMBING = frozenset(
-    {"jsx_expression", "jsx_attribute", "spread_element", "template_substitution"}
-)
 
 
 @register
@@ -297,8 +292,9 @@ def jsx_plumbing_dominates(fn_node: Any, lmap: LanguageNodeMap) -> bool:
 
     Counts decision points the way the CCN walker does (nested functions are
     their own; arrow functions count toward this one) and the share of them
-    under a JSX expression or attribute, an object spread or a template
-    substitution.
+    inside the markup: under any ``jsx_*`` node, which covers spreads, template
+    ternaries and ``&&`` in attributes and children. The same shapes outside
+    the markup (``const cfg = {...defaults, x: a && b}``) are logic, not wiring.
     """
     if fn_node is None:
         return False
@@ -311,10 +307,11 @@ def jsx_plumbing_dominates(fn_node: Any, lmap: LanguageNodeMap) -> bool:
         node, inside = stack.pop()
         if node.type in lmap.function_kinds:
             continue
-        has_jsx = has_jsx or node.type.startswith("jsx_")
+        in_jsx = node.type.startswith("jsx_")
+        has_jsx = has_jsx or in_jsx
         if (node.is_named and node.type in kinds) or _is_boolean_operator(node, lmap):
             total += 1
             plumbing += inside
-        inside = inside or node.type in _JSX_PLUMBING
+        inside = inside or in_jsx
         stack.extend((child, inside) for child in node.children)
     return has_jsx and plumbing * 2 > total

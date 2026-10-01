@@ -608,3 +608,43 @@ def test_component_with_real_logic_is_still_eligible():
     # No JSX at all: never gated, whatever the shape.
     plain = _parse("typescript", "function f(a) { return a ? { ...(a && { a }) } : {}; }")
     assert not jsx_plumbing_dominates(plain, get_language_map("typescript"))
+
+
+def test_spreads_and_conditionals_outside_the_markup_are_logic():
+    # The same shapes the gate reads as wiring inside JSX are ordinary logic
+    # in the component body: a config object built before the return.
+    node = _parse(
+        "tsx",
+        """
+        function Panel({ defaults, a, b, c, d }) {
+          const cfg = { ...defaults, x: a && b, y: c ? d : null, z: c || d };
+          return <View cfg={cfg} />;
+        }
+        """,
+    )
+    assert not jsx_plumbing_dominates(node, get_language_map("tsx"))
+
+
+def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
+    from repowise.core.analysis.health.dataflow import Extraction
+    from repowise.core.analysis.health.refactoring import extract_method
+
+    trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
+    worth = Extraction(20, 25, ("b",), (), slice_nloc=6, ccn_removed=3)
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l: [trivial, worth])
+    fn = _Shape(12, 40)
+    analysis = type(
+        "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
+                  "fn_node": None}
+    )()
+    assert not _worth_extracting(fn, trivial, {"complex_method"})
+    ctx = RefactoringContext(
+        file_path="m.py",
+        language="python",
+        nloc=100,
+        findings=[_Finding("complex_method", "f", 1, 1.2)],
+        function_analyses=[analysis],
+    )
+    (s,) = ExtractMethodDetector().detect(ctx)
+    assert s.plan["span"] == {"start": 20, "end": 25}
+    assert s.impact_delta == round(1.2 * 3 / 12, 3)
