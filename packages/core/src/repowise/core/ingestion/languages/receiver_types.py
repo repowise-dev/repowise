@@ -178,6 +178,14 @@ _GO_EMBEDDED_FIELD = re.compile(
     rf"(?m)^[ \t]*\*?(?P<member>(?P<type>(?P<name>{_GO_FIELD_NAME}))){_GO_FIELD_END}"
 )
 
+# ``x := f(..)``, ``x, err := pkg.New(..)``: the head of a call whose return
+# type names the local. Only the head is matched here; ``scan_call_assignments``
+# checks that the call is the whole right-hand side, not ``f().g()``.
+_GO_CALL_DECL = re.compile(
+    rf"(?<![\w.])(?P<name>{_GO_NAME})\s*(?:,\s*{_GO_NAME}\s*)*:="
+    r"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+)
+
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
 # and `class A(val x: Foo)` are all `name: Type`.
 #
@@ -696,6 +704,77 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
 
     found.sort()
     return tuple(found)
+
+
+class CallAssignment(NamedTuple):
+    """``name := receiver.target(..)`` at one line, typed later by the resolver."""
+
+    line: int
+    name: str
+    receiver: str | None
+    target: str
+
+
+_CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {"go": _GO_CALL_DECL}
+
+# Languages whose locals may be typed from a call's declared return type.
+CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
+
+_QUOTES = frozenset("\"'`")
+_STATEMENT_ENDS = frozenset("\n;}")
+
+
+def _call_end(text: str, index: int) -> int:
+    """Index just past the ``)`` closing the ``(`` before *index*, or -1."""
+    depth = 1
+    while index < len(text):
+        char = text[index]
+        if char in _QUOTES:
+            # A backquoted string has no escapes; the other two do.
+            index += 1
+            while index < len(text) and text[index] != char:
+                index += 2 if char != "`" and text[index] == "\\" else 1
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return -1
+
+
+def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...]:
+    """Every local *text* declares from a single call, in line order.
+
+    The call must be the whole right-hand side: ``x := f().g()`` or
+    ``x := f() + 1`` gives ``x`` no type from ``f``.
+    """
+    pattern = _CALL_ASSIGNMENT_PATTERNS.get(language)
+    if pattern is None:
+        return ()
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found: list[CallAssignment] = []
+    for match in pattern.finditer(cleaned):
+        end = _call_end(cleaned, match.end())
+        rest = cleaned[end:].lstrip(" \t") if end >= 0 else ""
+        if end < 0 or (rest and rest[0] not in _STATEMENT_ENDS):
+            continue
+        found.append(
+            CallAssignment(
+                bisect_right(starts, match.start()),
+                match.group("name"),
+                match.group("receiver"),
+                match.group("target"),
+            )
+        )
+    return tuple(found)
+
+
+def record_type(types: dict[str, str | None], name: str, type_name: str) -> None:
+    """``_record`` for a type found outside ``scan_declarations``."""
+    _record(types, Declaration(0, name, type_name))
 
 
 def _record(types: dict[str, str | None], declaration: Declaration) -> None:

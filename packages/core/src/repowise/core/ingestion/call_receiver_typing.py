@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from pathlib import Path
@@ -9,10 +10,12 @@ from typing import NamedTuple, TypeVar
 
 from .languages.receiver_types import (
     BINDING_LANGUAGES,
+    CALL_TYPED_LANGUAGES,
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
     RANGE_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
+    CallAssignment,
     Declaration,
     RangeClause,
     RangeScan,
@@ -24,7 +27,9 @@ from .languages.receiver_types import (
     merge_spans,
     names_in_span,
     range_element_types,
+    record_type,
     scan_bindings,
+    scan_call_assignments,
     scan_declarations,
     scan_ranges,
     scan_scope_marks,
@@ -34,8 +39,8 @@ from .languages.receiver_types import (
 )
 from .models import CallSite, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
-from .return_types import declared_return_type
-from .type_names import POINTER_LIKE_MEMBERS
+from .return_types import declared_return_type, go_first_result
+from .type_names import POINTER_LIKE_MEMBERS, bare_type_name
 
 # Which symbols own a class scope, and which of them swallow one. A class span
 # contains every method body inside it, so both sets are needed to tell a field
@@ -134,6 +139,9 @@ class ReceiverTypingMixin:
         # Scans are memoised per function, not per reference.
         self._source_text: dict[str, str] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
+        self._call_assignments: dict[str, tuple[CallAssignment, ...]] = {}
+        # {file: {(line, receiver, target): call site}}, for the calls above.
+        self._call_sites: dict[str, dict[tuple[int, str | None, str], CallSite]] = {}
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
         self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
@@ -304,6 +312,9 @@ class ReceiverTypingMixin:
         )
         if type_name is None:
             return None
+        if "::" in type_name:
+            # A symbol id, recorded by ``_add_call_typed_locals``.
+            return self._call_typed_receiver(file_path, call, caller_id, type_name)
         if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
             return None
 
@@ -722,7 +733,115 @@ class ReceiverTypingMixin:
                 self._type_range_variables(file_path, language, span, types)
 
         _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
+        if span is not None and language in CALL_TYPED_LANGUAGES:
+            # Stored first and filled in place: typing ``x := y.f()`` resolves
+            # ``y.f()``, which reads this body's types back, including the
+            # locals typed from earlier calls.
+            self._add_call_typed_locals(file_path, language, types, *span)
         return types
+
+    def _add_call_typed_locals(
+        self,
+        file_path: str,
+        language: str,
+        types: dict[str, str | None],
+        start: int,
+        end: int,
+    ) -> None:
+        """Type ``x := f(..)`` locals from the declared return type of ``f``.
+
+        The value recorded is the type's symbol id, not its name: the name is
+        read in the callee's package, and a same-named type elsewhere must
+        not answer for it. Go never retypes a variable after declaring it, so
+        only a second ``:=`` of the name (another block) can disagree, and
+        that makes the name unanswerable, as for any declaration. A name a
+        declaration already types keeps that reading untouched.
+        """
+        assignments = self._call_assignments_for(file_path, language)
+        sites = self._call_sites_for(file_path)
+        declared = frozenset(types)
+        first = bisect_left(assignments, start, key=lambda a: a.line)
+        for assignment in assignments[first:]:
+            if assignment.line > end:
+                break
+            if assignment.name in declared:
+                continue
+            site = sites.get((assignment.line, assignment.receiver, assignment.target))
+            resolved = None if site is None else self._resolve_one(file_path, site)
+            # A repo-wide guess at the callee is not evidence of what it returns.
+            if resolved is None or "global" in resolved.origin:
+                continue
+            type_id = self._returned_type_id(resolved.callee_id)
+            if type_id is not None:
+                record_type(types, assignment.name, type_id)
+
+    def _returned_type_id(self, callee_id: str) -> str | None:
+        """The repository type a go call to *callee_id* yields, as a symbol id.
+
+        ``T`` is looked up in the callee's own package and ``pkg.T`` in the
+        package the callee's file imports as ``pkg``; exactly one type there
+        must carry the name. A slice, map or external type yields None.
+        """
+        symbol = self._symbols_by_id.get(callee_id)
+        path = self._symbol_paths_by_id.get(callee_id)
+        if symbol is None or path is None:
+            return None
+        if symbol.kind in _TYPE_KINDS:
+            return callee_id  # a conversion, ``T(x)``
+        raw = declared_return_type(symbol.signature or "")
+        written = go_first_result(raw).lstrip("*") if raw else ""
+        type_name = bare_type_name(written)
+        # The head is the package the callee's file imports, not a type.
+        qualifier = written.rpartition(".")[0]
+        if not type_name.isidentifier() or (qualifier and not qualifier.isidentifier()):
+            return None
+        package = posixpath.dirname(path) if not qualifier else self._imported_dir(path, qualifier)
+        if package is None:
+            return None
+        found = [
+            type_id
+            for type_id in self._global_symbols.get(type_name, ())
+            if self._symbols_by_id[type_id].kind in _TYPE_KINDS
+            and posixpath.dirname(self._symbol_paths_by_id.get(type_id, "")) == package
+        ]
+        return found[0] if len(found) == 1 else None
+
+    def _imported_dir(self, file_path: str, local_name: str) -> str | None:
+        """The directory of the repository package *file_path* imports as *local_name*."""
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed else ():
+            if local_name in imp.local_names:
+                bound = imp.resolved_file
+                if not bound or bound.startswith("external:"):
+                    return None
+                return posixpath.dirname(bound)
+        return None
+
+    def _call_typed_receiver(
+        self, file_path: str, call: CallSite, caller_id: str, type_id: str
+    ) -> ResolvedCall | None:
+        """``x.m()`` where ``x`` holds the type *type_id*, bound by identity.
+
+        A go method may sit in any file of its type's package, so the method
+        is looked for across that package, not only the type's own file.
+        """
+        type_name = self._symbols_by_id[type_id].name
+        package = posixpath.dirname(self._symbol_paths_by_id[type_id])
+        found = [
+            (path, sym_id)
+            for path, sym_id in self._global_methods.get((type_name, call.target_name), ())
+            if posixpath.dirname(path) == package
+        ]
+        if len(found) != 1 or found[0][1] == caller_id:
+            return None
+        method_file, sym_id = found[0]
+        if method_file == file_path:
+            tier = "same_file"
+        elif package == posixpath.dirname(file_path):
+            tier = "same_package"
+        else:
+            tier = "import"
+        return self._body_typed_call(caller_id, sym_id, tier, call.line)
 
     def _module_types_in(self, file_path: str, language: str) -> dict[str, str | None]:
         """``{name: type}`` for the declarations one file makes at module scope.
@@ -982,6 +1101,25 @@ class ReceiverTypingMixin:
             found = scan_declarations(self._text_of(file_path), language)
             _store_capped(self._declarations, file_path, found, _SOURCE_CACHE_FILES)
         return found
+
+    def _call_assignments_for(self, file_path: str, language: str) -> tuple[CallAssignment, ...]:
+        found = self._call_assignments.get(file_path)
+        if found is None:
+            found = scan_call_assignments(self._text_of(file_path), language)
+            _store_capped(self._call_assignments, file_path, found, _SOURCE_CACHE_FILES)
+        return found
+
+    def _call_sites_for(self, file_path: str) -> dict[tuple[int, str | None, str], CallSite]:
+        sites = self._call_sites.get(file_path)
+        if sites is None:
+            parsed = self._parsed_files.get(file_path)
+            sites = {
+                (c.line, c.receiver_name, c.target_name): c
+                for c in (parsed.calls if parsed else ())
+                if c.caller_symbol_id and c.receiver_call is None
+            }
+            _store_capped(self._call_sites, file_path, sites, _SOURCE_CACHE_FILES)
+        return sites
 
     def _spans_for(self, file_path: str) -> dict[str, tuple[int, int]]:
         """``{symbol_id: (start_line, end_line)}`` for one file."""

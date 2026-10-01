@@ -11,6 +11,8 @@ import pytest
 from repowise.core.ingestion.languages.receiver_types import (
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
+    CallAssignment,
+    scan_call_assignments,
     scan_declarations,
     types_by_class,
     types_in_span,
@@ -549,7 +551,7 @@ class TestGoShapes:
 
     def test_a_constructor_call_names_no_type(self) -> None:
         """``x := NewFoo()`` types ``x`` only via the callee's return type,
-        which is a second lookup this mechanism does not do."""
+        which the resolver reads from ``scan_call_assignments``, not here."""
         assert declared_types("func f() { d := NewDetector() }", "go") == {}
 
     def test_a_slice_literal_does_not_type_its_element(self) -> None:
@@ -636,6 +638,41 @@ class TestGoFields:
         """A body line of the same shape (``return err``) must not bind a local."""
         body = "func f() {\n\tcfg Config\n\treturn err\n}"
         assert declared_types(body, "go") == {}
+
+
+class TestGoCallAssignments:
+    """``x := f(..)``: the call the resolver reads a return type from."""
+
+    def test_a_qualified_call(self) -> None:
+        body = "func f() {\n\td := detect.NewDetector(ctx, cfg)\n}"
+        assert scan_call_assignments(body, "go") == (
+            CallAssignment(2, "d", "detect", "NewDetector"),
+        )
+
+    def test_a_multiple_result_call_names_its_first_result(self) -> None:
+        body = "func f() {\n\td, err := New()\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
+
+    def test_arguments_may_span_lines_and_quote_parens(self) -> None:
+        body = 'func f() {\n\td := New(\n\t\t")", `(`,\n\t)\n\td.Run()\n}'
+        assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
+
+    def test_an_if_initialiser_is_a_whole_statement(self) -> None:
+        body = "func f() {\n\tif d, err := New(); err != nil {\n\t}\n}"
+        assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
+
+    def test_a_chained_call_is_not_the_head_s_result(self) -> None:
+        """``x`` holds what ``g`` returns, not what ``f`` returns."""
+        assert scan_call_assignments("func f() {\n\tx := f().g()\n}", "go") == ()
+
+    def test_an_expression_around_the_call_is_refused(self) -> None:
+        assert scan_call_assignments("func f() {\n\tn := count() + 1\n}", "go") == ()
+
+    def test_a_composite_literal_is_left_to_scan_declarations(self) -> None:
+        assert scan_call_assignments("func f() {\n\tr := Rule{}\n}", "go") == ()
+
+    def test_other_languages_scan_nothing(self) -> None:
+        assert scan_call_assignments("x := f()\n", "java") == ()
 
 
 class TestClassScope:

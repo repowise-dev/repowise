@@ -3,39 +3,43 @@
 Every store is read in its own savepoint and may fail on its own: an index
 built before a detector shipped, or an older schema, costs that store's rules
 (reported as unavailable, with the reason) rather than the whole list.
+
+The reads here only narrow; the row-to-fact rule is the pure builder in
+``repowise.core.analysis.actions.build``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.actions import ActionStateRecord, RepoFacts, compose_actions
-from repowise.core.analysis.actions.facts import (
-    CoverageState,
-    DeadFacts,
-    DecisionFacts,
-    DriftFacts,
-    FileFacts,
-    LeadFinding,
-    PerfFacts,
-    RecentFinding,
-    SecretFacts,
+from repowise.core.analysis.actions.build import (
+    ABSENT,
+    AUTHORED_BASES,
+    QUARTER,
+    WEEK,
+    build_authors,
+    build_coverage,
+    build_dead,
+    build_decisions,
+    build_drift,
+    build_files,
+    build_perf,
+    build_recent,
+    build_secrets,
+    lead_paths,
+    with_leads,
 )
+from repowise.core.analysis.actions.facts import FileFacts
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
-from repowise.core.author_identity import author_identity_key
 
 from ...models import (
     ActionState,
@@ -57,17 +61,15 @@ from ...models import (
 
 logger = logging.getLogger(__name__)
 
-QUARTER = timedelta(days=90)
-WEEK = timedelta(days=7)
-
-#: Attribution bases that tie a finding to lines the commit wrote. A
-#: ``file_change`` basis only says the commit touched the file, which is not
-#: enough to tell someone they made it worse.
-AUTHORED_BASES = ("added_lines", "new_file", "changed_symbol")
-
-#: Files whose lead finding is looked up: busy bug magnets only, so the lookup
-#: stays a keyed read whatever the repository's size.
-LEAD_LOOKUP_MIN_COMMITS = 5
+_HEALTH_FINDING_COLUMNS = (
+    HealthFinding.file_path,
+    HealthFinding.biomarker_type,
+    HealthFinding.severity,
+    HealthFinding.function_name,
+    HealthFinding.line_start,
+    HealthFinding.reason,
+    HealthFinding.health_impact,
+)
 
 
 async def _anchor(session: AsyncSession, repo_id: str) -> tuple[datetime | None, str | None]:
@@ -117,121 +119,55 @@ async def _files(session: AsyncSession, repo_id: str, since: datetime | None) ->
             )
         ).all()
     )
-    fix_shas: dict[str, set[str]] = defaultdict(set)
-    all_fix: set[str] = set()
+    fix_events: list[Any] = []
     if since is not None:
-        for path, sha in (
+        fix_events = (
             await session.execute(
-                select(FixEvent.file_path, FixEvent.fix_sha).where(
+                select(
+                    FixEvent.file_path,
+                    FixEvent.fix_sha,
+                    FixEvent.committed_at,
+                    FixEvent.shape_kind,
+                    FixEvent.attribution,
+                ).where(
                     FixEvent.repository_id == repo_id,
                     FixEvent.committed_at >= since,
                     FixEvent.shape_kind == "code_fix",
                     FixEvent.attribution != "none",
                 )
             )
-        ).all():
-            fix_shas[path].add(sha)
-            all_fix.add(sha)
-
-    files: dict[str, FileFacts] = {}
-    for r in rows:
-        files[r.file_path] = FileFacts(
-            path=r.file_path,
-            is_test=bool(r.is_test),
-            score=r.score,
-            max_ccn=r.max_ccn,
-            nloc=r.nloc,
-            line_coverage_pct=r.line_coverage_pct,
-            commits_90d=r.commit_count_90d or 0,
-            last_commit_at=r.last_commit_at,
-            bug_magnet=bool(r.bug_magnet),
-            fix_commits_90d=len(fix_shas.get(r.file_path, ())),
-            bus_factor=r.bus_factor,
-            owner_key=(
-                author_identity_key(r.primary_owner_name, r.primary_owner_email)
-                if (r.primary_owner_name or r.primary_owner_email)
-                else None
-            ),
-            owner_name=r.primary_owner_name,
-            owner_pct=r.primary_owner_commit_pct,
-            dependents=dependents.get(r.file_path),
-        )
-
-    # Lead finding for the busy bug magnets: the code-shape finding an edit can
-    # fix. History markers are context, never the thing to do.
-    lead_paths = [
-        p
-        for p, f in files.items()
-        if f.bug_magnet
-        and not f.is_test
-        and f.commits_90d >= LEAD_LOOKUP_MIN_COMMITS
-        and f.fix_commits_90d >= 3
-    ]
-    if lead_paths:
+        ).all()
+    out = build_files(rows, since=since, fix_events=fix_events, dependents=dependents)
+    # The lead lookup stays keyed to the few files that get one.
+    paths = lead_paths(out["files"])
+    if paths:
         findings = (
             await session.execute(
-                select(
-                    HealthFinding.file_path,
-                    HealthFinding.biomarker_type,
-                    HealthFinding.severity,
-                    HealthFinding.function_name,
-                    HealthFinding.line_start,
-                    HealthFinding.reason,
-                    HealthFinding.health_impact,
-                ).where(
+                select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
-                    HealthFinding.file_path.in_(lead_paths),
+                    HealthFinding.file_path.in_(paths),
                     HealthFinding.biomarker_type.not_in(excluded_types()),
                 )
             )
         ).all()
-        by_path: dict[str, list] = defaultdict(list)
-        for f in findings:
-            by_path[f.file_path].append(f)
-        for path, found in by_path.items():
-            shape, _history = split_by_origin(found)
-            lead = primary_finding(shape)
-            if lead is not None:
-                files[path] = replace(
-                    files[path],
-                    lead=LeadFinding(
-                        biomarker=lead.biomarker_type,
-                        severity=lead.severity,
-                        function=lead.function_name,
-                        line=lead.line_start,
-                        reason=lead.reason or "",
-                    ),
-                )
-    return {
-        "files": files,
-        "fix_shas_by_file": {p: frozenset(s) for p, s in fix_shas.items()},
-        "fix_commits_90d": len(all_fix),
-    }
+        out["files"] = with_leads(out["files"], findings)
+    return out
 
 
 async def _authors(session: AsyncSession, repo_id: str, since: datetime | None) -> dict[str, Any]:
-    last: dict[str, datetime] = {}
-    active: set[str] = set()
-    for name, email, latest in (
+    rows = (
         await session.execute(
             select(
                 GitCommit.author_name,
                 GitCommit.author_email,
-                func.max(GitCommit.committed_at),
+                func.max(GitCommit.committed_at).label("committed_at"),
             )
             .where(GitCommit.repository_id == repo_id)
             .group_by(GitCommit.author_name, GitCommit.author_email)
         )
-    ).all():
-        if latest is None:
-            continue
-        key = author_identity_key(name, email)
-        if key not in last or latest > last[key]:
-            last[key] = latest
-        if since is not None and latest >= since:
-            active.add(key)
-    return {"author_last_commit": last, "active_authors_90d": len(active)}
+    ).all()
+    return build_authors(rows, since=since)
 
 
 async def _recent(
@@ -241,7 +177,19 @@ async def _recent(
         return {}
     rows = (
         await session.execute(
-            select(GitCommitHealthFinding, GitCommit.subject, GitCommit.committed_at)
+            select(
+                GitCommitHealthFinding.sha,
+                GitCommitHealthFinding.file_path,
+                GitCommitHealthFinding.symbol,
+                GitCommitHealthFinding.biomarker_type,
+                GitCommitHealthFinding.severity,
+                GitCommitHealthFinding.change_kind,
+                GitCommitHealthFinding.line_start,
+                GitCommitHealthFinding.reason,
+                GitCommitHealthFinding.attribution_basis,
+                GitCommit.subject,
+                GitCommit.committed_at,
+            )
             .join(
                 GitCommit,
                 (GitCommit.repository_id == GitCommitHealthFinding.repository_id)
@@ -256,55 +204,18 @@ async def _recent(
             )
         )
     ).all()
-    candidates = [
-        (f, subject, at)
-        for f, subject, at in rows
-        if not (files.get(f.file_path) and files[f.file_path].is_test)
-        and biomarker_category(f.biomarker_type) != HISTORY_CATEGORY
-        and f.biomarker_type not in excluded_types()
-    ]
-    if not candidates:
-        return {"recent_findings": ()}
-    paths = {f.file_path for f, _, _ in candidates}
-    open_keys = {
-        (p, b, fn)
-        for p, b, fn in (
+    open_findings: list[Any] = []
+    if rows:
+        open_findings = (
             await session.execute(
-                select(
-                    HealthFinding.file_path,
-                    HealthFinding.biomarker_type,
-                    HealthFinding.function_name,
-                ).where(
+                select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
-                    HealthFinding.file_path.in_(paths),
+                    HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )
         ).all()
-    }
-    recent = []
-    seen: set[tuple[str, str, str | None]] = set()
-    for f, subject, at in sorted(candidates, key=lambda r: r[2] or datetime.min, reverse=True):
-        key = (f.file_path, f.biomarker_type, f.symbol)
-        # Still open, and counted once however many commits touched it.
-        if key not in open_keys or key in seen:
-            continue
-        seen.add(key)
-        recent.append(
-            RecentFinding(
-                sha=f.sha,
-                subject=subject or "",
-                committed_at=at,
-                file_path=f.file_path,
-                symbol=f.symbol,
-                biomarker=f.biomarker_type,
-                severity=f.severity,
-                change_kind=f.change_kind,
-                line=f.line_start,
-                reason=f.reason or "",
-            )
-        )
-    return {"recent_findings": tuple(recent)}
+    return build_recent(rows, week=since, open_findings=open_findings, files=files)
 
 
 async def _perf(session: AsyncSession, repo_id: str) -> dict[str, Any]:
@@ -322,30 +233,7 @@ async def _perf(session: AsyncSession, repo_id: str) -> dict[str, Any]:
         .scalars()
         .all()
     )
-    out = []
-    for r in rows:
-        try:
-            details = json.loads(r.details_json or "{}")
-        except ValueError:
-            details = {}
-        facets = details.get("facets") or {}
-        plan = details.get("plan") or {}
-        out.append(
-            PerfFacts(
-                opportunity_id=r.opportunity_id,
-                biomarker=r.biomarker_type,
-                boundary=r.boundary_kind,
-                file_path=r.file_path,
-                symbol=r.intervention_symbol,
-                call_sites=r.affected_call_sites_total or 0,
-                files=r.affected_files_total or 0,
-                actionability=r.actionability_state,
-                exposure=facets.get("exposure"),
-                loop_magnitude=facets.get("loop_magnitude"),
-                effort=plan.get("effort_bucket"),
-            )
-        )
-    return {"perf": tuple(out)}
+    return build_perf(rows)
 
 
 async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
@@ -356,6 +244,8 @@ async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFac
                 SecurityFinding.kind,
                 SecurityFinding.line_number,
                 SecurityFinding.snippet,
+                SecurityFinding.severity,
+                SecurityFinding.commit_sha,
             ).where(
                 SecurityFinding.repository_id == repo_id,
                 SecurityFinding.commit_sha == "",
@@ -364,22 +254,7 @@ async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFac
             )
         )
     ).all()
-    return {
-        "secrets": tuple(
-            SecretFacts(r.file_path, r.kind, r.line_number, r.snippet or "")
-            for r in rows
-            if not (files.get(r.file_path) and files[r.file_path].is_test)
-            and not _test_path(r.file_path)
-        )
-    }
-
-
-def _test_path(path: str) -> bool:
-    lowered = path.lower()
-    return any(
-        seg in lowered
-        for seg in ("/tests/", "/test/", "__tests__", "/fixtures/", ".test.", ".spec.", "_test.")
-    ) or lowered.startswith(("tests/", "test/"))
+    return build_secrets(rows, files)
 
 
 async def _drift(session: AsyncSession, repo_id: str) -> dict[str, Any]:
@@ -425,21 +300,7 @@ async def _drift(session: AsyncSession, repo_id: str) -> dict[str, Any]:
             .scalars()
             .all()
         )
-    return {
-        "drift": tuple(
-            DriftFacts(
-                document=r.file_path,
-                kind=r.kind,
-                target=r.target or "",
-                raw=r.raw or "",
-                line=r.line_number,
-                reason=r.reason or "",
-                confidence=float(r.confidence or 0.0),
-                target_known=(r.target in known),
-            )
-            for r in rows
-        )
-    }
+    return build_drift(rows, known)
 
 
 async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
@@ -450,6 +311,9 @@ async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]
                 DeadCodeFinding.file_path,
                 DeadCodeFinding.symbol_name,
                 DeadCodeFinding.lines,
+                DeadCodeFinding.kind,
+                DeadCodeFinding.safe_to_delete,
+                DeadCodeFinding.status,
             ).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.status == "open",
@@ -458,28 +322,13 @@ async def _dead(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]
             )
         )
     ).all()
-    return {
-        "dead": tuple(
-            DeadFacts(r.id, r.file_path, r.symbol_name, r.lines or 0)
-            for r in rows
-            if not (files.get(r.file_path) and files[r.file_path].is_test)
-            and not _test_path(r.file_path)
-        )
-    }
+    return build_dead(rows, files)
 
 
 async def _decisions(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     from ..decision_health import get_decision_health_summary
 
-    summary = await get_decision_health_summary(session, repo_id)
-    counts = summary.get("summary") or {}
-    return {
-        "stale_decisions": tuple(
-            DecisionFacts(d.id, d.title) for d in summary.get("stale_decisions") or []
-        ),
-        "proposed_decisions": int(counts.get("proposed") or 0),
-        "accepted_decisions": int(counts.get("active") or 0),
-    }
+    return build_decisions(await get_decision_health_summary(session, repo_id))
 
 
 async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -> dict:
@@ -492,38 +341,42 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
             ).where(CoverageFile.repository_id == repo_id)
         )
     ).one()
-    if not count:
-        return {"coverage": CoverageState("unknown")}
-    # The ingest record is authoritative for when, at which commit, and whether
-    # the report's paths all mapped. Indexes that predate it carry the same
-    # commit on every row, because one ingest replaces them all.
     partial = False
-    try:
-        async with session.begin_nested():
-            ingest = (
-                await session.execute(
-                    select(
-                        CoverageIngest.ingested_at,
-                        CoverageIngest.ingested_commit_sha,
-                        CoverageIngest.mapping_partial,
+    if count:
+        # The ingest record is authoritative for when, at which commit, and
+        # whether the report's paths all mapped. Indexes that predate it carry
+        # the same commit on every row, because one ingest replaces them all.
+        try:
+            async with session.begin_nested():
+                ingest = (
+                    await session.execute(
+                        select(
+                            CoverageIngest.ingested_at,
+                            CoverageIngest.ingested_commit_sha,
+                            CoverageIngest.mapping_partial,
+                        )
+                        .where(CoverageIngest.repository_id == repo_id)
+                        .order_by(CoverageIngest.ingested_at.desc())
+                        .limit(1)
                     )
-                    .where(CoverageIngest.repository_id == repo_id)
-                    .order_by(CoverageIngest.ingested_at.desc())
-                    .limit(1)
+                ).first()
+            if ingest is not None:
+                latest_at, latest_sha, partial = (
+                    ingest.ingested_at,
+                    ingest.ingested_commit_sha,
+                    bool(ingest.mapping_partial),
                 )
-            ).first()
-        if ingest is not None:
-            latest_at, latest_sha, partial = (
-                ingest.ingested_at,
-                ingest.ingested_commit_sha,
-                bool(ingest.mapping_partial),
-            )
-    except Exception:  # an index from before ingests were recorded
-        pass
-    # Stale only when both commits are known and differ; a report without a
-    # commit cannot be called out of date.
-    status = "stale" if latest_sha and head_sha and latest_sha != head_sha else "measured"
-    return {"coverage": CoverageState(status, latest_at, int(count), partial)}
+        except Exception:  # an index from before ingests were recorded
+            pass
+    return build_coverage(
+        {
+            "files_measured": count,
+            "ingested_at": latest_at,
+            "ingested_commit_sha": latest_sha,
+            "partial": partial,
+        },
+        head_sha,
+    )
 
 
 _Reader = Callable[[], Awaitable[dict[str, Any]]]
@@ -542,7 +395,7 @@ async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
                 values.update(await reader())
         except Exception as exc:  # one store must not cost the list
             logger.warning("actions: %s unavailable: %s", store, exc)
-            unavailable[store] = "Not in this index yet; run `repowise update`."
+            unavailable[store] = ABSENT
 
     await read("files", lambda: _files(session, repo_id, since))
     files: dict[str, FileFacts] = values.get("files") or {}
