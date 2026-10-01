@@ -159,6 +159,9 @@ class _Unit:
     effort: str
     improves: str
     write: Callable[[int], FixItem]
+    #: False for a performance cause whose marker has not cleared the bar for
+    #: leading (``opportunity_rank.may_lead``): listed, never first.
+    may_lead: bool = True
 
 
 _VENDORED = frozenset({"vendor", "third_party", "thirdparty", "node_modules"})
@@ -477,6 +480,7 @@ def _finish(
     improves: str,
     rank_inputs: Callable[[], list[FixRankFact]],
     fields: Callable[[], dict[str, Any]],
+    may_lead: bool = True,
 ) -> _Unit:
     confidence = confidence if confidence in LEVEL_RANK else "low"
     effort = effort if effort in FIX_EFFORTS else "M"
@@ -498,7 +502,7 @@ def _finish(
             **fields(),
         )
 
-    return _Unit(item_id, kind, tier, value, score, confidence, effort, improves, write)
+    return _Unit(item_id, kind, tier, value, score, confidence, effort, improves, write, may_lead)
 
 
 # --- refactoring ----------------------------------------------------------------
@@ -961,6 +965,7 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
     confidence = confidence if confidence in LEVEL_RANK else "low"
     return _finish(
         kind="perf_fix",
+        may_lead=details.get("may_lead") is not False,
         source_id=f"{path}::{symbol or path}",
         value=_perf_value(lead, facets),
         ready=ready or mechanical,
@@ -1131,7 +1136,12 @@ def _order(units: list[_Unit]) -> list[_Unit]:
         ranked.remove(pick)
         head.append(pick)
         taken[pick.kind] += 1
-    return head + ranked
+    out = head + ranked
+    # A cause that may not lead stays in the list, behind the first that may.
+    first = next((i for i, u in enumerate(out) if u.may_lead), 0)
+    if first:
+        out.insert(0, out.pop(first))
+    return out
 
 
 def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:

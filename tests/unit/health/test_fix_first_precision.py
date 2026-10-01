@@ -310,3 +310,38 @@ def test_a_duplicate_does_not_lift_a_line_finding() -> None:
     handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 30}
     item = _queue([handler, _dry()]).lead
     assert _ranked(item, "duplicate inside") == "no"
+
+
+# --- may_lead: a cause that has not cleared the bar never leads ----------------
+
+
+def _lazy(may_lead: bool) -> dict:
+    from tests.unit.health.fix_first_rows import _perf
+
+    row = _perf("perf3_lazy", "src/db.py::fetch", biomarker_type="lazy_load_in_loop")
+    row["details"] = {**row["details"], "may_lead": may_lead}
+    return row
+
+
+def test_a_cause_that_may_not_lead_is_listed_second() -> None:
+    small = _finding("src/core.py", ccn=16, nloc=40)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[small],
+        performance=[_lazy(False)],
+    )
+    assert [i.kind for i in queue.items] == ["finding", "perf_fix"]
+    assert next(f.value for f in queue.items[1].why_ranked if f.factor == "value") == "3"
+
+
+def test_a_cause_that_may_lead_still_leads() -> None:
+    small = _finding("src/core.py", ccn=16, nloc=40)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[small],
+        performance=[_lazy(True)],
+    )
+    assert [i.kind for i in queue.items] == ["perf_fix", "finding"]
+
+
+def test_a_lone_cause_that_may_not_lead_is_still_shown() -> None:
+    queue = build_fix_first(metrics=[_metric("src/repo.py")], performance=[_lazy(False)])
+    assert [i.kind for i in queue.items] == ["perf_fix"]
