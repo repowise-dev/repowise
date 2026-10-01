@@ -154,6 +154,10 @@ def _parse_porcelain(
     # Cache author-time per sha — porcelain only emits headers the first
     # time a sha appears; subsequent blocks repeat sha + line numbers only.
     sha_author_time: dict[str, int] = {}
+    # One shared ``(sha, time)`` tuple per commit instead of a fresh tuple,
+    # sha string and int per line: the index stays alive from the git stage
+    # until health finishes, and per-line copies tripled its size.
+    entries: dict[tuple[str, int], tuple[str, int]] = {}
 
     for line in raw.splitlines():
         if not line:
@@ -161,7 +165,8 @@ def _parse_porcelain(
         if line.startswith("\t"):
             if current_sha is not None and current_final is not None:
                 t = current_author_time or sha_author_time.get(current_sha, 0)
-                out[current_final] = (current_sha, t)
+                entry = (current_sha, t)
+                out[current_final] = entries.setdefault(entry, entry)
                 if current_sha not in authors and current_author_name:
                     authors[current_sha] = (
                         current_author_name,

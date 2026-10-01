@@ -51,6 +51,14 @@ def test_parse_porcelain_indexes_each_final_line():
     assert lines[4] == ("cccccccccccccccccccccccccccccccccccccccc", 1755000000)
 
 
+def test_parse_porcelain_shares_one_entry_per_commit():
+    # Lines from the same commit hold the same tuple, so the index costs one
+    # entry per commit rather than one tuple and sha string per line.
+    lines, _ = _parse_porcelain(_PORCELAIN)
+    assert lines[1] is lines[2]
+    assert lines[1] is not lines[3]
+
+
 def test_distinct_commits_in_range():
     idx = BlameIndex(lines=_parse_porcelain(_PORCELAIN)[0])
     # Range 1-2 → single sha (a*).
