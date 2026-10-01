@@ -141,7 +141,7 @@ export default async function OverviewPage({ params }: Props) {
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.
         actions: actions ? (
-          <NextActionsPanel repoId={id} repoName={repo.name} data={actions} />
+          <NextActionsPanel repoId={id} data={actions} />
         ) : undefined,
       }}
     />

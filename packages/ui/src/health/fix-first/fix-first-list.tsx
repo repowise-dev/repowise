@@ -7,7 +7,7 @@
  * host fetches, routes and writes, this renders.
  */
 
-import { useState, type ElementType } from "react";
+import { useCallback, useState, type ElementType } from "react";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
 
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
@@ -15,7 +15,7 @@ import { ApiError } from "../../shared/api-error";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
-import { buildFixItemPrompt } from "../ai-prompts/fix-first-prompt";
+import type { AiPromptFlavor } from "../ai-prompt-builder";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
 import { fixFirstScopeSentence, fixLocation } from "./scope";
 
@@ -30,7 +30,8 @@ export interface FixFirstListProps {
   fileHref?: ((path: string, line: number | null) => string | undefined) | undefined;
   planHref?: ((item: FixItem) => string | null) | undefined;
   onTriage?: ((item: FixItem, status: FixTriageStatus) => Promise<void>) | undefined;
-  repoName?: string | undefined;
+  /** An item's agent prompt as core renders it, for this `scope`. Omit to hide the prompt. */
+  loadPrompt?: ((item: FixItem, flavor: AiPromptFlavor) => Promise<string>) | undefined;
   LinkComponent?: ElementType | undefined;
   /** Drop the section's top hairline when it opens the page. */
   flush?: boolean | undefined;
@@ -46,7 +47,7 @@ export function FixFirstList({
   fileHref,
   planHref,
   onTriage,
-  repoName,
+  loadPrompt,
   LinkComponent,
   flush = true,
 }: FixFirstListProps) {
@@ -60,6 +61,11 @@ export function FixFirstList({
     setOpen(next);
   };
   const [promptFor, setPromptFor] = useState<FixItem | null>(null);
+  // Only fetched while the modal is open on an item; stable per item.
+  const promptSource = useCallback(
+    (flavor: AiPromptFlavor) => loadPrompt!(promptFor!, flavor),
+    [loadPrompt, promptFor],
+  );
 
   const toggleTests = onScopeChange ? (
     <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
@@ -111,7 +117,7 @@ export function FixFirstList({
               onToggle={() => toggle(item.id)}
               fileHref={fileHref}
               planHref={planHref}
-              onAiPrompt={setPromptFor}
+              onAiPrompt={loadPrompt ? setPromptFor : undefined}
               onTriage={onTriage}
               LinkComponent={LinkComponent}
             />
@@ -124,16 +130,8 @@ export function FixFirstList({
         onOpenChange={(next) => {
           if (!next) setPromptFor(null);
         }}
-        getPrompt={
-          promptFor
-            ? (flavor) =>
-                buildFixItemPrompt({
-                  item: promptFor,
-                  flavor,
-                  ...(repoName ? { repoName } : {}),
-                })
-            : null
-        }
+        getPrompt={null}
+        promptSource={promptSource}
         filePath={promptFor ? fixLocation(promptFor) : null}
         chatContext={fileChatContext(promptFor?.target.file_path)}
         title="Prompt for an agent"

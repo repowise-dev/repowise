@@ -16,7 +16,7 @@ import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
 import { Segmented } from "../shared/segmented";
-import { ActionDrawer } from "./action-drawer";
+import { ActionDrawer, type ActionDrawerProps } from "./action-drawer";
 import { OverviewSection } from "./section";
 
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
@@ -36,7 +36,8 @@ export interface NextActionsProps {
   fileHref?: ((path: string) => string | null) | undefined;
   /** Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs. */
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
-  repoName?: string | undefined;
+  /** An action's agent prompt as core renders it. Omit to hide the prompt. */
+  loadPrompt?: ActionDrawerProps["loadPrompt"];
   LinkComponent?: ElementType | undefined;
 }
 
@@ -106,7 +107,7 @@ export function NextActions({
   hrefFor,
   fileHref,
   onSetState,
-  repoName,
+  loadPrompt,
   LinkComponent,
 }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
@@ -253,7 +254,7 @@ export function NextActions({
             ? (state, message) => answer(opened, state, message)
             : undefined
         }
-        repoName={repoName}
+        loadPrompt={loadPrompt}
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />

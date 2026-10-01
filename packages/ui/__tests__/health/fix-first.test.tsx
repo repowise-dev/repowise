@@ -10,7 +10,6 @@ import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
 
 import { FixFirstList } from "../../src/health/fix-first/fix-first-list";
 import { fixFirstScopeSentence, fixPlanLabel } from "../../src/health/fix-first/scope";
-import { buildFixItemPrompt } from "../../src/health/ai-prompts/fix-first-prompt";
 import { FIX_FIRST_QUEUE } from "./fixtures/fix-first";
 
 const [REFACTOR, FINDING, PERF] = FIX_FIRST_QUEUE.items as [FixItem, FixItem, FixItem];
@@ -127,26 +126,16 @@ describe("Fix first items", () => {
 });
 
 describe("Fix first agent prompt", () => {
-  it("carries the steps and the Verify block", () => {
-    const prompt = buildFixItemPrompt({ item: REFACTOR, flavor: "claude-code-mcp" });
-    expect(prompt).toContain("## Verify");
-    expect(prompt).toContain(`Run: \`${REFACTOR.verify.command}\``);
-    expect(prompt).toContain("[mechanical]");
-    expect(prompt).toContain('get_health(opportunity_id="refop3_8ba13d978db910d160b1")');
+  it("is offered only when the host can load it", () => {
+    renderList();
+    expect(screen.queryByRole("button", { name: "Copy prompt for an agent" })).toBeNull();
   });
 
-  it("tells the agent to pin behaviour when no test guards the change", () => {
-    const prompt = buildFixItemPrompt({ item: FINDING });
-    expect(prompt).toContain("No guarding tests found.");
-  });
-
-  // The core renderer is parity-tested against this text, so a change to the
-  // shared preamble must not move a byte of it.
-  it("keeps every flavor's text unchanged", () => {
-    for (const flavor of ["generic", "claude-code", "claude-code-mcp", "cursor"] as const) {
-      for (const item of [REFACTOR, FINDING, PERF]) {
-        expect(buildFixItemPrompt({ item, flavor, repoName: "repo" })).toMatchSnapshot(`${item.id} ${flavor}`);
-      }
-    }
+  it("shows the prompt the host loads for the item", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    renderList({ loadPrompt });
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for an agent" }));
+    expect(await screen.findByText("Prompt from core")).toBeTruthy();
+    expect(loadPrompt).toHaveBeenCalledWith(REFACTOR, expect.any(String));
   });
 });

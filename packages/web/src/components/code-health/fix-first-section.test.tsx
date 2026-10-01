@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
 
 const getFixFirst = vi.fn();
 const updateFindingStatus = vi.fn();
+const getFixFirstItemPrompt = vi.fn();
 vi.mock("@/lib/api/code-health", () => ({
   getFixFirst: (...args: unknown[]) => getFixFirst(...args),
+  getFixFirstItemPrompt: (...args: unknown[]) => getFixFirstItemPrompt(...args),
   updateFindingStatus: (...args: unknown[]) => updateFindingStatus(...args),
 }));
 
 import { FixFirstSection, fixPlanHref } from "./fix-first-section";
+
+afterEach(cleanup);
 
 function item(overrides: Partial<FixItem>): FixItem {
   return {
@@ -116,5 +120,17 @@ describe("FixFirstSection", () => {
     await waitFor(() => expect(updateFindingStatus).toHaveBeenCalledTimes(2));
     expect(updateFindingStatus).toHaveBeenCalledWith("r1", "finding_1", "resolved");
     expect(updateFindingStatus).toHaveBeenCalledWith("r1", "finding_2", "resolved");
+  });
+
+  it("shows the prompt core renders for the item, in the list's scope", async () => {
+    getFixFirst.mockResolvedValue(queue([item({})]));
+    getFixFirstItemPrompt.mockResolvedValue({ flavor: "generic", text: "Core prompt text" });
+    renderSection();
+    fireEvent.click((await screen.findAllByRole("button", { name: "Copy prompt for an agent" }))[0]!);
+    expect(await screen.findByText("Core prompt text")).toBeTruthy();
+    expect(getFixFirstItemPrompt).toHaveBeenCalledWith("r1", "fix1_a", {
+      flavor: expect.any(String),
+      scope: "production",
+    });
   });
 });

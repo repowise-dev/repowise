@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ElementType } from "react";
+import { useCallback, useState, type ElementType } from "react";
 import type {
   ActionHorizonKey,
   NextAction,
@@ -8,6 +8,7 @@ import type {
   WorkspaceRepoActions,
 } from "@repowise-dev/types/actions";
 
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { ActionDrawer } from "../overview/action-drawer";
 import { ActionRow, renderActionTitle } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
@@ -23,6 +24,10 @@ export interface WorkspaceNextActionsProps {
   fileHref?: ((repoId: string, path: string) => string | null) | undefined;
   /** Where cross-repository contract changes are listed. */
   contractsHref: string;
+  /** An action's agent prompt as core renders it, given its repository's id. Omit to hide the prompt. */
+  loadPrompt?:
+    | ((repoId: string, action: NextAction, flavor: AiPromptFlavor) => Promise<string>)
+    | undefined;
   LinkComponent?: ElementType | undefined;
 }
 
@@ -46,15 +51,21 @@ export function WorkspaceNextActions({
   repoHref,
   fileHref,
   contractsHref,
+  loadPrompt,
   LinkComponent,
 }: WorkspaceNextActionsProps) {
   const [horizon, setHorizon] = useState<ActionHorizonKey>(
     data.repos.some((r) => work(r, "week") > 0) ? "week" : "quarter",
   );
-  const [opened, setOpened] = useState<{ action: NextAction; repo: string; repoId: string } | null>(
+  const [opened, setOpened] = useState<{ action: NextAction; repoId: string } | null>(
     null,
   );
   const Link = LinkComponent ?? "a";
+  const openedRepoId = opened?.repoId;
+  const loadActionPrompt = useCallback(
+    (action: NextAction, flavor: AiPromptFlavor) => loadPrompt!(openedRepoId!, action, flavor),
+    [loadPrompt, openedRepoId],
+  );
 
   const available = data.repos.filter((r) => r.status === "available");
   const withWork = available
@@ -142,7 +153,7 @@ export function WorkspaceNextActions({
                     key={action.id}
                     action={action}
                     selected={opened?.action.id === action.id && opened.repoId === repoId}
-                    onOpen={() => setOpened({ action, repo: repo.alias, repoId })}
+                    onOpen={() => setOpened({ action, repoId })}
                   />
                 ))}
               </ul>
@@ -168,7 +179,7 @@ export function WorkspaceNextActions({
         onClose={() => setOpened(null)}
         evidenceHref={opened ? hrefFor(opened.repoId, opened.action) : null}
         fileHref={opened && fileHref ? (path) => fileHref(opened.repoId, path) : undefined}
-        repoName={opened?.repo}
+        loadPrompt={loadPrompt ? loadActionPrompt : undefined}
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />

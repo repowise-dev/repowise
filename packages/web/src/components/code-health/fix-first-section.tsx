@@ -12,7 +12,8 @@ import useSWR, { useSWRConfig } from "swr";
 import { FixFirstList } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
-import { getFixFirst, updateFindingStatus } from "@/lib/api/code-health";
+import type { AgentPromptFlavor } from "@repowise-dev/types/agent-prompts";
+import { getFixFirst, getFixFirstItemPrompt, updateFindingStatus } from "@/lib/api/code-health";
 
 /** Items the section lists. The server caps the route at 50. */
 const LIMIT = 10;
@@ -26,7 +27,7 @@ export function fixPlanHref(repoId: string, item: FixItem): string | null {
   return null;
 }
 
-export function FixFirstSection({ repoId, repoName }: { repoId: string; repoName?: string }) {
+export function FixFirstSection({ repoId }: { repoId: string }) {
   const [scope, setScope] = useState<FixScope>("production");
   const key = `code-health-fix-first:${repoId}:${scope}`;
   const { data, error, isLoading, mutate } = useSWR<FixFirstQueue>(
@@ -52,6 +53,12 @@ export function FixFirstSection({ repoId, repoName }: { repoId: string; repoName
     [repoId, mutateAll],
   );
 
+  const loadPrompt = useCallback(
+    async (item: FixItem, flavor: AgentPromptFlavor) =>
+      (await getFixFirstItemPrompt(repoId, item.id, { flavor, scope })).text,
+    [repoId, scope],
+  );
+
   const prefix = `/repos/${repoId}`;
   return (
     <FixFirstList
@@ -64,8 +71,8 @@ export function FixFirstSection({ repoId, repoName }: { repoId: string; repoName
       fileHref={(path) => fileEntityPath(prefix, path)}
       planHref={(item) => fixPlanHref(repoId, item)}
       onTriage={onTriage}
+      loadPrompt={loadPrompt}
       LinkComponent={Link}
-      {...(repoName ? { repoName } : {})}
     />
   );
 }
