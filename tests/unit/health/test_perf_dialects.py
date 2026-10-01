@@ -351,6 +351,57 @@ def test_csharp_task_result_chained_read_still_blocks():
     )
 
 
+def _csharp_async(body: str) -> list[tuple[str, str]]:
+    src = (
+        "class A{ async System.Threading.Tasks.Task M(bool c){ "
+        "var t = F(); var u = G(); " + body + " }}"
+    )
+    return [h for h in _hits("csharp", src) if h[0] == "blocking_sync_in_async"]
+
+
+_AWAITED_BEFORE_READ = [
+    ("await t; var r = t.Result;", "direct await"),
+    ("await t.ConfigureAwait(false); var r = t.Result;", "ConfigureAwait"),
+    ("await Task.WhenAll(t, u); var r = t.Result;", "WhenAll args"),
+    ("await Task.WhenAll(t, u); var r = t.Result.Items;", "chained read after WhenAll"),
+    (
+        "var l = new List<Task>(); l.Add(t); l.Add(u); await Task.WhenAll(l); var r = t.Result;",
+        "WhenAll over a list the task was added to",
+    ),
+    ("var a = new[] { t, u }; await Task.WhenAll(a); var r = t.Result;", "array initializer"),
+    ("await Task.WhenAll(new[] { t, u }); var r = u.Result;", "inline array"),
+    ("var d = await Task.WhenAny(t, u); var r = d.Result;", "task returned by WhenAny"),
+    ("await Task.WhenAll(t, u); t.GetAwaiter().GetResult();", "GetAwaiter().GetResult()"),
+    ("await t; if (c) { var r = t.Result; }", "read in a branch after a straight-line await"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _AWAITED_BEFORE_READ], ids=[c[1] for c in _AWAITED_BEFORE_READ]
+)
+def test_csharp_result_after_await_not_blocking(body):
+    """A task awaited earlier in the method is complete: ``.Result`` does not block."""
+    assert _csharp_async(body) == []
+
+
+_NOT_AWAITED_BEFORE_READ = [
+    ("var r = t.Result;", "no await at all"),
+    ("if (c) { await t; } var r = t.Result;", "await inside a branch that may not run"),
+    ("await u; var r = t.Result;", "a different task was awaited"),
+    ("await Task.WhenAll(u); var r = t.Result;", "WhenAll without the task"),
+    ("var r = t.Result; await t;", "await after the read"),
+    ("await Task.WhenAny(t, u); var r = t.Result;", "WhenAny argument may still run"),
+    ("System.Action f = async () => await t; var r = t.Result;", "await inside a lambda"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _NOT_AWAITED_BEFORE_READ], ids=[c[1] for c in _NOT_AWAITED_BEFORE_READ]
+)
+def test_csharp_result_without_prior_await_still_blocks(body):
+    assert _csharp_async(body) == [("blocking_sync_in_async", ".Result")]
+
+
 def test_go_sql_rows_scan_not_io_in_loop():
     """``rows.Scan`` inside ``for rows.Next()`` is a cursor decode, not a sink.
 

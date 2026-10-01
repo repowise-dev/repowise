@@ -509,7 +509,7 @@ def _collect_perf_hits(
                         lock_targets[method] = line
             if do_blocking and in_async and not awaited:
                 api = dialect.blocking_sync_api(root_name, method)
-                if api is not None:
+                if api is not None and not dialect.task_already_complete(call_node):
                     hits.append(
                         PerfHit(
                             "blocking_sync_in_async", line, next_func, api, func_start=next_start
@@ -519,7 +519,7 @@ def _collect_perf_hits(
             if do_blocking and in_async:
                 # A non-call member read that blocks in async (C# ``task.Result``).
                 mem = dialect.async_blocking_member(node)
-                if mem is not None:
+                if mem is not None and not dialect.task_already_complete(node):
                     hits.append(
                         PerfHit(
                             "blocking_sync_in_async",

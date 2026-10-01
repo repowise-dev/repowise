@@ -46,6 +46,10 @@ byte unchanged:
                                   ``x in big_list`` membership test).
 ``async_blocking_member(node)``   a non-call member read that blocks in async
                                   (C# ``task.Result``).
+``task_already_complete(node)``   the blocking read/call targets a task already
+                                  awaited earlier in the method (C# ``.Result``
+                                  after ``await Task.WhenAll(t)``), so it does
+                                  not block.
 ``list_bound_names(root)``        names provably bound to a list literal /
                                   comprehension in this file — the gate for the
                                   ``membership_test_against_list_in_loop`` marker.
@@ -613,6 +617,13 @@ class BasePerfDialect:
         :meth:`blocking_sync_api` instead. Default ``None``.
         """
         return None
+
+    def task_already_complete(self, node: Node) -> bool:
+        """True if the blocking ``node`` (a ``blocking_sync_api`` call or an
+        ``async_blocking_member`` read) targets a task that is provably complete
+        because it was awaited earlier in the same method. Default ``False``.
+        """
+        return False
 
     def unbounded_read_bound_methods(self) -> frozenset[str]:
         """Method names anywhere in a chain that prove a DB read is bounded.
