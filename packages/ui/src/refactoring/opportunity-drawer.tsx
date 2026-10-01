@@ -34,6 +34,7 @@ import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
 import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
+import { RelatedWork } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
 import { extractHelperDetail } from "./types";
 import {
@@ -52,6 +53,7 @@ import type {
   RefactoringOpportunityDetailResolved,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
+import type { RelatedWorkFile, RelatedWorkItem } from "@repowise-dev/types/health";
 
 
 /** The drill-down an agent should call. Same shape the performance drawer uses,
@@ -83,6 +85,11 @@ export interface OpportunityDrawerProps {
   readSource?: ((path: string) => Promise<string>) | undefined;
   /** Opt-in model drafting of one step's diff. Omit when generation is off. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  /** What the other lenses hold for this file, from `getRelatedWork`. */
+  related?: RelatedWorkFile | null | undefined;
+  /** Where one related item lives; omit and the items are plain text. */
+  relatedWorkHref?: ((item: RelatedWorkItem) => string | null) | undefined;
+  onNavigate?: ((href: string) => void) | undefined;
 }
 
 export function OpportunityDrawer({
@@ -97,6 +104,9 @@ export function OpportunityDrawer({
   fileHref,
   readSource,
   onGenerateCode,
+  related,
+  relatedWorkHref,
+  onNavigate,
 }: OpportunityDrawerProps) {
   const resolved = detail?.found ? detail : null;
   return (
@@ -115,6 +125,9 @@ export function OpportunityDrawer({
             fileHref={fileHref}
             readSource={readSource}
             onGenerateCode={onGenerateCode}
+            related={related}
+            relatedWorkHref={relatedWorkHref}
+            onNavigate={onNavigate}
           />
         ) : loading ? (
           <>
@@ -169,6 +182,9 @@ function DrawerBody({
   fileHref,
   readSource,
   onGenerateCode,
+  related,
+  relatedWorkHref,
+  onNavigate,
 }: {
   detail: RefactoringOpportunityDetailResolved;
   onAiPrompt?: ((detail: RefactoringOpportunityDetailResolved) => void) | undefined;
@@ -182,6 +198,9 @@ function DrawerBody({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  related?: RelatedWorkFile | null | undefined;
+  relatedWorkHref?: ((item: RelatedWorkItem) => string | null) | undefined;
+  onNavigate?: ((href: string) => void) | undefined;
 }) {
   const meta = typeMeta(detail.lead_refactoring_type || "");
   const plansById = React.useMemo(
@@ -373,6 +392,14 @@ function DrawerBody({
             </p>
           )}
         </section>
+
+        <RelatedWork
+          file={related?.file_path === detail.file_path ? related : null}
+          exclude={["refactoring"]}
+          href={relatedWorkHref}
+          onNavigate={onNavigate}
+          headingLevel="h4"
+        />
 
         {detail.evidence.length > 0 ? (
           <section>

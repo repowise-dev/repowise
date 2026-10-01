@@ -39,6 +39,7 @@ export * from "./patch-coverage-summary";
 export * from "./severity-mark";
 export * from "./code-health-adapter";
 export * from "./file-opportunity";
+export * from "./related-work";
 export * from "./triage-view";
 export * from "./findings-view";
 export * from "./performance-view";

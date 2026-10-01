@@ -15,6 +15,8 @@ export type PerformanceViewAdapter = Pick<
   | "getPerformanceOpportunityFindings"
   | "getRefactoringPlan"
   | "refactoringPlanHref"
+  | "getRelatedWork"
+  | "relatedWorkHref"
   | "mapHref"
   | "readSource"
   | "fileHref"
