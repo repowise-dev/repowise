@@ -28,6 +28,7 @@ import json
 from dataclasses import dataclass, field
 
 __all__ = [
+    "CO_CHANGE_COMMIT_DECAY_TAU",
     "CO_CHANGE_DECAY_TAU",
     "MAX_PARTNERS_PER_FILE",
     "MIN_CO_CHANGE_SUPPORT",
@@ -45,7 +46,17 @@ __all__ = [
 # Defined here rather than in the indexer because two independent producers
 # apply it (per-repo history and the cross-repo session miner), and a drift
 # between them would silently change what a weight means.
+# Two consumers now: change entropy, and the cross-repo session miner, whose
+# output is a self-normalising share in which the decay largely cancels.
 CO_CHANGE_DECAY_TAU: float = 180.0
+
+# Tau in ``exp(-commits_ago / tau)`` for the per-repo co-change PAIR weight,
+# where ``commits_ago`` is the commit's position in the newest-first walk.
+# Calendar time is the wrong clock for a mass the health score reads directly:
+# on a fast repo nothing in the indexed history is older than a 180-day tau, so
+# the decay retires nothing and partners only accumulate. Counting in commits
+# makes the clock the repo's own rate of change.
+CO_CHANGE_COMMIT_DECAY_TAU: float = 500.0
 
 # Minimum number of shared commits for a pair to be worth recording. Counted
 # raw, so it keeps its meaning if the weighting changes.
@@ -76,7 +87,8 @@ class CoChangePartner:
     zero on an index written before they were recorded.
 
     ``dependency_kind`` is the ``edge_type`` behind a ``corroborated``
-    verdict, and is ``None`` for every other verdict.
+    verdict, or ``"barrel"`` when the pair is joined through a re-export
+    barrel, and is ``None`` for every other verdict.
 
     ``record`` is the verbatim source record, for callers that put it back on
     the wire or read a field this module does not model; it is excluded from

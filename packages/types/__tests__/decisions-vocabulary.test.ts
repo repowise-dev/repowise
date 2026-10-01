@@ -11,11 +11,14 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  ACCEPTER_KINDS,
+  ACCEPTER_KIND_LABELS,
   CANDIDATE_REVIEW_STATES,
   DECISION_CURRENCIES,
   DECISION_SOURCES,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KINDS,
   DECISION_LANES,
   DECISION_PRESETS,
   DECISION_SOURCE_LABELS,
@@ -47,6 +50,16 @@ describe("decision vocabulary matches the engine", () => {
     expect([...DECISION_CURRENCIES]).toEqual(fixture.currencies);
   });
 
+  it("names the same accepter kinds", () => {
+    expect([...ACCEPTER_KINDS]).toEqual(fixture.accepter_kinds);
+  });
+
+  it("labels every accepter kind", () => {
+    expect(Object.keys(ACCEPTER_KIND_LABELS).sort()).toEqual(
+      [...fixture.accepter_kinds].sort(),
+    );
+  });
+
   it("names the same candidate review states", () => {
     expect([...CANDIDATE_REVIEW_STATES]).toEqual(
       fixture.candidate_review_states,
@@ -57,6 +70,10 @@ describe("decision vocabulary matches the engine", () => {
     const labelled = Object.keys(DECISION_SOURCE_LABELS).sort();
     const expected = [...fixture.sources, ...fixture.retired_sources].sort();
     expect(labelled).toEqual(expected);
+  });
+
+  it("names the same kinds", () => {
+    expect([...DECISION_KINDS]).toEqual(fixture.kinds);
   });
 
   it("names the same review lanes, in the same order", () => {

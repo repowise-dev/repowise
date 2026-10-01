@@ -1,24 +1,36 @@
 import * as React from "react";
-import type { AttentionItem } from "../dashboard/attention-href";
+import { ATTENTION_TYPE_LABEL, type AttentionItem } from "../dashboard/attention-href";
+import { biomarkerLabel } from "../health/biomarker-glossary";
 
 /** Same item the panel renders. Deliberately not a parallel local type: the
  *  two surfaces must resolve identical targets, and a looser `type: string`
  *  here would silently accept a value `getDefaultHref` cannot route. */
 export type AttentionRowItem = AttentionItem;
 
-const TYPE_LABEL: Record<string, string> = {
-  stale_decision: "Stale decision",
-  proposed_decision: "Proposed",
-  ungoverned_hotspot: "Ungoverned",
-  knowledge_silo: "Knowledge silo",
-  dead_code: "Dead code",
-};
 
 const SEVERITY_COLOR: Record<string, string> = {
+  // Critical and high share the error colour rather than introducing a fifth
+  // hue: the palette has one "this is bad" red, and the band is already named
+  // in the screen-reader text and carried by the sort order.
+  critical: "var(--color-error)",
   high: "var(--color-error)",
   medium: "var(--color-warning)",
   low: "var(--color-text-tertiary)",
 };
+
+/**
+ * The kind chip on the left of a row.
+ *
+ * A health finding says which biomarker fired rather than the generic "Code
+ * health", because "Brain method" and "Untested hotspot" are different jobs
+ * and the source name is the least useful thing the row could lead with. The
+ * glossary that resolves it lives in the UI, which is why the server sends the
+ * raw `biomarker_type` instead of a label of its own.
+ */
+function typeLabel(item: AttentionItem): string {
+  if (item.type === "health_finding" && item.subtype) return biomarkerLabel(item.subtype);
+  return ATTENTION_TYPE_LABEL[item.type] ?? item.type;
+}
 
 /**
  * Triage items as full-width rows.
@@ -40,7 +52,7 @@ export function AttentionRows({
   items: AttentionRowItem[];
   /** Resolves an item to its target page; null renders the row unlinked. */
   hrefFor: (item: AttentionRowItem) => string | null;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (items.length === 0) {
@@ -57,7 +69,7 @@ export function AttentionRows({
         const href = hrefFor(item);
         const body = (
           <>
-            <span className="flex shrink-0 items-center gap-1.5 sm:w-32">
+            <span className="flex shrink-0 items-center gap-1.5 sm:w-40">
               <span
                 aria-hidden
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -69,7 +81,7 @@ export function AttentionRows({
                   `title`, which assistive tech reads inconsistently. */}
               <span className="sr-only">{item.severity} severity. </span>
               <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]">
-                {TYPE_LABEL[item.type] ?? item.type}
+                {typeLabel(item)}
               </span>
             </span>
             <span className="min-w-0 flex-1">

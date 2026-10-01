@@ -12,9 +12,14 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
+from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.refactoring import detect_refactorings
-from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
+from repowise.core.analysis.health.refactoring.extract_method import (
+    ExtractMethodDetector,
+    _recovered_fraction,
+)
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
+from repowise.core.analysis.health.scoring import severity_deduction
 
 # A long function whose tail (compute-average loop) is a clean extraction.
 _PROCESS = """
@@ -442,3 +447,61 @@ def test_detector_is_deterministic():
     first = run()
     for _ in range(3):
         assert run() == first
+
+
+# -- honest impact --------------------------------------------------------------
+
+
+@dataclass
+class _Shape:
+    ccn: int
+    nloc: int
+
+
+@dataclass
+class _Span:
+    ccn_removed: int
+    slice_nloc: int
+
+
+def test_extraction_that_clears_the_bar_recovers_the_whole_finding():
+    # CCN 12 -> 6 residual, helper CCN 7: both below complex_method's bar of 9.
+    assert _recovered_fraction("complex_method", _Shape(12, 40), _Span(6, 15)) == 1.0
+
+
+def test_extraction_that_only_drops_a_band_recovers_the_band_difference():
+    # CCN 15 (high) -> 12 (medium): still a complex method, one band lower.
+    got = _recovered_fraction("complex_method", _Shape(15, 40), _Span(3, 8))
+    expected = 1 - severity_deduction(Severity.MEDIUM) / severity_deduction(Severity.HIGH)
+    assert got == pytest.approx(expected)
+
+
+def test_extraction_that_stays_in_band_recovers_nothing():
+    # CCN 209 -> 203 stays critical for both brain_method and complex_method.
+    assert _recovered_fraction("brain_method", _Shape(209, 900), _Span(6, 20)) == 0.0
+    assert _recovered_fraction("complex_method", _Shape(209, 900), _Span(6, 20)) == 0.0
+
+
+def test_helper_that_inherits_the_smell_is_charged_against_the_recovery():
+    # 130-line method (high) lifts 100 lines out: the residual clears the bar
+    # but the helper is itself a 100-line large_method (medium).
+    got = _recovered_fraction("large_method", _Shape(12, 130), _Span(6, 100))
+    assert 0.0 < got < 1.0
+
+
+def test_detector_credits_only_what_the_best_extraction_recovers():
+    # The finding claims a CCN far above what _PROCESS's best span can clear,
+    # so the plan still stands but recovers nothing.
+    fns = _analyses(_PROCESS)
+    fn = fns[0]
+    fn.ccn, fn.nloc = 40, 18
+    ctx = RefactoringContext(
+        file_path="m.py",
+        language="python",
+        nloc=100,
+        findings=[_Finding("complex_method", "process", line_start=2, health_impact=2.0)],
+        function_analyses=[fn],
+    )
+    (s,) = ExtractMethodDetector().detect(ctx)
+    assert s.source_biomarker == "complex_method"
+    assert s.impact_delta == 0.0

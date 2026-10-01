@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { PageLede } from "../shared/page-lede";
 import { coverageBand } from "../health/tokens";
+import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
@@ -44,12 +45,12 @@ export function FileCoverageTab({
           title="Line-level coverage"
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
-          <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
             Run your suite with coverage on and hand us the report with{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
               repowise coverage add &lt;report&gt;
             </span>
-            . LCOV, Cobertura and coverage.py output all work.
+            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>

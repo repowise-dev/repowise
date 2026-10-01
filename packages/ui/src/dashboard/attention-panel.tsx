@@ -8,6 +8,10 @@ import {
   Users,
   FileWarning,
   Lightbulb,
+  Activity,
+  ShieldAlert,
+  FileText,
+  Wrench,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
@@ -23,16 +27,20 @@ import { buildWorkQueueAiPrompt } from "../health/ai-prompt-builder";
 // and a `"use client"` file cannot hand a callable function to the server.
 export { getDefaultHref } from "./attention-href";
 export type { AttentionItem, AttentionItemType } from "./attention-href";
-import { getDefaultHref } from "./attention-href";
-import type { AttentionItem, AttentionItemType } from "./attention-href";
+import { ATTENTION_TYPE_LABEL, getDefaultHref } from "./attention-href";
+import type { AttentionItem, AttentionItemType, AttentionSeverity } from "./attention-href";
 
-const ICON_MAP = {
+const ICON_MAP: Record<AttentionItemType, typeof AlertTriangle> = {
   stale_decision: AlertTriangle,
   knowledge_silo: Users,
   ungoverned_hotspot: FileWarning,
   dead_code: Trash2,
   proposed_decision: Lightbulb,
-} as const;
+  health_finding: Activity,
+  security_finding: ShieldAlert,
+  doc_drift: FileText,
+  refactoring: Wrench,
+};
 
 /**
  * Severity ramp for the row icons. Only `high` earns a hue — a column of
@@ -41,19 +49,14 @@ const ICON_MAP = {
  * rather than colour, so all three stay distinguishable while red keeps its
  * meaning by being rare.
  */
-const SEVERITY_COLORS = {
+const SEVERITY_COLORS: Record<AttentionSeverity, string> = {
+  // Critical shares the error colour with high rather than adding a fourth
+  // step. The point of the ramp is that red is rare; a second red defeats it.
+  critical: "text-[var(--color-error)]",
   high: "text-[var(--color-error)]",
   medium: "text-[var(--color-text-secondary)]",
   low: "text-[var(--color-text-tertiary)]",
-} as const;
-
-const TYPE_LABELS = {
-  stale_decision: "Stale Decision",
-  knowledge_silo: "Knowledge Silo",
-  ungoverned_hotspot: "Ungoverned Hotspot",
-  dead_code: "Dead Code",
-  proposed_decision: "Needs Review",
-} as const;
+};
 
 interface AttentionPanelProps {
   items: AttentionItem[];
@@ -179,7 +182,7 @@ export function AttentionPanel({
                       {stripMarkdown(item.title)}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
-                      {TYPE_LABELS[item.type]}
+                      {ATTENTION_TYPE_LABEL[item.type]}
                     </span>
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] truncate">

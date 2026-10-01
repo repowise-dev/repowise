@@ -15,7 +15,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import STORED_CURRENCIES
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    AGREEMENT_SCOPE,
+    ARCHITECTURAL_KIND,
+    STORED_CURRENCIES,
+)
 from repowise.core.analysis.decisions.manifest import (
     MANIFEST_FILENAME,
     ManifestDecision,
@@ -23,6 +28,7 @@ from repowise.core.analysis.decisions.manifest import (
     write_manifest,
 )
 from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
 from .crud.authority import (
     accepted_decision_ids,
@@ -31,6 +37,7 @@ from .crud.authority import (
     resolve_decision_id,
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
+from .decision_graph import set_record_scope
 from .models import DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
@@ -43,6 +50,33 @@ def _stored_currency(value: str) -> str:
     carrying it is read as the ``active`` it was derived from.
     """
     return value if value in STORED_CURRENCIES else "active"
+
+
+def _scope_files(scope: list[str]) -> list[str]:
+    """The entries of *scope* that name code.
+
+    An agreement's scope is the repository, which is a claim rather than a
+    path. Storing the marker in ``affected_files_json`` would put it in front of
+    staleness and git archaeology as a file that has never existed, and every
+    such file counts as changed.
+    """
+    return [s for s in scope if s != AGREEMENT_SCOPE]
+
+
+def _entry_scope(entry: ManifestDecision) -> list[str]:
+    """The scope *entry* states, read against the noun it claims to be.
+
+    The repo-wide marker is a scope for an agreement and nothing at all for a
+    decision. Read once here so the skip gate and the acceptance cannot
+    disagree: taking the marker as a scope for an architectural entry would
+    accept a record governing no code, which is the one thing the contract is
+    there to refuse. A file naming the marker without saying ``kind:
+    agreement`` is the realistic version of that, since the marker is now
+    written into every export that holds one.
+    """
+    if entry.kind == AGREEMENT_KIND:
+        return sorted(entry.scope)
+    return sorted(_scope_files(entry.scope))
 
 
 def _json_list(raw: str) -> list[str]:
@@ -117,6 +151,7 @@ async def export_manifest(
                 accepted_artifact=acceptance.artifact,
                 currency=acceptance.currency,
                 source=rec.source,
+                kind=rec.kind,
                 evidence=_json_list(acceptance.evidence_json),
                 superseded_by=rec.superseded_by or "",
                 aliases=await _aliases_for(session, rec.id),
@@ -160,6 +195,10 @@ def _differs(
         or _stored_currency(entry.currency) != acceptance.currency
         or entry.title != record.title
         or entry.decision != record.decision
+        # Without this a file whose only edit is the noun reads as unchanged,
+        # and the committed file becomes unable to express the one thing this
+        # column exists for.
+        or entry.kind != record.kind
     )
 
 
@@ -189,7 +228,12 @@ async def _apply_entry(
         _rederive_headline(record, evidence)
     else:
         record.confidence = _entry_confidence(entry)
-    record.affected_files_json = json.dumps(sorted(entry.scope))
+    record.kind = entry.kind or ARCHITECTURAL_KIND
+    # The file is hand-authored and version controlled, so its scope is
+    # stated: a record narrowed here binds to what the file says.
+    await set_record_scope(
+        session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
+    )
     # The successor is an id the file wrote down, and the file can be older
     # than the store it is being read into. Storing it unresolved would put a
     # retired id back into the column.
@@ -228,7 +272,7 @@ async def import_manifest(
         if not entry.reason.strip():
             outcome.skipped.append((entry.id, "no reason recorded"))
             continue
-        if not [s for s in entry.scope if s.strip()]:
+        if not [s for s in _entry_scope(entry) if s.strip()]:
             outcome.skipped.append((entry.id, "no scope recorded"))
             continue
 
@@ -267,7 +311,7 @@ async def import_manifest(
                 decision=entry.decision,
                 rationale=entry.reason,
                 source=entry.source or "cli",
-                affected_files_json=json.dumps(sorted(entry.scope)),
+                kind=entry.kind or ARCHITECTURAL_KIND,
                 evidence_commits_json=json.dumps(sorted(entry.evidence)),
                 superseded_by=entry.superseded_by or None,
                 confidence=_entry_confidence(entry),
@@ -275,6 +319,9 @@ async def import_manifest(
             )
             session.add(record)
             await session.flush()
+            await set_record_scope(
+                session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
+            )
         elif entry.id not in outcome.reaffirmed:
             outcome.accepted.append(entry.id)
             if dry_run:
@@ -286,10 +333,12 @@ async def import_manifest(
             action="accepted",
             currency=_stored_currency(entry.currency),
             reason=entry.reason,
-            scope=sorted(entry.scope),
+            scope=_entry_scope(entry),
             evidence=sorted(entry.evidence) or [artifact],
             accepter=entry.accepted_by,
             artifact=entry.accepted_artifact or artifact,
+            # The named accepter signed the manifest, not this store.
+            kind="import",
             note="imported from the tracked manifest",
         )
     return outcome

@@ -272,25 +272,27 @@ def _query_health_line(repo_path: Path) -> str | None:
         return None
     worst_path = data["worst_performer_path"] or "n/a"
     worst_score = data["worst_performer_score"]
-    worst_repr = f"{worst_score:.1f}" if worst_score is not None else "—"
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
         band_for,
+        format_score,
     )
+
+    worst_repr = format_score(worst_score) if worst_score is not None else "—"
 
     band = band_for(float(data["average_health"]))
     band_color = BAND_TERMINAL_COLOR[band]
     # Maintainability and performance are co-surfaced pillars; show each when the
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
-    maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
+    maint_part = f" · {format_score(maint)} (maintainability)" if maint is not None else ""
     # Performance leads with the finding COUNT (the honest signal); the bounded
     # /10 average trails in parens as a summary, never as a verification claim.
     perf = data.get("performance_average")
     perf_findings = data.get("performance_findings", 0)
     perf_part = (
-        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({perf:.1f})"
+        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({format_score(perf)})"
         if perf is not None
         else ""
     )
@@ -298,15 +300,61 @@ def _query_health_line(repo_path: Path) -> str | None:
     # rather than printing a 10.0 that would read as "your hotspots are
     # perfect" when there are none to score.
     hotspot = data.get("hotspot_health")
-    hotspot_part = f"{hotspot:.1f} (hotspots) · " if hotspot is not None else ""
+    hotspot_part = f"{format_score(hotspot)} (hotspots) · " if hotspot is not None else ""
     return (
-        f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
+        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
         f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"
         f"{maint_part}"
         f"{perf_part}"
     )
+
+
+def _load_actions(repo_path: Path) -> dict | None:
+    """The stored next-actions view, or ``None``; never raises (see ``next_cmd``)."""
+    try:
+        from repowise.cli.commands.next_cmd import load_view
+
+        return load_view(repo_path)
+    except Exception:
+        return None
+
+
+def _next_actions_summary(view: dict | None) -> dict | None:
+    """Counts only, for the json mode; ``repowise next --format json`` has the rows."""
+    if view is None:
+        return None
+    return {
+        "anchor": view.get("anchor"),
+        **{
+            name: {"total": h.get("total", 0), "by_tier": h.get("by_tier", {})}
+            for name, h in view["horizons"].items()
+        },
+        "unavailable": sorted(view.get("unavailable") or {}),
+    }
+
+
+def _next_actions_lines(view: dict | None) -> list[str]:
+    """The "Next" block: where things stand and the first thing worth doing."""
+    if view is None:
+        return []
+    from rich.markup import escape
+
+    from repowise.cli.commands.next_cmd import default_horizon, render_title, status_sentence
+
+    # The week's sentence names both windows when the week is quiet; the row
+    # under it comes from whichever window ``repowise next`` would open on.
+    lines = [f"[bold]Next:[/bold] {escape(status_sentence(view, 'week'))}"]
+    horizon = default_horizon(view)
+    top = next(
+        (a for a in view["horizons"][horizon]["actions"] if a["tier"] in ("act_now", "plan")),
+        None,
+    )
+    if top is not None:
+        lines.append(f"  {render_title(top['title'])}")
+        lines.append("  [dim]Run [bold]repowise next[/bold] for the list.[/dim]")
+    return lines
 
 
 def _format_relative_time(iso_timestamp: str | None) -> str:
@@ -591,6 +639,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
                 "health": _query_health(repo_path),
+                "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
             }
         )
@@ -664,3 +713,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if health_line:
         console.print()
         console.print(health_line)
+
+    next_lines = _next_actions_lines(_load_actions(repo_path))
+    if next_lines:
+        console.print()
+        for line in next_lines:
+            console.print(line)

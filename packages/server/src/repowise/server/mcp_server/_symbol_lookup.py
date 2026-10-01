@@ -21,6 +21,8 @@ from sqlalchemy import or_, select
 
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_path
 
 # Separators used between name segments AFTER the file path.
 NAME_SEPARATORS = (".", "::", "/")
@@ -97,6 +99,58 @@ def bare_name(name: str) -> str:
     for sep in NAME_SEPARATORS:
         tail = tail.rsplit(sep, 1)[-1]
     return tail
+
+
+# Kinds a bare name most likely means, best first; everything else (variables,
+# constants, fields) ranks after methods.
+_KIND_RANK = {
+    "class": 0,
+    "struct": 0,
+    "enum": 0,
+    "interface": 1,
+    "trait": 1,
+    "type_alias": 1,
+    "function": 2,
+    "method": 3,
+}
+_OTHER_KIND_RANK = 4
+
+
+def _dotted(name: str) -> str:
+    for sep in NAME_SEPARATORS[1:]:
+        name = name.replace(sep, ".")
+    return name
+
+
+def symbol_rank_key(
+    query: str,
+    *,
+    name: str | None,
+    qualified_name: str | None,
+    kind: str | None,
+    path: str | None,
+    language: str | None = None,
+    centrality: float = 0.0,
+) -> tuple:
+    """Sort key (ascending) for symbols competing for one name, best first.
+
+    Exact case, then exact name, then kind (class > interface > function >
+    method > variable), then code over test/docs/examples paths, then file
+    centrality, then the shorter path. Shared by every surface that picks
+    among same-named symbols, so they agree on which one a name means.
+    """
+    q = _dotted(query.strip())
+    names = (name or "", _dotted(qualified_name or ""))
+    path = path or ""
+    return (
+        q not in names,
+        q.lower() not in {n.lower() for n in names},
+        _KIND_RANK.get(kind or "", _OTHER_KIND_RANK),
+        is_test_path(path, language) or is_support_path(path),
+        -(centrality or 0.0),
+        len(path),
+        path,
+    )
 
 
 def order_candidates(rows: list[WikiSymbol], queried_file_path: str | None) -> list[WikiSymbol]:

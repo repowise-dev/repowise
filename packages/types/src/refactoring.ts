@@ -14,7 +14,7 @@ export type RefactoringType =
 export type EffortBucket = "S" | "M" | "L" | "XL";
 export type Confidence = "low" | "medium" | "high";
 export type ValidationBasis = "measured" | "inferred" | "mixed" | "unknown";
-export type ValidationVia = "coverage" | "call-graph" | "import-graph" | "mixed";
+export type ValidationVia = "coverage" | "call-graph" | "import-graph" | "name-match" | "mixed";
 
 export interface RecommendationValidationTarget {
   file_path: string;
@@ -270,10 +270,18 @@ export interface RefactoringOpportunityDetailUnresolved {
   };
 }
 
-export interface RefactoringOpportunityDetailResolved extends RefactoringOpportunity {
+export interface RefactoringOpportunityDetailResolved
+  extends Omit<RefactoringOpportunity, "steps_total"> {
   resolved: true;
+  /**
+   * `unavailable` when the opportunity resolved but its steps could not be
+   * read: `steps` is empty and `steps_total` is null, while the row's own
+   * `step_count` still says how many there are. Absent means available.
+   */
+  details_status?: "available" | "unavailable";
   steps: OpportunityStep[];
-  steps_total: number;
+  /** Null only when `details_status` is `unavailable`. */
+  steps_total: number | null;
   steps_emitted: number;
   steps_reduced_reason?: string;
   steps_next_cursor?: number;

@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 
 from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.generation.layers import layer_key
 from repowise.core.ids import file_path_of, kg_file_path_of
 
 logger = structlog.get_logger(__name__)
@@ -182,6 +183,7 @@ async def _enrich_layers(
     # position: positional joins silently corrupt every name when a model
     # returns batch-relative indices.
     by_id = {layer["id"]: layer for layer in enriched if layer.get("id")}
+    taken: list[str] = []
 
     for batch_start in range(0, len(layers), _LAYER_BATCH_SIZE):
         batch = layers[batch_start : batch_start + _LAYER_BATCH_SIZE]
@@ -198,7 +200,9 @@ async def _enrich_layers(
                 "top_files": top_files,
             })
 
-        user_prompt = _build_layer_naming_prompt(batch_context, tech_stack, repo_structure)
+        user_prompt = _build_layer_naming_prompt(
+            batch_context, tech_stack, repo_structure, taken_names=taken
+        )
         batch_ids = {layer.get("id") for layer in batch}
 
         try:
@@ -227,14 +231,38 @@ async def _enrich_layers(
                         target["description"] = item["description"]
         except Exception as exc:
             logger.warning("kg_layer_naming_batch_failed", error=str(exc))
+        taken.extend(layer["name"] for layer in batch)
 
+    _dedupe_layer_names(enriched)
     return enriched
+
+
+def _dedupe_layer_names(layers: list[dict]) -> None:
+    """Make every layer name unique, in place.
+
+    Batches are named independently, so two layers can come back with the same
+    name. The first layer in display order keeps it; a later one is qualified
+    with its id slug, which is unique by construction.
+    """
+    seen: set[str] = set()
+    for layer in layers:
+        name = layer["name"]
+        if name.casefold() in seen:
+            qualifier = layer_key(str(layer.get("id") or "")).replace("-", " ")
+            name = f"{layer['name']} ({qualifier})"
+            suffix = 2
+            while name.casefold() in seen:
+                name = f"{layer['name']} ({qualifier} {suffix})"
+                suffix += 1
+            layer["name"] = name
+        seen.add(name.casefold())
 
 
 def _build_layer_naming_prompt(
     batch_context: list[dict],
     tech_stack: list[dict],
     repo_structure: Any,
+    taken_names: list[str] | None = None,
 ) -> str:
     tech_names = [t.get("name", "") for t in tech_stack[:10] if t.get("name")]
     entry_points = orientation_entry_points(repo_structure, limit=5)
@@ -251,8 +279,14 @@ def _build_layer_naming_prompt(
         f"Tech stack: {', '.join(tech_names) if tech_names else 'unknown'}",
         f"Entry points: {', '.join(entry_points) if entry_points else 'none detected'}",
         "",
-        "Communities:",
     ]
+    if taken_names:
+        lines += [
+            "Names already given to other communities (every name must be unique): "
+            + ", ".join(taken_names),
+            "",
+        ]
+    lines.append("Communities:")
 
     for ctx in batch_context:
         lines.append(f"\n--- Community \"{ctx['id']}\" ---")

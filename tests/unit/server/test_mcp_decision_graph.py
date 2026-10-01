@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -333,7 +334,16 @@ async def decision_db(session: AsyncSession, repo_id: str) -> str:
         action="superseded",
         currency="superseded",
         accepter="test",
+        kind="person",
         evidence=["seed:dec_superseded"],
+    )
+    await session.flush()
+
+    # Accepting a record now mirrors its scope into the graph, so clear that
+    # before writing the links this fixture wants: it states the graph
+    # exactly, rather than layering on whatever the scope arrays imply.
+    await session.execute(
+        delete(DecisionNodeLink).where(DecisionNodeLink.repository_id == rid)
     )
     await session.flush()
 
@@ -515,7 +525,9 @@ async def test_get_context_decision_titles_capped_at_three(setup_mcp_decisions, 
             title=f"Extra decision {i}",
             status="active",
             context="extra",
-            decision="extra",
+            # Its own body: identity is the evidence, so four records sharing
+            # one body over one file would be one decision.
+            decision=f"extra {i}",
             rationale="extra",
             alternatives_json="[]",
             consequences_json="[]",

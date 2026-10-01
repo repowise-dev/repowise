@@ -5,6 +5,7 @@ import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } fr
 import type { FileRow } from "@repowise-dev/types/files";
 import {
   bandForScore,
+  formatScore,
   HEALTH_BAND_LABEL,
   HEALTH_BAND_ORDER,
   HEALTH_BAND_RANGE_LABEL,
@@ -472,7 +473,7 @@ export function FilesTreemap({
                 style={{ color: healthColor(tip.child.avgScore) }}
               >
                 {HEALTH_BAND_LABEL[bandForScore(tip.child.avgScore)]} ·{" "}
-                {tip.child.avgScore.toFixed(1)}
+                {formatScore(tip.child.avgScore)}
               </p>
             )}
           </div>

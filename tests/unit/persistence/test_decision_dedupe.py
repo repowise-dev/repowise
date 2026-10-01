@@ -14,6 +14,14 @@ import math
 import pytest
 from sqlalchemy import select
 
+from repowise.core.analysis.decisions.scope import (
+    MAX_GOVERNING_FILES,
+    SCOPE_BASIS_FOOTPRINT,
+    SCOPE_BASIS_REPOSITORY,
+    SCOPE_BASIS_SELECTED,
+    SCOPE_BASIS_STATED,
+    binds_to_paths,
+)
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.crud.authority import (
     accept_decision,
@@ -77,8 +85,10 @@ async def _seed(session, store, repo_id, specs: list[dict]) -> list[DecisionReco
             rationale=spec.get("rationale", ""),
             context="",
             source=spec.get("source", "pr"),
+            kind=spec.get("kind", "architectural"),
             confidence=spec.get("confidence", 0.5),
             affected_files_json=json.dumps(spec.get("files", [])),
+            scope_basis=spec.get("scope_basis", ""),
             affected_modules_json=json.dumps([]),
             evidence_commits_json=json.dumps(spec.get("commits", [])),
             tags_json=json.dumps([]),
@@ -215,6 +225,42 @@ async def test_fold_moves_evidence_without_downgrading_the_canonical(async_sessi
     assert ("comment", "b.py") in by_key
     assert by_key[("pr", "a.py")].verification == "exact"
     assert by_key[("pr", "a.py")].confidence == pytest.approx(0.8)
+
+
+async def test_a_fold_moves_the_canonical_to_the_checkable_noun(
+    async_session, repo_id
+):
+    """An agreement that absorbs a record about the code is about the code too.
+
+    The union gives the canonical the folded record's files, and a record that
+    names files is one being checked against them, so the noun has to follow or
+    the canonical claims to govern the repository while naming part of it.
+    """
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            # session outranks comment, so the agreement is the canonical and
+            # the record about the code is what folds into it.
+            {
+                "title": "Never commit to main @a",
+                "kind": "agreement",
+                "source": "session",
+            },
+            {
+                "title": "Never commit to trunk @a",
+                "source": "comment",
+                "files": ["src/app.py"],
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.kind == "architectural"
+    assert json.loads(survivor.affected_files_json) == ["src/app.py"]
 
 
 async def test_folded_id_still_resolves_and_its_files_survive(async_session, repo_id):
@@ -467,3 +513,249 @@ async def test_a_superseded_record_keeps_its_lineage(async_session, repo_id):
 
     assert plan.folded_count == 0
     assert await async_session.get(DecisionRecord, retired.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# The fold and the scope basis
+# ---------------------------------------------------------------------------
+
+_WIDE = [f"pkg/m{i:02d}.py" for i in range(30)]
+
+
+async def _links(session, decision_id) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(DecisionNodeLink).where(
+                    DecisionNodeLink.decision_id == decision_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.node_id for row in rows}
+
+
+async def test_a_footprint_folding_in_does_not_resurrect_its_files(
+    async_session, repo_id
+):
+    """The union widens the canonical past the bar, so the basis is
+    recomputed rather than inherited: the canonical's ``source`` is usually
+    not one ``backfill_scope_basis`` would repair afterwards."""
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": ["kept.py"],
+            },
+            {
+                "title": "Drop @a",
+                "source": "comment",
+                "files": _WIDE,
+                "scope_basis": SCOPE_BASIS_FOOTPRINT,
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert len(json.loads(survivor.affected_files_json)) > MAX_GOVERNING_FILES
+    assert survivor.scope_basis == SCOPE_BASIS_FOOTPRINT
+    assert await _links(async_session, canonical.id) == set()
+
+
+async def test_a_fold_that_stays_narrow_keeps_binding(async_session, repo_id):
+    """The recompute must not demote a fold that is still a real claim."""
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {"title": "Keep @a", "source": "pr", "decision": "Body", "files": ["a.py"]},
+            {"title": "Drop @a", "source": "comment", "files": ["b.py"]},
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.scope_basis == ""
+    assert await _links(async_session, canonical.id) == {"a.py", "b.py"}
+
+
+async def test_a_fold_of_two_selected_scopes_stays_selected(async_session, repo_id):
+    """Duplicates are restatements of one decision, so their union is a claim.
+
+    Both members chose their files file by file, so recomputing the basis by
+    breadth would demote a scope no breadth rule ever produced -- and the
+    union of two selections is wider than either, which is exactly when the
+    old recompute fires.
+    """
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": _WIDE[:4],
+                "scope_basis": SCOPE_BASIS_SELECTED,
+            },
+            {
+                "title": "Drop @a",
+                "source": "comment",
+                "files": _WIDE[4:],
+                "scope_basis": SCOPE_BASIS_SELECTED,
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert len(json.loads(survivor.affected_files_json)) > MAX_GOVERNING_FILES
+    assert survivor.scope_basis == SCOPE_BASIS_SELECTED
+    assert await _links(async_session, canonical.id) == set(_WIDE)
+
+
+async def test_a_narrow_footprint_folding_in_does_not_become_binding(
+    async_session, repo_id
+):
+    """A small union of unchosen files must not come back as a claim.
+
+    The recompute asks ``commit_scope_basis``, which answers with the binding
+    empty basis for any union at or under the cutoff. That was safe while a
+    footprint could only exist above the cutoff. It no longer is:
+    ``backfill_scope_basis`` marks a legacy commit list a footprint at any
+    width, so a two-file footprint folding into a one-file canonical produced
+    a three-file union that bound -- publishing the two files the repair had
+    just taken away.
+    """
+    store = _store()
+    narrow_footprint = ["b.py", "c.py"]
+    assert len(narrow_footprint) + 1 <= MAX_GOVERNING_FILES
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": ["kept.py"],
+            },
+            {
+                "title": "Drop @a",
+                "source": "comment",
+                "files": narrow_footprint,
+                "scope_basis": SCOPE_BASIS_FOOTPRINT,
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.scope_basis == SCOPE_BASIS_FOOTPRINT
+    assert await _links(async_session, canonical.id) == set()
+
+
+async def test_a_fold_does_not_promote_a_repository_scope(async_session, repo_id):
+    """An agreement is true everywhere and specific nowhere, fold or no fold.
+
+    Only ``stated`` used to be preserved, so a working agreement that absorbed
+    a duplicate had its basis recomputed by breadth and came back binding on
+    whatever files the union happened to hold.
+    """
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": ["a.py"],
+                "scope_basis": SCOPE_BASIS_REPOSITORY,
+            },
+            {"title": "Drop @a", "source": "comment", "files": ["b.py"]},
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert not binds_to_paths(survivor.scope_basis)
+    assert await _links(async_session, canonical.id) == set()
+
+
+async def test_a_footprint_folding_into_a_selected_scope_demotes_it(
+    async_session, repo_id
+):
+    """One unchosen list in the union makes the union unchosen again.
+
+    The fold takes the union of the file lists, so a footprint folding in
+    hands the canonical files nobody ever chose. Keeping ``commit_selected``
+    there would launder them into a binding scope.
+    """
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": ["kept.py"],
+                "scope_basis": SCOPE_BASIS_SELECTED,
+            },
+            {
+                "title": "Drop @a",
+                "source": "comment",
+                "files": _WIDE,
+                "scope_basis": SCOPE_BASIS_FOOTPRINT,
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.scope_basis == SCOPE_BASIS_FOOTPRINT
+    assert await _links(async_session, canonical.id) == set()
+
+
+async def test_a_fold_never_overwrites_a_stated_basis(async_session, repo_id):
+    """A scope a person accepted survives a later dedupe sweep."""
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            {
+                "title": "Keep @a",
+                "source": "pr",
+                "decision": "Body",
+                "files": ["a.py"],
+                "scope_basis": SCOPE_BASIS_STATED,
+            },
+            {"title": "Drop @a", "source": "comment", "files": _WIDE},
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.scope_basis == SCOPE_BASIS_STATED
+    assert "a.py" in await _links(async_session, canonical.id)

@@ -1479,11 +1479,11 @@ async def test_metric_rows_say_whether_a_file_is_test_material(setup_mcp, health
     """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(only=["worst_files", "high_leverage_files"])
-    by_path = {m["file_path"]: m for m in result["worst_files"]}
+    result = await get_health(only=["worst_files", "test_worst_files", "high_leverage_files"])
+    by_path = {m["file_path"]: m for m in result["worst_files"] + result["test_worst_files"]}
     assert by_path["tests/test_service.py"]["is_test"] is True
     assert by_path["src/auth/service.py"]["is_test"] is False
-    # Both ranked file lists carry it.
+    # Every ranked file list carries it.
     assert all("is_test" in m for m in result["high_leverage_files"])
 
 
@@ -1518,7 +1518,7 @@ async def test_targeted_mode_asks_only_about_the_files_it_was_given(
     test. Dashboard mode partitions a ranked finding list whose paths are not
     known until that list is built, so it must stay repo-wide.
     """
-    import repowise.server.mcp_server.tool_health as th
+    import repowise.server.mcp_server.tool_health.loading as th
     from repowise.server.mcp_server import get_health
 
     asked: list[object] = []
@@ -1545,6 +1545,9 @@ async def test_targeted_mode_asks_only_about_the_files_it_was_given(
 async def test_kpis_still_include_test_files(setup_mcp, health_data_with_tests):
     """Excluding test material from the KPIs is a scoring change, not a display one.
 
+    The ranked worst-file list is a worklist, so it is production only and the
+    test files rank in ``test_worst_files``.
+
     Measured across this workspace, dropping tests moves NLOC-weighted
     ``average_health`` 7.52 -> 6.87 on this repo, 7.07 -> 6.27 on the backend
     and 7.59 -> 7.46 on the frontend: test files score *better* than
@@ -1553,9 +1556,10 @@ async def test_kpis_still_include_test_files(setup_mcp, health_data_with_tests):
     """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(only=["kpis", "worst_files"])
+    result = await get_health(only=["kpis", "worst_files", "test_worst_files"])
     assert result["kpis"]["file_count"] == 3
-    assert any(m["file_path"] == "tests/test_service.py" for m in result["worst_files"])
+    assert all(m["file_path"] != "tests/test_service.py" for m in result["worst_files"])
+    assert [m["file_path"] for m in result["test_worst_files"]] == ["tests/test_service.py"]
 
 
 @pytest.mark.asyncio
@@ -1594,7 +1598,8 @@ async def test_dashboard_coverage_declines_the_covered_lines_column(setup_mcp, h
     dict comprehension. So a test that only checked the payload would pass on
     the unfixed code; the waste is invisible from the outside.
     """
-    from repowise.server.mcp_server import get_health, tool_health
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health import loading as tool_health
 
     seen: list[bool] = []
     real = tool_health.load_coverage_for_repo
@@ -1632,6 +1637,46 @@ async def test_coverage_payload_shape_is_unchanged(setup_mcp, health_data):
     targeted = await get_health(include=["coverage"], targets=["src/auth/service.py"])
     for row in targeted["coverage"]["files"]:
         assert "covered_lines" in row
+
+
+@pytest.mark.asyncio
+async def test_coverage_carries_its_trend_capped_to_the_newest_points(
+    setup_mcp, health_data, session
+):
+    """The REST route's history shape, newest ten, with the cap stated."""
+    from datetime import UTC, datetime, timedelta
+
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health.coverage import HISTORY_POINTS
+
+    none = await get_health(include=["coverage"], only=["coverage"])
+    assert "history" not in none["coverage"]
+
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    for i in range(HISTORY_POINTS + 2):
+        # A different figure each time: an unchanged one restamps the newest ingest.
+        fc = file_coverage("src/auth/service.py", range(1, i + 2), range(1, 30))
+        await save_coverage_files(
+            session, health_data, [fc], source_format="lcov", ingested_at=start + timedelta(i)
+        )
+
+    block = (await get_health(include=["coverage"], only=["coverage"]))["coverage"]
+    history = block["history"]
+    assert len(history) == block["history_emitted"] == HISTORY_POINTS
+    assert block["history_total"] == HISTORY_POINTS + 2
+    assert block["history_reduced_reason"] == "limit"
+    assert set(history[0]) == {
+        "ingested_at", "ingested_commit_sha", "line_coverage_pct", "branch_coverage_pct"
+    }
+    stamps = [point["ingested_at"] for point in history]
+    assert stamps == sorted(stamps)  # oldest first
+    assert stamps[-1].startswith("2026-09-12")  # the newest ingest is kept
+
+    # Repo-wide, like REST: a targeted read does not draw the trend.
+    targeted = await get_health(include=["coverage"], targets=["src/auth/service.py"])
+    assert "history" not in targeted["coverage"]
 
 
 @pytest.mark.asyncio
@@ -2581,3 +2626,21 @@ async def test_the_ranked_findings_leave_performance_out_but_asking_returns_it(
 
     asked = await get_health(include=["performance"], only=["top_findings"])
     assert any(f["dimension"] == "performance" for f in asked["top_findings"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets", [["does/not/exist.py"], ["src/db/models.py"]])
+async def test_a_targeted_read_returns_its_connection(setup_mcp, health_data, factory, targets):
+    """The analysis meta used to query a closed session, checking out a connection
+    nothing returned. A garbage collection then dropped it, and on the one-connection
+    test pool that dropped the whole in-memory database mid-test."""
+    import gc
+
+    from sqlalchemy import text
+
+    from repowise.server.mcp_server import get_health
+
+    await get_health(targets=targets, only=["metrics"])
+    gc.collect()
+    async with factory() as s:
+        assert (await s.execute(text("SELECT count(*) FROM repositories"))).scalar() == 1

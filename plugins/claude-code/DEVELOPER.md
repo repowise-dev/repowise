@@ -90,7 +90,7 @@ The plugin bundles the same `repowise-augment` `PostToolUse` hook that
 `repowise init` writes to `~/.claude/settings.json`. A user with both installed
 would otherwise get duplicate enrichment on a single tool event. `repowise-augment`
 guards against this: `_emit_response` claims a short-lived, content-keyed lock
-(`_claim_emission` in `packages/cli/src/repowise/cli/commands/augment_cmd.py`)
+(`_claim_emission` in `packages/cli/src/repowise/cli/commands/augment_cmd/command.py`)
 so exactly one of the two firings emits. The guard is fail-open — if anything
 goes wrong it emits rather than risk swallowing a real message.
 

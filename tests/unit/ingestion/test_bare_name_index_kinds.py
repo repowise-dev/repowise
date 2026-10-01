@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from repowise.core.ingestion.call_resolver import _NON_CALLABLE_KINDS, CallResolver
+from repowise.core.ingestion.language_data import get_builtin_methods
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
@@ -235,3 +236,87 @@ class TestTheImportMergedTierRefusesTheSame:
             parsed, tmp_path, {"caller.rs": {"util.rs"}, "util.rs": set(), "other.rs": set()}
         )
         assert [e for e in edges if e[1] == "util.rs::render" and e[2] == "import_merged"]
+
+
+class TestTheImportMergedTierRefusesAStdName:
+    """A std-library name is refused on this rung too, for tier 3's reason.
+
+    ``get_builtin_methods`` names what is in scope in every file of that
+    language without an import, so a repo symbol that merely shares the name is
+    not what the call site meant. ``_global_unique_match`` consulted the list
+    and this rung did not, so the same guess was refused on one tier and
+    answered at 0.85 on the other.
+
+    Every case here declares the name TWICE, because that is the only shape
+    where the two rungs could disagree: tier 3 refuses an ambiguous name
+    outright, so a single declaration proves nothing about which rung answered.
+    """
+
+    def test_an_imported_std_name_does_not_answer_a_bare_name(
+        self, tmp_path: Path
+    ) -> None:
+        """``unwrap`` is on Rust's list, so no repo symbol may answer it."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "parser.rs": ("rust", "pub fn unwrap() -> u8 {\n    1\n}\n"),
+                "other.rs": ("rust", "pub fn unwrap() -> u8 {\n    2\n}\n"),
+                "caller.rs": ("rust", "pub fn run() -> u8 {\n    unwrap()\n}\n"),
+            },
+        )
+        assert "unwrap" in get_builtin_methods("rust")
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.rs": {"parser.rs"}, "parser.rs": set(), "other.rs": set()},
+        )
+        assert not [e for e in edges if e[1] == "parser.rs::unwrap"]
+
+    def test_a_name_left_off_the_list_still_answers(self, tmp_path: Path) -> None:
+        """The narrowness is the point, not an accident.
+
+        ``next`` is a std method and is deliberately absent from Rust's list,
+        because a repo plausibly declares one. Widening the list to every std
+        name would delete that edge, so pin the name that stays answerable.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "cursor.rs": ("rust", "pub fn next() -> u8 {\n    1\n}\n"),
+                "other.rs": ("rust", "pub fn next() -> u8 {\n    2\n}\n"),
+                "caller.rs": ("rust", "pub fn run() -> u8 {\n    next()\n}\n"),
+            },
+        )
+        assert "next" not in get_builtin_methods("rust")
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.rs": {"cursor.rs"}, "cursor.rs": set(), "other.rs": set()},
+        )
+        assert [
+            e for e in edges if e[1] == "cursor.rs::next" and e[2] == "import_merged"
+        ]
+
+    def test_a_language_with_no_list_is_untouched(self, tmp_path: Path) -> None:
+        """The refusal is the language spec's, not a hardcoded set of names.
+
+        Python declares no ``builtin_methods``, so the very name Rust refuses
+        must still resolve there.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "parser.py": ("python", "def unwrap():\n    return 1\n"),
+                "other.py": ("python", "def unwrap():\n    return 2\n"),
+                "caller.py": ("python", "def run():\n    return unwrap()\n"),
+            },
+        )
+        assert get_builtin_methods("python") == frozenset()
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.py": {"parser.py"}, "parser.py": set(), "other.py": set()},
+        )
+        assert [
+            e for e in edges if e[1] == "parser.py::unwrap" and e[2] == "import_merged"
+        ]

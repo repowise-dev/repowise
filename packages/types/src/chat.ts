@@ -272,15 +272,14 @@ export interface RiskReportArtifactData {
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
-  change_shape?: {
-    independent_changes?: {
-      count?: number;
-      summary?: string;
-      basis?: string;
-      ungrouped_files?: string[];
-      groups?: Array<{ files: string[]; bridging_files?: string[] }>;
-      [k: string]: unknown;
-    };
+  /** One line on diff size and spread; never a danger verdict. */
+  diff_shape?: string;
+  independent_changes?: {
+    count?: number;
+    summary?: string;
+    basis?: string;
+    ungrouped_files?: string[];
+    groups?: Array<{ files: string[]; bridging_files?: string[] }>;
     [k: string]: unknown;
   };
   impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
@@ -288,8 +287,8 @@ export interface RiskReportArtifactData {
   fix_history?: {
     available?: boolean;
     files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+    overlap?: { files_with_fixes?: number; total_fixes?: number };
   };
-  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
   /** Other open branches editing the files this change edits. */
   branch_overlap?: {
     base?: string;
@@ -489,27 +488,46 @@ export interface DecisionsArtifact extends ArtifactEnvelopeIdentity {
   data: DecisionsArtifactData;
 }
 
-/** `get_dead_code` — confidence-tiered dead-code findings. */
-export interface DeadCodeArtifactData {
-  total_findings: number;
-  deletable_lines: number;
-  high_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-    lines: number;
-    safe_to_delete: boolean;
-  }>;
-  medium_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-  }>;
+/** One finding inside a `get_dead_code` tier. */
+export interface DeadCodeArtifactFinding {
+  file_path: string;
+  symbol_name?: string | null;
+  kind: string;
+  confidence: number;
+  reason: string;
+  lines: number | null;
+  safe_to_delete: boolean;
 }
+
+/** One confidence tier of a `get_dead_code` result. */
+export interface DeadCodeArtifactTier {
+  count: number;
+  findings: DeadCodeArtifactFinding[];
+  truncated: boolean;
+}
+
+/**
+ * `get_dead_code`: confidence-tiered dead-code findings. Totals sit in
+ * `summary`; a `tier` argument drops the tiers it did not ask for.
+ */
+export interface DeadCodeArtifactTiers {
+  mode?: undefined;
+  summary: {
+    total_findings: number;
+    deletable_lines: number;
+  };
+  tiers: Partial<Record<"high" | "medium" | "low", DeadCodeArtifactTier>>;
+}
+
+/** `get_dead_code(finding_id=...)`: one finding, or none when the id is unknown. */
+export interface DeadCodeArtifactLookup {
+  mode: "finding";
+  finding_id: string;
+  finding: DeadCodeArtifactFinding | null;
+  resolved: boolean;
+}
+
+export type DeadCodeArtifactData = DeadCodeArtifactTiers | DeadCodeArtifactLookup;
 export interface DeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code";
   data: DeadCodeArtifactData;

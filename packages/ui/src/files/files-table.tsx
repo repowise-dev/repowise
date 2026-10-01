@@ -82,6 +82,15 @@ function SortHeader({
 const GRID =
   "grid grid-cols-[minmax(0,1fr)_auto_56px] sm:grid-cols-[minmax(0,1fr)_92px_64px_64px] md:grid-cols-[minmax(0,1fr)_100px_84px_72px_64px_72px] items-center gap-2 px-3 sm:px-4";
 
+/** A row's line coverage; an older server sends only the deprecated `coverage_pct`. */
+export function lineCoverage(f: FileRow): number | null {
+  return f.line_coverage_pct ?? f.coverage_pct;
+}
+
+function formatCoverage(pct: number | null): string {
+  return pct != null ? `${Math.round(pct)}%` : "—";
+}
+
 export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -226,7 +235,7 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
 
                     {/* Coverage */}
                     <span className="hidden justify-end tabular-nums text-[var(--color-text-secondary)] md:flex">
-                      {f.coverage_pct != null ? `${Math.round(f.coverage_pct)}%` : "—"}
+                      {formatCoverage(lineCoverage(f))}
                     </span>
                   </a>
                 );

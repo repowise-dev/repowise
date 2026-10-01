@@ -219,6 +219,22 @@ def get_identity(slug: str) -> AgentIdentity | None:
     return _REGISTERED.get(slug)
 
 
+def slug_for_hook_adapter(name: str | None) -> str:
+    """The agent behind a hook adapter's name, or :data:`UNKNOWN_AGENT`.
+
+    The hook path knows exactly which agent it is serving — it was handed that
+    agent's adapter — so attribution there is evidence rather than inference.
+    This is the lookup that turns the adapter's own spelling back into the
+    canonical one, instead of a caller re-deriving it.
+    """
+    if not name:
+        return UNKNOWN_AGENT
+    for identity in _REGISTERED.values():
+        if identity.hook_adapter == name:
+            return identity.slug
+    return UNKNOWN_AGENT
+
+
 def identity_for_target_id(target_id: str) -> AgentIdentity | None:
     """The identity behind a ``--target=`` id."""
     return get_identity(target_id.replace("-", "_"))
@@ -230,7 +246,13 @@ def display_name_for(slug: str) -> str:
     An unregistered slug — a retired agent whose events are still in the ledger
     — is returned verbatim. Guessing a prettier label for an agent we no longer
     describe would be inventing evidence.
+
+    :data:`UNKNOWN_AGENT` is the exception, because it is not an agent at all
+    but this registry's own word for "nothing was announced". Labelling it here
+    keeps that string out of every surface that has to display it.
     """
+    if slug == UNKNOWN_AGENT:
+        return "Unknown"
     identity = _REGISTERED.get(slug)
     return identity.display_name if identity else slug
 

@@ -18,9 +18,11 @@ walk, and they are deliberately not the same count:
   that marker's denominator. Same call, opposite treatment, two questions.
 
 That split is the reason a row here can never move a score, and it is the only
-reason this file is safe to edit freely.
+reason a row here is safe to edit freely. :data:`NARROW_PREFIXES` and
+:data:`STUB_EXCEPTIONS` are not rows: both are read by
+``asserts/predicate.py``, which decides findings.
 
-Names are matched **exactly**, never as prefixes. SonarQube keeps a wide list
+Dialect names are matched **exactly**, never as prefixes. SonarQube keeps a wide list
 and a narrow one for the same reason we keep two, but its wide list matches
 name prefixes; measured across three test corpora, the ambiguous English verbs
 in that shape (``check``, ``validate``, ``approve``, ``fail``) matched
@@ -49,6 +51,17 @@ from dataclasses import dataclass, field
 #: every identifier in a call's callee chain. Frozen: the calibrated markers
 #: count with these and nothing else.
 NARROW_PREFIXES: tuple[str, ...] = ("assert", "expect")
+
+#: Exception names whose raise declares a method unimplemented rather than
+#: checking anything. ``raise NotImplementedError`` is the Python abstract-stub
+#: idiom; counting it would make every unimplemented base-class method an
+#: oracle, which then suppresses -- by name, the receiver being dropped -- any
+#: test calling a same-named method on a subclass that does implement it.
+#: Matched against the head of the raised expression's identifier chain, so
+#: only the unqualified spelling. **No JS/TS entry exists**, that idiom being
+#: ``throw new Error('not implemented')``, a message rather than a type, which
+#: nothing here can tell from a real guard.
+STUB_EXCEPTIONS = frozenset({"notimplementederror"})
 
 
 @dataclass(frozen=True)
@@ -145,6 +158,35 @@ _JS_TS = AssertDialect(
 )
 
 
+# DUnit's ``TTestCase`` oracle family (``TestFramework.pas``), called bare
+# (inherited protected methods, no receiver) inside a test method. DUnitX's
+# ``Assert.*`` needs no row: the narrow tier already takes any callee chain
+# carrying an ``assert``-prefixed identifier, and ``Assert`` (the receiver) is
+# one -- same reason the Go row above only needs ``require``.
+_PASCAL = AssertDialect(
+    assert_names=frozenset(
+        {
+            "check",
+            "checkequals",
+            "checknotequals",
+            "checksame",
+            "checknotsame",
+            "checkis",
+            "checknull",
+            "checknotnull",
+            "checktrue",
+            "checkfalse",
+            "checkequalsmem",
+            "checkexception",
+            "fail",
+            "failequals",
+            "failnotequals",
+            "failnotsame",
+        }
+    ),
+)
+
+
 # Keyed by ``LanguageTag`` (``ingestion/models.py``), as ``LANGUAGE_MAPS`` and
 # ``MOCK_DIALECTS`` are.
 ASSERT_DIALECTS: dict[str, AssertDialect] = {
@@ -152,6 +194,7 @@ ASSERT_DIALECTS: dict[str, AssertDialect] = {
     "java": _JAVA,
     "javascript": _JS_TS,
     "jsx": _JS_TS,
+    "pascal": _PASCAL,
     "python": _PY,
     "typescript": _JS_TS,
     "tsx": _JS_TS,

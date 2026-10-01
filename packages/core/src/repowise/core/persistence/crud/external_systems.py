@@ -244,10 +244,12 @@ async def batch_upsert_symbols(
 
     Accepts ingestion.models.Symbol dataclass instances (duck-typed).
     """
+    # One row per id and the last duplicate wins: an overload set's
+    # implementation goes last so its body, not a stub, is the stored range.
     await _batch_upsert_keyed(
         session,
         WikiSymbol,
-        symbols,
+        sorted(symbols, key=lambda sym: not getattr(sym, "is_declaration", False)),
         prefilter=(WikiSymbol.repository_id == repository_id,),
         item_key_fn=_symbol_id,
         row_key_fn=lambda row: row.symbol_id,

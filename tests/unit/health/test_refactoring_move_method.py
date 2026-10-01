@@ -259,3 +259,28 @@ def test_detector_equal_with_and_without_provided_index():
         assert [(s.target_symbol, s.plan) for s in provided] == [
             (s.target_symbol, s.plan) for s in derived
         ]
+
+
+def test_a_class_the_method_instantiates_is_not_a_move_target():
+    # ``result = T(); result.alpha(); ...``: the method produces T, it does not
+    # envy it. The constructor call is a ``calls`` edge onto the class node.
+    g = _envy_graph()
+    _call(g, "c.py::C.envious", "t.py::T")
+    assert _detect(g, "c.py") == []
+
+
+def test_an_ancestor_of_the_own_class_is_not_a_move_target():
+    g = _envy_graph()
+    g.add_edge("c.py::C", "t.py::T", edge_type="extends")
+    assert _detect(g, "c.py") == []
+
+
+def test_a_method_whose_work_is_in_its_home_file_does_not_envy():
+    # Three module-level helpers in c.py outweigh three calls on T.
+    g = _envy_graph()
+    for fn in ("load", "write", "render"):
+        g.add_node(f"c.py::{fn}", node_type="symbol", kind="function", name=fn, file_path="c.py")
+        _call(g, "c.py::C.envious", f"c.py::{fn}")
+    assert _detect(g, "c.py") == []
+    g.remove_node("c.py::render")
+    assert len(_detect(g, "c.py")) == 1

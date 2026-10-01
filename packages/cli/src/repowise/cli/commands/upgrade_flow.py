@@ -384,15 +384,19 @@ async def _run_upgrade(
             generation_config=config,
             selection_out=generation_scope,
         )
-    from repowise.core.generation.models import count_stub_fallbacks
+    from repowise.core.generation.models import (
+        STUB_FALLBACK_ERROR,
+        count_stub_fallbacks,
+        is_stub_fallback,
+    )
 
+    # A page the model failed keeps its placeholder, which `repowise generate`
+    # refills. Failing the run over it would discard every page that succeeded.
     stub_fallbacks = count_stub_fallbacks(generated_pages)
-    if stub_fallbacks:
-        await engine.dispose()
-        raise RuntimeError(
-            f"Model generation returned {stub_fallbacks} fallback page(s); "
-            "the prior index remains active and the upgrade can be retried"
-        )
+    stub_reasons = sorted(
+        {str(p.metadata.get(STUB_FALLBACK_ERROR, "")).strip() for p in generated_pages if is_stub_fallback(p)}
+        - {""}
+    )
     if checkpoint:
         checkpoint("generation")
 
@@ -570,7 +574,21 @@ async def _run_upgrade(
                 "next_command": "repowise reindex" if vector_store is None else None,
             },
             "embedding_error": embedding_error,
+            "stub_fallbacks": stub_fallbacks,
+            "stub_reasons": stub_reasons,
         },
+    )
+
+
+def _report_placeholders(count: int, reasons: list[str]) -> None:
+    """Name the pages the model failed and the command that refills them."""
+    if not count:
+        return
+    lines = "".join(f"  [dim]· {r[:160]}[/dim]\n" for r in reasons[:3])
+    console.print(
+        f"[yellow]{count} page(s) could not be written by the model[/yellow] "
+        f"and kept a placeholder rendered from structure.\n{lines}"
+        "  Run [bold]repowise generate[/bold] to write just those pages."
     )
 
 
@@ -860,6 +878,7 @@ def upgrade_to_full(
             f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
             f"{len(generated_pages)} pages generated, git tier now FULL."
         )
+        _report_placeholders(outcome.get("stub_fallbacks", 0), outcome.get("stub_reasons", []))
         if outcome["search"]["semantic"] != "available":
             console.print(
                 "[yellow]Semantic search is unavailable.[/yellow] Set an embedder key and run "

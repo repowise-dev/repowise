@@ -18,35 +18,52 @@ Clover layout (abbreviated):
 
 We trust the per-line elements over the ``<metrics>`` summary so coverage
 percentages match what gets highlighted in the dashboard. Branch coverage
-is derived from ``type="cond"`` lines (truecount + falsecount).
+is derived from ``type="cond"`` lines, whose two attributes mean one of two
+things depending on the writer:
+
+* evaluation counts (the original format): ``truecount`` / ``falsecount``
+  are how often the condition was true / false, so a line has two branches
+  and each is taken when its count is above zero;
+* branch counts: ``truecount`` is branches covered and ``falsecount``
+  branches not covered, so the line has ``truecount + falsecount``
+  branches. That writer marks its reports with a fixed
+  ``<project name="All files">`` and ``clover="3.2.0"`` on the root; both
+  must be present.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
-from .model import CoverageReport, FileCoverage
+from .model import CoverageReport, FileCoverage, file_coverage, parse_xml
+
+#: The markers the branch-count writer always emits (see the module docstring).
+_BRANCH_COUNT_PROJECT = "All files"
+_BRANCH_COUNT_VERSION = "3.2.0"
 
 
 def parse_clover(text: str) -> CoverageReport:
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
+    root = parse_xml(text)
+    if root is None:
         return CoverageReport(source_format="clover", files=[])
 
+    project = root.find("project")
+    branch_counts = (
+        project is not None
+        and project.get("name") == _BRANCH_COUNT_PROJECT
+        and root.get("clover") == _BRANCH_COUNT_VERSION
+    )
     files: list[FileCoverage] = []
     for file_el in root.iter("file"):
         path = file_el.get("path") or file_el.get("name") or ""
         if not path:
             continue
-        norm = Path(path).as_posix()
 
         covered: set[int] = set()
-        total: set[int] = set()
+        coverable: set[int] = set()
         branches_found = 0
         branches_hit = 0
-        has_branches = False
+        branch_lines: dict[int, tuple[int, int]] = {}
 
         for line in file_el.iter("line"):
             try:
@@ -55,39 +72,33 @@ def parse_clover(text: str) -> CoverageReport:
                 continue
             if line_no <= 0:
                 continue
-            ltype = line.get("type", "stmt")
             try:
                 count = int(line.get("count", "0"))
             except ValueError:
                 count = 0
-            total.add(line_no)
+            coverable.add(line_no)
             if count > 0:
                 covered.add(line_no)
-            if ltype == "cond":
-                has_branches = True
+            if line.get("type", "stmt") == "cond":
                 try:
                     tc = int(line.get("truecount", "0"))
                     fc = int(line.get("falsecount", "0"))
                 except ValueError:
                     tc, fc = 0, 0
-                branches_found += 2
-                branches_hit += (1 if tc > 0 else 0) + (1 if fc > 0 else 0)
-
-        total_n = len(total)
-        line_pct = (len(covered) / total_n * 100.0) if total_n else 0.0
-        branch_pct: float | None
-        if has_branches and branches_found:
-            branch_pct = branches_hit / branches_found * 100.0
-        else:
-            branch_pct = None
+                taken, total = (tc, tc + fc) if branch_counts else ((tc > 0) + (fc > 0), 2)
+                branches_found += total
+                branches_hit += taken
+                if total:
+                    branch_lines[line_no] = (taken, total)
 
         files.append(
-            FileCoverage(
-                file_path=norm,
-                line_coverage_pct=round(line_pct, 2),
-                branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
-                covered_lines=sorted(covered),
-                total_coverable_lines=total_n,
+            file_coverage(
+                Path(path).as_posix(),
+                covered,
+                coverable,
+                branches_found=branches_found,
+                branches_hit=branches_hit,
+                branch_lines=branch_lines,
             )
         )
 

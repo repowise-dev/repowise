@@ -113,6 +113,8 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     a key, so a keyless wiki gets a real tree with plainer labels rather than a
     worse tree.
     """
+    if group.packages:
+        return _package_rollup_title(group.packages)
     segments = [s for s in group.target_path.split("/") if s]
     meaningful = [s for s in segments if s.lower() not in _STOP_SEGMENTS] or segments
     tail = [_humanise(s) for s in meaningful[-2:]]
@@ -343,8 +345,30 @@ def disambiguate_titles(
     return [t for t, _ in out]
 
 
+def _package_rollup_title(packages: Sequence[str]) -> str:
+    """The shared parent plus a member list, never one member's name alone."""
+    parent = _common_prefix(list(packages))
+    lead = _humanise(_chapter_subject(parent)) or "Root"
+    if not lead.lower().endswith("packages"):
+        lead = f"{lead} Packages"
+    names = [_humanise(p.rsplit("/", 1)[-1]) for p in sorted(packages)]
+    more = f" and {len(names) - 2} More" if len(names) > 2 else ""
+    title = f"{lead}: {names[0]}, {names[1]}{more}"
+    if len(title.split()) <= MAX_TITLE_WORDS:
+        return title
+    return f"{lead} ({len(names)})"
+
+
 def deterministic_scope(group: ConceptGroup) -> str:
     """A scope line stating coverage and its boundary, with no model."""
+    if group.packages:
+        names = [p.rsplit("/", 1)[-1] for p in group.packages]
+        listed = ", ".join(names[:8]) + (f" and {len(names) - 8} more" if len(names) > 8 else "")
+        return (
+            f"Covers {len(names)} small sibling packages ({listed}), "
+            f"{group.file_count} source files in all. Each is its own package; "
+            "code outside them is documented on its own pages."
+        )
     # The root directory is the empty string, which is a real directory and
     # not an absent one; filtering it out left a group reading "0 directories".
     dirs = list(group.dirs)
@@ -524,6 +548,9 @@ def build_payload(
             common = _common_prefix(group.dirs)
             cut = len(common) + 1 if common else 0
             entry["subdirs"] = [d[cut:] or d.rsplit("/", 1)[-1] for d in group.dirs[:8]]
+        if group.packages:
+            # Sections only: the title stays the deterministic parent + members.
+            entry["packages"] = [p.rsplit("/", 1)[-1] for p in group.packages]
         label = labels.get(group.dominant_layer)
         if label:
             entry["layer"] = label
@@ -626,6 +653,9 @@ def decode_response(
         title = _clean_title(entry.get("title"))
         scope = str(entry.get("scope") or "").strip()
         fallback = False
+        if group.packages:
+            # A model shown several packages names the page after one of them.
+            title, scope = "", ""
         if not title:
             title = deterministic_title(group, labels.get(group.dominant_layer, ""))
             fallback = True

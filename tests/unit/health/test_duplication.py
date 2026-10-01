@@ -375,3 +375,80 @@ def test_aggregate_skips_files_without_nloc():
     pairs = [_pair("a.py", 1, 10, "b.py", 1, 10)]
     _, pct = _aggregate(pairs, {"a.py": 50})
     assert "b.py" not in pct
+
+
+# ---- identifier-level verification ----------------------------------------
+
+_LOOP_BODY = "\n".join(
+    [
+        "def {fn}({a}, {b}, {c}):",
+        "    {t} = 0",
+        "    for {i} in range({a}):",
+        "        if {i} > {b}:",
+        "            {t} = {t} + {i} * {c}",
+        "        else:",
+        "            {t} = {t} - {b}",
+        "    return {t} + {a} + {b} + {c}",
+        "",
+    ]
+)
+
+
+def _loop(**names: str) -> str:
+    return _LOOP_BODY.format(**names)
+
+
+def test_tokenize_file_drops_python_imports():
+    toks = tokenize_file("python", b"import os\nfrom a.b import c, d\nx = 1\n")
+    assert [t.kind for t in toks] == ["ID", "=", "LIT"]
+
+
+def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():
+    source = (
+        b'import { a, b } from "./x";\n'
+        b'export { c } from "./y";\n'
+        b'export * from "./z";\n'
+        b"export const n = 1;\n"
+    )
+    toks = tokenize_file("typescript", source, "src/i.ts")
+    assert [t.kind for t in toks] == ["export", "const", "ID", "=", "LIT", ";"]
+
+
+@pytest.mark.parametrize("language", ["ruby", "elixir", "shell", "luau", "gdscript"])
+def test_import_node_kinds_never_skip_calls_or_superclass_clauses(language: str):
+    from repowise.core.analysis.health.duplication.tokenizer import import_node_kinds
+
+    assert import_node_kinds(language) == frozenset()
+
+
+def test_tokenize_file_keeps_raw_identifier_names():
+    toks = tokenize_file("python", b"total = count + 1\n")
+    assert [t.name for t in toks] == ["total", "", "count", "", ""]
+
+
+def test_detect_clones_ignores_identical_import_blocks(tmp_path: Path):
+    imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(12))
+    a = _write(tmp_path, "a.py", imports + "def f():\n    return 1\n")
+    b = _write(tmp_path, "b.py", imports + "def g(x):\n    return x * 2\n")
+    report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
+    assert report.pairs == []
+
+
+def test_detect_clones_ignores_matching_data_literals(tmp_path: Path):
+    table = "TABLE = [\n" + "".join(f"    ({i}, '{i}', {i}.5),\n" for i in range(20)) + "]\n"
+    a = _write(tmp_path, "a.py", table)
+    b = _write(tmp_path, "b.py", table.replace("TABLE", "OTHER"))
+    report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
+    assert report.pairs == []
+
+
+def test_detect_clones_needs_shared_identifier_names(tmp_path: Path):
+    same = dict(fn="f", a="a", b="b", c="c", t="total", i="i")
+    renamed = dict(fn="g", a="rows", b="limit", c="scale", t="acc", i="k")
+    a = _write(tmp_path, "a.py", _loop(**same))
+    b = _write(tmp_path, "b.py", _loop(**renamed))
+    c = _write(tmp_path, "c.py", _loop(**{**same, "fn": "f_copy"}))
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b)), _pf("c.py", str(c))]
+    report = detect_clones(parsed, window_tokens=20, min_lines=4)
+    # Same shape with every name changed is not a copy; a real copy still is.
+    assert {(p.file_a, p.file_b) for p in report.pairs} == {("a.py", "c.py")}

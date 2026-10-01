@@ -33,20 +33,27 @@ class LargeMethodDetector:
     # a per-function flat-match flag threaded from the walker (a larger change).
     _CCN_FLOOR = 3
 
+    @classmethod
+    def severity_for(cls, ccn: int, nloc: int) -> Severity | None:
+        """The severity a function of this shape earns, ``None`` below the bar."""
+        if nloc < cls._NLOC_THRESHOLD or ccn < cls._CCN_FLOOR:
+            return None
+        return (
+            Severity.CRITICAL
+            if nloc >= 200
+            else Severity.HIGH
+            if nloc >= 120
+            else Severity.MEDIUM
+            if nloc >= 90
+            else Severity.LOW
+        )
+
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
-            if fn.nloc < self._NLOC_THRESHOLD or fn.ccn < self._CCN_FLOOR:
+        for fn in ctx.all_functions:
+            severity = self.severity_for(fn.ccn, fn.nloc)
+            if severity is None:
                 continue
-            severity = (
-                Severity.CRITICAL
-                if fn.nloc >= 200
-                else Severity.HIGH
-                if fn.nloc >= 120
-                else Severity.MEDIUM
-                if fn.nloc >= 90
-                else Severity.LOW
-            )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

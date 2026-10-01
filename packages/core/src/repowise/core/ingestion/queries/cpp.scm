@@ -370,7 +370,7 @@
 ; carries no import statement naming the type — only the ``#include``.
 ; Without these captures every header type reads as an unused export. The
 ; shared ``@param.type`` capture name routes through the C head extractor
-; (see parser_helpers.TYPE_HEAD_EXTRACTORS); pointer/array declarator
+; (see lang_helpers.type_heads.TYPE_HEAD_EXTRACTORS); pointer/array declarator
 ; wrapping lives on the declarator side, and primitive builtins are filtered.
 
 ; Parameter types: void f(Widget *w)

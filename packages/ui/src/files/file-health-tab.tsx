@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { HeartPulse } from "lucide-react";
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable, useVirtualRows } from "../shared/virtualized-table";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "../health/score-breakdown";
@@ -21,6 +21,7 @@ import { FileSignalsPanel } from "../health/file-signals-panel";
 import { FindingOpportunityLink } from "../health/file-opportunity";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { SeverityMark } from "../health/severity-mark";
+import { VerificationTag } from "../health/verification-tag";
 import { formatNumber } from "../lib/format";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
@@ -143,7 +144,7 @@ export function FileHealthTab({
     if (metric.maintainability_score != null) {
       pillars.push({
         label: "Maintainability",
-        value: metric.maintainability_score.toFixed(1),
+        value: formatScore(metric.maintainability_score),
         valueColor: healthBandTextColor(bandForScore(metric.maintainability_score)),
         sub: HEALTH_BAND_LABEL[bandForScore(metric.maintainability_score)],
       });
@@ -151,7 +152,7 @@ export function FileHealthTab({
     if (metric.performance_score != null) {
       pillars.push({
         label: "Performance",
-        value: metric.performance_score.toFixed(1),
+        value: formatScore(metric.performance_score),
         valueColor: healthBandTextColor(bandForScore(metric.performance_score)),
         sub: HEALTH_BAND_LABEL[bandForScore(metric.performance_score)],
       });
@@ -245,6 +246,7 @@ export function FileHealthTab({
                     <span className="text-sm font-semibold text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
                     {/* Category and pillar are machine-produced labels, so they
                         are mono micro-labels rather than two tinted chips —
                         rule 9, nothing here responds to a click. */}

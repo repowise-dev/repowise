@@ -423,7 +423,10 @@ class RefactoringHealthService:
             [rehydrate_suggestion(row)],
             metric_by_path=metric_by_path,
             centrality=centrality,
-            validations={0: _stored_validation(owner, row.public_id)},
+            validations={
+                0: _stored_validation(owner, row.public_id)
+                or await self._performance_validation(row)
+            },
         )
         payload = built[0].as_dict() if built else _plan_payload(row)
         payload["id"] = row.public_id or row.id
@@ -439,6 +442,27 @@ class RefactoringHealthService:
                 "arguments": {"opportunity_id": owner.opportunity_id},
             }
         return result
+
+    async def _performance_validation(self, row: Any) -> Any:
+        """A performance plan's profile, stored on its opportunity at finalize.
+
+        Performance plans are never refactoring steps, so the step lookup above
+        cannot find them, and an empty fallback reports every one as untested.
+        """
+        from repowise.core.persistence.crud.analysis.performance import (
+            get_performance_opportunity,
+        )
+
+        if row.refactoring_type != "performance_fix":
+            return None
+        opportunity_id = _loads(row.plan_json).get("opportunity_id")
+        if not opportunity_id:
+            return None
+        owner = await get_performance_opportunity(
+            self._session, self._repository_id, opportunity_id
+        )
+        profile = (_loads(owner.details_json).get("plan") or {}).get("validation") if owner else None
+        return _validation_from_profile(profile) if profile else None
 
     async def _rank_inputs(self, file_path: str) -> tuple[dict[str, Any], dict[str, float]]:
         """The two rank inputs for one file, as seeks rather than repo reads.
@@ -613,11 +637,6 @@ def _stored_validation(owner: Any, public_id: str | None) -> Any:
     Test reachability is a graph walk over the whole unanswered set; it belongs
     at index time, and this reads its result rather than repeating it.
     """
-    from repowise.core.analysis.health.refactoring.recommendations import (
-        ValidationPlan,
-        ValidationTarget,
-    )
-
     if owner is None or not public_id:
         return None
     details = _loads(owner.details_json)
@@ -635,8 +654,16 @@ def _stored_validation(owner: Any, public_id: str | None) -> Any:
         (p for p in (details.get("validation_profiles") or []) if p.get("id") == wanted),
         None,
     )
-    if profile is None:
-        return None
+    return _validation_from_profile(profile) if profile is not None else None
+
+
+def _validation_from_profile(profile: dict[str, Any]) -> Any:
+    """Rebuild a stored validation profile into the plan dataclass."""
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        ValidationPlan,
+        ValidationTarget,
+    )
+
     target_fields = set(ValidationTarget.__dataclass_fields__)
     values = {
         key: value

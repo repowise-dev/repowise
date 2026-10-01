@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contractDetailHref } from "./contract-href";
+import { contractDetailHref, contractsListHref } from "./contract-href";
 
 describe("contractDetailHref", () => {
   it("carries all three parts of the identity", () => {
@@ -34,5 +34,20 @@ describe("contractDetailHref", () => {
     const a = contractDetailHref({ repo: "a", file_path: "x.ts", contract_id: id });
     const b = contractDetailHref({ repo: "b", file_path: "x.ts", contract_id: id });
     expect(a).not.toBe(b);
+  });
+});
+
+describe("contractsListHref", () => {
+  it("keeps only the filters that are set and lands on the list", () => {
+    expect(contractsListHref({ repo: "backend", type: "http", role: "provider", linked: "no" })).toBe(
+      "/workspace/contracts?type=http&repo=backend&role=provider&linked=no#all-contracts",
+    );
+  });
+
+  it("drops the first page and an empty search", () => {
+    expect(contractsListHref({ q: "", page: 1 })).toBe("/workspace/contracts#all-contracts");
+    expect(contractsListHref({ q: "chat", page: 3 })).toBe(
+      "/workspace/contracts?q=chat&page=3#all-contracts",
+    );
   });
 });

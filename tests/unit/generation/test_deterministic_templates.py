@@ -531,9 +531,10 @@ def test_file_page_renders_german_headings_and_prose(german_generator):
         "## Wird verwendet von",
         "## Nutzungshinweise",
         "## Fragen, die diese Seite beantwortet",
-        "## Im Code",
     ):
         assert heading in page.content, heading
+    # The file vocabulary is embedded from metadata, never rendered.
+    assert "## Im Code" not in page.content
     assert "Sie stellt 1 öffentliches Symbol bereit" in page.content
     assert "Importiert von 1 Datei in diesem Repository." in page.content
     # Identifiers are never translated, in any language.
@@ -608,8 +609,8 @@ def test_the_footer_is_localized_on_every_structural_page(german_generator):
         template="file_page.j2",
         ctx=ctx,
     )
-    assert "Aus dem Code selbst erstellt" in page.content
-    assert "Built from the code itself" not in page.content
+    assert "Erstellt aus geparstem Code" in page.content
+    assert "Generated from parsed code" not in page.content
 
 
 def test_an_unsupported_language_renders_exactly_what_english_does(generator, klingon_generator):

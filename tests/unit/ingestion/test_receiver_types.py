@@ -634,6 +634,7 @@ def test_the_language_set_is_what_the_patterns_declare() -> None:
         "kotlin",
         "python",
         "swift",
+        "typescript",
     }
 
 

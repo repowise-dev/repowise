@@ -95,6 +95,8 @@ export async function listHealthFindings(
     /** Exact severities, comma-separated. Overrides `min_severity`. */
     severity?: string;
     dimension?: string;
+    /** Also return performance and advisory, which no impact-ranked list holds. */
+    include_zero_impact?: boolean;
     /** Comma-separated statuses, or `"all"`. Defaults to open work. */
     status?: string;
     limit?: number;

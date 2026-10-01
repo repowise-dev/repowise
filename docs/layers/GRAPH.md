@@ -10,7 +10,7 @@ that **every edge carries its own evidence**.
 
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
-  <img src="https://img.shields.io/badge/37-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="37 resolution origins" />
+  <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
   <img src="https://img.shields.io/badge/26-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="26 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
@@ -92,7 +92,7 @@ the call was there.
 **Stage two: resolution.** Given a captured site, work out what the name points
 at. `repo.save(draft)` hands you the name `save` and a receiver spelled `repo`,
 and the job is to turn that into one declaration in one file. This is where the
-37 origins below live, and it is the `user.save()` problem from the section
+39 origins below live, and it is the `user.save()` problem from the section
 above.
 
 | | fails when | costs you | how you find out |
@@ -160,12 +160,13 @@ permanent rather than a stopgap.
 
 ### The one we did
 
-Nine languages, 30 call edges per language per tool, every row opened in its own
-file with its imports and enclosing scope, then the target declaration opened
-too. **229 of 270 correct for us, 154 of 270 for CodeGraph 1.5.0**, intervals
-disjoint. Four of the nine cells separate and five are ties, reported as ties.
+Nine languages, 30 call edges per language per tool (widened to 40 for Java
+across two repositories), every row opened in its own file with its imports and
+enclosing scope, then the target declaration opened too. **240 of 280 correct
+for us (85.7%), 164 of 280 for CodeGraph 1.5.0 (58.6%)**, intervals disjoint.
+Four of the nine cells separate and five are ties, reported as ties.
 
-Read our own number the other way round: **roughly fifteen percent of our call
+Read our own number the other way round: **roughly fourteen percent of our call
 edges are wrong**, concentrated in java, rust and cpp. That is the figure to plan
 against, and it is a floor rather than a best case, because every resolver change
 since the earliest rows were graded only removes wrong edges.
@@ -176,7 +177,7 @@ reading source and a type checker landing within about a point of each other is
 the strongest available evidence that the hand-graded half is accurate rather
 than self-serving, and it is the result here we care about most.
 
-[The nine cells, and all 540 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
+[The nine cells, and all 560 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
 
 ### The column we lose
 
@@ -242,7 +243,7 @@ filter, and two of them silently counted co-change edges as imports.
 ## Every edge says how it got there
 
 Each `calls` edge is stamped with a **resolution origin**: the named strategy
-that produced it. There are 37, drawn from a closed vocabulary, and each one
+that produced it. There are 39, drawn from a closed vocabulary, and each one
 carries exactly one confidence.
 
 | Confidence | Origin | What was actually established |
@@ -272,7 +273,7 @@ call site.
 
 ## Typing the receiver
 
-Twelve of the 37 origins exist to answer the `user.save()` question properly.
+Twelve of the 39 origins exist to answer the `user.save()` question properly.
 Rather than matching a bare method name, repowise reads the receiver's
 **declaration** and resolves the method on that type.
 

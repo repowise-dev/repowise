@@ -129,6 +129,10 @@ class PipelineResult:
     # data module. Populated post-traversal during the graph build phase.
     tech_stack: list[dict] = field(default_factory=list)
 
+    repo_path: str = ""
+    """Working tree this run walked. Empty when the caller did not set it;
+    persistence steps that need the tree (the per-commit health scan) skip."""
+
     # External systems parsed from repo manifests (package.json,
     # pyproject.toml, Cargo.toml, go.mod, .csproj). Powers the C4 L1
     # System Context view. Plain dicts mirroring ExternalSystemRecord fields
@@ -541,6 +545,8 @@ async def run_pipeline(
             _run_doc_drift_analysis(
                 source_map,
                 file_infos=file_infos,
+                graph_builder=graph_builder,
+                repo_path=repo_path,
                 progress=progress,
             ),
         )
@@ -927,6 +933,7 @@ async def run_pipeline(
     symbol_count = sum(len(pf.symbols) for pf in parsed_files)
 
     return PipelineResult(
+        repo_path=str(repo_path),
         parsed_files=parsed_files,
         file_infos=file_infos,
         repo_structure=repo_structure,

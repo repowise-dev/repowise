@@ -157,6 +157,13 @@ class FileInfo:
     is_config: bool
     is_api_contract: bool
     is_entry_point: bool
+    # Named by a package manifest (package.json bin/main/exports["."],
+    # pyproject scripts, a distribution's package ``__init__``): the strongest
+    # entry evidence, ranked above every filename guess.
+    is_manifest_entry: bool = False
+    # Reached from outside the import graph (a runner or loader starts it), so
+    # dead-code analysis never flags it. Read through ``is_reachability_root``.
+    is_reachability_root: bool = False
 
 
 @dataclass
@@ -168,6 +175,8 @@ class PackageInfo:
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
+    # A member of a root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work).
+    declared: bool = False
 
 
 @dataclass
@@ -208,7 +217,9 @@ class Symbol:
     # declaration in a header. The definition carrying the same name lives in
     # a .cpp and is the symbol a call should attach to; the call resolver
     # redirects onto it, and the dead-code pass never reports a declaration,
-    # since a declaration is not independently deletable.
+    # since a declaration is not independently deletable. Python ``@overload``
+    # stubs and TypeScript overload signatures are declarations too: they share
+    # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
 
 
@@ -301,7 +312,11 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
-HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+# Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
+# test_wire_vocabulary_parity pins the difference.
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin", "derive"]
+
+HERITAGE_KIND_VALUES: frozenset[str] = frozenset(get_args(HeritageKind))
 
 
 @dataclass
@@ -460,6 +475,12 @@ ResolutionOrigin = Literal[
     "receiver_extension_same_file",  # 0.93
     "receiver_extension_import",  # 0.88 — the holder class's file is imported
     "receiver_extension_global",  # 0.75 — declared somewhere; a name match
+    # A dotted receiver (`this.a.b.m()`) typed hop by hop through each class's
+    # declared fields. No global tier: every hop's type must be bound by an
+    # import or declared in the file that wrote it, and the tier is the
+    # weakest hop's.
+    "receiver_chain_same_file",  # 0.93
+    "receiver_chain_import",  # 0.88
     # Chained receiver typed from the inner callee's declared return type.
     "return_type_same_file",  # 0.93
     "return_type_same_package",  # 0.90 (JVM)
@@ -537,20 +558,13 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference. See the
-        # note on SYMBOL_USE_EDGE_TYPES: `reads` is emitted at both layers.
+        # declaring the type, so this is a real file-level reference.
         "reads",
     }
 )
 
 # Symbol → symbol references. "Something reaches this symbol", so containment
 # is excluded: a class containing a method is not the method being used.
-#
-# `reads` is a member here for a reason that no longer holds: its symbol-level
-# producer moved to `framework_binds`, so `csharp_member_reads` is the only one
-# left and it emits file → file. A file node can never be a symbol node's
-# predecessor, so membership is inert rather than wrong. Retiring it moves the
-# vocabulary and belongs to a diff that can measure that.
 SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
     {
         "calls",
@@ -564,7 +578,6 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         # A fixture nobody calls and a collaborator nobody constructs are both
         # used — by the container, which no parser sees.
         "framework_binds",
-        "reads",
         # Naming a function is using it. A handler sitting in a dispatch table
         # is never called anywhere a parser can see, and treating that as "no
         # use" reported entire registration layers as safe to delete (#1602).
@@ -575,13 +588,12 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
 
 # Symbol → symbol edges along which control can actually reach the target, for
 # the question "would running this test execute that code?". The reachability
-# view minus the two that record a mention rather than a transfer of control:
-# `references` is a name sitting in a dispatch table and `reads` is a field
-# access, and neither runs the thing it names. Narrower than
-# SYMBOL_USE_EDGE_TYPES on purpose — dead code asks "is this used", which a
-# mention answers, and the inferred test map asks "is this run", which it does
-# not.
-EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references", "reads"}
+# view minus the one that records a mention rather than a transfer of control:
+# `references` is a name sitting in a dispatch table and does not run the thing
+# it names. Narrower than SYMBOL_USE_EDGE_TYPES on purpose — dead code asks
+# "is this used", which a mention answers, and the inferred test map asks "is
+# this run", which it does not.
+EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references"}
 
 
 # "Does anything use this symbol at all?" — the reachability view. Adds

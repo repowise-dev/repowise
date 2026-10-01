@@ -12,8 +12,14 @@ from sqlalchemy import select
 from repowise.core.analysis.dead_code.models import DeadCodeKind
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
     effective_safe_to_delete,
     path_risk_factors,
+)
+from repowise.core.analysis.finding_registry import (
+    excluded_types,
+    verification_label,
+    withheld_summary,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -22,7 +28,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_bases
+from repowise.server.mcp_server._basis import call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -34,6 +40,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     resolve_enum_argument,
 )
+from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._references import path_identity, stable_entity_id
 
@@ -48,6 +55,17 @@ class _FindingFilters:
     directory: str | None
     owner: str | None
     excluded_kinds: set[str] = field(default_factory=set)
+    # Kinds the finding-type registry keeps off this surface. Applied before
+    # anything is counted, so no total describes a finding the caller cannot see.
+    withheld_kinds: frozenset[str] = frozenset()
+
+    def split_withheld(self, findings: list) -> tuple[list, dict[str, dict]]:
+        """``(shown rows, {withheld kind: count/status/reason})``."""
+        counts: dict[str, int] = {}
+        for f in findings:
+            counts[f.kind] = counts.get(f.kind, 0) + 1
+        shown = [f for f in findings if f.kind not in self.withheld_kinds]
+        return shown, withheld_summary(counts, self.withheld_kinds)
 
 
 def _compute_excluded_kinds(
@@ -105,6 +123,7 @@ async def _get_dead_code_all_repos(
     total_deletable = 0
     total_safe = 0
     merged_by_kind: dict[str, int] = {}
+    merged_withheld: dict[str, dict] = {}
 
     for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
@@ -118,6 +137,10 @@ async def _get_dead_code_all_repos(
             repo_findings = filter_rows_by_attr(
                 list(all_result.scalars().all()), "file_path", _get_exclude_spec(ctx.path)
             )
+            repo_findings, repo_withheld = filters.split_withheld(repo_findings)
+            for name, entry in repo_withheld.items():
+                merged = merged_withheld.setdefault(name, {**entry, "count": 0})
+                merged["count"] += entry["count"]
 
             git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
 
@@ -130,13 +153,13 @@ async def _get_dead_code_all_repos(
 
         # Accumulate summary stats from unfiltered findings
         total_all += len(repo_findings)
-        total_deletable += sum(f.lines for f in repo_findings if _effective_safe(f))
+        total_deletable += sum(f.lines or 0 for f in repo_findings if _effective_safe(f))
         total_safe += sum(1 for f in repo_findings if _effective_safe(f))
         for f in repo_findings:
             merged_by_kind[f.kind] = merged_by_kind.get(f.kind, 0) + 1
 
     # Sort merged findings by confidence descending
-    merged_findings.sort(key=lambda d: (-d["confidence"], -d["lines"]))
+    merged_findings.sort(key=lambda d: (-d["confidence"], -(d["lines"] or 0)))
 
     summary = {
         "total_findings": total_all,
@@ -145,6 +168,8 @@ async def _get_dead_code_all_repos(
         "safe_to_delete_count": total_safe,
         "by_kind": merged_by_kind,
     }
+    if merged_withheld:
+        summary["withheld_types"] = merged_withheld
 
     tiers = _build_tiers_from_dicts(merged_findings, limit, tier)
 
@@ -164,11 +189,14 @@ async def _get_dead_code_all_repos(
 
 # The bands this tool tiers by, in one place: the tier descriptions quote them
 # and ``min_confidence="high"`` resolves to them, so the vocabulary the response
-# is organised by and the one it accepts cannot drift apart (#1496). Deliberately
-# this tool's own numbers — the web and CLI tier at 0.7/0.4
-# (``DEAD_CODE_CONFIDENCE`` in packages/types/src/dead-code.ts); reconciling the
-# two changes output and is not this change.
-_TIER_FLOORS: dict[str, float] = {"high": 0.8, "medium": 0.5, "low": 0.0}
+# is organised by and the one it accepts cannot drift apart (#1496). The engine's
+# own thresholds, so this tool, the web and the CLI (``DEAD_CODE_CONFIDENCE`` in
+# packages/types/src/dead-code.ts) put a finding in the same tier.
+_TIER_FLOORS: dict[str, float] = {
+    "high": SAFE_CONFIDENCE_THRESHOLD,
+    "medium": RISK_CAP_CONFIDENCE,
+    "low": 0.0,
+}
 
 # The four kinds the analyzer writes, taken from the enum it writes them with
 # rather than re-listed here, so a fifth kind never reads as a caller's typo.
@@ -188,7 +216,7 @@ def _build_tiers_from_dicts(
         return {
             "description": desc,
             "count": len(items),
-            "lines": sum(f["lines"] for f in items),
+            "lines": sum(f["lines"] or 0 for f in items),
             "safe_count": sum(1 for f in items if f["safe_to_delete"]),
             "findings": items[:limit],
             "truncated": len(items) > limit,
@@ -219,15 +247,17 @@ async def _load_git_meta_map(session: Any, repository_id: Any, findings: list) -
 
 
 _TIER_DESC_HIGH = (
-    "High confidence (>=0.8): No references found in the codebase. "
-    "Strong cleanup candidates — review (especially runtime-loaded files) before deleting."
+    f"High confidence (>={SAFE_CONFIDENCE_THRESHOLD}): No references found in the codebase. "
+    "Strong cleanup candidates — review (especially whole files and runtime-loaded files) "
+    "before deleting."
 )
 _TIER_DESC_MEDIUM = (
-    "Medium confidence (0.5-0.8): Likely unused but may have indirect references. "
-    "Review before deleting."
+    f"Medium confidence ({RISK_CAP_CONFIDENCE}-{SAFE_CONFIDENCE_THRESHOLD}): Likely unused "
+    "but may have indirect references. Review before deleting."
 )
 _TIER_DESC_LOW = (
-    "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first."
+    f"Low confidence (<{RISK_CAP_CONFIDENCE}): Potentially used via dynamic imports or "
+    "reflection. Investigate first."
 )
 
 
@@ -281,10 +311,10 @@ async def get_dead_code(
             An unrecognised value is dropped and named in ignored_arguments,
             never applied as a filter that matches nothing.
         min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
-            accepts a tier name: "high" (0.8) | "medium" (0.5) | "low" (0.0).
+            accepts a tier name: "high" | "medium" | "low".
         safe_only: deletion-ready findings only (no runtime-load risk).
         limit: max findings per tier (clamped to 25).
-        tier: "high" (>=0.8) | "medium" | "low".
+        tier: "high" | "medium" | "low", banded as min_confidence.
         directory: path-prefix filter.
         owner: primary-owner filter.
         group_by: "directory" | "owner" rollup.
@@ -321,6 +351,11 @@ async def get_dead_code(
             no_unused_exports=no_unused_exports,
             include_internals=include_internals,
             include_zombie_packages=include_zombie_packages,
+        ),
+        # Naming a kind, or ``include_internals`` for ``unused_internal``, is the
+        # explicit request a provisional kind needs; a hidden kind stays out.
+        withheld_kinds=excluded_types(
+            requested=[k for k in (kind, "unused_internal" if include_internals else None) if k]
         ),
     )
 
@@ -370,7 +405,7 @@ async def get_dead_code(
             DeadCodeFinding.status == "open",
         )
         all_result = await session.execute(all_query)
-        all_findings = list(all_result.scalars().all())
+        all_findings, withheld = filters.split_withheld(list(all_result.scalars().all()))
 
         # Phase 4: load git metadata for "last meaningful change" enrichment
         git_meta_map = await _load_git_meta_map(session, repository.id, all_findings)
@@ -426,10 +461,12 @@ async def get_dead_code(
     summary: dict[str, Any] = {
         "total_findings": len(all_findings),
         "filtered_findings": len(filtered),
-        "deletable_lines": sum(f.lines for f in all_findings if _effective_safe(f)),
+        "deletable_lines": sum(f.lines or 0 for f in all_findings if _effective_safe(f)),
         "safe_to_delete_count": sum(1 for f in all_findings if _effective_safe(f)),
         "by_kind": by_kind,
     }
+    if withheld:
+        summary["withheld_types"] = withheld
 
     # Cross-repo confidence adjustment (Phase 3)
     _adjust_dead_code_cross_repo(tiers, ctx.alias)
@@ -450,7 +487,7 @@ async def get_dead_code(
     # How much of the call graph these findings rest on, per language. A
     # reachability finding is only as strong as the edges that reached.
     summary["call_resolution_basis"] = await call_resolution_bases(
-        session, repository.id, cache_key=basis_cache_key(repository)
+        session, repository.id, cache_key=index_state_key(repository)
     )
 
     result["_meta"] = _build_meta(repository=repository)
@@ -521,7 +558,7 @@ def _effective_safe(f: Any) -> bool:
     files (and findings written before risk factors existed) never read as
     safe-to-delete.
     """
-    return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+    return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
 
 
 def _dead_code_finding_id(f: Any, repository: str) -> str:
@@ -570,6 +607,9 @@ def _serialize_finding(
         # findings. last_commit_at above is the staleness signal.
         "age_days": f.age_days,
     }
+    label = verification_label(f.kind)
+    if label:
+        result["verification"] = label
     # Phase 4: add last meaningful change date
     if git_meta_map:
         gm = git_meta_map.get(f.file_path)
@@ -596,15 +636,15 @@ def _build_tiers(
     hi, med = _TIER_FLOORS["high"], _TIER_FLOORS["medium"]
     high = sorted(
         [f for f in findings if f.confidence >= hi],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
     medium = sorted(
         [f for f in findings if med <= f.confidence < hi],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
     low = sorted(
         [f for f in findings if f.confidence < med],
-        key=lambda f: (-f.confidence, -f.lines),
+        key=lambda f: (-f.confidence, -(f.lines or 0)),
     )
 
     def _tier_block(name: str, items: list, description: str) -> dict:
@@ -623,7 +663,7 @@ def _build_tiers(
         return {
             "description": description,
             "count": len(items),
-            "lines": sum(f.lines for f in items),
+            "lines": sum(f.lines or 0 for f in items),
             "safe_count": sum(1 for f in items if _effective_safe(f)),
             "findings": [
                 _serialize_finding(f, git_meta_map, repository=repository)
@@ -652,7 +692,7 @@ def _rollup_by_directory(findings: list) -> list[dict]:
         if dir_key not in dirs:
             dirs[dir_key] = {"directory": dir_key, "count": 0, "lines": 0, "safe_count": 0}
         dirs[dir_key]["count"] += 1
-        dirs[dir_key]["lines"] += f.lines
+        dirs[dir_key]["lines"] += f.lines or 0
         if _effective_safe(f):
             dirs[dir_key]["safe_count"] += 1
 
@@ -667,7 +707,7 @@ def _rollup_by_owner(findings: list) -> list[dict]:
         if name not in owners:
             owners[name] = {"owner": name, "count": 0, "lines": 0, "safe_count": 0}
         owners[name]["count"] += 1
-        owners[name]["lines"] += f.lines
+        owners[name]["lines"] += f.lines or 0
         if _effective_safe(f):
             owners[name]["safe_count"] += 1
 
@@ -683,7 +723,7 @@ def _compute_impact(tiers: dict) -> dict:
         # Approximate safe lines from findings in the tier
         for f in tier_data["findings"]:
             if f["safe_to_delete"]:
-                safe_lines += f["lines"]
+                safe_lines += f["lines"] or 0
 
     return {
         "total_lines_reclaimable": total_lines,

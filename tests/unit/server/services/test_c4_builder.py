@@ -251,3 +251,133 @@ async def test_relation_labels_are_readable_with_coupling(async_session):
     assert cross.label == "imports"
     assert cross.coupling in {"loose", "moderate", "tight"}
     assert "+1" not in cross.label
+
+
+async def _seed_nodes_and_edges(session, local_path, nodes, edges=()):
+    repo = await upsert_repository(session, name="shop", local_path=local_path)
+    await batch_upsert_graph_nodes(
+        session,
+        repo.id,
+        [{"node_id": n, "node_type": "file", "language": lang, "symbol_count": 1} for n, lang in nodes],
+    )
+    if edges:
+        await batch_upsert_graph_edges(
+            session,
+            repo.id,
+            [{"source_node_id": s, "target_node_id": t, "edge_type": e} for s, t, e in edges],
+        )
+    await session.commit()
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_dominant_language_ignores_markdown(async_session):
+    nodes = [
+        ("packages/docs-kit/package.json", "json"),
+        ("packages/docs-kit/a.md", "markdown"),
+        ("packages/docs-kit/b.md", "markdown"),
+        ("packages/docs-kit/c.md", "markdown"),
+        ("packages/docs-kit/index.ts", "typescript"),
+    ]
+    repo = await _seed_nodes_and_edges(async_session, "/nonexistent/shop", nodes)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    (container,) = view.containers
+    assert container.language == "typescript"
+    assert container.file_count == 5
+
+
+@pytest.mark.asyncio
+async def test_fixture_manifest_not_container(async_session):
+    nodes = [
+        ("package.json", "json"),
+        ("src/index.ts", "typescript"),
+        ("tests/fixtures/app/package.json", "json"),
+        ("tests/fixtures/app/index.ts", "typescript"),
+        ("examples/demo/package.json", "json"),
+        ("examples/demo/main.ts", "typescript"),
+        ("packages/core/package.json", "json"),
+        ("packages/core/src/lib.ts", "typescript"),
+        ("packages/core/test/fixture/package.json", "json"),
+    ]
+    repo = await _seed_nodes_and_edges(async_session, "/nonexistent/shop", nodes)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    by_path = {c.path: c for c in view.containers}
+    assert set(by_path) == {"", "packages/core"}
+    # Fixture and sample files fold into the nearest remaining container.
+    assert by_path[""].file_count == 6
+    assert by_path["packages/core"].file_count == 3
+    # With no readable manifest a container is named by its relative path.
+    assert by_path["packages/core"].name == "packages/core"
+    assert by_path[""].name == "shop"
+
+
+@pytest.mark.asyncio
+async def test_fallback_top_level_dirs_skip_tests_and_examples(async_session):
+    nodes = [
+        ("app/main.go", "go"),
+        ("tests/app_test.go", "go"),
+        ("examples/hello/main.go", "go"),
+    ]
+    repo = await _seed_nodes_and_edges(async_session, "/nonexistent/shop", nodes)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    assert [c.path for c in view.containers] == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_container_named_from_manifest(async_session, tmp_path):
+    (tmp_path / "packages" / "core").mkdir(parents=True)
+    (tmp_path / "packages" / "core" / "package.json").write_text('{"name": "@shop/core"}')
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "shop-root"\n')
+    nodes = [
+        ("pyproject.toml", "toml"),
+        ("shop/app.py", "python"),
+        ("packages/core/package.json", "json"),
+        ("packages/core/index.ts", "typescript"),
+    ]
+    repo = await _seed_nodes_and_edges(async_session, str(tmp_path), nodes)
+    names = {c.path: c.name for c in (await c4_builder.build_l2(async_session, repo.id)).containers}
+    assert names == {"": "shop-root", "packages/core": "@shop/core"}
+
+
+async def _seed_two_containers_with_edges(session, edges):
+    nodes = [
+        ("packages/a/package.json", "json"),
+        ("packages/a/index.ts", "typescript"),
+        ("packages/a/tsconfig.json", "json"),
+        ("packages/b/package.json", "json"),
+        ("packages/b/index.ts", "typescript"),
+    ]
+    return await _seed_nodes_and_edges(session, "/nonexistent/shop", nodes, edges)
+
+
+@pytest.mark.asyncio
+async def test_l2_excludes_cochange(async_session):
+    repo = await _seed_two_containers_with_edges(
+        async_session, [("packages/a/index.ts", "packages/b/index.ts", "co_changes")]
+    )
+    assert (await c4_builder.build_l2(async_session, repo.id)).relations == []
+    # The shared roll-up drops history everywhere, the export included.
+    model = await c4_builder.build_model(async_session, repo.id)
+    assert model.container_relations == [] and model.component_relations == []
+
+    overlay = await c4_builder.build_l2(async_session, repo.id, include_co_changes=True)
+    assert [(r.source_id, r.target_id, r.label) for r in overlay.relations] == [
+        ("pkg:packages/a", "pkg:packages/b", "co-changes")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_l2_skips_edges_to_config_files(async_session):
+    repo = await _seed_two_containers_with_edges(
+        async_session,
+        [
+            ("packages/b/index.ts", "packages/a/tsconfig.json", "imports"),
+            ("packages/b/index.ts", "packages/a/index.ts", "imports"),
+        ],
+    )
+    (relation,) = (await c4_builder.build_l2(async_session, repo.id)).relations
+    assert (relation.source_id, relation.target_id, relation.edge_count) == (
+        "pkg:packages/b",
+        "pkg:packages/a",
+        1,
+    )

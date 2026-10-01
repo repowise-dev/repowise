@@ -44,6 +44,7 @@ from repowise.server.mcp_server._graph_files import (
     file_ext,
     keep_projected_edge,
     node_to_file,
+    per_index,
 )
 
 # Edge kinds that form the file-level dependency graph. ``imports`` is
@@ -232,6 +233,13 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str
     return {node: sorted(neighbours) for node, neighbours in adj.items()}
 
 
+async def file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
+    """:func:`_load_file_adjacency`, built once per index state. Read-only."""
+    return await per_index(
+        session, repo_id, "file_adjacency", lambda: _load_file_adjacency(session, repo_id)
+    )
+
+
 def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> list[str] | None:
     """Shortest file path between ``src`` and ``dst`` (inclusive), or None.
 
@@ -351,7 +359,7 @@ async def expand_via_flow_path(
         endpoints.append(top_hit)
     endpoints = endpoints[:_FLOW_MAX_ANCHORS]
 
-    adj = await _load_file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id)
 
     paths: list[list[str]] = []
     for i in range(len(endpoints)):

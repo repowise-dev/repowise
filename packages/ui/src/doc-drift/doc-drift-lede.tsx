@@ -97,8 +97,8 @@ export function DocDriftLede({
           <>
             <p>
               Every reference this detector could resolve still resolves. No document
-              names a file, a heading or a command that the repository has since moved
-              or removed.
+              names a file, a heading, a command or a code symbol that the repository
+              has since moved or removed.
             </p>
             <p className="mt-2.5">{summary.findings_basis}</p>
           </>
@@ -128,6 +128,13 @@ export function DocDriftLede({
                 </>
               ) : null}
               . Each one names the document to edit, not the file it points at.
+              {summary.new_since_last_update ? (
+                <>
+                  {" "}
+                  {formatNumber(summary.new_since_last_update)} appeared in the last
+                  update.
+                </>
+              ) : null}
             </p>
             <p className="mt-2.5">{summary.findings_basis}</p>
             <p className="mt-2.5">

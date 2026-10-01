@@ -26,6 +26,7 @@ import { Badge, Button } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
+import { PatchCoverageSummary } from "@repowise-dev/ui/health/patch-coverage-summary";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";
 import type {
@@ -181,6 +182,20 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
         <>
           <ScoreHero report={report} />
           <VerdictStrip impact={impact} cochangeFloor={cochangeFloor} />
+          {report.patchCoverage && (
+            // Absent (no coverage ingested, or an older server) renders
+            // nothing: an unmeasured change is not a finding.
+            <section className="flex flex-col gap-1 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
+              <PatchCoverageSummary
+                coverage={report.patchCoverage}
+                onOpenFile={(path) => host.openFile(path)}
+              />
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Committed changes against{" "}
+                <code>{report.base}</code>; uncommitted edits are not counted.
+              </p>
+            </section>
+          )}
           <ChangeImpact
             impact={impact}
             loading={impactLoading}

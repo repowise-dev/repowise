@@ -4,7 +4,7 @@ Repowise records a small set of security signals while it indexes: pattern
 matches over source text, and symbol names that look security-relevant. Pure
 regex and SQL, no LLM calls, no network, no dependency resolution.
 
-This is a floor, not a scanner. The registry holds sixteen patterns. It has no
+This is a floor, not a scanner. The registry holds twenty-two patterns. It has no
 model of your framework, no notion of which inputs are attacker-controlled, and
 no dataflow: it cannot tell a parameterised query from a concatenated one beyond
 what the surrounding characters give away, and it cannot tell whether a
@@ -21,17 +21,22 @@ repowise init                       # working-tree signals populate during index
 repowise security scan --history    # walk every tracked revision for leaked secrets
 repowise security scan --history --since v1.0.0 --to HEAD
 repowise security scan --history --all-patterns --format json
+repowise security check origin/main...HEAD   # CI gate on what a change adds (see below)
 ```
+
+`scan --history` stores what it finds and prints counts, not a list:
 
 ```
 repowise security scan --history
-
-  8 findings across 412 commits
-
-  high   hardcoded_secret     config/settings.py:14      a3f19c2  2025-11-04
-  high   hardcoded_password   deploy/bootstrap.sh:31     91b7ee0  2025-08-22
-  high   hardcoded_secret     tests/fixtures/auth.py:7   4c02da8  2025-06-13
+  Commits scanned: 412
+  Blobs scanned:   2318
+  Files scanned:   1604
+  Findings stored: 8
+  By severity:     high=6, low=2
+  By kind:         aws_access_key=1, hardcoded_password=2, hardcoded_secret=5
 ```
+
+The findings themselves are read where the stored rows surface, below.
 
 From an agent, through the risk surface:
 
@@ -44,26 +49,36 @@ Findings also appear on the Security tab of the code-health page, and at
 
 ## What the registry catches
 
-Sixteen patterns plus a symbol-name scan, giving seventeen kinds across three
-severities. Severity is a fixed property of the pattern; nothing is scored,
-ranked, or aggregated.
+Twenty-two patterns plus a symbol-name scan, giving twenty-three kinds across
+three severities. Severity is a fixed property of the pattern, with one
+exception: any finding in test material, or under a directory named
+`test`, `tests`, `__tests__`, `__test__`, `fixtures`, `__fixtures__`, `spec`,
+`specs`, `mock`, `mocks`, `__mocks__`, `example` or `examples`, is recorded at
+`low`. Keys there are mostly fake and calls there do not ship, but a real one
+is still worth seeing. Nothing is scored, ranked, or aggregated.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`, `foo.bar.eval(`) |
-| `exec_call` | high | `exec(...)`, same receiver handling. Outside Python only in a file that names `child_process`, and there also `execFile` / `execSync` |
+| `exec_call` | high | `exec(...)`, same receiver handling. Outside Python only a call through a name bound to `child_process` (a namespace, a named import, or the `require` result), covering `execFile` / `execSync` too |
 | `pickle_loads` | high | `pickle.loads` |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, including across physical lines |
 | `os_system` | high | `os.system` |
-| `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case |
-| `hardcoded_secret` | high | the same for `api_key`, `apikey` or `secret` |
+| `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case, where the name is code (not inside a comment, docstring or string) |
+| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key`. A snake_case value (a constant holding a key's name) or a template placeholder (`{{ ... }}`, `${...}`, `$(...)`) is skipped, and a value one of the vendor kinds below already reports is not reported twice |
+| `aws_access_key` | high | an AWS access key ID (`AKIA`/`ASIA` + 16 chars), regardless of variable name |
+| `github_token` | high | a GitHub PAT, OAuth, app, or refresh token (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), regardless of variable name |
+| `slack_token` | high | a Slack token (`xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`), regardless of variable name |
+| `google_api_key` | high | a Google API key (`AIza` + 35 chars), regardless of variable name, but not from the middle of a base64 run such as a lockfile integrity hash |
+| `stripe_key` | high | a Stripe secret or restricted key (`sk_` or `rk_`, then `live_`, `test_` or `prod_`), regardless of variable name. Publishable `pk_` keys are public by design and do not fire |
+| `private_key_pem` | high | a PEM header (`-----BEGIN ... PRIVATE KEY-----`) followed by a base64-looking body line, so assembling just the header string does not fire. The break may be an escaped `\n`, which catches keys held on one line in JSON or `.env` files |
 | `fstring_sql` | med | an f-string containing `SELECT` and an interpolation |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `tls_verify_false` | med | `verify = False` |
 | `weak_hash` | low | the words `md5` or `sha1` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML` shape) assigned a non-literal value |
 | `template_literal_sql` | med | a JS/TS template literal containing `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `public_env_secret` | high | a secret-shaped name (`API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`) behind a `NEXT_PUBLIC_` or `VITE_` prefix, excluding `..._ANON_...` |
+| `public_env_secret` | high | a secret-shaped name (`API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`) behind a `NEXT_PUBLIC_` or `VITE_` prefix, excluding `..._ANON_...`, outside comments |
 | `new_function_call` | high | `new Function(...)` |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `security_sensitive_symbol` | low | a symbol whose name contains `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
@@ -78,12 +93,28 @@ they are found by walking the AST, so a match is a real call rather than a
 substring, with a bounded lexical fallback when the file does not parse. Other
 languages get the lexical path, over source with comments and string literals
 masked out, so an `eval(` inside a comment does not fire. Outside Python
-`exec_call` carries one more condition: the file has to name `child_process`,
-searched in raw source because the module usually arrives as a string literal
-that masking would blank. Every other pattern in the table is a plain regex over
-one line of raw source, comments included.
+`exec_call` carries one more condition: the call has to go through a name the
+file binds to `child_process`. The imports are read from raw source because the
+module arrives as a string literal that masking would blank.
 
-**One pattern sees across lines.** `subprocess.run(` opening on one line with
+**Text that describes code is not code.** `pickle_loads`, `os_system`,
+`subprocess_shell_true` and `new_function_call` match over the same masked source, so a docstring or a
+comment naming the call does not fire. The two keyword secret kinds need their
+name to be code, so `password = "..."` in a doctest is an example, not a
+password, and `public_env_secret` ignores a comment naming the variable. The
+vendor key shapes (`aws_access_key` and the rest) still match anywhere,
+comments included, because a real key pasted into a comment is still a leak.
+Prose files (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for secret
+kinds only.
+
+**Examples of a credential are not one.** A keyword value that is elided or
+templated (`...`, a typographic ellipsis, `<your key>`, `your-`, `xxx`,
+`example`, `placeholder`, `dummy`, `fake`, `changeme`), shorter than eight
+characters, a short single-case word (`api_key="lmstudio"`, the dummy a local
+server's client requires), or a CSS custom property (`--chart-1`) is skipped.
+
+**Two patterns see across lines.** `private_key_pem` needs the body line after
+its header, and `subprocess.run(` opening on one line with
 `shell=True` several lines down is invisible to a per-line scan, so
 `subprocess_shell_true` gets a second pass over the whole source. Continuation
 is restricted to lines that begin with indentation and capped at roughly 200
@@ -111,37 +142,35 @@ and this layer does not try.
 reaches a dangerous call is not computed. `eval_call` fires the same on a
 constant and on a request parameter.
 
-**Real secret detection.** The two secret patterns match a literal assignment to
-a variable named like a credential, in any case, so the constant spelling a
-pinned credential usually carries is covered. That is the whole of it: they do
-not know entropy, key formats, or provider prefixes, and a credential held in a
-name they do not list is invisible. For secret scanning proper, run gitleaks or
+**Real secret detection.** `hardcoded_password` / `hardcoded_secret` match a
+literal assignment to a variable named like a credential, in any case, and the
+six value-shape kinds above (AWS, GitHub, Slack, Google, Stripe, PEM) catch a
+handful of common vendor formats regardless of variable name. That is still far
+short of a real scanner: no entropy scoring, and any format or provider not in
+that short list is invisible. For secret scanning proper, run gitleaks or
 trufflehog; history mode below is complementary to those, not a replacement.
 
 **Dependencies.** No CVE lookup, no advisory feed, no SBOM. Nothing here looks
 outside your source.
 
-**False positives are expected.** `weak_hash` fires on the word `md5` anywhere,
-including in a comment explaining why md5 was removed. `hardcoded_password`
-fires on test fixtures and on empty placeholder credentials. The layer reports
-signals for a human to read, and it is tuned to say too much rather than too
-little.
+**False positives are still possible.** `weak_hash` fires on the word `md5`
+anywhere, including in a comment explaining why md5 was removed. The high
+kinds are tuned the other way: a `high` should be something to act on, so a
+match that is only probably real is dropped.
 
 **Two of them are worth knowing before you read a report.**
 
 `exec` is not a global in JavaScript; the name belongs to `RegExp.prototype.exec`,
 so the receiver-chain prefix in the pattern would otherwise match
-`re.exec(expr)`, `/x/.exec(s)` and `cellPattern.exec(xml)` — ordinary parsing
-code — at `high`. Outside Python the kind is gated on the file naming
-`child_process`, which is where the dangerous call comes from. The gate is per
-file rather than per call, so a file that both spawns a process and parses text
-with regexes still reports every `exec(` in it. That residual is deliberate,
-and covered by a test rather than left implicit.
+`re.exec(expr)`, `/x/.exec(s)` and `cellPattern.exec(xml)` (ordinary parsing
+code) at `high`. Outside Python the kind is resolved through the file's own
+`child_process` bindings, which is where the dangerous call comes from: a
+file's own function named `exec`, or a regex `.exec` beside a `spawn` import,
+does not fire.
 
-The per-line patterns run on raw source, comments included. A comment that
-spells out a credential assignment reports itself as a `hardcoded_secret`, and
-`weak_hash` fires on a comment explaining why md5 was removed. Only the
-`eval`/`exec` path masks comments and string literals; nothing else does.
+The remaining per-line patterns (`weak_hash`, the SQL kinds, the TLS kinds,
+`unsafe_inner_html`) run on raw source, comments included,
+so `weak_hash` still fires on a comment explaining why md5 was removed.
 
 **Five patterns for JavaScript and TypeScript, measured the same way as the
 `exec_call` and secret-case fixes above** — a 17-repository, 1109-file corpus,
@@ -189,8 +218,10 @@ commit that introduced the match. This finds what the working tree cannot: a
 credential committed in March and removed in April is absent from HEAD and
 present in the clone forever.
 
-History mode reports **only `hardcoded_password` and `hardcoded_secret`** by
-default. The reasoning is asymmetry of decay. A commit that once called `eval()`
+History mode reports **only the `SECRET_KINDS` (genuine leaked-credential)
+kinds** by default — `hardcoded_password`, `hardcoded_secret`, and the six
+vendor value-shape kinds above. The reasoning is asymmetry of decay. A commit
+that once called `eval()`
 is history doing what history does — the code changed, that is the point, and
 reporting every such moment across every revision buries the surface in noise. A
 committed secret does not decay. It stays valid until someone rotates it, and
@@ -201,14 +232,108 @@ Both paths land in the same `security_findings` table, with a unique constraint
 on `(repository_id, file_path, kind, line_number, commit_sha)`. Re-running either
 scan is idempotent.
 
+## In CI: `repowise security check`
+
+A third surface, for pull requests. It needs git and nothing else: no index,
+no database, no API key, and it stores nothing.
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --fail-on med --format github
+repowise security check --format sarif > security.sarif
+```
+
+It judges what the change adds, not the repository:
+
+- **At the change's head**, every file the change touched is scanned as the
+  head commit has it, and a finding counts only when a line it spans is one
+  the change added or edited. The two multi-line kinds count when any line of
+  their span changed, so editing only the `shell=True` line of a call, or only
+  the body of a PEM key, still counts. In a documentation file (`.md`, `.mdx`,
+  `.rst`, `.txt`, `.adoc`) only the secret kinds count: prose naming
+  `pickle.loads` is not a call, but a key pasted into a README is a leak.
+- **Inside the change**, every commit in the range is scanned the same way
+  for the secret kinds only. A key committed in one commit and deleted in the
+  next is absent from the head and present in every clone; the gate reports it
+  with the commit that added it and says to rotate it. Merge commits are
+  skipped, so merging the target branch in does not blame its lines on the
+  change. A code smell added and removed inside the change does not count.
+
+`--fail-on` names the lowest severity that fails (`high` by default, then
+`med`, `low`). A finding under a test, fixture, spec, mock or example path is
+`low` (see above), so under the default it shows as a warning and does not
+fail; pass `--fail-on low` to fail on those too. Exit codes are the ones every
+repowise CI gate uses: `0` passed,
+`1` failed, `2` could not evaluate (not a git repository, unknown revision, no
+merge-base in a shallow clone, a commit of the change cut off by a shallow
+clone, an unreadable baseline). A git error is never read as a clean change.
+
+Every format carries the masked snippet only, because CI logs are often
+public: `table`, `json`, `markdown`, `github` (annotations plus the job
+summary), `sarif` (for code-scanning upload) and `gitlab` (a GitLab Code
+Quality report for the merge request widget). The gate is the registry
+above and has its limits: a pass means no pattern matched a changed line.
+
+**Baseline.** `--write-baseline FILE` records the change's findings in a
+committed JSON file and exits 0; `--baseline FILE` accepts what it lists, so
+only new findings fail. A finding is keyed on its file, kind and masked
+matched line, so it stays accepted when an edit above it shifts its line
+number. The vendor key shapes mask to their fixed prefix (`AKIA****`), so their
+key also takes a one-way hash of the matched text: a different key on an
+identical line is a new finding. The file never holds a raw value. The keyword
+kinds (`hardcoded_password`, `hardcoded_secret`) stay keyed on the masked line
+alone, because a short password could be guessed back from a hash of it; a
+different value sharing the first four characters on an identical line stays
+accepted. Because the gate sees one change at a time, writing to an existing
+baseline adds to its entries (and to those of `--baseline`, when given)
+instead of replacing them; remove an entry by deleting it from the file.
+`--format sarif` marks accepted findings as suppressed; `--format gitlab`
+leaves them out, because that format has no suppression field. In the Code
+Quality report a finding at or above `--fail-on` is `critical` when high and
+`major` otherwise, and one below it `minor`.
+
+Without a REVSPEC the base comes from the CI's pull-request variables, else
+the remote's default branch. A shallow checkout cannot be read commit by
+commit, so fetch the full history; the gate exits 2 rather than guess. The
+GitHub Action, the GitLab template and the SARIF upload are in
+[Repowise in CI](../start/CI.md).
+
+### Silencing one finding: `repowise-security-ignore`
+
+For a single false positive, put `repowise-security-ignore` on the finding's
+own line, in any comment syntax; `repowise-security-ignore: aws_access_key`
+silences only the kinds it lists. There is no next-line or whole-file form: use
+the baseline for that. A silenced finding never fails the gate and is still
+reported as suppressed in every format. The exact rules are in the
+[CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
+
+### Custom patterns: `security.patterns`
+
+A secret shape of your own goes under `security.patterns` in
+`.repowise/config.yaml` as a name, a regex and a severity. Each becomes the
+secret kind `custom:<name>`, scanned and masked like the built-in ones, and an
+invalid pattern stops the check with exit 2. Keys and limits are in
+[the `security:` block](../reference/CONFIG.md#the-security-block).
+
+### Before a commit: `--staged`
+
+`repowise security check --staged` checks what the next commit would record:
+the staged lines, read from the index. `repowise hook install --security` runs
+it as a pre-commit hook that blocks a commit only on a finding at or above
+`high`, and lets the commit through when the check cannot run. Skip it once
+with `git commit --no-verify`. See
+[`repowise hook install`](../reference/CLI_REFERENCE.md#repowise-hook-install).
+
 ## Line verification
 
 A finding's `line_number` is written at scan time, and the file moves on. A wrong
 line on a security finding is worse than none: it sends the reader to innocent
 code while looking authoritative. So the line is re-checked against the live file
-every time a finding is served, using the stored snippet — the first 120
-characters of the matched line, which is always a substring of the line it came
-from.
+every time a finding is served, using the stored snippet: the matched line,
+stripped and trimmed to 120 characters, with every credential value on it
+masked to its first four characters and `****`. An unmasked snippet is a
+substring of the line it came from; a masked one is matched on the text before
+the first `****`.
 
 Three outcomes, on every finding the API returns:
 
@@ -236,8 +361,8 @@ One table, `security_findings`, written by both scan paths:
 |---|---|
 | `file_path` | Repo-relative |
 | `kind` | One of the kinds in the table above |
-| `severity` | `high`, `med`, `low` — fixed per pattern |
-| `snippet` | Matched line, trimmed to 120 characters; a symbol name for `security_sensitive_symbol` |
+| `severity` | `high`, `med`, `low`: fixed per pattern, except a finding in test material is `low`. The Overview reads `med` as `medium` |
+| `snippet` | Matched line, trimmed to 120 characters, credential values masked (`AKIA****`); a symbol name for `security_sensitive_symbol`. The raw value is never stored |
 | `line_number` | As of scan time; verified at serve time |
 | `commit_sha` | Empty for working-tree rows, the introducing commit for history rows |
 | `commit_at` | Author date, history rows only |
@@ -249,7 +374,8 @@ persistence silently; every other write failure is a real error.
 
 A useful way to read a repo's findings, in order:
 
-1. **Any `hardcoded_secret` or `hardcoded_password` from history mode.** These
+1. **Any `SECRET_KINDS` finding from history mode** (`hardcoded_secret`,
+   `hardcoded_password`, or one of the vendor value-shape kinds). These
    are the findings most likely to be both true and actionable. Rotate first,
    remove from history second.
 2. **The high-severity working-tree kinds**, as a list of places to read rather

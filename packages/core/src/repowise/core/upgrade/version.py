@@ -54,7 +54,15 @@ STORE_FORMAT_VERSION: int = 2
 #: change makes ``persist_incremental_edges`` reconcile every file's edges once
 #: on the next update, so an existing index does not keep half its Python files
 #: without external edges.
-PARSER_SCHEMA_VERSION: int = 3
+#:
+#: v4: Python absolute imports resolve only by their full dotted path (no stem
+#: guess, no sibling lookup inside a package, never the importer itself), and
+#: ``from pkg import a, b`` over submodules no longer edges into
+#: ``pkg/__init__.py``. Reconciling once drops the stale edges from old stores.
+#:
+#: v5: an overload signature (Python ``@overload``, TypeScript function / method
+#: overload) is marked ``is_declaration`` so lookups serve the implementation.
+PARSER_SCHEMA_VERSION: int = 5
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

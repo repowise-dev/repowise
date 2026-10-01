@@ -105,7 +105,7 @@
 ; no import statement naming the type — only the ``#include`` of the header.
 ; Without these captures every header struct reads as an unused export. The
 ; shared ``@param.type`` capture name routes through the C head extractor
-; (see parser_helpers.TYPE_HEAD_EXTRACTORS), which drops the pointer/array
+; (see lang_helpers.type_heads.TYPE_HEAD_EXTRACTORS), which drops the pointer/array
 ; declarator wrapping (it lives on the declarator side in C, not the type)
 ; and filters primitive builtins. Mirrors the Go / C# captures.
 

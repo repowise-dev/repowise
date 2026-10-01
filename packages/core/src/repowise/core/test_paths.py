@@ -32,10 +32,16 @@ are registry *infixes*, so every extension that will ever exist is covered by
 construction. The suffix-list copies that had to be edited per extension are
 what let #288 regress twice.
 
-**Matching is anchored.** Directory rules compare whole path segments and
-filename rules compare stems, never substrings. An unanchored ``test[s_/]``
-substring is what made ``src/latest/api.py`` and ``protest/main.py`` read as
-tests to community assignment.
+**Matching is anchored.** Directory rules compare whole words of a path
+segment and filename rules compare stems, never substrings. An unanchored
+``test[s_/]`` substring is what made ``src/latest/api.py`` and
+``protest/main.py`` read as tests to community assignment. A segment's words are
+what ``-``, ``_`` and ``.`` separate, so ``e2e-tests/`` and ``integration_test/``
+are test trees while ``latest/`` and ``contest/`` stay single words that are not.
+
+**Filename rules are source rules.** ``test_``, ``_test`` and ``.test.`` name a
+test only on a source-language file: ``tsconfig.test.json`` and
+``workflows/release.test.yml`` are configuration that happens to share the word.
 """
 
 from __future__ import annotations
@@ -43,11 +49,30 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import cache
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 
 # Directory segments that mark every file beneath them as test material,
-# whatever the filename. ``__test__`` is the Jest variant of ``__tests__``.
-_TEST_DIR_TOKENS: frozenset[str] = frozenset({"test", "tests", "__tests__", "__test__", "e2e"})
+# whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
+# ``integration_test`` is the directory Flutter's integration tests must live in.
+_TEST_DIR_TOKENS: frozenset[str] = frozenset(
+    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test"}
+)
+
+# A compound segment (``e2e-tests``, ``pkg_tests``, ``client-e2e``) is a test
+# tree when its last word, the head of the compound, is one of these. Only the
+# head counts: ``test-api/`` (reference docs), ``test-tools/`` and
+# ``e2e-project/`` (a generator) are *about* testing. Singular ``test`` is not a
+# head word in any spelling, because a compound ending in it names a single
+# thing - ``unit-test/`` an executor, ``component-test/`` a generator,
+# ``assets_smoke_test/`` an example project, ``svg_test/`` a helper package -
+# far more often than it names a suite.
+_TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
+
+# GitHub's repository-metadata directory; see ``_classify``.
+_REPO_METADATA_DIR = ".github"
+
+# The separators a directory segment splits into words on.
+_SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
 # Tokens that also name non-test directories in the wild: "spec(s)" is as often
 # OpenAPI/language specifications as it is RSpec. These count only when the
@@ -57,12 +82,15 @@ _TEST_DIR_TOKENS: frozenset[str] = frozenset({"test", "tests", "__tests__", "__t
 _AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
 
 # A whole module named for testing and nothing else: Django's per-app
-# ``myapp/tests.py``, which no prefix/suffix/infix rule catches. Matched against
+# ``myapp/tests.py`` and Rust's ``#[cfg(test)] mod tests;`` in ``tests.rs``,
+# which no prefix/suffix/infix rule catches. Those two languages only: elsewhere
+# a bare ``test.ts`` or ``test.sh`` is as often an example or a script that
+# exercises something by hand as it is a suite. Matched against
 # the filename's own case, deliberately: a lowercase ``tests.py`` is the
 # snake_case-module convention, while a capitalised ``Test.java`` is a class
 # named Test and may be production code - which is why the registry's camel rule
-# requires a lowercase boundary and excludes it. Ceiling: if one language ever
-# needs to disagree, this moves onto the language specs like everything else here.
+# requires a lowercase boundary and excludes it. Ceiling: if a third language
+# ever needs it, this moves onto the language specs like everything else here.
 _TEST_EXACT_STEMS: frozenset[str] = frozenset({"test", "tests"})
 
 # Directories that hold the scaffolding rather than the tests. These only count
@@ -84,12 +112,19 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # the Go convention the toolchain itself reserves - ``go build`` ignores any
 # directory of that name - which is why it needs no Go file to corroborate it:
 # the golden files inside are JSON and YAML, and asking the file's own language
-# would never fire on them.
+# would never fire on them. ``__snapshots__`` is where Jest and Vitest write the
+# ``.snap`` output a snapshot test compares against; the ``.test.`` infix used to
+# catch those files by accident, and stopped once filename rules became source
+# rules.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
 # search, which uses ``is_test_path``, still surfaces the golden file by name.
-_SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset({"__fixtures__", "testdata"})
+# Matched on the segment's words run together too, so ``test-data/`` and
+# ``test_data/`` are the same golden data rather than a test tree.
+_SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
+    {"__fixtures__", "__snapshots__", "testdata"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +134,8 @@ class _Conventions:
     stem_prefixes: tuple[str, ...]
     stem_suffixes: tuple[str, ...]
     infixes: tuple[str, ...]
+    source_exts: frozenset[str]
+    exact_stem_exts: frozenset[str]
     camel_res: dict[str, re.Pattern[str]]
     camel_prefix_res: dict[str, re.Pattern[str]]
     support_stems: frozenset[str]
@@ -126,6 +163,8 @@ def _conventions() -> _Conventions:
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
         stem_suffixes=REGISTRY.test_stem_suffixes(),
         infixes=REGISTRY.test_infixes(),
+        source_exts=REGISTRY.all_code_extensions(),
+        exact_stem_exts=REGISTRY.extensions_for(("python", "rust")),
         camel_res=REGISTRY.camel_test_res_by_extension(),
         camel_prefix_res=REGISTRY.camel_test_prefix_res_by_extension(),
         support_stems=REGISTRY.test_fixture_stems(),
@@ -155,14 +194,29 @@ def _parts(path: str) -> tuple[list[str], list[str]]:
     return original, [seg.lower() for seg in original]
 
 
+def _words(segment: str) -> list[str]:
+    """A lowercased directory segment's words (``e2e-tests`` -> e2e, tests)."""
+    return [word for word in _SEGMENT_WORD_SEPARATORS.split(segment) if word]
+
+
+def _is_support_anywhere_dir(segment: str) -> bool:
+    return (
+        segment in _SUPPORT_DIR_TOKENS_ANYWHERE
+        or "".join(_words(segment)) in _SUPPORT_DIR_TOKENS_ANYWHERE
+    )
+
+
 def _is_test_name(filename: str) -> bool:
     """Whether the filename alone marks a test (test_x.py, x_test.go, x.spec.ts)."""
     if not filename:
         return False
     rules = _conventions()
-    if PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
-        return True
     lowered = filename.lower()
+    ext = PurePosixPath(lowered).suffix
+    if ext not in rules.source_exts:
+        return False
+    if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
+        return True
     stem = PurePosixPath(lowered).stem
     if (
         stem.startswith(rules.stem_prefixes)
@@ -170,7 +224,6 @@ def _is_test_name(filename: str) -> bool:
         or any(infix in lowered for infix in rules.infixes)
     ):
         return True
-    ext = PurePosixPath(lowered).suffix
     original_stem = PurePosixPath(filename).stem
     camel_re = rules.camel_res.get(ext)
     if camel_re is not None and camel_re.search(original_stem) is not None:
@@ -209,7 +262,11 @@ def _is_test_dir(
     for seg in segments:
         if seg in _TEST_DIR_TOKENS:
             return True
-        if seg in _AMBIGUOUS_TEST_DIR_TOKENS and (seg in lang_tokens or corroborated):
+        words = _words(seg)
+        head = words[-1] if words else ""
+        if head in _TEST_DIR_HEAD_WORDS:
+            return True
+        if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
             return True
 
     for needle in rules.dir_paths:
@@ -252,10 +309,17 @@ def _classify(path: str, language: str | None) -> str:
     named_test = _is_test_name(filename)
 
     # A scaffolding directory that needs no test tree around it settles the
-    # question before the tree rules run. A test-shaped filename still wins, so
-    # ``testdata/build_test.go`` stays a test.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS_ANYWHERE for seg in segments):
+    # question before the tree rules run, ``.github/`` included. A test-shaped
+    # filename still wins, so ``testdata/build_test.go`` stays a test.
+    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
         return "support"
+
+    # ``.github/`` holds CI workflows, actions, issue templates and agent
+    # instructions, so no directory there makes a test tree, however it is named
+    # (``skills/unit-tests/SKILL.md``). Only a test-shaped source file counts:
+    # the suite for a custom action's script is still a test.
+    if _REPO_METADATA_DIR in segments:
+        return "test" if named_test else ""
 
     if not named_test and not _is_test_dir(segments, original_segments, filename, language):
         return ""
@@ -310,3 +374,32 @@ def is_test_to_production_pair(
     against another file, with no node to read a stored flag from.
     """
     return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
+
+
+_PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
+
+
+def paired_test_names(rel_path: str) -> frozenset[str]:
+    """Filenames a test for *rel_path* would conventionally carry, any directory."""
+    p = PurePath(rel_path)
+    stem = p.stem
+    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
+    names = {
+        f"test_{stem}{test_suffix}",
+        f"{stem}_test{test_suffix}",
+        f"{stem}_spec{test_suffix}",
+        f"{stem}.test.ts",
+        f"{stem}.test.tsx",
+        f"{stem}.test.js",
+        f"{stem}.test.mts",
+        f"{stem}.test.cts",
+        f"{stem}.spec.ts",
+        f"{stem}.spec.js",
+        f"{stem}.spec.mts",
+        f"{stem}.spec.cts",
+    }
+    if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
+        # Delphi pairs ``uFoo.pas`` with a ``TestFoo.dpr`` program; only a
+        # lowercase ``u`` is the unit prefix (``Utils.pas`` keeps its U).
+        names.add(f"Test{stem[1:] if stem[:1] == 'u' else stem}.dpr")
+    return frozenset(names)

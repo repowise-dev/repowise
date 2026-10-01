@@ -131,7 +131,9 @@ def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None
         _log.warning("re-parse failed for %s: %s", row.file_path, exc)
         return None
 
-    symbols = parsed.symbols or []
+    # An overload set is several rows under one id; the implementation (the
+    # one non-declaration) goes first so a stub never answers for it.
+    symbols = sorted(parsed.symbols or [], key=lambda sym: sym.is_declaration)
     # Strongest match first: exact symbol_id, then (name, parent), then name.
     for sym in symbols:
         if sym.id == row.symbol_id:

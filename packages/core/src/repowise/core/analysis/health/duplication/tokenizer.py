@@ -7,6 +7,8 @@ per leaf node, excluding:
 - comment nodes (``comment``, ``line_comment``, ``block_comment``,
   ``doc_comment``)
 - syntax-error and missing nodes
+- import statements and re-exports (``export ... from``): every file opens
+  with one, so they pair up without being duplicated logic
 
 Two normalization knobs control how aggressive matching is:
 
@@ -17,7 +19,8 @@ Two normalization knobs control how aggressive matching is:
   reason; string content is rarely the meaningful signal in a clone.
 
 Operators and keywords pass through as their literal token text so we
-preserve structure.
+preserve structure. Each identifier token also keeps its raw text in
+``Token.name`` so a hash match can be checked against the real names.
 """
 
 from __future__ import annotations
@@ -83,6 +86,11 @@ _LITERAL_KINDS = frozenset(
 )
 
 
+# Config "import" kinds that also cover real code: generic calls or commands
+# (Ruby ``require``, shell ``source``) and GDScript's superclass clause.
+_NOT_IMPORT_KINDS = frozenset({"call", "command", "function_call", "extends_statement"})
+
+
 @dataclass(frozen=True, slots=True)
 class Token:
     """One AST token with the source location of its origin node."""
@@ -92,6 +100,17 @@ class Token:
     end_line: int  # 1-indexed
     start_byte: int
     end_byte: int
+    name: str = ""  # raw identifier text; empty for every other token
+
+
+def import_node_kinds(language: str) -> frozenset[str]:
+    """The language's import statement node kinds, minus ones that are real code."""
+    from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+
+    config = LANGUAGE_CONFIGS.get(language)
+    if config is None:
+        return frozenset()
+    return frozenset(config.import_node_types) - _NOT_IMPORT_KINDS
 
 
 def _is_skippable(node: Node) -> bool:
@@ -102,17 +121,25 @@ def _is_skippable(node: Node) -> bool:
     return bool(getattr(node, "has_error", False) and node.child_count == 0)
 
 
-def tokenize_tree(root: Node, source: bytes) -> list[Token]:
+def _is_reexport(node: Node) -> bool:
+    # JS/TS ``export { a } from "./b"``: an import in all but name.
+    return node.type == "export_statement" and node.child_by_field_name("source") is not None
+
+
+def tokenize_tree(
+    root: Node, source: bytes, skip_kinds: frozenset[str] = frozenset()
+) -> list[Token]:
     """Walk *root* and return the flattened token list.
 
-    Iterative DFS — uses a stack rather than recursion so very deep
-    files don't blow the recursion limit.
+    Subtrees whose node kind is in *skip_kinds* (import statements) and
+    re-exports are dropped whole. Iterative DFS — uses a stack rather than
+    recursion so very deep files don't blow the recursion limit.
     """
     out: list[Token] = []
     stack: list[Node] = [root]
     while stack:
         node = stack.pop()
-        if _is_skippable(node):
+        if _is_skippable(node) or node.type in skip_kinds or _is_reexport(node):
             continue
         if node.child_count == 0:
             tok = _tokenize_leaf(node, source)
@@ -126,8 +153,10 @@ def tokenize_tree(root: Node, source: bytes) -> list[Token]:
 
 
 def _tokenize_leaf(node: Node, source: bytes) -> Token | None:
+    name = ""
     if node.type in _IDENTIFIER_KINDS:
         kind = "ID"
+        name = sys.intern(source[node.start_byte : node.end_byte].decode("utf-8", errors="replace"))
     elif node.type in _LITERAL_KINDS:
         kind = "LIT"
     else:
@@ -149,6 +178,7 @@ def _tokenize_leaf(node: Node, source: bytes) -> Token | None:
         end_line=node.end_point[0] + 1,
         start_byte=node.start_byte,
         end_byte=node.end_byte,
+        name=name,
     )
 
 
@@ -181,4 +211,4 @@ def tokenize_file(language: str, source: bytes, path: str | None = None) -> list
         tree = parser.parse(source)
     except Exception:
         return []
-    return tokenize_tree(tree.root_node, source)
+    return tokenize_tree(tree.root_node, source, import_node_kinds(language))

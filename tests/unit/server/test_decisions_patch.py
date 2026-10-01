@@ -81,8 +81,9 @@ async def test_patch_decision_clear_files(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["affected_files"] == []
-    # Modules untouched (None means preserve).
-    assert body["affected_modules"] == ["packages/core"]
+    # Modules follow the files they describe, so clearing one clears the
+    # other: a record naming no file must not keep governing a whole subtree.
+    assert body["affected_modules"] == []
 
 
 @pytest.mark.asyncio

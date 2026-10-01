@@ -200,36 +200,42 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
 
 
-def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
-    """Names an entry ``__init__.py`` re-exports via ``__all__``.
+def dunder_all(path: Path) -> frozenset[str] | None:
+    """The string literals a module's ``__all__`` lists; None when it has none.
 
-    Python's entry file usually *declares* nothing — it is a wall of
-    ``from .x import Y`` — so without this a distribution's surface reads as
-    empty. Only plain string literals count; a computed ``__all__`` is refused
+    Only plain string literals count; a computed ``__all__`` is refused
     whole rather than half-read, per the same rule the signature mapper follows.
     """
     import ast
 
-    names: set[str] = set()
-    for rel in entry_files:
-        path = repo_path / rel
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, SyntaxError, ValueError):
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    names: set[str] | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
             continue
-        for node in tree.body:
-            if not isinstance(node, ast.Assign) or not any(
-                isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
-            ):
-                continue
-            if not isinstance(node.value, ast.List | ast.Tuple):
-                continue
-            names.update(
-                el.value
-                for el in node.value.elts
-                if isinstance(el, ast.Constant) and isinstance(el.value, str)
-            )
-    return frozenset(names)
+        if not isinstance(node.value, ast.List | ast.Tuple):
+            continue
+        names = (names or set()) | {
+            el.value
+            for el in node.value.elts
+            if isinstance(el, ast.Constant) and isinstance(el.value, str)
+        }
+    return None if names is None else frozenset(names)
+
+
+def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
+    """Names an entry ``__init__.py`` re-exports via ``__all__``.
+
+    Python's entry file usually *declares* nothing (it is a wall of
+    ``from .x import Y``), so without this a distribution's surface reads as
+    empty.
+    """
+    return frozenset(name for rel in entry_files for name in dunder_all(repo_path / rel) or ())
 
 
 def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:

@@ -61,6 +61,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
     edit_tool_names: ClassVar[frozenset[str]] = frozenset(
         {"Edit", "Write", "MultiEdit", "NotebookEdit"}
     )
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset({"Bash", "PowerShell"})
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         directory = transcript_dir_for(repo_root, projects_root)

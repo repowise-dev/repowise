@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from repowise.core.analysis.decisions.scope import (
+    MAX_GOVERNING_FILES,
+    NON_BINDING_SCOPE_BASES,
+    SCOPE_BASIS_FOOTPRINT,
+    SCOPE_BASIS_PROXIMITY,
+    SCOPE_BASIS_REPOSITORY,
+    SCOPE_BASIS_STATED,
     bind_scope_files,
+    binds_to_paths,
+    commit_scope_basis,
     commit_scope_files,
     derive_decision_scope,
+    session_scope_basis,
 )
 
 
@@ -157,3 +166,86 @@ def test_blanks_and_duplicates_collapse() -> None:
 def test_the_file_cap_still_applies() -> None:
     wide = frozenset(f"pkg/m{i:03d}.py" for i in range(40))
     assert len(bind_scope_files(sorted(wide), wide)) == 20
+
+
+# ---------------------------------------------------------------------------
+# Scope basis: when a file list is a claim, and when it is a footprint
+# ---------------------------------------------------------------------------
+
+
+def test_a_narrow_commit_list_is_a_claim() -> None:
+    assert commit_scope_basis([f"pkg/m{i}.py" for i in range(MAX_GOVERNING_FILES)]) == ""
+
+
+def test_a_wide_commit_list_is_a_footprint() -> None:
+    files = [f"pkg/m{i}.py" for i in range(MAX_GOVERNING_FILES + 1)]
+    assert commit_scope_basis(files) == SCOPE_BASIS_FOOTPRINT
+
+
+def test_the_cap_does_not_launder_a_huge_commit_into_a_claim() -> None:
+    """A large commit stored as a capped list is still a footprint.
+
+    Pins the ordering between two independent limits: ``MAX_GOVERNING_FILES``
+    must stay below ``commit_scope_files``'s own cap. Raise it to the storage
+    cap and every oversized commit comes back a claim of exactly the cap.
+    """
+    commit = [f"pkg/m{i:03d}.py" for i in range(42)]
+    stored = commit_scope_files(commit)
+    assert len(stored) < len(commit)
+    assert len(stored) > MAX_GOVERNING_FILES
+    assert commit_scope_basis(commit) == SCOPE_BASIS_FOOTPRINT
+
+
+def test_an_empty_list_is_not_a_footprint() -> None:
+    assert commit_scope_basis([]) == ""
+    assert commit_scope_basis(None) == ""
+
+
+def test_duplicates_do_not_inflate_a_list_into_a_footprint() -> None:
+    files = ["pkg/a.py"] * (MAX_GOVERNING_FILES + 5)
+    assert commit_scope_basis(files) == ""
+
+
+def test_only_the_footprint_basis_stops_a_record_binding_per_file() -> None:
+    assert binds_to_paths("") is True
+    assert binds_to_paths(None) is True
+    assert binds_to_paths("stated") is True
+    assert binds_to_paths(SCOPE_BASIS_FOOTPRINT) is False
+
+
+# ---------------------------------------------------------------------------
+# Session scope: proximity, not a footprint
+# ---------------------------------------------------------------------------
+
+
+def test_one_file_is_a_claim() -> None:
+    assert session_scope_basis(["pkg/a/x.py"], is_agreement=False) == ""
+
+
+def test_files_in_one_directory_are_a_claim() -> None:
+    assert session_scope_basis(["pkg/a/x.py", "pkg/a/y.py"], is_agreement=False) == ""
+
+
+def test_files_across_directories_are_proximity() -> None:
+    """A rule restated while editing two areas is not about either of them."""
+    basis = session_scope_basis(["pkg/a/x.py", "pkg/b/y.py"], is_agreement=False)
+    assert basis == SCOPE_BASIS_PROXIMITY
+
+
+def test_an_agreement_is_scoped_to_the_repository_however_narrow() -> None:
+    """It governs how the work is conducted, so no file is what it is about."""
+    assert (
+        session_scope_basis(["pkg/a/x.py"], is_agreement=True)
+        == SCOPE_BASIS_REPOSITORY
+    )
+
+
+def test_no_files_is_not_proximity() -> None:
+    assert session_scope_basis([], is_agreement=False) == ""
+
+
+def test_every_non_binding_basis_is_refused_by_the_one_predicate() -> None:
+    for basis in NON_BINDING_SCOPE_BASES:
+        assert binds_to_paths(basis) is False
+    assert SCOPE_BASIS_STATED not in NON_BINDING_SCOPE_BASES
+    assert binds_to_paths(SCOPE_BASIS_STATED) is True

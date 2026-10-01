@@ -15,6 +15,7 @@ import networkx as nx
 import structlog
 
 from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
+from ..languages.python_modules import dotted_module_for
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -119,6 +120,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
         self._cycle_subgraph_cache: nx.DiGraph | None = None
+        self._centrality_subgraph_cache: nx.DiGraph | None = None
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
@@ -133,6 +135,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # ``__setstate__`` recreates the lock.
         state = self.__dict__.copy()
         state["_subgraph_lock"] = None
+        # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
+        state["_cycle_subgraph_cache"] = None
+        state["_centrality_subgraph_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -144,6 +149,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # this is an explicit cross-version process boundary — default it rather
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
+        self.__dict__.setdefault("_centrality_subgraph_cache", None)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -165,6 +171,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
         self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
@@ -178,6 +185,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.
@@ -223,6 +231,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
+            is_reachability_root=parsed.file_info.is_reachability_root,
             docstring=parsed.docstring,
             # Same-file references (Python): names used intra-module in a
             # non-call/non-import position. Rescues them in the unused-export
@@ -302,6 +311,30 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
 
+    def _qualify_python_symbols(self) -> None:
+        """Rename Python symbols to their importable dotted module.
+
+        The parser sees one file, so it dots the raw repository path and a
+        src-layout symbol carries the layout prefix
+        (``packages.core.src.pkg.mod.f``). The importable name needs every
+        repository path, which only exists here. A file with no derivable
+        module keeps the path form. Derived from the path each time, so
+        re-running it, or running it on a cached parse, gives the same names.
+        ``Symbol.id`` is untouched.
+        """
+        path_set = set(self._parsed_files)
+        for path, parsed in self._parsed_files.items():
+            if parsed.file_info.language != "python":
+                continue
+            module = dotted_module_for(path, path_set)
+            if module is None:
+                module = PurePosixPath(path).with_suffix("").as_posix().replace("/", ".")
+            for sym in parsed.symbols:
+                prefix = f"{module}.{sym.parent_name}" if sym.parent_name else module
+                sym.qualified_name = f"{prefix}.{sym.name}"
+                if sym.id in self._graph:
+                    self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
+
     def build(self, progress: Any | None = None) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
@@ -311,6 +344,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         instead of a single opaque "0/1" bar over the whole build.
         """
         self._invalidate_metric_caches()
+        self._qualify_python_symbols()
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
@@ -521,6 +555,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # project-wide usings widen that; most .vb files declare no namespace
         # at all. Emit conservative sibling edges so neither reads as orphaned.
         self._resolve_dotnet_same_namespace(ctx, progress=progress)
+
+        # --- PHP same-namespace implicit references ---
+        # An unqualified class name resolves in the file's own namespace with
+        # no ``use``; emit conservative sibling edges for those references.
+        self._resolve_php_same_namespace(progress=progress)
 
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;

@@ -260,8 +260,17 @@ def test_report_queries_are_read_only_and_breakdowns_are_bounded(tmp_path: Path)
     assert report.priced_saved_output_tokens == 0
     assert report.unpriced_saved_output_tokens == 0
     assert len(report.per_operation) == 3
-    assert len(statements) == 3
+    # Every breakdown honours the cap, not just the first one.
+    for breakdown in (report.per_operation, report.per_surface, report.per_agent):
+        assert len(breakdown) <= 3
+    # Read-only, and every grouped query is bounded. Asserted as properties
+    # rather than as a statement count: the count changes whenever a breakdown
+    # is added, which is not the thing worth protecting.
+    assert statements
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    grouped = [statement for statement in statements if "GROUP BY" in statement.upper()]
+    assert grouped, "expected at least one grouped breakdown query"
+    assert all("LIMIT" in statement.upper() for statement in grouped)
 
 
 @pytest.mark.parametrize("column", ["integration", "agent"])

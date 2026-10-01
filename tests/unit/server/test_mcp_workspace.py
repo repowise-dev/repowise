@@ -639,6 +639,24 @@ async def test_unsupported_repo_all_get_context(workspace_mcp):
     assert "not supported" in result["error"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("get_health", {}),
+        ("generate_refactoring_code", {"suggestion_id": "any"}),
+        ("set_finding_status", {"suggestion_id": "any", "status": "acknowledged"}),
+    ],
+)
+async def test_unsupported_repo_all_returns_error_dict(workspace_mcp, tool_name, kwargs):
+    import repowise.server.mcp_server as mcp_server
+
+    tool = getattr(mcp_server, tool_name)
+    result = await tool(repo="all", **kwargs)
+
+    assert result["error"].startswith(f"repo='all' is not supported for {tool_name}.")
+
+
 # ---------------------------------------------------------------------------
 # Invalid repo alias
 # ---------------------------------------------------------------------------
@@ -954,7 +972,9 @@ async def test_list_repos_discovers_workspace_aliases(workspace_mcp):
             assert probe in json.dumps(answer)
             change = await get_change_risk("HEAD", repo=identity, baseline=0)
             assert change.get("warning") is None
-            assert change["score"] >= 0
+            # The raw score is behind include=["diagnostics"] now; the
+            # percentile is what the default payload ranks with.
+            assert change["risk_percentile"] is None or change["risk_percentile"] >= 0
             expected_head = subprocess.run(
                 ["git", "rev-parse", "--short=12", "HEAD"],
                 cwd=workspace_mcp.workspace_root / emitted["path"],

@@ -11,6 +11,7 @@ from repowise.core.analysis.health.trends import (
     DECLINE_LOOKBACK,
     DECLINE_THRESHOLD,
     diff_snapshots,
+    drop_unscoped_fields,
     file_score_series,
     file_trend,
     recent_kpis,
@@ -90,6 +91,15 @@ def test_recent_kpis_orders_newest_first():
     rows = recent_kpis(_series([5.0, 6.0, 7.0]), limit=10)
     scores = [r["hotspot_health"] for r in rows]
     assert scores == [7.0, 6.0, 5.0]
+
+
+def test_recent_kpis_carries_the_drift_count_only_when_asked():
+    snaps = _series([5.0, 6.0])
+    snaps[1].doc_drift_count = 3
+    assert "doc_drift_count" not in recent_kpis(snaps)[0]
+    rows = recent_kpis(snaps, doc_drift=True)
+    assert [r["doc_drift_count"] for r in rows] == [3, None]
+    assert drop_unscoped_fields(rows)[0]["doc_drift_count"] is None
 
 
 # --------------------------------------------------------------------------- #

@@ -12,7 +12,7 @@ The handler emits two things:
   file — so a public ``class BrewFixture : public ::testing::Test {…}``
   declared in one header and used as ``TEST_F(BrewFixture, …)`` from
   another TU stays reachable;
-* an ``is_entry_point=True`` stamp on the test TU's file node (the warmup
+* an ``is_reachability_root=True`` stamp on the test TU's file node (the warmup
   already marks ``LLVMFuzzerTestOneInput`` carriers and the registration-
   macro TUs, but ``TEST(…)``-only and ``BENCHMARK(…)``-only TUs are not in
   that token list — emitting the flag here keeps them out of
@@ -106,12 +106,12 @@ def _add_gtest_edges(
         if not text or not _file_uses_test_framework(text):
             continue
 
-        # Mark the TU as an entry point — the test runner discovers TEST
+        # Mark the TU a reachability root — the test runner discovers TEST
         # bodies via static-init registration, so no static caller edge
-        # exists.
+        # exists. A root, not an entry point: nobody enters the system here.
         node = graph.nodes.get(path)
         if node is not None:
-            node["is_entry_point"] = True
+            node["is_reachability_root"] = True
 
         seen: set[str] = set()
         for rx in (_GTEST_FIXTURE_RE, _BOOST_FIXTURE_RE, _CATCH_FIXTURE_RE):

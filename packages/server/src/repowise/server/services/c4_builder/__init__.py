@@ -10,7 +10,8 @@ Public API
 
 All three reuse the same persisted graph (``graph_nodes``, ``graph_edges``)
 and the ``external_systems`` table populated during ingestion. No on-disk
-re-scan is performed at request time.
+re-scan is performed at request time; only the L1 system description reads
+the root manifest and README.
 """
 
 from __future__ import annotations
@@ -18,18 +19,23 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import replace
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
+from repowise.core.ingestion.workspace_members import root_description
 from repowise.core.persistence import ExternalSystem, Repository
 from repowise.core.persistence.crud import (
+    code_file_rows,
     get_kg_layers,
     get_kg_project_meta,
     get_kg_tour_steps,
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_related_path
 
 from .actors import derive_actors
 from .components import detect_components, detect_components_for_all
@@ -76,20 +82,36 @@ async def load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
     return result.scalar_one_or_none()
 
 
+#: What a System Context shows: runtime services and frameworks. Libraries
+#: and tools are implementation detail and stay on L2/L3.
+_CONTEXT_CATEGORIES = ("service", "framework")
+
+
 async def _external_views(
-    session: AsyncSession, repo_id: str
+    session: AsyncSession, repo_id: str, *, context_only: bool = False
 ) -> tuple[list[ExternalSystemView], dict[str, str]]:
     """Return the deduplicated list of ExternalSystemView (one per name) and
     a map from each name → ``ext:<name>`` id.
 
     Multi-manifest deps collapse: we pick the highest-category entry
     (framework > service > tool > library) so the UI shows the most
-    interesting label.
+    interesting label. ``context_only`` keeps the non-dev service and
+    framework rows an L1 shows, declared by the system itself rather than
+    its tests, examples or docs site.
     """
-    result = await session.execute(
-        select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
-    )
+    query = select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
+    if context_only:
+        query = query.where(
+            ExternalSystem.is_dev_dep.is_(False),
+            ExternalSystem.category.in_(_CONTEXT_CATEGORIES),
+        )
+    result = await session.execute(query)
     rows = list(result.scalars())
+    if context_only:
+        rows = [
+            r for r in rows
+            if not (is_support_path(r.declared_in) or is_test_related_path(r.declared_in))
+        ]
     priority = {"framework": 3, "service": 2, "tool": 1, "library": 0}
     by_name: dict[str, ExternalSystem] = {}
     for row in rows:
@@ -125,7 +147,25 @@ def _is_external_box(box_id: str) -> bool:
 def _system_for(repo: Repository | None, repo_id: str) -> System:
     if repo is None:
         return System(id=render(SystemId(repo_id)), name=repo_id)
-    return System(id=render(SystemId(repo.id)), name=repo.name, description="")
+    return System(
+        id=render(SystemId(repo.id)),
+        name=repo.name,
+        description=_system_description(repo.local_path),
+    )
+
+
+def _system_description(local_path: str | None) -> str:
+    """The root manifest's description, else the README's first prose paragraph."""
+    if not local_path:
+        return ""
+    root = Path(local_path)
+    text = root_description(root)
+    if text:
+        return text
+    # Lazy: the generation package is heavy to import for one file read.
+    from repowise.core.generation.context.readme_digest import readme_opening
+
+    return readme_opening(root)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +197,7 @@ async def _actors_for(
 async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
-    externals, _ = await _external_views(session, repo_id)
+    externals, _ = await _external_views(session, repo_id, context_only=True)
 
     people, relations = await _actors_for(session, repo_id, system)
     for ext in externals:
@@ -172,11 +212,12 @@ async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     )
 
 
-async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
+async def build_l2(
+    session: AsyncSession, repo_id: str, *, include_co_changes: bool = False
+) -> C4L2:
+    """Container view; ``include_co_changes`` overlays co-change relations."""
     repo = await load_repo(session, repo_id)
-    containers = await detect_containers(
-        session, repo_id, root_name=repo.name if repo else None
-    )
+    containers = await _detect_containers(session, repo_id, repo)
     externals, _ = await _external_views(session, repo_id)
 
     file_to_container = await _file_to_container_map(session, repo_id, containers)
@@ -191,6 +232,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
         repo_id,
         file_to_box=file_to_container,
         file_to_external=file_to_external,
+        include_co_changes=include_co_changes,
     )
 
     # Only surface externals actually depended on by at least one container.
@@ -202,9 +244,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
 async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str) -> C4L3 | None:
     """Return L3 view for one container, or ``None`` if it doesn't exist."""
     repo = await load_repo(session, repo_id)
-    containers = await detect_containers(
-        session, repo_id, root_name=repo.name if repo else None
-    )
+    containers = await _detect_containers(session, repo_id, repo)
     container = next((c for c in containers if c.id == container_id_value), None)
     if container is None:
         return None
@@ -229,14 +269,13 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
     )[0]
 
     # Files outside this container map to their owning container so cross-
-    # container edges show as component → other-container.
-    file_to_box: dict[str, str] = dict(in_container_index)
-    other_containers_index = await _file_to_container_map(
-        session,
-        repo_id,
-        [c for c in containers if c.id != container.id],
-    )
-    file_to_box.update(other_containers_index)
+    # container edges show as component → other-container. Built from the
+    # all-container map so a root ("") container, which matches every path,
+    # cannot claim this container's files; component mappings go on last.
+    file_to_box: dict[str, str] = {
+        path: cid for path, cid in full_file_to_container.items() if cid != container.id
+    }
+    file_to_box.update(in_container_index)
 
     file_to_external = await external_node_to_system_id(session, repo_id)
     relations = await aggregate_relations(
@@ -280,7 +319,7 @@ async def build_model(
     """
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
-    containers = await detect_containers(session, repo_id, root_name=repo.name if repo else None)
+    containers = await _detect_containers(session, repo_id, repo)
     externals_all, _ = await _external_views(session, repo_id)
 
     people, actor_relations = await _actors_for(session, repo_id, system)
@@ -353,7 +392,7 @@ async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, di
                 GitMetadata.is_hotspot,
                 GitMetadata.primary_owner_name,
                 GitMetadata.bus_factor,
-            ).where(GitMetadata.repository_id == repo_id)
+            ).where(code_file_rows(repo_id))
         )
     ).all()
     hotspot_paths = [row[0] for row in git_rows if row[1]]
@@ -431,6 +470,17 @@ async def _tour_steps(session: AsyncSession, repo_id: str) -> list[TourStep]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _detect_containers(
+    session: AsyncSession, repo_id: str, repo: Repository | None
+) -> list[Container]:
+    return await detect_containers(
+        session,
+        repo_id,
+        root_name=repo.name if repo else None,
+        local_path=repo.local_path if repo else None,
+    )
 
 
 async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str]:

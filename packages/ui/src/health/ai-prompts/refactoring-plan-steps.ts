@@ -1,0 +1,149 @@
+/**
+ * The concrete, type-specific steps of one refactoring plan, shared by the
+ * single-plan prompt and the opportunity prompt that embeds each of its plans.
+ */
+
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+
+import {
+  cutEdges,
+  cycleMembers,
+  extractClassGroups,
+  extractHelperOccurrences,
+  extractMethodPlan,
+  helperSite,
+  moveTarget,
+  splitGroups,
+  splitResidual,
+  splitShimRequired,
+} from "../../refactoring/types";
+import { pluralS } from "./shared";
+
+export function planSourceLink(path: string, start: number | null, end: number | null): string {
+  if (start && end) return `\`${path}:${start}-${end}\``;
+  if (start) return `\`${path}:${start}\``;
+  return `\`${path}\``;
+}
+
+function extractClassSteps(plan: RefactoringPlan): string {
+  const groups = extractClassGroups(plan).filter(
+    (g) => g.methods.length > 0 || g.fields.length > 0,
+  );
+  const lines = groups.map((g, i) => {
+    const name = g.name ?? `NewClass${i + 1}`;
+    const methods = g.methods.length ? g.methods.join(", ") : "(none)";
+    const fields = g.fields.length ? g.fields.join(", ") : "(none)";
+    return `- **${name}** — methods: ${methods}; fields: ${fields}`;
+  });
+  return [
+    `Split \`${plan.target_symbol}\` into ${groups.length} cohesive class${
+      groups.length === 1 ? "" : "es"
+    }, one per group below. Each group's methods and the fields they touch move together:`,
+    "",
+    lines.join("\n"),
+    "",
+    "Pick a clear name for each group (the `NewClass*` placeholders are not final), keep the original class as a thin facade or update call sites, and preserve behavior.",
+  ].join("\n");
+}
+
+function extractHelperSteps(plan: RefactoringPlan): string {
+  const occ = extractHelperOccurrences(plan);
+  const site = helperSite(plan);
+  const lines = occ.map((o) => `- ${planSourceLink(o.file, o.line_start, o.line_end)}`);
+  return [
+    `Extract the duplicated block (${occ.length} occurrence${pluralS(
+      occ.length,
+    )}) into one shared helper${site ? ` near \`${site}\`` : ""}:`,
+    "",
+    lines.join("\n"),
+    "",
+    "Define the helper once, replace every occurrence with a call to it, and confirm the behavior is identical at each site (watch for small per-site differences that need a parameter).",
+  ].join("\n");
+}
+
+function extractMethodSteps(plan: RefactoringPlan): string {
+  const em = extractMethodPlan(plan);
+  if (!em.span) return "Extract the indicated slice into a helper method.";
+  const params = em.params.length ? em.params.join(", ") : "(none)";
+  const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
+  const name = em.suggested_name ?? "a clearly named helper";
+  return [
+    `Extract lines ${em.span.start}–${em.span.end} of \`${plan.target_symbol}\` into ${name}:`,
+    "",
+    `- **Parameters (in):** ${params}`,
+    `- **Returns (out):** ${returns}`,
+    "",
+    "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
+  ].join("\n");
+}
+
+function moveMethodSteps(plan: RefactoringPlan): string {
+  const mv = moveTarget(plan);
+  if (!mv) return "Move the method to the class it belongs to.";
+  return [
+    `Move \`${mv.method}\` from \`${mv.from_class}\` to \`${mv.to_class}\`${
+      mv.to_file ? ` (in \`${mv.to_file}\`)` : ""
+    }.`,
+    "",
+    "The method uses the target class's data more than its own. Move it, update both classes, and fix every call site. Only do this if the target class is legally accessible from the call sites.",
+  ].join("\n");
+}
+
+function breakCycleSteps(plan: RefactoringPlan): string {
+  const members = cycleMembers(plan);
+  const edges = cutEdges(plan);
+  const edgeLines = edges.map((e) => `- \`${e.from}\` → \`${e.to}\``);
+  return [
+    `Break the import cycle across ${members.length} file${pluralS(
+      members.length,
+    )} by cutting ${edges.length} edge${pluralS(edges.length)}:`,
+    "",
+    edgeLines.join("\n"),
+    "",
+    "For each edge, invert the dependency or introduce an abstraction/interface so the importer no longer needs the importee at module load time. Don't just move the import inside a function unless that genuinely breaks the cycle.",
+  ].join("\n");
+}
+
+function splitFileSteps(plan: RefactoringPlan): string {
+  const groups = splitGroups(plan).filter((g) => g.symbols.length > 0);
+  const residual = splitResidual(plan);
+  const lines = groups.map(
+    (g, i) => `- **${g.suggested_file ?? `part${i + 1}`}** — ${g.symbols.join(", ")}`,
+  );
+  return [
+    `Split \`${plan.file_path}\` into ${groups.length} file${pluralS(
+      groups.length,
+    )} along the seams below. Move each group's symbols together:`,
+    "",
+    lines.join("\n"),
+    residual.length
+      ? `\nLeave in the original file (shared by more than one group): ${residual
+          .map((symbol) => `\`${symbol}\``)
+          .join(", ")}.`
+      : "",
+    "",
+    splitShimRequired(plan)
+      ? "Other files import this module, so keep the original path importable: re-export the moved symbols from it, or update every importer. Do not break the existing import surface."
+      : "Update every importer of the moved symbols.",
+    "The suggested filenames are a starting point, not a requirement; rename them if the repo has a clearer convention.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+/** One renderer per refactoring type. A Map, so no type hits a prototype key. */
+const PLAN_STEPS = new Map<string, (plan: RefactoringPlan) => string>([
+  ["extract_class", extractClassSteps],
+  ["extract_helper", extractHelperSteps],
+  ["extract_method", extractMethodSteps],
+  ["move_method", moveMethodSteps],
+  ["break_cycle", breakCycleSteps],
+  ["split_file", splitFileSteps],
+]);
+
+/** Render the concrete, type-specific steps the agent should carry out. The
+ *  detection is already done deterministically; this is the executable plan. */
+export function refactoringPlanSteps(plan: RefactoringPlan): string {
+  const render = PLAN_STEPS.get(plan.refactoring_type);
+  return render ? render(plan) : "Apply the refactoring described above.";
+}

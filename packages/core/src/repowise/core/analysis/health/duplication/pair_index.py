@@ -40,7 +40,7 @@ from .limits import DuplicationLimits
 
 log = structlog.get_logger(__name__)
 
-_INDEX_VERSION = 1
+_INDEX_VERSION = 2
 _INDEX_FILENAME = "duplication_pairs.pkl"
 
 # One raw-pair multiset entry as a path-id row:

@@ -881,6 +881,7 @@ def _run_repo_checks(
                                     target_path=page.target_path or "",
                                     summary=page.summary or "",
                                     content=page.content or "",
+                                    page_metadata=page.metadata_json,
                                 )
                                 if item is None:
                                     # Below the information floor, so its absence

@@ -48,6 +48,7 @@ _PACKAGES = pathlib.Path(__file__).resolve().parents[3] / "packages"
 _GUARDED = [
     "core/src/repowise/core/analysis/dead_code/analyzer.py",
     "core/src/repowise/core/analysis/dead_code/name_occurrences.py",
+    "core/src/repowise/core/analysis/dead_code/entry_shape.py",
     "core/src/repowise/core/analysis/dead_code/risk_factors.py",
     "core/src/repowise/core/persistence/crud/analysis/dead_code.py",
     "cli/src/repowise/cli/commands/dead_code_cmd.py",

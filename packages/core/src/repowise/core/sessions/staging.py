@@ -49,6 +49,11 @@ RAW_TTL_DAYS = 90.0
 #: database with raw sqlite3 and must not learn about a new one.
 _VERDICT_REPAIR_VERSION = 1
 
+#: As above, for :meth:`reopen_smeared_contradictions`. The pragma is a single
+#: integer, so the repairs are ordered and a store carrying version 1 gets
+#: this one on its next update.
+_SMEAR_REPAIR_VERSION = 2
+
 #: ``raw_candidates.kind`` for a broad-discovery candidate. Discovery writes
 #: its raw row only as the anchor ``upsert_structured`` needs, never as work
 #: for the deterministic structuring pass.
@@ -507,12 +512,35 @@ class SessionStagingStore:
     def promotable(self) -> list[dict[str, Any]]:
         """Decisions that qualify for (re-)emission into decision_records.
 
-        Qualifies when 2+ distinct sessions observed it, or on a single
-        observation for a user correction (the fast path). Emits only when
-        there is something new to say: never promoted before, or observed by
-        more sessions than the last emission. A promoted decision is therefore not
-        re-upserted (and can never resurrect a human status change) on every
-        update.
+        Qualifies on a stated reason: the row carries a non-empty rationale.
+        That is the whole bar, and it replaces "two sessions saw it, or it was
+        a user correction". The recurrence half of that had never fired. The
+        observation distribution over the dogfood store is ``{1: 406}`` -- no
+        staged row has ever been seen twice -- so ``user_correction`` was the
+        entire promotion path and recurrence was rejecting 256 rows on a
+        condition nothing could satisfy. Waiting for a second sighting is not
+        a quality bar when a second sighting never comes.
+
+        A rationale is a bar that measures the record rather than the corpus:
+        it is the difference between a choice somebody explained and a
+        sentence that merely sounded like one, and it admits 224 of 406.
+
+        The bar gates the *first* promotion only. It is not a superset of the
+        old one: 124 of the 150 rows the old bar promoted are corrections
+        carrying no rationale, and they are already in the store. Applying the
+        bar to re-emission would not withdraw any of them, it would only stop
+        them accreting the evidence of a later sighting, which is information
+        about a record that exists either way. A bar admits a record; it does
+        not retract one already admitted.
+
+        Safe to widen only because promoted records land in the labelled
+        ``candidates`` lane under its own cap rather than as rules an agent
+        follows. Nothing here creates authority; a person still accepts.
+
+        Emits only when there is something new to say: never promoted before,
+        or observed by more sessions than the last emission. A promoted
+        decision is therefore not re-upserted (and can never resurrect a human
+        status change) on every update.
         """
         rows = self._conn.execute(
             "SELECT key, kind, title, structured, sessions, quotes, files, "
@@ -522,10 +550,10 @@ class SessionStagingStore:
         for r in rows:
             sessions = json.loads(r[4])
             observations = max(1, len(sessions))
-            qualifies = observations >= 2 or r[1] == "user_correction"
-            if not qualifies:
-                continue
+            structured = json.loads(r[3])
             first_promotion = r[7] is None
+            if first_promotion and not str(structured.get("rationale") or "").strip():
+                continue
             if not first_promotion and observations <= r[8]:
                 continue
             out.append(
@@ -533,7 +561,7 @@ class SessionStagingStore:
                     "key": r[0],
                     "kind": r[1],
                     "title": r[2],
-                    "structured": json.loads(r[3]),
+                    "structured": structured,
                     "sessions": sessions,
                     "quotes": json.loads(r[5]),
                     "files": json.loads(r[6]),
@@ -819,6 +847,55 @@ class SessionStagingStore:
         )
         # PRAGMA takes no parameters, hence the interpolation of an int constant.
         self._conn.execute(f"PRAGMA user_version = {_VERDICT_REPAIR_VERSION}")
+        return cur.rowcount or 0
+
+    def reopen_smeared_contradictions(self) -> int:
+        """Re-open contradicted rows so each is re-judged on its own session.
+
+        The verdict used to be computed per decision and stored per row, so one
+        session's match settled every row for that decision. On this
+        repository's store that turned a single match into 20 contradicted rows
+        and produced the layer's only published outcome number, 10.0%.
+
+        Re-opening rather than clearing, so a row that earned its verdict is
+        given the chance to earn it again. ``contradicted`` is the only value
+        the smear could invent — it was an ``or`` across sessions, so it could
+        add a contradiction but never remove one — which is why ``followed``
+        rows are left alone.
+
+        **Only rows whose session still holds a correction.** Re-opening a row
+        whose evidence has gone is a deletion, not a re-judgement: the judge
+        finds no quote and settles it with no verdict, which
+        :meth:`decision_feedback_totals` calls unrecoverable. And it does go --
+        :meth:`prune` drops an unstructured ``raw_candidates`` row at
+        :data:`RAW_TTL_DAYS` while :meth:`correction_quotes` ignores
+        ``structured_key``, and ``prune`` runs earlier in the same update. The
+        same clause as :meth:`retire_unjudgeable_verdicts`, inverted.
+
+        **Partial in both directions, and not repairable from here.** A session
+        that kept some corrections but lost the one that fired re-judges to
+        ``followed``, a positive claim rather than a gap; a genuinely smeared
+        row whose corrections have gone fails this guard and keeps
+        ``contradicted`` for good. The guard sees whether a session has
+        corrections, never which one produced a verdict, and cannot see
+        ``decision_records`` at all -- so a row whose decision was purged is
+        re-opened here and drained by the judge.
+
+        **Runs exactly once per store**, like the repair above: "written under
+        the old rule" is only true-forever for rows already here.
+        """
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] >= _SMEAR_REPAIR_VERSION:
+            return 0
+        placeholders = ",".join("?" * len(self.DECISION_SURFACES))
+        cur = self._conn.execute(
+            f"UPDATE injections SET evaluated = 0, verdict = '' "
+            f"WHERE surface IN ({placeholders}) AND verdict = 'contradicted' "
+            "AND EXISTS ("
+            "SELECT 1 FROM raw_candidates rc WHERE rc.session_id = injections.session_id "
+            "AND rc.kind = 'user_correction')",
+            self.DECISION_SURFACES,
+        )
+        self._conn.execute(f"PRAGMA user_version = {_SMEAR_REPAIR_VERSION}")
         return cur.rowcount or 0
 
     def decision_feedback_totals(self) -> dict[str, int]:

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections import Counter
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
@@ -28,6 +27,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
@@ -37,8 +37,10 @@ from repowise.core.ingestion.git_indexer._constants import (
 from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
+from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
+from repowise.server.routers._local_git import resolve_local_repo, revision_exists
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -47,6 +49,9 @@ from repowise.server.schemas import (
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
+    CommitFileResponse,
+    CommitHealthFindingResponse,
+    CommitHealthResponse,
     CommitResponse,
     CommitStatsResponse,
     FixHistoryFileResponse,
@@ -155,7 +160,7 @@ def _commit_fields(
 ) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
-    top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
+    top_driver = risk.top_driver.label if risk and risk.top_driver else None
     return {
         "sha": r.sha,
         "short_sha": r.sha[:8],
@@ -193,8 +198,77 @@ def _commit_from_row(
     return CommitResponse(**_commit_fields(r, normalizer, author_counts))
 
 
+async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[CommitFileResponse]:
+    """The files a commit touched. Stored, so it answers without a checkout."""
+    try:
+        rows = await crud.get_commit_files(session, repo_id, sha)
+    except (OperationalError, ProgrammingError) as exc:
+        # An index older than the table: serve the commit without its files
+        # rather than failing the whole detail view.
+        if not is_missing_table(exc):
+            raise
+        return []
+    if not rows:
+        return []
+    meta = await crud.get_git_metadata_bulk(session, repo_id, [r.file_path for r in rows])
+    return [
+        CommitFileResponse(
+            path=r.file_path,
+            lines_added=r.lines_added,
+            lines_deleted=r.lines_deleted,
+            prior_fixes=getattr(meta.get(r.file_path), "prior_defect_count", None),
+        )
+        for r in rows
+    ]
+
+
+async def _commit_health(
+    session: AsyncSession, repo_id: str, sha: str
+) -> CommitHealthResponse | None:
+    """What the commit did to health. None when it was never scanned."""
+    try:
+        delta = await crud.get_commit_health(session, repo_id, sha)
+        rows = await crud.get_commit_health_findings(session, repo_id, sha) if delta else []
+    except (OperationalError, ProgrammingError) as exc:
+        # An index older than the tables: serve the commit without its health
+        # block rather than failing the whole detail view.
+        if not is_missing_table(exc):
+            raise
+        return None
+    if delta is None:
+        return None
+    return CommitHealthResponse(
+        status=delta.status,
+        introduced_count=delta.introduced_count,
+        worsened_count=delta.worsened_count,
+        resolved_count=delta.resolved_count,
+        files_analyzed=delta.files_analyzed,
+        files_skipped=delta.files_skipped,
+        findings=[
+            CommitHealthFindingResponse(
+                change_kind=f.change_kind,
+                dimension=f.dimension,
+                biomarker_type=f.biomarker_type,
+                severity=f.severity,
+                severity_before=f.severity_before,
+                path=f.file_path,
+                symbol=f.symbol,
+                line_start=f.line_start,
+                line_end=f.line_end,
+                attribution_basis=f.attribution_basis,
+                reason=f.reason,
+            )
+            for f in rows
+        ],
+    )
+
+
 def _commit_detail_from_row(
-    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+    r: GitCommit,
+    normalizer: RiskNormalizer,
+    author_counts: dict[str, int] | None = None,
+    files: list[CommitFileResponse] | None = None,
+    health: CommitHealthResponse | None = None,
 ) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
@@ -217,31 +291,47 @@ def _commit_detail_from_row(
         **_commit_fields(r, normalizer, author_counts),
         drivers=drivers,
         agent_channel=r.agent_channel,
+        files=files or [],
+        health=health,
     )
 
 
 @router.get("/{repo_id}/commits", response_model=Paginated[CommitResponse])
 async def get_commits(
     repo_id: str,
-    sort: str = Query("risk", pattern="^(risk|date)$"),
+    sort: str = Query("date", pattern="^(risk|date)$"),
     authorship: str = Query("all", pattern="^(all|agent|human)$"),
+    kind: str = Query("all", pattern="^(all|high|fixes)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
-    ``sort=risk`` (default) orders by supporting diff-shape score descending (the
-    review-priority order); ``sort=date`` orders by recency. ``authorship``
-    narrows the feed to agent-attributed or human commits. Each commit also
-    carries a **repo-relative** ``risk_percentile`` + ``review_priority`` so the
-    ranking is portable across repos (the absolute calibration band is not).
+    ``sort=date`` (default) orders by recency; ``sort=risk`` orders by the
+    supporting diff-shape score descending. ``authorship`` narrows to
+    agent-attributed or human commits, and ``kind`` to the ``high``
+    review-priority band or to ``fixes``. Each commit carries a
+    **repo-relative** ``risk_percentile`` + ``review_priority`` so the ranking
+    is portable across repos (the absolute calibration band is not).
     """
-    total = await crud.count_git_commits(session, repo_id, authorship=authorship)
-    rows = await crud.get_git_commits(
-        session, repo_id, limit=limit, offset=offset, sort=sort, authorship=authorship
-    )
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
+    # The high band is a tercile of the repo's own scores, so the boundary has
+    # to be resolved before the page is cut rather than derived per row.
+    high_cut = normalizer.high_cut
+    total = await crud.count_git_commits(
+        session, repo_id, authorship=authorship, kind=kind, high_cut=high_cut
+    )
+    rows = await crud.get_git_commits(
+        session,
+        repo_id,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+        authorship=authorship,
+        kind=kind,
+        high_cut=high_cut,
+    )
     author_counts = await _author_commit_counts(session, repo_id)
     items = [_commit_from_row(r, normalizer, author_counts) for r in rows]
     next_offset = offset + limit if offset + limit < total else None
@@ -465,7 +555,9 @@ async def get_commit(
         raise HTTPException(status_code=404, detail="Commit not found")
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
-    return _commit_detail_from_row(row, normalizer, author_counts)
+    files = await _commit_files(session, repo_id, row.sha)
+    health = await _commit_health(session, repo_id, row.sha)
+    return _commit_detail_from_row(row, normalizer, author_counts, files, health)
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)
@@ -537,7 +629,7 @@ async def get_ownership(
     one entry per tracked file.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = result.scalars().all()
 
     if granularity == "file":
@@ -556,15 +648,18 @@ async def get_ownership(
         for m in all_meta:
             modules.setdefault(top_level_module(m.file_path), []).append(m)
 
+        resolve = people_resolver(all_meta)
         entries = []
         for module_path, files in sorted(modules.items()):
-            owners: dict[str, int] = {}
-            for f in files:
-                if f.primary_owner_name:
-                    owners[f.primary_owner_name] = owners.get(f.primary_owner_name, 0) + 1
+            owners: Counter[str] = Counter(
+                resolve(f.primary_owner_name, f.primary_owner_email)
+                for f in files
+                if f.primary_owner_name
+            )
             if owners:
-                top_owner = max(owners, key=owners.get)  # type: ignore[arg-type]
-                owner_pct = owners[top_owner] / len(files)
+                top_key = max(owners, key=owners.__getitem__)
+                top_owner = resolve.display_name(top_key)
+                owner_pct = owners[top_key] / len(files)
             else:
                 top_owner = None
                 owner_pct = 0.0
@@ -636,32 +731,6 @@ async def get_reviewer_suggestions(
     return ReviewerSuggestionsResponse(paths=paths, suggestions=suggestions)
 
 
-async def _resolve_local_repo(
-    repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
-) -> Repository:
-    """Resolve a repository with a usable local checkout, or raise 404."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path or not os.path.isdir(repo.local_path):
-        raise HTTPException(status_code=404, detail="Repository not found")
-    return repo
-
-
-def _revision_exists(repo_path: str, rev: str) -> bool:
-    # Reject option-shaped input outright; git refuses ref names starting
-    # with "-", so this loses no legitimate revision and keeps user input
-    # from ever being parsed as a git flag here or downstream.
-    if not rev or rev.startswith("-"):
-        return False
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
-
-
 @router.get("/{repo_id}/risk/range", response_model=RiskRangeResponse)
 def get_risk_range(
     repo_id: str,
@@ -672,7 +741,7 @@ def get_risk_range(
         ge=0,
         description="Recent commits to sample for the repo-relative percentile (0 skips it)",
     ),
-    repo: Repository = Depends(_resolve_local_repo),
+    repo: Repository = Depends(resolve_local_repo),
 ) -> RiskRangeResponse:
     """Assess a ``base..head`` range from its live diff shape and history.
 
@@ -683,7 +752,7 @@ def get_risk_range(
     the threadpool, since it shells out to git.
     """
     local_path = repo.local_path
-    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
+    if not revision_exists(local_path, base) or not revision_exists(local_path, head):
         raise HTTPException(status_code=400, detail=f"Unknown revision in range {base!r}..{head!r}")
 
     try:
@@ -766,7 +835,7 @@ async def get_git_summary(
     10) so an engineering leader can see the broader contributor surface.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = list(result.scalars().all())
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
@@ -776,13 +845,19 @@ async def get_git_summary(
         sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0 if all_meta else 0.0
     )
 
-    owners: dict[str, int] = {}
-    for m in all_meta:
-        if m.primary_owner_name:
-            owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
+    # One person is one owner, however many names and emails they commit under.
+    resolve = people_resolver(all_meta)
+    owners = Counter(
+        resolve(m.primary_owner_name, m.primary_owner_email)
+        for m in all_meta
+        if m.primary_owner_name
+    )
     total = len(all_meta) or 1
     top_owners = sorted(
-        [{"name": k, "file_count": v, "pct": v / total} for k, v in owners.items()],
+        [
+            {"name": resolve.display_name(k), "file_count": v, "pct": v / total}
+            for k, v in owners.items()
+        ],
         key=lambda x: x["file_count"],
         reverse=True,
     )[:top_owners_limit]

@@ -12,6 +12,7 @@ import { registerOnboarding } from "./features/onboarding";
 import { registerServerManager } from "./features/serverManager";
 import { registerMcp } from "./features/mcp";
 import { registerDiagnostics } from "./features/diagnostics";
+import { registerDocDriftDiagnostics } from "./features/docDriftDiagnostics";
 import { registerGutterHeat } from "./features/gutterHeat";
 import { registerHovers } from "./features/hovers";
 import { registerFileDecorations } from "./features/fileDecorations";
@@ -85,6 +86,7 @@ export function activate(extCtx: vscode.ExtensionContext): void {
     registerServerManager(ctx),
     registerMcp(ctx),
     registerDiagnostics(ctx),
+    registerDocDriftDiagnostics(ctx),
     registerGutterHeat(ctx),
     registerHovers(ctx),
     registerFileDecorations(ctx),

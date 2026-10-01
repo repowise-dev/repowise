@@ -65,6 +65,12 @@ IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 #: treated as a question we cannot ask rather than as an answer.
 MIN_ANSWERABLE_NAME_LEN = 3
 
+#: Where an unused internal lands when its own file could not be searched for
+#: it: the declaration's extent is unknown, or the name is one the scan cannot
+#: see. Below :data:`RISK_CAP_CONFIDENCE`, so the default report hides it rather
+#: than showing a finding nothing has checked.
+UNVERIFIED_INTERNAL_CONFIDENCE = 0.3
+
 
 class _Answer(Enum):
     """What the search actually established. Four outcomes, kept apart.
@@ -266,11 +272,10 @@ def clamp_unverified_absence(
     the analyzer. Never raises a confidence and never drops a finding.
 
     Scoped to unused *exports*, the one pass that promotes on import absence.
-    Unused internals already sit below the threshold and never claim to be
-    safe, and a whole-file finding would have to match on the path stem — the
-    broad-word shape ("index", "main", "utils") that the unindexed clamp and
-    the risk-factor token lists both refuse for being unable to tell a mention
-    from a coincidence.
+    Unused internals are settled by :func:`drop_internals_used_in_own_file`,
+    which can drop rather than cap because a private name has only its own file
+    to be used in. A whole-file finding is matched by path, never by its stem,
+    in :func:`clamp_path_mentions`.
 
     With no source access there is no knowledge to add, so the pass declines
     rather than guessing in either direction.
@@ -319,4 +324,172 @@ def clamp_unverified_absence(
         finding.evidence.append(
             f"'{name}' {detail}, so the absence of an import does not establish disuse"
         )
+    return findings
+
+
+def drop_internals_used_in_own_file(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """Drop unused internals their own file names outside their declaration.
+
+    The graph carries calls and a few reference kinds, but not every way a
+    private name is used: a module constant read in a function below it, a
+    handler passed as a value (``target=fn``, ``re.sub(pattern, fn, s)``), a
+    type named in an annotation, a component written as JSX or as object
+    shorthand. Each of those reached this pass as "not used anywhere". A
+    private name can only be used in its own file, so a mention there outside
+    the symbol's own span is a use and the finding is dropped, not capped.
+
+    A recursive call sits inside the span and does not count, so a function
+    only calling itself stays reported. A mention in a comment does count:
+    that is this module's textual ceiling, and it only ever costs recall.
+
+    When the file was read but the question could not be asked (no span, or a
+    name the identifier scan cannot see), the finding stays but falls to
+    :data:`UNVERIFIED_INTERNAL_CONFIDENCE`. A file with no source at all is
+    left as it was: nothing was established either way.
+    """
+    by_file: dict[str, list[DeadCodeFindingData]] = {}
+    for finding in findings:
+        if (
+            finding.kind is DeadCodeKind.UNUSED_INTERNAL
+            and finding.symbol_name
+            and finding.file_path in source_map
+        ):
+            by_file.setdefault(finding.file_path, []).append(finding)
+    if not by_file:
+        return findings
+
+    verdicts: dict[int, _Verdict] = {}
+    for path, pending in by_file.items():
+        verdicts.update(_uses_in_own_file(source_map, path, pending))
+
+    kept: list[DeadCodeFindingData] = []
+    for finding in findings:
+        verdict = verdicts.get(id(finding))
+        if verdict is not None:
+            if verdict.answer is _Answer.USED:
+                continue
+            if verdict.answer is _Answer.SPAN_UNKNOWN or not _token(finding.symbol_name):
+                finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
+                finding.evidence.append(
+                    f"'{finding.symbol_name}' could not be checked against the rest of "
+                    "its own file, so its disuse is unverified"
+                )
+        kept.append(finding)
+    return kept
+
+
+#: A path-shaped run of bytes: what a manifest, build script or doc writes when
+#: it names a file. It must hold a ``.`` or a ``/`` (every key does), so the
+#: regex engine skips plain words instead of handing each one to Python.
+#: Whether a run names a candidate is decided by the lookup.
+_PATH_TOKEN_RE = re.compile(rb"[A-Za-z0-9_@~+\-]*[./][A-Za-z0-9_.@~+\-/]*")
+
+
+def _path_keys(path: str) -> list[str]:
+    """The spellings that name *path*: the repo-relative path, the path without
+    its extension, and its ``dir/basename.ext`` tail.
+
+    Never the bare stem. ``index``, ``main`` and ``utils`` name a file in every
+    directory, and a stem cannot tell a mention from a coincidence. So the
+    extension-less form is kept only while it still carries a directory, and a
+    root-level file with no extension (a bare word) has no key at all.
+    """
+    keys = [path] if ("/" in path or "." in path) else []
+    stem, dot, ext = path.rpartition(".")
+    if dot and "/" in stem and "/" not in ext:
+        keys.append(stem)
+    parent, slash, base = path.rpartition("/")
+    if slash:
+        keys.append(f"{parent.rpartition('/')[2]}/{base}")
+    return keys
+
+
+def _token_spellings(token: str) -> list[str]:
+    """What a path-shaped *token* could be naming.
+
+    Every suffix that starts after a ``/``, so ``./src/a.ts``, ``../src/a.ts``
+    and an absolute path all reach ``src/a.ts``; and each suffix without its
+    extension, so a build output (``src/a.js``) names its source (``src/a.ts``)
+    through the shared extension-less key.
+    """
+    token = token.strip(".")
+    out: list[str] = []
+    start = 0
+    while True:
+        suffix = token[start:]
+        if suffix:
+            out.append(suffix)
+            stem, dot, ext = suffix.rpartition(".")
+            if dot and stem and "/" not in ext:
+                out.append(stem)
+        slash = token.find("/", start)
+        if slash < 0:
+            return out
+        start = slash + 1
+
+
+def _first_file_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, str]:
+    """For each of *targets* another file names by path, the first such file."""
+    wanted: dict[str, set[str]] = {}
+    for target in targets:
+        for key in _path_keys(target):
+            wanted.setdefault(key, set()).add(target)
+    # The last segment of every key, checked before any suffix work: nearly
+    # every path-shaped token in a repository names none of the candidates.
+    tails = {key.rpartition("/")[2] for key in wanted}
+
+    named_in: dict[str, str] = {}
+    for path, blob in sorted(source_map.items()):
+        for match in _PATH_TOKEN_RE.finditer(blob):
+            for target in _targets_named_by(match.group().decode("ascii"), wanted, tails):
+                if target != path:
+                    named_in.setdefault(target, path)
+    return named_in
+
+
+def _targets_named_by(token: str, wanted: dict[str, set[str]], tails: set[str]) -> set[str]:
+    """The targets one path-shaped *token* names, through any of its spellings."""
+    tail = token.strip(".").rpartition("/")[2]
+    if tail not in tails and tail.rpartition(".")[0] not in tails:
+        return set()
+    return {target for spelling in _token_spellings(token) for target in wanted.get(spelling, ())}
+
+
+def clamp_path_mentions(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """Cap unreachable files that another file names by path.
+
+    "Nothing imports this" is not "nothing uses this". A build script reads a
+    template by path, a JSON manifest lists example files, a doc links a
+    script, ``package.json`` names a bin: each loads the file without an import
+    edge, and such a file reported as deletion-ready breaks whatever reads it.
+    A mention is not proof of use either, so the finding is capped to the
+    review tier rather than dropped.
+
+    One scan over the indexed source. That already holds JSON, YAML, Markdown,
+    shell and ``package.json``: each has a language spec, so ingestion reads
+    it. A file's mention of itself is not a use. Mutates in place and returns
+    the same list; never raises a confidence and never removes a finding.
+    """
+    if not source_map:
+        return findings
+    candidates = [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNREACHABLE_FILE and f.confidence > RISK_CAP_CONFIDENCE
+    ]
+    if not candidates:
+        return findings
+
+    named_in = _first_file_naming({f.file_path for f in candidates}, source_map)
+    for finding in candidates:
+        where = named_in.get(finding.file_path)
+        if where is None:
+            continue
+        finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
+        finding.safe_to_delete = False
+        finding.evidence.append(f"Named by path in {where}, which may load it without an import")
     return findings

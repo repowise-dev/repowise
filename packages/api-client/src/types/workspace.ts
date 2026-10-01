@@ -37,6 +37,12 @@ export interface WorkspaceSyncResponse {
   results: WorkspaceSyncResult[];
 }
 
+export interface WorkspaceRepoRemovedResponse {
+  ok: boolean;
+  alias: string;
+  remaining_repos: number;
+}
+
 export interface WorkspaceCrossRepoSummary {
   co_change_count: number;
   package_dep_count: number;
@@ -111,6 +117,12 @@ export interface WorkspaceContractLinkEntry {
    */
   provider_symbol_id: string | null;
   consumer_symbol_id: string | null;
+  /**
+   * The consumer's own contract id when it is not spelled like `contract_id`,
+   * which names the provider's (a queue bound to that exchange, or a path
+   * matched across case, a wildcard method or a mount prefix); null otherwise.
+   */
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractsResponse {
@@ -166,6 +178,24 @@ export interface WorkspaceCoChangesResponse {
    * before pairing, so some pairs are in neither number.
    */
   total_mined: number;
+  /** Most pairs the miner keeps per repository pair. Optional for older servers. */
+  per_repo_pair_cap?: number | null;
+  /** Most pairs the miner keeps across the workspace. */
+  total_cap?: number | null;
+  /** Which cap trimmed the stored overlay; null when nothing was dropped. */
+  truncated_by?: "total" | "per_repo_pair" | null;
+}
+
+/** Declared structure behind one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  /** Contract links where one of the two files provides and the other consumes. */
+  pair_links: WorkspaceContractLinkEntry[];
+  /** Contract links between the two repositories through any files. */
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  /** Contract links touching each file, whatever the other end. */
+  source_file_links: number;
+  target_file_links: number;
 }
 
 export interface WorkspaceGraphNode {

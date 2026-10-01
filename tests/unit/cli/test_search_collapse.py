@@ -144,7 +144,7 @@ RISK_PAYLOAD = {
                                "top_symbols": {"_prune_stale_file_rows": 9,
                                                "mark_tombstone_pages": 4}},
             "health_score": 3.2,
-            "coverage_pct": 61.0,
+            "line_coverage_pct": 61.0,
             "top_biomarkers": [
                 {"biomarker_type": "nested_complexity", "severity": "high",
                  "function_name": "persist_analysis", "impact": 0.71},

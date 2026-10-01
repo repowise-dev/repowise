@@ -15,10 +15,10 @@ from repowise.core.persistence.models import DecisionRecord
 from tests.unit.persistence.helpers import insert_repo
 
 
-def _adr_dict(title="Use PostgreSQL for storage"):
+def _adr_dict(title="Use PostgreSQL for storage", decision="Use PostgreSQL as the primary datastore"):
     return {
         "title": title,
-        "decision": "Use PostgreSQL as the primary datastore",
+        "decision": decision,
         "rationale": "Strong transactional guarantees",
         "source": "adr",
         "status": "active",
@@ -28,7 +28,7 @@ def _adr_dict(title="Use PostgreSQL for storage"):
         "affected_files": ["src/storage/db.py"],
         "confidence": 0.9,
         "verification": "exact",
-        "source_quote": "Use PostgreSQL as the primary datastore",
+        "source_quote": decision,
     }
 
 
@@ -136,7 +136,12 @@ async def test_distinct_decisions_stay_separate(async_session):
     await bulk_upsert_decisions(
         async_session,
         repo.id,
-        [_adr_dict(title="Use PostgreSQL"), _adr_dict(title="Adopt gRPC internally")],
+        [
+            _adr_dict(title="Use PostgreSQL"),
+            # Its own decision and quote, not only its own title: identity is
+            # the evidence, so two titles over one body are one decision.
+            _adr_dict(title="Adopt gRPC internally", decision="Adopt gRPC for internal calls"),
+        ],
     )
     rows = await _decision_rows(async_session, repo.id)
     assert len(rows) == 2

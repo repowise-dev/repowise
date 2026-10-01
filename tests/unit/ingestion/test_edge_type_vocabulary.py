@@ -418,6 +418,20 @@ def test_graph_docs_origin_badge_matches_vocabulary() -> None:
     assert int(match.group(1)) == len(RESOLUTION_ORIGIN_VALUES)
 
 
+def test_language_support_origin_table_matches_vocabulary() -> None:
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    text = (root / "docs/layers/LANGUAGE_SUPPORT.md").read_text(encoding="utf-8")
+    section = text.split("### Every call edge says how it was resolved", 1)[1]
+    table, remainder = section.split("That is the complete vocabulary of ", 1)
+    names = re.findall(r"^\| `([a-z_]+)` \|", table, re.MULTILINE)
+
+    assert len(names) == len(set(names)), "origin table has duplicate rows"
+    assert set(names) == RESOLUTION_ORIGIN_VALUES
+    assert int(remainder.split(".", 1)[0]) == len(RESOLUTION_ORIGIN_VALUES)
+
+
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])
 def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
     """Each measured at 0 rows across 42 local indexes with no producer in the tree.
@@ -426,3 +440,13 @@ def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
     than a count.
     """
     assert phantom not in EDGE_TYPE_VALUES
+
+
+def test_reads_edge_producer_is_strictly_file_level() -> None:
+    """`reads` is produced exclusively by csharp_member_reads at the file level."""
+    producers = [
+        path for path, types in _edge_type_literals().items() if "reads" in types
+    ]
+    assert producers == ["packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py"], (
+        f"`reads` edge emitted by unexpected producers: {producers}"
+    )

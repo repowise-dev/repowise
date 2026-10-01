@@ -81,6 +81,45 @@ def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+#: Dropped paths named per reason; the count stays exact. The scope is embedded
+#: in editor files and orientation responses, so it carries a sample, not a
+#: listing of every generated file in a codegen-heavy repo.
+_DROPPED_PATHS_SHOWN = 20
+
+
+def dropped_files_scope(stats: Any) -> dict[str, Any] | None:
+    """What traversal dropped as generated, from its ``TraversalStats``.
+
+    ``None`` when there are no stats, so a run that never walked the tree does
+    not claim it dropped nothing.
+    """
+    paths = getattr(stats, "generated_files", None)
+    if paths is None:
+        return None
+    ordered = sorted(paths)
+    return {
+        "generated": {
+            "count": len(ordered),
+            "paths": ordered[:_DROPPED_PATHS_SHOWN],
+            "truncated": len(ordered) > _DROPPED_PATHS_SHOWN,
+        }
+    }
+
+
+def _dropped_files(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or not isinstance(value.get("generated"), Mapping):
+        return None
+    generated = value["generated"]
+    paths = generated.get("paths")
+    return {
+        "generated": {
+            "count": _number(generated.get("count")),
+            "paths": [str(p) for p in paths] if isinstance(paths, list) else [],
+            "truncated": generated.get("truncated") is True,
+        }
+    }
+
+
 def resolve_index_scope(
     state: Mapping[str, Any] | None,
     config: Mapping[str, Any] | None = None,
@@ -114,7 +153,7 @@ def resolve_index_scope(
     git_tier = _choice(state.get("git_tier", scope.get("git_tier")), {"essential", "full"})
     if isinstance(stored, Mapping):
         provenance = _choice(
-            scope.get("content_provenance", provenance), {"none", "template", "model"}
+            scope.get("content_provenance", provenance), {"none", "template", "model", "mixed"}
         )
 
     unavailable = analysis.get("unavailable", [])
@@ -135,6 +174,7 @@ def resolve_index_scope(
             if isinstance(scope.get("git_history_coverage"), Mapping)
             else None
         ),
+        "dropped_files": _dropped_files(scope.get("dropped_files")),
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),

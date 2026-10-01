@@ -76,14 +76,34 @@ const GROUPS: Group[] = [
       {
         key: "diagnostics.dimensions",
         label: "Problem dimensions",
-        description: "Which health dimensions appear in the Problems panel.",
+        description:
+          "Which health dimensions appear in the Problems panel. Advisory never deducts from a score, so it is off by default and stays in the gutter and in hovers.",
         kind: "multiselect",
         needs: "diagnostics.enabled",
         options: [
           { value: "defect", label: "Defect" },
           { value: "maintainability", label: "Maintainability" },
           { value: "performance", label: "Performance" },
+          { value: "advisory", label: "Advisory" },
         ],
+      },
+      {
+        key: "docDrift.diagnostics.enabled",
+        label: "Documentation drift",
+        description:
+          "Flag paths, links, anchors, commands, and code symbols in visible markdown files that the tree no longer has.",
+        kind: "toggle",
+      },
+      {
+        key: "docDrift.diagnostics.minConfidence",
+        label: "Drift confidence floor",
+        description:
+          "Lowest confidence a drift finding needs to appear (0 to 1). At 0.7 or above it shows as a warning.",
+        kind: "number",
+        needs: "docDrift.diagnostics.enabled",
+        min: 0,
+        max: 1,
+        step: 0.05,
       },
       {
         key: "gutterHeat.enabled",

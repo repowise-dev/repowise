@@ -273,12 +273,8 @@ def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
 
 
 def _default_shape(payload: dict[str, Any], question: str) -> None:
-    # A degraded payload keeps the fullest evidence shape whatever it graded.
-    # The trimming above is keyed on prose REPLACING evidence: a high-confidence
-    # answer makes the ranked list redundant, so it goes. There is no answer on
-    # this path - the evidence IS the product - and its ``confidence`` now rates
-    # that evidence rather than prose, so reading the two on one scale would cut
-    # a body and a hit from exactly the caller who has nothing else to read.
+    # A degraded payload keeps the fullest shape whatever it graded: trimming is
+    # keyed on prose replacing evidence, and there the evidence IS the product.
     confidence = "low" if payload.get("degraded") else payload.get("confidence", "low")
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
@@ -415,8 +411,8 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         return
     try:
         from repowise.core.persistence.database import get_session
-        from repowise.server.mcp_server._basis import basis_cache_key
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
         from repowise.server.mcp_server._scope import unrelated_scope_hint
 
@@ -428,7 +424,7 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
                 session,
                 repository.id,
                 [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+                cache_key=f"{repository.id}:{index_state_key(repository)}",
             )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:

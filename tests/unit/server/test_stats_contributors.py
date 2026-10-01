@@ -1,4 +1,4 @@
-"""Contributor-count dedup on the /stats/highlights activity payload.
+"""Contributor-count dedup on the stats commit pass.
 
 The "By the Numbers" contributor count keys on commit author identity; GitHub
 noreply variants and a person's same-name real+noreply emails must fold to one
@@ -9,13 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-from httpx import AsyncClient
-
-from repowise.core.persistence.crud import get_repository, upsert_git_commits_bulk
-from repowise.core.persistence.database import get_session
-from repowise.server.routers.stats import _commit_pass
-from tests.unit.server.conftest import create_test_repo
+from repowise.core.stats_highlights import build_commit_pass
 
 
 def _commit(sha: str, name: str, email: str, ts: int) -> dict:
@@ -28,68 +22,41 @@ def _commit(sha: str, name: str, email: str, ts: int) -> dict:
         "lines_added": 5,
         "lines_deleted": 1,
         "files_changed": 1,
-        "dirs_changed": 1,
-        "subsystems_changed": 1,
-        "entropy": 0.1,
-        "is_fix": False,
-        "change_risk_score": 1.0,
-        "change_risk_level": "low",
     }
 
 
-@pytest.mark.asyncio
-async def test_contributor_count_folds_noreply_and_same_name(client: AsyncClient, app) -> None:
-    repo = await create_test_repo(client)
+def test_contributor_count_folds_noreply_and_same_name() -> None:
     rows = [
-        # Jane: real email + two noreply variants (numeric id changed) — one person.
+        # Jane: real email + two noreply variants (numeric id changed), one person.
         _commit("a1", "Jane Doe", "jane@company.com", 1000),
         _commit("a2", "Jane Doe", "12345+jane@users.noreply.github.com", 1100),
         _commit("a3", "Jane Doe", "999+jane@users.noreply.github.com", 1200),
-        # Bob: a genuinely separate contributor.
         _commit("b1", "Bob", "bob@company.com", 1300),
     ]
-    async with get_session(app.state.session_factory) as session:
-        await upsert_git_commits_bulk(session, repo["id"], rows)
-
-    async with get_session(app.state.session_factory) as session:
-        repo_row = await get_repository(session, repo["id"])
-        activity = (await _commit_pass(session, repo["id"], repo_row))["origin"]
-
-    # No whole-history totals stored on the repo, so the count folds the
-    # bounded sample's author identities (Jane + Bob, not 4).
-    assert activity["total_commits"] == 4
-    assert activity["contributor_count"] == 2
+    origin = build_commit_pass(rows)["origin"]
+    assert origin["total_commits"] == 4
+    assert origin["contributor_count"] == 2
 
 
-@pytest.mark.asyncio
-async def test_activity_prefers_whole_history_totals(client: AsyncClient, app) -> None:
-    """When the repo carries index-time totals, the headline reads those, not
-    the bounded ``git_commits`` sample (issue #730)."""
-    repo = await create_test_repo(client)
-    # Two sampled commits from one author, ~1 day apart.
+def test_activity_prefers_whole_history_totals() -> None:
+    """Index-time totals win over the bounded commit sample (issue #730)."""
     rows = [
         _commit("a1", "Jane Doe", "jane@company.com", 1_600_000_000),
         _commit("a2", "Jane Doe", "jane@company.com", 1_600_086_400),
     ]
-    async with get_session(app.state.session_factory) as session:
-        await upsert_git_commits_bulk(session, repo["id"], rows)
-
-    # Stamp true whole-history values on the repo, far larger than the sample.
-    async with get_session(app.state.session_factory) as session:
-        repo_row = await get_repository(session, repo["id"])
-        repo_row.total_commit_count = 5000
-        repo_row.total_contributor_count = 42
-        repo_row.first_commit_at = datetime.fromtimestamp(1_300_000_000, tz=UTC)
-        repo_row.first_commit_author = "Ada Lovelace"
-        await session.flush()
-
-    async with get_session(app.state.session_factory) as session:
-        repo_row = await get_repository(session, repo["id"])
-        activity = (await _commit_pass(session, repo["id"], repo_row))["origin"]
-
-    assert activity["total_commits"] == 5000
-    assert activity["contributor_count"] == 42
-    assert activity["first_commit_author"] == "Ada Lovelace"
-    # Age runs from the true first commit to the latest sampled commit, so it is
-    # far larger than the ~1 day the sample alone would show.
-    assert activity["age_days"] > 3000
+    totals = {
+        "total_commit_count": 5000,
+        "total_contributor_count": 42,
+        # Naive, the way SQLite hands it back.
+        "first_commit_at": datetime(2011, 3, 13, 7, 6, 40),
+        "first_commit_author": "Ada Lovelace",
+    }
+    out = build_commit_pass(rows, totals)
+    origin = out["origin"]
+    assert origin["total_commits"] == 5000
+    assert origin["contributor_count"] == 42
+    assert origin["first_commit_author"] == "Ada Lovelace"
+    assert origin["age_days"] > 3000
+    # Two commits of 5,000 is a sample, and the payload says so.
+    assert out["rhythm"]["window"]["complete"] is False
+    assert out["rhythm"]["window"]["commits"] == 2

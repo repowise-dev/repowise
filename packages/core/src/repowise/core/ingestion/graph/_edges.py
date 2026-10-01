@@ -133,7 +133,9 @@ class EdgesMixin:
     def add_dynamic_edges(self, edges: list) -> None:
         """Add dynamic-hint edges to the graph. Each edge is a DynamicEdge."""
         for e in edges:
-            if e.source not in self._graph:
+            # A hint naming its own file (a package.json exporting
+            # "./package.json") is not a dependency.
+            if e.source not in self._graph or e.source == e.target:
                 continue
             if e.target not in self._graph:
                 if self._exclude.patterns and self._exclude.match_file(e.target):
@@ -161,9 +163,9 @@ class EdgesMixin:
             # every `src/lib.rs` with an inline `mod tests` was marked a test
             # file wholesale and dropped from dead-code analysis, the knowledge
             # graph and key-concept selection (#1103). The marker means "contains
-            # tests", not "is a test": it stays recorded on this edge's
-            # ``hint_source``, where it says that and nothing more. Health
-            # computes the file-level version itself, from the source, as
+            # tests", not "is a test", and as a file → same-file hint it is now
+            # dropped by the self-loop guard above. Health computes the
+            # file-level version itself, from the source, as
             # ``FileContext.has_inline_tests``.
         if edges:
             self._invalidate_subgraph_caches()

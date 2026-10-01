@@ -218,9 +218,9 @@ def test_branch_overlap_participates_in_the_response_ceiling(tmp_path):
 
     # Shed after the fix record and before the consumer list: who else is in
     # these files outlives what the diff weighs and is cheaper than what breaks.
-    assert _SHED_ORDER.index("prior_fixes") < _SHED_ORDER.index("branch_overlap")
+    assert _SHED_ORDER.index("fix_history") < _SHED_ORDER.index("branch_overlap")
     assert _SHED_ORDER.index("branch_overlap") < _SHED_ORDER.index("cross_repo")
-    assert _SHED_ORDER.index("change_shape.independent_changes") < _SHED_ORDER.index("change_shape")
+    assert _SHED_ORDER.index("fix_history.overlap") < _SHED_ORDER.index("fix_history")
 
     payload = {
         "score": 7.0,
@@ -248,7 +248,7 @@ async def test_get_change_risk_carries_the_block_end_to_end(tmp_path, monkeypatc
 
     assert [e["branch"] for e in payload["branch_overlap"]["branches"]] == ["overlapping"]
     # No index, so the diff is never split into changes the index cannot see.
-    assert "independent_changes" not in payload["change_shape"]
+    assert "independent_changes" not in payload
 
 
 async def test_reading_other_branches_does_not_widen_the_response_targets(tmp_path, monkeypatch):

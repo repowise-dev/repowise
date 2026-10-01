@@ -55,10 +55,11 @@ _PLUMBING: dict[str, str] = {
     "repowise/core/analysis/health/trends.py": "diffs snapshots; owns no current value",
     "repowise/server/routers/code_health/trends_routes.py": "serves the snapshot series",
     "repowise/cli/commands/health_cmd/trends.py": "prints the snapshot series",
+    "repowise/server/mcp_server/tool_health/blocks.py": "renders get_health's snapshot diff",
     # --- pure renderers: read a value someone else computed ------------------
     "repowise/cli/commands/health_cmd/command.py": "prints the KPI dict it was handed",
     "repowise/core/generation/editor_files/data.py": "the CodeHealthBlock field",
-    "repowise/server/routers/repos.py": "serves the latest snapshot column on /repos/summary",
+    "repowise/server/routers/_repo_summary.py": "serves the latest snapshot column on /repos/summary",
 }
 
 

@@ -158,7 +158,8 @@ export function OwnerProfileView({
   // section below. The two line counts are the payload's `_est` fields, so an
   // exact six-digit figure would claim a precision the number does not have.
   const ribbon: RibbonStat[] = [
-    { label: "Commits, 90d", value: owner.commit_count_90d.toLocaleString() },
+    // Null when the indexed commits do not reach back 90 days: not a zero.
+    { label: "Commits, 90d", value: owner.commit_count_90d?.toLocaleString() ?? "—" },
     {
       label: "Lines added",
       value: formatCompact(owner.lines_added_90d_est),

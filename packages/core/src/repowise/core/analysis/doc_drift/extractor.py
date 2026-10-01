@@ -11,13 +11,13 @@ three ask different questions:
 * ``validation`` checks *generated* prose against the single ``ParsedFile`` the
   page was written about, and its regex matches identifiers only --- it cannot
   express a path, having no ``/`` in its character class. It is a symbol
-  checker, and the symbol class is exactly what Phase 1 killed.
+  checker against one file; this detector's symbol class asks git history.
 * ``interlinking`` resolves refs to ``page_id``s and strips fences with one
   ``re.DOTALL`` pass over the whole document, which destroys line positions.
 * This detector files **line-level** findings against **user-authored** prose,
   checked against the **whole tree**. It needs line numbers (the persistence
   key includes one), markdown links, URL fragments and inline commands --- three
-  of its four classes are things neither of the others extracts at all.
+  of its five classes are things neither of the others extracts at all.
 
 Folding them together would mean one function with three incompatible regexes
 and a mode flag. The honest answer is a third extractor that shares the
@@ -297,30 +297,72 @@ def _from_links(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
         if frag and not target:
             # Same-document anchor, checkable against this file's own headings.
             yield DocReference(
-                DriftKind.ANCHOR, raw, f"{doc}#{frag}", doc, lineno, line.strip()
+                DriftKind.ANCHOR, raw, f"{doc}#{frag}", doc, lineno, line.strip(),
+                column=m.start(1),
             )
             continue
         if not target or not _path_shaped(target):
             continue
         if frag:
             yield DocReference(
-                DriftKind.ANCHOR, raw, f"{target}#{frag}", doc, lineno, line.strip()
+                DriftKind.ANCHOR, raw, f"{target}#{frag}", doc, lineno, line.strip(),
+                column=m.start(1),
             )
-        yield DocReference(DriftKind.LINK, raw, target, doc, lineno, line.strip())
+        yield DocReference(
+            DriftKind.LINK, raw, target, doc, lineno, line.strip(), column=m.start(1)
+        )
 
 
 def _from_inline_code(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
-    """Backtick-quoted paths: the PATH class.
+    """Backtick-quoted paths (the PATH class) and symbol candidates (SYMBOL).
 
-    Only paths. A backtick-quoted identifier is NOT emitted as a symbol
-    reference; see :class:`~.models.DriftKind` for why that class does not
-    exist.
+    A symbol candidate is only identifier-shaped here. Whether it ever named a
+    symbol is decided against git history in :mod:`.symbols`; see
+    :class:`~.models.DriftKind` for why shape alone is not evidence.
     """
     for m in _INLINE_CODE_RE.finditer(line):
-        raw = m.group(1).strip()
+        body = m.group(1)
+        raw = body.strip()
+        column = m.start(1) + len(body) - len(body.lstrip())
         norm = _normalize(raw)
         if _path_shaped(norm):
-            yield DocReference(DriftKind.PATH, raw, norm, doc, lineno, line.strip())
+            yield DocReference(
+                DriftKind.PATH, raw, norm, doc, lineno, line.strip(), column=column
+            )
+        elif symbol_name(raw):
+            # The qualified token is the target, so ``A.parse`` and ``B.parse``
+            # stay two findings; the lookup name is derived from it.
+            yield DocReference(
+                DriftKind.SYMBOL, raw, raw.removesuffix("()"), doc, lineno, line.strip(),
+                column=column,
+            )
+
+
+# ``name``, ``name()``, ``a.b.c`` or ``A::b``: dotted or ``::`` qualifiers, then
+# the final identifier, then an optional empty call.
+_SYMBOL_TOKEN_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*(?:\.|::))*([A-Za-z_][A-Za-z0-9_]*)(\(\))?"
+)
+_INNER_CAPITAL_RE = re.compile(r"[a-z][A-Z]")
+
+
+def symbol_name(token: str) -> str:
+    """The final identifier *token* names when it is shaped like a code symbol, else ``""``.
+
+    It needs a code signal (an underscore, an inner capital, a qualifier or a
+    trailing ``()``), four or more characters, and a lowercase letter, so
+    English words, ``true`` and ALL-CAPS constants never qualify.
+    """
+    m = _SYMBOL_TOKEN_RE.fullmatch(token)
+    if not m:
+        return ""
+    name = m.group(1)
+    if len(name) < 4 or name.upper() == name:
+        return ""
+    qualified = m.start(1) > 0
+    if "_" in name.strip("_") or _INNER_CAPITAL_RE.search(name) or qualified or m.group(2):
+        return name
+    return ""
 
 
 def _from_commands(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
@@ -335,19 +377,52 @@ def _from_commands(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
         for m in _COMMAND_RE.finditer(span.group(1)):
             target = f"make:{m.group(2)}" if m.group(1) else f"npm:{m.group(4)}"
             yield DocReference(
-                DriftKind.COMMAND, m.group(0), target, doc, lineno, line.strip()
+                DriftKind.COMMAND, m.group(0), target, doc, lineno, line.strip(),
+                column=span.start(1) + m.start(0),
             )
 
 
 _EXTRACTORS = (_from_links, _from_inline_code, _from_commands)
 
 
+# Inline suppression. Lives in the document, not config, because config
+# is local state, and a CI check has to agree with the author's machine.
+_IGNORE_RE = re.compile(r"<!--\s*repowise-drift-ignore(-file)?\s*-->")
+# A marker quoted in a code span is being documented, not applied.
+_CODE_SPAN_RE = re.compile(r"(`+).+?\1")
+
+
 def extract(text: str, doc_path: str) -> list[DocReference]:
-    """Every checkable assertion *text* makes, deduplicated, in document order."""
+    """Every checkable assertion *text* makes, deduplicated, in document order.
+
+    References silenced by a ``repowise-drift-ignore`` marker are left out; use
+    :func:`extract_with_suppressed` to count them.
+    """
+    return extract_with_suppressed(text, doc_path)[0]
+
+
+def extract_with_suppressed(
+    text: str, doc_path: str
+) -> tuple[list[DocReference], list[DocReference]]:
+    """``(references, suppressed)`` for *text*, both deduplicated, in order.
+
+    ``<!-- repowise-drift-ignore -->`` silences its own line and the next one;
+    ``<!-- repowise-drift-ignore-file -->`` silences the whole document. Both
+    count only in prose, so a fenced or backticked example does nothing.
+    """
     seen: set[DocReference] = set()
     out: list[DocReference] = []
+    suppressed: list[DocReference] = []
+    ignore_file = False
+    ignored_lines: set[int] = set()
     trail = _SectionTrail()
     for lineno, line in prose_lines(text):
+        marker = "<!--" in line and _IGNORE_RE.search(_CODE_SPAN_RE.sub("", line))
+        if marker:
+            if marker.group(1):
+                ignore_file = True
+            else:
+                ignored_lines.update((lineno, lineno + 1))
         # A heading updates the trail AND is still scanned: a section title
         # like "### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)"
         # asserts a path exactly as body prose does, and skipping headings
@@ -360,10 +435,10 @@ def extract(text: str, doc_path: str) -> list[DocReference]:
                 if ref in seen:
                     continue
                 seen.add(ref)
-                out.append(ref)
-    return out
-
-
+                (suppressed if lineno in ignored_lines else out).append(ref)
+    if ignore_file:
+        return [], sorted(out + suppressed, key=lambda ref: ref.line)
+    return out, suppressed
 
 
 # ---------------------------------------------------------------------------

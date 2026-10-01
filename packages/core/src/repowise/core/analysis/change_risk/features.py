@@ -17,7 +17,6 @@ offline calibration. Two entry points:
 from __future__ import annotations
 
 import math
-import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,9 @@ from pathlib import Path
 import pathspec
 
 from ...ingestion.git_indexer._constants import is_fix_commit
+
+# Re-exported: callers across the package import these from here.
+from ..git_cli import GIT_TIMEOUT_SECONDS, _git, split_revspec  # noqa: F401
 
 #: ``ChangeFeatures.ref`` for a score of the uncommitted change. Not a revspec —
 #: it names the unit scored, in the same slot a sha or ``base..head`` occupies.
@@ -56,32 +58,10 @@ class ChangeFeatures:
     file_churn: tuple[tuple[str, int], ...] = ()
 
 
-# Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
-# point is that a stuck git (lock contention, network filesystem) must fail
-# loud instead of hanging the caller's thread forever.
-GIT_TIMEOUT_SECONDS = 60
-
-
-def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
-    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
-    # pipe handles can wedge the session (same failure mode _meta.py guards
-    # against). check=True so a bad revspec raises instead of yielding empty
-    # stdout, which used to score as a zero-feature "low risk" change.
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if check and proc.returncode != 0:
-        raise subprocess.CalledProcessError(
-            proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
-        )
-    return proc.stdout
+def revspec_head(revspec: str | None) -> str:
+    """The revision a change ends at: a range's head, else the revision itself."""
+    parts = split_revspec(revspec) if revspec else None
+    return parts[2] if parts else revspec or "HEAD"
 
 
 def _accumulate_numstat(
@@ -367,14 +347,15 @@ def extract_range_features(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    sep: str = "..",
 ) -> ChangeFeatures:
     """Extract features for a ``base..head`` range scored as one change.
 
-    Diff size/diffusion come from the cumulative ``base..head`` diff; author and
-    fix-flag come from the head commit; experience is the head author's prior
-    commit count at *base*.
+    Diff size/diffusion come from the cumulative ``base{sep}head`` diff (``...``
+    diffs from the merge-base); author and fix-flag come from the head commit;
+    experience is the head author's prior commit count at *base*.
     """
-    numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
+    numstat = _git(["diff", "--numstat", f"{base}{sep}{head}"], repo_path)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
         numstat, extensions, exclude_patterns
     )
@@ -395,6 +376,6 @@ def extract_range_features(
         is_fix=is_fix,
         author=author,
         subject=subject,
-        ref=f"{base}..{head}",
+        ref=f"{base}{sep}{head}",
         file_churn=tuple(files),
     )

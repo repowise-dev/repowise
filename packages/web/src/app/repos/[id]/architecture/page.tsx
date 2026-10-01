@@ -29,7 +29,8 @@
  *   - `?community=` the community the file scope is drilled into. One axis with
  *     `?module=`: both narrow the file graph, so at most one is ever set.
  *   - `?show=` which non-production files the community views count
- *     (`tests,examples,docs`); absent means production only.
+ *     (`tests,examples,docs`); absent means production only. `external` in
+ *     the same list draws third-party modules in the Files view.
  *
  * `?view=` and `?viewMode=` used to encode the same axis twice — `view=explore`
  * and `viewMode=full` both meant "the file graph", and they could disagree.
@@ -106,10 +107,17 @@ const TABS: { id: string; label: string }[] = [
   { id: "symbols", label: "Symbols" },
 ];
 
-/** Landing view when a tab is clicked. Map opens on communities — the whole
- *  repo at a size you can read, rather than 1,500 circles. */
+/** Landing view when a tab is clicked, and for the page with no `?view=`.
+ *
+ * Map opens on Files. It used to open on Communities, because Files was 1,500
+ * circles with nothing to read them by. Files now draws each community as a
+ * named cluster with its bands and ranked file names, and a hover shows one
+ * file's real edges, so it answers "what is this repo made of" and "what does
+ * this file touch" on first paint. `?view=communities` still lands there.
+ */
+const DEFAULT_VIEW: CanonicalView = "files";
 const DEFAULT_VIEW_FOR_TAB: Record<string, CanonicalView> = {
-  map: "communities",
+  map: DEFAULT_VIEW,
   coupling: "coupling",
   packages: "packages",
   symbols: "symbols",
@@ -124,7 +132,7 @@ export default function ArchitecturePage({
   const router = useRouter();
   const [rawView, setView] = useQueryState(
     "view",
-    parseAsStringLiteral(VIEWS).withDefault("communities"),
+    parseAsStringLiteral(VIEWS).withDefault(DEFAULT_VIEW),
   );
   const [viewModeParam, setViewModeParam] = useQueryState("viewMode");
   const [, setSignal] = useQueryState("signal");
@@ -163,7 +171,7 @@ export default function ArchitecturePage({
   // reads it and nothing shows it.
   const handleTabChange = useCallback(
     (id: string) => {
-      void setView(DEFAULT_VIEW_FOR_TAB[id] ?? "communities");
+      void setView(DEFAULT_VIEW_FOR_TAB[id] ?? DEFAULT_VIEW);
       // `?focus=` means a file path in Coupling and the literal "relationships"
       // in Third-party, so carrying it across pins one tab's value in the
       // other's vocabulary. Cleared on every change, not just when leaving.

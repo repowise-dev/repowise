@@ -63,6 +63,7 @@ def _facts(lang: str, src: str) -> dict[str | None, PerfFnFacts]:
 _NESTED_IO_CASES = [
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, groups):\n"
         "    for g in groups:\n"
         "        for r in g:\n"
@@ -72,6 +73,7 @@ _NESTED_IO_CASES = [
     ),
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, repos):\n    for r in repos:\n        session.execute(r)\n",
         [("io_in_loop", "db")],
         "a single loop is io_in_loop only (no nesting)",

@@ -2,7 +2,8 @@
 
 Fires when a file is **all three** of:
 
-- a *hotspot* (``git_meta['is_hotspot']`` true OR commit_count_90d ≥ 8)
+- a *hotspot* (``git_meta['is_hotspot']``, which is top-quartile churn with
+  absolute activity floors under it)
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
   OR, when it isn't, neither a paired test file nor a test reaching it
   through the call graph)
@@ -22,6 +23,7 @@ is an accusation.
 
 from __future__ import annotations
 
+from ....ingestion.git_indexer.fix_shape import is_code_path
 from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -29,24 +31,25 @@ from .base import BiomarkerResult, FileContext
 _COVERAGE_LOW = 40.0
 _COVERAGE_VERY_LOW = 15.0
 _DEPENDENTS_THRESHOLD = 4
-_COMMITS_90D_THRESHOLD = 8
-
-
 def _is_hotspot(ctx: FileContext) -> bool:
-    meta = ctx.git_meta or {}
-    if bool(meta.get("is_hotspot")):
-        return True
-    try:
-        if int(meta.get("commit_count_90d", 0) or 0) >= _COMMITS_90D_THRESHOLD:
-            return True
-    except (TypeError, ValueError):
-        pass
-    try:
-        if float(meta.get("temporal_hotspot_score", 0.0) or 0.0) >= 0.8:
-            return True
-    except (TypeError, ValueError):
-        pass
-    return False
+    """The repository's own hotspot verdict, and only that.
+
+    This used to widen it with two absolute alternatives -- eight commits in 90
+    days, or a decayed churn score over 0.8 -- either of which a busy repository
+    clears for a large share of its files while a quiet one never clears at all.
+    ``is_hotspot`` is already top-quartile churn with activity floors under it,
+    so the alternatives only ever made the gate less repo-relative, never more
+    informative.
+    """
+    return bool((ctx.git_meta or {}).get("is_hotspot"))
+
+
+def _has_something_to_test(ctx: FileContext) -> bool:
+    """Code with at least one function. A config file (``vite.config.ts``, a
+    ``.d.ts``, a non-code language) or a file with no function (types,
+    constants, a settings module) has nothing a test could exercise, so the
+    absence of one is not a gap."""
+    return is_code_path(ctx.file_path) and bool(ctx.all_functions)
 
 
 class UntestedHotspotDetector:
@@ -58,6 +61,8 @@ class UntestedHotspotDetector:
         # the suite itself, so where coverage is ingested every test file reads
         # as 0% covered and a churning one would be accused of it.
         if is_test_related_path(ctx.file_path, ctx.language):
+            return []
+        if not _has_something_to_test(ctx):
             return []
         if not _is_hotspot(ctx):
             return []
@@ -76,8 +81,8 @@ class UntestedHotspotDetector:
             # ``reached_by_tests`` is the graph one, and it is what stops the
             # long-standing false positive: a suite that names its tests for
             # behaviour rather than for the file under test satisfies no naming
-            # convention, so ``has_test_file`` was False and this fired on files
-            # the graph records several test files importing.
+            # convention, so name-only pairing left ``has_test_file`` False and
+            # this fired on files the graph records several test files importing.
             if ctx.has_test_file or ctx.reached_by_tests:
                 return []
             cov_for_severity = 0.0

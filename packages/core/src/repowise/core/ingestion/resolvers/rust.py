@@ -160,6 +160,14 @@ def _follow_crate_root_reexport(
     and resolve that ``pub use``'s own module path instead. Depth is
     capped at one hop: a chain of re-exporting hubs resolves to the next
     hub, whose own ``pub use`` edges keep the graph connected.
+
+    Segments after the matched one are carried through the hop. A
+    re-exported *module* can be named on the way to a submodule, as in
+    ``use crate_x::outer::inner::Type`` against a root that re-exports
+    ``outer``, and dropping the tail resolves the import to the parent
+    module's file instead. ``_probe_rust_path`` probes longest-first and
+    walks down, so a matched name that is a type rather than a module
+    still falls back to the module file for free.
     """
     if not remaining_parts:
         return None
@@ -174,6 +182,7 @@ def _follow_crate_root_reexport(
         return None
 
     name = remaining_parts[0]
+    rest = remaining_parts[1:]
     for imp in getattr(parsed_files[root_path], "imports", []) or []:
         if not getattr(imp, "is_reexport", False):
             continue
@@ -186,12 +195,18 @@ def _follow_crate_root_reexport(
             # carries the selected names.
             if name not in names:
                 continue
-            target_mp = "::".join([*segments[:-1], name])
+            target_mp = "::".join([*segments[:-1], name, *rest])
         elif last == "*":
             # Glob re-export: `pub use crate::module::*` — resolve the module.
+            # `name` names a member of it rather than a path segment, so
+            # neither it nor anything after it is appended.
             target_mp = "::".join(segments[:-1])
         elif last == name or name in names:
-            target_mp = mp
+            # `name` either ends `mp` or is an alias for it: a renamed
+            # re-export carries the alias in `imported_names`, never a
+            # segment below `mp`. Either way it names `mp` itself, so only
+            # the tail is appended.
+            target_mp = "::".join([mp, *rest]) if rest else mp
         else:
             continue
         resolved = resolve_rust_import(target_mp, root_path, ctx, _reexport_depth=1)

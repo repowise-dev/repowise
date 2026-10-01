@@ -45,6 +45,9 @@ export interface GraphFlowProps {
    *  via `?show=`. */
   population?: GraphPopulation | undefined;
   onPopulationChange?: ((next: GraphPopulation) => void) | undefined;
+  /** Third-party nodes in the Files view. The page owns it via `?show=`. */
+  showExternal?: GraphFlowShellProps["showExternal"];
+  onShowExternalChange?: GraphFlowShellProps["onShowExternalChange"];
   /** Node cap for the full-graph fetch, stepped up by the truncation banner.
    *  Must be the SAME value the banner is reporting: this and the banner's own
    *  fetch share an SWR key, so a mismatch means the caption describes a
@@ -87,6 +90,8 @@ export function GraphFlow({
   onActiveCommunityChange,
   population,
   onPopulationChange,
+  showExternal,
+  onShowExternalChange,
   graphLimit,
   onModuleGroupsChange,
   initialColorMode,
@@ -166,6 +171,8 @@ export function GraphFlow({
       onActiveCommunityChange={onActiveCommunityChange}
       population={population}
       onPopulationChange={onPopulationChange}
+      showExternal={showExternal}
+      onShowExternalChange={onShowExternalChange}
       {...(resolvedRepoName ? { repoName: resolvedRepoName } : {})}
       deadCodeGraph={deadGraph as GraphExport | undefined}
       isLoadingDeadCodeGraph={deadLoading}

@@ -238,7 +238,18 @@ def test_the_registry_is_where_a_label_comes_from(agent: AgentIdentity) -> None:
 def test_an_unregistered_slug_is_labelled_verbatim() -> None:
     """A retired agent still in the ledger gets its id back, not an invented name."""
     assert display_name_for("retired_agent") == "retired_agent"
-    assert display_name_for(UNKNOWN_AGENT) == UNKNOWN_AGENT
+
+
+def test_the_unknown_sentinel_is_labelled_rather_than_echoed() -> None:
+    """``unknown`` is this registry's own word, not an agent id.
+
+    It reaches a screen whenever a client announces nothing, so the label
+    belongs here beside every other label rather than being title-cased by each
+    surface that has to render it.
+    """
+    assert display_name_for(UNKNOWN_AGENT) == "Unknown"
+    # Still not an agent: it must not appear in the registry itself.
+    assert identity.get_identity(UNKNOWN_AGENT) is None
 
 
 def test_the_shipped_registry_is_the_six_integrated_agents() -> None:

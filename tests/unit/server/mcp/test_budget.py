@@ -545,15 +545,15 @@ async def test_get_dead_code_truncation_is_expandable(setup_mcp, repo_root: Path
     from repowise.server.mcp_server import get_dead_code
 
     mcp_mod._repo_path = str(repo_root)
-    # Fixture has two medium-tier findings; limit=1 drops one of them.
+    # Fixture has two high-tier findings (0.9, 0.7); limit=1 drops the second.
     result = await get_dead_code(limit=1)
-    assert result["tiers"]["medium"]["truncated"] is True
+    assert result["tiers"]["high"]["truncated"] is True
     omitted = result["_meta"]["omitted"]
     assert omitted["refs"]
 
     stored = "\n".join(_store_get(repo_root, r) or "" for r in omitted["refs"])
-    assert "OldModel" in stored  # the dropped medium finding
-    assert "medium-tier findings beyond limit=1" in stored
+    assert "deprecated_login" in stored  # the dropped high finding
+    assert "high-tier findings beyond limit=1" in stored
     rec = _store_record(repo_root, omitted["refs"][0])
     assert rec["source"] == "mcp:get_dead_code"
 

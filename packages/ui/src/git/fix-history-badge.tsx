@@ -38,11 +38,14 @@ export function FixHistoryBadge({
   if (!fix) return null;
 
   return (
-    <Badge
-      variant={fix.magnet ? "outdated" : "outline"}
-      className={className}
-      title={title ?? DEFAULT_TITLE}
-    >
+    // Always `outline`, never the `outdated` variant it used to take when the
+    // magnet fired. `fresh`/`stale`/`outdated` are the *documentation
+    // confidence* vocabulary — on every other surface that red means "this
+    // page is out of date" — and a file that attracts bug fixes is not an
+    // outdated doc. Two marks on one object must not share a colour
+    // vocabulary, so this one keeps the word and the bug glyph, which name
+    // the thing far better than a hue can.
+    <Badge variant="outline" className={className} title={title ?? DEFAULT_TITLE}>
       <Bug className="h-2.5 w-2.5" />
       {fix.magnet ? `Bug magnet · ${fix.label}` : fix.label}
     </Badge>

@@ -37,7 +37,7 @@ export function CommitRows({
 }: {
   commits: CommitRow[];
   hrefFor: (sha: string) => string;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (commits.length === 0) {
@@ -84,7 +84,7 @@ export function DecisionRows({
 }: {
   decisions: DecisionRow[];
   hrefFor: (id: string) => string;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (decisions.length === 0) {

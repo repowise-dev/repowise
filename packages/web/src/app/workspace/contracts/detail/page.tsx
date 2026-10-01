@@ -21,7 +21,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   if (!repo || !file || !id) return { title: "Contract" };
   try {
     const detail = await getWorkspaceContractDetail({ repo, file, id });
-    return { title: `${contractHeading(detail.contract)} — Contract` };
+    return { title: `${contractHeading(detail.contract)} | Contract` };
   } catch {
     return { title: "Contract" };
   }
@@ -37,7 +37,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
  * The workspace payload comes along for one reason: contracts name their repo
  * by alias, and a file link needs the indexed repo id. A repo that has never
  * been indexed has no id, which is why the map is passed down whole rather
- * than resolved into hrefs here — the degrade belongs next to the link.
+ * than resolved into hrefs here: the degrade belongs next to the link.
  */
 export default async function ContractDetailPage({ searchParams }: Props) {
   const { repo, file, id } = await searchParams;

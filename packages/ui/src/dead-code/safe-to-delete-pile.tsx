@@ -10,7 +10,7 @@ export interface SafeToDeletePileFinding {
   id: string;
   file_path: string;
   symbol_name: string | null;
-  lines: number;
+  lines: number | null;
   confidence: number;
 }
 
@@ -49,7 +49,7 @@ export function SafeToDeletePile({
 }: SafeToDeletePileProps) {
   const lines =
     reclaimableLines ??
-    findings.reduce((sum, f) => sum + (Number.isFinite(f.lines) ? f.lines : 0), 0);
+    findings.reduce((sum, f) => sum + (f.lines ?? 0), 0);
   const files = new Set(findings.map((f) => f.file_path)).size;
 
   // Roll findings up by file so the preview list shows distinct files
@@ -67,7 +67,7 @@ export function SafeToDeletePile({
     for (const f of findings) {
       const existing = byFile.get(f.file_path);
       if (existing) {
-        existing.lines += Number.isFinite(f.lines) ? f.lines : 0;
+        existing.lines += f.lines ?? 0;
         existing.finding_count += 1;
         if ((f.lines ?? 0) > (existing.representative.lines ?? 0)) {
           existing.representative = f;
@@ -75,7 +75,7 @@ export function SafeToDeletePile({
       } else {
         byFile.set(f.file_path, {
           file_path: f.file_path,
-          lines: Number.isFinite(f.lines) ? f.lines : 0,
+          lines: f.lines ?? 0,
           finding_count: 1,
           representative: f,
         });

@@ -24,7 +24,9 @@ class DeadCodeFindingData:
     reason: str
     last_commit_at: datetime | None
     commit_count_90d: int
-    lines: int
+    # Physical lines the finding covers; ``None`` when it could not be
+    # counted (the evidence says why) — never an estimate.
+    lines: int | None
     evidence: list[str]
     safe_to_delete: bool
     primary_owner: str | None

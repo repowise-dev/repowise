@@ -11,7 +11,7 @@ export interface OwnerListEntry {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   bus_factor_risk_files: number;
 }
@@ -49,7 +49,7 @@ export interface OwnerProfileResponse {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
   bus_factor_risk_files: number;

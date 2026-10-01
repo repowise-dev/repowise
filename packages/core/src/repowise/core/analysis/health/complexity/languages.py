@@ -115,6 +115,16 @@ class LanguageNodeMap:
     # false positive, and no vocabulary row can give it any.
     assert_kinds: frozenset[str] = frozenset()
     assert_call_kinds: frozenset[str] = frozenset()
+    #   * ``expr_stmt_kinds`` — this language's wrapper node type(s) for "an
+    #     expression used as a full statement", when that wrapper is not
+    #     literally named ``expression_statement`` (most grammars this pass
+    #     already serves use that exact name, hardcoded in
+    #     ``assertions._assertion_tier``; Pascal's is called ``statement``).
+    #     Empty by default: a grammar whose wrapper IS ``expression_statement``
+    #     needs nothing here, and one with no wrapper at all (a call sits
+    #     directly in the statement list, e.g. Kotlin) needs nothing here
+    #     either -- ``stmt.type in assert_call_kinds`` already matches it.
+    expr_stmt_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Performance pass (io_in_loop / string_concat_in_loop /
@@ -133,6 +143,16 @@ class LanguageNodeMap:
     #     walker, so this set only needs the dedicated async node types.
     call_kinds: frozenset[str] = frozenset()
     async_function_kinds: frozenset[str] = frozenset()
+    # Statement-wrapper node type(s) that MAY wrap a call with no ``call_kinds``
+    # node at all -- a parenless call (Pascal's ``Q.Open;``, valid for any
+    # zero-argument procedure). Every wrapped statement of this kind reaches
+    # ``PerfDialect.bare_statement_call``, which returns the node to treat as
+    # the call (typically the wrapper's sole named child) or ``None`` when the
+    # statement is not a call at all (Pascal's bare ``Exit;`` / ``inherited;``
+    # take this same wrapper shape and correctly return ``None``). Empty by
+    # default: a language whose call site always has its own dedicated node
+    # (most grammars) needs neither this field nor the hook.
+    bare_call_wrapper_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Dataflow def/use pass (intra-procedural CFG + reaching definitions).
@@ -775,7 +795,10 @@ _PASCAL = LanguageNodeMap(
     # recursive walker already counts one branch per level without special
     # casing.
     branch_kinds=frozenset({"if", "ifElse"}),
-    loop_kinds=frozenset({"for", "while", "repeat"}),
+    # ``for`` is the counted ``for i := a to b do`` loop; ``foreach`` is the
+    # distinct ``for x in collection do`` grammar node (its own node type,
+    # not a variant of ``for``) -- both are loops and must both count.
+    loop_kinds=frozenset({"for", "foreach", "while", "repeat"}),
     try_kinds=frozenset({"try"}),
     # A bound handler (``on E: Exception do``) is an ``exceptionHandler``
     # node; a bare ``except ... end`` with no ``on`` clauses has no such
@@ -793,6 +816,18 @@ _PASCAL = LanguageNodeMap(
     # not generic operator text inside a binary node, so no text-sniffing
     # set is needed here (unlike the C-family languages above).
     boolean_operator_kinds=frozenset({"kAnd", "kOr"}),
+    # DUnit's ``Check`` / ``CheckEquals`` / ``Fail`` family are ordinary calls
+    # named in ``asserts/lexicon.py``'s Pascal row (broad tier); DUnitX's
+    # ``Assert.AreEqual`` / ``Assert.IsTrue`` / ... need no row at all -- the
+    # narrow tier already matches any callee chain with an ``assert``-prefixed
+    # identifier, and ``Assert`` (the receiver) is one. Same for the RTL's own
+    # ``Assert(cond, msg)`` runtime-assertion call.
+    assert_call_kinds=frozenset({"exprCall"}),
+    # A call in flat statement position -- ``CheckEquals(5, X);`` as much as a
+    # structural statement -- sits directly under a ``statement`` wrapper, not
+    # a node literally named ``expression_statement`` the way most grammars
+    # this pass serves spell it.
+    expr_stmt_kinds=frozenset({"statement"}),
     # No class-level metrics: Pascal splits a class into an interface-only
     # ``declClass`` (method SIGNATURES only, via ``declProc`` -- no bodies)
     # and a fully separate implementation section where each qualified
@@ -804,7 +839,14 @@ _PASCAL = LanguageNodeMap(
     # every class. Same posture as Go (external-receiver methods): left
     # unmapped rather than emitting a misleading zero-method class.
     if_kinds=frozenset({"if", "ifElse"}),
-    block_kinds=frozenset({"block"}),
+    # ``block`` is the ``begin ... end`` container; ``statements`` is the
+    # grammar's OTHER flat statement-list node, used for a ``try``'s guarded
+    # body and each ``except``/``finally`` clause's body (``try`` has no
+    # ``begin``/``end`` of its own). Both are true statement-list containers,
+    # so both belong here -- without ``statements``, every assertion inside a
+    # ``try ... finally Free; end`` (a near-universal Delphi test idiom) was
+    # invisible to the assertion pass and to mock-setup counting.
+    block_kinds=frozenset({"block", "statements"}),
     # No dedicated ``return`` node -- ``Result := ...`` is an ordinary
     # assignment and a bare ``Exit`` / ``Exit(...)`` is an ordinary
     # identifier/call statement, so neither edges to the CFG exit specially
@@ -817,6 +859,17 @@ _PASCAL = LanguageNodeMap(
     break_kinds=frozenset(),
     continue_kinds=frozenset(),
     with_kinds=frozenset({"with"}),
+    # ``exprCall`` is the one call-expression node, covering both a bare
+    # ``Foo(x)`` (``entity`` is an ``identifier``) and a method call
+    # ``Obj.Foo(x)`` (``entity`` is an ``exprDot``). Feeds the perf pass
+    # (``perf/dialects/pascal.py``).
+    call_kinds=frozenset({"exprCall"}),
+    # A parenless call to a zero-argument procedure (``Q.Open;`` / ``Close;``)
+    # has no ``exprCall`` node at all -- it is a bare ``identifier`` or
+    # ``exprDot`` sitting directly under a ``statement`` wrapper (the same
+    # wrapper ``Break``/``Continue``/``Exit`` use, per the comment above).
+    # ``PascalPerfDialect.bare_statement_call`` tells the two apart.
+    bare_call_wrapper_kinds=frozenset({"statement"}),
 )
 
 

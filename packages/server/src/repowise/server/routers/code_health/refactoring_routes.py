@@ -71,7 +71,9 @@ async def health_work_queue(
     severity: str | None = Query(
         None, description="Exact severities, comma-separated. Overrides min_severity."
     ),
-    dimension: str | None = Query(None, description="defect | maintainability | performance"),
+    dimension: str | None = Query(
+        None, description="defect | maintainability | performance | advisory"
+    ),
     status: str = Query("open", description=STATUS_FILTER_DESCRIPTION),
     search: str | None = Query(None, description="Substring filter on file_path"),
     only_hotspots: bool = Query(False),
@@ -100,15 +102,19 @@ async def health_work_queue(
         raise HTTPException(status_code=404, detail="Repository not found")
 
     metrics = await crud.get_health_metrics(session, repo_id)
+    # As the findings list does, so a row's count and the list behind it agree:
+    # the zero-impact dimensions stay out of the ranking, and naming one thing
+    # -- here a marker -- takes the caller out of that ranking and returns it.
+    # The marker options come from the unfiltered breakdown, so without this
+    # every advisory and performance marker in that menu matches nothing.
     findings = await crud.get_health_findings(
         session,
         repo_id,
         dimension=dimension,
         status=parse_status_filter(status),
-        # As the findings list does, so a row's count and the list behind it
-        # agree. Performance carries zero health impact and ranks by cause on
-        # its own surface; ``dimension=performance`` still returns it.
-        exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
+        exclude_dimensions=(
+            tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if biomarker is None else None
+        ),
     )
     metrics, findings = narrow(scope, metrics, findings)
     metrics, findings, _unscored = project(counts, metrics, findings)
@@ -157,6 +163,14 @@ async def health_work_queue(
         nloc = m.nloc
         score = m.score
         primary = primary_finding(fs)
+        if primary is None:
+            # Every finding here is advisory, so no cause accuses this file and
+            # the general queue never reaches this: advisory is excluded from
+            # it. A caller who filtered to an advisory marker did reach it, and
+            # the marker they asked for is the honest lead for the row.
+            primary = max(
+                fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0))
+            )
         # Impact, and therefore the ranking, counts only findings still open:
         # ``score`` on this row was computed from open findings, and a file
         # whose findings were all dismissed is not work to rank near the top.

@@ -62,6 +62,10 @@ export interface SigmaCanvasProps {
   /** Suppress the camera easings. Honour `prefers-reduced-motion` here rather
    *  than reading the media query inside the renderer. */
   reducedMotion?: boolean | undefined;
+  /** Community names, drawn over each cluster in the Files overview. */
+  communityLabels?: Map<number, string> | undefined;
+  /** Communities the key has switched on (null/undefined = all). */
+  activeCommunities?: Set<number> | null | undefined;
 }
 
 export interface SigmaCanvasHandle {
@@ -99,6 +103,8 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       hiddenNodes: props.hiddenNodes,
       visibleEdgeTypes: props.visibleEdgeTypes,
       reducedMotion: props.reducedMotion,
+      communityLabels: props.communityLabels,
+      activeCommunities: props.activeCommunities,
     });
 
     const { isRunning: isLayoutRunning } = useFA2Layout({

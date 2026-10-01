@@ -146,6 +146,15 @@ Use `--no-prose` for CI pipelines that don't need model-written prose, just the 
     path: dead-code-report.json
 ```
 
+Documentation drift needs no index at all, so it can gate a pull request on its
+own. It fails the job when a document names a path, heading or build target the
+tree no longer has:
+
+```yaml
+- name: Check documentation drift
+  run: repowise doc-drift --check --format github
+```
+
 For full documentation generation in CI (with LLM):
 
 ```yaml

@@ -551,7 +551,7 @@ class _GenerationRun:
         the import graph) and reference only pages that will exist, so neither
         spawns new LLM work.
         """
-        from ..layers import compute_layer_order, infer_layer, layer_key
+        from ..layers import compute_layer_order, infer_layer, is_adjacent_layer, layer_key
         from ..tour import build_tour
 
         import_edges = self._file_import_edges()
@@ -608,7 +608,12 @@ class _GenerationRun:
             file_layers[path] = layer_id
             display_of.setdefault(layer_id, display)
         self.layer_order_ids = compute_layer_order(file_layers, import_edges)
-        self.layer_order = [display_of.get(lid, lid) for lid in self.layer_order_ids]
+        # Tests keep their place in the tree but are not a layer of the stack.
+        self.layer_order = [
+            display_of.get(lid, lid)
+            for lid in self.layer_order_ids
+            if not is_adjacent_layer(lid)
+        ]
 
     # ------------------------------------------------------------------
     # Level runner
@@ -1051,6 +1056,7 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
         target_path=page.target_path,
         summary=page.summary,
         content=page.content,
+        page_metadata=page.metadata,
     )
 
 

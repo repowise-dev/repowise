@@ -48,7 +48,7 @@ All of the following ship in `pip install repowise` today, free for internal use
   commits, contributor profiles, module health), Documentation (a wiki page per
   module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  (51 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
@@ -80,11 +80,12 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
 - **Test intelligence, from a coverage report and from the call graph.** Ingests
-  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
-  service structurally cannot: answers *which tests reach this file* and *which
-  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
-  precision** measured against a real `coverage run --contexts=test`. Measured and
-  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
+  then does the half a coverage service structurally cannot: answers *which
+  tests reach this file* and *which tests does this diff exercise* **with no
+  report at all**, at **95.7% and 97.5% precision** measured against a real
+  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
@@ -168,6 +169,7 @@ the items that matter most to you can be prioritized.
 | Auto-generated CLAUDE.md | ✅ | ✅ |
 | Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
+| Local CI security gate on a change (`repowise security check`, SARIF output, committed baseline) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |

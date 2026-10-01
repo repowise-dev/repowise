@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.coverage_gap import CoverageGapDetector
 from repowise.core.analysis.health.biomarkers.coverage_gradient import (
@@ -9,6 +11,14 @@ from repowise.core.analysis.health.biomarkers.coverage_gradient import (
 )
 from repowise.core.analysis.health.biomarkers.untested_hotspot import (
     UntestedHotspotDetector,
+)
+from repowise.core.analysis.health.complexity.models import FunctionComplexity
+from repowise.core.analysis.health.coverage import parse_repowise_json
+
+_ONE_FUNCTION = (
+    FunctionComplexity(
+        name="run", start_line=1, end_line=5, ccn=1, max_nesting=0, cognitive=0, nloc=4
+    ),
 )
 
 
@@ -23,6 +33,7 @@ def _ctx(
     branch_cov: float | None = None,
     covered_lines: set[int] | None = None,
     total_lines: int = 0,
+    functions: tuple[FunctionComplexity, ...] = _ONE_FUNCTION,
 ) -> FileContext:
     return FileContext(
         file_path=path,
@@ -37,6 +48,7 @@ def _ctx(
         branch_coverage_pct=branch_cov,
         covered_lines=covered_lines or set(),
         total_coverable_lines=total_lines,
+        all_functions=functions,
     )
 
 
@@ -74,7 +86,7 @@ def test_untested_hotspot_silent_when_well_covered() -> None:
 
 def test_untested_hotspot_falls_back_when_no_coverage_data() -> None:
     ctx = _ctx(
-        git_meta={"commit_count_90d": 12},
+        git_meta={"commit_count_90d": 12, "is_hotspot": True},
         dependents=6,
         has_test_file=False,
     )
@@ -83,11 +95,44 @@ def test_untested_hotspot_falls_back_when_no_coverage_data() -> None:
     assert "no coverage data" in results[0].reason
 
 
+def test_untested_hotspot_needs_the_repo_hotspot_verdict() -> None:
+    """A raw commit count is a different bar on a busy repository than on a
+    quiet one, so the gate is is_hotspot, which is already repo-relative."""
+    ctx = _ctx(
+        git_meta={"commit_count_90d": 12, "temporal_hotspot_score": 4.0},
+        dependents=6,
+        has_test_file=False,
+    )
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
 def test_untested_hotspot_skips_when_paired_test_present() -> None:
     ctx = _ctx(
-        git_meta={"commit_count_90d": 12},
+        git_meta={"commit_count_90d": 12, "is_hotspot": True},
         dependents=6,
         has_test_file=True,
+    )
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
+@pytest.mark.parametrize(
+    ("path", "functions"),
+    [
+        # Types only: interfaces and aliases, no function to call.
+        ("src/types/router.types.ts", ()),
+        ("src/settings.py", ()),
+        # Build/tool configuration and declaration files, even with a function in them.
+        ("vite.config.ts", _ONE_FUNCTION),
+        ("src/api.d.ts", _ONE_FUNCTION),
+        ("config/app.yaml", ()),
+    ],
+)
+def test_untested_hotspot_skips_files_with_nothing_to_test(path, functions) -> None:
+    ctx = _ctx(
+        path=path,
+        git_meta={"is_hotspot": True},
+        dependents=10,
+        functions=functions,
     )
     assert UntestedHotspotDetector().detect(ctx) == []
 
@@ -128,6 +173,41 @@ def test_coverage_gap_skips_when_no_coverage_data() -> None:
 
 def test_coverage_gap_skips_well_covered() -> None:
     ctx = _ctx(line_cov=85.0, total_lines=200, covered_lines=set(range(1, 171)))
+    assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gap_counts_from_the_percentage_when_no_hit_set_is_reported() -> None:
+    # A parser may pin a file with a percentage and a total and no per-line set.
+    # Reading the absent set as "nothing is covered" made 20 real uncovered
+    # lines report as 40/40 and clear the 25-line gate.
+    ctx = _ctx(line_cov=50.0, total_lines=40)
+    assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gap_severity_follows_the_percentage_count_not_the_total() -> None:
+    ctx = _ctx(line_cov=25.0, total_lines=120)
+    results = CoverageGapDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["uncovered_lines"] == 90
+    assert results[0].severity == "medium"
+
+
+def test_coverage_gap_ranks_the_hit_set_ahead_of_the_percentage() -> None:
+    # The set is exact evidence; the percentage is the fallback, and rounded.
+    ctx = _ctx(line_cov=40.0, total_lines=100, covered_lines=set(range(1, 62)))
+    results = CoverageGapDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["uncovered_lines"] == 39
+
+
+def test_coverage_gap_reads_a_repowise_json_entry_that_omits_the_hit_set() -> None:
+    report = parse_repowise_json(
+        '{"format": "repowise-coverage-v1", "files": {"src/example.py": '
+        '{"line_coverage_pct": 50.0, "total_coverable_lines": 40}}}'
+    )
+    fc = report.files[0]
+    assert fc.covered_lines == []
+    ctx = _ctx(line_cov=fc.line_coverage_pct, total_lines=fc.total_coverable_lines)
     assert CoverageGapDetector().detect(ctx) == []
 
 

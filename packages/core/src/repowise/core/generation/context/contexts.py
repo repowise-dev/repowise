@@ -120,6 +120,16 @@ class ModulePageContext:
     is_rollup: bool = False
     # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
     child_pages: list[dict] = field(default_factory=list)
+    # Sibling packages a package roll-up covers: [{"path", "files"}].
+    packages: list[dict] = field(default_factory=list)
+    # What the page's packages publish, computed from manifests and re-exports:
+    # [{"name", "kind", "file", "signature", "doc", "alias_of"}]; past the budget, names only.
+    public_api: list[dict] = field(default_factory=list)
+    # Public API entries past the hard cap, counted, not listed.
+    public_api_omitted: int = 0
+    # Rendered source excerpts, then one-line signatures for files with no excerpt.
+    code_excerpts: str = ""
+    declared_files: list[str] = field(default_factory=list)
     # Git-derived subsystem health, aggregated over the page's member files.
     # All degrade to zero/empty when no git metadata is available, so the
     # template renders nothing rather than a wrong number.

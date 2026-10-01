@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
+from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
 from repowise.core.persistence import crud
 
@@ -158,7 +159,9 @@ class HealthMapService:
 
         active_shown = [path for path in active if admit(path)]
 
-        performance_eligible = [r.file_path for r in rollups if r.file_path in eligible_paths]
+        # A file whose only causes are ``expected`` has nothing to do; it earns no priority slot.
+        open_rollups = [r for r in rollups if r.opportunities > r.expected]
+        performance_eligible = [r.file_path for r in open_rollups if r.file_path in eligible_paths]
         performance_shown = sum(1 for path in performance_eligible if admit(path))
 
         nloc_before = len(chosen)
@@ -178,12 +181,12 @@ class HealthMapService:
         # on a file with no lines can never be drawn at any cap, and counting
         # it here would promise a recovery that pinning the path cannot give.
         undrawn_perf = [
-            r for r in rollups if r.file_path in eligible_paths and r.file_path not in taken
+            r for r in open_rollups if r.file_path in eligible_paths and r.file_path not in taken
         ]
         omitted = {
             "files": len(eligible) - len(chosen),
             "performance_files": len(undrawn_perf),
-            "opportunities": sum(r.opportunities for r in undrawn_perf),
+            "opportunities": sum(r.opportunities - r.expected for r in undrawn_perf),
             "observations": sum(r.observations for r in undrawn_perf),
         }
 
@@ -252,7 +255,8 @@ class HealthMapService:
             "has_test_file": metric.has_test_file,
             "maintainability_score": metric.maintainability_score,
             "performance_analyzed": languages.get(metric.file_path) in perf_languages,
-            "performance_opportunities": rollup.opportunities if rollup else 0,
+            # What the default queue shows: ``expected`` causes have nothing to do.
+            "performance_opportunities": rollup.opportunities - rollup.expected if rollup else 0,
             "performance_observations": rollup.observations if rollup else 0,
         }
         actionability = _leading_actionability(rollup)
@@ -322,6 +326,7 @@ class HealthMapService:
                 "plan_ready": sum(r.plan_ready for r in rollups),
                 "advisory": sum(r.advisory for r in rollups),
                 "investigate": sum(r.investigate for r in rollups),
+                "expected": sum(r.expected for r in rollups),
             },
             "model_version": getattr(summary, "performance_model_version", None),
             "analyzed_commit": getattr(summary, "analyzed_commit", None),
@@ -334,10 +339,7 @@ def _leading_actionability(rollup: Any) -> str | None:
     Best rather than most common: a file with one stored plan and nine
     investigations is a file with a stored plan.
     """
-    if rollup is None or rollup.opportunities == 0:
+    if rollup is None:
         return None
-    if rollup.plan_ready:
-        return "plan_ready"
-    if rollup.advisory:
-        return "advisory"
-    return "investigate"
+    # ``expected`` is never a lead: it has nothing to do.
+    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and getattr(rollup, s)), None)

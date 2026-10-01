@@ -49,6 +49,50 @@ those patterns apply automatically and are combined with any command-line
 flags. For example, `tests/` excludes that directory recursively, while
 `test_*.py` excludes matching test filenames anywhere in the repository.
 
+## In CI
+
+`--fail-above-percentile P` turns the command into a gate on
+`risk_percentile`: it ranks the diff-shape score against recent commits, and
+the absolute 0-10 value never decides.
+
+```bash
+repowise risk --fail-above-percentile 95 --format github
+repowise risk origin/main...HEAD --fail-above-percentile 95 --format markdown
+```
+
+With the flag, or with `--format markdown` or `github`, and no revspec, the
+subject is the CI change: the pull request's target branch (from the CI's
+variables, else the remote's default branch) `...HEAD`. A CI checkout of a
+pull request is a merge commit, so `HEAD` alone would be the wrong change.
+Otherwise the default stays "uncommitted work, else `HEAD`".
+
+Exit codes are the shared CI ones: `0` at or below the percentile, `1` above
+it, `2` when the gate cannot evaluate. A change with no percentile cannot be
+gated: `--baseline 0` turns ranking off, and a shallow clone with fewer than 8
+recent commits has nothing to rank against, so fetch full history. At a
+percentile P roughly (100 - P)% of changes fail by construction; a failure asks
+for a split or a second reviewer, not a code fix.
+
+The table prints the verdict under the review priority. `json` adds
+`"gate": {"fail_above_percentile": P, "percentile": <unrounded>, "status":
+"pass" | "fail"}`; `percentile` is what the gate compared, since
+`risk_percentile` is rounded. `markdown` leads with the verdict ("**Above the
+95th percentile gate**: larger and more spread out than 97% of recent
+commits"), then the range, the sample, the lines, files and directories, the
+fix-history rank, and the files with bug-fix history. `github` writes an
+`::error::` when the gate fails (a `::notice::` otherwise) plus the markdown in
+the job summary. `markdown` and `github` are not for `--target`, which stays
+`table` or `json`.
+
+A revspec git cannot read (an unknown revision, not a repository, a missing
+merge-base) exits `2` on every revspec run, gated or not. It used to exit `1`,
+which a pipeline would have read as a failed gate.
+
+The GitHub Action runs it as the `risk` check (input
+`risk-fail-above-percentile`; empty reports the rank without gating), and the
+GitLab template as the `repowise-risk` job when
+`REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set. See [CI](../start/CI.md).
+
 ## Fix history: where the change lands
 
 The first block in the result is `fix_history`, and it is the one to act on. It
@@ -180,7 +224,10 @@ Read the result in this order:
 - **`fix_history`**: uncalibrated historical evidence about where the change
   lands, reported separately rather than folded into a probability.
 - **`score`** (0–10 normalized points): supporting diff size and spread,
-  offline-calibrated and corpus-anchored to a single commit.
+  offline-calibrated and corpus-anchored to a single commit. It ranks 0.99
+  against lines added on every repository measured, so `get_change_risk` keeps
+  it behind `include=["diagnostics"]` rather than on the wire; the CLI and the
+  REST range endpoint still report it.
 - **`fallback_band`**: the heuristic-thresholded absolute `low` / `moderate` /
   `high` model-score band. Present
   *only* when there was no baseline to rank against (a shallow repo, or
@@ -300,7 +347,7 @@ no report.
 It surfaces in two places. `repowise risk` prints the groups under the driver
 table, naming each group's files, its bridging files, and the first ten ungrouped
 paths; `--format json` carries the same object under `independent_changes`. In
-`get_change_risk` it is `change_shape.independent_changes`, which needs an index
+`get_change_risk` it is `independent_changes`, which needs an index
 and is absent without one.
 
 ## Calibration & accuracy
@@ -377,7 +424,9 @@ and all three bands are occupied. The corpus lives in
 | `get_risk` `health_score` | Indexed code-health model | health points, 0-10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
 | `structural_impact_score` | PR structural formula above | normalized points, 0-10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
 | `direct_risks[].structural_score` | `pagerank * (1 + temporal_hotspot)` | raw pagerank-weighted-hotspot value, unbounded | Uncalibrated within-change structural weight. `risk_score` is an exact deprecated alias |
-| `direct_risks[].temporal_hotspot` | Exponentially-decayed sum of per-commit churn (halflife 180 d); each commit contributes up to 3.0 | raw decayed churn, unbounded (observed max ~23); use `churn_percentile` for a normalised 0–1 rank | Intermediate input to `structural_score`; not a ratio|
+| `direct_risks[].temporal_hotspot` | Exponentially-decayed sum of per-commit churn (halflife 180 d); each commit contributes up to 3.0 | raw decayed churn, unbounded (observed max 42.6 on this repository); use `churn_percentile` for a normalised 0–1 rank | Intermediate input to `structural_score`; not a ratio|
+| `direct_risks[].churn_percentile` | Rank of `temporal_hotspot` among the repository's files | percentile rank, 0–1 | Comparable across repositories as a rank, not as activity; reported beside `structural_score`, never folded into it |
+| `direct_risks[].is_hotspot` | The index's hotspot verdict: top-quartile churn AND its absolute activity floors | boolean | Read this rather than re-deriving a hotspot from `churn_percentile`, which omits the floors |
 | `cochange_warnings[].score` | Number of historical commits in which the pair co-changed | raw commit count, 0+ | Historical evidence only; cannot become structural or runtime-breakage evidence |
 | workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0-1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
 | dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0-100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |

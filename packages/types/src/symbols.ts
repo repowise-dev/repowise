@@ -208,7 +208,7 @@ export interface SymbolBodyDeadFinding {
   id: string;
   kind: string;
   reason: string;
-  lines: number;
+  lines: number | null;
   safe_to_delete: boolean;
 }
 

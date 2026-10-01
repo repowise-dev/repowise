@@ -23,9 +23,9 @@ from repowise.core.ingestion.framework_routes import flask_blueprints, flask_rou
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
 from repowise.core.workspace.extractors.http.flask import FlaskDialect
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 APP_PY = """\
 from flask import Flask

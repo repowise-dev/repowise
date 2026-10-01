@@ -18,7 +18,7 @@ def _ctx(fns: list[FunctionComplexity]) -> FileContext:
         nloc=sum(f.nloc for f in fns),
         has_test_file=False,
         module=None,
-        function_metrics={f.name: f for f in fns},
+        all_functions=tuple(fns),
         git_meta={},
         dependents_count=0,
         pagerank_score=0.0,

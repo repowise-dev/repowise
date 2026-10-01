@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "../lib/confidence";
 import { edgeColorsForTheme } from "./sigma/constants";
-import { useCommunityFamilies } from "../shared/use-theme-tokens";
+import { useGraphCommunityFamilies } from "./community-colors";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
 /** Community rows shown before the key folds into a "+N" line. */
@@ -13,6 +13,10 @@ const COMMUNITY_ROWS = 8;
 
 /**
  * Edge kinds, in the order they are keyed.
+ *
+ * `dynamic` is keyed "Co-change": it is the `co_changes` edge, two files that
+ * change together in git history, not a runtime dependency. Keyed "Dynamic",
+ * it read as dynamic imports, which is a different claim.
  *
  * There is no "Imports" row any more. `classifyEdge` returned that kind only
  * for an edge with an endpoint missing from the graph, and those are dropped
@@ -23,7 +27,7 @@ const COMMUNITY_ROWS = 8;
 const EDGE_KINDS = [
   { type: "crossCommunity", label: "Cross-community" },
   { type: "internal", label: "Internal" },
-  { type: "dynamic", label: "Dynamic" },
+  { type: "dynamic", label: "Co-change" },
   { type: "lowConfidence", label: "Low confidence" },
 ] as const;
 
@@ -31,9 +35,15 @@ const EDGE_KINDS = [
 const SCOPED_EDGE_KINDS = [
   { type: "internal", label: "Within this group" },
   { type: "crossCommunity", label: "Leaving this group" },
-  { type: "dynamic", label: "Dynamic" },
+  { type: "dynamic", label: "Co-change" },
   { type: "lowConfidence", label: "Low confidence" },
 ] as const;
+
+/** The overview draws cross-community edges as bands between clusters. */
+const OVERVIEW_EDGE_LABELS: Partial<Record<string, string>> = {
+  crossCommunity: "Between communities",
+  internal: "Within a community",
+};
 
 const LANGUAGE_LEGEND = [
   { lang: "python", color: LANGUAGE_COLORS.python, label: "Python" },
@@ -155,6 +165,42 @@ interface GraphLegendProps {
    *  summary list, which on a capped file graph names groups no node here
    *  belongs to; keying those offered a toggle that could not do anything. */
   drawnCommunityIds?: Set<number> | undefined;
+  /**
+   * The whole-repo Files overview: what it leaves out, and the direction key
+   * for a focused file's edges. Its presence selects that reading.
+   */
+  overview?: OverviewLegend | undefined;
+  /** Rendered at the row's far end in every reading (the shortcuts button). */
+  trailing?: ReactNode | undefined;
+}
+
+export interface OverviewLegend {
+  /** Third-party nodes not drawn (0 while they are shown). */
+  hiddenExternal: number;
+  /** Third-party nodes drawn, counted apart from the repo's own files. */
+  shownExternal: number;
+  /** Files with no dependency edge to anything drawn. */
+  hiddenUnlinked: number;
+  /** Community pairs whose link is below the band floor, so not drawn. */
+  omittedLinks: number;
+  /** Dependency edges drawn (co-change and low confidence never count). */
+  dependencies: number;
+  showExternal: boolean;
+  onShowExternalChange: (next: boolean) => void;
+}
+
+/** Kinds the overview reveals only on a hovered or selected file. */
+const FOCUS_ONLY_KINDS = new Set(["dynamic", "lowConfidence"]);
+
+/** A short stroke, for keying a line rather than a node. */
+function LineSwatch({ color, dashed }: { color: string; dashed?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-0 w-3.5 shrink-0 border-t-2"
+      style={{ borderColor: color, borderStyle: dashed ? "dashed" : "solid" }}
+    />
+  );
 }
 
 export const GraphLegend = memo(function GraphLegend({
@@ -179,11 +225,13 @@ export const GraphLegend = memo(function GraphLegend({
   visibleEdgeCount,
   nodeFilter,
   drawnCommunityIds,
+  overview,
+  trailing,
 }: GraphLegendProps) {
   // Open by default: every node is painted from this key, so a collapsed one
   // ships a field of coloured circles with no way to read them.
   const [expanded, setExpanded] = useState(true);
-  const communityFamily = useCommunityFamilies();
+  const communityFamily = useGraphCommunityFamilies();
   const edgeColors = edgeColorsForTheme(graphTheme);
   const isConstellation = viewMode === "architecture";
 
@@ -244,6 +292,7 @@ export const GraphLegend = memo(function GraphLegend({
             )}
           </div>
         )}
+        {trailing && <span className="ml-auto">{trailing}</span>}
       </div>
     );
   }
@@ -332,19 +381,68 @@ export const GraphLegend = memo(function GraphLegend({
             )}
           </div>
         )}
+        {trailing && <span className="ml-auto">{trailing}</span>}
       </div>
     );
   }
 
   return (
     <div className={shellClass}>
-      <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
+      <button
+        onClick={() => setExpanded((s) => !s)}
+        className={headerClass}
+        aria-expanded={expanded}
+      >
         <span className={countClass}>
-          {nodeCount} nodes &middot; {drawnEdgeCount} edges
+          {overview
+            ? [
+                `${(nodeCount - overview.shownExternal).toLocaleString()} files`,
+                overview.shownExternal > 0
+                  ? `${overview.shownExternal.toLocaleString()} third-party`
+                  : null,
+                `${overview.dependencies.toLocaleString()} dependencies`,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : `${nodeCount} nodes · ${drawnEdgeCount} edges`}
         </span>
         <Chevron expanded={expanded} />
       </button>
       {nodeFilter}
+      {overview && (
+        // What the picture leaves out, beside the count it changes. Rule:
+        // state what is not drawn.
+        <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-secondary)]">
+          {(overview.hiddenExternal > 0 || overview.showExternal) && (
+            <span className="inline-flex items-center gap-1.5">
+              {overview.showExternal
+                ? "Third-party modules shown"
+                : `${overview.hiddenExternal.toLocaleString()} third-party modules hidden`}
+              <button
+                type="button"
+                onClick={() => overview.onShowExternalChange(!overview.showExternal)}
+                aria-pressed={overview.showExternal}
+                aria-label={
+                  overview.showExternal ? "Hide third-party modules" : "Show third-party modules"
+                }
+                className="rounded px-1 py-0.5 font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              >
+                {overview.showExternal ? "Hide" : "Show"}
+              </button>
+            </span>
+          )}
+          {overview.hiddenUnlinked > 0 && (
+            <span title="Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.">
+              {overview.hiddenUnlinked.toLocaleString()} unlinked files not drawn
+            </span>
+          )}
+          {overview.omittedLinks > 0 && (
+            <span title="Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.">
+              {overview.omittedLinks.toLocaleString()} weaker community links not drawn
+            </span>
+          )}
+        </span>
+      )}
 
       {expanded && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -435,27 +533,58 @@ export const GraphLegend = memo(function GraphLegend({
             );
           })()}
 
-          {onEdgeTypeToggle && visibleEdgeTypes && (
-            <>
-              <p className={groupClass}>Edges</p>
-              {EDGE_KINDS.map((et) => {
-                const checked = visibleEdgeTypes.has(et.type);
-                return (
-                  <div key={et.type} className={rowClass}>
-                    <SwatchToggle
-                      color={edgeColors[et.type]}
-                      checked={checked}
-                      label={`Toggle ${et.label} edges`}
-                      onToggle={() => onEdgeTypeToggle(et.type)}
-                    />
-                    <span className={`truncate ${checked ? "" : "opacity-45"}`}>
-                      {et.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </>
-          )}
+          {onEdgeTypeToggle && visibleEdgeTypes && (() => {
+            const toggle = (et: (typeof EDGE_KINDS)[number]) => {
+              const checked = visibleEdgeTypes.has(et.type);
+              const label = (overview && OVERVIEW_EDGE_LABELS[et.type]) || et.label;
+              return (
+                <div key={et.type} className={rowClass}>
+                  <SwatchToggle
+                    // The overview draws these in community hues (bands,
+                    // cluster texture) or in the direction hues on a focused
+                    // file, never in the kind colours, so it keys none of them.
+                    color={overview ? "var(--color-text-secondary)" : edgeColors[et.type]}
+                    checked={checked}
+                    label={`Toggle ${label} edges`}
+                    onToggle={() => onEdgeTypeToggle(et.type)}
+                  />
+                  <span className={`truncate ${checked ? "" : "opacity-45"}`}>
+                    {label}
+                  </span>
+                </div>
+              );
+            };
+            if (!overview) {
+              return (
+                <>
+                  <p className={groupClass}>Edges</p>
+                  {EDGE_KINDS.map(toggle)}
+                </>
+              );
+            }
+            // The overview draws co-change and low-confidence edges only on a
+            // focused file, so their toggles sit under that heading rather
+            // than beside kinds that change the picture at rest.
+            return (
+              <>
+                <p className={groupClass}>Edges</p>
+                {EDGE_KINDS.filter((et) => !FOCUS_ONLY_KINDS.has(et.type)).map(toggle)}
+                {/* A focused file's edges carry direction, in two hues that
+                    must be named: colour alone cannot say which way a
+                    dependency points. */}
+                <p className={groupClass}>Hover or select a file</p>
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
+                  <LineSwatch color="var(--color-accent-primary)" />
+                  imports
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
+                  <LineSwatch color="var(--color-accent-secondary)" />
+                  imported by
+                </span>
+                {EDGE_KINDS.filter((et) => FOCUS_ONLY_KINDS.has(et.type)).map(toggle)}
+              </>
+            );
+          })()}
 
           {viewMode !== "full" && (
             <p className="text-[10px] text-[var(--color-text-tertiary)]">
@@ -466,6 +595,7 @@ export const GraphLegend = memo(function GraphLegend({
           )}
         </div>
       )}
+      {trailing && <span className="ml-auto">{trailing}</span>}
     </div>
   );
 });

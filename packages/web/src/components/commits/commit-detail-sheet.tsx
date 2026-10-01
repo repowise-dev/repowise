@@ -13,6 +13,7 @@ import {
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
 import { AiPromptButton, AiPromptModal, buildCommitAiPrompt } from "@repowise-dev/ui/health";
 import { getCommit } from "@/lib/api/git";
+import { getRiskRange } from "@/lib/api/risk";
 
 /**
  * The commit detail drawer, driven entirely by `?commit=`.
@@ -22,16 +23,7 @@ import { getCommit } from "@/lib/api/git";
  * also what makes the deep link work — entity links from Overview and the file
  * pages land here with the sheet already open, and it survives a refresh.
  */
-export function CommitDetailSheet({
-  repoId,
-  reviewCut,
-}: {
-  repoId: string;
-  /** `CommitStats.high_cut` — the raw score at this repo's review line. The
-   *  page already has it, and without it the card can only state a commit's
-   *  score with nothing to measure it against. */
-  reviewCut?: number | null | undefined;
-}) {
+export function CommitDetailSheet({ repoId }: { repoId: string }) {
   const [selectedSha, setSelectedSha] = useQueryState("commit");
   const [promptOpen, setPromptOpen] = useState(false);
 
@@ -39,6 +31,18 @@ export function CommitDetailSheet({
     selectedSha ? `commit:${repoId}:${selectedSha}` : null,
     () => getCommit(repoId, selectedSha as string),
     { revalidateOnFocus: false },
+  );
+
+  // Only for the fix-density percentile, which needs live scoring. The file
+  // list itself is stored, so a server with no checkout still renders it.
+  const { data: range } = useSWR(
+    selectedSha ? `commit-fixes:${repoId}:${selectedSha}` : null,
+    () =>
+      getRiskRange(repoId, {
+        base: `${selectedSha}^`,
+        head: selectedSha as string,
+      }),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
   return (
@@ -49,7 +53,7 @@ export function CommitDetailSheet({
       >
         <SheetContent side="right" className="w-[440px] max-w-[92vw] sm:w-[560px]">
           <SheetHeader>
-            <SheetTitle>Commit change-risk</SheetTitle>
+            <SheetTitle>Review this commit</SheetTitle>
           </SheetHeader>
           <div className="flex-1 overflow-y-auto px-4 pb-6">
             {isLoading || !detail ? (
@@ -65,7 +69,14 @@ export function CommitDetailSheet({
                     onClick={() => setPromptOpen(true)}
                   />
                 </div>
-                <CommitDetailCard commit={detail} reviewCut={reviewCut} />
+                <CommitDetailCard
+                  commit={detail}
+                  fixPercentile={
+                    range?.fix_history?.available
+                      ? range.fix_history.percentile
+                      : null
+                  }
+                />
               </>
             )}
           </div>

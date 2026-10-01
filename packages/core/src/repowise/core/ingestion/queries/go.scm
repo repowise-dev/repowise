@@ -104,6 +104,42 @@
   )
 )
 
+; Function value in composite literal (keyed map/struct or slice/array element):
+; template.FuncMap{"greet": greet, "handler": pkg.Handler}, Config{fn: greet}, []func(){greet}
+(keyed_element
+  value: (literal_element
+    (identifier) @reference.name
+  )
+)
+
+(keyed_element
+  value: (literal_element
+    (selector_expression
+      operand: (_) @reference.receiver
+      field: (field_identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (selector_expression
+        operand: (_) @reference.receiver
+        field: (field_identifier) @reference.name
+      )
+    )
+  )
+)
+
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------

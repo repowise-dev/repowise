@@ -190,3 +190,12 @@ def test_supplied_props_survives_rehydration():
     for e in edges[1:]:
         assert "supplied_props" not in graph[e["source_node_id"]][e["target_node_id"]]
 
+
+
+def test_reachability_root_survives_rehydration():
+    original = _build_sample()
+    original.graph().nodes["c.py"]["is_reachability_root"] = True
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert hydrated.graph().nodes["c.py"]["is_reachability_root"] is True
+    assert not hydrated.graph().nodes["a.py"].get("is_reachability_root")

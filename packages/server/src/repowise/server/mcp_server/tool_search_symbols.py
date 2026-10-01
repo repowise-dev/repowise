@@ -33,6 +33,8 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
+from repowise.server.mcp_server._query_shape import _name_lookup_keys, _qual_norm
+from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
 # caps how many rows we pull. Generous enough that the true top-`limit` is
@@ -62,21 +64,13 @@ def _tokens(text: str | None) -> set[str]:
     return out
 
 
-def _qual_norm(name: str | None) -> str:
-    """Normalize a qualified name's separators (``::``/``/`` -> ``.``), lowered."""
-    s = name or ""
-    for sep in ("::", "/"):
-        s = s.replace(sep, ".")
-    return s.lower()
-
-
 def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:
     """Rank a candidate symbol against the query (higher = better).
 
     Tiers, in priority order: exact name / qualified-name match, the query's
     leaf token naming the symbol, query-token coverage, substring fallback,
-    then graph-centrality and entry-point boosts. Tests are penalised so a
-    non-test definition ranks above its test unless the caller asked for tests.
+    then graph-centrality and entry-point boosts. Non-exact tests are penalised
+    so a non-test definition ranks above its test unless the caller asked for tests.
     """
     name = (row.name or "").lower()
     qn = _qual_norm(row.qualified_name)
@@ -84,7 +78,8 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
 
     score = 0.0
     # Exact match on the bare name or the (separator-normalised) qualified name.
-    if qnorm and qnorm in (name, qn):
+    exact = bool(qnorm) and qnorm in (name, qn)
+    if exact:
         score += 100.0
     # The query explicitly names the leaf identifier (e.g. "...index_repo").
     if name and name in qtokens:
@@ -101,7 +96,8 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
 
     # Graph signals — bounded so a high-pagerank file can't outrank a real
     # name match. pagerank/betweenness are small floats; cap their reach.
-    if gnode is not None:
+    # Exact matches tie here and `symbol_rank_key` orders them instead.
+    if gnode is not None and not exact:
         score += min(gnode.pagerank or 0.0, 0.1) * 50.0
         score += min(gnode.betweenness or 0.0, 0.1) * 20.0
         if gnode.is_entry_point:
@@ -111,8 +107,11 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
     # the query was after, so it keeps its score. The flag is read first for the
     # same reason everywhere else does, but note it decides nothing here today —
     # it is stamped on file nodes and these are symbol nodes, so the path rules
-    # are what answer in practice.
-    if (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language):
+    # are what answer in practice. Exact matches skip it: the shared key ranks
+    # kind before test path for them.
+    if not exact and (
+        (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language)
+    ):
         score -= 5.0
     return score
 
@@ -187,6 +186,28 @@ async def _tombstoned_paths(session, repo_id: str, paths: set[str]) -> set[str]:
     return {row[0] for row in res.all()}
 
 
+async def indexed_names(contexts: list, query: str) -> set[str]:
+    """The indexed symbol names ``query`` could name, each also lowered: the
+    ``names`` container ``_embedded_identifiers`` validates against."""
+    keys = _name_lookup_keys(query)
+    names: set[str] = set()
+    if not keys:
+        return names
+    for ctx in contexts:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
+            res = await session.execute(
+                select(WikiSymbol.name)
+                .distinct()
+                .where(
+                    WikiSymbol.repository_id == repository.id,
+                    func.lower(WikiSymbol.name).in_(sorted(keys)),
+                )
+            )
+            names.update(name for (name,) in res.all() if name)
+    return names | {name.lower() for name in names}
+
+
 async def search_symbols_single(
     ctx: Any,
     query: str,
@@ -221,12 +242,12 @@ async def search_symbols_single(
         if not rows:
             return []
 
-        # One batched fetch of graph nodes for the candidate symbol_ids.
-        sym_ids = [r.symbol_id for r in rows]
+        # One batched fetch of graph nodes: the symbols and their files.
+        node_ids = {r.symbol_id for r in rows} | {r.file_path for r in rows}
         gres = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repository.id,
-                GraphNode.node_id.in_(sym_ids),
+                GraphNode.node_id.in_(node_ids),
             )
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
@@ -248,8 +269,25 @@ async def search_symbols_single(
             continue
         scored.append((_score_symbol(row, g, qtokens, qnorm), row))
 
-    # Highest score first; deterministic tiebreak on symbol_id.
-    scored.sort(key=lambda pair: (-pair[0], pair[1].symbol_id or ""))
+    def _rank(pair: tuple[float, WikiSymbol]) -> tuple:
+        score, row = pair
+        file_node = gmap.get(row.file_path)
+        return (
+            -score,
+            symbol_rank_key(
+                query,
+                name=row.name,
+                qualified_name=row.qualified_name,
+                kind=row.kind,
+                path=row.file_path,
+                language=row.language,
+                centrality=(file_node.pagerank or 0.0) if file_node is not None else 0.0,
+            ),
+            row.symbol_id or "",
+        )
+
+    # Highest score first; equal scores (every exact match) by the shared key.
+    scored.sort(key=_rank)
     return [_symbol_result(row, score) for score, row in scored[:limit]]
 
 

@@ -18,8 +18,24 @@ class FakeSigma {
     lastSigmaInstance = this as unknown as Record<string, unknown>;
   }
   getCamera() {
-    return { animate: cameraAnimate, animatedReset: vi.fn(), animatedZoom: vi.fn(), animatedUnzoom: vi.fn() };
+    return {
+      animate: cameraAnimate,
+      animatedReset: vi.fn(),
+      animatedZoom: vi.fn(),
+      animatedUnzoom: vi.fn(),
+      on: vi.fn(),
+    };
   }
+  // The Files overview's canvas layers (attached for every graph, blank
+  // unless the graph carries overview meta).
+  createCanvas() {
+    return document.createElement("canvas");
+  }
+  killLayer() {}
+  getDimensions() {
+    return { width: 800, height: 600 };
+  }
+  once() {}
   getNodeDisplayData(id: string) {
     return getNodeDisplayData(id);
   }

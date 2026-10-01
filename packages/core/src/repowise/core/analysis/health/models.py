@@ -59,19 +59,41 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     ``coverage_gradient``.
     """
     from .biomarkers.registry import continuous_biomarkers
-    from .scoring import is_advisory
+    from .governance import GOVERNANCE_BIOMARKERS
+    from .rows import field as row_field
+    from .scoring import HISTORY_CATEGORY, biomarker_category, is_advisory
 
     if not findings:
         return None
     # An advisory finding describes; it never accuses. Leaving it eligible made
     # it the stated "one reason" for any file whose only open finding was
     # advisory - printed beside a total deduction of zero.
-    candidates = [item for item in findings if not is_advisory(item.biomarker_type)]
+    candidates = [
+        item for item in findings if not is_advisory(row_field(item, "biomarker_type"))
+    ]
     if not candidates:
         return None
+    # A history marker is measured from git, so it names a file's context, not
+    # something an edit changes. When the file also carries a code-shape
+    # finding, that one leads: the Findings list put `change_entropy` at the
+    # head of four of its top five rows and asked an agent to fix it.
+    # Governance markers share the category but are work: writing or updating
+    # a decision clears them, so they stay eligible to lead.
+    shaped = [
+        item
+        for item in candidates
+        if biomarker_category(row_field(item, "biomarker_type")) != HISTORY_CATEGORY
+        or row_field(item, "biomarker_type") in GOVERNANCE_BIOMARKERS
+    ]
+    candidates = shaped or candidates
     continuous = continuous_biomarkers()
-    discrete = [item for item in candidates if item.biomarker_type not in continuous]
-    return max(discrete or candidates, key=lambda item: float(item.health_impact or 0.0))
+    discrete = [
+        item for item in candidates if row_field(item, "biomarker_type") not in continuous
+    ]
+    return max(
+        discrete or candidates,
+        key=lambda item: float(row_field(item, "health_impact") or 0.0),
+    )
 
 
 def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
@@ -151,6 +173,10 @@ class HealthReport:
     # Per-function blame rollup rows (``git_function_blame``), derived from the
     # FULL-tier blame index. Empty on ESSENTIAL tier / when blame is absent.
     function_blame_rows: list[dict] = field(default_factory=list)
+    # The repo-wide function-mod p80 this run computed over every walked
+    # function. Set only when the run actually saw the whole repo, so an
+    # incremental run never offers its changed-files subset for storage.
+    repo_function_mod_p80: int | None = None
     # Deterministic refactoring suggestions (``RefactoringSuggestion``), one
     # per detected opportunity. Produced by the refactoring layer in the same
     # per-file pass that produces findings; empty when the layer is disabled
@@ -163,9 +189,9 @@ class HealthReport:
     # to the ``coverage_files`` table. Empty when no coverage was ingested.
     coverage_files: list[Any] = field(default_factory=list)
     coverage_format: str | None = None
-    # True when the ingested coverage report mapped fewer than half its files
-    # to the repo tree (#1746); carried so the persister can stamp the rows.
-    coverage_mapping_partial: bool = False
+    # How the ingested report mapped to the repo tree (``CoverageProvenance``:
+    # formats, path counts, partial mapping #1746), for the persister to record.
+    coverage_provenance: Any = None
     # Incremental writers replace all dimensions only for ``authoritative_paths``.
     # ``performance_authoritative_paths`` may be wider: the bounded execution
     # closure whose performance rows/plans were recomputed for full parity.

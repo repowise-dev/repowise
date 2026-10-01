@@ -1,4 +1,4 @@
-import { bandForScore } from "@repowise-dev/types";
+import { bandForScore, formatScore } from "@repowise-dev/types";
 import { HEALTH_BAND_ORDER, type HealthBand } from "@repowise-dev/types/health";
 import { healthBandSoftBadgeClass } from "./tokens";
 
@@ -26,9 +26,9 @@ export function HealthBadge({ score, band, size = "xs" }: HealthBadgeProps) {
   return (
     <span
       className={`inline-flex items-center rounded font-semibold tabular-nums ${cls} ${sizing}`}
-      title={`Health ${score.toFixed(1)}/10`}
+      title={`Health ${formatScore(score)}/10`}
     >
-      {score.toFixed(1)}
+      {formatScore(score)}
     </span>
   );
 }

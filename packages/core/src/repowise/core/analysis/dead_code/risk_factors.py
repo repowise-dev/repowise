@@ -52,6 +52,12 @@ NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
 # reads as deletion-ready.
 RISK_CAP_CONFIDENCE: float = 0.4
 
+# Finding kinds that are never deletion-ready, whatever their confidence. A
+# whole file with no importers was measured well below the deletion-ready bar
+# (files read by build scripts, manifests and runtime loaders by path), so it
+# is a review candidate until path mentions and entry-shape evidence exist.
+REVIEW_ONLY_KINDS: frozenset[str] = frozenset({"unreachable_file"})
+
 # Filename-stem tokens → risk-factor tag. Matched against the basename split on
 # ``. _ -`` so ``environment.db.js`` yields {environment, db, js} → environment
 # + database. Deliberately curated: broad identifiers (app, main, index, core,
@@ -198,6 +204,7 @@ def effective_safe_to_delete(
     confidence: float,
     file_path: str,
     stored_safe: bool = True,
+    kind: str | None = None,
 ) -> bool:
     """Re-derive whether a finding is genuinely deletion-ready.
 
@@ -206,9 +213,10 @@ def effective_safe_to_delete(
 
     - never True when ``stored_safe`` is already False,
     - never True below :data:`SAFE_CONFIDENCE_THRESHOLD`,
-    - never True when the path carries any runtime-load risk factor.
+    - never True when the path carries any runtime-load risk factor,
+    - never True for a :data:`REVIEW_ONLY_KINDS` finding.
     """
-    if not stored_safe:
+    if not stored_safe or kind in REVIEW_ONLY_KINDS:
         return False
     if confidence < SAFE_CONFIDENCE_THRESHOLD:
         return False

@@ -11,6 +11,11 @@ from __future__ import annotations
 import json
 
 from repowise.cli.commands.health_cmd import _render_refactoring_targets
+from repowise.core.analysis.health.models import (
+    HealthFileMetricData,
+    HealthFindingData,
+    Severity,
+)
 from repowise.core.analysis.health.refactoring import RefactoringSuggestion
 
 
@@ -178,3 +183,57 @@ def test_a_step_whose_plan_falls_outside_the_limit_still_renders(capsys):
     for fmt in ("console", "md"):
         _render_refactoring_targets([], [], suggestions, fmt=fmt, limit=3)
         assert capsys.readouterr().out
+
+
+def _metric(path: str) -> HealthFileMetricData:
+    return HealthFileMetricData(
+        file_path=path,
+        score=7.0,
+        max_ccn=1,
+        max_nesting=1,
+        nloc=40,
+        has_test_file=False,
+    )
+
+
+def _finding(path: str, biomarker: str, impact: float) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type=biomarker,
+        severity=Severity.LOW,
+        file_path=path,
+        function_name="f",
+        line_start=3,
+        line_end=5,
+        details={},
+        health_impact=impact,
+        reason=f"{biomarker} in {path}",
+    )
+
+
+def test_a_file_whose_findings_are_all_advisory_leaves_the_table(capsys):
+    """``primary_finding`` names no cause for one, and the table ranks causes.
+
+    It returns None rather than an advisory row, because advisory deducts
+    nothing. Dereferencing that took the whole command down, and the row it
+    would have produced ranks at an impact of zero regardless.
+    """
+    metrics = [_metric("a.py"), _metric("b_test.py")]
+    findings = [
+        _finding("a.py", "complex_method", 2.5),
+        _finding("b_test.py", "assertion_free_test", 0.0),
+    ]
+    _render_refactoring_targets(metrics, findings, [], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    assert [t["file_path"] for t in out["targets"]] == ["a.py"]
+
+
+def test_an_advisory_finding_beside_a_real_one_keeps_the_real_lead(capsys):
+    """The sibling shape: a file is only dropped when nothing accuses it."""
+    metrics = [_metric("a.py")]
+    findings = [
+        _finding("a.py", "assertion_free_test", 0.0),
+        _finding("a.py", "complex_method", 2.5),
+    ]
+    _render_refactoring_targets(metrics, findings, [], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    assert [t["primary_biomarker"] for t in out["targets"]] == ["complex_method"]

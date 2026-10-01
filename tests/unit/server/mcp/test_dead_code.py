@@ -15,17 +15,20 @@ async def test_get_dead_code(setup_mcp):
 
     result = await get_dead_code()
     assert result["summary"]["total_findings"] == 3
-    assert result["summary"]["safe_to_delete_count"] == 2
+    # dc1 is stored safe but is a whole file, so it reads as review-only.
+    assert result["summary"]["safe_to_delete_count"] == 1
 
-    # Tiered structure: dc1 (0.9) in high, dc2 (0.7) + dc3 (0.5) in medium
+    # Engine bands (0.7 / 0.4): dc1 (0.9) + dc2 (0.7) high, dc3 (0.5) medium
     tiers = result["tiers"]
-    assert tiers["high"]["count"] == 1
-    assert tiers["medium"]["count"] == 2
+    assert tiers["high"]["count"] == 2
+    assert tiers["medium"]["count"] == 1
     assert tiers["low"]["count"] == 0
 
     # High tier findings sorted by confidence desc
     high_findings = tiers["high"]["findings"]
-    assert high_findings[0]["confidence"] >= 0.8
+    assert high_findings[0]["confidence"] >= high_findings[1]["confidence"] >= 0.7
+    assert high_findings[0]["kind"] == "unreachable_file"
+    assert high_findings[0]["safe_to_delete"] is False
 
     # Impact estimate present
     assert result["impact"]["total_lines_reclaimable"] > 0
@@ -68,7 +71,7 @@ async def test_get_dead_code_tier_filter(setup_mcp):
     assert "high" in result["tiers"]
     assert "medium" not in result["tiers"]
     assert "low" not in result["tiers"]
-    assert result["tiers"]["high"]["count"] == 1
+    assert result["tiers"]["high"]["count"] == 2
 
 
 @pytest.mark.asyncio

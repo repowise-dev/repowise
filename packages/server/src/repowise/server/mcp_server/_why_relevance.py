@@ -173,6 +173,19 @@ def query_scorer(query: str, corpus: list[str]) -> Callable[[str], float]:
     return lambda text: relevance(text.lower(), idf)
 
 
+def floor_ranked(query: str, rows: list[Any], text: Callable[[Any], str], limit: int) -> list[Any]:
+    """The *rows* whose ``text(row)`` clears the floor for *query*, best first.
+
+    Rarity comes from every row passed, so pass the whole population (every
+    harvested comment, every commit subject), not a shortlist. Ties keep input
+    order, so a caller that pre-sorts by strength or recency keeps that order.
+    """
+    score = query_scorer(query, [text(r).lower() for r in rows])
+    scored = [(s, i) for i, r in enumerate(rows) if clears_floor(s := score(text(r)))]
+    scored.sort(key=lambda t: -t[0])
+    return [rows[i] for _, i in scored[:limit]]
+
+
 def recovery_note(total: int, recall: str) -> dict[str, Any]:
     """What a block reduces to when a query is present and nothing bears on it.
 
@@ -223,13 +236,14 @@ def redirect_for(query: str) -> dict[str, Any]:
     return {
         "try_instead": tools,
         "reason": (
-            "No decision record covers this question. The store holds none "
-            "carrying its terms, and the closest ones would be noise."
+            "No recorded rationale: no decision record covers this question. "
+            "The store holds none carrying its terms, and the closest ones "
+            "would be noise."
         ),
     }
 
 
-def redirect_when_served(lanes: list[str], recall: str) -> dict[str, Any]:
+def redirect_when_served(lanes: list[str], recall: str | None) -> dict[str, Any]:
     """The redirect for a call that missed the store but *answered anyway*.
 
     Once the relevance floor started rejecting target-anchored records, the
@@ -245,8 +259,19 @@ def redirect_when_served(lanes: list[str], recall: str) -> dict[str, Any]:
     to reach something weaker, and learns from that trade that this tool's
     answers are not to be acted on. What is left is the true and narrower
     statement — the *decision store* was silent, these other lanes were not.
+
+    ``recall`` is None when no file was named: the lanes were then searched
+    repository-wide by the question itself, so there is no file to recall.
     """
     served = " and ".join(lanes)
+    if recall is None:
+        return {
+            "reason": (
+                f"No decision record covers this question. The {served} below "
+                "carry its terms. They are quoted from the code and its history, "
+                "not a ruling: read them as evidence, not as the recorded reason."
+            )
+        }
     return {
         "reason": (
             f"No decision record covers this question. This file's {served} "

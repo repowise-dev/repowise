@@ -68,6 +68,5 @@ from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPT
 ## Tests
 
 - `tests/unit/generation/test_page_generator.py`
-- `tests/unit/generation/test_page_generator_tiering.py`
 - `tests/integration/test_generation_pipeline.py`
 """

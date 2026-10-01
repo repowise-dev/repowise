@@ -396,6 +396,7 @@ def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "structure_average": None,
             "history_average": None,
             "maintainability_average": None,
+            **({"doc_drift_count": None} if "doc_drift_count" in row else {}),
         }
         for row in rows
     ]
@@ -407,12 +408,15 @@ def _point(snap: Any, attr: str) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
-def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
+def recent_kpis(
+    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* snapshots for CLI / API consumers.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
+    off by default so agent-facing trend rows stay as they were.
     """
     if not history:
         return []
@@ -439,6 +443,8 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
                 "maintainability_average": _point(snap, "maintainability_average"),
             }
         )
+        if doc_drift:
+            rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
     return rows
 
 

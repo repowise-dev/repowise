@@ -1,26 +1,39 @@
 "use client";
 
 /**
- * A typed system-map edge. Colour + glyph come from the edge-kind registry;
- * the dash pattern encodes match confidence (exact solid, candidate dashed,
- * inferred dotted). Co-change edges read as behavioral, contract/dep edges as
- * structural. Selection and overlay state (highlight / dim / badge) reuse the
- * same calm-vs-emphasised treatment as the knowledge-graph edges.
+ * A typed system-map edge. Structural edges are solid ink, co-change edges a
+ * quieter dotted line; the dash follows match confidence (exact solid,
+ * candidate dashed, inferred dotted). Kind is named in the label, the legend
+ * and the drawer rather than in a hue per transport.
+ *
+ * Labels show only for the edges touching what the reader hovers or selects,
+ * plus edges a lens badged. Drawn always, a busy pair's labels land on top of
+ * each other and none of them can be read.
  */
 
 import { memo } from "react";
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 import { edgeKindStyle, matchTypeDash } from "./edge-kinds";
+import { useEdgeActive } from "./system-map-focus";
+import { weightShort } from "./system-map-model";
 import type { SystemMapEdgeData } from "./types";
 
 function strokeWidth(weight: number): number {
-  return Math.min(1 + Math.log2(weight + 1) * 0.5, 3);
+  return Math.min(1 + Math.log2(weight + 1) * 0.4, 3.2);
+}
+
+function badgeColor(tone: "danger" | "warning" | "info"): string {
+  if (tone === "danger") return "var(--color-error)";
+  if (tone === "warning") return "var(--color-warning)";
+  return "var(--color-text-secondary)";
 }
 
 function SystemMapEdgeInner(props: EdgeProps) {
-  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, selected } = props;
+  const { id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data } =
+    props;
   const { edge, overlay } = data as unknown as SystemMapEdgeData;
   const style = edgeKindStyle(edge.kind);
+  const active = useEdgeActive(id, source, target);
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -32,30 +45,35 @@ function SystemMapEdgeInner(props: EdgeProps) {
     borderRadius: 8,
   });
 
-  const emphasized = selected || overlay?.highlighted;
-  const dimmed = overlay?.dimmed ?? false;
-  const stroke = emphasized ? "var(--color-viz-selection)" : style.color;
-  const dash = emphasized ? "none" : matchTypeDash(edge.match_type);
-  const opacity = dimmed ? 0.08 : emphasized ? 1 : 0.85;
-
+  const dimmed = (overlay?.dimmed ?? false) && !active;
+  const lensed = overlay?.highlighted ?? false;
+  const stroke = active
+    ? "var(--color-accent-primary)"
+    : lensed
+      ? "var(--color-text-primary)"
+      : edge.structural
+        ? "var(--color-diagram-edge)"
+        : "var(--color-text-tertiary)";
+  const width = active || lensed ? Math.max(2, strokeWidth(edge.weight)) : strokeWidth(edge.weight);
+  const showLabel = !dimmed && (active || Boolean(overlay?.badge));
   const Icon = style.icon;
-  const label = edge.weight > 1 ? `${style.label} ×${edge.weight}` : style.label;
 
   return (
-    <>
+    <g className="sm-edge" data-active={active || lensed ? "" : undefined}>
       <BaseEdge
         id={id}
         path={edgePath}
         {...(markerEnd ? { markerEnd } : {})}
+        interactionWidth={16}
         style={{
           stroke,
-          strokeWidth: emphasized ? 2.5 : strokeWidth(edge.weight),
-          strokeDasharray: dash,
-          opacity,
-          animation: emphasized ? "edgeFlow 1.5s linear infinite" : "none",
+          strokeWidth: width,
+          strokeDasharray: matchTypeDash(edge.match_type),
+          opacity: dimmed ? 0.1 : 1,
+          transition: "opacity 120ms, stroke 120ms",
         }}
       />
-      {!dimmed && (
+      {showLabel && (
         <EdgeLabelRenderer>
           <div
             className="nodrag nopan"
@@ -67,29 +85,28 @@ function SystemMapEdgeInner(props: EdgeProps) {
               gap: 4,
               background: "var(--color-bg-surface)",
               color: "var(--color-text-secondary)",
-              padding: "2px 7px",
-              borderRadius: 6,
+              padding: "2px 6px",
+              borderRadius: 4,
               fontFamily: "var(--font-mono, ui-monospace, monospace)",
-              fontSize: 9.5,
-              fontWeight: 500,
-              letterSpacing: 0.3,
+              fontSize: 10,
+              lineHeight: "14px",
               pointerEvents: "none",
-              border: emphasized
-                ? "1px solid var(--color-viz-selection)"
-                : "1px solid var(--color-border-default)",
+              border: `1px solid ${active ? "var(--color-accent-primary)" : "var(--color-border-hover)"}`,
               whiteSpace: "nowrap",
-              opacity: emphasized ? 1 : 0.92,
+              zIndex: active ? 2 : 1,
             }}
           >
-            <Icon size={10} aria-hidden style={{ color: style.color, flexShrink: 0 }} />
-            {label}
+            <Icon size={10} aria-hidden style={{ flexShrink: 0 }} />
+            {style.label} · {weightShort(edge)}
             {overlay?.badge && (
-              <span style={{ color: "var(--color-risk-high)", fontWeight: 700 }}>· {overlay.badge.label}</span>
+              <span style={{ color: badgeColor(overlay.badge.tone), fontWeight: 600 }}>
+                · {overlay.badge.label}
+              </span>
             )}
           </div>
         </EdgeLabelRenderer>
       )}
-    </>
+    </g>
   );
 }
 

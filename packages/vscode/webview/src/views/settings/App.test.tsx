@@ -13,6 +13,8 @@ const DEFAULTS: SettingsValues = {
   "diagnostics.enabled": true,
   "diagnostics.minSeverity": "high",
   "diagnostics.dimensions": ["defect", "maintainability", "performance"],
+  "docDrift.diagnostics.enabled": true,
+  "docDrift.diagnostics.minConfidence": 0.7,
   "gutterHeat.enabled": true,
   "fileDecorations.enabled": true,
   "fileDecorations.maxScore": 4,

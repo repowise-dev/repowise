@@ -69,6 +69,31 @@ def test_decision_help_lists_subcommands() -> None:
         assert name in result.output
 
 
+
+def _stored_column(repo_root: Path, decision_id: str, column: str) -> str:
+    """One column of a record as written, for the ones no command prints."""
+    import sqlite3
+
+    conn = sqlite3.connect(repo_root / ".repowise" / "wiki.db")
+    try:
+        row = conn.execute(
+            f"SELECT {column} FROM decision_records WHERE id LIKE ?",
+            (decision_id + "%",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, decision_id
+    return row[0]
+
+
+def _stored_kind(repo_root: Path, decision_id: str) -> str:
+    return _stored_column(repo_root, decision_id, "kind")
+
+
+def _stored_files(repo_root: Path, decision_id: str) -> str:
+    return _stored_column(repo_root, decision_id, "affected_files_json")
+
+
 def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
     """With --title and --decision, nothing is asked and the id comes back.
 
@@ -134,7 +159,7 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
 
 def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     """Answering the prompts is an acceptance, and a scope is part of it."""
-    answers = "Interactive title\ncontext\nthe decision\nwhy\n\n\nsrc/app.py\n\n"
+    answers = "\nInteractive title\ncontext\nthe decision\nwhy\n\n\nsrc/app.py\n\n"
     result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
 
     assert result.exit_code == 0, result.output
@@ -149,7 +174,7 @@ def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> N
     It is kept rather than refused: eight answered questions are worth more
     than the round trip, and ``confirm --scope`` finishes the job.
     """
-    answers = "Unscoped title\ncontext\nthe decision\nwhy\n\n\n\n\n"
+    answers = "\nUnscoped title\ncontext\nthe decision\nwhy\n\n\n\n\n"
     result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
 
     assert result.exit_code == 0, result.output
@@ -157,6 +182,75 @@ def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> N
     listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
     records = json.loads(listed.output)["decisions"]
     assert [d["status"] for d in records if d["title"] == "Unscoped title"] == ["proposed"]
+
+
+def test_an_agreement_is_accepted_although_it_names_no_files(indexed_repo: Path) -> None:
+    """The asymmetry the split exists for. Its other half is the test above.
+
+    An agreement names no file because it is not about one, and its acceptance
+    row records the repository as its scope, so the contract is satisfied
+    honestly rather than exempted. Refusing it for the files it is defined not
+    to have is what made a working agreement structurally unacceptable before
+    the split. An architectural record with no files is still refused:
+    ``test_decision_add_without_a_scope_stays_a_candidate`` is that half, and
+    the two only mean anything read together.
+    """
+    answers = "agreement\nNever use em dashes\ncontext\nno em dashes anywhere\nwhy\n\n\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "Stored as a candidate" not in result.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    records = json.loads(listed.output)["decisions"]
+    stored = [d for d in records if d["title"] == "Never use em dashes"]
+    assert [d["status"] for d in stored] == ["active"]
+    # Accepted on the noun, not because it quietly acquired a scope.
+    assert _stored_files(indexed_repo, stored[0]["id"]) == "[]"
+
+
+def test_the_kind_flag_records_the_noun(indexed_repo: Path) -> None:
+    """--kind reaches the column, so a person can type an agreement at all.
+
+    Read off the record rather than the command's own output: what matters is
+    what the store holds, because the column is what the SessionStart injector
+    reads.
+    """
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--title", "Commit as the user",
+            "--decision", "every commit is authored by the user",
+            "--kind", "agreement",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["decision"]
+    assert payload["kind"] == "agreement"
+    assert _stored_kind(indexed_repo, payload["id"]) == "agreement"
+
+
+def test_a_decision_added_without_the_flag_is_architectural(indexed_repo: Path) -> None:
+    """The default is the checkable noun, so nothing silently stops being checked."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--title", "Prefer ruff check here",
+            "--decision", "Run ruff check, never ruff format",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["decision"]
+    assert _stored_kind(indexed_repo, payload["id"]) == "architectural"
 
 
 def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> None:
@@ -189,6 +283,7 @@ def test_decision_add_help_lists_a_flag_per_field() -> None:
         "--consequence",
         "--affects",
         "--tag",
+        "--kind",
         "--format",
     ):
         assert flag in result.output

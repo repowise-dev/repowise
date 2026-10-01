@@ -117,16 +117,26 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "type_alias_declaration": "type_alias",
             "enum_declaration": "enum",
             "method_definition": "method",
+            # Class properties holding a function (``static create = (...) => {}``,
+            # ``handler = function () {}``). The .scm pattern gates on the value
+            # being an arrow_function / function_expression, so no plain data
+            # property (``count = 0``) ever reaches this mapping; a class member
+            # is a member, so the kind is "method".
+            "public_field_definition": "method",
             "lexical_declaration": "function",  # const foo = () => {}
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # Overload signatures (the .scm keeps method ones to class bodies).
+            "function_signature": "function",
+            "method_signature": "method",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
         visibility_fn=ts_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
+        declaration_node_types=frozenset({"function_signature", "method_signature"}),
     ),
     "javascript": LanguageConfig(
         symbol_node_types={

@@ -14,6 +14,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
+[The `security:` block](#the-security-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -89,8 +90,9 @@ flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
 > **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
 > Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect. `max_tokens` must be a positive integer when documentation is
-> generated. The `distill:` block is validated only when you run
+> take effect, except in the `security:` block, where they stop
+> `repowise security check`. `max_tokens` must be a positive integer when
+> documentation is generated. The `distill:` block is validated only when you run
 > `repowise doctor`. If a setting doesn't seem to be taking effect, check
 > spelling and indentation first.
 
@@ -317,7 +319,12 @@ hooks:
   read_skeleton: false           # serve large indexed files as skeletons
   read_reread: false             # serve unchanged re-reads as a pointer
   search_digest: false           # serve multi-file grep floods as a digest
+  coverage_reingest: false       # re-ingest coverage after an agent's full test run
 ```
+
+- `coverage_reingest` re-ingests coverage after an agent's full test run, at
+  a process start per shell command (`REPOWISE_HOOK_COVERAGE_REINGEST=1` for
+  one session). Details: [test intelligence](../layers/TEST_INTELLIGENCE.md).
 
 - `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
   short notice instead of the content, when the same range was already served
@@ -411,7 +418,30 @@ decisions:
     max_input_tokens: 30000 # 2000-60000
   harnesses:                # whose transcripts the session lane reads
     - claude_code           # the default; add codex to read that store too
+  agent_acceptance: false   # may an agent grant a decision authority?
+  capture_prompt: false     # ask the agent to record what it just committed
 ```
+
+`agent_acceptance` is the one key here that is not about capture. Off, an agent
+can propose candidates and withdraw authority but never grant it; on, it may
+accept, and the acceptance is recorded as an agent's — with the session that
+signed it — on every surface, never as yours. It ships off and no preset turns
+it on.
+
+`capture_prompt` is the other. On, a successful `git commit` whose message
+carries two or more decision signals prompts the agent, once per session, to
+run `repowise decision add` — never for a commit a record already cites, and
+never as anything but a proposal. An agent cannot decline a hook, so this also
+ships off and no preset turns it on:
+`repowise decision config capture-prompt --on`.
+
+That command also installs what it needs. The shared PostToolUse matcher
+deliberately excludes the shell tools — measured at 51% of hook invocations
+for 0.7% of emissions — so switching the prompt on adds a separate
+`Bash|PowerShell` PostToolUse entry, and switching it off removes it. The
+entry is per install rather than per repository: other repositories on the
+machine pay a process start on shell calls and emit nothing unless they
+switch it on too, and switching it off here turns it off for all of them.
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
@@ -530,6 +560,23 @@ Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
+
+### The `security:` block
+
+Secret shapes of your own for `repowise security check`.
+
+```yaml
+security:
+  patterns:
+    - name: internal_token        # 1 to 40 of a-z, 0-9, _ and -, unique
+      regex: 'itk_[A-Za-z0-9]{32}'
+      severity: high              # low, med or high; high when omitted
+```
+
+- Each is the secret kind `custom:<name>` (SARIF rule `custom/<name>`): changed lines only, every commit of the change scanned, a match masked to its first four characters and `****` in every format. It keeps its severity under test, fixture and example paths.
+- A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
+- Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
+- At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
 
 ### The `refactoring:` block
 
@@ -761,6 +808,12 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
+Repowise sizes the model's context window (`num_ctx`) to each prompt, so pages
+are not cut to Ollama's small default window. Set `REPOWISE_OLLAMA_NUM_CTX` to
+pin it instead, for example to stay within a machine's memory. Requests are sent
+one at a time; if the server runs with `OLLAMA_NUM_PARALLEL` above 1, set the
+same value where you run repowise to send that many at once.
+
 ### LiteLLM (100+ providers)
 
 ```bash
@@ -897,6 +950,8 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it to each prompt |
+| `OLLAMA_NUM_PARALLEL` | Ollama requests repowise sends at once (default: 1) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
 | `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
@@ -957,7 +1012,7 @@ Anonymous usage telemetry is **enabled by default** (opt-out).
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_GIT_WINDOW_ANCHOR` | Set to `head` to anchor git "now" to the latest commit instead of wall-clock time |
+| `REPOWISE_GIT_WINDOW_ANCHOR` | Git history windows (90-day churn, prior defects, decay, blame age) are measured from the indexed commit's committer date by default. Set to `now` to measure them from wall-clock time instead |
 | `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
 | `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |

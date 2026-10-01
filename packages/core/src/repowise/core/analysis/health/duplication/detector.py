@@ -3,9 +3,11 @@
 Pipeline:
 
 1. Tokenize every parsed file with the duplication ``tokenizer``.
-2. Rolling-hash each token stream into fixed-size windows.
+2. Rolling-hash each token stream into fixed-size windows, dropping
+   windows made almost entirely of literals and punctuation (data tables).
 3. Bucket windows by hash; for each multi-window bucket, verify token
-   equality (hash collision-proof) and emit a ``ClonePair``.
+   equality (hash collision-proof) and that the two windows share most of
+   their raw identifier names, then emit a ``ClonePair``.
 4. Merge adjacent windows in the same (file_a, file_b) pair into a
    single contiguous clone region.
 5. Weight active vs dormant clone pairs using
@@ -24,6 +26,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from itertools import accumulate
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +45,15 @@ log = structlog.get_logger(__name__)
 # Tunables — locked in for v1, may move to ``HealthConfig`` later.
 DEFAULT_WINDOW_TOKENS = 50
 DEFAULT_MIN_LINES = 6
+
+# A window above this share of literal/punctuation tokens is a data literal.
+_MAX_NOISE_SHARE = 0.8
+# Same shape with mostly different names is not copied code.
+_MIN_NAME_JACCARD = 0.5
+
+# One file's token stream: (normalized kinds, raw identifier names). The
+# lists are parallel; ``names[i]`` is empty unless token ``i`` is an ``ID``.
+_Stream = tuple[list[str], list[str]]
 
 
 @dataclass(slots=True)
@@ -120,22 +132,37 @@ def _co_change_score(
     return max(_partner_support(a_meta, file_b), _partner_support(b_meta, file_a))
 
 
-def _tokens_equal(
-    a_kinds: list[str],
-    b_kinds: list[str],
-    a_start: int,
-    b_start: int,
-    window: int,
-) -> bool:
-    """Verify hash-collision by comparing token ``kind`` sequences.
+def _is_noise(kind: str) -> bool:
+    return kind == "LIT" or not any(ch.isalnum() for ch in kind)
 
-    Operates on the per-file kind list (all the verifier ever compared of
-    the full ``Token`` records) so cached token streams round-trip without
-    rebuilding Token objects.
+
+def _informative_windows(
+    windows: list[WindowHash], kinds: list[str], window: int
+) -> list[WindowHash]:
+    """Drop windows that are more than ``_MAX_NOISE_SHARE`` literals/punctuation."""
+    noise = list(accumulate((_is_noise(k) for k in kinds), initial=0))
+    limit = _MAX_NOISE_SHARE * window
+    return [w for w in windows if noise[w.start_index + window] - noise[w.start_index] <= limit]
+
+
+def _windows_match(a: _Stream, b: _Stream, a_start: int, b_start: int, window: int) -> bool:
+    """Confirm a hash match: equal token kinds, then shared identifier names.
+
+    Operates on the per-file streams so cached token streams round-trip
+    without rebuilding Token objects.
     """
+    a_kinds, a_names = a
+    b_kinds, b_names = b
     if a_start + window > len(a_kinds) or b_start + window > len(b_kinds):
         return False
-    return a_kinds[a_start : a_start + window] == b_kinds[b_start : b_start + window]
+    if a_kinds[a_start : a_start + window] != b_kinds[b_start : b_start + window]:
+        return False
+    a_set = set(a_names[a_start : a_start + window])
+    b_set = set(b_names[b_start : b_start + window])
+    a_set.discard("")
+    b_set.discard("")
+    union = len(a_set | b_set)
+    return union > 0 and len(a_set & b_set) >= _MIN_NAME_JACCARD * union
 
 
 def _merge_adjacent_pairs(raw: list[ClonePair]) -> list[ClonePair]:
@@ -251,14 +278,14 @@ def detect_clones(
         # Fall through to the full pipeline; it refreshes the artifact.
         diag = DuplicationDiagnostics()
 
-    per_file_kinds, per_file_nloc, all_windows, per_file_hash = _collect_windows(
+    per_file_streams, per_file_nloc, all_windows, per_file_hash = _collect_windows(
         parsed_list, window_tokens, lim, diag, cache, source_reader
     )
     if cache is not None:
         cache.save()
         # The persisted form holds another representation of every token
         # stream and window. Collision verification only needs the returned
-        # per-file kinds, so release the cache's owning dictionaries before
+        # per-file streams, so release the cache's owning dictionaries before
         # allocating the repo-wide hash index and clone-pair lists.
         cache.release_memory()
         log.debug(
@@ -273,7 +300,7 @@ def detect_clones(
     # Every WindowHash is now owned by a bucket. Keeping the flat list too
     # adds millions of redundant references at the scan's high-water mark.
     del all_windows
-    raw_pairs = _pairs_from_buckets(bucket, per_file_kinds, window_tokens, lim, diag)
+    raw_pairs = _pairs_from_buckets(bucket, per_file_streams, window_tokens, lim, diag)
 
     if cache is not None and cache_dir is not None:
         all_paths = {pf.file_info.path for pf in parsed_list}
@@ -282,7 +309,7 @@ def detect_clones(
             window_tokens,
             lim,
             diag,
-            per_file_kinds,
+            per_file_streams,
             per_file_hash,
             raw_pairs,
             all_paths,
@@ -291,7 +318,7 @@ def detect_clones(
     # Neither structure participates in merge/finalize/aggregation. Drop
     # them before those stages allocate their output lists so freed arenas
     # can be reused inside this phase rather than growing the process again.
-    del bucket, per_file_kinds
+    del bucket, per_file_streams
 
     final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
     pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
@@ -316,8 +343,8 @@ def _collect_windows(
     diag: DuplicationDiagnostics,
     cache: Any | None = None,
     read_source: Any | None = None,
-) -> tuple[dict[str, list[str]], dict[str, int], list[WindowHash], dict[str, str]]:
-    """Tokenize each file once and emit its rolling-hash windows.
+) -> tuple[dict[str, _Stream], dict[str, int], list[WindowHash], dict[str, str]]:
+    """Tokenize each file once and emit its informative rolling-hash windows.
 
     Files are dropped (and counted in *diag*) when they are unreadable,
     minified/generated, shorter than one window, or exceed the per-file
@@ -326,14 +353,14 @@ def _collect_windows(
 
     When a :class:`~.token_cache.DuplicationTokenCache` is supplied,
     unchanged files (by content hash) skip the tokenize + rolling-hash
-    work and replay their cached kind sequence and window tuples; every
+    work and replay their cached stream and window tuples; every
     gate above still re-evaluates live against the cached lengths. The
     returned hash map (path -> content hash, gate survivors only) feeds
     the persisted pair index; it is empty when no cache is supplied.
     """
     import hashlib
 
-    per_file_kinds: dict[str, list[str]] = {}
+    per_file_streams: dict[str, _Stream] = {}
     per_file_nloc: dict[str, int] = {}
     all_windows: list[WindowHash] = []
     per_file_hash: dict[str, str] = {}
@@ -368,7 +395,7 @@ def _collect_windows(
             cached = cache.get(content_hash)
 
         if cached is not None:
-            kinds, nloc, window_tuples = cached
+            kinds, names, nloc, window_tuples = cached
             windows = [
                 WindowHash(
                     file_path=path,
@@ -385,12 +412,16 @@ def _collect_windows(
                 diag.skipped_token_cap += 1
                 continue
             kinds = [t.kind for t in toks]
+            names = [t.name for t in toks]
             nloc = _nloc(source)
-            windows = rolling_hashes(path, toks, window_tokens)
+            windows = _informative_windows(
+                rolling_hashes(path, toks, window_tokens), kinds, window_tokens
+            )
             if cache is not None:
                 cache.put(
                     content_hash,
                     kinds,
+                    names,
                     nloc,
                     [(w.hash_value, w.start_index, w.start_line, w.end_line) for w in windows],
                 )
@@ -405,7 +436,7 @@ def _collect_windows(
             diag.window_budget_hit = True
             break
 
-        per_file_kinds[path] = kinds
+        per_file_streams[path] = (kinds, names)
         per_file_nloc[path] = nloc
         all_windows.extend(windows)
         if content_hash:
@@ -413,7 +444,7 @@ def _collect_windows(
         diag.files_tokenized += 1
 
     diag.total_windows = len(all_windows)
-    return per_file_kinds, per_file_nloc, all_windows, per_file_hash
+    return per_file_streams, per_file_nloc, all_windows, per_file_hash
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +454,7 @@ def _collect_windows(
 
 def _pairs_from_buckets(
     bucket: dict[int, list[WindowHash]],
-    per_file_kinds: dict[str, list[str]],
+    per_file_streams: dict[str, _Stream],
     window_tokens: int,
     limits: DuplicationLimits,
     diag: DuplicationDiagnostics,
@@ -452,22 +483,22 @@ def _pairs_from_buckets(
         if deadline is not None and (i & 0x3FF) == 0 and time.monotonic() > deadline:
             diag.timed_out = True
             break
-        _verify_bucket(windows, per_file_kinds, window_tokens, seen, raw_pairs)
+        _verify_bucket(windows, per_file_streams, window_tokens, seen, raw_pairs)
 
     return raw_pairs
 
 
 def _verify_bucket(
     windows: list[WindowHash],
-    per_file_kinds: dict[str, list[str]],
+    per_file_streams: dict[str, _Stream],
     window_tokens: int,
     seen: set[tuple[str, int, str, int]],
     out: list[ClonePair],
 ) -> None:
     """Confirm every unordered pair in one (bounded) hash bucket.
 
-    Hash equality is necessary but not sufficient — ``_tokens_equal``
-    rejects collisions by comparing the actual token sequences.
+    Hash equality is necessary but not sufficient — ``_windows_match``
+    rejects collisions and renamed look-alikes.
     """
     for i in range(len(windows)):
         for j in range(i + 1, len(windows)):
@@ -479,9 +510,9 @@ def _verify_bucket(
             if key in seen:
                 continue
             seen.add(key)
-            if not _tokens_equal(
-                per_file_kinds[a.file_path],
-                per_file_kinds[b.file_path],
+            if not _windows_match(
+                per_file_streams[a.file_path],
+                per_file_streams[b.file_path],
                 a.start_index,
                 b.start_index,
                 window_tokens,
@@ -571,41 +602,41 @@ def _detect_clones_incremental(
     # 1. Collect the changed files live (read, gates, tokenize, windows).
     #    Sorted for deterministic window-budget behaviour.
     changed_pfs = [current[p] for p in sorted(changed)]
-    new_kinds, new_nloc, new_windows, new_hash = _collect_windows(
+    new_streams, new_nloc, new_windows, new_hash = _collect_windows(
         changed_pfs, window_tokens, lim, diag, cache, read_source
     )
     if diag.window_budget_hit:
         return None
 
-    # 2. Old windows + kinds of affected files, from the token cache.
-    old_aff: dict[str, tuple[list[str], list[tuple[int, int, int, int]]]] = {}
+    # 2. Old windows + streams of affected files, from the token cache.
+    old_aff: dict[str, tuple[_Stream, list[tuple[int, int, int, int]]]] = {}
     for p in affected_old:
         entry = cache.entry(old_files[p])
         if entry is None:
             return None
-        kinds, _nloc, window_tuples = entry
-        old_aff[p] = (kinds, window_tuples)
+        kinds, names, _nloc, window_tuples = entry
+        old_aff[p] = ((kinds, names), window_tuples)
 
     # 3. Window-budget equivalence: splicing is only valid when the full
     #    pipeline would not truncate either state.
-    n_old_aff = sum(len(wt) for _k, wt in old_aff.values())
+    n_old_aff = sum(len(wt) for _s, wt in old_aff.values())
     if index.total_windows - n_old_aff + len(new_windows) > lim.max_total_windows:
         return None
 
     # 4. Touched buckets = hashes present in moving windows (old or new).
     touched: set[int] = {w.hash_value for w in new_windows}
-    for _kinds, window_tuples in old_aff.values():
+    for _stream, window_tuples in old_aff.values():
         touched.update(row[0] for row in window_tuples)
 
     # 5. One pass over the unchanged files' cached windows builds the
     #    touched buckets' membership; rows of unchanged files belong to
-    #    both the old and the new bucket composition. Kinds maps are
-    #    split because a modified file verifies with its old kinds on
-    #    the old side and its new kinds on the new side.
+    #    both the old and the new bucket composition. Stream maps are
+    #    split because a modified file verifies with its old stream on
+    #    the old side and its new stream on the new side.
     old_rows: dict[int, list[WindowHash]] = defaultdict(list)
     new_rows: dict[int, list[WindowHash]] = defaultdict(list)
-    old_kinds_map: dict[str, list[str]] = {}
-    new_kinds_map: dict[str, list[str]] = dict(new_kinds)
+    old_streams_map: dict[str, _Stream] = {}
+    new_streams_map: dict[str, _Stream] = dict(new_streams)
     per_file_nloc: dict[str, int] = dict(new_nloc)
     for p in unchanged:
         check_cancelled()
@@ -613,7 +644,7 @@ def _detect_clones_incremental(
         entry = cache.entry(h)
         if entry is None:
             return None
-        kinds, nloc, window_tuples = entry
+        kinds, names, nloc, window_tuples = entry
         per_file_nloc[p] = nloc
         hit = False
         for row in window_tuples:
@@ -629,11 +660,11 @@ def _detect_clones_incremental(
                 new_rows[row[0]].append(w)
                 hit = True
         if hit:
-            old_kinds_map[p] = kinds
-            new_kinds_map[p] = kinds
+            old_streams_map[p] = (kinds, names)
+            new_streams_map[p] = (kinds, names)
         cache.retain(h)
 
-    for p, (kinds, window_tuples) in old_aff.items():
+    for p, (stream, window_tuples) in old_aff.items():
         for row in window_tuples:
             if row[0] in touched:
                 old_rows[row[0]].append(
@@ -645,13 +676,13 @@ def _detect_clones_incremental(
                         end_line=row[3],
                     )
                 )
-        old_kinds_map[p] = kinds
+        old_streams_map[p] = stream
     for w in new_windows:
         new_rows[w.hash_value].append(w)
 
     # 6. Per-bucket contributions, old and new.
-    old_contrib = _bucket_contributions(old_rows, old_kinds_map, window_tokens, lim, None)
-    new_contrib = _bucket_contributions(new_rows, new_kinds_map, window_tokens, lim, diag)
+    old_contrib = _bucket_contributions(old_rows, old_streams_map, window_tokens, lim, None)
+    new_contrib = _bucket_contributions(new_rows, new_streams_map, window_tokens, lim, diag)
 
     # 7. Splice the multiset. A negative count means the persisted state
     #    disagrees with the recomputed old contribution — fall back.
@@ -734,7 +765,7 @@ def _pair_key(p: ClonePair) -> _PairKey:
 
 def _bucket_contributions(
     rows_by_hash: dict[int, list[WindowHash]],
-    kinds_map: dict[str, list[str]],
+    streams_map: dict[str, _Stream],
     window_tokens: int,
     lim: DuplicationLimits,
     diag: DuplicationDiagnostics | None,
@@ -758,7 +789,7 @@ def _bucket_contributions(
                 diag.degenerate_buckets += 1
             continue
         check_cancelled()
-        _verify_bucket(rows, kinds_map, window_tokens, seen, out)
+        _verify_bucket(rows, streams_map, window_tokens, seen, out)
     return out
 
 
@@ -767,7 +798,7 @@ def _persist_pair_index(
     window_tokens: int,
     lim: DuplicationLimits,
     diag: DuplicationDiagnostics,
-    per_file_kinds: dict[str, list[str]],
+    per_file_streams: dict[str, _Stream],
     per_file_hash: dict[str, str],
     raw_pairs: list[ClonePair],
     all_paths: set[str],
@@ -777,8 +808,8 @@ def _persist_pair_index(
 
     from .pair_index import DuplicationPairIndex, limits_fingerprint, save_pair_index
 
-    files = {p: per_file_hash[p] for p in per_file_kinds if p in per_file_hash}
-    if len(files) != len(per_file_kinds):
+    files = {p: per_file_hash[p] for p in per_file_streams if p in per_file_hash}
+    if len(files) != len(per_file_streams):
         # A gate survivor without a content hash should be impossible
         # when the cache is active; don't persist a state we can't trust.
         return

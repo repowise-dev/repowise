@@ -510,14 +510,14 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 37 values in
+with a `ResolutionOrigin`, a closed vocabulary of 39 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 37 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 39 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
@@ -865,7 +865,7 @@ The `GitIndexer` runs once during `repowise init` (after graph construction, bef
 generation) and incrementally during `repowise update`. All git features degrade
 gracefully when git metadata is unavailable; they simply skip git-enriched context.
 
-### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
+### 7.1 GitIndexer (`packages/core/src/repowise/core/ingestion/git_indexer/`)
 
 The `GitIndexer` class mines git history into the `git_metadata` SQL table. For each
 tracked file, it computes:
@@ -1060,7 +1060,7 @@ repowise decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server/tool_why.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
+| `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 
@@ -1462,7 +1462,7 @@ in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine dist
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
 gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector.py`
+The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector_store/`
 selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
 
 ### NetworkX + SQLite fallback, not Neo4j

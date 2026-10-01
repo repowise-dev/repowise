@@ -15,8 +15,10 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
@@ -48,6 +50,24 @@ _MAX_MODULES = 10
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 8
+
+
+def _signed_by(signature) -> str:
+    """The mark for a decision a person did not sign, else ``""``.
+
+    An agent reads this block as standing rules, so one it accepted itself has
+    to be legible as that rather than as the team's. A person's acceptance is
+    the ordinary case and is left unmarked, which is also what keeps the line
+    cheap: these files are read into every session.
+    """
+    if signature is None or signature.kind == "person":
+        return ""
+    if signature.kind == "agent":
+        who = signature.accepter or "an agent"
+        return f" [accepted by {who}, not a person]"
+    if signature.kind == "import":
+        return " [accepted by a tracked file]"
+    return " [signer not recorded]"
 
 
 class EditorFileDataFetcher:
@@ -282,9 +302,15 @@ class EditorFileDataFetcher:
         An agent reads this block as instructions, so it is the surface where
         the candidate/decision distinction matters most: acceptance, not a
         status string a recurrence check wrote, is what earns a line here.
+
+        It is also where an agent can read back its own acceptance as the
+        team's rule, so a line a person did not sign says so.
         """
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
-        from repowise.core.persistence.crud.authority import accepted_predicate
+        from repowise.core.persistence.crud.authority import (
+            accepted_predicate,
+            decision_signatures,
+        )
 
         result = await self._session.execute(
             select(DecisionRecord)
@@ -302,18 +328,16 @@ class EditorFileDataFetcher:
         records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
             :_MAX_DECISIONS
         ]
+        signatures = await decision_signatures(self._session, self._repo_id, records)
         summaries: list[DecisionSummary] = []
         for rec in records:
-            rationale = (rec.rationale or "").strip()
-            rationale = rationale[:100].rstrip(".,;") if rationale else ""
-            decision_text = (rec.decision or "").strip()
-            decision_text = decision_text[:120].rstrip(".,;") if decision_text else ""
             summaries.append(
                 DecisionSummary(
                     title=rec.title,
                     status=rec.status,
-                    rationale=rationale,
-                    decision=decision_text,
+                    rationale=_truncate_at_word(rec.rationale or "", 100),
+                    decision=_truncate_at_word(rec.decision or "", 120),
+                    signed_by=_signed_by(signatures.get(rec.id)),
                 )
             )
         return summaries
@@ -353,7 +377,11 @@ class EditorFileDataFetcher:
         # zero-total-weight fallback to a plain mean. The empty case cannot
         # reach it — ``metric_rows`` is checked above.
         avg = nloc_weighted_score(metric_rows)
-        worst = min(metric_rows, key=lambda m: m.score)
+        # The worst file and the critical list name production files: a test
+        # is not the file an agent should be told to handle with care.
+        production, tests = split_tests(metric_rows)
+        test_paths = {m.file_path for m in tests}
+        worst = min(production or tests, key=lambda m: m.score)
 
         # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
         # the shared owners now; this file used to re-derive the same weighted
@@ -413,6 +441,7 @@ class EditorFileDataFetcher:
             .where(
                 HealthFinding.repository_id == self._repo_id,
                 HealthFinding.status == "open",
+                HealthFinding.biomarker_type.not_in(excluded_types()),
             )
             .order_by(HealthFinding.health_impact.desc())
         )
@@ -433,6 +462,8 @@ class EditorFileDataFetcher:
         for f in all_findings:
             if len(critical) >= 5:
                 break
+            if f.file_path in test_paths:
+                continue
             if f.biomarker_type == "brain_method" or (
                 f.severity == "critical" and f.file_path in hotspot_paths
             ):

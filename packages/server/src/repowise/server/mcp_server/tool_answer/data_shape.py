@@ -1,19 +1,9 @@
 """Ground data-shape questions ("what fields does each entry in X contain?").
 
-A data-shape question names a data blob / row / record and asks for its field
-set. Fuzzy retrieval scatters across every file that *touches* the blob and
-gates low, so the tool hands back a best_guesses pointer list and the agent
-drills with Read/get_symbol to find the fields itself. But the answer usually
-lives verbatim in source: a documented ``{...}`` shape in a docstring near the
-identifier, and/or the concrete keys consumers pull off the parsed value
-(``partner.get("co_change_count")``). This module mines that field set directly
-so the tool answers in one call.
-
-Precision-first: every reported field is a quoted token lifted from source, so a
-field with no source backing can never be synthesised. Two grounding sources,
-precision-ordered: a documented brace shape (authoritative -> high) beats mined
-key accesses (usage-inferred -> medium). Returns ``None`` (the caller falls
-through to normal retrieval) unless a shape is genuinely grounded.
+Fuzzy retrieval scatters across every file that touches a blob, but the field
+set usually lives verbatim in source: a documented ``{...}`` shape (high) or the
+keys consumers read off the value (medium). Every field is a quoted token lifted
+from source; ``None`` means nothing was grounded and retrieval runs as normal.
 """
 
 from __future__ import annotations
@@ -66,29 +56,21 @@ _CONTAINMENT_VERBS = ("contain", "consist", "comprise", "hold", "look like", "ma
 
 _WORD = re.compile(r"[a-z_]+")
 
-# A body this long is not a question, it is a report that may contain one. The
-# bound is deliberately generous: the longest genuine one-line data-shape
-# question anyone writes is well under it, and the bug reports this exists to
-# exclude run to a median of about 1200 characters.
+# Longer than this with no `?` is a pasted report, not a question. Generous:
+# genuine one-line shape questions are well under it.
 _BARE_QUESTION_MAX_CHARS = 400
 
-# Sentence-ish split. Only `?` actually matters below; `.`/`!`/newline are here
-# so a question sentence is bounded by the prose around it rather than swallowing
-# it. Fenced code and tracebacks are full of `.` and newlines, which is fine:
-# splitting them finer only makes it harder for a stray cue to land in a clause
-# that also ends in `?`.
+# Only `?` matters below; the other splits bound a question sentence so it
+# cannot swallow the prose around it.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.?!])\s+|\n+")
 
 
 def _interrogative_clauses(question: str) -> list[str]:
     """The parts of ``question`` that are actually asking something.
 
-    A sentence ending in `?` is a question. If the whole input is short and asks
-    nothing explicitly, the input *is* the question — "what keys are in the
-    blame_record blob" and "describe the schema of GitCommitMeta" are how people
-    type, and demanding punctuation of them would break the short-question case
-    this fast path exists for. Anything longer with no `?` in it is a report, and
-    reports get no clauses.
+    A sentence ending in `?` is a question. A short input with no `?` is itself
+    the question (people rarely punctuate); a longer one is a report and gets
+    no clauses.
     """
     clauses = [s.strip() for s in _SENTENCE_SPLIT.split(question) if s.strip().endswith("?")]
     if clauses:
@@ -107,16 +89,9 @@ def _is_data_shape_question(question: str, question_ids: set[str]) -> bool:
     (entry/record/element/...) paired with a containment verb. Mechanism
     questions ("how does X work") carry neither and fall through.
 
-    The cue itself is still cheap, and the miner is still the real precision
-    gate. What the clause restriction adds is a precondition on *where* the cue
-    may sit. "A false-positive cue is safe" holds for a question someone typed
-    and fails for a body someone pasted: across a bug-report corpus a shape noun
-    like `field` or `key` appears incidentally in nearly every ticket, the
-    identifier extractor always finds something to ground on, and the miner then
-    answers a question nobody asked — returning a field list to a caller who
-    pasted a stack trace, before retrieval has run at all. Requiring the cue to
-    sit in the question's own interrogative clause keeps the short-question case
-    intact and stops an arbitrarily long body from being mined by accident.
+    The clause restriction matters for pasted bodies: shape nouns like `field`
+    appear incidentally in most bug reports, and without it the miner would
+    answer a question nobody asked before retrieval runs.
     """
     if not question or not question_ids:
         return False
@@ -231,17 +206,10 @@ def _run_grep(
 def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None) -> list[str]:
     """Source files naming ``identifier`` (whole word), repo-relative.
 
-    Tracked ``git grep`` first (fast, skips ignored/vendored). If the tree isn't
-    a git checkout (returncode 128), retry with ``--no-index`` so the tool still
-    grounds its answer on a non-git tree - both are fast C greps, never the
-    per-file Python read that wedges on a large tree. Returns the full match set;
-    the caller orders (doc files first) then caps, so the documenting file is
-    never dropped by an unlucky order.
-
-    ``--no-index`` scans the raw filesystem and ignores ``.gitignore``, so a
-    gitignored stale wheel / vendored copy can surface as a match. The compiled
-    ``spec`` (gitignore + ``exclude_patterns``) filters those out authoritatively,
-    matching every other MCP read path.
+    Tracked ``git grep`` first; on a non-git tree (returncode 128) retry with
+    ``--no-index``, which ignores ``.gitignore``, so ``spec`` filters the hits
+    like every other MCP read path. Returns the full match set; the caller
+    orders then caps, so the documenting file is never dropped.
     """
     proc = _run_grep(repo_root, [], identifier)
     if proc is not None and proc.returncode == 128:
@@ -344,14 +312,10 @@ def _alias_keys_on_documented_lines(
 ) -> list[tuple[str, int]]:
     """Alias keys a documented field is read as a fallback for.
 
-    Targets one idiom precisely: ``<recv>.get("<A>") or <recv>.get("<B>")`` - the
-    same receiver reads two keys joined by ``or``, so when one is a documented
-    field the other is an alias for it (``partner.get("co_change_count") or
-    partner.get("count")`` -> ``count``; ``... or partner.get("path")`` ->
-    ``path``). Requiring the ``or`` fallback and a shared receiver keeps this tight:
-    an assignment that merely co-mentions a documented key on a different record
-    (``meta["prior_defect_count"] = ...meta["file_path"]``) or a test assertion
-    does not match. Returns ``(alias, line)`` for keys not in ``doc_fields``.
+    Targets one idiom: ``<recv>.get("<A>") or <recv>.get("<B>")`` where one key
+    is documented, so the other is its alias. The ``or`` and the shared receiver
+    keep incidental co-mentions out. Returns ``(alias, line)`` for keys not in
+    ``doc_fields``.
     """
     out: list[tuple[str, int]] = []
     for idx, line in enumerate(lines, 1):
@@ -445,9 +409,7 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
     except Exception:
         return None
 
-    # Compile the repo's exclusion rules once per query. The grep fallbacks
-    # (esp. ``git grep --no-index`` on a non-git tree) don't honour .gitignore,
-    # so filter their hits the same way every other MCP read path does.
+    # ``--no-index`` ignores .gitignore, so grep hits are filtered through this.
     exclude_spec = build_exclude_spec(root)
 
     for identifier in _specific_identifiers(question_ids):
@@ -507,12 +469,8 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
                 if any(src["file"] == s["file"] for s in sources):
                     continue
                 sources.append(src)
-            # Divergence: keys consumers read right beside a documented field but
-            # the doc never lists (a legacy alias like ``count`` for
-            # ``co_change_count``, an optional key). The documented shape is
-            # authoritative for what it declares, but if we said "cite it, no Read
-            # needed" while hiding a key four consumers defensively handle, an
-            # agent could ship a change that ignores it. Surface it instead.
+            # Keys consumers read beside a documented field that the doc omits
+            # (an alias): "no Read needed" must not hide a key the code handles.
             doc_field_set = set(fields)
             also_accessed: list[dict] = []
             also_seen: set[str] = set()
@@ -582,9 +540,6 @@ def _data_shape_prose(grounded: dict, citations: list[str]) -> tuple[str, str]:
             "data_shape.sources lists every field's origin line.",
         )
 
-    # The doc lists the declared shape, but consumers read alias key(s) it omits
-    # (a legacy fallback). Surface them: telling the agent "no Read needed" while
-    # hiding a key it must handle would be a confidently-incomplete answer.
     alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
     first_alias = also_accessed[0]
     return (

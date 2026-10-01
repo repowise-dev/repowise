@@ -29,7 +29,11 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
-from repowise.core.index_scope import file_page_scope, stamp_index_scope
+from repowise.core.index_scope import (
+    dropped_files_scope,
+    file_page_scope,
+    stamp_index_scope,
+)
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -370,6 +374,7 @@ def _stamp_full_init_scope(
         content_provenance="model",
         git_tier="full",
         git_commit_cap=resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={"configured_cap": max_file_pages, **pages},
         analysis={"unavailable": unavailable, "skipped": []},
         provider={

@@ -34,7 +34,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-from repowise.core.persistence.search import PAGE_FTS_DDL, PG_FTS_EXPRESSION
+from repowise.core.persistence.search import PG_FTS_EXPRESSION
 
 # revision identifiers
 revision: str = "0044"
@@ -54,6 +54,13 @@ _REFILL_SQL = (
 _OLD_REFILL_SQL = (
     "INSERT INTO page_fts(page_id, title, content) "
     "SELECT id, COALESCE(title,''), COALESCE(content,'') FROM wiki_pages"
+)
+
+# Frozen at this revision's shape. ``ensure_index`` widens it to the current
+# columns, refilling any that were added later.
+PAGE_FTS_DDL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+    "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
 )
 
 _OLD_SQLITE_DDL = (

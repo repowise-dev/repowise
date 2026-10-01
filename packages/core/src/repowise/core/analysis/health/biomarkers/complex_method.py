@@ -16,18 +16,19 @@ class ComplexMethodDetector:
 
     _CCN_THRESHOLD = 9
 
+    @classmethod
+    def severity_for(cls, ccn: int, nloc: int) -> Severity | None:
+        """The severity a function of this shape earns, ``None`` below the bar."""
+        if ccn < cls._CCN_THRESHOLD:
+            return None
+        return Severity.CRITICAL if ccn >= 25 else Severity.HIGH if ccn >= 15 else Severity.MEDIUM
+
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
-            if fn.ccn < self._CCN_THRESHOLD:
+        for fn in ctx.all_functions:
+            severity = self.severity_for(fn.ccn, fn.nloc)
+            if severity is None:
                 continue
-            severity = (
-                Severity.CRITICAL
-                if fn.ccn >= 25
-                else Severity.HIGH
-                if fn.ccn >= 15
-                else Severity.MEDIUM
-            )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

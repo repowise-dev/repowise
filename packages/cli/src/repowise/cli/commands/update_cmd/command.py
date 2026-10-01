@@ -176,6 +176,10 @@ def _refresh_editor_stamp(
         # but a stale CLAUDE.md stamp is worth an honest mention.
         if degraded is not None:
             degraded.append(f"Editor file refresh: {exc}")
+    # This run may have stored coverage (or the flag changed): keep the hook in step.
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+    sync_repo_hook(repo_path, console)
 
 
 def _surface_release_news(*, written_by: str | None) -> None:
@@ -783,10 +787,15 @@ def run_update(
     resolved_index_only = _resolve_index_only_mode(
         index_only=index_only, docs_flag=docs_flag, state=state
     )
+    # ``or``, not ``get``'s default: a repo that has never had a docs pass
+    # carries ``last_docs_commit`` as an explicit null rather than omitting it,
+    # and a default only applies to a missing key. Reading it with a default
+    # handed back that null and the update aborted with "No previous sync
+    # found" against a store holding a perfectly good ``last_sync_commit``.
     base_ref = since or (
         state.get("last_sync_commit")
         if resolved_index_only
-        else state.get("last_docs_commit", state.get("last_sync_commit"))
+        else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     head = get_head_commit(repo_path)
 
@@ -1440,13 +1449,15 @@ def run_update(
         affected.regenerate = [pf.file_info.path for pf in parsed_files]
 
     if affected.stale_due_to_budget > 0:
-        console.print(
-            f"\n[yellow]⚠ Cascade budget of {cascade_budget} pages was reached. "
-            f"{affected.stale_due_to_budget} dependent pages were skipped and marked stale.[/yellow]"
-        )
-        console.print(
-            f"[yellow]  Pass `--cascade-budget {cascade_budget + affected.stale_due_to_budget}` "
-            f"to regenerate them all.[/yellow]\n"
+        from .deterministic import load_cascade_overflow_split
+        from .reporting import render_cascade_budget_warning
+
+        # The detector puts the budget overflow first in decay_only.
+        skipped = affected.decay_only[: affected.stale_due_to_budget]
+        render_cascade_budget_warning(
+            cascade_budget,
+            affected.stale_due_to_budget,
+            load_cascade_overflow_split(repo_path, skipped),
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -1486,7 +1497,14 @@ def run_update(
         repo_function_mod_p80=repo_function_mod_p80,
         timings=timings,
     )
-    doc_drift_report = _run_doc_drift_partial(graph_builder, source_map, timings=timings)
+    doc_drift_report = _run_doc_drift_partial(
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        timings=timings,
+        base_ref=base_ref,
+        file_diffs=file_diffs,
+    )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,
@@ -1603,7 +1621,8 @@ def run_update(
                         decay_paths=affected.decay_only,
                         degraded=degraded,
                     )
-                state["last_docs_commit"] = head
+                if head:
+                    state["last_docs_commit"] = head
                 console.print(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
                     "wiki pages from structure"
@@ -1640,6 +1659,7 @@ def run_update(
                             target_path=page.target_path,
                             summary=page.summary,
                             content=page.content,
+                            page_metadata=page.metadata,
                         )
                     )
                     is not None
@@ -2376,8 +2396,13 @@ def run_update(
             console.print(f"[yellow]Knowledge-graph export skipped: {exc}[/yellow]")
             degraded.append(f"Knowledge-graph export: {exc}")
 
-    state["last_sync_commit"] = head
-    state["last_docs_commit"] = head
+    # Never write a null pointer. ``get_head_commit`` returns None whenever
+    # ``git rev-parse HEAD`` fails, and erasing a good baseline strands the
+    # store: the next update reads the null as its base and refuses to run.
+    # #1507 guarded the same write in ``generate``; these are the rest of it.
+    if head:
+        state["last_sync_commit"] = head
+        state["last_docs_commit"] = head
     # Real DB total, not an accumulation: regeneration upserts existing pages,
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages

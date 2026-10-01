@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from repowise.server.mcp_server._budget.budgeter import (
+    FIT_HEADROOM_CHARS,
     effective_char_budget,
     fit_to_budget,
     response_chars,
@@ -131,14 +132,17 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # Cheapest loss first. Diff-shape context and history go before the
             # delta and the tests, so what to do survives what the diff weighs.
             "exclude_patterns",
-            "change_shape.independent_changes",
-            "change_shape",
+            "independent_changes",
+            "diff_shape",
+            "fix_history.overlap.files[]",
+            "fix_history.overlap",
             "fix_history.files[]",
             "fix_history.files",
             "fix_history",
-            "prior_fixes",
             "branch_overlap",
             "cross_repo",
+            "patch_coverage.files[]",
+            "patch_coverage",
             "impacted_tests",
             "health_delta.limits",
             "health_delta.skipped",
@@ -149,7 +153,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "health_delta",
             "classification",
             "risk_percentile",
-            "score",
         ),
     ),
     "get_answer": ResponseBudgetContract(
@@ -266,6 +269,13 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # served 0 of 40 while 73% of the budget went unspent.
             "outline.sections[]",
             "outline",
+            # Built at three rows a horizon. The quarter trims first, since the
+            # week is the nearer ask, and the totals stay until the whole block
+            # goes.
+            "next_actions.quarter.actions[]",
+            "next_actions.week.actions[]",
+            "next_actions_reason",
+            "next_actions",
             "tool_surface",
             "repos[]",
             "key_modules[]",
@@ -745,6 +755,43 @@ def _emergency_fit(
             return
 
 
+def _lead_with_dropped_targets(
+    tool: str,
+    result: dict[str, Any],
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    limit: int,
+) -> None:
+    """Put any target the budget dropped first, with the call that fetches it.
+
+    The recovery is the same call narrowed to the dropped targets. It repeats
+    their names, so it rides along only while the response stays under *limit*.
+    """
+    dropped = result.get("dropped_targets")
+    if not dropped:
+        return
+    try:
+        bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        bound = dict(kwargs)
+    params = signature.parameters
+    arguments = {
+        name: value
+        for name, value in bound.items()
+        if value is not None and (name not in params or value != params[name].default)
+    }
+    arguments["targets"] = list(dropped)
+    lead: dict[str, Any] = {"dropped_targets": dropped}
+    recovery = {"tool": tool, "arguments": arguments}
+    if response_chars(result) + response_chars({"recovery": recovery}) <= limit:
+        lead["recovery"] = recovery
+    rest = {key: value for key, value in result.items() if key not in lead}
+    result.clear()
+    result.update(lead)
+    result.update(rest)
+
+
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -787,6 +834,9 @@ def enforce_response_budget(
             char_budget=working_limit,
             collector=collector,
             record_counts=True,
+        )
+        _lead_with_dropped_targets(
+            tool, result, signature, args, kwargs, limit - FIT_HEADROOM_CHARS
         )
     else:
         fit_to_budget(

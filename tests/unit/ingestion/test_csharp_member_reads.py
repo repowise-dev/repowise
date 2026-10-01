@@ -99,3 +99,27 @@ def test_self_reads_skipped() -> None:
     resolve_csharp_member_reads(graph, cs_texts, {"Order": "Order.cs"})
 
     assert not graph.has_edge("Order.cs", "Order.cs")
+
+
+def test_reads_edges_are_strictly_file_to_file() -> None:
+    """Every `reads` edge emitted connects two file nodes, never symbol nodes."""
+    graph = _seed_graph("Caller.cs", "Order.cs")
+    cs_texts = {
+        "Caller.cs": (
+            "namespace Acme;\npublic class Caller {\n"
+            "  decimal Sum() { var order = new Order(); return order.Total; }\n}"
+        ),
+        "Order.cs": "namespace Acme;\npublic class Order { public decimal Total { get; } }",
+    }
+    type_to_file = {"Order": "Order.cs", "Caller": "Caller.cs"}
+    resolve_csharp_member_reads(graph, cs_texts, type_to_file)
+
+    reads_edges = [
+        (u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "reads"
+    ]
+    assert reads_edges, "Expected at least one reads edge"
+    for u, v in reads_edges:
+        assert "::" not in u, f"reads edge source {u} is a symbol node, expected file node"
+        assert "::" not in v, f"reads edge target {v} is a symbol node, expected file node"
+        assert u.endswith(".cs")
+        assert v.endswith(".cs")

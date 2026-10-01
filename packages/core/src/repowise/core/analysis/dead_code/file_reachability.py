@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
 from .constants import never_flag_match
@@ -276,7 +277,7 @@ def is_file_reachable(
     # Conventional entry points, framework-instantiated files and published
     # API contracts are reached from outside the graph. Nothing imports
     # ``main.py`` either.
-    if node_data.get("is_entry_point", False):
+    if is_reachability_root(node_data):
         return True
     if node_data.get("is_api_contract", False):
         return True

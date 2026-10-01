@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
@@ -11,6 +13,10 @@ from repowise.core.analysis.health.refactoring.opportunity import (
     is_standalone_clone,
     opportunity_public_id,
     opportunity_status,
+)
+from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    _details_payload,
+    _row_kwargs,
 )
 
 
@@ -238,6 +244,36 @@ def test_mechanical_and_judgment_steps_are_counted_separately() -> None:
     assert opportunity.step_count == 2
 
 
+def test_the_stored_step_count_is_the_stored_steps() -> None:
+    """The row's ``step_count`` and the details it ships with describe one list.
+
+    A reader pairs the row (counts) with the details (steps) by id; if either
+    half could disagree, a queue would promise steps its drawer never shows.
+    """
+    rows = [
+        plan("extract_method"),
+        plan("extract_method", "render"),
+        split(),
+        clone(intra=False, co_change=7),
+        clone(intra=True, co_change=0),
+        plan("extract_method", file_path="svc/billing.py"),
+    ]
+    for rank, opportunity in enumerate(compose_opportunities(rows)):
+        details = _details_payload(opportunity, validations={}, finding_ids={})
+        row = _row_kwargs(
+            opportunity,
+            rank_position=rank,
+            queue_position=rank,
+            status="open",
+            details=details,
+            analyzed_commit=None,
+        )
+        stored_steps = json.loads(row["details_json"])["steps"]
+        assert row["step_count"] == len(stored_steps) == len(opportunity.steps)
+        assert row["mechanical_steps"] + row["judgment_steps"] == row["step_count"]
+        assert opportunity.as_dict()["step_count"] == len(opportunity.as_dict()["steps"])
+
+
 # --------------------------------------------------------------------------
 # ranking
 # --------------------------------------------------------------------------
@@ -340,3 +376,77 @@ def test_dicts_and_dataclasses_compose_to_the_same_opportunity() -> None:
     from_objects = compose_opportunities(rows)[0]
     from_dicts = compose_opportunities([asdict(row) for row in rows])[0]
     assert from_objects.as_dict() == from_dicts.as_dict()
+
+
+# --------------------------------------------------------------------------
+# finding attribution
+# --------------------------------------------------------------------------
+
+
+def finding(public_id: str, function_name: str | None, line_start: int | None, **kwargs):
+    row = {
+        "public_id": public_id,
+        "file_path": "svc/orders.py",
+        "biomarker_type": "complex_method",
+        "function_name": function_name,
+        "line_start": line_start,
+        "line_end": None if line_start is None else line_start + 20,
+    }
+    row.update(kwargs)
+    return row
+
+
+def test_a_step_names_only_the_findings_its_target_answers() -> None:
+    rows = [
+        plan("extract_method", "handle", line_start=10, line_end=40),
+        plan("extract_method", "render", line_start=60, line_end=90),
+    ]
+    findings = [
+        finding("hf_handle", "handle", 10),
+        finding("hf_render", "render", 60),
+        finding("hf_other_biomarker", "handle", 10, biomarker_type="large_method"),
+        finding("hf_elsewhere", "handle", 10, file_path="svc/billing.py"),
+    ]
+    (opportunity,) = compose_opportunities(rows, findings=findings)
+    ids = {step.target_symbol: step.finding_ids for step in opportunity.steps}
+    assert ids == {"handle": ("hf_handle",), "render": ("hf_render",)}
+    assert opportunity.steps[0].as_dict()["finding_ids"] in (["hf_handle"], ["hf_render"])
+
+
+def test_finding_ids_stay_unknown_without_addressable_findings() -> None:
+    rows = [plan("extract_method")]
+    assert compose_opportunities(rows)[0].steps[0].finding_ids is None
+    unaddressable = [finding("", "handle", 10)]
+    step = compose_opportunities(rows, findings=unaddressable)[0].steps[0]
+    assert step.finding_ids is None
+    assert "finding_ids" not in step.as_dict()
+
+
+def block(name: str, **kwargs) -> RefactoringSuggestion:
+    return plan(
+        "extract_helper",
+        name,
+        evidence={"is_intra_file": False, "co_change_count": 7},
+        blast_radius={"files": ["svc/billing.py"], "file_count": 1},
+        source_biomarker="dry_violation",
+        **kwargs,
+    )
+
+
+def test_a_finding_several_steps_answer_is_recovered_once() -> None:
+    # Two cross-file, co-changed clone blocks both overlap one file-level
+    # dry_violation finding: the file recovers it once, at the larger claim.
+    rows = [
+        block("a", line_start=10, line_end=20, impact_delta=0.7),
+        block("b", line_start=15, line_end=30, impact_delta=0.5),
+        plan("extract_method", "handle", impact_delta=1.0),
+    ]
+    findings = [
+        finding("hf_dry", None, 12, biomarker_type="dry_violation"),
+        finding("hf_handle", "handle", 10),
+    ]
+    (without,) = compose_opportunities(rows)
+    (deduped,) = compose_opportunities(rows, findings=findings)
+    assert without.recoverable_health == pytest.approx(2.2)
+    assert deduped.recoverable_health == pytest.approx(1.7)
+    assert deduped.rank_factors["benefit"] == pytest.approx(1.7)

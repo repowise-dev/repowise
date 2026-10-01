@@ -93,10 +93,22 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["defect", "maintainability", "performance"]
+            "enum": ["defect", "maintainability", "performance", "advisory"]
           },
           "default": ["defect", "maintainability", "performance"],
-          "description": "Health dimensions included in the Problems panel."
+          "description": "Health dimensions included in the Problems panel. Advisory findings never deduct from a score, so they are off by default; they stay visible in the gutter, in hovers and to the language-model tools either way."
+        },
+        "repowise.docDrift.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show documentation-drift findings (paths, links, anchors, commands and code symbols a markdown file names that the tree no longer has) for visible markdown files in the Problems panel. On by default: findings are sparse and each names the line to edit."
+        },
+        "repowise.docDrift.diagnostics.minConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.7,
+          "description": "Lowest confidence a documentation-drift finding needs to appear in the Problems panel. Findings at 0.7 or above show as warnings, the rest as information."
         },
         "repowise.gutterHeat.enabled": {
           "type": "boolean",

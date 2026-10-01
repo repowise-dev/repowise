@@ -61,16 +61,33 @@ _SNIPPET_LEN = 200
 # file the page documents; most page titles are that path verbatim, which
 # leaves a question naming a directory matching only whatever the generated
 # prose happens to mention.
-PAGE_FTS_COLUMNS = ("page_id", "title", "content", "summary", "target_path")
+#
+# ``vocabulary`` is a file page's own identifiers and comment prose. It is kept
+# off the rendered page (it reads as noise), so without its own column a
+# keyless store cannot match a page on any of those words.
+PAGE_FTS_COLUMNS = ("page_id", "title", "content", "summary", "target_path", "vocabulary")
 
 PAGE_FTS_DDL = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
-    "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
+    "USING fts5(page_id UNINDEXED, title, content, summary, target_path, vocabulary)"
 )
 
 _PAGE_FTS_INSERT_SQL = (
-    "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
-    "VALUES (:pid, :title, :content, :summary, :target_path)"
+    "INSERT INTO page_fts(page_id, title, content, summary, target_path, vocabulary) "
+    "VALUES (:pid, :title, :content, :summary, :target_path, :vocabulary)"
+)
+
+# Page-metadata key for a file page's vocabulary (field names, string
+# literals, comment prose). Indexed for search, never rendered on the page.
+FILE_VOCABULARY_KEY = "file_vocabulary"
+
+# The vocabulary as stored on a ``wiki_pages`` row. Every writer indexes after
+# the page row commits, so reading it here keeps all of them in agreement
+# without each passing it. Invalid JSON yields "" rather than failing a write.
+_VOCABULARY_SQL = (
+    "CASE WHEN json_valid(metadata_json) "
+    f"THEN COALESCE(json_extract(metadata_json, '$.{FILE_VOCABULARY_KEY}'), '') "
+    "ELSE '' END"
 )
 
 # SQLite allows 999 host parameters per statement by default.
@@ -93,6 +110,23 @@ async def _delete_page_ids(conn: Any, page_ids: Sequence[str]) -> None:
         )
 
 
+async def _stored_vocabulary(conn: Any, page_ids: Sequence[str]) -> dict[str, str]:
+    """``page_id -> vocabulary`` from ``wiki_pages``; ``{}`` without that table."""
+    if not await FullTextSearch._page_table_exists(conn):
+        return {}
+    found: dict[str, str] = {}
+    for start in range(0, len(page_ids), _ID_CHUNK):
+        chunk = page_ids[start : start + _ID_CHUNK]
+        placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
+        params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        rows = await conn.execute(
+            text(f"SELECT id, {_VOCABULARY_SQL} FROM wiki_pages WHERE id IN ({placeholders})"),
+            params,
+        )
+        found.update({r[0]: r[1] or "" for r in rows.fetchall()})
+    return found
+
+
 # An indexed row whose page is gone from ``wiki_pages``. Counting and deleting
 # share the predicate so the number reported is exactly the number removed.
 # ``NOT EXISTS`` rather than ``NOT IN``: the subquery's column is a primary key
@@ -108,6 +142,10 @@ _ORPHAN_DELETE_SQL = f"DELETE FROM page_fts WHERE {_ORPHAN_PREDICATE}"
 # migration uses this exact expression: any drift between the two silently
 # drops the index from the query plan, leaving a sequential scan that still
 # returns the right rows, so both read it from here.
+#
+# It does not cover the file vocabulary yet: that needs a migration rebuilding
+# the GIN index over ``metadata_json``, which a text column cast to JSON makes
+# fail on any unparseable row.
 PG_FTS_EXPRESSION = (
     "to_tsvector('english', "
     "COALESCE(title,'') || ' ' || COALESCE(content,'') || ' ' "
@@ -128,8 +166,9 @@ _SCORE_EPSILON = 1e-6
 # it. ``page_id`` is UNINDEXED and contributes nothing, but bm25() takes one
 # weight per column, so it still needs one. bm25() ignores a weight past the
 # last column and defaults a missing one to 1.0, so the arity is checked by
-# test_search_fts_columns rather than by anything raising here.
-_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0)
+# test_search_fts_columns rather than by anything raising here. The vocabulary
+# is a bag of words, so it counts for less than prose written about the file.
+_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5)
 _BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
 
 _log = logging.getLogger(__name__)
@@ -227,8 +266,8 @@ class FullTextSearch:
         FTS5 has no ``ALTER TABLE``, so widening the index means dropping it
         and writing every row again. The rows themselves cannot supply the new
         columns — the old index never held them — so the refill reads
-        ``wiki_pages``, which is the system of record for all four indexed
-        fields.
+        ``wiki_pages``, which is the system of record for every indexed
+        field (the vocabulary from ``metadata_json``).
 
         The table is created with ``IF NOT EXISTS`` by three separate callers,
         so without this an upgraded install would keep its old shape
@@ -307,9 +346,11 @@ class FullTextSearch:
             await conn.execute(text(PAGE_FTS_DDL))
             await conn.execute(
                 text(
-                    "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
+                    "INSERT INTO page_fts"
+                    "(page_id, title, content, summary, target_path, vocabulary) "
                     "SELECT id, COALESCE(title,''), COALESCE(content,''), "
-                    "       COALESCE(summary,''), COALESCE(target_path,'') "
+                    "       COALESCE(summary,''), COALESCE(target_path,''), "
+                    f"      {_VOCABULARY_SQL} "
                     "FROM wiki_pages"
                 )
             )
@@ -451,6 +492,7 @@ class FullTextSearch:
                     "content": content,
                     "summary": summary or "",
                     "target_path": target_path or "",
+                    "vocabulary": "",
                 }
             else:
                 self._count_skipped_below_floor(page_id, content)
@@ -464,6 +506,8 @@ class FullTextSearch:
         async with self._engine.begin() as conn:
             await _delete_page_ids(conn, list(deletions))
             if insertions:
+                for pid, vocabulary in (await _stored_vocabulary(conn, list(insertions))).items():
+                    insertions[pid]["vocabulary"] = vocabulary
                 await conn.execute(text(_PAGE_FTS_INSERT_SQL), list(insertions.values()))
 
     def _count_skipped_below_floor(self, page_id: str, content: str) -> None:

@@ -56,8 +56,16 @@
 {#- The column is written on either scale depending on the producer, the
     same normalisation ``health/biomarkers/developer_congestion.py`` applies.
     Unnormalised, a 0-100 source renders "at 8500% of commits". -#}
-{%- if git.get("primary_owner_name") and git.get("primary_owner_commit_pct") -%}
+{#- With blame the owner is the top author of current lines, so the line share
+    leads and the commit share is named as such; without blame both the owner
+    and the share come from commits. -#}
 {%- set owner_pct = git.get("primary_owner_commit_pct") -%}
+{%- set line_pct = git.get("primary_owner_line_pct") -%}
+{%- if git.get("primary_owner_name") and line_pct and owner_pct -%}
+{%- set _ = history.append(labels.history_owner_lines.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int, commit=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and line_pct -%}
+{%- set _ = history.append(labels.history_owner_lines_only.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and owner_pct -%}
 {%- set _ = history.append(labels.history_owner.format(owner=git.get("primary_owner_name"), pct=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
 {%- endif -%}
 {#- Suppressed when it exceeds the commit total: the two are counted over
@@ -206,29 +214,10 @@ _{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
 - {{ q }}
 {%- endfor %}
 {%- endif %}
-{#- The words the file itself uses.
-
-    Everything above is a description of the file. This is the file's own
-    vocabulary: field names, string literals, help text, comment prose. The
-    page could describe a file accurately and still be unfindable by any
-    question about what it does, because a question is asked in the words of
-    the source and none of those words were on the page.
-
-    Per-file, and that is the whole point. Repo-level vocabulary rendered here
-    would be byte-identical across every file page in the corpus, which is the
-    failure this template's own header warns about: it would match every query
-    and distinguish none of them.
-
-    Last on the page, below the questions block, for the same reason that
-    block is low: ``_extract_summary`` reads back from the top, and a bag of
-    words is not a summary. Conditional, like every section below the
-    Overview, so a file that yields no vocabulary renders no heading.
--#}
-{%- if ctx.file_vocabulary %}
-
-## {{ labels.in_the_code }}
-
-{{ ctx.file_vocabulary }}
-{%- endif %}
+{#- The file's own vocabulary (``ctx.file_vocabulary``) is not rendered.
+    ``_render_file_page`` stores it in page metadata and ``embed_item`` adds
+    it to the embedded text: it is a bag of words, which serves retrieval and
+    reads to a person as noise.
+#}
 
 {% include "_footer.j2" %}

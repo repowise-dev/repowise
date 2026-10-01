@@ -20,6 +20,7 @@ engine can pick it up when building each ``FileContext``.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "BlameIndex",
+    "blame_as_of",
     "build_blame_index",
     "distinct_commits_in_range",
     "median_author_time_in_range",
@@ -59,6 +61,14 @@ class BlameIndex:
 
     lines: dict[int, tuple[str, int]] = field(default_factory=dict)
     authors: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # The indexer's history anchor (unix seconds), so line ages are measured
+    # from the indexed commit like every other git window.
+    as_of_ts: int | None = None
+
+
+def blame_as_of(idx: BlameIndex) -> int:
+    """Reference 'now' for *idx*: its anchor, or wall clock when built without one."""
+    return idx.as_of_ts if idx.as_of_ts is not None else int(time.time())
 
 
 def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float | None]:

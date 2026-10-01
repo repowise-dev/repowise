@@ -253,23 +253,31 @@ inside a repowise repo.
 ## `repowise saved` — the savings report
 
 ```bash
-repowise saved                  # per-filter rollup + totals + est. dollars
+repowise saved                  # per-operation rollup + totals + est. dollars
+repowise saved --by surface     # distill vs hooks vs MCP
+repowise saved --by agent       # which agent the savings went to
 repowise saved --by day         # daily rollup
-repowise saved --by source      # cli vs hook-* vs mcp:<tool>
 repowise saved --since 2026-06-01
-repowise saved --model claude-opus-4-6   # price the estimate differently
 repowise saved --missed                  # savings raw commands left on the table
 repowise saved --missed --missed-days 30
 ```
 
-Dollar estimates price saved tokens at the chosen model's *input* rate (saved
-tokens are input the agent never had to read) using the same pricing table as
-`repowise costs`. Token counts are chars/4 estimates.
+Savings are priced at each event's own rate, captured when the event was
+recorded, so a later price change never rewrites what a past saving was worth.
+Events recorded without a rate are reported as unpriced rather than valued at
+today's model, and the command prints both figures. Saved tokens are input the
+agent never had to read, so the input rate applies; the pricing table is the
+one `repowise costs` uses. Token counts are chars/4 estimates.
 
-The report covers both surfaces of the ledger: the **distill command/hook
-path** (`cli` / `hook-*` sources) and **MCP counterfactual savings** (`mcp:<tool>`
-sources — each tool answer priced against the raw exploration it replaced).
-`repowise saved --by source` separates them.
+The report covers every capture surface in one ledger: the **distill
+command/hook path**, the **hooks that replace a tool result**, and **MCP
+calls**, where each answer is counted against the raw exploration it replaced.
+`repowise saved --by surface` separates them.
+
+The total keeps two kinds of evidence apart. **Measured** savings compare a
+known before and after — bytes that really moved. **Inferred** savings estimate
+the exploration an answer replaced. The command prints the split, and calls the
+total "estimated" whenever any of it is inferred.
 
 ### Missed savings — `repowise saved --missed`
 

@@ -415,7 +415,7 @@ describe("the inspector", () => {
       <MapInspector file={row} overlay="performance" onOpen={vi.fn()} onClose={vi.fn()} />,
     );
     expect(getByText("Open opportunities")).toBeInTheDocument();
-    expect(getByText(/defect risk 7\.0/)).toBeInTheDocument();
+    expect(getByText(/code health 7\.0/)).toBeInTheDocument();
     // The score badge, which is the defect ramp, is not the leading mark.
     const leading = container.querySelector("section > div")?.firstElementChild;
     expect(leading?.textContent).toBe("");

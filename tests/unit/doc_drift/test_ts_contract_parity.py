@@ -23,6 +23,7 @@ import pytest
 from repowise.core.analysis.doc_drift.constants import (
     HIGH_CONFIDENCE_THRESHOLD,
     REVIEW_CONFIDENCE_THRESHOLD,
+    SUGGESTION_BASIS_VALUES,
     UNAVAILABLE_NO_TABLE,
     UNAVAILABLE_NOT_COMPUTED,
     UNAVAILABLE_READ_FAILED,
@@ -85,6 +86,14 @@ def test_every_reference_class_has_a_reader_facing_label(contract: str) -> None:
     assert block, "DOC_DRIFT_KIND_LABELS is not declared"
     labelled = set(re.findall(r"^\s*([a-z_]+):", block.group(1), re.M))
     assert labelled == {kind.value for kind in DriftKind}
+
+
+def test_every_suggestion_basis_has_a_reader_facing_label(contract: str) -> None:
+    """A basis added alone renders its slug in the detail panel and the prompt."""
+    block = re.search(r"SUGGESTION_BASIS_LABELS:.*?= \{(.*?)\};", contract, re.S)
+    assert block, "SUGGESTION_BASIS_LABELS is not declared"
+    labelled = set(re.findall(r"^\s*([a-z_]+):", block.group(1), re.M))
+    assert labelled == SUGGESTION_BASIS_VALUES
 
 
 def _interface_fields(source: str, name: str) -> set[str]:

@@ -15,14 +15,18 @@ from pathlib import Path
 import click
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands.coverage_check_cmd import coverage_check
+from repowise.cli.commands.coverage_suggest_gates_cmd import coverage_suggest_gates
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.workspace.update import get_head_commit
 
 
@@ -53,18 +57,22 @@ async def _repo_file_keys(session, repo_id: str) -> set[str]:
 
 @click.group("coverage")
 def coverage_group() -> None:
-    """Ingest and inspect test-coverage reports."""
+    """Ingest and inspect test-coverage reports, and gate changes on them in CI."""
+
+
+coverage_group.add_command(coverage_check)
+coverage_group.add_command(coverage_suggest_gates)
 
 
 @coverage_group.command("add")
-@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.argument("paths", nargs=-1)
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 @click.option(
     "--format",
     "coverage_format",
-    type=click.Choice(["lcov", "cobertura", "clover", "repowise-json"]),
+    type=click.Choice(list(COVERAGE_PARSERS)),
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
@@ -90,6 +98,16 @@ def coverage_add(
 ) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
 
+    Each PATH is a report path or a glob (quote it, e.g. 'artifacts/**/lcov.info'),
+    relative to cwd. PATH=PREFIX prepends PREFIX to the paths inside every report
+    it matches, like a {path, path_prefix} entry in coverage.paths. A PATH that
+    matches no file is an error.
+
+    With hooks.coverage_reingest: true and the Claude Code repowise hooks
+    installed, a successful ingest also adds this repository's coverage
+    re-ingest hook to .claude/settings.local.json (removed again when the flag
+    is not true).
+
     Stores per-file line/branch coverage, and additionally the per-test
     "test-to-code" map when a report carries contexts - a coverage.py
     ``.coverage`` written with ``coverage run --contexts=test``, or a per-test
@@ -102,6 +120,8 @@ def coverage_add(
         repowise coverage add coverage/lcov.info
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
+        repowise coverage add 'artifacts/**/lcov.info'
+        repowise coverage add web/coverage/lcov.info=web
 
     Exits non-zero when nothing was stored, so `coverage add ... || exit 1`
     tells a complete ingest from a no-op. With --strict it also exits
@@ -116,6 +136,7 @@ def coverage_add(
         CoverageConfig,
         build_coverage_map,
         discover_artifacts,
+        expand_report_args,
         parse_contexts_file,
         resolve_test_reports,
     )
@@ -123,8 +144,13 @@ def coverage_add(
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
+    report_prefixes: dict[Path, str | None] = {}
     if paths:
-        report_paths = [Path(p) for p in paths]
+        try:
+            report_prefixes = expand_report_args(paths, Path())
+        except FileNotFoundError as exc:
+            raise click.BadParameter(str(exc), param_hint="PATHS") from None
+        report_paths = list(report_prefixes)
     else:
         report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
         report_paths += _discover_context_reports(repo_path)
@@ -160,7 +186,10 @@ def coverage_add(
             save_test_coverage,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
@@ -190,7 +219,7 @@ def coverage_add(
                 or getattr(repo_row, "head_commit", None)
             )
 
-            # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
+            # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             agg_matched = 0
             unmapped = 0
             mapping_partial = False
@@ -202,6 +231,8 @@ def coverage_add(
                     coverage_format=coverage_format or cfg.format,
                     strip_prefix=cfg.strip_prefix,
                     path_prefix=cfg.path_prefix,
+                    report_prefixes=report_prefixes,
+                    ignore=cfg.ignore,
                 )
                 for path, err in errors:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
@@ -219,7 +250,7 @@ def coverage_add(
                         resolved.files,
                         source_format=resolved.source_format or "lcov",
                         ingested_commit_sha=head_sha,
-                        mapping_partial=mapping_partial,
+                        provenance=resolved.provenance,
                     )
                     agg_matched = resolved.matched
                     console.print(
@@ -261,7 +292,8 @@ def coverage_add(
                     creport,
                     repo_keys,
                     strip_prefix=cfg.strip_prefix,
-                    path_prefix=cfg.path_prefix,
+                    path_prefix=report_prefixes.get(report_path) or cfg.path_prefix,
+                    ignore=cfg.ignore,
                 )
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format
@@ -317,6 +349,9 @@ def coverage_add(
     # exit status alone.
     if not run_async(_do()):
         raise click.exceptions.Exit(1)
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+    sync_repo_hook(repo_path, console)
 
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -348,7 +383,7 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 # Safe to spell this ``--format`` here: the ``--format`` that names an *input*
-# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# parser (a COVERAGE_PARSERS key) lives on ``coverage add``, not on the
 # group, so the two never meet on one command line.
 @format_option()
 def coverage_status(repo: str | None, fmt: str) -> None:
@@ -368,7 +403,10 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_test_coverage_summary,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
@@ -377,7 +415,9 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 if fmt == "json":
                     emit_json({"repo": str(repo_path), "indexed": False})
                 return
-            summary = await get_coverage_summary(session, repo_row.id)
+            summary = await get_coverage_summary(
+                session, repo_row.id, reference_commit=repo_row.head_commit
+            )
             map_summary = await get_test_coverage_summary(session, repo_row.id)
 
             if fmt == "json":
@@ -418,6 +458,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
                 if branch_pct is not None:
                     console.print(f"  Branch: {branch_pct:.1f}%")
+                paths = summary.get("report_paths")
+                if paths:
+                    console.print(
+                        f"  Report paths matched: {paths['matched']} of {paths['total']}"
+                    )
+                if (summary.get("freshness") or {}).get("status") == "stale":
+                    console.print(
+                        f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
+                        "not the indexed commit; re-run the tests and ingest again.[/yellow]"
+                    )
 
             if map_summary.get("pair_count"):
                 console.print(

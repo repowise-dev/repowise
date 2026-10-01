@@ -16,6 +16,7 @@ from typing import Any, TypeVar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -99,6 +100,9 @@ async def collect_node_signals(
     dec_q = select(DecisionRecord.affected_files_json).where(
         DecisionRecord.repository_id == repo_id,
         DecisionRecord.status.in_(("active", "proposed")),
+        # A commit footprint does not make each file it touched a file
+        # with a decision.
+        DecisionRecord.scope_basis != SCOPE_BASIS_FOOTPRINT,
     )
     decision_paths: set[str] = set()
     for (raw,) in (await session.execute(dec_q)).all():

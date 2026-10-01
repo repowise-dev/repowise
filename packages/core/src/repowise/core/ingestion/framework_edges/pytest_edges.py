@@ -199,6 +199,13 @@ def _fixture_scopes(parsed: Any, class_name: str | None) -> list[str | None]:
     return scopes
 
 
+# Stamped on the test -> conftest edge. pytest loads a conftest for every test
+# under its directory, so the edge is real for fixture visibility, but no
+# import statement makes it: consumers that mean "imports" (the import-edge
+# oracle, density metrics) must be able to tell it from one.
+CONFTEST_HINT = "pytest_conftest"
+
+
 def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
     """conftest.py -> test files in the same or child directories."""
     count = 0
@@ -216,6 +223,7 @@ def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
             if (p.startswith(prefix) or (prefix == "" and "/" not in p)) and _add_edge_if_new(
                 graph, p, conf
             ):
+                graph[p][conf]["hint_source"] = CONFTEST_HINT
                 count += 1
     return count
 

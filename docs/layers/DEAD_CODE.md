@@ -43,7 +43,7 @@ get_dead_code(kind="unused_export", group_by="owner")
 | Kind | What it means | How it is computed | Base confidence |
 |------|---------------|--------------------|-----------------|
 | `unreachable_file` | No file in the repo imports this one. | File-node in-degree of 0 on the dependency graph, after entry points and the never-flag allowlist are removed. | Scored from git age (below) |
-| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `method_implements` / `reads` / `extends` / `implements` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
+| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `extends` / `implements` / `method_implements` / `dispatches_to` / `framework_binds` / `reads` / `references` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
 | `unused_internal` | A private or underscore-prefixed symbol nothing calls. | No `calls` edge, and no cross-file importer pulls the name (which would mean a dispatch-table lookup). Off by default. | `0.65` |
 | `zombie_package` | A whole top-level package no other package imports. | No inter-package import edges into it. Never marked safe to delete. | `0.50` |
 
@@ -245,9 +245,11 @@ These are the cases where a finding is most likely wrong:
   config file, a handler looked up in a registry dict, a Java class loaded by
   `Class.forName`. The dynamic-pattern name list and the `.register` decorator
   suffix catch the common shapes; nothing catches all of them.
-- **Dynamic imports in unmodelled languages.** The marker table covers Python and
-  JS/TS. Go, Ruby, PHP, Kotlin, Swift, and Scala runtime loading is not detected
-  yet, so an orphan in those languages carries no dynamic-import cap.
+- **Dynamic imports in unmodelled languages.** The marker table covers Python,
+  JS/TS, Java, Kotlin, Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++.
+  Languages without dynamic import markers or framework hints do not detect
+  runtime loading, so an orphan in those unmodelled languages carries no
+  dynamic-import cap.
 - **Entry points the graph did not mark.** A binary target, a CLI script, or a
   serverless handler that neither the allowlist nor the entry-point pass
   recognized reads as unreachable every time. If you see a whole directory light
