@@ -1630,8 +1630,8 @@ class DeadCodeAnalyzer:
             # never hold — a method or an interface is filtered out above.
             # ``new X(..)`` lands on X's constructor (``path::X::X``) when X
             # declares one, and constructing a type uses it.
-            if self._has_inbound_use(node) or self._has_inbound_use(
-                f"{file_path}::{sym_name}::{sym_name}"
+            if self._has_inbound_use(node, candidate_node=node) or self._has_inbound_use(
+                f"{file_path}::{sym_name}::{sym_name}", candidate_node=node
             ):
                 continue
 
@@ -1673,15 +1673,57 @@ class DeadCodeAnalyzer:
 
         return findings
 
-    def _has_inbound_use(self, node: str) -> bool:
-        """Whether any reachability-use edge lands on *node* (False if absent)."""
+    def _has_inbound_use(self, node: str, candidate_node: str | None = None) -> bool:
+        """Whether any reachability-use edge lands on *node* (False if absent).
+
+        When *candidate_node* is provided, predecessors that lie entirely within
+        the candidate symbol's own line span (e.g. self-referencing constructors,
+        recursive calls, or methods within a class) are excluded so internal
+        calls do not mask dead code (#2790).
+        """
         if not self.graph.has_node(node):
             return False
-        return any(
-            self.graph.get_edge_data(pred, node, {}).get("edge_type")
-            in REACHABILITY_USE_EDGE_TYPES
-            for pred in self.graph.predecessors(node)
-        )
+
+        candidate_file: str | None = None
+        candidate_start: int | None = None
+        candidate_end: int | None = None
+        if candidate_node and self.graph.has_node(candidate_node):
+            cdata = self.graph.nodes[candidate_node]
+            candidate_file = cdata.get("file_path")
+            candidate_start = cdata.get("start_line")
+            candidate_end = cdata.get("end_line")
+
+        for pred in self.graph.predecessors(node):
+            edge_data = self.graph.get_edge_data(pred, node, {})
+            if edge_data.get("edge_type") not in REACHABILITY_USE_EDGE_TYPES:
+                continue
+
+            if candidate_node:
+                if pred in (candidate_node, node):
+                    continue
+
+                if (
+                    candidate_file is not None
+                    and candidate_start is not None
+                    and candidate_end is not None
+                    and self.graph.has_node(pred)
+                ):
+                    pdata = self.graph.nodes[pred]
+                    pfile = pdata.get("file_path")
+                    pstart = pdata.get("start_line")
+                    pend = pdata.get("end_line")
+                    if (
+                        pfile == candidate_file
+                        and pstart is not None
+                        and pend is not None
+                        and pstart >= candidate_start
+                        and pend <= candidate_end
+                    ):
+                        continue
+
+            return True
+
+        return False
 
     def _is_internal_candidate(
         self, node_data: dict, dynamic_patterns: tuple[str, ...], whitelist: set[str]

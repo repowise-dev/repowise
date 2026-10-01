@@ -582,3 +582,115 @@ def test_without_source_the_finding_is_left_as_it_was():
     )
     [finding] = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
     assert finding.confidence == 0.65
+
+
+def test_unused_internal_self_referencing_constructor_reported():
+    """A private class whose only caller is inside its own span is unused (#2790)."""
+    g = _build_graph(
+        nodes={
+            "pkg/thing.py": {
+                "symbols": [
+                    {
+                        "name": "_SelfRef",
+                        "kind": "class",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 20,
+                    },
+                    {
+                        "name": "_SelfRef::__init__",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 5,
+                        "end_line": 10,
+                    },
+                ],
+            },
+        },
+        edges=[
+            (
+                "pkg/thing.py::_SelfRef::__init__",
+                "pkg/thing.py::_SelfRef",
+                {"edge_type": "calls"},
+            ),
+        ],
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_unused_exports": False, "min_confidence": 0.0}
+    )
+    internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert any(f.symbol_name == "_SelfRef" for f in internals)
+
+
+def test_unused_internal_recursive_function_reported():
+    """A private function whose only caller is itself is unused (#2790)."""
+    g = _build_graph(
+        nodes={
+            "pkg/thing.py": {
+                "symbols": [
+                    {
+                        "name": "_recurse",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 10,
+                    },
+                ],
+            },
+        },
+        edges=[
+            (
+                "pkg/thing.py::_recurse",
+                "pkg/thing.py::_recurse",
+                {"edge_type": "calls"},
+            ),
+        ],
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_unused_exports": False, "min_confidence": 0.0}
+    )
+    internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert any(f.symbol_name == "_recurse" for f in internals)
+
+
+def test_unused_internal_external_caller_not_reported():
+    """A private function called from outside its own span is not reported (#2790)."""
+    g = _build_graph(
+        nodes={
+            "pkg/thing.py": {
+                "symbols": [
+                    {
+                        "name": "_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 10,
+                    },
+                    {
+                        "name": "caller",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 12,
+                        "end_line": 20,
+                    },
+                ],
+            },
+        },
+        edges=[
+            (
+                "pkg/thing.py::caller",
+                "pkg/thing.py::_helper",
+                {"edge_type": "calls"},
+            ),
+        ],
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_unused_exports": False, "min_confidence": 0.0}
+    )
+    internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert not any(f.symbol_name == "_helper" for f in internals)
