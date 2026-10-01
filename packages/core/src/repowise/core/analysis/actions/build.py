@@ -240,6 +240,20 @@ def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
     return {"author_last_commit": last, "active_authors_90d": len(active)}
 
 
+def _authored_regression(row: Any) -> bool:
+    """The commit's own lines introduced or worsened a critical/high finding."""
+    return (
+        field(row, "change_kind") in ("introduced", "worsened")
+        and field(row, "severity") in ("critical", "high")
+        and field(row, "attribution_basis") in AUTHORED_BASES
+    )
+
+
+def _shown_code_shape(biomarker: Any, hidden: frozenset[str]) -> bool:
+    """A code-shape marker, not a history one, and not one the registry hides."""
+    return biomarker_category(biomarker) != HISTORY_CATEGORY and biomarker not in hidden
+
+
 def _recent_candidates(
     rows: Rows, *, week: datetime | None, files: Mapping[str, FileFacts]
 ) -> list[tuple[Any, datetime]]:
@@ -250,17 +264,11 @@ def _recent_candidates(
     out = []
     for f in rows:
         at = _when(field(f, "committed_at"))
-        biomarker = field(f, "biomarker_type")
-        if (
-            at is not None
-            and at >= week
-            and field(f, "change_kind") in ("introduced", "worsened")
-            and field(f, "severity") in ("critical", "high")
-            and field(f, "attribution_basis") in AUTHORED_BASES
-            and not _is_test(field(f, "file_path"), files)
-            and biomarker_category(biomarker) != HISTORY_CATEGORY
-            and biomarker not in hidden
-        ):
+        if at is None or at < week or not _authored_regression(f):
+            continue
+        if _is_test(field(f, "file_path"), files):
+            continue
+        if _shown_code_shape(field(f, "biomarker_type"), hidden):
             out.append((f, at))
     return out
 

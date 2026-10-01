@@ -212,3 +212,36 @@ def test_a_store_that_fails_to_build_costs_only_itself() -> None:
     )
     assert facts.unavailable == {"doc_drift": "Not here."}
     assert facts.secrets
+
+
+def test_only_a_recent_authored_code_shape_regression_is_a_candidate() -> None:
+    """Each condition alone keeps a commit-health row out of the recent findings."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.actions.build import _recent_candidates
+
+    week = _T - timedelta(days=7)
+    kept = {"committed_at": _iso(timedelta(days=2)), "change_kind": "worsened",
+            "severity": "critical", "attribution_basis": "changed_symbol",
+            "file_path": "src/a.py", "biomarker_type": "complex_method"}
+    dropped = {
+        "no date": {"committed_at": None},
+        "unparseable date": {"committed_at": "not a date"},
+        "before the week": {"committed_at": _iso(timedelta(days=8))},
+        "resolved": {"change_kind": "resolved"},
+        "medium": {"severity": "medium"},
+        "touched, not written": {"attribution_basis": "file_change"},
+        "a test file": {"file_path": "tests/test_a.py"},
+        "a history marker": {"biomarker_type": "change_entropy"},
+        "a hidden marker": {"biomarker_type": "dry_violation"},
+    }
+    files = {"tests/test_a.py": SimpleNamespace(is_test=True)}
+
+    rows = [kept, *({**kept, **change} for change in dropped.values())]
+    out = _recent_candidates(rows, week=week, files=files)
+
+    assert [row for row, _at in out] == [kept]
+    assert _recent_candidates(rows, week=None, files=files) == []
+    # The week's own instant is inside it.
+    edge = {**kept, "committed_at": week.isoformat()}
+    assert len(_recent_candidates([edge], week=week, files=files)) == 1
