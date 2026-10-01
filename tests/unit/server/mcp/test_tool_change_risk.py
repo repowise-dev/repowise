@@ -73,6 +73,31 @@ def test_a_failed_health_comparison_degrades_to_unavailable(monkeypatch):
     assert delta.findings == []
 
 
+def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
+    """A lazy import asking the loaded module for a name only the checkout has."""
+
+    def _stale(_path):
+        from repowise.core.ingestion.type_names import name_added_after_server_start  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _stale)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.status == "unavailable"
+    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert "name_added_after_server_start" in delta.explanation
+    assert "Restart the MCP server" in delta.explanation
+
+
+def test_a_missing_third_party_module_keeps_the_raw_failure(monkeypatch):
+    """Not a stale server: restarting would not install a dependency."""
+
+    def _missing(_path):
+        import repowise_no_such_dependency  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _missing)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.explanation.startswith("Health comparison failed: No module named")
+
+
 def _finding(path, biomarker, symbol, start, end):
     return SimpleNamespace(
         path=path,

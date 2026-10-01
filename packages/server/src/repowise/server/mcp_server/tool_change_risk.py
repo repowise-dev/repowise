@@ -51,6 +51,10 @@ from repowise.server.mcp_server._change_health import (
 from repowise.server.mcp_server._change_health import (
     patch_coverage_action as _patch_coverage_action,
 )
+from repowise.server.mcp_server._failure_shield import (
+    is_stale_server_import,
+    stale_server_notice,
+)
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -342,9 +346,14 @@ def _compare_health(
         )
     except Exception as exc:
         log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
+        explanation = (
+            stale_server_notice(exc)
+            if is_stale_server_import(exc)
+            else f"Health comparison failed: {exc}"
+        )
         return ChangeHealthDelta(
             status="unavailable",
-            explanation=f"Health comparison failed: {exc}",
+            explanation=explanation,
             base=None,
             head=None,
             comparison_basis="not_compared",
