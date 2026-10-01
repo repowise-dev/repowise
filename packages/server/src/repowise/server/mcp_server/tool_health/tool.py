@@ -12,6 +12,9 @@ from time import perf_counter
 from typing import Any
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.refactoring.serving import (
+    DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
+)
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.persistence.database import get_session
@@ -48,7 +51,6 @@ from repowise.server.mcp_server.tool_health.projection import (
 )
 from repowise.server.mcp_server.tool_health.request import _ONLY_ALIASES, HealthRequest
 from repowise.server.mcp_server.tool_health.targeted import ModeTotals, build_targeted
-from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
 
 __all__ = ["_ONLY_ALIASES", "get_health"]
 

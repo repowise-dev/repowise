@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_VIEWS as _REFACTORING_VIEWS,
+)
+from repowise.core.analysis.health.refactoring.serving import (
+    DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
+)
 from repowise.core.analysis.health.scoring import ALL_DIMENSIONS
-from repowise.server.services.refactoring_health import CANONICAL_VIEWS as _REFACTORING_VIEWS
-from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
 
 # ``include`` names that land under a different response key, so ``only`` can
 # use the same name. ``signals`` has no top-level key (it merges into

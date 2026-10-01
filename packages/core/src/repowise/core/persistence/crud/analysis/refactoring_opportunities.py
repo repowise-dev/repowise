@@ -47,26 +47,16 @@ _LIVE_PLAN_STATUSES = frozenset({"open", "acknowledged"})
 # and restate the decision as its own.
 _DECIDED_STATUSES = frozenset({"resolved", "false_positive"})
 
-# Orders the queue can be read in. Every one ends in a unique column so the
-# total order is deterministic and a deep offset cannot repeat or skip a row.
-_ORDERS: dict[str, tuple[Any, ...]] = {
-    "queue": (RefactoringOpportunity.queue_position.asc(),),
-    "rank": (RefactoringOpportunity.rank_position.asc(),),
-    "health": (
-        RefactoringOpportunity.recoverable_health.desc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-    "effort": (
-        RefactoringOpportunity.step_count.asc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-    "file": (
-        RefactoringOpportunity.file_path.asc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-}
+def _order_by(order: str | None) -> tuple[Any, ...]:
+    """The ``ORDER BY`` for *order*, built from the serving layer's sort table."""
+    from ....analysis.health.refactoring.serving import DEFAULT_ORDER, SORTS
 
-DEFAULT_ORDER = "queue"
+    return tuple(
+        getattr(RefactoringOpportunity, name).desc()
+        if descending
+        else getattr(RefactoringOpportunity, name).asc()
+        for name, descending in SORTS.get(order or DEFAULT_ORDER, SORTS[DEFAULT_ORDER])
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -499,68 +489,33 @@ async def _write_summary(
 # ---------------------------------------------------------------------------
 
 
-def _opportunity_filters(
-    repository_id: str,
-    *,
-    status: str,
-    lead_types: list[str] | None,
-    confidence: str | None,
-    effort: str | None,
-    file_paths: list[str] | None,
-    path_contains: str | None,
-    path_prefix: str | None,
-    mechanical_only: bool,
-    addresses_primary: bool | None,
-    opportunity_ids: list[str] | None = None,
-) -> list[Any]:
-    predicates: list[Any] = [
+def _predicate(rule: Any, value: Any) -> Any:
+    """One serving-layer filter rule as a SQL predicate."""
+    column = getattr(RefactoringOpportunity, rule.field)
+    if rule.op == "eq":
+        return column == value
+    if rule.op == "in":
+        # One value is still one equality; an empty list matches nothing.
+        return column == value[0] if len(value) == 1 else column.in_(value)
+    if rule.op == "contains":
+        # Escaping goes through the shared helper so a path fragment is read
+        # as a path fragment here the same way it is everywhere else.
+        return column.ilike(f"%{escape_like(value)}%", escape=LIKE_ESCAPE)
+    if rule.op == "prefix":
+        return column.like(f"{escape_like(value)}%", escape=LIKE_ESCAPE)
+    if rule.op == "positive":
+        return column > 0
+    return column.is_(value)
+
+
+def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
+    """The ``WHERE`` for *params*, built from the serving layer's filter table."""
+    from ....analysis.health.refactoring.serving import active_filters
+
+    return [
         RefactoringOpportunity.repository_id == repository_id,
-        RefactoringOpportunity.status == status,
+        *(_predicate(rule, value) for rule, value in active_filters(params)),
     ]
-    if opportunity_ids is not None:
-        # A scope resolved in Python (Fix first's eligible set); an empty one
-        # matches nothing, as ``file_paths`` does.
-        predicates.append(RefactoringOpportunity.opportunity_id.in_(opportunity_ids))
-    if lead_types:
-        # One value is still one equality; a list is how the board's
-        # "Structural" tab asks for its four types without four round trips.
-        predicates.append(
-            RefactoringOpportunity.lead_refactoring_type == lead_types[0]
-            if len(lead_types) == 1
-            else RefactoringOpportunity.lead_refactoring_type.in_(lead_types)
-        )
-    if confidence is not None:
-        predicates.append(RefactoringOpportunity.confidence == confidence)
-    if effort is not None:
-        predicates.append(RefactoringOpportunity.effort_bucket == effort)
-    if file_paths is not None:
-        predicates.append(RefactoringOpportunity.file_path.in_(file_paths))
-    if path_contains:
-        # A residual filter over the open set, not an index seek: the board's
-        # search box is the one caller, and it is bounded by open row count
-        # rather than by page. Escaping goes through the shared helper so a
-        # path fragment is read as a path fragment here the same way it is
-        # everywhere else that builds a LIKE.
-        predicates.append(
-            RefactoringOpportunity.file_path.ilike(
-                f"%{escape_like(path_contains)}%", escape=LIKE_ESCAPE
-            )
-        )
-    if path_prefix:
-        # A directory scope (the CLI's ``--module``), counted in the store so
-        # the total is exact rather than a capped over-fetch narrowed later.
-        predicates.append(
-            RefactoringOpportunity.file_path.like(
-                f"{escape_like(path_prefix)}%", escape=LIKE_ESCAPE
-            )
-        )
-    if mechanical_only:
-        predicates.append(RefactoringOpportunity.mechanical_steps > 0)
-    if addresses_primary is not None:
-        predicates.append(
-            RefactoringOpportunity.addresses_primary_problem.is_(addresses_primary)
-        )
-    return predicates
 
 
 async def list_refactoring_opportunities(
@@ -577,7 +532,7 @@ async def list_refactoring_opportunities(
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
     opportunity_ids: list[str] | None = None,
-    order: str = DEFAULT_ORDER,
+    order: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[RefactoringOpportunity], int]:
@@ -605,7 +560,7 @@ async def list_refactoring_opportunities(
     query: Select[Any] = (
         select(RefactoringOpportunity)
         .where(*predicates)
-        .order_by(*_ORDERS.get(order, _ORDERS[DEFAULT_ORDER]))
+        .order_by(*_order_by(order))
         .offset(max(offset, 0))
         .limit(max(limit, 0))
     )
@@ -754,38 +709,22 @@ async def refactoring_facet_counts(
     statement each, so adding a facet never adds a round trip.
     ``opportunity_ids`` narrows the counts to a scope the list applies too.
     """
-    columns = (
-        RefactoringOpportunity.lead_refactoring_type,
-        RefactoringOpportunity.effort_bucket,
-        RefactoringOpportunity.confidence,
-    )
+    from ....analysis.health.refactoring.serving import FACETS, fold_facets
+
+    columns = tuple(getattr(RefactoringOpportunity, name) for _, name in FACETS)
     rows = await session.execute(
         select(*columns, func.count())
         .where(
-            RefactoringOpportunity.repository_id == repository_id,
-            RefactoringOpportunity.status == status,
-            *(
-                [RefactoringOpportunity.opportunity_id.in_(opportunity_ids)]
-                if opportunity_ids is not None
-                else []
-            ),
+            *_opportunity_filters(
+                repository_id, status=status, opportunity_ids=opportunity_ids
+            )
         )
         .group_by(*columns)
     )
-    facets: dict[str, dict[str, int]] = {"lead_type": {}, "effort": {}, "confidence": {}}
-    for lead_type, effort, confidence, count in rows.all():
-        for name, key in (
-            ("lead_type", lead_type),
-            ("effort", effort),
-            ("confidence", confidence),
-        ):
-            if key is not None:
-                facets[name][str(key)] = facets[name].get(str(key), 0) + int(count)
-    return facets
+    return fold_facets(rows.all())
 
 
 __all__ = [
-    "DEFAULT_ORDER",
     "finalize_refactoring_opportunities",
     "get_refactoring_opportunity",
     "get_refactoring_summary",

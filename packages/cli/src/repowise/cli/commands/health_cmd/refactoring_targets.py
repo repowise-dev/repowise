@@ -121,12 +121,10 @@ def _render_stored_refactoring_targets(
     wrote.
     """
     from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.analysis.health.refactoring.serving import parse_query
     from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
     from repowise.core.persistence import crud
-    from repowise.server.services.refactoring_health import (
-        RefactoringHealthService,
-        parse_query,
-    )
+    from repowise.server.services.refactoring_health import RefactoringHealthService
 
     def keep(path: str) -> bool:
         if file_filter and path != file_filter:

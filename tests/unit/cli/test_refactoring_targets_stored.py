@@ -62,6 +62,7 @@ _PATHS = [f"pkg{i % 3}/mod{i}.py" for i in range(6)]
 
 async def _store(repo_path: Path, paths: list[str] = _PATHS) -> list[str]:
     """Seed one opportunity per file; return the stored queue order."""
+    from repowise.core.analysis.health.refactoring.serving import parse_query
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -70,10 +71,7 @@ async def _store(repo_path: Path, paths: list[str] = _PATHS) -> list[str]:
         init_db,
         upsert_repository,
     )
-    from repowise.server.services.refactoring_health import (
-        RefactoringHealthService,
-        parse_query,
-    )
+    from repowise.server.services.refactoring_health import RefactoringHealthService
 
     db_path = repo_path / ".repowise" / "wiki.db"
     engine = create_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.core.persistence.crud import get_health_finding_by_public_id
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
@@ -25,10 +26,7 @@ from repowise.server.mcp_server.tool_health.serialize import (
     _legacy_health_finding_id,
     _serialize_finding,
 )
-from repowise.server.services.performance_health import (
-    PerformanceHealthService,
-    evidence_block,
-)
+from repowise.server.services.performance_health import PerformanceHealthService
 from repowise.server.services.refactoring_health import RefactoringHealthService
 
 

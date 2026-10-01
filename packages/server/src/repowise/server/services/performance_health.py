@@ -30,6 +30,7 @@ from repowise.core.analysis.health.perf.opportunity_rank import (
     DEFAULT_QUEUE_STATES,
     NON_LEADING_MARKERS,
 )
+from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.persistence.crud import (
     get_performance_opportunity,
@@ -590,23 +591,6 @@ def _summary_of(row: Any) -> dict[str, Any]:
     }
 
 
-def evidence_block(
-    evidence: list[dict[str, Any]], total: int, offset: int
-) -> dict[str, Any]:
-    """Evidence plus the exact recovery for what it left out."""
-    emitted = offset + len(evidence)
-    block: dict[str, Any] = {
-        "evidence": evidence,
-        "evidence_total": total,
-        "evidence_emitted": len(evidence),
-        "evidence_truncated": emitted < total,
-    }
-    if emitted < total:
-        block["evidence_reduced_reason"] = "evidence_page"
-        block["evidence_next_cursor"] = emitted
-    return block
-
-
 def _plan_brief(plan: dict[str, Any] | None) -> dict[str, Any]:
     """The stored plan's validation, steps and economics, or nothing on an older store."""
     if not plan:
@@ -673,7 +657,6 @@ __all__ = [
     "PerformancePage",
     "PerformanceQuery",
     "PlanLink",
-    "evidence_block",
     "evidence_payload",
     "parse_query",
 ]

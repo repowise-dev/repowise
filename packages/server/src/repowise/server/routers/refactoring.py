@@ -25,6 +25,12 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_ORDERS,
+    CANONICAL_VIEWS,
+    DEFAULT_VIEW,
+    parse_query,
+)
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
@@ -36,13 +42,7 @@ from repowise.server.schemas import (
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
 )
-from repowise.server.services.refactoring_health import (
-    CANONICAL_ORDERS,
-    CANONICAL_VIEWS,
-    DEFAULT_VIEW,
-    RefactoringHealthService,
-    parse_query,
-)
+from repowise.server.services.refactoring_health import RefactoringHealthService
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
