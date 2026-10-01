@@ -21,6 +21,7 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.finding_identity import finding_public_id
+from repowise.core.analysis.health.fix_first.text import perf_cost
 from repowise.core.analysis.health.perf.opportunities import (
     PERFORMANCE_MODEL_VERSION,
     model_state,
@@ -484,6 +485,7 @@ class PerformanceHealthService:
             "reliable_entry_reachability": details.get("reliable_entry_reachability"),
             "provenance": details.get("provenance"),
             "facets": details.get("facets", {}),
+            "gain_text": _gain_text(row, details.get("facets") or {}),
             "actionability_reason": details.get("actionability_reason"),
             "prerequisites": details.get("prerequisites", []),
             "rank_factors": details.get("rank_factors", {}),
@@ -498,6 +500,18 @@ class PerformanceHealthService:
                 **({"api": details["fix_api"]} if details.get("fix_api") else {}),
             },
         }
+
+
+def _gain_text(row: Any, facets: dict[str, Any]) -> str:
+    """What fixing this cause buys, in the words the Fix-first item uses."""
+    _problem, gain = perf_cost(
+        "",
+        row.biomarker_type,
+        row.boundary_kind,
+        facets.get("amplification"),
+        facets.get("loop_magnitude"),
+    )
+    return gain
 
 
 def _rescope(

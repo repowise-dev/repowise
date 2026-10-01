@@ -344,6 +344,8 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
     assert body["evidence_emitted"] == 1
     assert body["evidence_next_cursor"] == 1
     assert body["plan_status"] == "available"
+    # The same words the Fix-first item uses for this cause, from one core function.
+    assert body["gain_text"].startswith("one database call per loop iteration")
 
 
 async def test_a_cause_that_stops_being_observed_is_resolved_not_deleted(

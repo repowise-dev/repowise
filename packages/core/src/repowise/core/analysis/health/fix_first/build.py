@@ -658,7 +658,6 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         call_sites = int(field(lead, "affected_call_sites_total") or 0)
         files_n = int(field(lead, "affected_files_total") or 1)
         amplification = facets.get("amplification")
-        call = f"{noun} call" if noun else "costly call"
         shaped = text.PERF_SHAPE.get(field(lead, "biomarker_type") or "")
         if shaped:
             title = shaped[0].format(name=name)
@@ -668,22 +667,13 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
             title = f"Move the {noun} call in {name} out of its loop"
         else:
             title = f"Fix the repeated work in {name}"
-        if shaped:
-            what, gain_text = shaped[1].format(name=name), shaped[2]
-        elif amplification == "quadratic":
-            what = f"{name} runs nested loops over the same data"
-            gain_text = "nested loop work that grows with the square of the data"
-        elif amplification == "per_call":
-            what, gain_text = f"{name} repeats a {call} on every call", f"one fewer {call} per call"
-        else:
-            what = f"{name} makes a {call} once per loop iteration"
-            gain_text = f"one {call} per loop iteration" + (
-                ", grows with the data"
-                if magnitude == "grows_with_data"
-                else ", bounded by a fixed loop"
-                if magnitude == "bounded"
-                else "; loop size unknown"
-            )
+        what, gain_text = text.perf_cost(
+            name,
+            field(lead, "biomarker_type"),
+            field(lead, "boundary_kind"),
+            amplification,
+            magnitude,
+        )
         reach = []
         if call_sites > 1:
             reach.append(f"{call_sites} call sites in {text.plural(files_n, 'file')} reach it")

@@ -124,6 +124,41 @@ def problem(marker: str | None, subject: str) -> str:
     return f"{subject} {phrase}"
 
 
+def perf_cost(
+    name: str,
+    marker: str | None,
+    boundary: str | None,
+    amplification: str | None,
+    magnitude: str | None,
+) -> tuple[str, str]:
+    """A performance cause's problem and what fixing it buys, in words.
+
+    One function so the Fix-first item and the performance drawer say the same
+    thing about the same cause. The gain names the repeated work, never a time
+    saving: nothing here was measured running.
+    """
+    noun = BOUNDARY_NOUN.get(boundary or "")
+    call = f"{noun} call" if noun else "costly call"
+    shaped = PERF_SHAPE.get(marker or "")
+    if shaped:
+        return shaped[1].format(name=name), shaped[2]
+    if amplification == "quadratic":
+        return (
+            f"{name} runs nested loops over the same data",
+            "nested loop work that grows with the square of the data",
+        )
+    if amplification == "per_call":
+        return f"{name} repeats a {call} on every call", f"one fewer {call} per call"
+    gain = f"one {call} per loop iteration" + (
+        ", grows with the data"
+        if magnitude == "grows_with_data"
+        else ", bounded by a fixed loop"
+        if magnitude == "bounded"
+        else "; loop size unknown"
+    )
+    return f"{name} makes a {call} once per loop iteration", gain
+
+
 def health_gain(value: float, *, ceiling: bool) -> str:
     shown = "under +0.1" if value < 0.05 else f"+{value:.1f}"
     return f"{'up to ' if ceiling else ''}{shown} health on this file"

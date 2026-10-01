@@ -465,6 +465,8 @@ export interface PerformanceOpportunity {
   /** Evidence confidence: how reliably the call path resolved. */
   confidence: PerformanceOpportunityConfidence;
   facets: PerformanceOpportunityFacets;
+  /** What fixing this cause buys, in the words Fix first uses. Absent on an older server. */
+  gain_text?: string;
   actionability_state: PerformanceActionabilityState;
   actionability_reason: string;
   prerequisites: string[];
