@@ -169,6 +169,8 @@ class TestIdGrammar:
             ("v(void) -> void", "cpp", (0, 0)),
             ("operator()(int a, int b) -> bool", "cpp", (2, 2)),
             ("operator<<(std::ostream& os, const A& a) -> std::ostream", "cpp", (2, 2)),
+            ("g(int (*fp)(int, int), int n) -> void", "cpp", (2, 2)),
+            ("print(FMT_STRING(Char, N) fmt, T&&... args) -> void", "cpp", (1, None)),
         ],
     )
     def test_parameter_range(self, signature: str, language: str, expected) -> None:
