@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from .mcp_tool_registry import ToolEntry
 
@@ -56,6 +57,13 @@ class AvailabilityFacts:
     """
 
     counts: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Snapshot into a read-only view so the hash below cannot drift.
+        object.__setattr__(self, "counts", MappingProxyType(dict(self.counts)))
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.counts.items()))
 
 
 def normalize_override(override: str | Sequence[str] | None) -> list[str] | None:

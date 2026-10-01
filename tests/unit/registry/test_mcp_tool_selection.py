@@ -162,6 +162,18 @@ GATED = [
 ]
 
 
+def test_facts_are_hashable_and_snapshot_their_counts():
+    source = {"flows": 2}
+    facts = AvailabilityFacts(counts=source)
+    source["flows"] = 0
+
+    assert facts.counts["flows"] == 2
+    assert hash(facts) == hash(AvailabilityFacts(counts={"flows": 2}))
+    assert facts == AvailabilityFacts(counts={"flows": 2})
+    assert {facts, HAS_FLOWS} == {HAS_FLOWS}
+    assert hash(NO_FLOWS) == hash(AvailabilityFacts())
+
+
 def test_predicate_true_keeps_the_default_tool():
     assert "get_flow_map" in resolve_enabled_tools(GATED, is_workspace=False, facts=HAS_FLOWS)
 
