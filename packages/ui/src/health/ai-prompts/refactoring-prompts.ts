@@ -11,8 +11,6 @@ import { blastFiles } from "../../refactoring/types";
 import {
   planSourceLink,
   refactoringPlanSteps,
-  verifyLines,
-  verifySection,
   verifySubject,
 } from "./refactoring-plan-steps";
 import {
@@ -23,6 +21,8 @@ import {
   joinSections,
   pluralS,
   repoSuffix,
+  verifyLines,
+  verifySection,
   type AiPromptFlavor,
 } from "./shared";
 
@@ -55,7 +55,8 @@ export function buildPerformanceOpportunityPrompt({
   )
     .split("::")
     .pop() ?? opportunity.file_path;
-  const verify = verifySection(opportunity.validation, [subject]);
+  // An older payload carries no validation; it keeps no Verify block.
+  const verify = opportunity.validation ? verifySection(opportunity.validation, [subject]) : "";
 
   return [
     FLAVOR_PREAMBLE[flavor],

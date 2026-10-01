@@ -1,7 +1,14 @@
 import type { ActionDetail, NextAction } from "@repowise-dev/types/actions";
 
 import { biomarkerLabel } from "../biomarker-glossary";
-import { bulletList, closingSections, joinSections, repoSuffix, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  joinSections,
+  preamble,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Next action prompt: one action from "Do next", handed to an agent cold
@@ -14,19 +21,19 @@ export interface BuildActionPromptOptions {
 }
 
 /**
- * The opening. Not the fix-prompt preamble: an action can span many files and
- * is built from stored analysis, so the agent is told both before it reads a
- * line.
+ * The opening after the shared role. Not the file preamble: an action can span
+ * many files and is built from stored analysis, so the agent is told both
+ * before it reads a line.
  */
 const OPENING: Record<AiPromptFlavor, string> = {
   generic:
-    "You are a senior engineer in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis of the repository (git history, code health, the dependency graph). Its evidence is listed in full or in part; treat each item as a lead to verify against the code, not as ground truth.",
+    "Repowise, a code-intelligence index, produced the action below from its stored analysis of the repository (git history, code health, the dependency graph). Its evidence is listed in full or in part; treat each item as a lead to verify against the code, not as ground truth.",
   "claude-code":
-    "You are Claude Code in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: read the code with Read and Grep, confirm it, and use TodoWrite to track the files you work through.",
+    "Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: read the code with Read and Grep, confirm it, and use TodoWrite to track the files you work through.",
   "claude-code-mcp":
-    "You are Claude Code in this repository, which Repowise indexes and serves over MCP. The action below comes from Repowise's stored analysis. Use the MCP calls listed under \"Look closer\" before reading files by hand: they return the full evidence with line numbers, reasons and history. Treat each item as a lead to confirm against the code.",
+    "The action below comes from Repowise's stored analysis. Use the MCP calls listed under \"Look closer\" before reading files by hand: they return the full evidence with line numbers, reasons and history. Treat each item as a lead to confirm against the code.",
   cursor:
-    "Work in this repository. Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: open the file with @file, confirm it, then act.",
+    "Repowise, a code-intelligence index, produced the action below from its stored analysis. Treat each evidence item as a lead: open the file with @file, confirm it, then act.",
 };
 
 const CONSTRAINTS = [
@@ -82,7 +89,7 @@ export function buildActionPrompt({
     .filter((l): l is string => l !== null);
 
   return joinSections([
-    OPENING[flavor],
+    preamble(flavor, { body: OPENING }),
     "",
     `## Action${repoSuffix(repoName)}`,
     "",

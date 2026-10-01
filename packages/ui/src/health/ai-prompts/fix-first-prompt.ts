@@ -1,6 +1,13 @@
 import type { FixItem } from "@repowise-dev/types/fix-first";
 
-import { bulletList, closingSections, joinSections, repoSuffix, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  joinSections,
+  preamble,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fix first: one ranked item, handed to an agent with its Verify block
@@ -12,15 +19,16 @@ export interface BuildFixItemPromptOptions {
   repoName?: string;
 }
 
+/** The opening after the shared role. */
 const OPENING: Record<AiPromptFlavor, string> = {
   generic:
-    "You are a senior engineer in this repository. Repowise, a code-intelligence index, ranked the change below first among the work it found. Its facts come from stored analysis; treat them as leads to confirm against the code, not as ground truth.",
+    "Repowise, a code-intelligence index, ranked the change below first among the work it found. Its facts come from stored analysis; treat them as leads to confirm against the code, not as ground truth.",
   "claude-code":
-    "You are Claude Code in this repository. Repowise, a code-intelligence index, ranked the change below first among the work it found. Confirm each fact with Read and Grep before editing, and track the steps with TodoWrite.",
+    "Repowise, a code-intelligence index, ranked the change below first among the work it found. Confirm each fact with Read and Grep before editing, and track the steps with TodoWrite.",
   "claude-code-mcp":
-    "You are Claude Code in this repository, which Repowise indexes and serves over MCP. Repowise ranked the change below first among the work it found. Call the MCP lookup under \"Look closer\" for the full record before reading files by hand, then confirm each fact against the code.",
+    "Repowise ranked the change below first among the work it found. Call the MCP lookup under \"Look closer\" for the full record before reading files by hand, then confirm each fact against the code.",
   cursor:
-    "Work in this repository. Repowise, a code-intelligence index, ranked the change below first among the work it found. Open the target with @file, confirm each fact, then make the change.",
+    "Repowise, a code-intelligence index, ranked the change below first among the work it found. Open the target with @file, confirm each fact, then make the change.",
 };
 
 const CONSTRAINTS = [
@@ -80,7 +88,7 @@ export function buildFixItemPrompt({
   const moreSteps = item.action.steps_total - item.action.steps.length;
 
   return joinSections([
-    OPENING[flavor],
+    preamble(flavor, { body: OPENING }),
     "",
     `## Fix first${repoSuffix(repoName)}`,
     "",

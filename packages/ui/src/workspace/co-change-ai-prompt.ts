@@ -9,7 +9,16 @@
  * type or a generated client should replace the manual lockstep.
  */
 
-import type { AiPromptFlavor } from "../health/ai-prompt-builder";
+import {
+  bulletList,
+  closingSections,
+  joinSections,
+  preamble,
+  verifySection,
+  WORKSPACE_ROLE,
+  type AiPromptFlavor,
+  type PreambleParts,
+} from "../health/ai-prompts/shared";
 import type { WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
 import {
   gapPhrase,
@@ -25,27 +34,14 @@ import {
 /** File pairs listed in a repository-pair prompt before the rest become a count. */
 export const MAX_PROMPT_PAIRS = 15;
 
-const PREAMBLE: Record<AiPromptFlavor, string> = {
-  generic:
-    "You are a senior engineer working across the repositories of one workspace. The evidence below is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. It is a lead, not a verified dependency. Open the files it names and read the commits before you conclude anything.",
-  "claude-code":
-    "You are Claude Code working across the repositories of one workspace. The evidence below is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. Treat it as a lead, not a verified dependency. Use Read, Grep and Glob on the files it names, and `git log` in each repository, before planning edits. Use TodoWrite for non-trivial steps.",
-  "claude-code-mcp":
-    "You are Claude Code working across the repositories of one workspace indexed by repowise, with its MCP tools available. The evidence below is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. Treat it as a lead, not a verified dependency. Pull what repowise already computed before re-reading by hand: `get_context([...])` for a file's skeleton, `get_risk([...])` for its co-change partners and test gaps, `get_why(...)` for the decision behind its shape, `search_codebase` to find a type or route by name, and `get_blast_radius` for which services a change reaches. Fall back to Read / Grep only for what the index cannot serve.",
-  cursor:
-    "Work across the repositories referenced below. The evidence is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. Treat it as a lead, not a verified dependency. Use @file and @codebase to read every file it names before editing.",
+const PREAMBLE_PARTS: PreambleParts = {
+  role: WORKSPACE_ROLE,
+  source:
+    "The evidence below is a work pattern repowise mined from git history: files in different repositories that the same author changed in the same work sessions. It is not a verified dependency.",
+  open: "the files it names and the commits that touched them",
+  mcpTail:
+    "Pull what repowise already computed before re-reading by hand: `get_context([...])` for a file's skeleton, `get_risk([...])` for its co-change partners and test gaps, `get_why(...)` for the decision behind its shape, `search_codebase` to find a type or route by name, and `get_blast_radius` for which services a change reaches.",
 };
-
-function bullets(items: (string | null | undefined | false)[]): string {
-  return items
-    .filter(Boolean)
-    .map((s) => `- ${s}`)
-    .join("\n");
-}
-
-function join(sections: (string | null | undefined | false)[]): string {
-  return sections.filter((s) => s !== null && s !== undefined && s !== false && s !== "").join("\n");
-}
 
 function where(repo: string, file: string): string {
   return `\`${repo}\` \`${file}\``;
@@ -126,12 +122,12 @@ export function buildCoChangePairAiPrompt({
       ? `Call \`get_context(['${pair.source_file}'])\` in \`${pair.source_repo}\` and \`get_context(['${pair.target_file}'])\` in \`${pair.target_repo}\`, \`get_risk([...])\` on each for its other co-change partners and test gaps, \`get_why(...)\` for any decision that governs either file, and \`get_blast_radius\` for what else in the workspace a change to either reaches. Don't restructure until you can name why they move together.`
       : `Read both files, then run \`git log\` for each in its own repository around the shared dates. The session count is a symptom; find the shared concept driving it before you change anything.`;
 
-  return join([
-    PREAMBLE[flavor],
+  return joinSections([
+    preamble(flavor, PREAMBLE_PARTS),
     "",
     "## Two files that change together across repositories",
     "",
-    bullets([
+    bulletList([
       `File A: ${a}${factsTail(sourceFacts)}`,
       `File B: ${b}${factsTail(targetFacts)}`,
       `Shared work sessions: **${pair.frequency}** (the same author changed both, with commits in the two repositories no more than ${SESSION_WINDOW_HOURS} hours apart)`,
@@ -142,10 +138,10 @@ export function buildCoChangePairAiPrompt({
     ]),
     "",
     shownCommits.length > 0
-      ? join([
+      ? joinSections([
           "## Commits close together",
           "",
-          bullets(shownCommits.map((c) => commitLine(c, pair))),
+          bulletList(shownCommits.map((c) => commitLine(c, pair))),
           "",
           "Reconstructed from each file's recent significant commits: the miner does not record which sessions it counted, so some may be missing.",
           "",
@@ -157,23 +153,23 @@ export function buildCoChangePairAiPrompt({
     "2. Is the lockstep manual? If one file restates what the other defines (a schema retyped by hand, a route described in prose, a client written against a server), decide whether a declared contract, a shared type package, or a generated client or document should own it so the second edit disappears.",
     "3. If the coupling is legitimate and cheap to keep (documentation that must track code), say so and propose the lightest guard: a test, a CI check, or a note in each file naming its partner.",
     "",
-    "## Hard constraints",
+    verifySection(null, [pair.source_file, pair.target_file]),
     "",
-    bullets([
-      "**Diagnose before changing.** Name the shared concept and cite the lines on both sides before proposing anything.",
-      "**When you edit either file, check the other in the same change.** Until the coupling is removed, a change to one is half a change.",
-      "Keep the contract between the repositories stable. Do not move code across a repository boundary without saying why the boundary is wrong.",
-      "Preserve behavior. Add or update a test or check that fails when the two drift apart.",
-      "If the evidence turns out to be coincidence (unrelated work in one sitting), say so and stop.",
-    ]),
-    "",
-    "## What I expect back",
-    "",
-    "1. A verdict: the shared concept, and whether the coupling is accidental, legitimate but manual, or legitimate and fine.",
-    "2. If manual: what should own the shared concept (contract, shared type, generated client or doc), where it would live, and the smallest safe first step.",
-    "3. The first change, scoped, with the test or check that guards it.",
-    "4. If the coupling stays: the one-line note to add to each file naming its partner.",
-    "",
+    ...closingSections(
+      [
+        "**Diagnose before changing.** Name the shared concept and cite the lines on both sides before proposing anything.",
+        "**When you edit either file, check the other in the same change.** Until the coupling is removed, a change to one is half a change.",
+        "Keep the contract between the repositories stable. Do not move code across a repository boundary without saying why the boundary is wrong.",
+        "Preserve behavior. Add or update a test or check that fails when the two drift apart.",
+        "If the evidence turns out to be coincidence (unrelated work in one sitting), say so and stop.",
+      ],
+      [
+        "1. A verdict: the shared concept, and whether the coupling is accidental, legitimate but manual, or legitimate and fine.",
+        "2. If manual: what should own the shared concept (contract, shared type, generated client or doc), where it would live, and the smallest safe first step.",
+        "3. The first change, scoped, with the test or check that guards it.",
+        "4. If the coupling stays: the one-line note to add to each file naming its partner.",
+      ],
+    ),
     closer,
   ]);
 }
@@ -235,12 +231,12 @@ export function buildCoChangeRepoPairAiPrompt({
       ? `Start with \`get_blast_radius\` on \`${repo1}\` and \`${repo2}\` to see what already connects them, then \`get_context\` and \`get_risk\` on the recurring files above. \`search_codebase\` for the type or route names you find on both sides. repowise already mapped the contracts and history; use it before grepping.`
       : "Start with the recurring files: they are usually where the shared concept lives. Read them in both repositories and the commits that changed them together before proposing anything.";
 
-  return join([
-    PREAMBLE[flavor],
+  return joinSections([
+    preamble(flavor, PREAMBLE_PARTS),
     "",
     "## Two repositories that change together",
     "",
-    bullets([
+    bulletList([
       `Repositories: \`${repo1}\` and \`${repo2}\``,
       `File pairs: **${ranked.length}**${capped ? ` (${rule}, so there are likely more)` : ""}`,
       ranked[0] ? `Strongest pair: ${pct(ranked[0].strength)}` : null,
@@ -259,10 +255,10 @@ export function buildCoChangeRepoPairAiPrompt({
     hidden > 0 ? `...and ${hidden} more file pairs not listed.` : "",
     "",
     hubs.length > 0
-      ? join([
+      ? joinSections([
           "## Files that recur across pairs",
           "",
-          bullets(hubs.map((h) => `${where(h.repo, h.file)} appears in ${h.n} pairs`)),
+          bulletList(hubs.map((h) => `${where(h.repo, h.file)} appears in ${h.n} pairs`)),
           "",
         ])
       : "",
@@ -272,21 +268,21 @@ export function buildCoChangeRepoPairAiPrompt({
     "2. For each group, check whether a declared contract, shared package or generated client already covers it. If not, say whether one should, and what it would replace.",
     "3. Rank the groups by payoff: how often they force a second edit, and how bad a missed edit would be.",
     "",
-    "## Hard constraints",
+    verifySection(null, hubs.map((h) => h.file)),
     "",
-    bullets([
-      "**Diagnose before changing.** Cite the lines on both sides for every group you name.",
-      "Keep the contract between the repositories stable, and do not move code across the boundary without saying why the boundary is wrong.",
-      "One group per change, each independently revertible, each with a test or check that fails when the two sides drift.",
-      "Some groups will be coincidence or legitimate documentation upkeep. Say so and leave them.",
-    ]),
-    "",
-    "## What I expect back",
-    "",
-    "1. The groups, each with its shared concept and the pairs that belong to it.",
-    "2. For each: accidental, legitimate but manual, or legitimate and fine, with the reason.",
-    "3. A ranked plan for the manual ones: what should own the concept, where, and the first step.",
-    "",
+    ...closingSections(
+      [
+        "**Diagnose before changing.** Cite the lines on both sides for every group you name.",
+        "Keep the contract between the repositories stable, and do not move code across the boundary without saying why the boundary is wrong.",
+        "One group per change, each independently revertible, each with a test or check that fails when the two sides drift.",
+        "Some groups will be coincidence or legitimate documentation upkeep. Say so and leave them.",
+      ],
+      [
+        "1. The groups, each with its shared concept and the pairs that belong to it.",
+        "2. For each: accidental, legitimate but manual, or legitimate and fine, with the reason.",
+        "3. A ranked plan for the manual ones: what should own the concept, where, and the first step.",
+      ],
+    ),
     closer,
   ]);
 }

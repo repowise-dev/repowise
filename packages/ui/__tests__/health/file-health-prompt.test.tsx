@@ -58,7 +58,7 @@ describe("buildFileHealthAiPrompt", () => {
     // The whole point of handing over a static report. A prompt that reads as
     // a work order gets a file edited to satisfy an analyzer.
     const out = buildFileHealthAiPrompt({ file, findings: [finding()] });
-    expect(out).toMatch(/leads/i);
+    expect(out).toMatch(/as a lead, not ground truth/i);
     expect(out).toMatch(/false positive/i);
     expect(out).toMatch(/which findings share a root cause/i);
   });

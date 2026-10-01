@@ -146,6 +146,17 @@ describe("buildCoChangeRepoPairAiPrompt", () => {
   });
 });
 
+describe("co-change prompt Verify", () => {
+  it("asks for the tests over both files of the pair", () => {
+    const p = buildCoChangePairAiPrompt({ pair: pair() });
+    expect(p).toContain("Treat each item as a lead, not ground truth.");
+    expect(p).toContain(
+      "## Verify\n\nNo test data came with this prompt. Find the tests that exercise `app/models/schemas/repos.py`, `src/lib/api/types.ts`",
+    );
+    expect(p.indexOf("## Verify")).toBeLessThan(p.indexOf("## Hard constraints"));
+  });
+});
+
 describe("capRule", () => {
   it("names the cap the server says applied", () => {
     expect(capRule({ truncatedBy: null, perRepoPairCap: 50, totalCap: 200 })).toBeNull();

@@ -3,7 +3,9 @@ import {
   closingSections,
   joinSections,
   pluralS,
+  preamble,
   repoSuffix,
+  verifySection,
   type AiPromptFlavor,
 } from "./shared";
 
@@ -11,15 +13,12 @@ import {
 // Work-queue prompt (repo-level: the Attention Needed backlog)
 // ─────────────────────────────────────────────────────────────────────
 
-const WORK_QUEUE_PREAMBLE: Record<AiPromptFlavor, string> = {
-  generic:
-    "You are a senior engineer triaging a backlog of issues repowise flagged across this repository. Work through them in priority order, one focused change at a time. Each item is a lead from static + git analysis — verify it against the real code before acting, and skip anything that turns out to be a false positive (say why).",
-  "claude-code":
-    "You are Claude Code clearing a backlog of issues repowise flagged across this repository. Use TodoWrite to track the queue, and Read / Grep / Glob to investigate each item before editing. Work in priority order, one focused, independently-revertible change at a time. Verify each item against the real code; flag false positives instead of forcing a change.",
-  "claude-code-mcp":
-    "You are Claude Code clearing a backlog of issues repowise flagged across this repository, which is indexed by repowise and exposes its MCP tools. Use TodoWrite to track the queue. For each item, pull the context repowise already computed — `get_context([target])` for the skeleton, `get_risk([target])` before editing, `get_why(...)` for decision items, `get_health([target])` for code-health items — instead of re-exploring by hand. Work in priority order, one focused, independently-revertible change at a time. Verify each item; flag false positives.",
-  cursor:
-    "You are clearing a backlog of issues repowise flagged across this repository. Work through them in priority order, one focused change at a time. Use @file and @codebase to investigate each item before editing. Verify each against the real code and skip false positives, saying why.",
+const WORK_QUEUE_PARTS = {
+  source:
+    "Repowise flagged the backlog below from static and git analysis. Work through it in priority order, one focused, independently-revertible change at a time.",
+  open: "the target each item names",
+  mcpTail:
+    "For each item, pull the context repowise already computed instead of re-exploring by hand: `get_context([target])` for the skeleton, `get_risk([target])` before editing, `get_why(...)` for decision items, `get_health([target])` for code-health items.",
 };
 
 const WORK_QUEUE_GUIDANCE: Record<string, string> = {
@@ -91,7 +90,7 @@ export function buildWorkQueueAiPrompt({
   const hidden = ranked.length - shown.length;
 
   return joinSections([
-    WORK_QUEUE_PREAMBLE[flavor],
+    preamble(flavor, WORK_QUEUE_PARTS),
     "",
     `## Repository backlog${repoSuffix(repoName)}`,
     "",
@@ -106,6 +105,8 @@ export function buildWorkQueueAiPrompt({
     hidden > 0
       ? `\n…and ${hidden} more lower-priority item${pluralS(hidden)} in the panel — handle these after the above.`
       : "",
+    "",
+    verifySection(null, []),
     "",
     ...closingSections(CONSTRAINTS, EXPECTED),
     flavor === "claude-code-mcp"
