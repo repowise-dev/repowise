@@ -17,6 +17,7 @@ from repowise.core.analysis.health.fix_first import FIX_SCOPES, FixItem
 from repowise.core.analysis.health.fix_first.model import FixTotals
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
 
@@ -40,12 +41,17 @@ def _scope(scope: str) -> str:
     return scope
 
 
-async def _item(session: AsyncSession, repo_id: str, fix_id: str, scope: str) -> FixItem:
+async def _item(
+    session: AsyncSession, repo_id: str, fix_id: str, scope: str
+) -> tuple[Repository, FixItem]:
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
     queue = await load_fix_first(session, repo_id, scope=_scope(scope), item_id=fix_id)
     item = queue.find(fix_id)
     if item is None:
         raise HTTPException(status_code=404, detail="No open Fix-first item with that id")
-    return item
+    return repo, item
 
 
 @router.get("/api/repos/{repo_id}/health/fix-first", response_model=FixFirstQueueResponse)
@@ -68,7 +74,8 @@ async def get_fix_first_item(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One item by its stable id, wherever it ranks."""
-    return (await _item(session, repo_id, fix_id, scope)).as_dict()
+    _, item = await _item(session, repo_id, fix_id, scope)
+    return item.as_dict()
 
 
 @router.get(
@@ -83,10 +90,7 @@ async def get_fix_first_item_prompt(
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentPromptResponse:
     """One item as the prompt an agent starts from, worded for its harness."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    item = await _item(session, repo_id, fix_id, scope)
+    repo, item = await _item(session, repo_id, fix_id, scope)
     return AgentPromptResponse(flavor=flavor, text=render_fix_item(item.as_dict(), flavor, repo.name))
 
 

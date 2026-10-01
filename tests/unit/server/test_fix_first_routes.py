@@ -59,3 +59,10 @@ async def test_item_prompt_rejects_bad_flavor_and_unknown_ids(client, session, t
     assert (await client.get(url, params={"flavor": "vim"})).status_code == 422
     assert (await client.get(url)).status_code == 404
     assert (await client.get("/api/repos/nope/health/fix-first/fix1_missing/prompt")).status_code == 404
+
+
+async def test_unknown_repository_is_404_for_the_item_and_its_prompt(client) -> None:
+    for suffix in ("", "/prompt"):
+        resp = await client.get(f"/api/repos/nope/health/fix-first/fix1_missing{suffix}")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Repository not found"
