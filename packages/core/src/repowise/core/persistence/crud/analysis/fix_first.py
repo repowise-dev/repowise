@@ -69,6 +69,7 @@ async def _metrics(session: AsyncSession, repo_id: str, paths: set[str]) -> list
                 HealthFileMetric.file_path,
                 HealthFileMetric.nloc,
                 HealthFileMetric.is_test,
+                HealthFileMetric.code_origin,
                 GitMetadata.commit_count_90d,
                 GraphMetric.in_degree.label("dependents"),
             )

@@ -1010,9 +1010,9 @@ CLAUDE.md render the same object. The block carries `lead` (equal to
 `title`, `target`, `why`, `gain`, `effort`, `confidence`, `next_call`),
 `totals` (`candidates`, `eligible`, `shown`, and `excluded` counted by reason:
 `test`, `tooling`, `unknown`, `generated`, `expected`, `no_strategy`, `no_plan`,
-`below_min_worth`, `history_only`; a performance cause enters only from the
-performance default queue, whose reasons `unknown`, `expected` and `no_strategy`
-are), `by_improves`, `model_version`, `basis`, and `detail_call`,
+`below_min_worth`, `history_only`, `vendored`, `docs_example`, `deprecated`; a
+performance cause enters only from the performance default queue, whose reasons
+`unknown`, `expected` and `no_strategy` are), `by_improves`, `model_version`, `basis`, and `detail_call`,
 the `get_health(fix_id=...)` call that returns the lead in full. `tier` is
 `now` (worth doing, and the plan is safe to start), `next` (worth doing, needs
 judgment) or `later`. Items are ordered by value first, the larger of the recoverable health and the size of the problem (CCN, lines and nesting past their bars, a critical or brain-method finding, a hot file), then by tier, so a function far past every bar leads as "Break up ..." ahead of tidy work that is safer to start. `kind` is `refactor` (one file's composed refactoring),

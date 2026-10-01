@@ -31,7 +31,10 @@ export type FixExclusion =
   | "no_strategy"
   | "no_plan"
   | "below_min_worth"
-  | "history_only";
+  | "history_only"
+  | "vendored"
+  | "docs_example"
+  | "deprecated";
 
 /** `all` keeps test files, labelled in `context`. */
 export type FixScope = "production" | "all";

@@ -10,15 +10,15 @@ caller may pass unfiltered rows.
 Row shapes (field names are the SQL columns):
 
 ``metrics``
-    ``file_path``, ``score``, ``nloc``, ``is_test``, ``analyzed_commit``,
-    ``updated_at``, plus ``commit_count_90d`` (git) and ``dependents`` (graph
-    in-degree).
+    ``file_path``, ``score``, ``nloc``, ``is_test``, ``code_origin``,
+    ``analyzed_commit``, ``updated_at``, plus ``commit_count_90d`` (git) and
+    ``dependents`` (graph in-degree).
 ``findings``
     ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
     ``line_start``, ``line_end``, ``reason``, ``health_impact``, ``public_id``,
     ``dimension``, ``status`` (absent = open), and ``details`` /
     ``details_json`` (``ccn``, ``nloc``, ``max_nesting``) for the numbers a
-    sentence quotes.
+    sentence quotes, and ``deprecated`` for a function on its way out.
 ``refactoring``
     The ``refactoring_opportunities`` columns, ``details`` (or
     ``details_json``) carrying ``steps``, ``validation_profiles``,
@@ -142,6 +142,14 @@ class _Unit:
 
 
 _VENDORED = frozenset({"vendor", "third_party", "thirdparty", "node_modules"})
+#: Stored code origins that do not ship, by the exclusion each counts as.
+_ORIGIN_EXCLUSION = {
+    "test": "test",
+    "vendored": "vendored",
+    "docs_example": "docs_example",
+    "generated": "generated",
+    "tooling": "tooling",
+}
 
 
 def _open(row: Any) -> bool:
@@ -157,19 +165,27 @@ def _num(value: Any) -> float:
 _code_context = functools.lru_cache(maxsize=65536)(code_context)
 
 
-def _path_exclusion(path: str, is_test: bool | None, context: str | None = None) -> str | None:
+def _path_exclusion(
+    path: str, is_test: bool | None, context: str | None = None, origin: str | None = None
+) -> str | None:
     """Why a file is out of the queue, or ``None`` when it ships.
 
-    Code-shape work reads :func:`code_context`, where a CLI ships. A
-    performance fix passes ``production``: its stored execution context is
-    judged by the performance default queue, so only the path rules apply.
-    The stored ``is_test`` flag also marks a test.
+    The stored ``code_origin`` decides first: it read the file's head, so it
+    knows a vendored library or a docs tutorial the path alone does not.
+    Then the path rules. Code-shape work reads :func:`code_context`, where a
+    CLI ships. A performance fix passes ``production``: its stored execution
+    context is judged by the performance default queue, so only the path
+    rules apply. The stored ``is_test`` flag also marks a test.
     """
+    if origin in _ORIGIN_EXCLUSION:
+        return _ORIGIN_EXCLUSION[origin]
     ctx = context or _code_context(path)
     if is_test or ctx == "test":
         return "test"
     parts = set(path.lower().split("/")[:-1])
-    if _is_generated_path(path) or parts & _VENDORED:
+    if parts & _VENDORED:
+        return "vendored"
+    if _is_generated_path(path):
         return "generated"
     # ``unknown`` under a directory is docs, examples or demos: code that does
     # not ship. A root-level file stays eligible.
@@ -269,6 +285,10 @@ class _Files:
     def is_test(self, path: str) -> bool | None:
         """The stored flag; ``None`` when the file has no metric row or flag."""
         return field(self.by_path.get(path), "is_test")
+
+    def origin(self, path: str) -> str | None:
+        """The stored code origin; ``None`` before it was recorded."""
+        return field(self.by_path.get(path), "code_origin")
 
     def commits(self, path: str) -> int:
         return int(field(self.by_path.get(path), "commit_count_90d") or 0)
@@ -883,13 +903,16 @@ def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
 def _measure(findings: Iterable[Any]) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
-    ``severe`` is set when any of them is critical or a brain method.
+    ``severe`` is set when any of them is critical or a brain method,
+    ``deprecated`` when any sits in a function marked deprecated.
     """
     shape: dict[str, int] = {}
     for f in findings:
         if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
             shape["severe"] = 1
         details = detail_map(f)
+        if details.get("deprecated"):
+            shape["deprecated"] = 1
         for k in ("ccn", "nloc", "max_nesting", "lcom4", "method_count"):
             v = details.get(k)
             if isinstance(v, (int, float)) and v > shape.get(k, 0):
@@ -954,7 +977,7 @@ def build_fix_first(
     )
 
     def out_of_scope(path: str, context: str | None = None) -> bool:
-        reason = _path_exclusion(path, files.is_test(path), context)
+        reason = _path_exclusion(path, files.is_test(path), context, files.origin(path))
         if reason is None or (reason == "test" and keep_tests):
             return False
         excluded[reason] += 1
@@ -978,6 +1001,9 @@ def build_fix_first(
         gain = _num(field(row, "recoverable_health"))
         if not steps:
             excluded["below_min_worth"] += 1
+            continue
+        if files.shape(path, steps[0].get("target_symbol")).get("deprecated"):
+            excluded["deprecated"] += 1
             continue
         units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
         # Only a plan that became an item speaks for the file's findings; an
@@ -1017,6 +1043,9 @@ def build_fix_first(
             continue
         if lead is None:
             excluded["history_only"] += 1
+            continue
+        if files.shape(path, field(lead, "function_name")).get("deprecated"):
+            excluded["deprecated"] += 1
             continue
         units.append(_finding_unit(lead, files))
 

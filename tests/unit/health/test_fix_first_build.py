@@ -48,6 +48,9 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "no_plan": 0,
         "below_min_worth": 1,
         "history_only": 1,
+        "vendored": 0,
+        "docs_example": 0,
+        "deprecated": 0,
     }
     assert queue.totals.eligible == 3
     assert queue.totals.candidates == 3 + 7

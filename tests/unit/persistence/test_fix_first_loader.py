@@ -33,6 +33,7 @@ async def seed_fix_first(session, rid: str | None = None) -> str:
                 repository_id=rid,
                 **{k: m[k] for k in ("file_path", "score", "nloc", "is_test",
                                      "analyzed_commit", "updated_at")},
+                code_origin=m.get("code_origin"),
             )
         )
         session.add(GitMetadata(repository_id=rid, file_path=m["file_path"],
@@ -100,3 +101,30 @@ async def test_the_queue_is_cached_until_a_store_changes(async_session) -> None:
     rebuilt = await load_fix_first(async_session, rid)
     assert rebuilt is not first
     assert all(i.target.file_path != "src/plain.py" for i in rebuilt.items)
+
+
+async def test_loader_reads_the_stored_code_origin(async_session) -> None:
+    from sqlalchemy import update
+
+    rid = await seed_fix_first(async_session)
+    await async_session.execute(
+        update(HealthFileMetric)
+        .where(HealthFileMetric.file_path == "src/plain.py")
+        .values(code_origin="docs_example")
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    metrics = [
+        {**m, "code_origin": "docs_example"} if m["file_path"] == "src/plain.py" else m
+        for m in METRICS
+    ]
+    built = build_fix_first(
+        metrics=metrics,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+    )
+    assert loaded.totals.excluded["docs_example"] == 1
+    # The update moved the metric's ``updated_at``, so only the basis differs.
+    assert (loaded.items, loaded.totals) == (built.items, built.totals)
