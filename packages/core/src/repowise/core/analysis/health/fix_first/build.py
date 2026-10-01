@@ -15,8 +15,8 @@ Row shapes (field names are the SQL columns):
     ``commit_count_90d`` and ``contributor_count`` (git) and ``dependents``
     (graph in-degree).
 ``findings``
-    Hidden types are never items; ``dry_violation`` rows are read for where
-    duplicates sit. ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
+    Hidden types are never items. ``file_path``, ``biomarker_type``,
+    ``severity``, ``function_name``,
     ``line_start``, ``line_end``, ``reason``, ``health_impact``, ``public_id``,
     ``dimension``, ``status`` (absent = open), and ``details`` /
     ``details_json`` (``ccn``, ``nloc``, ``max_nesting``) for the numbers a
@@ -34,9 +34,11 @@ Row shapes (field names are the SQL columns):
     Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
     ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
     ``params``, ``returns``, ``suggested_name``; a move's destination; a
-    split's named groups). A plan row that also carries ``refactoring_type``
-    ``extract_method``, ``file_path`` and ``target_symbol`` can give a finding
-    with no plan of its own its first concrete step.
+    split's named groups; a helper's ``occurrences``). A plan row that also
+    carries ``refactoring_type`` ``extract_method``, ``file_path`` and
+    ``target_symbol`` can give a finding with no plan of its own its first
+    concrete step. Every Extract Helper plan's occurrences say where verified
+    duplicates sit.
 """
 
 from __future__ import annotations
@@ -1109,19 +1111,14 @@ def _finding_exclusion(finding: Any, files: _Files) -> str | None:
     return reason
 
 
-def _clone_spans(findings: Iterable[Any], plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
-    """Where stored duplicates sit, by file: clone findings and the
-    occurrences an Extract Helper plan names.
-
-    ``dry_violation`` is hidden from every list (it also pairs import blocks
-    and data literals), so it is read here only as a fact about a function
-    whose span it overlaps, where an import block cannot sit.
+def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
+    """Where verified duplicates sit, by file: the occurrences an Extract
+    Helper plan names. Those come from clone pairs the detector verified
+    token by token and by shared identifier names, with test, generated and
+    short spans already dropped. ``dry_violation`` is not read: it also
+    pairs import blocks and data literals, which is why it is hidden.
     """
     out: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for f in findings:
-        start, end = field(f, "line_start"), field(f, "line_end")
-        if field(f, "biomarker_type") == "dry_violation" and start and end:
-            out[field(f, "file_path")].append((start, end))
     for plan in plans:
         for occ in _plan_body(plan).get("occurrences") or ():
             if isinstance(occ, dict) and occ.get("line_start") and occ.get("line_end"):
@@ -1270,7 +1267,7 @@ def build_fix_first(
         {p: hist for p, (_shape, hist) in split.items() if hist},
         _by_function(f for shape, _hist in split.values() for f in shape),
         hot_cuts,
-        _clone_spans((f for f in findings if _open(f)), plans),
+        _clone_spans(plans),
         _extractions(plans),
     )
 

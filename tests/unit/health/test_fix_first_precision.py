@@ -74,6 +74,15 @@ def test_a_deprecated_function_is_no_item() -> None:
 # --- F2: one long dispatch on one value -------------------------------------------
 
 
+def _helper(path: str = "src/core.py", start: int = 25, end: int = 40) -> dict:
+    """A verified duplicate: an Extract Helper plan stored at another file."""
+    return {"public_id": f"refac3_h{start}", "refactoring_type": "extract_helper",
+            "file_path": "src/other.py", "target_symbol": "other",
+            "plan": {"occurrences": [
+                {"file": "src/other.py", "line_start": 5, "line_end": 20},
+                {"file": path, "line_start": start, "line_end": end}]}}
+
+
 def _dry(path: str = "src/core.py", start: int = 25, end: int = 40) -> dict:
     return {"file_path": path, "biomarker_type": "dry_violation", "severity": "medium",
             "line_start": start, "line_end": end, "health_impact": 0.4,
@@ -91,11 +100,17 @@ def test_a_lower_dispatch_share_stays() -> None:
 
 
 def test_a_duplicate_inside_the_dispatch_function_keeps_it() -> None:
-    queue = _queue([_finding(dispatch_share=0.8), _dry()])
+    queue = _queue([_finding(dispatch_share=0.8)], plans=[_helper()])
     assert [i.target.symbol for i in queue.items] == ["run"]
-    # A duplicate elsewhere in the file does not, and is never an item itself.
-    away = _queue([_finding(dispatch_share=0.8), _dry(start=200, end=220)])
+    # A duplicate elsewhere in the file does not.
+    away = _queue([_finding(dispatch_share=0.8)], plans=[_helper(start=200, end=220)])
     assert away.items == () and away.totals.excluded["inherent_dispatch"] == 1
+
+
+def test_an_unverified_clone_finding_rescues_nothing() -> None:
+    """``dry_violation`` also pairs import blocks and data literals."""
+    queue = _queue([_finding(dispatch_share=0.8), _dry()])
+    assert queue.items == () and queue.totals.excluded["inherent_dispatch"] == 1
 
 
 def test_the_files_other_findings_still_compete() -> None:
@@ -295,20 +310,25 @@ def _ranked(item, factor: str) -> str:
 
 def test_a_duplicate_inside_lifts_a_complexity_unit_one_step() -> None:
     plain = _queue([_finding()]).lead
-    lifted = _queue([_finding(), _dry()]).lead
+    lifted = _queue([_finding()], plans=[_helper()]).lead
     assert int(_ranked(lifted, "value")) == int(_ranked(plain, "value")) + 1
     assert _ranked(lifted, "duplicate inside") == "yes"
     assert "duplicated" in lifted.why and "duplicated" not in plain.why
 
 
 def test_a_duplicate_elsewhere_in_the_file_does_not_lift() -> None:
-    item = _queue([_finding(), _dry(start=200, end=220)]).lead
+    item = _queue([_finding()], plans=[_helper(start=200, end=220)]).lead
+    assert _ranked(item, "duplicate inside") == "no"
+
+
+def test_an_unverified_clone_finding_does_not_lift() -> None:
+    item = _queue([_finding(), _dry()]).lead
     assert _ranked(item, "duplicate inside") == "no"
 
 
 def test_a_duplicate_does_not_lift_a_line_finding() -> None:
     handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 30}
-    item = _queue([handler, _dry()]).lead
+    item = _queue([handler], plans=[_helper()]).lead
     assert _ranked(item, "duplicate inside") == "no"
 
 

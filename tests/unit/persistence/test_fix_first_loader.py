@@ -130,9 +130,9 @@ async def test_loader_reads_the_stored_code_origin(async_session) -> None:
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
 
 
-async def test_loader_reads_hidden_duplicates_as_a_fact(async_session) -> None:
-    """A dispatch-heavy function stays a candidate when a duplicate sits in it,
-    although ``dry_violation`` itself is hidden from every list."""
+async def test_loader_reads_verified_duplicates_as_a_fact(async_session) -> None:
+    """A dispatch-heavy function stays a candidate when a verified duplicate
+    sits in it: an Extract Helper plan stored at another file names it."""
     from sqlalchemy import select
 
     rid = await seed_fix_first(async_session)
@@ -143,23 +143,40 @@ async def test_loader_reads_hidden_duplicates_as_a_fact(async_session) -> None:
     ).scalar_one()
     dispatch = {**json.loads(row.details_json), "dispatch_share": 0.9}
     row.details_json = json.dumps(dispatch)
-    dry = {"file_path": "src/core.py", "biomarker_type": "dry_violation", "severity": "medium",
-           "line_start": 30, "line_end": 44, "health_impact": 0.4, "public_id": "finding_dry",
-           "dimension": "maintainability", "details": {}}
-    async_session.add(HealthFinding(repository_id=rid, **_with_json(dry, "details")))
+    helper = {
+        "public_id": "refac3_helper", "refactoring_type": "extract_helper",
+        "file_path": "src/other.py", "target_symbol": "other",
+        "evidence": {"duplicated_lines": 15},
+        "plan": {"occurrences": [
+            {"file": "src/other.py", "line_start": 5, "line_end": 20},
+            {"file": "src/core.py", "line_start": 30, "line_end": 44},
+        ]},
+    }
+    async_session.add(
+        RefactoringSuggestion(
+            repository_id=rid,
+            public_id=helper["public_id"],
+            refactoring_type="extract_helper",
+            file_path="src/other.py",
+            target_symbol="other",
+            status="open",
+            evidence_json=json.dumps(helper["evidence"]),
+            plan_json=json.dumps(helper["plan"]),
+        )
+    )
     await async_session.flush()
     findings = [
         {**f, "details": dispatch} if f["public_id"] == "finding_c1" else f for f in FINDINGS
     ]
     built = build_fix_first(
         metrics=METRICS,
-        findings=[*findings, dry],
+        findings=findings,
         refactoring=REFACTORING,
         performance=PERFORMANCE,
-        plans=PLANS,
+        plans=[*PLANS, helper],
     )
     loaded = await load_fix_first(async_session, rid)
-    assert loaded.lead.target.file_path == "src/core.py"
+    assert "src/core.py" in {i.target.file_path for i in loaded.items}
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
 
 

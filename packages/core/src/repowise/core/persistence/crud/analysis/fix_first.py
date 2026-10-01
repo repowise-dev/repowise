@@ -227,27 +227,6 @@ async def _findings(
     )
 
 
-#: A duplicate's place, for the builder's "a clone sits in this function" fact.
-_Clone = namedtuple("_Clone", "file_path biomarker_type line_start line_end status")
-
-
-async def _clones(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
-    """Open ``dry_violation`` spans in ``paths``. The type is hidden from
-    every list, so it is read apart from the eligible findings, as a fact."""
-    if not paths:
-        return []
-    f = HealthFinding
-    rows = await session.execute(
-        select(f.file_path, f.line_start, f.line_end).where(
-            f.repository_id == repo_id,
-            f.status == "open",
-            f.biomarker_type == "dry_violation",
-            f.file_path.in_(paths),
-        )
-    )
-    return [_Clone(r.file_path, "dry_violation", r.line_start, r.line_end, "open") for r in rows]
-
-
 async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
     o = RefactoringOpportunity
     return _plain(
@@ -330,9 +309,11 @@ def _steps(refactoring: list[Any]) -> list[dict[str, Any]]:
 async def _plans(
     session: AsyncSession, repo_id: str, steps: list[dict[str, Any]], files: set[str]
 ) -> list[Any]:
-    """The plans those steps name (span, signature, evidence), and the open
+    """The plans those steps name (span, signature, evidence), the open
     Extract Method plans in ``files``, where a finding with no plan of its own
-    takes its first concrete step from."""
+    takes its first concrete step from, and every open Extract Helper plan,
+    whose occurrences say where verified duplicates sit (a plan is stored at
+    one anchor file and names every site, so it is not filtered by file)."""
     ids = {s.get("plan_id") for s in steps if s.get("plan_id")}
     s = RefactoringSuggestion
     named = s.public_id.in_(ids) if ids else None
@@ -341,7 +322,8 @@ async def _plans(
         if files
         else None
     )
-    wanted = [c for c in (named, extractions) if c is not None]
+    helpers = and_(s.refactoring_type == "extract_helper", s.status == "open")
+    wanted = [c for c in (named, extractions, helpers) if c is not None]
     if not wanted:
         return []
     return _plain(
@@ -443,11 +425,7 @@ async def _build(
     paths = full | planned | {r.file_path for r in history_only}
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
-        findings=[
-            *findings,
-            *(r for r in history_only if r.file_path not in full | planned),
-            *await _clones(session, repository_id, full | planned),
-        ],
+        findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
         refactoring=refactoring,
         performance=performance,
         plans=await _plans(session, repository_id, steps, full),
