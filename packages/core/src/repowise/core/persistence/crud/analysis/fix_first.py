@@ -140,37 +140,49 @@ def _eligible_findings(repo_id: str) -> Any:
     )
 
 
-async def _finding_paths(session: AsyncSession, repo_id: str) -> set[str]:
-    """The heaviest code-shape files, and every file whose findings are all history."""
+#: One stand-in row per history-only file: the builder reads from it only
+#: that the file's findings are all history, which is what it counts.
+_HistoryOnly = namedtuple("_HistoryOnly", "file_path biomarker_type health_impact dimension")
+
+
+async def _finding_files(session: AsyncSession, repo_id: str) -> tuple[set[str], list[Any]]:
+    """The heaviest code-shape files, and one row for each history-only file."""
     f = HealthFinding
     shaped_impact = func.sum(
         case((f.biomarker_type.in_(history_biomarkers()), 0.0), else_=f.health_impact)
     )
     rows = (
         await session.execute(
-            select(f.file_path, shaped_impact.label("shaped"))
+            select(
+                f.file_path,
+                shaped_impact.label("shaped"),
+                func.max(f.biomarker_type).label("marker"),
+                func.max(f.health_impact).label("impact"),
+            )
             .where(_eligible_findings(repo_id))
             .group_by(f.file_path)
         )
     ).all()
     heaviest = sorted((r for r in rows if r.shaped > 0), key=lambda r: (-r.shaped, r.file_path))
-    return {r.file_path for r in heaviest[:FINDING_FILES]} | {
-        r.file_path for r in rows if not r.shaped
-    }
+    history_only = [
+        _HistoryOnly(r.file_path, r.marker, r.impact, "defect") for r in rows if not r.shaped
+    ]
+    return {r.file_path for r in heaviest[:FINDING_FILES]}, history_only
 
 
 async def _findings(
-    session: AsyncSession, repo_id: str, paths: set[str], quoted: set[str], functions: set[str]
+    session: AsyncSession, repo_id: str, full: set[str], planned: set[str], functions: set[str]
 ) -> list[Any]:
-    """Every eligible finding in ``paths``, with the numbers only where a sentence quotes them.
+    """Every eligible finding in ``full``; in ``planned`` only what an item quotes.
 
-    Details travel for files whose own finding may lead (``quoted``) and for
-    the functions a plan changes; elsewhere the row's presence is what counts.
+    A file with a plan that becomes an item needs its history markers (the
+    item's context) and the findings on the function the plan changes (its
+    numbers); its other findings never lead, because the plan speaks for it.
     """
-    if not paths:
+    if not full and not planned:
         return []
     f = HealthFinding
-    shaped = f.biomarker_type.not_in(history_biomarkers())
+    history = history_biomarkers()
     return _plain(
         await session.execute(
             select(
@@ -186,16 +198,19 @@ async def _findings(
                 f.dimension,
                 f.status,
                 # Only a code-shape finding's numbers are quoted.
-                case(
-                    (
-                        and_(
-                            shaped,
-                            or_(f.file_path.in_(quoted), f.function_name.in_(functions)),
-                        ),
-                        f.details_json,
-                    )
-                ).label("details_json"),
-            ).where(_eligible_findings(repo_id), f.file_path.in_(paths))
+                case((f.biomarker_type.in_(history), None), else_=f.details_json).label(
+                    "details_json"
+                ),
+            ).where(
+                _eligible_findings(repo_id),
+                or_(
+                    f.file_path.in_(full),
+                    and_(
+                        f.file_path.in_(planned - full),
+                        or_(f.biomarker_type.in_(history), f.function_name.in_(functions)),
+                    ),
+                ),
+            )
         )
     )
 
@@ -258,9 +273,24 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
     )
 
 
+def _decoded(rows: list[Any]) -> list[Any]:
+    """``details_json`` decoded once into ``details``, which the builder reads first."""
+    if not rows:
+        return rows
+    fields = [("details" if f == "details_json" else f) for f in rows[0]._fields]
+    shape = namedtuple("Row", fields)  # type: ignore[misc]
+    out = []
+    for r in rows:
+        values = list(r)
+        at = fields.index("details")
+        values[at] = detail_map(r) if r.details_json else None
+        out.append(shape(*values))
+    return out
+
+
 def _steps(refactoring: list[Any]) -> list[dict[str, Any]]:
     """Every step of the opportunities that can become an item."""
-    return [s for r in refactoring if r.details_json for s in detail_map(r).get("steps") or []]
+    return [s for r in refactoring if r.details for s in r.details.get("steps") or []]
 
 
 async def _plans(session: AsyncSession, repo_id: str, steps: list[dict[str, Any]]) -> list[Any]:
@@ -294,17 +324,22 @@ async def load_fix_first(
 
     ``item_id`` keeps only that item, at its rank, for a lookup by id.
     """
-    refactoring = await _refactoring(session, repository_id)
-    performance = await _performance(session, repository_id)
+    refactoring = _decoded(await _refactoring(session, repository_id))
+    performance = _decoded(await _performance(session, repository_id))
     steps = _steps(refactoring)
-    paths = await _finding_paths(session, repository_id)
-    quoted = set(paths)
-    paths |= {r.file_path for r in refactoring if r.details_json}
-    paths |= {p.file_path for p in performance if p.details_json}
+    heavy, history_only = await _finding_files(session, repository_id)
+    # Ceiling: a plan whose details carry no steps is not an item, so its
+    # file is read in full like any other.
+    planned = {r.file_path for r in refactoring if r.details and r.details.get("steps")}
+    full = heavy | {p.file_path for p in performance if p.details} | (
+        {r.file_path for r in refactoring if r.details} - planned
+    )
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
+    findings = await _findings(session, repository_id, full, planned, functions)
+    paths = full | planned | {r.file_path for r in history_only}
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
-        findings=await _findings(session, repository_id, paths, quoted, functions),
+        findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
         refactoring=refactoring,
         performance=performance,
         plans=await _plans(session, repository_id, steps),
