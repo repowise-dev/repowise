@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { useChatHandoff } from "../chat/chat-handoff";
 import { ViewToggle } from "./code-health-controls";
 import type { AiPromptFlavor } from "./ai-prompt-builder";
@@ -19,6 +20,9 @@ export interface AiPromptModalProps {
   onOpenChange: (open: boolean) => void;
   /** Pure builder that returns the prompt string for the chosen flavor. */
   getPrompt: ((flavor: AiPromptFlavor) => string) | null;
+  /** Fetches the prompt instead, e.g. one core renders; overrides `getPrompt`.
+   *  Pass a stable function: a new one fetches again. */
+  promptSource?: PromptSource | undefined;
   /** Path or other one-line identifier shown next to the title. */
   filePath?: string | null;
   /** Section heading (e.g. "AI fix prompt", "AI test prompt"). */
@@ -48,6 +52,72 @@ const FLAVORS: { value: AiPromptFlavor; label: string; hint: string }[] = [
   },
   { value: "cursor", label: "Cursor", hint: "Uses @file context and Cursor editing conventions." },
 ];
+
+/** Where a server-rendered prompt comes from, one request per flavor. */
+export type PromptSource = (flavor: AiPromptFlavor) => Promise<string>;
+
+type PromptLoad =
+  | { status: "loading" }
+  | { status: "ready"; text: string }
+  | { status: "failed"; retry: () => void };
+
+/** The prompt `source` returns for `flavor`, refetched on a flavor switch or a retry. */
+function usePromptSource(source: PromptSource | undefined, flavor: AiPromptFlavor): PromptLoad | null {
+  const [load, setLoad] = useState<PromptLoad>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!source) return;
+    let live = true;
+    setLoad({ status: "loading" });
+    source(flavor).then(
+      (text) => {
+        if (live) setLoad({ status: "ready", text });
+      },
+      () => {
+        if (live) setLoad({ status: "failed", retry: () => setAttempt((n) => n + 1) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [source, flavor, attempt]);
+
+  return source ? load : null;
+}
+
+/** The text, or while a fetched prompt is pending or failed, a stand-in for it. */
+function PromptText({ text, load }: { text: string; load: PromptLoad | null }) {
+  if (load?.status === "loading") {
+    return (
+      <SkeletonRegion className="space-y-2" label="Loading the prompt">
+        <Skeleton className="h-3 w-3/4" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-5/6" />
+        <Skeleton className="h-3 w-2/3" />
+      </SkeletonRegion>
+    );
+  }
+  if (load?.status === "failed") {
+    return (
+      <p className="text-xs text-[var(--color-text-secondary)]">
+        Couldn't load the prompt.{" "}
+        <button
+          type="button"
+          onClick={load.retry}
+          className="rounded font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        >
+          Retry
+        </button>
+      </p>
+    );
+  }
+  return (
+    <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
+      {text}
+    </pre>
+  );
+}
 
 const FLAVOR_STORAGE_KEY = "repowise:ai-prompt-flavor";
 
@@ -102,11 +172,14 @@ function AskPromptInChat({
  */
 export function AiPromptBlock({
   getPrompt,
+  promptSource,
   bleed = "px-6",
   chatContext,
   onAsked,
 }: {
   getPrompt: ((flavor: AiPromptFlavor) => string) | null;
+  /** See {@link AiPromptModalProps.promptSource}. */
+  promptSource?: PromptSource | undefined;
   /** Horizontal padding that matches the host's own, so the hairlines run edge to edge. */
   bleed?: string;
   /** What "Ask in chat" asks about; the control is hidden without it. */
@@ -126,7 +199,13 @@ export function AiPromptBlock({
     }
   };
 
-  const prompt = useMemo(() => (getPrompt ? getPrompt(flavor) : ""), [getPrompt, flavor]);
+  const load = usePromptSource(promptSource, flavor);
+  const built = useMemo(
+    () => (getPrompt && !promptSource ? getPrompt(flavor) : ""),
+    [getPrompt, promptSource, flavor],
+  );
+  // Empty until a fetched prompt arrives, which keeps Copy and Ask disabled.
+  const prompt = load ? (load.status === "ready" ? load.text : "") : built;
 
   useEffect(() => setCopied(false), [prompt]);
 
@@ -163,16 +242,18 @@ export function AiPromptBlock({
         </div>
 
         <div className={`min-w-0 max-w-full max-h-[420px] overflow-x-hidden overflow-y-auto py-4 ${bleed}`}>
-          <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
-            {prompt}
-          </pre>
+          <PromptText text={prompt} load={load} />
         </div>
       </div>
 
       <div className={`flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)] ${bleed}`}>
         <span className="min-w-0 tabular-nums">
-          {prompt.length.toLocaleString()} chars, approx{" "}
-          {Math.round(prompt.length / 4).toLocaleString()} tokens
+          {load && !prompt ? null : (
+            <>
+              {prompt.length.toLocaleString()} chars, approx{" "}
+              {Math.round(prompt.length / 4).toLocaleString()} tokens
+            </>
+          )}
         </span>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <AskPromptInChat prompt={prompt} context={chatContext} onAsked={onAsked} />
@@ -207,6 +288,7 @@ export function AiPromptModal({
   open,
   onOpenChange,
   getPrompt,
+  promptSource,
   filePath,
   title = "AI fix prompt",
   description = "A ready-to-paste prompt that gives your AI coding agent every detail needed to make this change in one focused pass.",
@@ -232,6 +314,7 @@ export function AiPromptModal({
           {open ? (
             <AiPromptBlock
               getPrompt={getPrompt}
+              promptSource={promptSource}
               chatContext={chatContext}
               onAsked={() => onOpenChange(false)}
             />

@@ -112,3 +112,77 @@ describe("AiPromptModal Ask in chat", () => {
     expect(screen.queryByRole("button", { name: "Ask in chat" })).toBeNull();
   });
 });
+
+describe("AiPromptModal with a built prompt", () => {
+  it("shows the text at once with its size, and no loading state", () => {
+    render(<AiPromptModal open onOpenChange={() => undefined} getPrompt={(f) => `Built for ${f}`} />);
+    expect(screen.getByRole("dialog").querySelector("pre")?.textContent).toMatch(/^Built for /);
+    expect(screen.getByText(/chars, approx/)).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeEnabled();
+  });
+});
+
+describe("AiPromptModal with a fetched prompt", () => {
+  const CONTEXT = fileChatContext("src/a.py")!;
+
+  function renderFetched(promptSource: (flavor: string) => Promise<string>, onHandoff = vi.fn()) {
+    render(
+      <ChatHandoffProvider onHandoff={onHandoff}>
+        <AiPromptModal
+          open
+          onOpenChange={() => undefined}
+          getPrompt={null}
+          promptSource={promptSource}
+          chatContext={CONTEXT}
+        />
+      </ChatHandoffProvider>,
+    );
+  }
+
+  it("shows a skeleton with Copy and Ask disabled until the prompt arrives", async () => {
+    let resolve!: (text: string) => void;
+    renderFetched(() => new Promise((r) => (resolve = r)));
+    expect(screen.getByRole("status").textContent).toBe("Loading the prompt");
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Ask in chat" })).toBeDisabled();
+    expect(screen.getByRole("dialog").querySelector("pre")).toBeNull();
+
+    resolve("Fetched prompt");
+    expect(await screen.findByText("Fetched prompt")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeEnabled();
+  });
+
+  it("copies and asks in chat with exactly the text on screen", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const onHandoff = vi.fn();
+    renderFetched(async (flavor) => `Fetched for ${flavor}`, onHandoff);
+    const shown = (await screen.findByText(/^Fetched for /)).textContent;
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(shown));
+    fireEvent.click(screen.getByRole("button", { name: "Ask in chat" }));
+    expect(onHandoff).toHaveBeenCalledWith({ context: CONTEXT, question: shown, autoSend: false });
+  });
+
+  it("says when the prompt failed to load and fetches again on Retry", async () => {
+    const source = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce("Second try");
+    renderFetched(source);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Second try")).toBeTruthy();
+    expect(source).toHaveBeenCalledTimes(2);
+  });
+
+  it("fetches again for another target agent", async () => {
+    const source = vi.fn(async (flavor: string) => `Fetched for ${flavor}`);
+    renderFetched(source);
+    await screen.findByText(/^Fetched for /);
+    fireEvent.click(screen.getByRole("button", { name: "Cursor" }));
+    expect(await screen.findByText("Fetched for cursor")).toBeTruthy();
+    expect(source).toHaveBeenLastCalledWith("cursor");
+  });
+});
