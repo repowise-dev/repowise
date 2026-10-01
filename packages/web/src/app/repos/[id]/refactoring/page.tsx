@@ -168,7 +168,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         stepLimit: 50,
         evidenceLimit: 20,
       });
-      if (detail.resolved) setPromptFor({ kind: "opportunity", value: detail });
+      if (detail.found) setPromptFor({ kind: "opportunity", value: detail });
     },
     [repoId],
   );

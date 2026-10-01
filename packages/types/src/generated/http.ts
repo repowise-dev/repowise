@@ -2508,7 +2508,7 @@ export interface RefactoringOpportunitiesResponse {
  * part and anything else passes through rather than being dropped.
  */
 export interface RefactoringOpportunityDetailResponse {
-  resolved: boolean;
+  found: boolean;
   steps?: Record<string, unknown>[];
   steps_total?: number;
   steps_emitted?: number;

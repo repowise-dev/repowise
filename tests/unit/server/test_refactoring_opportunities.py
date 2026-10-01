@@ -385,7 +385,11 @@ async def test_bare_get_health_carries_one_bounded_refactoring_directive(client,
 
     # And the id it names resolves in one call.
     detail = await get_health(opportunity_id=directive["opportunity_id"])
-    assert detail["resolved"] is True
+    assert detail["found"] is True
+    # The lookup flag never shares a name with the lifecycle it sits beside:
+    # ``resolved: true`` next to ``status: "open"`` read as a contradiction.
+    assert "resolved" not in detail
+    assert detail["status"] == "open"
     assert detail["mode"] == "refactoring_opportunity"
     assert detail["steps"]
     del repo_id
@@ -508,7 +512,7 @@ async def test_an_unknown_opportunity_id_says_which_kind_of_unknown(client, app)
     await _seed(client, app, files=2)
     get_health = await _mcp(app)
     missing = await get_health(opportunity_id="refop2_" + "0" * 20)
-    assert missing["resolved"] is False
+    assert missing["found"] is False
     assert missing["model_state"]["state"] == "current"
     stale = await get_health(opportunity_id="refop1_" + "0" * 20)
     assert stale["model_state"]["state"] == "stale_model"

@@ -82,7 +82,7 @@ export function OpportunityDrawer({
   onOpenStep,
   fileHref,
 }: OpportunityDrawerProps) {
-  const resolved = detail?.resolved ? detail : null;
+  const resolved = detail?.found ? detail : null;
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -108,7 +108,7 @@ export function OpportunityDrawer({
               <Skeleton className="h-40 rounded-none" />
             </SkeletonRegion>
           </>
-        ) : detail && !detail.resolved ? (
+        ) : detail && !detail.found ? (
           <>
             <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
               Opportunity unavailable

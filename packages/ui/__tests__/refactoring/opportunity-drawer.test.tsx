@@ -16,7 +16,7 @@ function detail(
   overrides: Partial<RefactoringOpportunityDetailResolved> = {},
 ): RefactoringOpportunityDetailResolved {
   return {
-    resolved: true,
+    found: true,
     opportunity_id: "refop2_drawer",
     refactoring_model_version: 2,
     status: "open",

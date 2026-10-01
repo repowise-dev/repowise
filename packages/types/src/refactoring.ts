@@ -248,16 +248,17 @@ export interface RefactoringOpportunity {
 }
 
 /**
- * A detail lookup either resolved or did not; the two shapes share nothing but
- * the discriminant, so narrow on `resolved` before reading anything else.
- * REST 404s on the unresolved branch, MCP returns it verbatim.
+ * A detail lookup either found the id or did not; the two shapes share nothing
+ * but the discriminant, so narrow on `found` before reading anything else.
+ * `found` is the lookup, `status` the triage lifecycle (which can itself be
+ * `resolved`). REST 404s on the not-found branch, MCP returns it verbatim.
  */
 export type RefactoringOpportunityDetail =
   | RefactoringOpportunityDetailResolved
   | RefactoringOpportunityDetailUnresolved;
 
 export interface RefactoringOpportunityDetailUnresolved {
-  resolved: false;
+  found: false;
   opportunity_id: string;
   reason: "unknown_opportunity_id";
   /** MCP only: tells a stale-model id apart from one never minted here. */
@@ -272,7 +273,7 @@ export interface RefactoringOpportunityDetailUnresolved {
 
 export interface RefactoringOpportunityDetailResolved
   extends Omit<RefactoringOpportunity, "steps_total"> {
-  resolved: true;
+  found: true;
   /**
    * `unavailable` when the opportunity resolved but its steps could not be
    * read: `steps` is empty and `steps_total` is null, while the row's own

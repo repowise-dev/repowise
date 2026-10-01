@@ -482,7 +482,7 @@ async def get_refactoring_opportunity_detail(
         evidence_limit=evidence_limit,
         evidence_offset=evidence_offset,
     )
-    if not detail.get("resolved"):
+    if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
     return detail
 

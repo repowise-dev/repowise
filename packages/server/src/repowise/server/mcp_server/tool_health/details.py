@@ -274,7 +274,7 @@ async def _refactoring_detail_response(
         result = {
             "mode": "refactoring_evidence",
             "opportunity_id": opportunity_id,
-            "resolved": bool(detail.get("resolved")),
+            "found": bool(detail.get("found")),
             **block,
             "_meta": _build_meta(repository=repository),
         }
@@ -297,7 +297,7 @@ async def _refactoring_detail_response(
         evidence_limit=_REFACTORING_EVIDENCE_CAP,
     )
     file_path = detail.get("file_path")
-    if not detail.get("resolved"):
+    if not detail.get("found"):
         detail.setdefault(
             "model_state", _refactoring_model_state(opportunity_id)
         )

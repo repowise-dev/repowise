@@ -352,13 +352,20 @@ class RefactoringHealthService:
         evidence_offset: int = 0,
         with_plans: bool = True,
     ) -> dict[str, Any]:
-        """One opportunity by id: an indexed seek, then its member plans."""
+        """One opportunity by id: an indexed seek, then its member plans.
+
+        ``found`` says whether the id named a stored row; ``status`` is the
+        opportunity's triage lifecycle. The lookup flag is not called
+        ``resolved`` because ``status`` can itself be ``resolved``, and a
+        payload reading ``resolved: true`` beside ``status: "open"`` would
+        contradict itself.
+        """
         row = await get_refactoring_opportunity(
             self._session, self._repository_id, opportunity_id
         )
         if row is None:
             return {
-                "resolved": False,
+                "found": False,
                 "opportunity_id": opportunity_id,
                 "reason": "unknown_opportunity_id",
             }
@@ -366,7 +373,7 @@ class RefactoringHealthService:
         steps = list(details.get("steps") or [])
         page = steps[step_offset : step_offset + max(step_limit, 0)]
         payload = self._serialize(row, steps_limit=None, evidence_limit=0)
-        payload["resolved"] = True
+        payload["found"] = True
         payload["steps"] = page
         payload["steps_total"] = len(steps)
         payload["steps_emitted"] = len(page)

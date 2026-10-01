@@ -1168,7 +1168,9 @@ The opt-in enrichments:
   `file_path` and span describe where the symbol was.
   `get_health(opportunity_id="refop...")` returns the full ordered steps, the
   member plan payloads, the validation profile and structured `next_actions`;
-  `only=["refactoring_evidence"]` plus `cursor` pages the evidence.
+  `only=["refactoring_evidence"]` plus `cursor` pages the evidence. `found`
+  says whether the id named a stored opportunity; `status` is its triage
+  lifecycle (`open`, `acknowledged`, `resolved`, `false_positive`).
 - **`refactoring_directive`** rides on a bare `get_health()`: one opportunity,
   what it addresses, and the exact `opportunity_id` call that opens it. One
   primary-key read; it never touches the queue. **`refactoring_summary`**

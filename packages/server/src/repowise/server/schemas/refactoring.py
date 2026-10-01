@@ -68,7 +68,8 @@ class RefactoringOpportunityDetailResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    resolved: bool
+    #: Whether the id named a stored opportunity. Lifecycle is ``status``.
+    found: bool
     steps: list[dict[str, Any]] = []
     steps_total: int = 0
     steps_emitted: int = 0
