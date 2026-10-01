@@ -394,11 +394,11 @@ class _Files:
         start, end = shape.get("deep_start"), shape.get("deep_end")
         if start and end:
             depth = shape.get("max_nesting")
-            block = f"the {depth}-deep block" if depth else "the deepest block"
+            where = f"where it nests {depth} deep" if depth else "where it nests deepest"
             lines = f"line {start}" if start == end else f"lines {start}-{end}"
             return FixStep(
                 1,
-                f"Start with {lines}, {block}: return early or move it into a helper",
+                f"Start with {lines}, {where}: return early or move it into a helper",
                 path,
                 start,
             )

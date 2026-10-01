@@ -45,10 +45,26 @@ def _functions() -> dict:
     return {fc.name: fc for fc in fcx.functions}
 
 
-def test_the_first_block_at_the_deepest_level_is_recorded() -> None:
+def test_a_small_deepest_block_widens_to_its_nearest_four_line_block() -> None:
     deep = _functions()["deep"]
     assert deep.max_nesting == 6
-    assert deep.deepest_block == (11, 13)
+    # The 6-deep ``if flag`` spans 3 lines; the ``while`` around it spans 4.
+    assert deep.deepest_block == (10, 13)
+
+
+def test_a_deepest_block_of_four_lines_is_kept() -> None:
+    src = (
+        "def wide(rows):\n"
+        "    for row in rows:\n"
+        "        if row.ok:\n"
+        "            a = 1\n"
+        "            b = 2\n"
+        "            c = 3\n"
+    )
+    fcx = walk_file("/tmp/wide.py", "python", src.encode())
+    if not fcx.functions:
+        pytest.skip("python grammar unavailable")
+    assert fcx.functions[0].deepest_block == (3, 6)
 
 
 def test_a_flat_function_records_none() -> None:
@@ -72,7 +88,7 @@ def test_size_findings_carry_it_and_keep_their_id() -> None:
         dup_report=DuplicationReport(),
     )
     nested = next(f for f in findings if f.biomarker_type == "nested_complexity")
-    assert nested.details["deepest_block"] == {"start": 11, "end": 13}
+    assert nested.details["deepest_block"] == {"start": 10, "end": 13}
     without = HealthFindingData(
         **{
             **nested.__dict__,

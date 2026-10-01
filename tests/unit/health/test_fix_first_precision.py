@@ -165,7 +165,7 @@ def test_a_size_finding_starts_at_the_best_stored_extraction() -> None:
 def test_without_an_extraction_it_starts_at_the_deepest_block() -> None:
     item = _queue([_finding()]).lead
     assert item.action.steps[0].text == (
-        "Start with lines 20-30, the 4-deep block: return early or move it into a helper"
+        "Start with lines 20-30, where it nests 4 deep: return early or move it into a helper"
     )
     assert (item.action.steps[0].file_path, item.action.steps[0].line) == ("src/core.py", 20)
 
@@ -456,4 +456,4 @@ def test_only_a_size_finding_is_titled_break_up() -> None:
 
 def test_a_one_line_block_reads_as_one_line() -> None:
     item = _queue([_finding(deepest_block={"start": 42, "end": 42})]).lead
-    assert item.action.steps[0].text.startswith("Start with line 42, the 4-deep block")
+    assert item.action.steps[0].text.startswith("Start with line 42, where it nests 4 deep")
