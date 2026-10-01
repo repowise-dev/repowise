@@ -81,14 +81,15 @@ async def test_triage_carries_over_by_public_id(async_session, writer):
         repo.id,
         writer,
         [
-            # The same findings two lines lower: an edit above the function.
+            # The same findings two lines lower (an edit above the function),
+            # and one point more complex.
             _finding(
                 n,
                 reason="second",
                 severity=Severity.HIGH,
                 line_start=12,
                 line_end=22,
-                details={"ccn": 12, "symbol_line": 12},
+                details={"ccn": 13, "symbol_line": 12},
             )
             for n in names
         ],

@@ -50,7 +50,7 @@ from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
-from .finding_identity import SYMBOL_LINE_KEY
+from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
 from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
@@ -125,6 +125,10 @@ log = structlog.get_logger(__name__)
 # ``code_origin``. Complexity findings copy ``dispatch_share`` into their
 # details and findings on a deprecated function gain ``deprecated: true``. No
 # CCN, threshold, weight or score moves.
+# v37 (also): a finding inside a function or class records that symbol's first
+# line (``details["symbol_line"]``) and its public id is anchored on the symbol
+# plus the offset into it, hashing no metric values, so every stored finding id
+# moves once.
 #
 # v36 (also): which files are tests changed (``repowise.core.test_paths``).
 # Compound directories headed by a test word (``e2e-tests/``, ``pkg_tests/``,
@@ -141,10 +145,6 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
-#
-# v37: a finding inside a function or class records that symbol's first line
-# (``details["symbol_line"]``) and its public id is anchored on the symbol plus
-# the offset into it, so every stored finding id moves once.
 #
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are
@@ -404,25 +404,40 @@ def walked_functions(
 
 
 def _stamp_symbol_lines(findings: list[HealthFindingData], fcx: FileComplexity) -> None:
-    """Record the first line of the symbol each finding sits in.
+    """Record the symbol each finding sits in, so its id can be anchored there.
 
-    The finding id is anchored on the symbol plus the offset into it, so an edit
-    above the symbol leaves the id alone. The innermost same-named function or
-    class holding the finding's line is the anchor; a finding with none keeps
-    absolute lines. A replayed stored finding already carries its anchor.
+    The finding id is the symbol plus the offset into it, so an edit above the
+    symbol leaves the id alone. The anchor is the innermost function or class
+    holding the finding's line and sharing its name; a finding the detector
+    left unnamed takes the innermost one of any name, recorded under
+    ``symbol``. ``symbol_index`` tells same-named symbols in one file apart (two
+    ``run`` methods, sibling ``it`` callbacks). A finding outside every symbol
+    keeps absolute lines, and a replayed stored finding keeps its anchor.
     """
-    spans = [(fc.name, fc.start_line, fc.end_line) for fc in fcx.functions]
-    spans += [(c.name, c.start_line, c.end_line) for c in fcx.classes]
+    spans = sorted(
+        [(fc.start_line, fc.end_line, fc.name) for fc in fcx.functions]
+        + [(c.start_line, c.end_line, c.name) for c in fcx.classes]
+    )
     for f in findings:
-        if not f.function_name or f.line_start is None or SYMBOL_LINE_KEY in f.details:
+        if f.line_start is None or SYMBOL_LINE_KEY in f.details:
             continue
-        starts = [
-            start
-            for name, start, end in spans
-            if name == f.function_name and start <= f.line_start <= end
+        holding = [
+            span
+            for span in spans
+            if span[0] <= f.line_start <= span[1]
+            and (not f.function_name or span[2] == f.function_name)
         ]
-        if starts:
-            f.details = {**f.details, SYMBOL_LINE_KEY: max(starts)}
+        if not holding:
+            continue
+        start, _, name = max(holding, key=lambda span: (span[0], -span[1]))
+        stamp: dict = {SYMBOL_LINE_KEY: start}
+        if not f.function_name:
+            stamp[SYMBOL_KEY] = name
+        index = sum(1 for span in spans if span[2] == name and span[0] < start)
+        if index:
+            stamp[SYMBOL_INDEX_KEY] = index
+        f.details = {**f.details, **stamp}
+
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

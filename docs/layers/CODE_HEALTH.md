@@ -691,7 +691,10 @@ never silently change what those numbers mean.
 Every finding carries a stable public id (`finding_<digest>`). Inside a known
 function or class it is anchored on that symbol's name plus the finding's line
 offset into it, so an edit above the symbol does not change the id; a
-file-level finding keeps its absolute lines.
+file-level finding keeps its absolute lines. Metric values (a CCN, a churn
+figure, a coverage percentage) are not part of the id, so a finding keeps its
+id while its numbers move; only the few detail keys a marker needs to tell two
+of its findings apart (a coupling partner, an error kind) are.
 
 Triage survives re-indexing. Each index replaces the open findings, and a
 re-detected finding whose id matches a triaged row updates that row's evidence
