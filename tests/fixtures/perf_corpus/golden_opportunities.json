@@ -16,7 +16,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/jobs.py",
-          "finding_id": "finding_7862bc2a3df024245880",
+          "finding_id": "finding_0bbb5976a0db9ce5c38b",
           "function_name": "drain",
           "line_end": 40,
           "line_start": 40,
@@ -27,7 +27,7 @@
         {
           "biomarker_type": "nested_loop_with_io",
           "file_path": "src/app/jobs.py",
-          "finding_id": "finding_5b2ffd1bc937101fdd7e",
+          "finding_id": "finding_4920d985db7b900b6d9a",
           "function_name": "drain",
           "line_end": 42,
           "line_start": 42,
@@ -38,7 +38,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/jobs.py",
-          "finding_id": "finding_04717480d8db54d5f8de",
+          "finding_id": "finding_2789a72f7acb87f86cdc",
           "function_name": "drain",
           "line_end": 44,
           "line_start": 44,
@@ -130,7 +130,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/migrate.py",
-          "finding_id": "finding_80edaea9a46fda8481d6",
+          "finding_id": "finding_99e6a402db90eaf9544e",
           "function_name": "apply",
           "line_end": 587,
           "line_start": 587,
@@ -144,7 +144,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/migrate.py",
-          "finding_id": "finding_0a2cb7c82f83ec322cb3",
+          "finding_id": "finding_9b7378f919d4c62c71b6",
           "function_name": "apply",
           "line_end": 590,
           "line_start": 590,
@@ -158,7 +158,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/migrate.py",
-          "finding_id": "finding_46fed3cb2b1b20d90720",
+          "finding_id": "finding_bcbd5e05d77811ea7695",
           "function_name": "apply",
           "line_end": 591,
           "line_start": 591,
@@ -249,7 +249,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/entry.py",
-          "finding_id": "finding_a201efe1e1c9df9c6097",
+          "finding_id": "finding_d1b7702a840faaee6230",
           "function_name": "a",
           "line_end": 252,
           "line_start": 250,
@@ -264,7 +264,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/entry.py",
-          "finding_id": "finding_c7cbdc90f0dffc630671",
+          "finding_id": "finding_66292afa8823b8db693a",
           "function_name": "b",
           "line_end": 257,
           "line_start": 255,
@@ -357,7 +357,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/api.py",
-          "finding_id": "finding_7a93e35224cdbe6464f5",
+          "finding_id": "finding_165492e638f0ce198bad",
           "function_name": "list_users",
           "line_end": 32,
           "line_start": 30,
@@ -372,7 +372,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/api.py",
-          "finding_id": "finding_b502c8ca8878ade8c752",
+          "finding_id": "finding_7a74222fa7b3681d4b81",
           "function_name": "list_orders",
           "line_end": 33,
           "line_start": 31,
@@ -466,7 +466,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/reindex.py",
-          "finding_id": "finding_edae08cde216b8678b58",
+          "finding_id": "finding_dd1107d677ac5244c707",
           "function_name": "one",
           "line_end": 212,
           "line_start": 210,
@@ -481,7 +481,7 @@
         {
           "biomarker_type": "nested_loop_with_io",
           "file_path": "src/app/reindex.py",
-          "finding_id": "finding_37906110543334a495f1",
+          "finding_id": "finding_e7a60ff74d2f2b7ca67b",
           "function_name": "many",
           "line_end": 217,
           "line_start": 215,
@@ -574,7 +574,7 @@
         {
           "biomarker_type": "blocking_io_under_lock",
           "file_path": "src/app/pool.py",
-          "finding_id": "finding_0f4d6ed4b8e62ab7acec",
+          "finding_id": "finding_2cca2a2e17c82f868f98",
           "function_name": "reaper",
           "line_end": 132,
           "line_start": 130,
@@ -589,7 +589,7 @@
         {
           "biomarker_type": "blocking_io_under_lock",
           "file_path": "src/app/pool.py",
-          "finding_id": "finding_0a1cbec352aadd5800a1",
+          "finding_id": "finding_401246625d2b912b7c5c",
           "function_name": "writer",
           "line_end": 132,
           "line_start": 130,
@@ -677,7 +677,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/owners.py",
-          "finding_id": "finding_fda81ef13ef4cf19ba17",
+          "finding_id": "finding_c7e0cff49d2e4944af6c",
           "function_name": "load_owners",
           "line_end": 22,
           "line_start": 20,
@@ -759,7 +759,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/sync.py",
-          "finding_id": "finding_030499578345115bf627",
+          "finding_id": "finding_3181306320c607f836ff",
           "function_name": "sync_one",
           "line_end": 72,
           "line_start": 70,
@@ -774,7 +774,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/sync.py",
-          "finding_id": "finding_ff3e61eed3f93515485b",
+          "finding_id": "finding_77b2373b82e9257f6ee4",
           "function_name": "sync_all",
           "line_end": 73,
           "line_start": 71,
@@ -867,7 +867,7 @@
         {
           "biomarker_type": "blocking_io_under_lock",
           "file_path": "src/app/cache.py",
-          "finding_id": "finding_1e5678e8e33fd6960a6b",
+          "finding_id": "finding_8ea43b76f67150954aef",
           "function_name": "refresh",
           "line_end": 112,
           "line_start": 110,
@@ -958,7 +958,7 @@
         {
           "biomarker_type": "serial_await_in_loop",
           "file_path": "src/app/fetch.py",
-          "finding_id": "finding_763ec1cb433e3ef63614",
+          "finding_id": "finding_f8f8bae754849200b18a",
           "function_name": "fetch_each",
           "line_end": 42,
           "line_start": 40,
@@ -1040,7 +1040,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/commits.py",
-          "finding_id": "finding_cdc3430a0de872c130b3",
+          "finding_id": "finding_67809361ebc8f5a864d8",
           "function_name": "first_commit_each",
           "line_end": 32,
           "line_start": 30,
@@ -1124,7 +1124,7 @@
         {
           "biomarker_type": "serial_await_in_loop",
           "file_path": "src/app/fanout.py",
-          "finding_id": "finding_28eb6a8735fdf18585c6",
+          "finding_id": "finding_2fd4157a8e2822d774f3",
           "function_name": "gather_all",
           "line_end": 92,
           "line_start": 90,
@@ -1207,7 +1207,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/job.py",
-          "finding_id": "finding_4bc7b73af1f456af57b6",
+          "finding_id": "finding_a4ca438d1238f8956526",
           "function_name": "run",
           "line_end": 202,
           "line_start": 200,
@@ -1299,7 +1299,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/lone.py",
-          "finding_id": "finding_85307ceeab392a03daf6",
+          "finding_id": "finding_9cfd6311dc82a0049c6a",
           "function_name": "run",
           "line_end": 11,
           "line_start": 9,
@@ -1389,7 +1389,7 @@
         {
           "biomarker_type": "lazy_load_in_loop",
           "file_path": "app/incidents/service.py",
-          "finding_id": "finding_dade924692ed5b18d9f8",
+          "finding_id": "finding_b8a85cd0da954d3af1b7",
           "function_name": "notify_owners",
           "line_end": 50,
           "line_start": 50,
@@ -1472,7 +1472,7 @@
         {
           "biomarker_type": "lazy_load_in_loop",
           "file_path": "app/issues/views.py",
-          "finding_id": "finding_19b553fd5a6033f13645",
+          "finding_id": "finding_c99dea746d7bfeb433cd",
           "function_name": "issue_list",
           "line_end": 30,
           "line_start": 30,
@@ -1555,7 +1555,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/orders.py",
-          "finding_id": "finding_cad43bf01be5d5f78ee3",
+          "finding_id": "finding_8277702ee7a1de73ddf9",
           "function_name": "handle",
           "line_end": 12,
           "line_start": 10,
@@ -1647,7 +1647,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/reports.py",
-          "finding_id": "finding_aac082c5466872ab8b9b",
+          "finding_id": "finding_8e1d9d853534ecd57392",
           "function_name": "handle",
           "line_end": 14,
           "line_start": 12,
@@ -1739,7 +1739,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/billing.py",
-          "finding_id": "finding_6379ce5a318505017239",
+          "finding_id": "finding_afbcfc0c666017b74c22",
           "function_name": "handle",
           "line_end": 13,
           "line_start": 11,
@@ -1831,7 +1831,7 @@
         {
           "biomarker_type": "resource_construction_in_loop",
           "file_path": "src/app/clients.py",
-          "finding_id": "finding_36449d699224e623c1f6",
+          "finding_id": "finding_b3099686f4d36c75f964",
           "function_name": "each_varying",
           "line_end": 182,
           "line_start": 180,
@@ -1910,7 +1910,7 @@
         {
           "biomarker_type": "serial_await_in_loop",
           "file_path": "src/app/fanout.py",
-          "finding_id": "finding_c1f4482918ae3823bedb",
+          "finding_id": "finding_6f5702e6e6af64656121",
           "function_name": "gather_seq",
           "line_end": 97,
           "line_start": 95,
@@ -1989,7 +1989,7 @@
         {
           "biomarker_type": "resource_construction_in_loop",
           "file_path": "src/app/clients.py",
-          "finding_id": "finding_17256c41ed2a1893e6ce",
+          "finding_id": "finding_840a26ef5269b670f5a2",
           "function_name": "each",
           "line_end": 172,
           "line_start": 170,
@@ -2068,7 +2068,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/formatter.py",
-          "finding_id": "finding_b853807b08e242e784f5",
+          "finding_id": "finding_74b3cc4ea0afc2828ead",
           "function_name": "run",
           "line_end": 24,
           "line_start": 22,
@@ -2083,7 +2083,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/lexer.py",
-          "finding_id": "finding_7e425174e879fb9f9d23",
+          "finding_id": "finding_f1d7e9138afa40a0f1b7",
           "function_name": "run",
           "line_end": 22,
           "line_start": 20,
@@ -2098,7 +2098,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/linter.py",
-          "finding_id": "finding_34d631c0ff0bed50aafd",
+          "finding_id": "finding_04801d753f6bc1eb8675",
           "function_name": "run",
           "line_end": 23,
           "line_start": 21,
@@ -2113,7 +2113,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/resolver.py",
-          "finding_id": "finding_ef6b980a3a371a707424",
+          "finding_id": "finding_1bb5c282969f6d4c8f99",
           "function_name": "run",
           "line_end": 25,
           "line_start": 23,
@@ -2199,7 +2199,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/retry.py",
-          "finding_id": "finding_1bdd58a5f59d1771055a",
+          "finding_id": "finding_0e8c0794491c7384f4c4",
           "function_name": "post_with_retry",
           "line_end": 52,
           "line_start": 50,
@@ -2283,7 +2283,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "scripts/backfill.py",
-          "finding_id": "finding_9317f3939e8ba7a1dd00",
+          "finding_id": "finding_d8a564a824ecf8f12ecb",
           "function_name": "run",
           "line_end": 202,
           "line_start": 200,
@@ -2375,7 +2375,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/edge.py",
-          "finding_id": "finding_14ea9dfdb77b0df39e75",
+          "finding_id": "finding_323137fff890d9e629dc",
           "function_name": "run",
           "line_end": 232,
           "line_start": 230,
@@ -2467,7 +2467,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "tests/test_job.py",
-          "finding_id": "finding_059a3a02cba6c95befa3",
+          "finding_id": "finding_e34ca4ba22d5f482348d",
           "function_name": "run",
           "line_end": 202,
           "line_start": 200,
@@ -2559,7 +2559,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/walker.py",
-          "finding_id": "finding_aa5de561c0b650b976ac",
+          "finding_id": "finding_57d0612e4678a6b34b8d",
           "function_name": "index",
           "line_end": 53,
           "line_start": 51,
@@ -2644,7 +2644,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/walker.py",
-          "finding_id": "finding_2bf692d084c65fdb5995",
+          "finding_id": "finding_a609e571a99e409b1aab",
           "function_name": "scan",
           "line_end": 52,
           "line_start": 50,
@@ -2729,7 +2729,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "src/app/guess.py",
-          "finding_id": "finding_2c964005af179686b46e",
+          "finding_id": "finding_e287cbc148e5a8ea8ca8",
           "function_name": "run",
           "line_end": 242,
           "line_start": 240,
@@ -2822,7 +2822,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "bootstrap.py",
-          "finding_id": "finding_23610573a960e1c72ac3",
+          "finding_id": "finding_a88c49a6ad4cfd7bc111",
           "function_name": "main",
           "line_end": 16,
           "line_start": 14,
@@ -2899,7 +2899,7 @@
         {
           "biomarker_type": "io_in_loop",
           "file_path": "docs/snippets/walk.py",
-          "finding_id": "finding_8e360766909208ee01a2",
+          "finding_id": "finding_d0b10a5d5eeb35e40893",
           "function_name": "demo",
           "line_end": 10,
           "line_start": 8,
@@ -2976,7 +2976,7 @@
         {
           "biomarker_type": "membership_test_against_list_in_loop",
           "file_path": "src/app/filters.py",
-          "finding_id": "finding_ffe2b0bc5340930cea74",
+          "finding_id": "finding_9fa77c322fa3d741a8c4",
           "function_name": "select",
           "line_end": 152,
           "line_start": 150,
@@ -3060,7 +3060,7 @@
         {
           "biomarker_type": "string_concat_in_loop",
           "file_path": "src/app/render.py",
-          "finding_id": "finding_05e1666dc8637c4749e3",
+          "finding_id": "finding_ffee3cf5c3bbf22b87ba",
           "function_name": "to_csv",
           "line_end": 162,
           "line_start": 160,
