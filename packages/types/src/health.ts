@@ -445,9 +445,16 @@ export interface PerformanceOpportunity {
   biomarker_types: string[];
   boundary_kind: C4IoKind | null;
   execution_context: PerformanceExecutionContext;
+  /** The one sink every observation reaches, else null; see `terminal_sinks`. */
   terminal_sink: string | null;
+  /** Every sink the intervention's observations reach. Absent on an older store. */
+  terminal_sinks?: string[];
   shared_path_suffix: string[];
+  /** Where to edit. Named on every row from model 3 (`path::__module__` for
+   *  top-level code); null only on an older store. */
   intervention_symbol: string | null;
+  /** The loop's function, a helper every caller shares, or top-level code. */
+  intervention_kind?: "function" | "shared_helper" | "module";
   /** The file holding the symbol worth editing. */
   file_path: string;
   resource_fingerprints: string[];

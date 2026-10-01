@@ -148,7 +148,9 @@ log = structlog.get_logger(__name__)
 #
 # v37: a perf hit inside a lambda with no named function around it is named for
 # that lambda (``build``, ``it callback``), so its stored ``function_name`` and
-# public id change; top-level script code still carries none.
+# public id change; top-level script code still carries none. It also carries
+# ``PERFORMANCE_MODEL_VERSION`` 3 (one opportunity per intervention), so every
+# stored opportunity id and the id stamped on every perf finding change.
 #
 # v36: files a package manifest declares (package.json ``bin``, a built
 # ``main`` mapped to its source, a distribution's package ``__init__``) are

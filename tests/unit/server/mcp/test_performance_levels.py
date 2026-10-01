@@ -349,7 +349,7 @@ async def test_the_summary_costs_the_same_however_many_causes_there_are(
     for index in range(40):
         row = _row(materialized, f"src/bulk_{index}.py", 500 + index)
         row.details_json = row.details_json.replace(
-            "src/db.py::fetch", f"src/db.py::fetch_{index}"
+            "src/shared.py::load", f"src/shared.py::load_{index}"
         )
         session.add(row)
     await session.flush()
@@ -413,10 +413,10 @@ async def test_the_queue_costs_the_same_however_many_opportunities_there_are(
         await get_health(include=["performance"], only=["performance_opportunities"], limit=2)
 
     for index in range(40):
-        # A distinct sink per row, so these are forty causes rather than one.
+        # A distinct helper per row, so these are forty causes rather than one.
         row = _row(materialized, f"src/bulk_{index}.py", 500 + index)
         row.details_json = row.details_json.replace(
-            "src/db.py::fetch", f"src/db.py::fetch_{index}"
+            "src/shared.py::load", f"src/shared.py::load_{index}"
         )
         session.add(row)
     await session.flush()

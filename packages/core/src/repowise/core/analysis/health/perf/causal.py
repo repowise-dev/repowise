@@ -33,11 +33,20 @@ from the string alone. Version 1 ids carry no digit and remain readable as
 version 1. Moving this constant means bumping ``HEALTH_ANALYZER_VERSION`` with
 it, which forces the rescore that restamps every stored finding.
 
-Version 3 classes schema migrations as ``tooling`` in :func:`execution_context`,
-a kernel input. Digests of every other path are unchanged; only the prefix moved.
+Version 3 keys a cause by its intervention, not by the sink it reaches: one
+loop reaching three sinks was three opportunities under version 2. It also
+classes schema migrations as ``tooling`` in :func:`execution_context`, a kernel
+input.
 """
 
 ExecutionContext = Literal["production", "tooling", "test", "unknown"]
+
+# Where the edit lands: the function holding the loop, a helper every caller
+# reaches the sink through, or top-level script code.
+InterventionKind = Literal["function", "shared_helper", "module"]
+
+MODULE_SCOPE = "__module__"
+"""The symbol name for top-level code, the same synthetic node the graph uses."""
 
 CausalKey = tuple[Any, ...]
 
@@ -135,42 +144,53 @@ def cost_shape(marker: str) -> str:
     return marker
 
 
+def shared_helper(facts: ObservationFacts) -> str | None:
+    """The helper the repetition passes through, when the loop is not the edit.
+
+    On ``loop owner -> helper -> ... -> sink`` every caller reaches the sink
+    through the sink's immediate caller, so that helper is the one place a
+    batched form settles them all. A two-node path has no helper: the loop
+    owner calls the sink-holding function itself, so the loop is the edit.
+    """
+    if facts.cross_function and facts.path_depth >= 3:
+        return facts.meaningful_predecessor
+    return None
+
+
 def causal_key(facts: ObservationFacts) -> CausalKey:
-    """The v2 identity kernel.
+    """The v3 identity kernel: one cause per intervention and cost family.
 
-    A cross-function cause is named by the pair the intervention lives in:
-    the sink that pays the cost and the caller that repeats it. Naming it by
-    the sink alone merged every workflow that happened to reach a shared
-    infrastructure helper, so a session opener reached from many unrelated
-    callers read as one cause. Requiring the caller to match splits those, and
-    leaves a genuinely shared helper merged however many callers reach it,
-    because they all reach the sink through that helper.
+    The unit is the place a person edits. A loop is named by the function that
+    holds it, so the sinks it reaches, the call sites inside it, and the
+    co-signals of one cost family (``io_in_loop`` with ``nested_loop_with_io``)
+    are members of one cause, not one cause each. A shared helper is named by
+    itself, so unrelated callers that reach a sink through it stay one cause,
+    and unrelated callers of a generic sink stay apart because each loop owner
+    is its own intervention.
 
-    A same-function cause has no call path and is named by its own location.
+    Boundary stays in: a loop doing database and filesystem work holds two
+    different changes. The loop's own line does not: two loops in one function
+    are one edit site, and their lines stay in the evidence. That is a ceiling,
+    not a claim that they are one loop: findings record the sink's line and not
+    the loop's, so splitting per loop would need the walk to carry the loop
+    line into ``details`` first.
 
     Everything outside these tuples is display or derived data and stays out:
-    prose, line ends, storage ids, rank factors, confidence, reachability, and
-    provenance.
+    prose, lines, sinks, storage ids, rank factors, confidence, reachability,
+    and provenance.
     """
     context = execution_context(facts.file_path)
-    predecessor = facts.meaningful_predecessor
-    if facts.cross_function and predecessor is not None:
-        return (
-            "cross-function",
-            context,
-            cost_shape(facts.marker),
-            facts.boundary_kind,
-            predecessor,
-            facts.terminal_sink,
-        )
+    family = cost_shape(facts.marker)
+    helper = shared_helper(facts)
+    if helper is not None:
+        return ("shared_helper", context, family, facts.boundary_kind, helper)
     return (
-        "local",
+        "function",
         context,
-        facts.marker,
+        family,
         facts.boundary_kind,
         facts.file_path,
-        facts.function_name,
-        facts.line_start,
+        facts.function_name or None,
     )
 
 
@@ -190,18 +210,20 @@ def key_boundary(key: CausalKey) -> str | None:
     return key[3]
 
 
-def key_is_cross_function(key: CausalKey) -> bool:
-    return key[0] == "cross-function"
+def key_intervention_kind(key: CausalKey) -> InterventionKind:
+    if key[0] == "shared_helper":
+        return "shared_helper"
+    return "function" if key[5] else "module"
 
 
-def key_intervention_symbol(key: CausalKey) -> str | None:
-    """The caller the whole group shares, and therefore the place to edit."""
-    return key[4] if key_is_cross_function(key) else None
+def key_intervention_symbol(key: CausalKey) -> str:
+    """The place the whole group shares, and therefore the place to edit.
 
-
-def key_terminal_sink(key: CausalKey) -> str | None:
-    """The sink the whole group shares. Read off the key, never off a member."""
-    return key[5] if key_is_cross_function(key) else None
+    Every group has one: top-level script code is named for its module.
+    """
+    if key[0] == "shared_helper":
+        return key[4]
+    return f"{key[4]}::{key[5] or MODULE_SCOPE}"
 
 
 def opportunity_id_model_version(opportunity_id: str) -> int | None:
@@ -286,22 +308,24 @@ def shared_path_suffix(paths: list[tuple[str, ...]]) -> tuple[str, ...]:
 
 
 __all__ = [
+    "MODULE_SCOPE",
     "PERFORMANCE_MODEL_VERSION",
     "CausalKey",
     "ExecutionContext",
+    "InterventionKind",
     "causal_key",
     "cost_shape",
     "execution_context",
     "group_observations",
     "key_boundary",
     "key_context",
+    "key_intervention_kind",
     "key_intervention_symbol",
-    "key_is_cross_function",
-    "key_terminal_sink",
     "link_performance_findings",
     "model_state",
     "opportunity_id_for_finding",
     "opportunity_id_model_version",
+    "shared_helper",
     "shared_path_suffix",
     "stable_id",
 ]

@@ -74,6 +74,8 @@ def opportunity_details(
     return {
         **({"plan": plan} if plan else {}),
         "biomarker_types": list(opportunity.biomarker_types),
+        "intervention_kind": opportunity.intervention_kind,
+        "terminal_sinks": list(opportunity.terminal_sinks),
         "shared_path_suffix": list(opportunity.shared_path_suffix),
         "resource_fingerprints": list(opportunity.resource_fingerprints),
         "reliable_entry_reachability": opportunity.reliable_entry_reachability,

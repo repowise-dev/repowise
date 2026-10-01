@@ -154,6 +154,10 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         ("reachability_states", 1, {"batch_or_prefetch_io"}),
         ("unclassified_context", 2, {None}),
         ("sink_without_caller", 1, {"batch_or_prefetch_io"}),
+        # One loop reaching three sinks is one intervention with three sinks under it.
+        ("one_loop_many_sinks", 1, {"batch_or_prefetch_io"}),
+        # A direct sink, its nested co-signal and a helper call in one loop: one edit.
+        ("one_loop_mixed_shapes", 1, {"batch_or_prefetch_io"}),
     ],
 )
 def test_case_membership_and_actionability(case, expected_groups, expected_strategies) -> None:
@@ -189,11 +193,12 @@ def test_an_unclassifiable_path_is_not_reported_as_production() -> None:
     assert contexts == {"unknown"}
 
 
-def test_a_path_that_names_no_caller_is_keyed_locally() -> None:
-    """A single-node path is a destination with no journey to it."""
+def test_a_path_that_names_no_caller_is_keyed_by_its_loop() -> None:
+    """A single-node path names a sink and no helper, so the loop is the edit."""
     item = build_performance_opportunities(rows_for("sink_without_caller"))[0]
-    assert item.intervention_symbol is None
-    assert item.terminal_sink is None
+    assert item.intervention_symbol == "src/app/lone.py::run"
+    assert item.intervention_kind == "function"
+    assert item.terminal_sink == "src/app/db.py::only_sink"
 
 
 def test_every_group_reports_an_actionability_state_and_a_reason() -> None:

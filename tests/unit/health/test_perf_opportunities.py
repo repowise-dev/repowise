@@ -426,7 +426,9 @@ def test_a_plan_lists_its_edits_and_marks_only_proven_ones_mechanical():
     parallel_plan = performance_fix_suggestions(proven)[0].plan
 
     assert [step["order"] for step in batch_plan["steps"]] == [1, 2]
-    assert batch_plan["steps"][0]["symbol"] == "a.py::run"
+    # The bulk form goes on the callee the loop repeats, not on the loop's owner.
+    assert batch_plan["steps"][0]["symbol"] == "db.py::fetch"
+    assert batch_plan["intervention_symbol"] == "a.py::run"
     assert batch_plan["steps"][1]["line"] == 2
     assert (batch_plan["mechanical_steps"], batch_plan["judgment_steps"]) == (0, 2)
     assert (parallel_plan["mechanical_steps"], parallel_plan["judgment_steps"]) == (1, 0)

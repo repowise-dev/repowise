@@ -460,6 +460,7 @@ class PerformanceHealthService:
             "execution_context": row.execution_context,
             "terminal_sink": row.terminal_sink,
             "intervention_symbol": row.intervention_symbol,
+            "intervention_kind": details.get("intervention_kind"),
             "file_path": row.file_path,
             "affected_call_sites_total": row.affected_call_sites_total,
             "affected_files_total": row.affected_files_total,
@@ -479,6 +480,7 @@ class PerformanceHealthService:
         fix_strategy = row.fix_strategy
         return {
             **payload,
+            "terminal_sinks": details.get("terminal_sinks", []),
             "shared_path_suffix": details.get("shared_path_suffix", []),
             "resource_fingerprints": details.get("resource_fingerprints", []),
             "reliable_entry_reachability": details.get("reliable_entry_reachability"),

@@ -76,7 +76,7 @@ def fix_steps(
         target = intervention or sink
         steps.append(
             {
-                "action": intro.format(sink=(target or "the shared sink").rsplit("::", 1)[-1]),
+                "action": intro.format(sink=(target or "the per-key call").rsplit("::", 1)[-1]),
                 "symbol": target,
                 "file_path": file_of_symbol(target) if target else None,
                 "line": None,
@@ -152,8 +152,17 @@ def _suggestion(
         }
         for item in opportunity.evidence
     ]
+    # A bulk form belongs on the per-key callee: the shared helper, else the one
+    # sink the loop reaches. The loop's own function is where the keys are
+    # collected, never what gains the bulk form.
+    batched_on_helper = opportunity.intervention_kind == "shared_helper"
     steps = fix_steps(
-        fix.strategy, fix.safety, intervention, opportunity.terminal_sink, locations, fix.api
+        fix.strategy,
+        fix.safety,
+        intervention if fix.strategy != "batch_or_prefetch_io" or batched_on_helper else None,
+        opportunity.terminal_sink,
+        locations,
+        fix.api,
     )
     mechanical = sum(step["applicability"] == "mechanical" for step in steps)
     return RefactoringSuggestion(
