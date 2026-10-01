@@ -127,13 +127,12 @@ page cost the whole repository.
 `performance_fix` plans are excluded by construction: the performance layer
 composes, ranks and owns the lifecycle of its own opportunities.
 
-**Known limit: Split File ids across `init` and `update`.** A `split_file` plan
-id can differ between a full index and an incremental update of the same
-commit. The partition behind it comes from community detection over the file's
-symbol graph, and modularity is sensitive to edge density, which the two paths
-do not always build identically. The id is stable from one update to the next,
-but not guaranteed equal between an `init` and an `update` at one commit, and
-the opportunity id over it moves with it.
+**Split File ids across `init` and `update`.** A full index, an incremental
+update and a re-score from stored git metadata now build the same symbol graph
+for a file at one commit, so its `split_file` plan id is the same on every path:
+the co-change edge reads each function's commit set (its 50 most recent
+distinct commits) from `git_function_blame` when no blame index is at hand.
+Rows stored before that column existed carry no set until the next full index.
 
 ### Ordering, and `refactoring_view`
 
