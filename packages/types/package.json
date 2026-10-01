@@ -35,6 +35,7 @@
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
     "./refactoring": "./src/refactoring.ts",
+    "./fix-first": "./src/fix-first.ts",
     "./generated/http": "./src/generated/http.ts"
   },
   "publishConfig": {

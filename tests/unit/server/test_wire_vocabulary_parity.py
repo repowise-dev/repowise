@@ -83,3 +83,33 @@ def test_action_vocabularies_match_python() -> None:
     }
     for alias, values in pairs.items():
         assert _union_members(alias, "actions.ts") == set(values), alias
+
+
+def test_fix_first_vocabularies_match_python() -> None:
+    from repowise.core.analysis.health.fix_first import (
+        FIX_EFFORTS,
+        FIX_EXCLUSIONS,
+        FIX_FACT_BASES,
+        FIX_GAIN_KINDS,
+        FIX_IMPROVES,
+        FIX_KINDS,
+        FIX_LEVELS,
+        FIX_SCOPES,
+        FIX_TIERS,
+    )
+
+    pairs = {
+        "FixTier": FIX_TIERS,
+        "FixKind": FIX_KINDS,
+        "FixImproves": FIX_IMPROVES,
+        "FixGainKind": FIX_GAIN_KINDS,
+        "FixLevel": FIX_LEVELS,
+        "FixFactBasis": FIX_FACT_BASES,
+        "FixExclusion": FIX_EXCLUSIONS,
+        "FixScope": FIX_SCOPES,
+    }
+    for alias, values in pairs.items():
+        assert _union_members(alias, "fix-first.ts") == set(values), alias
+    # Upper-case members fall outside the lower-case member regex.
+    match = re.search(r'export type FixEffort =(.*?);', (_TYPES_SRC / "fix-first.ts").read_text(encoding="utf-8"))
+    assert match and set(re.findall(r'"([A-Z]+)"', match.group(1))) == set(FIX_EFFORTS)

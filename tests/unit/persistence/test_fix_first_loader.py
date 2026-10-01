@@ -25,8 +25,8 @@ def _with_json(row: dict, name: str) -> dict:
     return out
 
 
-async def _seed(session) -> str:
-    rid = (await insert_repo(session)).id
+async def seed_fix_first(session, rid: str | None = None) -> str:
+    rid = rid or (await insert_repo(session)).id
     for m in METRICS:
         session.add(
             HealthFileMetric(
@@ -62,7 +62,7 @@ async def _seed(session) -> str:
 
 
 async def test_loader_matches_the_builder_over_rows(async_session) -> None:
-    rid = await _seed(async_session)
+    rid = await seed_fix_first(async_session)
     loaded = await load_fix_first(async_session, rid)
     built = build_fix_first(
         metrics=METRICS,

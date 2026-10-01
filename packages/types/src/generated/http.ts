@@ -1513,6 +1513,50 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FixAction {
+  summary: string;
+  steps: FixStep[];
+  steps_total: number;
+  mechanical: boolean;
+}
+
+export interface FixConfidence {
+  level: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface FixContext {
+  label: string;
+  value: string;
+}
+
+export interface FixEffortEstimate {
+  bucket: "S" | "M" | "L" | "XL";
+  basis: string;
+}
+
+export interface FixFact {
+  label: string;
+  value: string;
+  basis?: "measured" | "inferred" | "unknown";
+}
+
+/** ``FixFirstQueue.as_dict()``: the stored fields plus the ``lead`` it derives. */
+export interface FixFirstQueueResponse {
+  items: FixItem[];
+  lead: FixItem | null;
+  totals: FixTotals;
+  by_improves: Record<string, number>;
+  model_version: number;
+  basis: Record<string, string | null>;
+}
+
+export interface FixGain {
+  kind: "health_points" | "performance";
+  value: number | null;
+  text: string;
+}
+
 /** One changed file's recency-weighted bug-fix record. */
 export interface FixHistoryFileResponse {
   path: string;
@@ -1534,6 +1578,85 @@ export interface FixHistoryResponse {
   density: number;
   percentile: number | null;
   files: FixHistoryFileResponse[];
+}
+
+export interface FixItem {
+  id: string;
+  rank: number;
+  tier: "now" | "next" | "later";
+  kind: "refactor" | "perf_fix" | "finding";
+  improves: "defect" | "maintainability" | "performance";
+  title: string;
+  target: FixTarget;
+  why: string;
+  facts: FixFact[];
+  action: FixAction;
+  gain: FixGain;
+  effort: FixEffortEstimate;
+  risk: FixRisk;
+  confidence: FixConfidence;
+  verify: FixVerify;
+  context: FixContext[];
+  source: FixSource;
+  next_call: FixNextCall;
+  why_ranked?: FixRankFact[];
+}
+
+export interface FixNextCall {
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface FixRankFact {
+  factor: string;
+  value: string;
+}
+
+export interface FixRisk {
+  level: "high" | "medium" | "low";
+  dependents: number | null;
+  files_touched: number;
+  text: string;
+}
+
+export interface FixSource {
+  opportunity_id?: string | null;
+  plan_ids?: string[];
+  finding_ids?: string[];
+}
+
+export interface FixStep {
+  order: number;
+  text: string;
+  file_path: string;
+  line?: number | null;
+  mechanical?: boolean;
+}
+
+export interface FixTarget {
+  file_path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+}
+
+export interface FixTest {
+  path: string;
+  reason: string;
+}
+
+export interface FixTotals {
+  candidates?: number;
+  eligible?: number;
+  shown?: number;
+  excluded?: Record<string, number>;
+}
+
+export interface FixVerify {
+  tests: FixTest[];
+  tests_total: number;
+  command: string | null;
+  basis: "measured" | "inferred" | "unknown";
 }
 
 /** Optional per-call overrides for the enrichment provider/model. */
