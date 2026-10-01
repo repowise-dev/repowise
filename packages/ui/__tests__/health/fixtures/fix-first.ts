@@ -328,7 +328,7 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
         "steps": [
           {
             "order": 1,
-            "text": "Add a form of ensure_repo_registration that takes every key at once (ensure_repo_registration)",
+            "text": "Add a form of ensure_repo_registration that takes every key at once",
             "file_path": "packages/server/src/repowise/server/repo_db.py",
             "line": null,
             "mechanical": false

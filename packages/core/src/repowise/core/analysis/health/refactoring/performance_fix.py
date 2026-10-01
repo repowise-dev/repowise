@@ -90,6 +90,7 @@ def fix_steps(
                 "symbol": location.get("function_name"),
                 "file_path": location.get("file_path"),
                 "line": location.get("line_start"),
+                **({"loop_line": location["loop_line"]} if location.get("loop_line") else {}),
                 "applicability": applicability,
             }
             for location in locations
@@ -149,6 +150,7 @@ def _suggestion(
             "function_name": item.get("function_name"),
             "line_start": item.get("line_start"),
             "line_end": item.get("line_end"),
+            **({"loop_line": item["loop_line"]} if item.get("loop_line") else {}),
         }
         for item in opportunity.evidence
     ]

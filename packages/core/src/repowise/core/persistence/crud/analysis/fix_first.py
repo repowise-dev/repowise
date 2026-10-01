@@ -37,6 +37,7 @@ from repowise.core.analysis.health.scoring import history_biomarkers
 from ...models import (
     GitMetadata,
     GraphMetric,
+    GraphNode,
     HealthFileMetric,
     HealthFinding,
     PerformanceOpportunity,
@@ -340,6 +341,27 @@ async def _plans(
     )
 
 
+async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[Any]) -> dict[str, int]:
+    """First lines of the functions a performance plan step names with no
+    line of its own (the intervention a batched form is added to)."""
+    wanted = {
+        step["symbol"]
+        for row in performance
+        if row.details
+        for step in (row.details.get("plan") or {}).get("steps") or ()
+        if not step.get("line") and "::" in (step.get("symbol") or "")
+    }
+    if not wanted:
+        return {}
+    g = GraphNode
+    rows = await session.execute(
+        select(g.node_id, g.start_line).where(
+            g.repository_id == repo_id, g.node_id.in_(wanted), g.start_line.is_not(None)
+        )
+    )
+    return {node_id: line for node_id, line in rows.all()}
+
+
 #: Built queues kept in process. A handful covers the shapes one surface asks
 #: for (dashboard, CLI, Do next, one id), per repository a server holds.
 CACHE_SIZE = 32
@@ -434,6 +456,7 @@ async def _build(
         item_id=item_id,
         basis=await _basis(session, repository_id),
         hot_cuts=await _hot_cuts(session, repository_id),
+        symbol_lines=await _symbol_lines(session, repository_id, performance),
     )
 
 

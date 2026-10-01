@@ -98,8 +98,9 @@ async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materializ
     assert "performance_directive" not in result
     perf = [i for i in result["fix_first"]["items"] if i["kind"] == "perf_fix"]
     assert perf, result["fix_first"]
-    # The five callers behind one shared helper are one intervention, one item.
-    shared = [i for i in perf if i["target"]["symbol"] == "load"]
+    # The five callers behind one shared helper are one intervention, one item;
+    # it points at the loop of its first caller, so its title names the helper.
+    shared = [i for i in perf if i["title"].endswith(" load")]
     assert len(shared) == 1, perf
     assert shared[0]["next_call"]["arguments"]["opportunity_id"].startswith("perf")
     assert 0 < len(json.dumps(shared[0])) <= 1500

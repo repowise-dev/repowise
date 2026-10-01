@@ -881,7 +881,28 @@ def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     return value
 
 
-def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
+def _perf_step_text(step: Mapping[str, Any], path: str) -> str:
+    """A plan step's action, naming its function once: an action that already
+    says the name is not followed by it again."""
+    action = step.get("action") or ""
+    name = text.scope_name(step.get("symbol"), path)
+    if not name or name.rsplit(".", 1)[-1] in action:
+        return action
+    return f"{action} ({name})"
+
+
+def _site_symbol(symbol: str | None) -> str | None:
+    """The function a call site sits in; ``None`` for none, or a file's top
+    level, which is no symbol to jump to."""
+    short = text.short_symbol(symbol)
+    if not short or short.rsplit(".", 1)[-1] == "__module__":
+        return None
+    return short
+
+
+def _perf_unit(
+    rows: list[Any], files: _Files, symbol_lines: Mapping[str, int] | None = None
+) -> _Unit:
     lead = min(rows, key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
     details = detail_map(lead)
     facets = details.get("facets") or {}
@@ -902,6 +923,10 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
     def fields() -> dict[str, Any]:
         # A cause with no intervention symbol is named by the function its plan edits.
         first = plan_steps[0] if plan_steps else {}
+        lines = symbol_lines or {}
+        # The lead observation: the first call site the plan names. The item
+        # points at the loop around it, else at the call itself.
+        site = next((s for s in plan_steps if s.get("line")), None)
         name = (
             text.scope_name(symbol, path)
             or text.scope_name(first.get("symbol"), path)
@@ -955,10 +980,9 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         steps = tuple(
             FixStep(
                 int(s.get("order") or i + 1),
-                s.get("action", "")
-                + (f" ({text.scope_name(s.get('symbol'), path)})" if s.get("symbol") else ""),
+                _perf_step_text(s, path),
                 s.get("file_path") or path,
-                s.get("line"),
+                s.get("line") or lines.get(s.get("symbol") or ""),
                 s.get("applicability") == "mechanical",
             )
             for i, s in enumerate(plan_steps)
@@ -966,10 +990,18 @@ def _perf_unit(rows: list[Any], files: _Files) -> _Unit:
         strategy = field(lead, "fix_strategy") or ""
         return {
             "title": text.clip(title),
-            "target": FixTarget(
-                path,
-                name if (symbol or first.get("symbol")) and not module else None,
-                first.get("line"),
+            "target": (
+                FixTarget(
+                    site.get("file_path") or path,
+                    _site_symbol(site.get("symbol")),
+                    site.get("loop_line") or site.get("line"),
+                )
+                if site
+                else FixTarget(
+                    path,
+                    name if (symbol or first.get("symbol")) and not module else None,
+                    steps[0].line if steps else None,
+                )
             ),
             "why": f"{what}; {', '.join(reach) or 'the loop size is unknown'}.",
             "facts": tuple(facts[:MAX_FACTS]),
@@ -1246,6 +1278,7 @@ def build_fix_first(
     basis: Mapping[str, str | None] | None = None,
     item_id: str | None = None,
     hot_cuts: tuple[float, float] | None = None,
+    symbol_lines: Mapping[str, int] | None = None,
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
@@ -1255,7 +1288,9 @@ def build_fix_first(
     ``item_id`` keeps just that item, at its rank, for a lookup by id.
     ``hot_cuts`` are the (churn, dependents) thresholds for a hot file when the
     caller measured them over more files than it passed in ``metrics``; see
-    :func:`hot_cut` for the rule.
+    :func:`hot_cut` for the rule. ``symbol_lines`` maps a symbol id
+    (``path::name``) to its first line, for a performance plan step that
+    names a function but stored no line.
     """
     metrics = list(metrics)
     findings = list(findings)
@@ -1353,7 +1388,7 @@ def build_fix_first(
         if not worth:
             excluded["below_min_worth"] += 1
             continue
-        units.append(_perf_unit(worth, files))
+        units.append(_perf_unit(worth, files, symbol_lines))
 
     for path, (shape, history) in split.items():
         if path in planned_files:
