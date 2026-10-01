@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.fix_first import build_fix_first
+import re
+
+import pytest
+
+from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first
 from repowise.core.analysis.health.fix_first.build import LOW_VALUE_KINDS
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, _perf
@@ -80,3 +84,53 @@ def test_a_long_parameter_list_is_no_candidate() -> None:
     assert queue.items == ()
     assert queue.totals.excluded["low_value_kind"] == 1
     assert LOW_VALUE_KINDS["primitive_obsession"] == "dev 0/0, all 0/2"
+
+
+# --- no internal token reaches a text field -------------------------------------------
+
+_RAW = re.compile(
+    r"__module__|\bp\d\d\b|percentile|\bNone\b|\(\)|  |:$|:\)|\bn/a\b|[a-z]+-graph|name-match"
+    r"|\b(?:entry_reachable|not_entry_reachable|grows_with_data|db)\b"
+)
+
+
+def _texts(item) -> list[str]:
+    return [
+        item.title, item.why, item.action.summary, item.gain.text, item.effort.basis,
+        item.risk.text, item.confidence.reason,
+        *(f"{f.label}: {f.value}" for f in item.facts),
+        *(s.text for s in item.action.steps),
+        *(f"{c.label}: {c.value}" for c in item.context),
+        *(f"{r.factor}: {r.value}" for r in item.why_ranked),
+        *(t.reason for t in item.verify.tests),
+    ]
+
+
+def _validated(magnitude: str, via: str, dependents: int) -> FixFirstQueue:
+    row = _perf("perf3_raw", "src/db.py::fetch")
+    details = row["details"]
+    row["details"] = {
+        **details,
+        "facets": {**details["facets"], "loop_magnitude": magnitude},
+        "plan": {**details["plan"], "validation": {"tests": ["tests/test_repo.py"], "via": via}},
+    }
+    finding = {**FINDINGS[1], "public_id": "f_raw"}
+    return build_fix_first(
+        metrics=[{**METRICS[0], "dependents": dependents}, METRICS[3]],
+        findings=[finding], performance=[row],
+    )
+
+
+@pytest.mark.parametrize("via", ["coverage", "call-graph", "import-graph", "name-match", "mixed"])
+@pytest.mark.parametrize("magnitude", ["n/a", "grows_with_data", "unknown"])
+def test_no_text_field_carries_an_internal_token(via: str, magnitude: str) -> None:
+    queue = _validated(magnitude, via, dependents=1)
+    assert len(queue.items) == 2
+    for item in queue.items:
+        for line in _texts(item):
+            assert not _RAW.search(line), line
+
+
+def test_one_importer_reads_in_the_singular() -> None:
+    item = next(i for i in _validated("unknown", "mixed", 1).items if i.kind == "finding")
+    assert item.risk.text == "Touches 1 file; 1 file imports it."

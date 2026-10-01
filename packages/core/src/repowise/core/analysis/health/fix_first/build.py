@@ -280,7 +280,7 @@ def _risk(files_touched: int, dependents: int | None) -> FixRisk:
         level = "low"
     parts = [f"touches {text.plural(files_touched, 'file')}"]
     if dependents:
-        parts.append(f"{text.plural(dependents, 'file')} import it")
+        parts.append(text.imports_it(dependents))
     return FixRisk(level, dependents, files_touched, "; ".join(parts).capitalize() + ".")
 
 
@@ -289,7 +289,8 @@ def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
     if not profile:
         return FixVerify((), 0, None, "unknown")
     via = profile.get("via")
-    reason = f"reaches the changed code through the {text.humanize(via)}" if via else "covers it"
+    how = text.TEST_VIA.get(via or "")
+    reason = f"reaches the changed code {how}" if how else "covers it"
     tests = tuple(FixTest(str(t), reason) for t in (profile.get("tests") or [])[:MAX_TESTS])
     commands = profile.get("commands") or []
     basis = profile.get("basis")
@@ -969,12 +970,12 @@ def _perf_unit(
             FixFact("files", str(files_n)),
             FixFact(
                 "reachable from an entry point",
-                {"entry_reachable": "Yes", "not_entry_reachable": "No"}.get(exposure or "", "Unknown"),
+                text.REACH_ANSWER.get(exposure or "", "unknown"),
                 "inferred" if exposure in ("entry_reachable", "not_entry_reachable") else "unknown",
             ),
             FixFact(
                 "loop size",
-                text.humanize(magnitude) if magnitude and magnitude != "n/a" else "unknown",
+                text.loop_size(magnitude),
                 "inferred" if magnitude in ("grows_with_data", "bounded") else "unknown",
             ),
         ]
@@ -1048,9 +1049,11 @@ def _perf_unit(
         improves="performance",
         rank_inputs=lambda: [
             FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
-            FixRankFact("entry reachable", text.humanize(exposure or "unknown")),
-            FixRankFact("loop size", text.humanize(magnitude or "unknown")),
-            FixRankFact("boundary", field(lead, "boundary_kind") or "none"),
+            FixRankFact("entry reachable", text.REACH_ANSWER.get(exposure or "", "unknown")),
+            FixRankFact("loop size", text.loop_size(magnitude)),
+            FixRankFact(
+                "boundary", text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "", "none")
+            ),
         ],
         fields=fields,
     )

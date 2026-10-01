@@ -93,6 +93,18 @@ PERF_SHAPE: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+#: How a verify block found its tests, completing "reaches the changed code ...".
+TEST_VIA: dict[str, str] = {
+    "coverage": "in a coverage report",
+    "call-graph": "through the call graph",
+    "import-graph": "through the import graph",
+    "name-match": "by a matching test name",
+    "mixed": "through the call and import graphs",
+}
+
+#: Whether an entry point reaches a performance cause, as a short answer.
+REACH_ANSWER: dict[str, str] = {"entry_reachable": "yes", "not_entry_reachable": "no"}
+
 FIX_STRATEGY: dict[str, str] = {
     "batch_or_prefetch_io": "Batch the calls, or fetch the data once before the loop",
     "replace_membership_collection": "Use a set or dict for the membership test",
@@ -103,6 +115,18 @@ FIX_STRATEGY: dict[str, str] = {
 
 def humanize(token: str) -> str:
     return token.replace("_", " ")
+
+
+def loop_size(magnitude: str | None) -> str:
+    """``grows with data``, ``bounded``, ``no loop`` or ``unknown``."""
+    if magnitude == "n/a":
+        return "no loop"
+    return humanize(magnitude) if magnitude else "unknown"
+
+
+def imports_it(dependents: int) -> str:
+    """``1 file imports it`` / ``7 files import it``."""
+    return f"{plural(dependents, 'file')} import{'s' if dependents == 1 else ''} it"
 
 
 def plural(n: int, noun: str) -> str:
@@ -211,7 +235,7 @@ def exposure(dependents: int | None, commits: int, coverage: float | None = None
     its lines``, or nothing. Coverage only when a report measured the file."""
     parts = []
     if dependents:
-        parts.append(f"{plural(dependents, 'file')} import{'s' if dependents == 1 else ''} it")
+        parts.append(imports_it(dependents))
     if commits:
         parts.append(f"changed {plural(commits, 'time')} in 90 days")
     if coverage is not None:
@@ -331,7 +355,9 @@ __all__ = [
     "HISTORY_LABEL",
     "PERF_SHAPE",
     "PROBLEM",
+    "REACH_ANSWER",
     "REFACTOR_TITLE",
+    "TEST_VIA",
     "TITLE_MAX",
     "basename",
     "changes",
@@ -341,6 +367,8 @@ __all__ = [
     "health_gain",
     "history_fact",
     "humanize",
+    "imports_it",
+    "loop_size",
     "marker_label",
     "measured",
     "plural",
