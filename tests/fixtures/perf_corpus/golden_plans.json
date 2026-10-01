@@ -2,148 +2,6 @@
   "plans": [
     {
       "blast_radius": {
-        "call_sites": 1,
-        "file_count": 1,
-        "files": [
-          "src/app/owners.py"
-        ]
-      },
-      "confidence": "high",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "io_in_loop",
-        "biomarker_types": [
-          "io_in_loop"
-        ],
-        "boundary_kind": "db",
-        "execution_context": "production",
-        "observations_total": 1,
-        "provenance": "direct",
-        "rank_factors": {
-          "affected_call_sites": 2,
-          "boundary_kind": 4,
-          "entry_reachability": 0,
-          "execution_context": 3,
-          "loop_magnitude": 2,
-          "multiplier_shape": 4,
-          "provenance": 3
-        },
-        "rank_score": 18,
-        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
-        "reliable_entry_reachability": null
-      },
-      "file_path": "src/app/owners.py",
-      "impact_delta": 0.0,
-      "line_end": 22,
-      "line_start": 20,
-      "plan": {
-        "affected_locations": [
-          {
-            "file_path": "src/app/owners.py",
-            "function_name": "load_owners",
-            "line_end": 22,
-            "line_start": 20
-          }
-        ],
-        "affected_locations_total": 1,
-        "api": ".in_(\"repo_id\", keys)",
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/owners.py::load_owners",
-        "judgment_steps": 0,
-        "mechanical_steps": 1,
-        "opportunity_id": "perf3_83d258547498bed60226",
-        "paths": [],
-        "paths_total": 1,
-        "safety": "proven",
-        "steps": [
-          {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
-            "applicability": "mechanical",
-            "file_path": "src/app/owners.py",
-            "line": 20,
-            "order": 1,
-            "symbol": "load_owners"
-          }
-        ],
-        "strategy": "batch_or_prefetch_io"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "io_in_loop",
-      "target_symbol": "src/app/owners.py::load_owners"
-    },
-    {
-      "blast_radius": {
-        "call_sites": 1,
-        "file_count": 1,
-        "files": [
-          "src/app/fetch.py"
-        ]
-      },
-      "confidence": "high",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "serial_await_in_loop",
-        "biomarker_types": [
-          "serial_await_in_loop"
-        ],
-        "boundary_kind": "network",
-        "execution_context": "production",
-        "observations_total": 1,
-        "provenance": "direct",
-        "rank_factors": {
-          "affected_call_sites": 2,
-          "boundary_kind": 4,
-          "entry_reachability": 0,
-          "execution_context": 3,
-          "loop_magnitude": 1,
-          "multiplier_shape": 4,
-          "provenance": 3
-        },
-        "rank_score": 17,
-        "rationale": "Iterations are independent and each await already runs under self._sem.",
-        "reliable_entry_reachability": null
-      },
-      "file_path": "src/app/fetch.py",
-      "impact_delta": 0.0,
-      "line_end": 42,
-      "line_start": 40,
-      "plan": {
-        "affected_locations": [
-          {
-            "file_path": "src/app/fetch.py",
-            "function_name": "fetch_each",
-            "line_end": 42,
-            "line_start": 40
-          }
-        ],
-        "affected_locations_total": 1,
-        "api": "self._sem",
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/fetch.py::fetch_each",
-        "judgment_steps": 0,
-        "mechanical_steps": 1,
-        "opportunity_id": "perf3_877f87ea6dac79fd92fc",
-        "paths": [],
-        "paths_total": 1,
-        "safety": "proven",
-        "steps": [
-          {
-            "action": "Run the independent awaits concurrently, each still inside self._sem",
-            "applicability": "mechanical",
-            "file_path": "src/app/fetch.py",
-            "line": 40,
-            "order": 1,
-            "symbol": "fetch_each"
-          }
-        ],
-        "strategy": "parallelize_independent_awaits"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "serial_await_in_loop",
-      "target_symbol": "src/app/fetch.py::fetch_each"
-    },
-    {
-      "blast_radius": {
         "call_sites": 3,
         "file_count": 1,
         "files": [
@@ -690,6 +548,77 @@
     },
     {
       "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/owners.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 2,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 18,
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/owners.py",
+      "impact_delta": 0.0,
+      "line_end": 22,
+      "line_start": 20,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/owners.py",
+            "function_name": "load_owners",
+            "line_end": 22,
+            "line_start": 20
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": ".in_(\"repo_id\", keys)",
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/owners.py::load_owners",
+        "judgment_steps": 0,
+        "mechanical_steps": 1,
+        "opportunity_id": "perf3_83d258547498bed60226",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "steps": [
+          {
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "applicability": "mechanical",
+            "file_path": "src/app/owners.py",
+            "line": 20,
+            "order": 1,
+            "symbol": "load_owners"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/owners.py::load_owners"
+    },
+    {
+      "blast_radius": {
         "call_sites": 2,
         "file_count": 1,
         "files": [
@@ -867,6 +796,77 @@
       "refactoring_type": "performance_fix",
       "source_biomarker": "blocking_io_under_lock",
       "target_symbol": "src/app/cache.py::refresh"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/fetch.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "serial_await_in_loop",
+        "biomarker_types": [
+          "serial_await_in_loop"
+        ],
+        "boundary_kind": "network",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 1,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "Iterations are independent and each await already runs under self._sem.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/fetch.py",
+      "impact_delta": 0.0,
+      "line_end": 42,
+      "line_start": 40,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/fetch.py",
+            "function_name": "fetch_each",
+            "line_end": 42,
+            "line_start": 40
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": "self._sem",
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/fetch.py::fetch_each",
+        "judgment_steps": 0,
+        "mechanical_steps": 1,
+        "opportunity_id": "perf3_877f87ea6dac79fd92fc",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "steps": [
+          {
+            "action": "Run the independent awaits concurrently, each still inside self._sem",
+            "applicability": "mechanical",
+            "file_path": "src/app/fetch.py",
+            "line": 40,
+            "order": 1,
+            "symbol": "fetch_each"
+          }
+        ],
+        "strategy": "parallelize_independent_awaits"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "serial_await_in_loop",
+      "target_symbol": "src/app/fetch.py::fetch_each"
     },
     {
       "blast_radius": {

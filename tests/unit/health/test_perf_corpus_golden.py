@@ -212,10 +212,20 @@ def test_every_group_reports_an_actionability_state_and_a_reason() -> None:
             assert item.prerequisites, item.opportunity_id
 
 
-def test_actionable_groups_sort_above_higher_scoring_evidence() -> None:
-    """Raw magnitude must not bury work somebody could start today."""
-    order = [item.actionability_state for item in _opportunities()]
-    assert order == sorted(order, key=ACTIONABILITY_ORDER.__getitem__)
+def test_value_leads_and_actionability_breaks_a_tie() -> None:
+    """A higher-value cause outranks an easier one; at equal value the plan wins.
+
+    The sibling pass may move a superseded remedy to just after its leader, so
+    the order is checked over items that lead their own position.
+    """
+    ordered = [item for item in _opportunities() if not _follows_a_sibling(item)]
+    keys = [(-item.rank_score, ACTIONABILITY_ORDER[item.actionability_state]) for item in ordered]
+    assert keys == sorted(keys)
+    assert len({item.rank_score for item in ordered}) > 1
+
+
+def _follows_a_sibling(item) -> bool:
+    return any(sibling["relation"] == "preferred" for sibling in item.siblings)
 
 
 def test_rank_rationale_is_bounded_and_never_pads_with_nothing() -> None:
