@@ -2,8 +2,7 @@
 order, and how to verify it.
 
 Takes the item's wire dict (``FixItem.as_dict()``) and only arranges fields core
-already worded; the sentences themselves come from ``fix_first.text``. Port of
-``buildFixItemPrompt`` and ``fixVerifyLines``.
+already worded; the sentences themselves come from ``fix_first.text``.
 """
 
 from __future__ import annotations

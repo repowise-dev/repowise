@@ -2,7 +2,7 @@
 the rest, and what finished looks like.
 
 Takes the action's wire dict (``Action.as_dict()``), so the evidence is already
-capped the way every surface sees it. Port of ``buildActionPrompt``.
+capped the way every surface sees it.
 """
 
 from __future__ import annotations

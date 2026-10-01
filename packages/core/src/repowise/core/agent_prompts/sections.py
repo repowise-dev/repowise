@@ -1,7 +1,8 @@
 """The section helpers every agent prompt is written with.
 
-Ports of ``packages/ui/src/health/ai-prompts/shared.ts``; the parity goldens in
-``tests/fixtures/agent_prompts`` hold the two to the same bytes.
+Written to match ``packages/ui/src/health/ai-prompts/shared.ts``, which the web's
+own prompt builders use; the goldens in ``tests/fixtures/agent_prompts`` pin
+core's output.
 """
 
 from __future__ import annotations

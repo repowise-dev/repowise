@@ -1,9 +1,8 @@
 """Agent prompts rendered in core: plain wire dicts in, prompt text out.
 
 No session and no store: a caller loads the item the way it already does and
-hands over its ``as_dict()``. The web builders in
-``packages/ui/src/health/ai-prompts`` render the same bytes, which the goldens in
-``tests/fixtures/agent_prompts`` check from both sides.
+hands over its ``as_dict()``. The only renderer of these prompts: the web shows
+them from the server, and ``tests/fixtures/agent_prompts`` pins the bytes.
 """
 
 from __future__ import annotations

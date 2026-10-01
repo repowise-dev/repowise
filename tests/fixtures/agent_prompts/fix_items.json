@@ -1,5 +1,5 @@
 {
-  "_comment": "Representative Fix-first items in their wire shape (FixItem.as_dict()). buildFixItemPrompt/fixVerifyLines and repowise.core.agent_prompts must both render golden.json from them; see packages/ui/__tests__/health/agent-prompt-parity.test.ts.",
+  "_comment": "Representative Fix-first items in their wire shape (FixItem.as_dict()). repowise.core.agent_prompts renders golden.json from them; see tests/unit/agent_prompts/test_golden.py.",
   "cases": [
     {
       "name": "no_tests_mixed_args",

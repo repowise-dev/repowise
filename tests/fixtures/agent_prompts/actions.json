@@ -1,5 +1,5 @@
 {
-  "_comment": "Representative next actions in their wire shape (Action.as_dict()). buildActionPrompt and repowise.core.agent_prompts.render_action must both render golden.json from them; see packages/ui/__tests__/health/agent-prompt-parity.test.ts.",
+  "_comment": "Representative next actions in their wire shape (Action.as_dict()). repowise.core.agent_prompts.render_action renders golden.json from them; see tests/unit/agent_prompts/test_golden.py.",
   "cases": [
     {
       "name": "evidence_over_cap",

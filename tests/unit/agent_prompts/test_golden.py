@@ -1,13 +1,16 @@
-"""Core's agent prompts render the bytes the web builders do.
+"""Core's agent prompts render ``tests/fixtures/agent_prompts/golden.json``.
 
-``tests/fixtures/agent_prompts/golden.json`` is written by the web side
-(``packages/ui/__tests__/health/agent-prompt-parity.test.ts``); this checks core
-against the same file, so a wording change on one side fails on the other.
+Core is the one renderer: the web shows these prompts from the server. The
+golden pins every flavor's bytes, so a wording change shows up as a diff here.
+
+Regenerate after a deliberate wording change:
+    UPDATE_AGENT_PROMPT_GOLDENS=1 pytest tests/unit/agent_prompts/test_golden.py
 """
 
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 
 import pytest
@@ -26,9 +29,32 @@ def _load(name: str) -> dict:
     return json.loads((_DIR / name).read_text(encoding="utf-8"))
 
 
-_GOLDEN = _load("golden.json")
 _ACTIONS = _load("actions.json")["cases"]
 _ITEMS = _load("fix_items.json")["cases"]
+
+
+def _render_all() -> dict:
+    def per_flavor(render) -> dict[str, str]:
+        return {flavor: render(flavor) for flavor in FLAVORS}
+
+    return {
+        "action": {
+            c["name"]: per_flavor(lambda f, c=c: render_action(c["action"], f, c.get("repo_name")))
+            for c in _ACTIONS
+        },
+        "fix_item": {
+            c["name"]: per_flavor(lambda f, c=c: render_fix_item(c["item"], f, c.get("repo_name")))
+            for c in _ITEMS
+        },
+        "verify": {c["name"]: render_verify_lines(c["item"]) for c in _ITEMS},
+    }
+
+
+if os.environ.get("UPDATE_AGENT_PROMPT_GOLDENS"):
+    (_DIR / "golden.json").write_text(
+        json.dumps(_render_all(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
+    )
+_GOLDEN = _load("golden.json")
 
 
 @pytest.mark.parametrize("flavor", FLAVORS)
