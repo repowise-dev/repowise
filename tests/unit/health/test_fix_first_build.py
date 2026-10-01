@@ -51,6 +51,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "vendored": 0,
         "docs_example": 0,
         "deprecated": 0,
+        "inherent_dispatch": 0,
     }
     assert queue.totals.eligible == 3
     assert queue.totals.candidates == 3 + 7

@@ -1010,7 +1010,8 @@ CLAUDE.md render the same object. The block carries `lead` (equal to
 `title`, `target`, `why`, `gain`, `effort`, `confidence`, `next_call`),
 `totals` (`candidates`, `eligible`, `shown`, and `excluded` counted by reason:
 `test`, `tooling`, `unknown`, `generated`, `expected`, `no_strategy`, `no_plan`,
-`below_min_worth`, `history_only`, `vendored`, `docs_example`, `deprecated`; a
+`below_min_worth`, `history_only`, `vendored`, `docs_example`, `deprecated`,
+`inherent_dispatch`; a
 performance cause enters only from the performance default queue, whose reasons
 `unknown`, `expected` and `no_strategy` are), `by_improves`, `model_version`, `basis`, and `detail_call`,
 the `get_health(fix_id=...)` call that returns the lead in full. `tier` is

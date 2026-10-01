@@ -227,6 +227,27 @@ async def _findings(
     )
 
 
+#: A duplicate's place, for the builder's "a clone sits in this function" fact.
+_Clone = namedtuple("_Clone", "file_path biomarker_type line_start line_end status")
+
+
+async def _clones(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
+    """Open ``dry_violation`` spans in ``paths``. The type is hidden from
+    every list, so it is read apart from the eligible findings, as a fact."""
+    if not paths:
+        return []
+    f = HealthFinding
+    rows = await session.execute(
+        select(f.file_path, f.line_start, f.line_end).where(
+            f.repository_id == repo_id,
+            f.status == "open",
+            f.biomarker_type == "dry_violation",
+            f.file_path.in_(paths),
+        )
+    )
+    return [_Clone(r.file_path, "dry_violation", r.line_start, r.line_end, "open") for r in rows]
+
+
 async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
     o = RefactoringOpportunity
     return _plain(
@@ -410,7 +431,11 @@ async def _build(
     paths = full | planned | {r.file_path for r in history_only}
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
-        findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
+        findings=[
+            *findings,
+            *(r for r in history_only if r.file_path not in full | planned),
+            *await _clones(session, repository_id, full | planned),
+        ],
         refactoring=refactoring,
         performance=performance,
         plans=await _plans(session, repository_id, steps),

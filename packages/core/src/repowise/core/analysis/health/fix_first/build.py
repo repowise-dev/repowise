@@ -14,7 +14,8 @@ Row shapes (field names are the SQL columns):
     ``analyzed_commit``, ``updated_at``, plus ``commit_count_90d`` (git) and
     ``dependents`` (graph in-degree).
 ``findings``
-    ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
+    Hidden types are never items; ``dry_violation`` rows are read for where
+    duplicates sit. ``file_path``, ``biomarker_type``, ``severity``, ``function_name``,
     ``line_start``, ``line_end``, ``reason``, ``health_impact``, ``public_id``,
     ``dimension``, ``status`` (absent = open), and ``details`` /
     ``details_json`` (``ccn``, ``nloc``, ``max_nesting``) for the numbers a
@@ -120,6 +121,15 @@ MAX_CONTEXT = 3
 HEAD = 5
 HEAD_PER_KIND = 3
 DEFAULT_LIMIT = 10
+#: Findings that measure one function's size; a unit led by one of them, or by
+#: an Extract Method step, is a function-level complexity unit.
+SIZE_MARKERS = frozenset(
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+)
+#: A function whose largest dispatch on one value holds this share of its
+#: decision points is usually fine as it is. Fitted on the dev labels only:
+#: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
+DISPATCH_SHARE = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,9 +280,11 @@ class _Files:
         history: Mapping[str, list[Any]],
         functions: Mapping[tuple[str, str], list[Any]],
         cuts: tuple[float, float] | None,
+        clones: Mapping[str, list[tuple[int, int]]] | None = None,
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
         self.functions = functions
+        self.clones = clones or {}
         if cuts is None:
             production = [m for m in self.by_path.values() if not field(m, "is_test")]
             cuts = (
@@ -318,6 +330,29 @@ class _Files:
                 (),
             )
         return _measure(found)
+
+    def cloned(self, path: str, shape: Mapping[str, int]) -> bool:
+        """Whether a stored duplicate overlaps the function ``shape`` spans."""
+        start, end = shape.get("start"), shape.get("end")
+        if not start or not end:
+            return False
+        return any(a <= end and b >= start for a, b in self.clones.get(path, ()))
+
+    def unit_exclusion(self, path: str, symbol: str | None, complexity: bool) -> str | None:
+        """Why a unit on ``symbol`` is not a candidate, or ``None``.
+
+        A deprecated function is on its way out. A complexity unit on a
+        function that is mostly one dispatch on one value is usually fine as
+        it is, unless a duplicate also sits in it.
+        """
+        shape = self.shape(path, symbol)
+        if shape.get("deprecated"):
+            return "deprecated"
+        if not complexity:
+            return None
+        if shape.get("dispatch_pct", 0) >= DISPATCH_SHARE * 100 and not self.cloned(path, shape):
+            return "inherent_dispatch"
+        return None
 
     def why(
         self,
@@ -855,6 +890,34 @@ def _finding_unit(lead: Any, files: _Files) -> _Unit:
     )
 
 
+def _finding_exclusion(finding: Any, files: _Files) -> str | None:
+    return files.unit_exclusion(
+        field(finding, "file_path"),
+        field(finding, "function_name"),
+        complexity=field(finding, "biomarker_type") in SIZE_MARKERS,
+    )
+
+
+def _clone_spans(findings: Iterable[Any], plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
+    """Where stored duplicates sit, by file: clone findings and the
+    occurrences an Extract Helper plan names.
+
+    ``dry_violation`` is hidden from every list (it also pairs import blocks
+    and data literals), so it is read here only as a fact about a function
+    whose span it overlaps, where an import block cannot sit.
+    """
+    out: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for f in findings:
+        start, end = field(f, "line_start"), field(f, "line_end")
+        if field(f, "biomarker_type") == "dry_violation" and start and end:
+            out[field(f, "file_path")].append((start, end))
+    for plan in plans:
+        for occ in _plan_body(plan).get("occurrences") or ():
+            if isinstance(occ, dict) and occ.get("line_start") and occ.get("line_end"):
+                out[occ.get("file") or ""].append((occ["line_start"], occ["line_end"]))
+    return dict(out)
+
+
 # --- order ------------------------------------------------------------------------
 
 
@@ -904,7 +967,9 @@ def _measure(findings: Iterable[Any]) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
     ``severe`` is set when any of them is critical or a brain method,
-    ``deprecated`` when any sits in a function marked deprecated.
+    ``deprecated`` when any sits in a function marked deprecated,
+    ``dispatch_pct`` is the largest stored dispatch share in percent, and
+    ``start`` / ``end`` span the function as its size findings place it.
     """
     shape: dict[str, int] = {}
     for f in findings:
@@ -913,6 +978,14 @@ def _measure(findings: Iterable[Any]) -> dict[str, int]:
         details = detail_map(f)
         if details.get("deprecated"):
             shape["deprecated"] = 1
+        share = details.get("dispatch_share")
+        if isinstance(share, (int, float)):
+            shape["dispatch_pct"] = max(shape.get("dispatch_pct", 0), round(share * 100))
+        if field(f, "biomarker_type") in SIZE_MARKERS:
+            start, end = field(f, "line_start"), field(f, "line_end")
+            if start and end:
+                shape["start"] = min(shape.get("start", start), start)
+                shape["end"] = max(shape.get("end", end), end)
         for k in ("ccn", "nloc", "max_nesting", "lcom4", "method_count"):
             v = details.get(k)
             if isinstance(v, (int, float)) and v > shape.get(k, 0):
@@ -955,6 +1028,7 @@ def build_fix_first(
     :func:`hot_cut` for the rule.
     """
     metrics = list(metrics)
+    findings = list(findings)
     keep_tests = scope == "all"
     excluded = dict.fromkeys(FIX_EXCLUSIONS, 0)
     hidden = excluded_types()
@@ -969,11 +1043,13 @@ def build_fix_first(
         ):
             by_file[field(f, "file_path")].append(f)
     split = {path: split_by_origin(rows) for path, rows in by_file.items()}
+    plans = list(plans)
     files = _Files(
         metrics,
         {p: hist for p, (_shape, hist) in split.items() if hist},
         _by_function(f for shape, _hist in split.values() for f in shape),
         hot_cuts,
+        _clone_spans((f for f in findings if _open(f)), plans),
     )
 
     def out_of_scope(path: str, context: str | None = None) -> bool:
@@ -1002,8 +1078,13 @@ def build_fix_first(
         if not steps:
             excluded["below_min_worth"] += 1
             continue
-        if files.shape(path, steps[0].get("target_symbol")).get("deprecated"):
-            excluded["deprecated"] += 1
+        reason = files.unit_exclusion(
+            path,
+            steps[0].get("target_symbol"),
+            complexity=steps[0].get("refactoring_type") == "extract_method",
+        )
+        if reason is not None:
+            excluded[reason] += 1
             continue
         units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
         # Only a plan that became an item speaks for the file's findings; an
@@ -1044,10 +1125,14 @@ def build_fix_first(
         if lead is None:
             excluded["history_only"] += 1
             continue
-        if files.shape(path, field(lead, "function_name")).get("deprecated"):
-            excluded["deprecated"] += 1
+        # A finding that is no candidate leaves the file's others to compete;
+        # the file is counted under its own lead's reason when none is left.
+        reasons = {id(f): _finding_exclusion(f, files) for f in shape}
+        eligible = primary_finding([f for f in shape if reasons[id(f)] is None])
+        if eligible is None:
+            excluded[reasons[id(lead)] or next(r for r in reasons.values() if r)] += 1
             continue
-        units.append(_finding_unit(lead, files))
+        units.append(_finding_unit(eligible, files))
 
     ordered = _order(units)
     if item_id is not None:
@@ -1071,10 +1156,12 @@ def build_fix_first(
 
 __all__ = [
     "DEFAULT_LIMIT",
+    "DISPATCH_SHARE",
     "GAIN_CUTS",
     "HEAD",
     "HEAD_PER_KIND",
     "MIN_WORTH",
+    "SIZE_MARKERS",
     "build_fix_first",
     "hot_cut",
     "hot_cut_offset",

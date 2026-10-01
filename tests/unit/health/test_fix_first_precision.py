@@ -69,3 +69,50 @@ def test_a_deprecated_function_is_no_item() -> None:
     queue = _queue([_finding(deprecated=True)])
     assert queue.items == () and queue.totals.excluded["deprecated"] == 1
     assert len(_queue([_finding()]).items) == 1
+
+
+# --- F2: one long dispatch on one value -------------------------------------------
+
+
+def _dry(path: str = "src/core.py", start: int = 25, end: int = 40) -> dict:
+    return {"file_path": path, "biomarker_type": "dry_violation", "severity": "medium",
+            "line_start": start, "line_end": end, "health_impact": 0.4,
+            "public_id": f"finding_dry_{start}", "dimension": "maintainability",
+            "details": {"clone_pair_count": 1}}
+
+
+def test_a_dispatch_function_is_no_candidate() -> None:
+    queue = _queue([_finding(dispatch_share=0.8)])
+    assert queue.items == () and queue.totals.excluded["inherent_dispatch"] == 1
+
+
+def test_a_lower_dispatch_share_stays() -> None:
+    assert len(_queue([_finding(dispatch_share=0.5)]).items) == 1
+
+
+def test_a_duplicate_inside_the_dispatch_function_keeps_it() -> None:
+    queue = _queue([_finding(dispatch_share=0.8), _dry()])
+    assert [i.target.symbol for i in queue.items] == ["run"]
+    # A duplicate elsewhere in the file does not, and is never an item itself.
+    away = _queue([_finding(dispatch_share=0.8), _dry(start=200, end=220)])
+    assert away.items == () and away.totals.excluded["inherent_dispatch"] == 1
+
+
+def test_the_files_other_findings_still_compete() -> None:
+    handler = {**_COMPLEX, "biomarker_type": "error_handling", "function_name": "load",
+               "public_id": "finding_eh", "line_start": 70, "line_end": 70,
+               "health_impact": 0.5, "details": {}}
+    queue = _queue([_finding(dispatch_share=0.9), handler])
+    assert [i.target.symbol for i in queue.items] == ["load"]
+    assert queue.totals.excluded["inherent_dispatch"] == 0
+
+
+def test_a_dispatch_function_plan_is_no_candidate() -> None:
+    from tests.unit.health.fix_first_rows import PLANS, REFACTORING
+
+    queue = build_fix_first(
+        metrics=[_metric()], findings=[_finding(dispatch_share=0.7)],
+        refactoring=REFACTORING[:1], plans=PLANS,
+    )
+    # The plan and then the finding it leaves behind: both on the dispatch.
+    assert queue.items == () and queue.totals.excluded["inherent_dispatch"] == 2

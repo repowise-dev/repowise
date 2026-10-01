@@ -128,3 +128,36 @@ async def test_loader_reads_the_stored_code_origin(async_session) -> None:
     assert loaded.totals.excluded["docs_example"] == 1
     # The update moved the metric's ``updated_at``, so only the basis differs.
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
+
+
+async def test_loader_reads_hidden_duplicates_as_a_fact(async_session) -> None:
+    """A dispatch-heavy function stays a candidate when a duplicate sits in it,
+    although ``dry_violation`` itself is hidden from every list."""
+    from sqlalchemy import select
+
+    rid = await seed_fix_first(async_session)
+    row = (
+        await async_session.execute(
+            select(HealthFinding).where(HealthFinding.public_id == "finding_c1")
+        )
+    ).scalar_one()
+    dispatch = {**json.loads(row.details_json), "dispatch_share": 0.9}
+    row.details_json = json.dumps(dispatch)
+    dry = {"file_path": "src/core.py", "biomarker_type": "dry_violation", "severity": "medium",
+           "line_start": 30, "line_end": 44, "health_impact": 0.4, "public_id": "finding_dry",
+           "dimension": "maintainability", "details": {}}
+    async_session.add(HealthFinding(repository_id=rid, **_with_json(dry, "details")))
+    await async_session.flush()
+    findings = [
+        {**f, "details": dispatch} if f["public_id"] == "finding_c1" else f for f in FINDINGS
+    ]
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=[*findings, dry],
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+    )
+    loaded = await load_fix_first(async_session, rid)
+    assert loaded.lead.target.file_path == "src/core.py"
+    assert (loaded.items, loaded.totals) == (built.items, built.totals)
