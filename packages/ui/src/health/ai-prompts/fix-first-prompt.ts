@@ -68,9 +68,7 @@ export function buildFixItemPrompt({
   repoName,
 }: BuildFixItemPromptOptions): string {
   const useMcp = flavor === "claude-code-mcp";
-  const call = `${item.next_call.tool}(${Object.entries(item.next_call.arguments)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-    .join(", ")})`;
+  const call = item.next_call.mcp;
   const steps = item.action.steps.map(
     (s) =>
       `${s.order}. ${s.text} (\`${s.file_path}${s.line ? `:${s.line}` : ""}\`)${

@@ -8,8 +8,6 @@ already worded; the sentences themselves come from ``fix_first.text``. Port of
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,25 +26,6 @@ _EXPECTED = (
     "2. The Verify run, before and after, with its result.",
     "3. Anything you left undone, and why.",
 )
-
-
-def _js_value(v: Any) -> Any:
-    """Values as ``JSON.stringify`` sees them: a whole float has no ``.0`` and a
-    non-finite one is null. Ceiling: exponent spelling (``1e-07`` vs ``1e-7``)
-    still differs; call arguments are ids, paths and small counts."""
-    if isinstance(v, float):
-        if not math.isfinite(v):
-            return None
-        return int(v) if v.is_integer() else v
-    if isinstance(v, Mapping):
-        return {k: _js_value(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple)):
-        return [_js_value(x) for x in v]
-    return v
-
-
-def _js_json(v: Any) -> str:
-    return json.dumps(_js_value(v), ensure_ascii=False, separators=(",", ":"))
 
 
 def _where(target: Mapping[str, Any]) -> str:
@@ -84,9 +63,7 @@ def _step(s: Mapping[str, Any]) -> str:
 
 def render_fix_item(item: Mapping[str, Any], flavor: str = "generic", repo_name: str | None = None) -> str:
     use_mcp = flavor == "claude-code-mcp"
-    next_call = item["next_call"]
-    args = ", ".join(f"{k}={_js_json(v)}" for k, v in next_call["arguments"].items())
-    call = f"{next_call['tool']}({args})"
+    call = item["next_call"]["mcp"]
     action = item["action"]
     steps = [_step(s) for s in action["steps"]]
     more_steps = action["steps_total"] - len(action["steps"])

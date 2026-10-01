@@ -10,6 +10,8 @@ import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.next_call import ActionCommand
+
 #: Bumped when ranking, eligibility or the item shape changes meaning.
 FIX_FIRST_MODEL_VERSION = 1
 
@@ -164,12 +166,6 @@ class FixSource:
 
 
 @dataclass(frozen=True, slots=True)
-class FixNextCall:
-    tool: str
-    arguments: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
 class FixItem:
     id: str
     rank: int
@@ -188,7 +184,7 @@ class FixItem:
     verify: FixVerify
     context: tuple[FixContext, ...]
     source: FixSource
-    next_call: FixNextCall
+    next_call: ActionCommand
     why_ranked: tuple[FixRankFact, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -206,7 +202,7 @@ class FixItem:
             "gain": self.gain.text,
             "effort": self.effort.bucket,
             "confidence": self.confidence.level,
-            "next_call": asdict(self.next_call),
+            "next_call": self.next_call.as_dict(),
         }
 
 
@@ -277,7 +273,6 @@ __all__ = [
     "FixFirstQueue",
     "FixGain",
     "FixItem",
-    "FixNextCall",
     "FixRankFact",
     "FixRisk",
     "FixSource",

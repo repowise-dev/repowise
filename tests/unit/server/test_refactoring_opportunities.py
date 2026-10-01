@@ -513,7 +513,8 @@ async def test_the_summary_rolls_up_by_type_effort_and_classification(client, ap
     assert summary["mechanical_steps_total"] + summary["judgment_steps_total"] == 6
     assert summary["addresses_primary_problem"]["yes"] == 6
     assert "facets" in summary
-    assert "refactoring_opportunities" in summary["next_call"]
+    assert summary["next_call"]["arguments"]["only"] == ["refactoring_opportunities"]
+    assert "refactoring_opportunities" in summary["next_call"]["mcp"]
 
 
 @pytest.mark.asyncio

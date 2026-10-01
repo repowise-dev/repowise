@@ -6,6 +6,8 @@
  * Python twins disagree.
  */
 
+import type { ActionCommand } from "./actions.js";
+
 export type FixTier = "now" | "next" | "later";
 
 export type FixKind = "refactor" | "perf_fix" | "finding";
@@ -64,11 +66,6 @@ export interface FixStep {
   mechanical: boolean;
 }
 
-export interface FixNextCall {
-  tool: string;
-  arguments: Record<string, unknown>;
-}
-
 export interface FixItem {
   /** `fix1_<20 hex>`: stable while the item's source id is. */
   id: string;
@@ -96,7 +93,7 @@ export interface FixItem {
   /** History signals: shown beside the item, never ranked on. */
   context: { label: string; value: string }[];
   source: { opportunity_id: string | null; plan_ids: string[]; finding_ids: string[] };
-  next_call: FixNextCall;
+  next_call: ActionCommand;
   /** The value inputs and the tier reason, so the order is explainable. */
   why_ranked: { factor: string; value: string }[];
 }
@@ -112,7 +109,7 @@ export interface FixItemCompact {
   gain: string;
   effort: FixEffort;
   confidence: FixLevel;
-  next_call: FixNextCall;
+  next_call: ActionCommand;
 }
 
 export interface FixFirstTotals {

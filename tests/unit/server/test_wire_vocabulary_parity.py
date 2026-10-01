@@ -126,3 +126,33 @@ def test_agent_prompt_flavors_match_python() -> None:
         match = re.search(rf"export type {alias} =(.*?);", text, re.DOTALL)
         assert match, f"{alias} is not declared in {module}"
         assert set(re.findall(r'"([a-z-]+)"', match.group(1))) == set(FLAVORS), alias
+
+
+
+def _interface_body(name: str, module: str) -> str:
+    """The text between `export interface <name> {` and its closing brace."""
+    text = (_TYPES_SRC / module).read_text(encoding="utf-8")
+    match = re.search(rf"export interface {name} \{{\n(.*?)\n\}}", text, re.DOTALL)
+    assert match, f"{name} is not declared in {module}"
+    return match.group(1)
+
+
+def _interface_fields(name: str, module: str) -> set[str]:
+    return set(re.findall(r"^  (\w+)\??:", _interface_body(name, module), re.MULTILINE))
+
+
+def test_next_call_shapes_match_python() -> None:
+    """One "what to call next" shape: actions, Fix first, get_health pillars and
+    the get_risk directive all carry it, so its fields are pinned on both ends."""
+    from dataclasses import fields
+
+    from repowise.core.analysis.actions.model import WhyFact
+    from repowise.core.analysis.health.fix_first.model import FixItem
+    from repowise.core.analysis.next_call import ActionCommand
+
+    assert _interface_fields("ActionCommand", "actions.ts") == {f.name for f in fields(ActionCommand)}
+    assert _interface_fields("ActionWhy", "actions.ts") == {f.name for f in fields(WhyFact)}
+    assert {f.name: f.type for f in fields(FixItem)}["next_call"] == "ActionCommand"
+    for name in ("FixItem", "FixItemCompact"):
+        body = _interface_body(name, "fix-first.ts")
+        assert re.search(r"^  next_call: ActionCommand;", body, re.MULTILINE), name

@@ -129,6 +129,9 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
         ]
       },
       "next_call": {
+        "purpose": "The full plan: ordered steps, validation and evidence",
+        "mcp": "get_health(opportunity_id=\"refop3_8ba13d978db910d160b1\")",
+        "cli": null,
         "tool": "get_health",
         "arguments": {
           "opportunity_id": "refop3_8ba13d978db910d160b1"
@@ -254,6 +257,9 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
         ]
       },
       "next_call": {
+        "purpose": "Every open finding in the file, with its line and reason",
+        "mcp": "get_health(targets=[\"packages/ui/src/graph/graph-flow.tsx\"], include=[\"biomarkers\"])",
+        "cli": "repowise health --file packages/ui/src/graph/graph-flow.tsx",
         "tool": "get_health",
         "arguments": {
           "targets": [
@@ -405,6 +411,9 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
         "finding_ids": []
       },
       "next_call": {
+        "purpose": "The full opportunity: ordered steps, validation and other causes here",
+        "mcp": "get_health(opportunity_id=\"perf2_5ca551b7b7c3293951d0\")",
+        "cli": null,
         "tool": "get_health",
         "arguments": {
           "opportunity_id": "perf2_5ca551b7b7c3293951d0"
@@ -559,6 +568,9 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       ]
     },
     "next_call": {
+      "purpose": "The full plan: ordered steps, validation and evidence",
+      "mcp": "get_health(opportunity_id=\"refop3_8ba13d978db910d160b1\")",
+      "cli": null,
       "tool": "get_health",
       "arguments": {
         "opportunity_id": "refop3_8ba13d978db910d160b1"

@@ -125,7 +125,8 @@ async def test_the_summary_rolls_up_and_names_the_next_call(setup_mcp, materiali
     assert summary["actionability"].get("plan_ready", 0) == 0
     assert summary["with_plan_total"] == 2
     assert summary["analyzed_commit"] == "c" * 40
-    assert "get_health" in summary["next_call"]
+    assert summary["next_call"]["tool"] == "get_health"
+    assert summary["next_call"]["arguments"]["only"] == ["performance_opportunities"]
     assert len(json.dumps(summary)) <= 3000
 
 

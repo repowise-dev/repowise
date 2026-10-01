@@ -1605,13 +1605,8 @@ export interface FixItem {
   verify: FixVerify;
   context: FixContext[];
   source: FixSource;
-  next_call: FixNextCall;
+  next_call: ActionCommand;
   why_ranked?: FixRankFact[];
-}
-
-export interface FixNextCall {
-  tool: string;
-  arguments: Record<string, unknown>;
 }
 
 export interface FixRankFact {

@@ -2356,6 +2356,10 @@ async def test_every_growing_collection_has_total_and_emitted_counts(
         if not isinstance(value, dict):
             return
         for key, child in value.items():
+            if key == "arguments":
+                # A next call's keyword arguments: a count there would be an argument.
+                assert not any(k.endswith(("_total", "_emitted")) for k in child), child
+                continue
             if isinstance(child, list):
                 assert f"{key}_total" in value, key
                 assert f"{key}_emitted" in value, key

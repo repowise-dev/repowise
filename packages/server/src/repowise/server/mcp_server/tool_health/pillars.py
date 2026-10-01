@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.analysis.next_call import ActionCommand
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
@@ -202,10 +203,11 @@ def _render_refactoring(
             **refactoring.summary,
             "facets": page.facets if page else {},
             "view": req.refactoring_view,
-            "next_call": (
-                "get_health(include=['refactoring'], "
-                "only=['refactoring_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked refactoring opportunities, lead first",
+                "get_health",
+                {"include": ["refactoring"], "only": ["refactoring_opportunities"], "limit": 6},
+            ).as_dict(),
         }
 
 
@@ -230,8 +232,9 @@ def _render_performance(
         result["performance_summary"] = {
             **performance.summary,
             "facets": page.facets if page else {},
-            "next_call": (
-                "get_health(include=['performance'], "
-                "only=['performance_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked performance opportunities, lead first",
+                "get_health",
+                {"include": ["performance"], "only": ["performance_opportunities"], "limit": 6},
+            ).as_dict(),
         }

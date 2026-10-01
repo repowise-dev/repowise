@@ -61,6 +61,7 @@ from repowise.core.analysis.health.refactoring.extract_helper import _is_generat
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
+from repowise.core.analysis.next_call import ActionCommand
 
 from . import text
 from .model import (
@@ -78,7 +79,6 @@ from .model import (
     FixFirstQueue,
     FixGain,
     FixItem,
-    FixNextCall,
     FixRankFact,
     FixRisk,
     FixSource,
@@ -782,8 +782,10 @@ def _refactor_unit(
                 plan_ids,
                 tuple(details.get("lead_finding_ids") or ()),
             ),
-            "next_call": FixNextCall(
-                "get_health", {"opportunity_id": field(row, "opportunity_id")}
+            "next_call": ActionCommand.call(
+                "The full plan: ordered steps, validation and evidence",
+                "get_health",
+                {"opportunity_id": field(row, "opportunity_id")},
             ),
         }
 
@@ -1030,8 +1032,10 @@ def _perf_unit(
             "verify": _verify(plan.get("validation")),
             "context": files.context(path),
             "source": FixSource(field(lead, "opportunity_id")),
-            "next_call": FixNextCall(
-                "get_health", {"opportunity_id": field(lead, "opportunity_id")}
+            "next_call": ActionCommand.call(
+                "The full opportunity: ordered steps, validation and other causes here",
+                "get_health",
+                {"opportunity_id": field(lead, "opportunity_id")},
             ),
         }
 
@@ -1113,8 +1117,11 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
             "verify": _verify(None),
             "context": files.context(path),
             "source": FixSource(None, (), (public_id,) if public_id else ()),
-            "next_call": FixNextCall(
-                "get_health", {"targets": [path], "include": ["biomarkers"]}
+            "next_call": ActionCommand.call(
+                "Every open finding in the file, with its line and reason",
+                "get_health",
+                {"targets": [path], "include": ["biomarkers"]},
+                cli=f"repowise health --file {path}",
             ),
         }
 

@@ -1,5 +1,6 @@
 /** Canonical wire contract for structured refactoring recommendations. */
 
+import type { ActionCommand } from "./actions.js";
 import type { FixExclusion } from "./fix-first.js";
 import type { Paginated } from "./pagination.js";
 
@@ -354,7 +355,7 @@ export interface RefactoringRollupAvailable {
   analyzed_commit: string | null;
   /** Present on the MCP block only. */
   facets?: Record<string, Record<string, number>>;
-  next_call?: string;
+  next_call?: ActionCommand;
 }
 
 export type RefactoringOpportunityRollup =

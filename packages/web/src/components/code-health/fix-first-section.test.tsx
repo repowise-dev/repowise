@@ -33,7 +33,13 @@ function item(overrides: Partial<FixItem>): FixItem {
     verify: { tests: [], tests_total: 0, command: null, basis: "unknown" },
     context: [],
     source: { opportunity_id: "refop3_x", plan_ids: [], finding_ids: ["finding_1", "finding_2"] },
-    next_call: { tool: "get_health", arguments: { opportunity_id: "refop3_x" } },
+    next_call: {
+      purpose: "The full plan: ordered steps, validation and evidence",
+      mcp: 'get_health(opportunity_id="refop3_x")',
+      cli: null,
+      tool: "get_health",
+      arguments: { opportunity_id: "refop3_x" },
+    },
     why_ranked: [],
     ...overrides,
   };

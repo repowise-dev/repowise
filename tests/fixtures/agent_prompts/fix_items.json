@@ -23,6 +23,9 @@
         "context": [],
         "source": {"opportunity_id": "perfop_1", "plan_ids": [], "finding_ids": []},
         "next_call": {
+          "purpose": "Every argument shape a call can carry",
+          "mcp": "get_health(query=\"say \\\"hi\\\" \\\\path\\nnext\\ttab … ünï \\u0001\", limit=5, ratio=2.5, whole=3.0, flag=True, off=False, none=None, targets=[\"a.py\", \"b \\\"c\\\".py\"], nested={\"k\": [1, 2.0, \"x\"]})",
+          "cli": null,
           "tool": "get_health",
           "arguments": {
             "query": "say \"hi\" \\path\nnext\ttab … ünï \u0001",
@@ -80,7 +83,13 @@
         },
         "context": [{"label": "changes in 90 days", "value": "5"}],
         "source": {"opportunity_id": "refop3_1", "plan_ids": ["refac3_1"], "finding_ids": []},
-        "next_call": {"tool": "get_health", "arguments": {"opportunity_id": "refop3_1"}},
+        "next_call": {
+          "purpose": "The full plan: ordered steps, validation and evidence",
+          "mcp": "get_health(opportunity_id=\"refop3_1\")",
+          "cli": null,
+          "tool": "get_health",
+          "arguments": {"opportunity_id": "refop3_1"}
+        },
         "why_ranked": [{"factor": "value", "value": "3"}]
       }
     },
@@ -117,7 +126,13 @@
         },
         "context": [],
         "source": {"opportunity_id": null, "plan_ids": [], "finding_ids": ["finding_1"]},
-        "next_call": {"tool": "get_health", "arguments": {}},
+        "next_call": {
+          "purpose": "The full item",
+          "mcp": "get_health()",
+          "cli": "repowise health",
+          "tool": "get_health",
+          "arguments": {}
+        },
         "why_ranked": []
       }
     }
