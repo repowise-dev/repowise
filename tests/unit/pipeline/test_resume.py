@@ -299,6 +299,29 @@ async def test_a_successful_checkpoint_says_nothing(sf, monkeypatch):
     assert progress.messages == []
 
 
+async def test_index_checkpoint_is_timed(sf, monkeypatch):
+    """The checkpoint write runs outside every progress phase, so it times itself."""
+    from repowise.core.pipeline.phase_timing import PhaseTimingRecorder
+
+    repo_id = await _make_repo(sf)
+
+    async def _ok(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_ingestion", _ok)
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_git", _ok)
+
+    recorder = PhaseTimingRecorder(_RecordingProgress())
+    await ResumeController(sf, repo_id, resume=False).checkpoint_index(
+        parsed_files=[],
+        graph_builder=None,
+        git_metadata_list=[],
+        progress=recorder,
+    )
+
+    assert "persist.checkpoint" in recorder.timings
+
+
 async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf, monkeypatch):
     """ANALYSIS cannot complete while post-health symbol state is stale."""
     repo_id = await _make_repo(sf)

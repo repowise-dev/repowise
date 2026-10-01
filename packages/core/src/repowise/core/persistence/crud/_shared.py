@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.models import _new_uuid, _now_utc
@@ -149,7 +149,8 @@ async def _batch_upsert_keyed(
 
     Within-batch duplicate keys keep the legacy outcome: the first item
     inserts, later ones update the pending object (the per-item SELECT used
-    to see the autoflushed insert).
+    to see the autoflushed insert), or the reloaded row once that insert has
+    been flushed and released.
 
     *gate*, when given, skips items whose stored row already matches (see
     :class:`UpsertGate`). Only the surviving items are hydrated as ORM rows.
@@ -158,8 +159,7 @@ async def _batch_upsert_keyed(
     """
     materialized = list(items)
     if not materialized:
-        if batch_size is None:
-            await session.flush()
+        await session.flush()
         return
 
     gated_keys: list[Any] | None = None
@@ -217,21 +217,30 @@ async def _batch_upsert_keyed(
             )
     by_key: dict[Any, Any] = {row_key_fn(row): row for row in existing_rows}
 
-    if batch_size is None:
-        chunks: list[list[Any]] = [materialized]
-    else:
-        chunks = [materialized[i : i + batch_size] for i in range(0, len(materialized), batch_size)]
-    for chunk in chunks:
-        for item in chunk:
+    # Rows this call inserted and already flushed, by key -> ORM identity. Only
+    # the identity is kept: holding every inserted object until the end pinned
+    # the whole table in memory at once (1.8M graph edges took ~5 GiB). A
+    # later duplicate key reloads its row through the identity map instead.
+    flushed: dict[Any, Any] = {}
+    size = batch_size or _BATCH_SIZE
+    for start in range(0, len(materialized), size):
+        inserted: list[tuple[Any, Any]] = []
+        for item in materialized[start : start + size]:
             key = item_key_fn(item)
             existing = by_key.get(key)
+            if existing is None and key in flushed:
+                existing = await session.get(model, flushed[key])
             if existing is not None:
                 update_fn(existing, item)
             else:
                 obj = insert_fn(item)
                 session.add(obj)
                 by_key[key] = obj
+                inserted.append((key, obj))
         await session.flush()
+        for key, obj in inserted:
+            flushed[key] = inspect(obj).identity
+            del by_key[key]
 
 
 async def _batch_delete_in(

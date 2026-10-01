@@ -26,6 +26,7 @@ from typing import Any
 import structlog
 
 from ..persist import persist_analysis, persist_git, persist_ingestion, persist_symbol_analysis
+from ..phase_timing import timed
 from ..progress import emit_warning
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
@@ -166,9 +167,12 @@ class ResumeController:
         )
         await self._ledger.mark_started(ResumePhase.INDEX)
         try:
-            async with get_session(self._sf) as session:
-                await persist_ingestion(view, session, self._repo_id)
-                await persist_git(view, session, self._repo_id)
+            # No progress phase covers this write, and on a large repo it runs
+            # for minutes; without its own timing it is missing from the totals.
+            with timed(getattr(progress, "table", None), "persist.checkpoint"):
+                async with get_session(self._sf) as session:
+                    await persist_ingestion(view, session, self._repo_id)
+                    await persist_git(view, session, self._repo_id)
         except Exception as exc:
             logger.warning("resume_checkpoint_index_failed", error=str(exc))
             # The CLI tells the user their index was saved and that

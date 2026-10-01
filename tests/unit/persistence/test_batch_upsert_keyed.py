@@ -144,3 +144,74 @@ async def test_git_metadata_update_path(async_session):
     )
     assert len(rows) == 1
     assert rows[0].commit_count_30d == 7
+
+
+def _edge(source: str, confidence: float = 0.5) -> dict:
+    return {
+        "source_node_id": source,
+        "target_node_id": "t.py",
+        "edge_type": "imports",
+        "confidence": confidence,
+    }
+
+
+async def test_duplicate_key_across_a_flush_boundary_updates_one_row(async_session):
+    """A key repeated after its insert was flushed still lands one row, last wins."""
+    from repowise.core.persistence.crud._shared import _BATCH_SIZE
+
+    repo = await insert_repo(async_session)
+    edges = [_edge(f"s{i}.py") for i in range(_BATCH_SIZE + 10)]
+    edges.append(_edge("s0.py", confidence=0.9))
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    await async_session.commit()
+
+    rows = (await session_exec(async_session, repo.id)).scalars().all()
+    assert len(rows) == _BATCH_SIZE + 10
+    assert next(r for r in rows if r.source_node_id == "s0.py").confidence == 0.9
+
+
+async def test_inserted_rows_are_released_after_each_flush(async_session):
+    """Inserted objects must not all stay alive until the call returns.
+
+    Holding them pinned a whole table in memory at once; on a 1.8M-edge graph
+    that was ~5 GiB on top of the run.
+    """
+    import gc
+    import weakref
+
+    from repowise.core.persistence.crud._shared import _BATCH_SIZE, _batch_upsert_keyed
+    from repowise.core.persistence.models import _new_uuid
+
+    repo = await insert_repo(async_session)
+    total = _BATCH_SIZE * 3
+    made: list[weakref.ref] = []
+    alive_at_end: list[int] = []
+
+    def insert(e: dict) -> GraphEdge:
+        if len(made) == total - 1:
+            gc.collect()
+            alive_at_end.append(sum(ref() is not None for ref in made))
+        obj = GraphEdge(
+            id=_new_uuid(),
+            repository_id=repo.id,
+            source_node_id=e["source_node_id"],
+            target_node_id=e["target_node_id"],
+            edge_type=e["edge_type"],
+        )
+        made.append(weakref.ref(obj))
+        return obj
+
+    await _batch_upsert_keyed(
+        async_session,
+        GraphEdge,
+        [_edge(f"s{i}.py") for i in range(total)],
+        prefilter=(GraphEdge.repository_id == repo.id,),
+        item_key_fn=lambda e: (e["source_node_id"], e["target_node_id"], e["edge_type"]),
+        row_key_fn=lambda row: (row.source_node_id, row.target_node_id, row.edge_type),
+        update_fn=lambda existing, e: None,
+        insert_fn=insert,
+    )
+    await async_session.commit()
+
+    assert alive_at_end and alive_at_end[0] < _BATCH_SIZE
+    assert len((await session_exec(async_session, repo.id)).scalars().all()) == total
