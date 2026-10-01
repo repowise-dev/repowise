@@ -164,7 +164,8 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
-        ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
+        deepest: list[int] = []
+        ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap, deepest)
         (
             assertion_blocks,
             assertion_count,
@@ -195,6 +196,7 @@ def walk_file(
             bare_called_names=bare_called,
             dispatch_share=dispatch_share(dispatch_points(body, lmap), ccn),
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
+            deepest_block=(deepest[0], deepest[1]) if deepest else None,
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

@@ -129,6 +129,10 @@ log = structlog.get_logger(__name__)
 # line (``details["symbol_line"]``) and its public id is anchored on the symbol
 # plus the offset into it, hashing no metric values, so every stored finding id
 # moves once.
+# v37 (also): the walker records each function's deepest nested block and each
+# performance hit's loop header line; size findings carry ``deepest_block`` and
+# performance findings ``loop_line`` in their details, both outside the id
+# kernel. A cached v37 walk without them reads the defaults (absent).
 # v37 (also): a perf hit inside a lambda with no named function around it is
 # named for that lambda (``build``, ``it callback``), so its stored
 # ``function_name`` and public id change; top-level script code still carries
@@ -387,6 +391,34 @@ def _mark_deprecated(
             for name, start, end in spans
         ):
             finding.details["deprecated"] = True
+
+
+#: Function-size findings whose fix starts at the deepest nested block.
+_DEEPEST_BLOCK_MARKERS = frozenset(
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+)
+
+
+def _mark_deepest_block(
+    findings: list[HealthFindingData], functions: list[FunctionComplexity]
+) -> None:
+    """Copy the function's deepest nested block onto its size findings as
+    ``deepest_block: {start, end}``, so a fix list can name where to start
+    without re-walking the file. Absent when the function does not nest."""
+    blocks = {
+        (fc.name, fc.start_line): fc.deepest_block
+        for fc in functions
+        if fc.deepest_block
+    }
+    if not blocks:
+        return
+    for finding in findings:
+        if finding.biomarker_type not in _DEEPEST_BLOCK_MARKERS:
+            continue
+        block = blocks.get((finding.function_name, finding.line_start))
+        if block:
+            # A mapping, not a pair: surfaces count every nested list as a collection.
+            finding.details["deepest_block"] = {"start": block[0], "end": block[1]}
 
 
 def walked_functions(
@@ -1535,6 +1567,7 @@ class HealthAnalyzer:
             f.file_path = file_path
         _mark_deprecated(findings, fc_list)
         _stamp_symbol_lines(findings, fcx)
+        _mark_deepest_block(findings, fc_list)
 
         # The overall surfaced score stays == the defect dimension (no blend
         # yet); the per-dimension scores ride alongside it, additively.

@@ -247,6 +247,7 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
+    deepest: list[int] | None = None,
 ) -> tuple[int, int, int, int, list[ConditionComplexity]]:
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
@@ -262,6 +263,10 @@ def _walk_function_body(
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive
     accumulation logic is unchanged.
+
+    ``deepest``, when given, is filled with the 1-indexed ``[start, end]``
+    lines of the first block that reaches the function's deepest nesting:
+    where a reader starts flattening it. Also a side-channel only.
     """
 
     ccn = 1
@@ -273,9 +278,10 @@ def _walk_function_body(
     # Track match_expression nodes identified as "flat" so their arms
     # are not individually counted as branch points.
     flat_match_ids: set[int] = set()
+    deepest_depth = 0
 
     def _recurse(node: Node, depth: int) -> None:
-        nonlocal ccn, max_nesting, cognitive
+        nonlocal ccn, max_nesting, cognitive, deepest_depth
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
@@ -363,6 +369,9 @@ def _walk_function_body(
 
         if new_depth > max_nesting:
             max_nesting = new_depth
+        if deepest is not None and nesting_increment and new_depth > deepest_depth:
+            deepest_depth = new_depth
+            deepest[:] = [node.start_point[0] + 1, node.end_point[0] + 1]
 
         for child in node.children:
             _recurse(child, new_depth)

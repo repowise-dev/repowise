@@ -108,6 +108,10 @@ class FunctionComplexity:
     # True when the declaration is marked deprecated or the body's top level
     # issues a deprecation warning. ``complexity/deprecation.py``.
     deprecated: bool = False
+    # 1-indexed (start, end) lines of the first block that reaches
+    # ``max_nesting``, when the function nests at all: the concrete place to
+    # start flattening it. ``cyclomatic._walk_function_body``.
+    deepest_block: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:
