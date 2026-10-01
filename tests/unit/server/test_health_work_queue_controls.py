@@ -326,3 +326,88 @@ async def test_history_only_files_are_left_out_and_counted(client, session, tmp_
     # Naming the marker reaches it, as naming a zero-impact dimension does.
     named = await _queue(client, repo_id, "biomarker=change_entropy")
     assert [t["file_path"] for t in named["targets"]] == ["a.py"]
+
+
+async def test_a_row_carries_its_lead_impact_and_effort(client, session, tmp_path) -> None:
+    """Every field of one row, pinned so a reshaping of the route cannot drift it."""
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [_metric("a.py", 4.123, nloc=100)],
+        [
+            _finding("a.py", severity="critical", impact=1.0),
+            _finding("a.py", "god_class", severity="low", impact=0.5),
+        ],
+    )
+
+    row = (await _queue(client, repo_id))["targets"][0]
+
+    assert row["file_path"] == "a.py"
+    assert row["score"] == 4.12
+    assert row["nloc"] == 100
+    assert row["module"] is None
+    assert row["is_test"] is False
+    assert row["primary_biomarker"] == "complex_method"
+    assert row["primary_severity"] == "critical"
+    assert row["primary_reason"] == "complex_method in a.py"
+    assert (row["primary_line_start"], row["primary_line_end"]) == (12, 20)
+    assert row["primary_suggestion"]
+    assert row["primary_finding_id"]
+    assert row["total_impact"] == 1.5
+    assert (row["finding_count"], row["open_finding_count"]) == (2, 2)
+    assert row["biomarkers"] == ["complex_method", "god_class"]
+    # 100 lines is an M, weighted 2.
+    assert (row["effort_bucket"], row["impact_per_effort"]) == ("M", 0.75)
+
+
+async def test_min_severity_is_a_floor(client, session, tmp_path) -> None:
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [_metric("a.py", 4.0), _metric("b.py", 5.0), _metric("c.py", 6.0)],
+        [
+            _finding("a.py", severity="low"),
+            _finding("b.py", severity="high"),
+            _finding("c.py", severity="critical"),
+        ],
+    )
+
+    body = await _queue(client, repo_id, "min_severity=high")
+
+    assert {t["file_path"] for t in body["targets"]} == {"b.py", "c.py"}
+
+
+async def test_max_effort_drops_larger_files(client, session, tmp_path) -> None:
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [
+            _metric("s.py", 4.0, nloc=30),
+            _metric("m.py", 4.0, nloc=100),
+            _metric("x.py", 4.0, nloc=900),
+        ],
+        [_finding("s.py"), _finding("m.py"), _finding("x.py")],
+    )
+
+    small = await _queue(client, repo_id, "max_effort=S")
+    every = await _queue(client, repo_id, "max_effort=XL")
+
+    assert [t["file_path"] for t in small["targets"]] == ["s.py"]
+    assert {t["effort_bucket"] for t in every["targets"]} == {"S", "M", "XL"}
+
+
+async def test_a_named_marker_counts_only_its_own_findings(client, session, tmp_path) -> None:
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [_metric("a.py", 4.0), _metric("b.py", 5.0)],
+        [_finding("a.py"), _finding("a.py", "god_class"), _finding("b.py")],
+    )
+
+    body = await _queue(client, repo_id, "biomarker=god_class")
+
+    assert [(t["file_path"], t["finding_count"]) for t in body["targets"]] == [("a.py", 1)]

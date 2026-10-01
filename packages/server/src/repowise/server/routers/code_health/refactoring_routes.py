@@ -6,6 +6,7 @@ not structured refactoring plans.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,9 @@ _EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
     (150, "M"),
     (400, "L"),
 )
+
+# The divisor behind ``impact_per_effort``, and the order ``max_effort`` caps.
+_EFFORT_RANK = {"S": 1, "M": 2, "L": 3, "XL": 5}
 
 
 _SORT_KEYS = {
@@ -116,14 +120,10 @@ def queue_filters(
     )
 
 
-async def _queue_targets(
-    session: AsyncSession, repo_id: str, q: QueueFilters, *, history: str
-) -> tuple[list[dict], int]:
-    """Every work item the filters keep, unsorted, and the history-only count."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
+async def _load_queue_rows(
+    session: AsyncSession, repo_id: str, q: QueueFilters
+) -> tuple[dict[str, Any], list[Any]]:
+    """The metrics the file-level filters keep, by path, and the findings read."""
     metrics = await crud.get_health_metrics(session, repo_id)
     # As the findings list does, so a row's count and the list behind it agree:
     # the zero-impact dimensions stay out of the ranking, and naming one thing
@@ -150,29 +150,95 @@ async def _queue_targets(
         only_failing=q.only_failing,
         hotspots=await hotspot_paths(session, repo_id) if q.only_hotspots else None,
     )
-    metric_by_path = {m.file_path: m for m in metrics if keep_metric(m)}
+    return {m.file_path: m for m in metrics if keep_metric(m)}, findings
 
+
+def _finding_filter(q: QueueFilters) -> Callable[[Any], bool]:
+    """One marker, then exact severities or else a severity floor."""
     # An all-empty list (","; " ") means the caller selected nothing, not that
     # nothing matches — falling through to ``min_severity`` keeps a stray
     # serialization from silently emptying the queue behind a 200.
     picked = {v.strip().lower() for v in (q.severity or "").split(",") if v.strip()}
-    exact_severities = picked or None
+    floor = _SEVERITY_ORDER.get(q.min_severity, 0) if q.min_severity else None
 
+    def keep(f: Any) -> bool:
+        if q.biomarker and f.biomarker_type != q.biomarker:
+            return False
+        if picked:
+            return (f.severity or "").lower() in picked
+        if floor is not None:
+            return _SEVERITY_ORDER.get(f.severity, 0) >= floor
+        return True
+
+    return keep
+
+
+def _group_by_file(findings: list[Any], keep: Callable[[Any], bool]) -> dict[str, list[Any]]:
     by_file: dict[str, list[Any]] = {}
     for f in findings:
-        if q.biomarker and f.biomarker_type != q.biomarker:
-            continue
-        if exact_severities is not None:
-            if (f.severity or "").lower() not in exact_severities:
-                continue
-        elif q.min_severity:
-            order = _SEVERITY_ORDER
-            if order.get(f.severity, 0) < order.get(q.min_severity, 0):
-                continue
-        by_file.setdefault(f.file_path, []).append(f)
+        if keep(f):
+            by_file.setdefault(f.file_path, []).append(f)
+    return by_file
 
-    effort_rank = {"S": 1, "M": 2, "L": 3, "XL": 5}
-    max_effort_rank = effort_rank.get(q.max_effort or "", 99)
+
+def _is_history_only(fs: list[Any], q: QueueFilters, history: str) -> bool:
+    # Naming a marker reaches it whatever its origin, as with the zero-impact
+    # dimensions in ``_load_queue_rows``.
+    return history == "exclude" and q.biomarker is None and not split_by_origin(fs)[0]
+
+
+def _lead_finding(fs: list[Any]) -> Any:
+    primary = primary_finding(fs)
+    if primary is not None:
+        return primary
+    # Every finding here is advisory, so no cause accuses this file and the
+    # general queue never reaches this: advisory is excluded from it. A caller
+    # who filtered to an advisory marker did reach it, and the marker they
+    # asked for is the honest lead for the row.
+    return max(fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0)))
+
+
+def _target_row(file_path: str, fs: list[Any], m: Any, effort_bucket: str) -> dict:
+    primary = _lead_finding(fs)
+    # Impact, and therefore the ranking, counts only findings still open:
+    # ``score`` on this row was computed from open findings, and a file
+    # whose findings were all dismissed is not work to rank near the top.
+    open_fs = [x for x in fs if (getattr(x, "status", None) or "open") == "open"]
+    total_impact = round(sum(x.health_impact for x in open_fs), 3)
+    return {
+        "file_path": file_path,
+        "score": round(m.score, 2),
+        "nloc": m.nloc,
+        "module": m.module or None,
+        "is_test": bool(getattr(m, "is_test", False)),
+        "primary_biomarker": primary.biomarker_type,
+        "primary_severity": primary.severity,
+        "primary_reason": primary.reason,
+        "primary_function": primary.function_name,
+        "primary_line_start": primary.line_start,
+        "primary_line_end": primary.line_end,
+        "primary_suggestion": _suggestion_for(primary.biomarker_type),
+        "primary_finding_id": primary.id,
+        "total_impact": total_impact,
+        "finding_count": len(fs),
+        "open_finding_count": len(open_fs),
+        "biomarkers": sorted({x.biomarker_type for x in fs}),
+        "effort_bucket": effort_bucket,
+        "impact_per_effort": round(total_impact / _EFFORT_RANK[effort_bucket], 3),
+    }
+
+
+async def _queue_targets(
+    session: AsyncSession, repo_id: str, q: QueueFilters, *, history: str
+) -> tuple[list[dict], int]:
+    """Every work item the filters keep, unsorted, and the history-only count."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    metric_by_path, findings = await _load_queue_rows(session, repo_id, q)
+    by_file = _group_by_file(findings, _finding_filter(q))
+    max_effort_rank = _EFFORT_RANK.get(q.max_effort or "", 99)
 
     targets: list[dict] = []
     history_only = 0
@@ -184,55 +250,13 @@ async def _queue_targets(
         # top of a list ordered by how bad things are.
         if m is None:
             continue
-        # Naming a marker reaches it whatever its origin, as with the
-        # zero-impact dimensions above.
-        if history == "exclude" and q.biomarker is None and not split_by_origin(fs)[0]:
+        if _is_history_only(fs, q, history):
             history_only += 1
             continue
-        nloc = m.nloc
-        score = m.score
-        primary = primary_finding(fs)
-        if primary is None:
-            # Every finding here is advisory, so no cause accuses this file and
-            # the general queue never reaches this: advisory is excluded from
-            # it. A caller who filtered to an advisory marker did reach it, and
-            # the marker they asked for is the honest lead for the row.
-            primary = max(
-                fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0))
-            )
-        # Impact, and therefore the ranking, counts only findings still open:
-        # ``score`` on this row was computed from open findings, and a file
-        # whose findings were all dismissed is not work to rank near the top.
-        open_fs = [x for x in fs if (getattr(x, "status", None) or "open") == "open"]
-        total_impact = round(sum(x.health_impact for x in open_fs), 3)
-        effort_bucket = _effort_for_nloc(nloc)
-        if effort_rank[effort_bucket] > max_effort_rank:
+        effort_bucket = _effort_for_nloc(m.nloc)
+        if _EFFORT_RANK[effort_bucket] > max_effort_rank:
             continue
-        weight = effort_rank[effort_bucket]
-        ratio = round(total_impact / weight, 3)
-        targets.append(
-            {
-                "file_path": file_path,
-                "score": round(score, 2),
-                "nloc": nloc,
-                "module": m.module if (m and m.module) else None,
-                "is_test": bool(getattr(m, "is_test", False)),
-                "primary_biomarker": primary.biomarker_type,
-                "primary_severity": primary.severity,
-                "primary_reason": primary.reason,
-                "primary_function": primary.function_name,
-                "primary_line_start": primary.line_start,
-                "primary_line_end": primary.line_end,
-                "primary_suggestion": _suggestion_for(primary.biomarker_type),
-                "primary_finding_id": primary.id,
-                "total_impact": total_impact,
-                "finding_count": len(fs),
-                "open_finding_count": len(open_fs),
-                "biomarkers": sorted({x.biomarker_type for x in fs}),
-                "effort_bucket": effort_bucket,
-                "impact_per_effort": ratio,
-            }
-        )
+        targets.append(_target_row(file_path, fs, m, effort_bucket))
     return targets, history_only
 
 
