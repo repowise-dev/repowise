@@ -1,8 +1,8 @@
-"""The reader-facing label for a biomarker id, as the web glossary words it.
+"""The reader-facing label for each biomarker id: the one source.
 
-A copy of the labels in ``packages/ui/src/health/biomarker-glossary.ts``; that
-file stays the source (it also carries categories and descriptions core does not
-need). ``test_wire_vocabulary_parity`` fails when the two disagree.
+Agent prompts print these, and ``scripts/generate_biomarker_labels.py`` writes
+them into ``packages/ui/src/health/generated/biomarker-labels.ts`` for the web
+glossary, which keeps its categories and descriptions beside them.
 """
 
 from __future__ import annotations

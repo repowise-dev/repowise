@@ -126,15 +126,3 @@ def test_agent_prompt_flavors_match_python() -> None:
         match = re.search(rf"export type {alias} =(.*?);", text, re.DOTALL)
         assert match, f"{alias} is not declared in {module}"
         assert set(re.findall(r'"([a-z-]+)"', match.group(1))) == set(FLAVORS), alias
-
-
-def test_biomarker_labels_match_the_web_glossary() -> None:
-    """Core's copy of the glossary labels, which agent prompts print."""
-    from repowise.core.agent_prompts.markers import BIOMARKER_LABELS
-
-    text = (_PACKAGES / "ui/src/health/biomarker-glossary.ts").read_text(encoding="utf-8")
-    block = text[text.index("export const BIOMARKER_GLOSSARY") : text.index("export function biomarkerInfo")]
-    web = dict(re.findall(r'^  ([a-z0-9_]+): \{\n    label: "([^"]*)",', block, re.MULTILINE))
-    entries = re.findall(r"^  \S+: \{$", block, re.MULTILINE)
-    assert web and len(web) == len(entries), "the glossary's entry shape changed; update this reader"
-    assert web == BIOMARKER_LABELS

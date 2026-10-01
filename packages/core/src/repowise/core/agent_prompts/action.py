@@ -11,7 +11,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from .markers import biomarker_label
+from repowise.core.analysis.health.biomarker_labels import biomarker_label
+
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, count, join_sections, repo_suffix
 
