@@ -84,6 +84,10 @@ Rust helper is never flagged here. And the `lines` count on file and package fin
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
+A .NET reference assembly (`ref/*.cs`) is the compile-time API of a library.
+Its files are never reported, and neither is a C# file or type it lists: that
+is public API, used outside the repository.
+
 ### How unreachable-file confidence is scored
 
 An orphaned file that nobody has touched in a year is a much stronger signal than
@@ -98,10 +102,17 @@ one added last week. Confidence starts from git activity:
 | No commits in 90 days, but the file is under 30 days old | `0.55` (may be work in progress) |
 | Still being committed to | `0.40` |
 
-Then it only ever goes down. Two caps apply:
+Then it only ever goes down. These caps apply:
 
 - **Dynamic imports nearby.** If any file in the same directory uses a runtime
   loader, confidence is capped at `0.40`.
+- **Imported by namespace.** A C# `using` names a namespace, never a file, and
+  a same-namespace `new T()` needs no `using` at all, so a C# file is capped at
+  `0.40` whatever its age.
+- **Its type is named elsewhere.** When another file writes the name of a type
+  the file declares, confidence is capped at `0.40` and the evidence names
+  that file: Java, C# and Swift use a type from its own package or module
+  without an import.
 - **Runtime-load risk factors.** If the path looks like config, environment,
   bootstrap, database, script, or runtime-asset code, confidence is capped at
   `0.40` and the finding carries an evidence line explaining why. These are

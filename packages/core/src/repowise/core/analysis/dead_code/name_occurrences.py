@@ -46,6 +46,7 @@ where this answers it from the repository in front of us.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
@@ -493,3 +494,105 @@ def clamp_path_mentions(
         finding.safe_to_delete = False
         finding.evidence.append(f"Named by path in {where}, which may load it without an import")
     return findings
+
+
+def _is_reference_assembly(path: str) -> bool:
+    """A .NET reference-assembly source: ``src/libraries/X/ref/X.cs``."""
+    return path.endswith(".cs") and "/ref/" in f"/{path}"
+
+
+def _writers(
+    source_map: dict[str, bytes], names: Mapping[int, frozenset[str]]
+) -> dict[bytes, set[str]]:
+    """For every searchable name in *names*, the files of *source_map* writing it."""
+    tokens = {_token(name) for group in names.values() for name in group} - {b""}
+    return occurrence_files(source_map, tokens)
+
+
+def drop_reference_assembly_api(
+    findings: list[DeadCodeFindingData],
+    source_map: dict[str, bytes],
+    type_names: Mapping[str, frozenset[str]],
+) -> list[DeadCodeFindingData]:
+    """Drop C# findings whose type a reference assembly lists.
+
+    A ``ref/*.cs`` file is the compile-time surface of a .NET library: every
+    type it names is public API, used by code outside the repository, so
+    neither the type nor the file declaring it is dead. *type_names* maps an
+    unreachable file to the types it declares. Returns a new list.
+    """
+    references = {p: b for p, b in source_map.items() if _is_reference_assembly(p)}
+    names = {
+        id(f): _type_names_of(f, type_names)
+        for f in findings
+        if f.file_path.endswith(".cs") and not _is_reference_assembly(f.file_path)
+    }
+    if not references or not names:
+        return findings
+    listed = _writers(references, names)
+    return [
+        f
+        for f in findings
+        if not any(_token(name) in listed for name in names.get(id(f), ()))
+    ]
+
+
+def clamp_named_types(
+    findings: list[DeadCodeFindingData],
+    source_map: dict[str, bytes],
+    type_names: Mapping[str, frozenset[str]],
+) -> list[DeadCodeFindingData]:
+    """Cap unreachable files whose types another file names.
+
+    The file-level counterpart of :func:`clamp_unverified_absence`. A Java or
+    C# type is used from its own package or namespace without any import, so
+    a file no edge reaches but whose type another file writes has not been
+    shown unused. Capped to the review tier, never dropped: a name is not
+    proof of use. Mutates in place and returns the same list.
+    """
+    candidates = [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNREACHABLE_FILE
+        and f.confidence > RISK_CAP_CONFIDENCE
+        and type_names.get(f.file_path)
+    ]
+    if not candidates or not source_map:
+        return findings
+    names = {id(f): type_names[f.file_path] for f in candidates}
+    writers = _writers(source_map, names)
+    for finding in candidates:
+        written = _first_writer(finding.file_path, names[id(finding)], writers)
+        if written is None:
+            continue
+        path, name = written
+        finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
+        finding.evidence.append(
+            f"Its type '{name}' is written in {path}, which may use it without an import"
+        )
+    return findings
+
+
+def _first_writer(
+    file_path: str, names: frozenset[str], writers: dict[bytes, set[str]]
+) -> tuple[str, str] | None:
+    """The first ``(path, name)`` where another file writes one of *names*."""
+    return min(
+        (
+            (path, name)
+            for name in names
+            for path in writers.get(_token(name), ())
+            if path != file_path and not _is_own_type_sibling(path, file_path)
+        ),
+        default=None,
+    )
+
+
+def _type_names_of(
+    finding: DeadCodeFindingData, type_names: Mapping[str, frozenset[str]]
+) -> frozenset[str]:
+    if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
+        return type_names.get(finding.file_path, frozenset())
+    if finding.kind is DeadCodeKind.UNUSED_EXPORT and finding.symbol_name:
+        return frozenset({finding.symbol_name})
+    return frozenset()

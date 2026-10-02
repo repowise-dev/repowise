@@ -32,6 +32,7 @@ from .constants import (
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
+    _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
@@ -54,9 +55,11 @@ from .file_reachability import (
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .name_occurrences import (
     IDENTIFIER_RE,
+    clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
     drop_internals_used_in_own_file,
+    drop_reference_assembly_api,
 )
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
@@ -404,6 +407,12 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
 #: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
 #: Paired with ``is_declaration`` this identifies a type forward declaration,
 #: which is never a deletable unit — see the guard in ``_detect_unused_exports``.
+#: Kinds that declare a type, which Java and C# use from their own package or
+#: namespace without an import.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "struct", "enum", "record", "trait", "object"}
+)
+
 _CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
     {
         "class",
@@ -744,6 +753,18 @@ def _is_declaration_only(sym: dict) -> bool:
 _LINES_UNKNOWN = "Line count unavailable: source was not read"
 
 
+#: ``(days, confidence)`` rungs for a file with no commit in 90 days, oldest
+#: first. ``_is_old`` uses strict >, so days-1 gives >= semantics: a year or
+#: more untouched is 1.0, very likely dead.
+_GIT_AGE_RUNGS: tuple[tuple[int, float], ...] = ((364, 1.0), (179, 0.9), (89, 0.8))
+
+
+def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
+    if sym.get("visibility") != "public" or sym.get("parent_name"):
+        return False
+    return kinds is None or sym.get("kind") in kinds
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
@@ -904,6 +925,9 @@ class DeadCodeAnalyzer:
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
+        type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
+        findings = drop_reference_assembly_api(findings, self._source_map, type_names)
+        findings = clamp_named_types(findings, self._source_map, type_names)
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
         )
@@ -1065,21 +1089,11 @@ class DeadCodeAnalyzer:
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
-        # _is_old uses strict >, so pass days-1 to get >= semantics.
-        if no_git_signal:
-            confidence = NO_GIT_SIGNAL_CONFIDENCE
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
-            confidence = 1.0  # Untouched for a year+ — very likely dead
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
-            confidence = 0.9
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=89):
-            confidence = 0.8
-        elif commit_90d == 0 and age_days is not None and age_days < 30:
-            confidence = 0.55  # Recently created — may be WIP
-        elif commit_90d == 0:
-            confidence = 0.7
-        else:
-            confidence = 0.4
+        confidence = (
+            NO_GIT_SIGNAL_CONFIDENCE
+            if no_git_signal
+            else self._git_age_confidence(commit_90d, last_commit, age_days)
+        )
 
         # The ladder above is an evidence scale, not a tier boundary: its rungs
         # stay literal so moving a threshold does not silently re-score how
@@ -1100,6 +1114,12 @@ class DeadCodeAnalyzer:
         if risk_factors:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
+        # A namespace-imported file is reached without an edge (a same-namespace
+        # ``new T()``), so no edge says little and its age says nothing more.
+        namespace_imported = node_data.get("language") in _NAMESPACE_IMPORT_LANGUAGES
+        if namespace_imported:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
         # A whole file is a review candidate, never deletion-ready: see
         # ``REVIEW_ONLY_KINDS``. Confidence still ranks it.
         safe = False
@@ -1114,6 +1134,10 @@ class DeadCodeAnalyzer:
         risk_line = risk_evidence(risk_factors)
         if risk_line:
             evidence.append(risk_line)
+        if namespace_imported:
+            evidence.append(
+                "Imported by namespace, not by file, so having no importer is weak evidence"
+            )
         lines = self._file_line_count(node)
         if lines is None:
             evidence.append(_LINES_UNKNOWN)
@@ -1134,6 +1158,20 @@ class DeadCodeAnalyzer:
             age_days=age_days,
             risk_factors=list(risk_factors),
         )
+
+    def _git_age_confidence(
+        self, commit_90d: int, last_commit: Any, age_days: int | None
+    ) -> float:
+        """The git-age evidence ladder for a file no edge reaches."""
+        if commit_90d != 0:
+            return 0.4
+        if last_commit:
+            for days, confidence in _GIT_AGE_RUNGS:
+                if self._is_old(last_commit, days=days):
+                    return confidence
+        if age_days is not None and age_days < 30:
+            return 0.55  # Recently created — may be WIP
+        return 0.7
 
     def _member_is_used(self, sym_id: str, language: str | None) -> bool:
         """True when this container declares a method something else uses.
@@ -1205,14 +1243,14 @@ class DeadCodeAnalyzer:
         ]
 
     def _public_top_level_names(
-        self, findings: list[DeadCodeFindingData]
+        self, findings: list[DeadCodeFindingData], kinds: AbstractSet[str] | None = None
     ) -> dict[str, frozenset[str]]:
-        """Top-level public symbol names of each unreachable file in *findings*."""
+        """Top-level public symbol names (of *kinds*, if given) of each unreachable file."""
         return {
             f.file_path: frozenset(
                 sym["name"]
                 for _, sym in self._defined_symbols(f.file_path)
-                if sym.get("visibility") == "public" and not sym.get("parent_name")
+                if _is_public_top_level(sym, kinds)
             )
             for f in findings
             if f.kind is DeadCodeKind.UNREACHABLE_FILE and self.graph.has_node(f.file_path)
