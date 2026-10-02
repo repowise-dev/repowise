@@ -40,12 +40,24 @@ And the target must draw more of the method's calls than its home file does.
 The Jaccard sets see only class-owned callees, so a method whose work is three
 module-level helpers plus ``result.record`` / ``result.note`` on a collector it
 was handed looked like it envied the collector.
+
+The ``calls`` graph does not see field reads, so own-class use is also read
+off the class's cohesion components: a method that shares a component holding
+fields works on its own class's state and stays. A method that fulfils a
+contract (``@Override``, a member its base class or interface declares, a
+runtime contract name such as ``toString``) cannot move either, since the
+type it overrides for is the reason it exists. Building the target through a
+static factory (``OperationResult.Ok()``, any target member returning the
+target type) counts as instantiating it, and an interface, an exception type
+or a ``*Util``/``*Helper`` class is never a home for instance behaviour.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
 from ....test_paths import is_test_related_path
@@ -69,6 +81,12 @@ _MAX_TARGET_DISTANCE = 0.7
 # The target must be clearly nearer than the own class by this margin, so a
 # near-tie (the method is about as related to both) never fires.
 _MIN_DISTANCE_MARGIN = 0.25
+
+# Target kinds that hold no instance behaviour to move a method onto.
+_NON_TARGET_KINDS = frozenset({"interface", "trait", "protocol", "enum"})
+# Name suffixes of classes that are never a home for a moved method: an
+# exception carries an error, a utility class only static helpers.
+_NON_TARGET_SUFFIXES = ("Exception", "Error", "Util", "Utils", "Helper", "Helpers")
 
 
 def _node(graph: Any, node_id: str) -> dict | None:
@@ -101,6 +119,80 @@ def _ancestors(graph: Any, class_id: str) -> set[str]:
                 seen.add(base)
                 stack.append(base)
     return seen
+
+
+def _class_name(graph: Any, class_id: str) -> str:
+    return (_node(graph, class_id) or {}).get("name") or class_id.rsplit("::", 1)[-1]
+
+
+def _method_names(graph: Any, class_id: str) -> set[str]:
+    return {
+        (_node(graph, member) or {}).get("name") or ""
+        for _u, member, data in graph.out_edges(class_id, data=True)
+        if data.get("edge_type") == "has_method"
+    }
+
+
+def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool:
+    """Whether the method fulfils a contract: an ``@Override`` annotation, a
+    runtime contract name, or a member an ancestor class or interface also
+    declares."""
+    name = data.get("name") or ""
+    if any("@Override" in d for d in data.get("decorators") or ()):
+        return True
+    if is_contract_method(name, data.get("kind"), language):
+        return True
+    return any(name in _method_names(graph, base) for base in _ancestors(graph, own_class_id))
+
+
+def _returns(signature: str | None, class_name: str) -> bool:
+    """Whether a ``name(params) -> Type`` signature returns *class_name*."""
+    pattern = rf"->\s*(?:[\w.]+\.)?{re.escape(class_name)}\b"
+    return bool(signature) and re.search(pattern, signature) is not None
+
+
+def _builds(graph: Any, class_id: str, accessed: set[str]) -> bool:
+    """Whether the method instantiates *class_id*: a constructor call, or a
+    call to a member that returns the class (a static factory such as
+    ``OperationResult.Ok()``)."""
+    class_name = _class_name(graph, class_id)
+    members = [_node(graph, member) or {} for member in accessed]
+    return class_id in accessed or any(
+        m.get("name") == class_name or _returns(m.get("signature"), class_name) for m in members
+    )
+
+
+def _never_a_target(graph: Any, class_id: str) -> bool:
+    """An interface, an exception type or a utility class."""
+    if (_node(graph, class_id) or {}).get("kind") in _NON_TARGET_KINDS:
+        return True
+    names = [_class_name(graph, class_id)]
+    names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]
+    return any(n.endswith(_NON_TARGET_SUFFIXES) for n in names)
+
+
+def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) -> bool:
+    """A foreign class the method could move to: not its own class or an
+    ancestor (*home*), not a class it builds, not a non-target kind."""
+    return (
+        class_id not in home
+        and not _builds(graph, class_id, accessed)
+        and not _never_a_target(graph, class_id)
+    )
+
+
+def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None) -> bool:
+    """Whether the method shares a cohesion component that holds fields with
+    the rest of its class. The ``calls`` graph sees no field reads; the
+    components do (``ClassComplexity.components``)."""
+    own = [
+        cls
+        for cls in classes
+        if getattr(cls, "name", None) == parent
+        and (line is None or cls.start_line <= line <= cls.end_line)
+    ]
+    groups = [g for cls in own[:1] for g in getattr(cls, "components", None) or ()]
+    return any(name in g.methods and g.fields for g in groups)
 
 
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:
@@ -204,6 +296,10 @@ class MoveMethodDetector(RefactoringDetector):
         own_class_id = f"{ctx.file_path}::{parent}"
         if own_class_id not in graph:
             return None
+        if _overrides(graph, data, own_class_id, ctx.language) or _uses_own_state(
+            ctx.classes, parent, name, data.get("start_line")
+        ):
+            return None
 
         # Group the method's class-owned callees by the class they belong to.
         accessed_by_class: dict[str, set[str]] = {}
@@ -234,11 +330,11 @@ class MoveMethodDetector(RefactoringDetector):
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
-        inherited = _ancestors(graph, own_class_id)
+        own_and_inherited = _ancestors(graph, own_class_id) | {own_class_id}
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()
-            if c != own_class_id and c not in inherited and c not in m
+            if _is_target(graph, c, m, own_and_inherited)
         ]
         if not foreign:
             return None

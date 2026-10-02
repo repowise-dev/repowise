@@ -284,3 +284,76 @@ def test_a_method_whose_work_is_in_its_home_file_does_not_envy():
     assert _detect(g, "c.py") == []
     g.remove_node("c.py::render")
     assert len(_detect(g, "c.py")) == 1
+
+
+# ---- contracts, factories and non-targets ---------------------------------
+
+
+def _java_envy_graph(method: str = "envious", target: str = "T") -> nx.DiGraph:
+    g = nx.DiGraph()
+    _add_class(g, "C.java", "C", [method, "helper"])
+    _add_class(g, f"{target}.java", target, ["alpha", "beta", "gamma"])
+    for m in ("alpha", "beta", "gamma"):
+        _call(g, f"C.java::C.{method}", f"{target}.java::{target}.{m}")
+    return g
+
+
+def _detect_java(g: nx.DiGraph, classes: list | None = None) -> list:
+    ctx = RefactoringContext(
+        file_path="C.java", language="java", nloc=40, graph=g, classes=classes or []
+    )
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "move_method"]
+
+
+def test_java_envy_control_still_fires():
+    assert len(_detect_java(_java_envy_graph())) == 1
+
+
+def test_override_annotated_method_never_moves():
+    g = _java_envy_graph()
+    g.nodes["C.java::C.envious"]["decorators"] = ["@Override\n    public"]
+    assert _detect_java(g) == []
+
+
+def test_runtime_contract_method_never_moves():
+    assert _detect_java(_java_envy_graph(method="toString")) == []
+
+
+def test_method_its_base_type_declares_never_moves():
+    g = _java_envy_graph()
+    _add_class(g, "Base.java", "Base", ["envious"])
+    g.add_edge("C.java::C", "Base.java::Base", edge_type="implements")
+    assert _detect_java(g) == []
+
+
+def test_static_factory_on_target_counts_as_instantiation():
+    g = _java_envy_graph()
+    g.nodes["T.java::T.alpha"]["signature"] = "alpha(String key) -> T"
+    assert _detect_java(g) == []
+
+
+def test_exception_interface_and_utility_targets_are_rejected():
+    assert _detect_java(_java_envy_graph(target="ParseException")) == []
+    assert _detect_java(_java_envy_graph(target="StringUtils")) == []
+    g = _java_envy_graph()
+    g.nodes["T.java::T"]["kind"] = "interface"
+    assert _detect_java(g) == []
+
+
+def test_method_sharing_its_class_state_does_not_move():
+    from repowise.core.analysis.health.complexity import ClassComplexity, CohesionGroup
+
+    cls = ClassComplexity(
+        name="C",
+        start_line=1,
+        end_line=40,
+        method_count=2,
+        total_nloc=30,
+        methods=[],
+        lcom4=1,
+        components=[CohesionGroup(methods=["envious", "helper"], fields=["settings"])],
+    )
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []
+    stateless = CohesionGroup(methods=["envious"], fields=[])
+    cls.components = [stateless]
+    assert len(_detect_java(_java_envy_graph(), classes=[cls])) == 1
