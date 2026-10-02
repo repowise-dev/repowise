@@ -1942,3 +1942,50 @@ def test_rust_let_inside_a_match_arm_is_not_a_param():
     spans = [e for e in find_extractions(fn, lmap) if e.start_line == 9]
     assert spans
     assert all("total" not in e.params for e in spans)
+
+
+def test_rust_span_ending_on_a_consumed_tail_if_is_not_offered():
+    # The ``else`` block's last ``if`` is its value, read by the ``let``.
+    src = """
+        fn matcher(names: &[String], dir: &str, case: bool) -> usize {
+            let found = if names.is_empty() {
+                0
+            } else {
+                let wanted: Vec<&String> = names.iter().filter(|n| n.len() > 2).collect();
+                log(dir);
+                log(case);
+                if wanted.is_empty() {
+                    0
+                } else {
+                    let m = wanted.len();
+                    m + 1
+                }
+            };
+            found
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert all(e.end_line != 14 for e in find_extractions(fn, lmap))
+
+
+def test_rust_span_ending_on_an_if_in_a_loop_body_is_still_offered():
+    src = """
+        fn tally(items: &[usize], limit: usize, out: &mut Vec<usize>) -> usize {
+            let count = items.len();
+            for item in items {
+                let doubled = item * 2;
+                log(doubled);
+                log(limit);
+                if doubled > limit {
+                    out.push(limit);
+                } else {
+                    out.push(doubled);
+                }
+            }
+            count
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert any(e.end_line == 12 for e in find_extractions(fn, lmap))

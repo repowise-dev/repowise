@@ -255,6 +255,11 @@ class LanguageNodeMap:
     #     block's tail expression (the implicit value an extraction would
     #     silently drop), so only truly expression-oriented grammars may map it.
     statement_wrapper_kinds: frozenset[str] = frozenset()
+    #   * ``value_passthrough_kinds`` -- nodes a block's value flows through
+    #     unchanged on its way out (Rust ``if`` / ``else`` / ``match`` arms), so
+    #     the slicer can tell whether an unterminated tail statement's value is
+    #     consumed. Only meaningful with ``statement_wrapper_kinds``.
+    value_passthrough_kinds: frozenset[str] = frozenset()
 
     # -- Decorators / annotations (mock-saturation pass) ---------------------
     #   * ``decorator_kinds`` -- the node a single ``@thing`` is parsed as.
@@ -586,6 +591,16 @@ _RUST = LanguageNodeMap(
     # node, and the slicer uses this as the expression-oriented marker for
     # tail-expression suppression.
     statement_wrapper_kinds=frozenset({"expression_statement"}),
+    value_passthrough_kinds=frozenset(
+        {
+            "if_expression",
+            "else_clause",
+            "match_expression",
+            "match_block",
+            "match_arm",
+            "unsafe_block",
+        }
+    ),
 )
 
 
