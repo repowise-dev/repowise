@@ -32,6 +32,7 @@ from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.fix_first import DEFAULT_LIMIT, FixFirstQueue, build_fix_first
 from repowise.core.analysis.health.fix_first.build import MIN_WORTH, hot_cut, hot_cut_offset
 from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
+from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
 
@@ -247,7 +248,11 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
                 o.status,
                 case((o.recoverable_health >= MIN_WORTH, o.details_json)).label("details_json"),
             )
-            .where(o.repository_id == repo_id, o.status == "open")
+            .where(
+                o.repository_id == repo_id,
+                o.status == "open",
+                o.refactoring_model_version == REFACTORING_MODEL_VERSION,
+            )
             .order_by(o.rank_position)
         )
     )

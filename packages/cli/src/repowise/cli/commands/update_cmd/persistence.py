@@ -1141,27 +1141,10 @@ async def _persist_full_update_async(
             if timings is not None:
                 timings.start("persist.governance")
             try:
-                from sqlalchemy import select as _sel_dec
+                from repowise.core.pipeline.persist import refresh_governance_findings
 
-                from repowise.core.analysis.health.governance import build_governance_findings
-                from repowise.core.persistence.crud import (
-                    get_decision_health_summary,
-                    get_scored_file_paths,
-                    replace_governance_findings,
-                )
-                from repowise.core.persistence.models import DecisionRecord
-
-                _dr = await session.execute(
-                    _sel_dec(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
-                )
-                _decisions = list(_dr.scalars().all())
-                _summary = await get_decision_health_summary(session, repo_id)
-                _gov = build_governance_findings(
-                    health_summary=_summary,
-                    decisions=_decisions,
-                    scored_paths=await get_scored_file_paths(session, repo_id),
-                )
-                await replace_governance_findings(session, repo_id, _gov)
+                # The health step below finalizes the refactoring queue.
+                await refresh_governance_findings(session, repo_id, recompose_queue=False)
             except Exception as exc:
                 _skip("Governance findings", exc)
             finally:
@@ -1431,6 +1414,7 @@ async def _rescore_health_from_db(
         from repowise.core.persistence.models import GitMetadata, HealthFinding
         from repowise.core.pipeline.persist import (
             persist_graph_nodes,
+            refresh_governance_findings,
             save_full_health_report,
         )
         from repowise.core.pipeline.resume.rehydrate import (
@@ -1531,6 +1515,12 @@ async def _rescore_health_from_db(
             await save_full_health_report(
                 session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
             )
+            # That writer replaced every open finding, the governance ones too,
+            # and only the governance pass produces those.
+            try:
+                await refresh_governance_findings(session, repo_id)
+            except Exception as exc:
+                console.print(f"[yellow]Governance findings skipped: {exc}[/yellow]")
             # Rows for the files blamed above, so the next re-score reads them.
             if report.function_blame_rows:
                 await upsert_git_function_blame_bulk(session, repo_id, report.function_blame_rows)

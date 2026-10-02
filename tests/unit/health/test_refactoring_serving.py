@@ -275,13 +275,14 @@ _FILTERS: list[dict[str, Any]] = [
 
 
 def _seed_rows(repository_id: str) -> list[Any]:
+    from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
     from repowise.core.persistence.models import RefactoringOpportunity
 
     return [
         RefactoringOpportunity(
             repository_id=repository_id,
             opportunity_id=f"refop_{i}",
-            refactoring_model_version=1,
+            refactoring_model_version=REFACTORING_MODEL_VERSION,
             rank_position=i,
             queue_position=_QUEUE[i],
             rank_score=1.0 / (i + 1),
