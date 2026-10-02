@@ -49,7 +49,7 @@ from .constants import (
     never_flag_path,
 )
 from .contract_methods import is_com_method_implementation, is_contract_method
-from .csharp_reachability import build_csharp_named_files
+from .csharp_reachability import build_csharp_named_files, build_csharp_named_types
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
@@ -57,6 +57,7 @@ from .dynamic_markers import (
 )
 from .entry_shape import clamp_entry_shaped, drop_program_entries
 from .file_reachability import (
+    CSHARP_SUFFIX,
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
@@ -73,6 +74,7 @@ from .name_occurrences import (
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .published_api import demote_published_api
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
@@ -966,8 +968,10 @@ class DeadCodeAnalyzer:
             if on_step:
                 on_step("zombie_packages")
 
-        # First: a C/C++ name written outside its declaration is a use, which
-        # settles the finding before any clamp re-scores it.
+        # First: a C# type another file in its scope names is used, and a
+        # C/C++ name written outside its declaration is a use. Both settle the
+        # finding before any clamp re-scores it.
+        findings = self._drop_csharp_named_exports(findings)
         findings = drop_preprocessed_named_elsewhere(
             findings,
             self._source_map,
@@ -997,6 +1001,13 @@ class DeadCodeAnalyzer:
             findings, self._source_map, self._public_top_level_names(findings)
         )
 
+        findings = demote_published_api(
+            findings,
+            self._published_api_languages(findings, type_names),
+            repo_root=self._repo_root,
+            dotnet_index=self._dotnet_index,
+        )
+
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
         findings = [f for f in findings if f.confidence >= min_conf]
@@ -1004,6 +1015,54 @@ class DeadCodeAnalyzer:
         return DeadCodeReport.from_findings(
             findings, hidden_below_threshold=hidden_below_threshold
         )
+
+    def _drop_csharp_named_exports(
+        self, findings: list[DeadCodeFindingData]
+    ) -> list[DeadCodeFindingData]:
+        """Drop C# unused exports whose type a file that can see it names.
+
+        The symbol-level counterpart of the file rescue in
+        :func:`build_csharp_named_files`: a C# type is used from its own
+        namespace with no import, so "no importer" says nothing about it.
+        Returns a new list.
+        """
+        wanted: dict[str, set[str]] = {}
+        for f in findings:
+            if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX):
+                wanted.setdefault(f.file_path, set()).add(f.symbol_name or "")
+        if not wanted:
+            return findings
+        named = build_csharp_named_types(
+            self.graph,
+            self._source_map,
+            wanted,
+            dotnet_index=self._dotnet_index,
+            repo_root=self._repo_root,
+        )
+        return [
+            f
+            for f in findings
+            if f.kind is not DeadCodeKind.UNUSED_EXPORT or (f.file_path, f.symbol_name) not in named
+        ]
+
+    def _published_api_languages(
+        self, findings: list[DeadCodeFindingData], type_names: dict[str, frozenset[str]]
+    ) -> dict[str, str]:
+        """Language of each file whose finding is about public API.
+
+        Every unused export is; an unreachable file only when it declares a
+        public type (*type_names*).
+        """
+        files = {
+            f.file_path
+            for f in findings
+            if f.kind is DeadCodeKind.UNUSED_EXPORT or type_names.get(f.file_path)
+        }
+        return {
+            path: self.graph.nodes[path].get("language", "")
+            for path in files
+            if self.graph.has_node(path)
+        }
 
     # ------------------------------------------------------------------
     # Detection methods

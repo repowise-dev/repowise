@@ -241,6 +241,76 @@ public static class CatalogExtensions {
 # ---------------------------------------------------------------------------
 
 
+class TestAssemblyScanDiscovery:
+    """A framework-discovered base plus that framework's registration call."""
+
+    def _edges(self, repo: Path, files: dict[str, str]) -> nx.DiGraph:
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return graph
+
+    _CONFIG = (
+        "using Microsoft.EntityFrameworkCore;\n"
+        "public class OrderConfiguration : IEntityTypeConfiguration<Order> {\n"
+        "    public void Configure(EntityTypeBuilder<Order> b) {}\n}\n"
+    )
+
+    def test_ef_configuration_is_wired_from_the_assembly_scan(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": (
+                    "public class AppDbContext : DbContext {\n"
+                    "    protected override void OnModelCreating(ModelBuilder m) =>\n"
+                    "        m.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);\n}\n"
+                ),
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        edge = graph.get_edge_data("Data/AppDbContext.cs", "Data/Config/OrderConfiguration.cs")
+        assert edge is not None and edge["edge_type"] == "framework"
+
+    def test_no_registration_call_means_no_edge(self, tmp_path: Path) -> None:
+        """The base alone is not evidence: nothing here scans the assembly."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": "public class AppDbContext : DbContext {}\n",
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        assert graph.in_degree("Data/Config/OrderConfiguration.cs") == 0
+
+    def test_fastendpoints_endpoint_and_validator(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddFastEndpoints().SwaggerDocument();\n",
+                "Cart/AddToCart.cs": (
+                    "public class AddToCartEndpoint : Endpoint<AddToCartRequest, CartDto> {}\n"
+                    "public class AddToCartValidator : Validator<AddToCartRequest> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("Program.cs", "Cart/AddToCart.cs")
+
+    def test_a_class_named_like_a_handler_is_not_a_handler(self, tmp_path: Path) -> None:
+        """Name patterns do not count; only the declared base does."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrderHandler.cs": "public class CreateOrderHandler {}\n",
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+
 class TestDotNetDynamicHints:
     def test_di_registration_emits_interface_to_impl(self, tmp_path: Path) -> None:
         (tmp_path / "IUserService.cs").write_text(
