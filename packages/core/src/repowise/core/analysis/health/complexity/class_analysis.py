@@ -13,6 +13,10 @@ a field declared in the class body or to a sibling method, and that no
 parameter or local of the method rebinds. A C# ``partial`` class is never
 scored, because its other parts live in files this pass does not see, and in
 those languages only components that hold state count (``_stateful_groups``).
+A Rust trait impl is not scored either: its methods are the trait's contract.
+A member a class only calls and never reads or writes (``self.x()`` on an
+inherited, abstract or trait-provided method) links the methods that call it
+but is not counted as a field.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from .ast_utils import _IDENTIFIER_SUFFIX, _find_name
 from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
+from .signature import is_trait_impl
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -52,13 +57,14 @@ class _ClassBody(NamedTuple):
 
 
 class _MemberRefs(NamedTuple):
-    """Each method's member references, the methods the class body only
-    declares (a C++ method defined out of line: a call target, never a field),
+    """Each method's member references, the referenced members that are
+    methods rather than fields (a C++ method declared here and defined out of
+    line, a ``self.x()`` the class only calls: call targets, never state),
     and the indices of the methods that are contracts rather than behaviour
     (constructors and overrides)."""
 
     per_method: list[set[str]]
-    out_of_line: frozenset[str]
+    call_targets: frozenset[str]
     contracts: frozenset[int] = frozenset()
 
 
@@ -248,17 +254,30 @@ def _self_member_name(node: Node, lmap: LanguageNodeMap) -> str | None:
     return prop.text.decode("utf-8", errors="replace")
 
 
-def _collect_self_members(method_node: Node, lmap: LanguageNodeMap) -> set[str]:
-    """Set of instance-member names referenced by *method_node*.
+def _is_callee(node: Node, lmap: LanguageNodeMap) -> bool:
+    """Whether *node* is the function a call invokes (``self.x()``)."""
+    parent = node.parent
+    if parent is None or parent.type not in lmap.call_kinds:
+        return False
+    function = parent.child_by_field_name("function")
+    return function is not None and function.id == node.id
+
+
+def _collect_self_members(
+    method_node: Node, lmap: LanguageNodeMap
+) -> tuple[set[str], set[str]]:
+    """Instance-member names *method_node* references, and the subset it
+    reads or writes rather than only calls.
 
     Walks the method body (descending through nested functions/lambdas,
     which close over the same instance) but stops at nested class
     definitions. Both field reads and method calls reduce to a member
-    name here — both are evidence two methods touch the same thing.
+    name here: both are evidence two methods touch the same thing.
     """
     members: set[str] = set()
+    read: set[str] = set()
     if not lmap.self_identifiers or not lmap.member_access_kinds:
-        return members
+        return members, read
     stack: list[Node] = list(method_node.children)
     while stack:
         node = stack.pop()
@@ -268,9 +287,22 @@ def _collect_self_members(method_node: Node, lmap: LanguageNodeMap) -> set[str]:
             name = _self_member_name(node, lmap)
             if name:
                 members.add(name)
+                if not _is_callee(node, lmap):
+                    read.add(name)
         for child in node.children:
             stack.append(child)
-    return members
+    return members, read
+
+
+def _explicit_refs(method_nodes: list[Node], lmap: LanguageNodeMap) -> _MemberRefs:
+    """Each method's ``self.x`` references. A member no method reads or
+    writes, only calls, is a method the class gets from elsewhere (a base
+    class, an abstract declaration, a trait default): a call target, never
+    this class's state."""
+    pairs = [_collect_self_members(node, lmap) for node in method_nodes]
+    referenced: set[str] = set().union(*(members for members, _ in pairs))
+    read: set[str] = set().union(*(names for _, names in pairs))
+    return _MemberRefs([members for members, _ in pairs], frozenset(referenced - read))
 
 
 def _foreign_member_id(node: Node, lmap: LanguageNodeMap) -> int | None:
@@ -375,9 +407,9 @@ def _class_member_refs(
     it. A static method has no instance: a bare name in it (an object
     initializer in a factory) is never this object's state.
     """
-    explicit = [_collect_self_members(node, lmap) for node in body.methods]
+    explicit = _explicit_refs(body.methods, lmap)
     if not lmap.field_decl_kinds:
-        return _MemberRefs(explicit, frozenset())
+        return explicit
     fields: set[str] = set()
     out_of_line: set[str] = set()
     named_decls: list[tuple[Node, list[str]]] = []
@@ -390,10 +422,12 @@ def _class_member_refs(
     links = _member_links(named_decls, body.nested, lmap, declared)
     per_method = [
         _method_refs(node, members, lmap, declared, links)
-        for node, members in zip(body.methods, explicit, strict=True)
+        for node, members in zip(body.methods, explicit.per_method, strict=True)
     ]
+    # A declared field may be read by bare name where ``this->f()`` only calls it.
+    call_targets = out_of_line | (explicit.call_targets - fields)
     return _MemberRefs(
-        per_method, frozenset(out_of_line), _contract_indices(body.methods, method_fcs, class_name)
+        per_method, frozenset(call_targets), _contract_indices(body.methods, method_fcs, class_name)
     )
 
 
@@ -437,8 +471,15 @@ def _stateful_groups(
     return [
         group
         for idxs, group in indexed_groups
-        if len(group.fields) >= 2 and not contracts.issuperset(idxs)
+        if holds_state(group) and not contracts.issuperset(idxs)
     ]
+
+
+def holds_state(group: CohesionGroup) -> bool:
+    """Whether a cohesion component is state of its own: two or more fields.
+    Accessors, setters and counters over one field are how a data class or a
+    builder exposes its state, not a class to extract."""
+    return len(group.fields) >= 2
 
 
 def _tcc(field_sets: list[set[str]]) -> float:
@@ -583,9 +624,9 @@ def _compute_lcom4(
     if not method_nodes:
         return 1, 0, [], 1.0
     if refs is None:
-        refs = _MemberRefs([_collect_self_members(n, lmap) for n in method_nodes], frozenset())
+        refs = _explicit_refs(method_nodes, lmap)
     members_per_method = refs.per_method
-    method_names = {fc.name for fc in method_fcs} | refs.out_of_line
+    method_names = {fc.name for fc in method_fcs} | refs.call_targets
     all_members: set[str] = set().union(*members_per_method)
     field_count = len(all_members - method_names)
 
@@ -628,7 +669,9 @@ def _collect_classes(
         # Keep nodes and FCs aligned (a method missing from the function
         # pass — unusual — drops out of both).
         body = body._replace(methods=[m for m in body.methods if m.id in fc_by_node_id])
-        if "partial" in _decl_words(class_node):
+        # A partial class's other parts live in files this pass does not see;
+        # a trait impl's methods are the trait's, so none can move out.
+        if "partial" in _decl_words(class_node) or is_trait_impl(class_node, lmap):
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
             refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
