@@ -183,6 +183,15 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # Support directories count anywhere, .github included.
     (".github/test-data/expected.json", None, "support"),
     (".github/actions/notify/__snapshots__/Button.snap", None, "support"),
+    # C/C++ helpers shared by tests (abseil, leveldb)
+    ("absl/strings/cord_test_helpers.h", None, "test"),
+    ("absl/random/internal/distribution_test_util.cc", None, "test"),
+    ("absl/log/log_basic_test_impl.inc", None, "test"),
+    ("util/env_posix_test_helper.h", None, "test"),
+    ("absl/strings/str_cat.h", None, ""),
+    # a crate's shared test module
+    ("crates/searcher/src/testutil.rs", None, "support"),
+    ("crates/searcher/src/searcher/util.rs", None, ""),
 )
 
 

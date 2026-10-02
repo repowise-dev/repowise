@@ -450,3 +450,28 @@ def test_build_rs_under_src_is_a_dead_code_root_but_keeps_its_origin() -> None:
     assert code_origin("src/bootstrap/build.rs") == "production"
     assert code_origin("crates/cli/src/commands/build.rs") == "production"
     assert not is_build_file("src/build.rs")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # A deps/ directory holding a library is a vendored copy.
+        ("deps/wslay/lib/wslay_event.c", "vendored"),
+        ("internal/warpc/deps/parson/parson.c", "vendored"),
+        ("deps/deps.go", "production"),  # hugo's own package named deps
+        ("src/deps.py", "production"),
+        # Benchmarks beside the code they measure are tooling.
+        ("absl/synchronization/mutex_benchmark.cc", "tooling"),
+        ("absl/random/internal/randen_benchmarks.cc", "tooling"),
+        ("absl/synchronization/mutex.cc", "production"),
+        ("src/benchmark_runner.py", "production"),
+        # Cargo builds every crate's examples/ as example targets.
+        ("crates/grep/examples/simplegrep.rs", "docs_example"),
+        ("apps/examples/desktop-app/src-tauri/src/main.rs", "docs_example"),
+        ("crates/core/src/examples/registry.rs", "production"),  # a module of the crate
+        ("pkg/x/examples/a.py", "production"),  # other languages: root only
+        ("src/main/kotlin/org/example/App.kt", "production"),
+    ],
+)
+def test_deps_benchmarks_and_cargo_examples(path: str, expected: str) -> None:
+    assert code_origin(path) == expected

@@ -247,6 +247,10 @@ _VENDORED_DIR_TOKENS = frozenset(
 # monorepo's own libraries as it is a copy of someone else's code.
 _VENDORED_ROOT_TOKENS = frozenset({"external", "externals"})
 _NATIVE_TREE = "native"
+# A ``deps/`` directory holding a library directory (aria2's ``deps/wslay/``,
+# hugo's ``internal/warpc/deps/parson/``). A file directly in ``deps/`` is the
+# repository's own (hugo's ``deps/deps.go``).
+_DEPS_DIR = "deps"
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
 
 
@@ -259,6 +263,8 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
     if any(
         d == _NATIVE_TREE and dirs[i + 1] in _VENDORED_ROOT_TOKENS for i, d in enumerate(dirs[:-2])
     ):
+        return True
+    if _DEPS_DIR in dirs[:-1]:
         return True
     return lowered_name.endswith(_MINIFIED_SUFFIXES)
 
@@ -461,9 +467,28 @@ def _is_example_dir(segment: str) -> bool:
     return segment in _EXAMPLE_TOKENS or segment.startswith(_TUTORIAL_PREFIX)
 
 
-def _is_docs_example(dirs: list[str]) -> bool:
+# Example directories a build tool compiles as examples at any depth, by file
+# suffix: Cargo builds every crate's ``examples/`` as example targets
+# (ripgrep's ``crates/grep/examples/``). Outside a ``src/`` tree only: under
+# it, ``examples`` is a module of the crate.
+_TOOL_EXAMPLE_DIRS = {".rs": "examples"}
+_SOURCE_ROOT = "src"
+
+
+def _is_tool_example(name: str, dirs: list[str]) -> bool:
+    example_dir = _TOOL_EXAMPLE_DIRS.get(PurePosixPath(name).suffix.lower())
+    if example_dir is None or example_dir not in dirs:
+        return False
+    return _SOURCE_ROOT not in dirs[: dirs.index(example_dir)]
+
+
+def _is_docs_example(name: str, dirs: list[str]) -> bool:
     # Anything under a docs root already counts, examples beneath it included.
-    return any(d in _DOCS_ROOT_TOKENS for d in dirs) or bool(dirs and _is_example_dir(dirs[0]))
+    return (
+        any(d in _DOCS_ROOT_TOKENS for d in dirs)
+        or bool(dirs and _is_example_dir(dirs[0]))
+        or _is_tool_example(name, dirs)
+    )
 
 
 # No ``/cli/`` rule: a CLI's source ships and its findings are real work (only
@@ -499,6 +524,9 @@ _TOOLING_ROOT_DIRS = frozenset(
 _MIGRATION_DIR = "migrations"
 _MIGRATION_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
 _TOOLING_ROOT_NAMES = frozenset({"fabfile.py"})
+# Benchmarks kept beside the code they measure (abseil's
+# ``mutex_benchmark.cc``), not in a benchmarks directory.
+_TOOLING_STEM_SUFFIXES = ("_benchmark", "_benchmarks")
 # Lint, test and transpiler configs. Bundler configs are build files (above).
 _TOOLING_NAME_RE = re.compile(
     r"^(?:eslint\.config|jest\.config|vitest\.config|babel\.config|karma\.conf)\.[cm]?[jt]s$"
@@ -566,6 +594,10 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
         or _is_migration_dir(dirs)
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
+        or (
+            name.lower().endswith(_code_suffixes())
+            and PurePosixPath(name).stem.lower().endswith(_TOOLING_STEM_SUFFIXES)
+        )
     )
 
 
@@ -617,7 +649,7 @@ def _maintained_origin(
         return "build"
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
-    if _is_docs_example(dirs):
+    if _is_docs_example(name, dirs):
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
