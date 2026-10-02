@@ -527,6 +527,16 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_string.go",
     "*zz_generated*.go",
     "*bindata.go",
+    # ---- PHP conventions -------------------------------------------------
+    # Lint and refactoring tools load their config by file name.
+    "rector.php",
+    "*/rector.php",
+    "ecs.php",
+    "*/ecs.php",
+    ".php-cs-fixer.php",
+    "*/.php-cs-fixer.php",
+    ".php-cs-fixer.dist.php",
+    "*/.php-cs-fixer.dist.php",
     # ---- JavaScript conventions ------------------------------------------
     # Bundles and minified artifacts are served to the browser, not imported.
     "*.bundle.js",

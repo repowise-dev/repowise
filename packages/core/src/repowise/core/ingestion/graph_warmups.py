@@ -334,6 +334,37 @@ def _warmup_rust(ctx: ResolverContext) -> None:
                 node["is_reachability_root"] = True
 
 
+def _warmup_php(ctx: ResolverContext) -> None:
+    """Stamp the PHP files a tool loads with no importer as reachability roots.
+
+    Composer's autoloader loads every file a ``composer.json`` lists in
+    ``autoload.files`` on every run (a ``helpers.php`` of global functions),
+    and PHPStan alone runs a type-test corpus (:mod:`.phpstan`).
+    """
+    from .composer import repo_composer_manifests
+    from .phpstan import type_test_files
+
+    graph = getattr(ctx, "graph", None)
+    repo_path = getattr(ctx, "repo_path", None)
+    if graph is None:
+        return
+    manifests = repo_composer_manifests(ctx)
+    roots = {path for manifest in manifests for path in manifest.files}
+    if repo_path is not None:
+        parsed = getattr(ctx, "parsed_files", None) or {}
+        source_map = getattr(ctx, "source_map", None)
+        roots |= type_test_files(
+            repo_path,
+            manifests,
+            (path for path, pf in parsed.items() if pf.file_info.language == "php"),
+            lambda path: _read_warmup_source(path, parsed[path], source_map),
+        )
+    for path in roots:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
+
+
 def _warmup_go(ctx: ResolverContext) -> None:
     """Build the Go package index and stamp ``is_entry_point`` on every
     ``package main`` file declaring ``func main()``. Go's entry convention
@@ -551,6 +582,7 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
+    "php": ("graph.composer_files", _warmup_php),
     "dart": ("graph.dart_shells", _warmup_dart),
     # Registered under both tags: a repo of loose .gd scripts has no scenes,
     # and an addon distributed as scenes plus a project.godot may carry no
