@@ -188,7 +188,7 @@ def test_duplicated_assertion_block_needs_five_real_checks():
     ctx = _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
     assert d.detect(ctx) == []
     # Five assertions, but a bare null / flag check does not count as one.
-    flagged = ["assertNotNull(result);", *short]
+    flagged = ["assert result is not None", *short]
     sources = {"tests/test_x.py": _lines(flagged, 12), "tests/test_y.py": _lines(flagged, 7)}
     fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
     ctx = _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
