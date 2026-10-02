@@ -8,6 +8,16 @@ overlap an assertion block on a **test file**, and only when the block's
 text, whitespace aside, really appears in the partner region. Clones match
 on token shape, so without that check two asserts on different values pair up.
 
+A block must hold at least ``_MIN_CHECKS`` assertions, not counting a bare
+null or boolean check on a plain name (``assertNotNull(x)``). Shorter copies,
+like ``assertFalse(plugin.isEnabled()); assertNull(plugin.extender());`` or
+the three-line "found it, it has this name, it has N buckets" check, are how
+two tests of one fixture read, not a helper waiting to be extracted; on
+elasticsearch they were nine in ten of what the marker reported. From five
+real checks up, a verbatim copy is a response-shape check worth one helper.
+A copy inside one file still counts: the same five checks repeated in two
+tests of one class are as much a missing helper as copies across files.
+
 It complements ``dry_violation`` (which flags clones anywhere, weighted by
 co-change): this one is scoped to test assertions and lands in the milder
 ``test_quality`` category so a duplicated test never tanks a file's score.
@@ -15,9 +25,32 @@ co-change): this one is scoped to test assertions and lands in the milder
 
 from __future__ import annotations
 
+import re
+
 from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
+
+_MIN_CHECKS = 5
+
+# One whole line that only checks a bare name is set, null or true:
+# ``assertNotNull(x);``, ``assertTrue(ok)``, ``assertThat(x, notNullValue());``,
+# ``Assert.IsNotNull(x);``, Python's ``assert x is not None``. Matched on the
+# whitespace-collapsed line, so a check that spans lines never matches and
+# counts as a real one.
+_FLAG_CHECK_RE = re.compile(
+    r"^(?=[\w.]*assert)[\w.]+\s*\(\s*!?\s*\w+\s*(?:,\s*\w+\(\s*\))?\s*\)\s*;?$"
+    r"|^assert\s+(?:not\s+)?\w+(?:\s+is\s+(?:not\s+)?None)?$",
+    re.IGNORECASE,
+)
+
+
+def _real_checks(lines: list[str], start: int, end: int, count: int) -> int:
+    """*count* assertions in lines ``start..end`` less the bare flag checks."""
+    flags = sum(
+        1 for line in lines[max(start, 1) - 1 : end] if _FLAG_CHECK_RE.match(" ".join(line.split()))
+    )
+    return count - flags
 
 
 def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -59,10 +92,12 @@ class DuplicatedAssertionBlockDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         if not is_test_file(ctx.file_path) or not ctx.clones:
             return []
+        own_lines = ctx.clone_sources.get(ctx.file_path) or []
         blocks = [
             (start, end)
             for fn in ctx.all_functions
-            for start, end, _count in fn.assertion_blocks
+            for start, end, count in fn.assertion_blocks
+            if _real_checks(own_lines, start, end, count) >= _MIN_CHECKS
         ]
         if not blocks:
             return []
