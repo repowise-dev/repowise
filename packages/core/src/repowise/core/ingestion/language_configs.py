@@ -90,6 +90,10 @@ class LanguageConfig:
     # the edge they produce is ``references`` rather than ``calls``.
     reference_call_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Children of a declaration that hold its keyword modifiers (C#
+    # ``modifier``, Kotlin ``modifiers``), read into ``Symbol.modifiers``.
+    modifier_node_types: frozenset[str] = field(default_factory=frozenset)
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
@@ -134,6 +138,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
         visibility_fn=ts_visibility,
+        modifier_node_types=frozenset({"override_modifier"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
         declaration_node_types=frozenset({"function_signature", "method_signature"}),
@@ -271,6 +276,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import"],
         export_node_types=[],
         visibility_fn=kotlin_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "object_declaration"}),
     ),
@@ -309,6 +315,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["using_directive", "global_using_directive"],
         export_node_types=[],
         visibility_fn=csharp_visibility,
+        modifier_node_types=frozenset({"modifier"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {
@@ -338,6 +345,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["imports_statement"],
         export_node_types=[],
         visibility_fn=vbnet_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {
@@ -362,6 +370,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=swift_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
     ),
@@ -409,6 +418,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=scala_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
     ),

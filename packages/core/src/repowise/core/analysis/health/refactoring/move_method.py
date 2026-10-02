@@ -44,12 +44,14 @@ was handed looked like it envied the collector.
 The ``calls`` graph does not see field reads, so own-class use is also read
 off the class's cohesion components: a method that shares a component holding
 fields works on its own class's state and stays. A method that fulfils a
-contract (``@Override``, a member its base class or interface declares, a
-runtime contract name such as ``toString``) cannot move either, since the
-type it overrides for is the reason it exists. Building the target through a
-static factory (``OperationResult.Ok()``, any target member returning the
-target type) counts as instantiating it, and an interface, an exception type
-or a ``*Util``/``*Helper`` class is never a home for instance behaviour.
+contract (``@Override``, an ``override`` / ``virtual`` / ``abstract``
+modifier, a member its base class or interface declares, a runtime contract
+name such as ``toString``) cannot move either, since the type it overrides for
+is the reason it exists. Building the target through a static factory
+(``OperationResult.Ok()``, any target member returning the target type) counts
+as instantiating it, and an interface, an exception type, a ``*Util``/``*Helper``
+class or a C# ``static class`` is never a home for instance behaviour. The
+other ``partial`` fragments of the method's own class are its own class.
 """
 
 from __future__ import annotations
@@ -89,6 +91,17 @@ _NON_TARGET_KINDS = frozenset({"interface", "trait", "protocol"})
 _NON_TARGET_SUFFIXES = ("Exception", "Error", "Util", "Utils", "Helper", "Helpers")
 # Java ``@Override``, Python ``@override`` / ``@typing.override``.
 _OVERRIDE_DECORATOR = re.compile(r"@(?:[\w.]+\.)?[Oo]verride\b")
+# Keyword modifiers (``Symbol.modifiers``) that bind a member to a type
+# hierarchy: it overrides a base member (C#, Kotlin, Swift, Scala, TypeScript
+# ``override``; VB.NET ``Overrides``) or is declared for subclasses to
+# override (``virtual`` / ``abstract``; VB.NET ``Overridable`` / ``MustOverride``).
+_CONTRACT_MODIFIERS = frozenset(
+    {"override", "overrides", "virtual", "overridable", "abstract", "mustoverride"}
+)
+# The class modifier that makes a type instance-less, per language: a C#
+# ``static class`` holds only static helpers, like a ``*Util`` class. Java's
+# ``static`` nested class is instantiable, so the keyword alone is not enough.
+_STATIC_HOLDER_MODIFIER = {"csharp": "static"}
 # Factory-shaped names: a member returning its own class under one of these
 # names builds an instance (``OperationResult.Ok()``, ``Foo.of(...)``); a
 # getter such as ``parent() -> T`` does not.
@@ -133,6 +146,22 @@ def _ancestors(graph: Any, class_id: str) -> set[str]:
     return seen
 
 
+def _partial_fragments(graph: Any, file_path: str, class_name: str) -> set[str]:
+    """The class ids of *class_name*'s ``partial`` fragments in other files.
+
+    The graph links co-fragment files with ``partial_class`` import edges
+    naming the type; every fragment is the same class, so none is foreign.
+    """
+    if file_path not in graph:
+        return set()
+    return {
+        f"{other}::{class_name}"
+        for _u, other, data in graph.out_edges(file_path, data=True)
+        if data.get("hint_source") == "partial_class"
+        and class_name in (data.get("imported_names") or ())
+    }
+
+
 def _class_name(graph: Any, class_id: str) -> str:
     return (_node(graph, class_id) or {}).get("name") or class_id.rsplit("::", 1)[-1]
 
@@ -151,11 +180,13 @@ def _class_members(graph: Any, class_id: str, cache: dict[str, set[str]]) -> set
 
 
 def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool:
-    """Whether the method fulfils a contract: an ``@Override`` annotation, a
-    runtime contract name, or a member an ancestor class or interface also
-    declares."""
+    """Whether the method fulfils a contract: an ``@Override`` annotation or
+    an ``override`` / ``virtual`` / ``abstract`` modifier, a runtime contract
+    name, or a member an ancestor class or interface also declares."""
     name = data.get("name") or ""
     if any(_OVERRIDE_DECORATOR.search(d) for d in data.get("decorators") or ()):
+        return True
+    if _CONTRACT_MODIFIERS.intersection(data.get("modifiers") or ()):
         return True
     if is_contract_method(name, data.get("kind"), language):
         return True
@@ -196,8 +227,12 @@ def _builds(graph: Any, class_id: str, accessed: set[str]) -> bool:
 
 
 def _never_a_target(graph: Any, class_id: str) -> bool:
-    """An interface, an exception type or a utility class."""
-    if (_node(graph, class_id) or {}).get("kind") in _NON_TARGET_KINDS:
+    """An interface, an exception type or a utility class (by name, or a C#
+    ``static class``)."""
+    node = _node(graph, class_id) or {}
+    if node.get("kind") in _NON_TARGET_KINDS:
+        return True
+    if _STATIC_HOLDER_MODIFIER.get(node.get("language") or "") in (node.get("modifiers") or ()):
         return True
     names = [_class_name(graph, class_id)]
     names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]
@@ -357,14 +392,14 @@ class MoveMethodDetector(RefactoringDetector):
         if not accessed:
             return None
 
-        own_accessed = accessed_by_class.get(own_class_id, set())
-        own_distinct = len(own_accessed)
+        own_ids = _partial_fragments(graph, ctx.file_path, parent) | {own_class_id}
+        own_distinct = len(set().union(*(accessed_by_class.get(c, ()) for c in own_ids)))
         if own_distinct > _MAX_OWN_MEMBERS:
             return None
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
-        own_and_inherited = _ancestors(graph, own_class_id) | {own_class_id}
+        own_and_inherited = _ancestors(graph, own_class_id) | own_ids
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()

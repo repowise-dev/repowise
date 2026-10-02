@@ -793,6 +793,31 @@ def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
     return []
 
 
+def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
+    """Lowercased keyword modifiers written in *def_node*'s modifier children.
+
+    Keywords are the leaves of those children (C# ``modifier`` > ``override``,
+    Kotlin ``modifiers`` > ``member_modifier`` > ``override``, VB.NET's leaf
+    ``modifier`` ``Overrides``). Annotations and attributes nested among them
+    are skipped: they are decorators, not modifiers.
+    """
+    if not node_types:
+        return ()
+    words: list[str] = []
+    stack = [c for c in reversed(def_node.children) if c.type in node_types]
+    while stack:
+        node = stack.pop()
+        if "annotation" in node.type or "attribute" in node.type:
+            continue
+        if node.child_count == 0:
+            text = _node_text(node, src).strip()
+            if text.isalpha():
+                words.append(text.lower())
+            continue
+        stack.extend(reversed(node.children))
+    return tuple(words)
+
+
 def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
     """Rust: outer attributes (#[...]) are preceding siblings of the item."""
     attrs: list[str] = []
@@ -1639,6 +1664,7 @@ class ASTParser:
             type_parameter_count=(
                 _csharp_type_parameter_count(def_node) if language == "csharp" else None
             ),
+            modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
         )
         return symbol, def_node
 
