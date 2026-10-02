@@ -125,6 +125,7 @@ class TestParityGoldens:
             "src/test/java",
             "src/test/kotlin",
             "src/test/scala",
+            "src/testfixtures",
         )
 
     def test_test_dir_suffixes_union(self) -> None:

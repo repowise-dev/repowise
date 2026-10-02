@@ -68,6 +68,18 @@ _TEST_DIR_TOKENS: frozenset[str] = frozenset(
 # far more often than it names a suite.
 _TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
 
+# The same head written in PascalCase or camelCase, one word with no separator:
+# ``UnitTests/``, ``UITests/``, ``FuzzTests/``, ``AdvancedPaste.UnitTests/``.
+# Plural only, for the reason above (``HitTest/`` is a UI feature), and matched
+# on the original case so ``contests/`` stays one lowercase word.
+_CAMEL_TESTS_HEAD_RE = re.compile(r"[A-Za-z0-9]Tests$")
+
+# Directories that hold whole test projects, each with its own source tree:
+# Gradle QA builds keep integration suites and the plugins they load in
+# ``qa/<project>/src/main``. Only that shape counts; a ``qa/`` module of an
+# application has its sources directly beneath it.
+_TEST_PROJECT_CONTAINERS: frozenset[str] = frozenset({"qa"})
+
 # GitHub's repository-metadata directory; see ``_classify``.
 _REPO_METADATA_DIR = ".github"
 
@@ -248,8 +260,16 @@ def _is_test_dir(
     segments: list[str], original: list[str], filename: str, language: str | None
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
-    rules = _conventions()
-    lang_tokens = rules.lang_dir_tokens.get((language or "").lower(), frozenset())
+    return _has_test_segment(segments, original, filename, language) or _has_test_layout(
+        segments, original
+    )
+
+
+def _has_test_segment(
+    segments: list[str], original: list[str], filename: str, language: str | None
+) -> bool:
+    """Whether one directory's own name says it holds tests."""
+    lang_tokens = _conventions().lang_dir_tokens.get((language or "").lower(), frozenset())
     # ``spec/`` needs corroboration from somewhere: the language declaring the
     # token, a test- or support-shaped filename, or a scaffolding dir beneath it
     # (``spec/support/helper.rb`` is RSpec whatever the filename says, and
@@ -259,15 +279,26 @@ def _is_test_dir(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
-    for seg in segments:
-        if seg in _TEST_DIR_TOKENS:
-            return True
+    for seg, orig in zip(segments, original, strict=True):
         words = _words(seg)
         head = words[-1] if words else ""
-        if head in _TEST_DIR_HEAD_WORDS:
+        if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
             return True
         if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
             return True
+        if _CAMEL_TESTS_HEAD_RE.search(orig):
+            return True
+    return False
+
+
+def _has_test_layout(segments: list[str], original: list[str]) -> bool:
+    """Whether the directories form a known test layout (``src/test/java``)."""
+    rules = _conventions()
+    if any(
+        seg in _TEST_PROJECT_CONTAINERS and segments[i + 2] == "src"
+        for i, seg in enumerate(segments[:-2])
+    ):
+        return True
 
     for needle in rules.dir_paths:
         span = len(needle)
