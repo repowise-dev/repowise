@@ -236,12 +236,8 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     return out
 
 
-def _count_parameters(fn_node: Node) -> int:
-    """Best-effort parameter-list size for *fn_node*.
-
-    Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
-    children. Returns 0 when no parameter list is found.
-    """
+def _parameter_list(fn_node: Node) -> Node | None:
+    """The node holding *fn_node*'s declared parameters, or ``None``."""
     params = fn_node.child_by_field_name("parameters")
     if params is None:
         for child in fn_node.children:
@@ -263,6 +259,16 @@ def _count_parameters(fn_node: Node) -> int:
         header = fn_node.child_by_field_name("header")
         if header is not None:
             params = header.child_by_field_name("args")
+    return params
+
+
+def _count_parameters(fn_node: Node) -> int:
+    """Best-effort parameter-list size for *fn_node*.
+
+    Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
+    children. Returns 0 when no parameter list is found.
+    """
+    params = _parameter_list(fn_node)
     if params is None:
         return 0
     count = 0
@@ -299,6 +305,19 @@ def _count_parameters(fn_node: Node) -> int:
         if child.is_named:
             count += 1
     return count
+
+
+def declaration_head(fn_node: Node, body: Node, source: bytes) -> str:
+    """The declaration text before the parameter list: modifiers, annotations
+    and attributes, where the grammar keeps them inside the declaration (Java,
+    Kotlin, C#, TypeScript). Empty when the declaration starts at its name."""
+    head_end = next(
+        (c.start_byte for c in fn_node.children if "parameter" in c.type or "body" in c.type),
+        body.start_byte if body is not fn_node else fn_node.start_byte,
+    )
+    if head_end <= fn_node.start_byte:
+        return ""
+    return source[fn_node.start_byte : head_end].decode("utf-8", errors="replace")
 
 
 def _identifier_chain(node: Node) -> list[str]:

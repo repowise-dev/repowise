@@ -2,12 +2,24 @@
 
 A proxy for the OOP smell: when a function signature carries 5+ raw
 parameters, the call sites usually pass strings/ints/bools that *should*
-be a value object. We don't try to inspect parameter *types* (too much
-language-specific machinery) — the raw count is a strong-enough
-correlation in practice.
+be a value object. Where the signature declares types, the walker counts
+how many are scalars or strings (``complexity/signature.py``).
 
-Constructors (`__init__`, `init`) get a small grace allowance — wide
-dataclass-style ctors are an idiomatic pattern, not a smell.
+Constructors get a small grace allowance — wide dataclass-style ctors are an
+idiomatic pattern, not a smell. A constructor is known by its node kind or by
+carrying its type's name, so a Java or C# constructor gets it too.
+
+Two narrowings keep the finding to signatures someone can actually fix:
+
+- A signature set by another declaration is skipped: an override, an
+  interface or trait implementation, a native binding. Its parameters belong
+  to the base method, the interface or the foreign ABI, and an SPI hook with
+  nine parameters is not this method's smell.
+- When the signature declares types, a majority of its parameters must be
+  scalars or strings. A wide list of rich domain types is already the value
+  objects this smell asks for. An untyped signature (unannotated Python or
+  JavaScript) has no types to read and is judged on the count alone, as
+  before.
 
 A wide signature only counts as obsession in a file with enough substance to
 *have* a design (`_MIN_FILE_NLOC`). In a tiny module a long parameter list is
@@ -26,7 +38,6 @@ from .base import BiomarkerResult, FileContext
 
 _PARAM_THRESHOLD = 5
 _CTOR_GRACE = 2  # constructors get +2 free params before the smell trips
-_CTOR_NAMES = frozenset({"__init__", "init", "constructor"})
 # A wide signature in a module below this many non-blank lines is idiomatic
 # (config/builder/DTO), not a design smell — empirically anti-predictive of
 # defects on small files. Tuned on the defect benchmark's small-file size band.
@@ -44,12 +55,15 @@ class PrimitiveObsessionDetector:
         for fn in ctx.all_functions:
             # A test case's parameters are fixtures the runner injects, not a
             # signature anyone calls.
-            if fn.is_test_case:
+            if fn.is_test_case or fn.signature_fixed:
                 continue
             threshold = _PARAM_THRESHOLD
-            if fn.name in _CTOR_NAMES:
+            if fn.is_constructor:
                 threshold += _CTOR_GRACE
             if fn.param_count < threshold:
+                continue
+            primitive = fn.primitive_param_count
+            if primitive is not None and primitive * 2 <= fn.param_count:
                 continue
             severity = (
                 Severity.HIGH
@@ -67,8 +81,12 @@ class PrimitiveObsessionDetector:
                     line_end=fn.end_line,
                     details={
                         "param_count": fn.param_count,
+                        "primitive_param_count": primitive,
                     },
-                    reason=f"long parameter list: {fn.name} takes {fn.param_count} parameters",
+                    reason=(
+                        f"long parameter list: {fn.name} takes {fn.param_count} parameters"
+                        + (f", {primitive} of them scalars or strings" if primitive else "")
+                    ),
                 )
             )
         return out

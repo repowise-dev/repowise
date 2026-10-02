@@ -48,6 +48,8 @@ from .ast_utils import (
     _collect_function_nodes,
     _count_parameters,
     _find_function_entry_name,
+    _parameter_list,
+    declaration_head,
 )
 from .class_analysis import _collect_classes
 from .cyclomatic import _walk_function_body
@@ -74,6 +76,7 @@ from .models import (
 # which imports it directly from this module.
 from .nloc import _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
+from .signature import is_constructor, is_signature_fixed, primitive_param_count
 from .test_case import is_test_case
 
 __all__ = [
@@ -184,6 +187,11 @@ def walk_file(
             nloc=scan.lines.count(body, source),
             bumps=bumps,
             param_count=_count_parameters(fn_node),
+            primitive_param_count=primitive_param_count(_parameter_list(fn_node)),
+            is_constructor=is_constructor(fn_node, name),
+            signature_fixed=is_signature_fixed(
+                fn_node, declaration_head(fn_node, body, source), language
+            ),
             complex_conditions=conditions,
             assertion_blocks=assertion_blocks,
             assertion_count=assertion_count,

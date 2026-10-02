@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from .ast_utils import declaration_head
+
 if TYPE_CHECKING:
     from tree_sitter import Node
 
@@ -62,15 +64,10 @@ def _preceding_text(anchor: Node) -> list[str]:
 
 def _declaration_text(fn_node: Node, body: Node, source: bytes) -> list[str]:
     texts: list[str] = []
-    # The head: modifiers, annotations and attributes the grammar keeps inside
-    # the declaration (Java, Kotlin, C#). It stops at the parameters, whose
-    # inline types can carry a JSDoc ``@deprecated`` for one option.
-    head_end = next(
-        (c.start_byte for c in fn_node.children if "parameter" in c.type or "body" in c.type),
-        body.start_byte if body is not fn_node else fn_node.start_byte,
-    )
-    if head_end > fn_node.start_byte:
-        texts.append(source[fn_node.start_byte : head_end].decode("utf-8", errors="replace"))
+    # The head stops at the parameters, whose inline types can carry a JSDoc
+    # ``@deprecated`` for one option.
+    if head := declaration_head(fn_node, body, source):
+        texts.append(head)
     anchor = fn_node
     while anchor.parent is not None and anchor.parent.type in _WRAPPER_KINDS:
         anchor = anchor.parent

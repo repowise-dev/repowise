@@ -83,12 +83,13 @@ def test_primitive_obsession_flags_wide_signature():
 
 
 def test_primitive_obsession_grace_for_constructors():
-    # 6 params on a regular fn fires; on __init__ it doesn't (grace = 2).
+    # 6 params on a regular fn fires; on a constructor it doesn't (grace = 2).
     regular = FunctionComplexity(
         "build", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6
     )
     ctor = FunctionComplexity(
-        "__init__", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6
+        "__init__", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6,
+        is_constructor=True,
     )
     d = PrimitiveObsessionDetector()
     assert d.detect(_ctx([regular, _FILLER]))
@@ -112,3 +113,28 @@ def test_primitive_obsession_skips_tiny_files():
     assert PrimitiveObsessionDetector().detect(_ctx([fn])) == []
     # The same wide signature in a substantial module still fires.
     assert PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER]))
+
+
+def test_primitive_obsession_skips_fixed_signatures():
+    fn = FunctionComplexity(
+        "getRestHandlers", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=9,
+        signature_fixed=True,
+    )
+    assert PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER])) == []
+
+
+def test_primitive_obsession_needs_mostly_primitive_params_when_typed():
+    def fn(primitive: int | None) -> FunctionComplexity:
+        return FunctionComplexity(
+            "run", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6,
+            primitive_param_count=primitive,
+        )
+
+    d = PrimitiveObsessionDetector()
+    # Three of six is not a majority: rich types already group the values.
+    assert d.detect(_ctx([fn(3), _FILLER])) == []
+    out = d.detect(_ctx([fn(4), _FILLER]))
+    assert out and out[0].details["primitive_param_count"] == 4
+    assert "4 of them scalars or strings" in out[0].reason
+    # An untyped signature has nothing to count and is judged on size alone.
+    assert d.detect(_ctx([fn(None), _FILLER]))
