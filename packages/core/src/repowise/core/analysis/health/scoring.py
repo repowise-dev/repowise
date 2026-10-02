@@ -23,7 +23,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from .complexity.languages import has_health_dialect
 from .models import HealthFileMetricData, HealthFindingData, Severity
 from .rows import field, scored_rows, split_tests, split_unscored
 
@@ -806,16 +805,16 @@ def _rounded(value: float | None) -> float | None:
 
 
 def file_score_fields(
-    language: str | None, scores: dict[str, float | None], findings: Iterable[Any]
+    analysed: bool, scores: dict[str, float | None], findings: Iterable[Any]
 ) -> dict[str, float | None]:
     """The score columns one file stores, from its scored findings.
 
-    A file whose language has no health dialect gets ``None`` in every one:
-    nothing walked it, so a number would be a default dressed as a measurement
-    (a mechanical 10.0). Its findings still stand, since the history markers
-    read git rather than the parse.
+    A file health never walked (*analysed* false: its language has no dialect,
+    see ``has_health_dialect``) gets ``None`` in every one, since a number
+    would be a default dressed as a measurement (a mechanical 10.0). Its
+    findings still stand: the history markers read git rather than the parse.
     """
-    if not has_health_dialect(language):
+    if not analysed:
         return dict.fromkeys(SCORE_FIELDS)
     structure, history = deduction_split(findings)
     return {

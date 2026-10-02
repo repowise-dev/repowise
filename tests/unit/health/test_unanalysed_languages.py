@@ -87,8 +87,8 @@ def test_a_python_file_still_scores(tmp_path) -> None:
 
 def test_score_fields_are_all_none_without_a_dialect() -> None:
     scores = {"defect": 7.5, "maintainability": 8.0, "performance": 10.0}
-    assert file_score_fields("php", scores, []) == dict.fromkeys(SCORE_FIELDS)
-    fields = file_score_fields("python", scores, [])
+    assert file_score_fields(False, scores, []) == dict.fromkeys(SCORE_FIELDS)
+    fields = file_score_fields(True, scores, [])
     assert fields["score"] == 7.5 and fields["maintainability_score"] == 8.0
 
 
@@ -173,3 +173,28 @@ def test_get_health_names_an_unscored_target_for_what_it_is(tmp_path) -> None:
         unanalysed_paths={"Big.php"},
     )
     assert out == [{"target": "Big.php", "reason": "language_not_supported"}]
+
+
+def _refresh(language: str | None, stored_score: float | None):
+    from repowise.core.analysis.health.history_refresh import refresh_history
+
+    metric = _metric("src/a.py", stored_score)
+    languages = {} if language is None else {"src/a.py": language}
+    (out,) = refresh_history(
+        metrics=[metric],
+        findings_by_path={},
+        git_meta_by_path={"src/a.py": {"commit_count_90d": 1}},
+        languages=languages,
+    )
+    return out
+
+
+def test_the_history_refresh_nulls_a_language_with_no_dialect() -> None:
+    assert _refresh("php", 10.0).score is None
+
+
+def test_a_file_with_no_graph_node_keeps_its_score() -> None:
+    """A missing language is not evidence the file was never walked."""
+    assert _refresh(None, 7.5).score is not None
+    assert _refresh(None, None).score is None
+    assert _refresh("python", 7.5).score is not None

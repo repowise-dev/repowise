@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
 from ....analysis.finding_registry import excluded_types
+from ....analysis.health.complexity.languages import has_health_dialect
 from ....analysis.health.finding_identity import (
     finding_public_id,
     legacy_finding_public_id,
@@ -32,7 +33,7 @@ from ....analysis.health.ranking import (
 )
 from ....analysis.health.rows import detail_map, split_tests, split_unscored
 from ....analysis.health.scope import scores_language
-from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
+from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
 from ....test_paths import is_test_related_path
 from ...models import (
     DocDriftFinding,
@@ -345,6 +346,34 @@ async def prune_unscored_health_rows(session: AsyncSession, repository_id: str) 
                 removed += 1
         await session.flush()
     return removed
+
+
+async def clear_unanalysed_scores(session: AsyncSession, repository_id: str) -> int:
+    """Drop the numbers stored for files in a language health has no dialect for.
+
+    A store written before such files were left unscored holds a 10.0 and a
+    max_ccn of 1 for each, which every average would keep counting until a full
+    rescore. The answer comes from the language alone, so an update fixes it in
+    place, git history or not. Files with no graph node are left alone, as in
+    ``prune_unscored_health_rows``. Returns the number of rows cleared.
+    """
+    languages = await get_file_language_map(session, repository_id)
+    paths = [p for p, lang in languages.items() if lang and not has_health_dialect(lang)]
+    cleared = 0
+    for i in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(paths[i : i + _BATCH_SIZE]),
+                HealthFileMetric.score.is_not(None),
+            )
+        )
+        for row in rows.scalars().all():
+            for name in (*SCORE_FIELDS, "max_ccn", "max_nesting"):
+                setattr(row, name, None)
+            cleared += 1
+    await session.flush()
+    return cleared
 
 
 async def backfill_module_attribution(

@@ -1358,9 +1358,14 @@ async def persist_partial_health(
     # average, and rows written before ``is_test`` existed get it from their
     # path. Both before the refresh, which should not re-score a row that is
     # about to be deleted.
-    from repowise.core.persistence.crud import backfill_is_test, prune_unscored_health_rows
+    from repowise.core.persistence.crud import (
+        backfill_is_test,
+        clear_unanalysed_scores,
+        prune_unscored_health_rows,
+    )
 
     await prune_unscored_health_rows(session, repo_id)
+    await clear_unanalysed_scores(session, repo_id)
     await backfill_is_test(session, repo_id)
     # Then the files this run did not walk, whose git-derived markers the fresh
     # metadata may have moved. Before the snapshot, or the trend would describe

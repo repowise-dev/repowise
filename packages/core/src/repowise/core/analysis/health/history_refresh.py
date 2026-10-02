@@ -19,6 +19,7 @@ from typing import Any
 
 from .biomarkers.base import BiomarkerResult, FileContext
 from .biomarkers.registry import registered_biomarkers
+from .complexity.languages import has_health_dialect
 from .governance import GOVERNANCE_BIOMARKERS
 from .models import HealthFindingData, Severity
 from .rows import detail_map, field
@@ -56,6 +57,18 @@ class RefreshedFile:
     performance_score: float | None
     structure_deduction: float | None
     history_deduction: float | None
+
+
+def _analysed(language: str, metric: Any) -> bool:
+    """Whether the file's numbers are measurements.
+
+    Decided by the language when the graph knows it. A file with no graph node
+    keeps what its stored row says, so a missing language never wipes the
+    score of a file that was walked.
+    """
+    if language:
+        return has_health_dialect(language)
+    return field(metric, "score", None) is not None
 
 
 def as_biomarker_result(finding: Any) -> BiomarkerResult:
@@ -145,7 +158,7 @@ def refresh_history(
         rescored = attach_impacts(results, deductions)
         for finding in rescored:
             finding.file_path = path
-        numbers = file_score_fields(ctx.language, scores, rescored)
+        numbers = file_score_fields(_analysed(ctx.language, metric), scores, rescored)
         rescored.extend(governance)
 
         out.append(RefreshedFile(file_path=path, findings=rescored, **numbers))

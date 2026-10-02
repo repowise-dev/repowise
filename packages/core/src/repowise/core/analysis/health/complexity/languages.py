@@ -1193,6 +1193,7 @@ def has_health_dialect(language: str | None) -> bool:
     A file in a language without one is never walked, so a score for it would
     be a mechanical 10.0 that means "nothing looked", not "this code is fine".
     Every surface that stores, averages or prints a file score asks this one
-    question rather than keeping its own language list.
+    question rather than keeping its own language list. Narrower than
+    ``scope.scores_language``, which decides whether a file gets a row at all.
     """
     return bool(language) and (language in LANGUAGE_MAPS or language in _WALKED_WITHOUT_A_MAP)

@@ -1661,7 +1661,7 @@ class HealthAnalyzer:
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,
-            **file_score_fields(pf.file_info.language, scores, findings),
+            **file_score_fields(analysed, scores, findings),
             is_test=bool(pf.file_info.is_test),
             code_origin=self._origins.get(file_path) or self._origin(pf),
         )

@@ -10,8 +10,13 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from repowise.core.analysis.health.models import HealthFileMetricData
-from repowise.core.persistence.crud import get_health_metrics, save_health_metrics
+from repowise.core.persistence.crud import (
+    clear_unanalysed_scores,
+    get_health_metrics,
+    save_health_metrics,
+)
 from repowise.core.persistence.database import init_db
+from repowise.core.persistence.models import GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -76,3 +81,41 @@ async def test_a_current_store_is_left_alone(async_engine, async_session):
     after = (await async_session.execute(text("SELECT id FROM health_file_metrics"))).all()
     assert before == after
     assert not await _not_null(async_session, "score")
+
+
+async def _with_languages(session, repo_id: str, languages: dict[str, str]) -> None:
+    session.add_all(
+        GraphNode(repository_id=repo_id, node_id=p, node_type="file", language=lang)
+        for p, lang in languages.items()
+    )
+    await session.flush()
+
+
+async def test_an_update_clears_a_stored_ten_for_a_language_with_no_dialect(async_session):
+    """A store written before this kept 10.0 / CCN 1 for every PHP file."""
+    repo = await insert_repo(async_session)
+    await save_health_metrics(
+        async_session,
+        repo.id,
+        [_row("Big.php", 10.0), _row("ok.py", 7.5), _row("orphan.py", 6.0)],
+    )
+    # ``orphan.py`` has no graph node: no language, so it is left alone.
+    await _with_languages(async_session, repo.id, {"Big.php": "php", "ok.py": "python"})
+    assert await clear_unanalysed_scores(async_session, repo.id) == 1
+    by_path = {m.file_path: m for m in await get_health_metrics(async_session, repo.id)}
+    assert by_path["Big.php"].score is None and by_path["Big.php"].max_ccn is None
+    assert by_path["ok.py"].score == 7.5
+    assert by_path["orphan.py"].score == 6.0
+    assert await clear_unanalysed_scores(async_session, repo.id) == 0
+
+
+async def test_the_badge_says_no_data_when_no_file_is_scored(async_session):
+    from repowise.server.routers.code_health.badge import _badge_average_health
+
+    repo = await insert_repo(async_session)
+    # No rows at all keeps the endpoint's historical 10.0.
+    assert await _badge_average_health(async_session, repo.id) == 10.0
+    await save_health_metrics(async_session, repo.id, [_row("Big.php", None)])
+    assert await _badge_average_health(async_session, repo.id) is None
+    await save_health_metrics(async_session, repo.id, [_row("Big.php", None), _row("a.py", 8.0)])
+    assert await _badge_average_health(async_session, repo.id) == 8.0

@@ -20,3 +20,16 @@ def test_index_storage_bytes_sums_repowise_files(tmp_path: Path) -> None:
 
 def test_index_storage_bytes_missing_dir() -> None:
     assert status_cmd._index_storage_bytes(Path("/no/such/repowise/dir")) == 0
+
+
+def test_health_line_for_a_repo_with_no_scored_file(monkeypatch) -> None:
+    """Every file is in a language health has no dialect for: say so, never crash."""
+    from repowise.cli.commands import status_cmd
+
+    monkeypatch.setattr(
+        status_cmd,
+        "_query_health",
+        lambda _path: {"average_health": None, "unanalysed_file_count": 2992},
+    )
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None and "not analysed" in line and "2992" in line

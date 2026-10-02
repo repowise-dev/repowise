@@ -485,9 +485,9 @@ def health_command(
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
-        f"Hotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
-        f"Worst: [bold]{kpis.get('worst_performer_score', '?')}[/bold]/10 "
-        f"({kpis.get('worst_performer_path', 'n/a')})"
+        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
+        f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
     if code_shape:
         console.print("[dim]Counting code shape only — change history is left out.[/dim]")
