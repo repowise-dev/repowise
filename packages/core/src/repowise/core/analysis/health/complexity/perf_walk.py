@@ -19,6 +19,7 @@ registered.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -93,6 +94,73 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # child only — a sink in the lock-object expression
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
+
+# A whole condition that is one null test, and the name it tests: ``x == null``,
+# ``this.x.get() == null``, ``o.x is null`` (the last segment, ``.get()`` stripped).
+_NULL_GUARD = re.compile(
+    r"(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\.get\(\))?"
+    r"\s*(?:===?\s*(?:null|nil|None)|is\s+null)"
+)
+_IF_KINDS = frozenset({"if_statement", "if_expression"})
+# ``x = ...`` / ``x ??= ...`` / ``x.set(...)``: the held body stores the guarded name.
+_ASSIGNS = r"\b{}\s*(?:=(?!=)|\?\?=|\.set\(|\.compareAndSet\()"
+
+
+def _null_guarded_name(node: Node | None) -> str | None:
+    """The name *node* tests when it is exactly ``if (x == null) {...}``, with no ``else``."""
+    if node is None or node.type not in _IF_KINDS or node.child_by_field_name("alternative"):
+        return None
+    cond = node.child_by_field_name("condition")
+    text = (cond.text if cond is not None else b"").decode("utf-8", "replace")
+    guard = _NULL_GUARD.fullmatch(text.strip("() \t\r\n"))
+    return guard.group(1) if guard is not None else None
+
+
+def _sole_statement(body: Node) -> Node | None:
+    """The one statement a held body runs, ignoring comments and a trailing ``return``."""
+    stmts = [c for c in body.children if c.is_named and "comment" not in c.type]
+    if len(stmts) == 2 and stmts[1].type == "return_statement":
+        stmts = stmts[:1]
+    return stmts[0] if len(stmts) == 1 else None
+
+
+def _is_coalescing_assignment(stmt: Node | None) -> bool:
+    """``x ??= Load();``: assigns only when ``x`` is still null."""
+    if stmt is None or stmt.type != "expression_statement":
+        return False
+    return b"??=" in (stmt.text or b"")
+
+
+def _enclosing_statement(lock: Node) -> Node | None:
+    """The statement around *lock*, looking through the block it sits in."""
+    outer = lock.parent
+    if outer is not None and outer.type in _LOCK_BODY_KINDS:
+        outer = outer.parent
+    return outer
+
+
+def _is_memoizing_lock(lock: Node) -> bool:
+    """The lock only makes a one-time initialisation thread-safe.
+
+    The held body assigns the name a null guard tests, where the guard either
+    wraps the lock (``if (x == null) { synchronized (m) { x = ... } }``) or is
+    the whole held body (double-checked locking); or the whole body is
+    ``x ??= Load()``. A trailing ``return`` is allowed. The I/O then runs once,
+    and moving it out of the lock would run it more than once, so such a lock
+    is not a ``blocking_io_under_lock`` region.
+    """
+    body = next((c for c in lock.children if c.type in _LOCK_BODY_KINDS), None)
+    if body is None:
+        return False
+    only = _sole_statement(body)
+    if _is_coalescing_assignment(only):
+        return True
+    held = (body.text or b"").decode("utf-8", "replace")
+    for guard in (only, _enclosing_statement(lock)):
+        name = _null_guarded_name(guard)
+        if name and re.search(_ASSIGNS.format(re.escape(name)), held):
+            return True
+    return False
 
 
 def _perf_func_name(node: Node) -> str | None:
@@ -613,7 +681,9 @@ def _collect_perf_hits(
         # Only its BLOCK body runs with the lock held — a sink in the lock-object
         # expression (``synchronized(repo.find(id)){…}``) runs before the lock is
         # taken — so ``lock_depth`` is raised per-child, for the body block only.
-        entering_lock = do_lock_io and dialect.is_lock_scope(node)
+        entering_lock = (
+            do_lock_io and dialect.is_lock_scope(node) and not _is_memoizing_lock(node)
+        )
 
         if is_loop:
             # The outermost loop in a nest fixes ``outer_iter``; deeper loops
