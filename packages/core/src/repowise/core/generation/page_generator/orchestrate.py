@@ -22,6 +22,7 @@ import structlog
 from ...persistence.vector_store import embed_item
 from ...pipeline.phase_timing import timed
 from ..context_assembler import FilePageContext
+from ..mermaid_safety import sanitize_pages
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -641,6 +642,14 @@ class _GenerationRun:
                             result = await coro
 
                         if isinstance(result, GeneratedPage):
+                            # Sanitized before the streaming sink sees it, so the
+                            # first stored version is the final text. Left to the
+                            # post-generation pass alone, any page it changes was
+                            # written twice and archived a spurious version.
+                            try:
+                                sanitize_pages([result])
+                            except Exception as exc:
+                                log.debug("mermaid_safety.failed", error=str(exc))
                             # A page whose provider call raised comes back as its
                             # structural stub rather than being dropped (issue #1089),
                             # so the row exists and `repowise generate` can refill it.
@@ -883,8 +892,6 @@ class _GenerationRun:
             # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
             # labels in LLM output don't break the whole diagram in the renderer.
             try:
-                from ..mermaid_safety import sanitize_pages
-
                 fixed = sanitize_pages(all_pages)
                 if fixed:
                     log.info("mermaid_safety.applied", pages_changed=fixed)

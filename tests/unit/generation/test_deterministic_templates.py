@@ -600,6 +600,20 @@ def test_scc_page_renders_german(german_generator):
     assert "**Symbole insgesamt im Zyklus:** 2" in page.content
 
 
+def test_scc_page_starts_at_its_heading(generator):
+    """A stray newline ahead of the heading is stripped after the page was
+    already streamed to the store, so every SCC page was written twice and
+    archived a version nobody made."""
+    from repowise.core.generation.mermaid_safety import sanitize_pages
+
+    page = generator._structural_scc_page(
+        _scc_ctx(), "scc-001", structural_page_title("en", "scc_page", "scc-001")
+    )
+
+    assert page.content.startswith("# ")
+    assert sanitize_pages([page]) == 0
+
+
 def test_the_footer_is_localized_on_every_structural_page(german_generator):
     ctx = _file_ctx()
     page = german_generator._structural_page(
