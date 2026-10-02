@@ -480,7 +480,9 @@ def _stateful_groups(
     exposes state) and is not made only of constructors and overrides. A
     constructor sets fields that properties or out-of-line methods this pass
     cannot place may read, and ``toString`` / ``Equals`` are contracts; neither
-    is a class to extract.
+    is a class to extract. Rust gets the same count for its own reason: a
+    builder setter, a getter or a ``match self`` arm touches one field or
+    none, and ``new()`` has no ``self`` at all.
     """
     return [
         group
@@ -637,7 +639,9 @@ def _compute_lcom4(
 
     *refs* defaults to the explicit ``self.x`` references. Where the map
     names field declarations (implicit receivers), overloads are one node and
-    only ``_stateful_groups`` count toward LCOM4.
+    only ``_stateful_groups`` count toward LCOM4; a map that sets
+    ``cohesion_counts_state_only`` gets the same count without the implicit
+    references.
     """
     if not method_nodes:
         return 1, 0, [], 1.0
@@ -660,7 +664,7 @@ def _compute_lcom4(
     indexed = _indexed_groups(
         roots, method_fcs, members_per_method, method_names, refs.call_targets
     )
-    if implicit:
+    if implicit or lmap.cohesion_counts_state_only:
         groups = _stateful_groups(indexed, refs.contracts)
         return max(len(groups), 1), field_count, groups, tcc
     return len(indexed), field_count, [g for _, g in indexed], tcc

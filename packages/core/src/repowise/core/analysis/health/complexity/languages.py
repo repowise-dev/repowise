@@ -116,6 +116,11 @@ class LanguageNodeMap:
     binding_kinds: frozenset[str] = frozenset()
     identifier_kinds: frozenset[str] = frozenset()
     nested_type_kinds: frozenset[str] = frozenset()
+    # Count only cohesion components that hold state (two or more fields), as
+    # implicit-receiver languages always do. For an explicit-receiver language
+    # whose methods routinely touch one field or none: Rust setters, getters
+    # and ``match self`` arms, and ``new()`` with no ``self`` at all.
+    cohesion_counts_state_only: bool = False
 
     # ------------------------------------------------------------------
     # Assertion detection (test-quality smells). Both fields default to
@@ -540,6 +545,8 @@ _RUST = LanguageNodeMap(
     class_kinds=frozenset({"impl_item"}),
     self_identifiers=frozenset({"self"}),
     member_access_kinds=frozenset({"field_expression"}),
+    # Builders, accessor types and enums are one field per method by design.
+    cohesion_counts_state_only=True,
     # ``assert!`` / ``assert_eq!`` / ``assert_ne!`` are macro invocations.
     assert_call_kinds=frozenset({"macro_invocation"}),
     # The perf pass: both ``foo()`` and method/scoped calls (``x.fetch_all()`` /
