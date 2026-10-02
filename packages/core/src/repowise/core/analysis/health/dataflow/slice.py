@@ -111,6 +111,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
     hoisted = _hoisted_bindings(def_lines, use_lines)
+    decl_lines = _declaration_lines(analysis.def_use)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -197,6 +198,10 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
                     continue
                 if any(s <= first_def <= e and first_use < s for first_def, first_use in hoisted):
+                    continue
+                if _declaration_escapes(
+                    s, e, returns, decl_lines, def_lines, use_lines, declared_first
+                ):
                     continue
                 if nested_prefix[j + 1] > nested_prefix[i]:
                     continue
@@ -449,6 +454,65 @@ def _hoisted_bindings(
         if defs and uses and uses[0] < defs[0]:
             hoisted.append((defs[0], uses[0]))
     return sorted(hoisted)
+
+
+def _declaration_lines(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines that declare it (a ``let`` / ``var`` / ``:=`` /
+    typed local, as the dialect marks with ``declared_at``)."""
+    lines: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        if d.declared_at is not None:
+            lines[d.var].add(d.line)
+    return {var: frozenset(found) for var, found in lines.items()}
+
+
+def _declaration_escapes(
+    s: int,
+    e: int,
+    returns: tuple[str, ...],
+    decl_lines: dict[str, frozenset[int]],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+) -> bool:
+    """True when the span declares a name the code after it still refers to.
+
+    A returned name is fine: the caller declares it from the helper's result.
+    Otherwise the declaration leaves with the span and the caller's next
+    reference names nothing, even when that reference is a plain assignment
+    (Go ``var out T`` in the span, ``out = x`` after it, which is why liveness
+    did not make it an OUT). A later reference that declares the name afresh
+    (``y, err := g()``, a second ``for i := ...``, whose reads on that line
+    follow the declaration per *declared_first*) needs nothing from the span.
+    Block scopes are not modelled, so a same-named variable of an outer scope
+    read after the span also refuses: a missed span, never a broken one.
+    """
+    return any(
+        var not in returns
+        and any(s <= ln <= e for ln in declared)
+        and _needed_after(var, e, declared, def_lines, use_lines, declared_first)
+        for var, declared in decl_lines.items()
+    )
+
+
+def _needed_after(
+    var: str,
+    e: int,
+    declared: frozenset[int],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+) -> bool:
+    """True when the first reference to *var* after line *e* relies on an
+    earlier declaration: it is a plain use or assignment, not a fresh one."""
+    uses = use_lines.get(var, ())
+    after = [ln for ln in (*def_lines.get(var, ()), *uses) if ln > e]
+    if not after:
+        return False
+    first = min(after)
+    if first not in declared:
+        return True
+    return first in uses and first not in declared_first.get(var, ())
 
 
 def _outs_definitely_assigned(

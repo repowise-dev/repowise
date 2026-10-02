@@ -2026,3 +2026,66 @@ def test_rust_match_arm_binders_are_params_of_a_span_in_the_arm():
     spans = [e for e in find_extractions(fn, get_language_map("rust")) if e.start_line <= 7]
     assert spans
     assert all({"negated", "ranges"} <= set(e.params) for e in spans)
+
+
+# == A declaration the code after the span still needs ==========================
+
+
+def test_go_span_declaring_a_name_assigned_after_it_is_not_offered():
+    # ``var out []int`` moves with the span, but ``out = formats`` and the
+    # return after it still name it; liveness alone saw no OUT.
+    src = """
+        package main
+
+        func paths(formats []int, link bool) ([]int, map[int]int) {
+            targets := make(map[int]int)
+            for i, f := range formats {
+                if f > 2 {
+                    targets[f] = i
+                } else {
+                    targets[f] = -i
+                }
+            }
+            var out []int
+            if link {
+                out = formats
+            }
+            return out, targets
+        }
+        """
+    lmap = get_language_map("go")
+    spans = find_extractions(_first("go", src), lmap)
+    # Holding ``var out`` is fine only when the span returns ``out``.
+    assert all("out" in e.returns for e in spans if e.start_line <= 13 <= e.end_line)
+    assert any(e.end_line == 12 for e in spans)  # the loop alone is still offered
+
+
+def test_go_name_declared_afresh_after_the_span_does_not_refuse_it():
+    src = """
+        package main
+
+        func load(items []string) int {
+            total := 0
+            for _, it := range items {
+                n, err := parse(it)
+                if err == nil {
+                    total += n
+                }
+                log(it)
+                log(n)
+            }
+            for i := 0; i < total; i++ {
+                if i%2 == 0 {
+                    total--
+                }
+            }
+            m, err := finish(total)
+            if err != nil {
+                return 0
+            }
+            return m
+        }
+        """
+    lmap = get_language_map("go")
+    fn = _first("go", src)
+    assert any(e.start_line <= 7 and e.end_line >= 12 for e in find_extractions(fn, lmap))
