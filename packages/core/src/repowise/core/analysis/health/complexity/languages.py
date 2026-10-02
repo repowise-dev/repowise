@@ -236,10 +236,13 @@ class LanguageNodeMap:
     #     function resumes after it), but it hands a value to the caller, so a
     #     helper lifted around it would yield into nothing: the slicer refuses
     #     a span holding one.
-    #   * ``exit_macro_names`` -- macros whose expansion returns from the
+    #   * ``exit_macro_kinds`` / ``exit_macro_names`` -- macro invocation
+    #     node(s) and the macros among them whose expansion returns from the
     #     function (Rust ``anyhow::bail!``), matched by the macro's last name
-    #     segment. The slicer treats them as jumps for the same reason.
+    #     segment. The slicer treats them as jumps for the same reason. A user
+    #     macro of the same name that does not exit only hides a span.
     yield_kinds: frozenset[str] = frozenset()
+    exit_macro_kinds: frozenset[str] = frozenset()
     exit_macro_names: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
@@ -574,6 +577,7 @@ _RUST = LanguageNodeMap(
     # early exit the CFG treats as a terminator and the Extract Method slicer
     # treats as a jump, so no span containing one is ever offered.
     raise_kinds=frozenset({"try_expression"}),
+    exit_macro_kinds=frozenset({"macro_invocation"}),
     exit_macro_names=frozenset({"bail", "ensure", "try"}),
     break_kinds=frozenset({"break_expression"}),
     continue_kinds=frozenset({"continue_expression"}),

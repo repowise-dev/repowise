@@ -160,6 +160,7 @@ def _find_extractions_reference(analysis, lmap):
         Extraction,
         _all_blocks,
         _declared_before_read,
+        _exit_macros,
         _function_lines,
         _infer_in_out,
     _loop_carry_free,
@@ -227,7 +228,7 @@ def _find_extractions_reference(analysis, lmap):
                     continue
                 span = stmts[i : j + 1]
                 decisions, has_jump = _span_metrics(
-                    span, decision_kinds, jump_kinds, scope_kinds, lmap.exit_macro_names
+                    span, decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
                 )
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue

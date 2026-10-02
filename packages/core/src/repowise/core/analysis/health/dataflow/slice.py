@@ -157,7 +157,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             code_prefix = [0]
             for st in stmts:
                 d, jmp = _span_metrics(
-                    [st], decision_kinds, jump_kinds, scope_kinds, lmap.exit_macro_names
+                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
                 )
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
@@ -712,16 +712,26 @@ def _all_blocks(
     return blocks
 
 
-def _is_jump(node: Node, jump_kinds: frozenset[str], exit_macros: frozenset[str]) -> bool:
-    """True for a jump node, or a macro named in *exit_macros* (matched by its
-    last name segment: ``bail`` in ``anyhow::bail!``)."""
+def _exit_macros(lmap: LanguageNodeMap) -> tuple[frozenset[str], frozenset[str]]:
+    """The macro node kinds and the macro names that exit the function."""
+    return lmap.exit_macro_kinds, lmap.exit_macro_names
+
+
+def _is_jump(
+    node: Node,
+    jump_kinds: frozenset[str],
+    exit_macros: tuple[frozenset[str], frozenset[str]],
+) -> bool:
+    """True for a jump node, or a macro whose name is in *exit_macros*
+    (matched by its last segment: ``bail`` in ``anyhow::bail!``)."""
     if node.type in jump_kinds:
         return True
-    macro = node.child_by_field_name("macro") if exit_macros else None
-    if macro is None:
+    kinds, names = exit_macros
+    if node.type not in kinds:
         return False
-    name = macro.child_by_field_name("name") or macro
-    return bool(name.text) and name.text.decode("utf-8", "replace") in exit_macros
+    macro = node.child_by_field_name("macro")
+    name = macro.child_by_field_name("name") or macro if macro is not None else None
+    return name is not None and bool(name.text) and name.text.decode("utf-8", "replace") in names
 
 
 def _span_metrics(
@@ -729,7 +739,7 @@ def _span_metrics(
     decision_kinds: frozenset[str],
     jump_kinds: frozenset[str],
     scope_kinds: frozenset[str],
-    exit_macros: frozenset[str] = frozenset(),
+    exit_macros: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset()),
 ) -> tuple[int, bool]:
     """Decision-point count and jump presence within *span* (nested scopes are
     not descended into). A macro named in *exit_macros* counts as a jump."""
