@@ -336,7 +336,9 @@ def _ranked(item, factor: str) -> str:
 def test_a_duplicate_inside_lifts_a_complexity_unit_one_step() -> None:
     plain = _queue([_finding()]).lead
     lifted = _queue([_finding()], plans=[_helper()]).lead
-    assert int(_ranked(lifted, "value")) == int(_ranked(plain, "value")) + 1
+    # CCN 14 is near the bar, so both are later; the lift still orders them.
+    value = "value within later"
+    assert int(_ranked(lifted, value)) == int(_ranked(plain, value)) + 1
     assert _ranked(lifted, "duplicate inside") == "yes"
     assert "duplicated" in lifted.why and "duplicated" not in plain.why
 

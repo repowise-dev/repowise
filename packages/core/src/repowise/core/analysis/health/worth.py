@@ -40,9 +40,22 @@ WORTH_MAGNITUDE = 2
 #: first whatever its branching looks like: a dispatch that big has arms worth
 #: splitting out, and a straight sequence that long is a module in one body.
 EXTREME_MAGNITUDE = 3
+#: A function at least this branchy and this deep is worth doing first even
+#: under the size bars: tangled, not just long.
+TANGLED_CCN = 25
+TANGLED_NESTING = 5
 
 LowPriority = Literal[
-    "dispatch", "chain", "near_bar", "deep_block", "straight", "condition", "handler"
+    "dispatch",
+    "chain",
+    "near_bar",
+    "deep_block",
+    "straight",
+    "condition",
+    "swallow",
+    "broad_catch",
+    "unwrap",
+    "handler",
 ]
 
 #: Why an item can wait, as the tier reason a surface shows beside it.
@@ -52,17 +65,29 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
         "which usually reads fine as written"
     ),
     "chain": "lower priority: one long else-if or ternary chain, deep by count but flat to read",
-    "near_bar": "lower priority: past the bar for its size, but not by much",
-    "deep_block": "lower priority: the depth sits in one block of a short function",
+    "near_bar": "lower priority: past the bar, but under CCN 40, 200 lines and nesting 6",
+    "deep_block": "lower priority: deeply nested, but under 100 lines",
     "straight": "lower priority: long, but its control flow is simple",
     "condition": "lower priority: the fix is one condition, not the function",
-    "handler": "lower priority: one handler, and a swallowed error is sometimes deliberate",
+    "swallow": "lower priority: a swallowed error, which is sometimes deliberate",
+    "broad_catch": "lower priority: a broad catch, which may be deliberate at a boundary",
+    "unwrap": "lower priority: an unwrap or panic that may be unreachable",
+    "handler": "lower priority: error handling at one site",
 }
 
-#: Findings about one expression or one handler: real, and small to fix.
+#: Findings about one expression or one error site: real, and small to fix.
 _LOCAL_MARKERS: dict[str, LowPriority] = {
     "complex_conditional": "condition",
     "error_handling": "handler",
+}
+#: An error_handling finding's stored ``kind``, by the reason it can wait.
+_ERROR_KINDS: dict[str, LowPriority] = {
+    "swallowed_catch": "swallow",
+    "go_swallow": "swallow",
+    "bare_except": "swallow",
+    "broad_except": "broad_catch",
+    "unsafe_unwrap": "unwrap",
+    "panic_macro": "unwrap",
 }
 
 
@@ -126,33 +151,41 @@ def _chained(shape: Mapping[str, int]) -> bool:
 
 
 def worth_size(shape: Mapping[str, int]) -> int:
-    """:func:`magnitude` with nesting counted only in a function past the
-    length bar: deep nesting in a short function is one block to flatten."""
+    """:func:`magnitude` with nesting under 8 counted only in a function past
+    the length bar: moderate depth in a short function is a small fix."""
     nloc = shape.get("nloc") or 0
     if not nloc and shape.get("start") and shape.get("end"):
         nloc = shape["end"] - shape["start"] + 1
-    if nloc >= SIZE_NLOC[0]:
+    if nloc >= SIZE_NLOC[0] or shape.get("max_nesting", 0) >= SIZE_NESTING[2]:
         return magnitude(shape)
     return magnitude({**shape, "max_nesting": 0})
 
 
 def low_priority(
-    marker: str | None, shape: Mapping[str, int], *, function_size: bool = False
+    marker: str | None,
+    shape: Mapping[str, int],
+    *,
+    function_size: bool = False,
+    error_kind: str | None = None,
 ) -> LowPriority | None:
     """Why a problem of kind ``marker`` on a function of ``shape`` can wait,
     or ``None`` when it is worth doing first. ``function_size`` judges any
     marker but a local one as a function-size problem (an Extract Method plan
-    answers the function's size, whichever finding led it).
+    answers the function's size, whichever finding led it). ``error_kind`` is
+    an error_handling finding's stored ``kind``, which picks its reason.
 
-    A condition or a handler is a local fix. A function-size problem is worth
-    doing first when the function is far past a bar (:data:`WORTH_MAGNITUDE`)
-    and its branching is not one dispatch, or when it is past
+    A condition or one error site is a local fix. A function-size problem is
+    worth doing first when the function is far past a bar
+    (:data:`WORTH_MAGNITUDE`) and its branching is not one dispatch, when it is
+    both branchy and deep (CCN 25 and nesting 5), or when it is past
     :data:`EXTREME_MAGNITUDE` whatever its branching. An else-if or ternary
     chain is flat however deep it counts; length with CCN under 20 and nesting
     under 5 is a table or a straight sequence. Other kinds keep their own
     rules, so they get ``None``.
     """
     local = _LOCAL_MARKERS.get(marker or "")
+    if local == "handler":
+        return _ERROR_KINDS.get(error_kind or "", "handler")
     if local is not None:
         return local
     if marker not in SIZE_MARKERS and not function_size:
@@ -171,6 +204,8 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
         return None
     if dispatch_shaped(shape):
         return "dispatch"
+    if shape.get("ccn", 0) >= TANGLED_CCN and shape.get("max_nesting", 0) >= TANGLED_NESTING:
+        return None
     if size < WORTH_MAGNITUDE:
         return "deep_block" if magnitude(shape) >= WORTH_MAGNITUDE else "near_bar"
     # Past the bar on length alone.
@@ -188,6 +223,8 @@ __all__ = [
     "SIZE_MARKERS",
     "SIZE_NESTING",
     "SIZE_NLOC",
+    "TANGLED_CCN",
+    "TANGLED_NESTING",
     "WORTH_MAGNITUDE",
     "LowPriority",
     "dispatch_shaped",

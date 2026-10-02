@@ -685,13 +685,15 @@ worth doing.
 **Lower priority.** A `later` item is real and stays listed, after every `now` and
 `next` item, with the reason it can wait as its tier reason. Code shape decides
 (`analysis/health/worth.py`, one rule for every default list); the hot-file bonus
-orders items but never lifts one out of `later`. A function-size problem is
-`later` when the function is under CCN 40, 200 lines and nesting 6 (nesting counts
-only in a function of 100 lines or more), when one dispatch on one value holds 60%
-of its decisions, when its nesting is one else-if or ternary chain, or when it is
-long with CCN under 20 and nesting under 5. From CCN 80, 400 lines or nesting 8 a
-function is worth doing whatever its branching. A complex condition and a single
-exception handler are `later` too: each is a local fix.
+orders items but never lifts one out of `later`, and a later item's rank facts
+read "value within later" and its shape-only size. A function-size problem is
+`later` when the function is under CCN 40, 200 lines and nesting 6 (nesting under
+8 counts only in a function of 100 lines or more) and not both CCN 25 and nesting
+5; when one dispatch on one value holds 60% of its decisions; when its nesting is
+one else-if or ternary chain; or when it is long with CCN under 20 and nesting
+under 5. From CCN 80, 400 lines or nesting 8 a function is worth doing whatever
+its branching. A complex condition and a single error site (a swallowed or broad
+catch, an unwrap or panic) are `later` too: each is a local fix.
 
 **Verify.** Each item carries up to 5 tests from its stored validation profile,
 each with how it reaches the changed code (call graph, import graph, a matching

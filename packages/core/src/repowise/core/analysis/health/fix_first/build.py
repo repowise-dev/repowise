@@ -69,6 +69,7 @@ from repowise.core.analysis.health.worth import (
     low_priority,
     magnitude,
     measure,
+    worth_size,
 )
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.code_origin import path_origin
@@ -522,7 +523,8 @@ def _finish(
             kind=kind,
             improves=improves,
             why_ranked=(
-                FixRankFact("value", str(value)),
+                # A later item ranks by value only among later items.
+                FixRankFact("value" if low is None else "value within later", str(value)),
                 *rank_inputs(),
                 FixRankFact("tier", why_tier),
             ),
@@ -822,7 +824,7 @@ def _refactor_unit(
         improves=dimension if dimension in FIX_IMPROVES else "maintainability",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{gain:.2f}"),
-            FixRankFact("problem size", str(size)),
+            FixRankFact("problem size", str(size if low is None else worth_size(shape))),
             FixRankFact("hot file", "yes" if hot else "no"),
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
@@ -1101,6 +1103,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
     shape = files.shape(path, function)
     size = _size_value(shape, hot)
     cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
+    low = low_priority(marker, shape, error_kind=detail_map(lead).get("kind"))
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
@@ -1125,7 +1128,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
                 [
                     FixFact("finding", text.marker_label(marker)),
                     *([FixFact("size", size_text)] if (size_text := text.size_line(shape)) else []),
-                    FixFact("severity", field(lead, "severity") or "unknown"),
+                    FixFact("severity", _severity(field(lead, "severity"), low)),
                     *files.common_facts(path),
                 ][:MAX_FACTS]
             ),
@@ -1161,13 +1164,19 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
         improves=dimension if dimension in FIX_IMPROVES else "defect",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{impact:.2f}"),
-            FixRankFact("problem size", str(size)),
+            FixRankFact("problem size", str(size if low is None else worth_size(shape))),
             FixRankFact("hot file", "yes" if hot else "no"),
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
-        low=low_priority(marker, shape),
+        low=low,
     )
+
+
+def _severity(severity: str | None, low: str | None) -> str:
+    """The detector's severity; on a later item it says the tier overrides it."""
+    severity = severity or "unknown"
+    return severity if low is None else f"{severity} by the detector; lower priority by shape"
 
 
 def _small(shape: Mapping[str, int]) -> bool:

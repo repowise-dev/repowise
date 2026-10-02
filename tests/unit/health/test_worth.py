@@ -30,6 +30,20 @@ from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority,
         # Extreme size is worth doing whatever the branching looks like.
         ("complex_method", {"ccn": 530, "nloc": 2564, "max_nesting": 9, "dispatch_pct": 90}, None),
         ("large_method", {"ccn": 13, "nloc": 809, "max_nesting": 3}, None),
+        # Nesting 8 counts at any length; under it, only past 100 lines.
+        ("nested_complexity", {"ccn": 12, "nloc": 34, "max_nesting": 8}, None),
+        ("nested_complexity", {"ccn": 12, "nloc": 99, "max_nesting": 6}, "deep_block"),
+        ("nested_complexity", {"ccn": 12, "nloc": 100, "max_nesting": 6}, None),
+        ("nested_complexity", {"ccn": 12, "nloc": 150, "max_nesting": 5}, "near_bar"),
+        # The size bars, either side.
+        ("complex_method", {"ccn": 39, "nloc": 120, "max_nesting": 4}, "near_bar"),
+        ("complex_method", {"ccn": 40, "nloc": 120, "max_nesting": 4}, None),
+        ("large_method", {"ccn": 22, "nloc": 199, "max_nesting": 4}, "near_bar"),
+        ("large_method", {"ccn": 22, "nloc": 200, "max_nesting": 4}, None),
+        # Branchy and deep under the bars, either side.
+        ("nested_complexity", {"ccn": 25, "nloc": 73, "max_nesting": 5}, None),
+        ("nested_complexity", {"ccn": 24, "nloc": 73, "max_nesting": 5}, "near_bar"),
+        ("complex_method", {"ccn": 30, "nloc": 90, "max_nesting": 4}, "near_bar"),
         # Local fixes.
         ("complex_conditional", {"ccn": 32, "nloc": 75}, "condition"),
         ("error_handling", {}, "handler"),
@@ -42,6 +56,21 @@ from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority,
 )
 def test_low_priority_reads_code_shape(marker, shape, expected) -> None:
     assert low_priority(marker, shape) == expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("swallowed_catch", "swallow"),
+        ("go_swallow", "swallow"),
+        ("broad_except", "broad_catch"),
+        ("unsafe_unwrap", "unwrap"),
+        ("panic_macro", "unwrap"),
+        (None, "handler"),
+    ],
+)
+def test_an_error_site_is_labelled_by_what_it_does(kind, expected) -> None:
+    assert low_priority("error_handling", {}, error_kind=kind) == expected
 
 
 def test_an_extract_method_plan_is_judged_by_its_function() -> None:
@@ -97,8 +126,15 @@ def test_history_orders_within_a_tier_but_never_lifts_a_small_function() -> None
     assert ("tier", LOW_PRIORITY_LABEL["near_bar"]) in [
         (f.factor, f.value) for f in tidy.why_ranked
     ]
-    # Still listed, still true: the item names the finding it came from.
+    # Still listed, still true: the item names the finding it came from, and
+    # no rank fact or severity reads as top-tier work beside the tier reason.
     assert tidy.title == "Reduce the branching in tidy"
+    ranked = {f.factor: f.value for f in tidy.why_ranked}
+    assert "value" not in ranked and "value within later" in ranked
+    assert ranked["problem size"] == "0"
+    assert ("severity", "high by the detector; lower priority by shape") in [
+        (f.label, f.value) for f in tidy.facts
+    ]
 
 
 def test_a_cloned_dispatcher_stays_listed_but_waits() -> None:
