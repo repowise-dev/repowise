@@ -38,6 +38,7 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ...installed_components import is_installed_component
 from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..graph_view import HasEdge, ImportEdgeView
@@ -726,6 +727,7 @@ class HealthAnalyzer:
         # answer cannot live on the cached walk.
         self._project_name: str | None = None
         self._origins: dict[str, CodeOrigin] = {}
+        self._installed_ui_dirs: dict[str, Any] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
@@ -1420,6 +1422,13 @@ class HealthAnalyzer:
         return self._project_name
 
     def _origin(self, pf: Any, source: bytes | None = None) -> CodeOrigin:
+        # A copy a component CLI installed is generated, the origin that wins
+        # over every other; deciding it needs the checkout's config files,
+        # which ``code_origin`` (path and head only) does not read.
+        if self.repo_root is not None and is_installed_component(
+            self.repo_root, pf.file_info.path, self._installed_ui_dirs
+        ):
+            return "generated"
         return code_origin(
             pf.file_info.path,
             source,
