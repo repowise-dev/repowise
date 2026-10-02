@@ -59,12 +59,16 @@ class FunctionDefUse:
 
     ``blocks`` is keyed by block id; ``definitions`` is every write site ordered
     by ``index`` (so ``definitions[i].index == i``); ``params`` is the parameter
-    occurrences seeded at the entry block.
+    occurrences seeded at the entry block. ``captured`` holds the reads made
+    inside nested closures, kept apart from the per-block uses because they
+    run when the closure is called, not where it is written; code that moves
+    statements (the Extract Method slicer) still has to count them.
     """
 
     blocks: dict[int, BlockDefUse]
     definitions: list[Definition]
     params: tuple[Occurrence, ...]
+    captured: tuple[Occurrence, ...] = ()
 
     def block(self, block_id: int) -> BlockDefUse | None:
         return self.blocks.get(block_id)
@@ -118,4 +122,8 @@ def compute_def_use(
                 _add_def(occ, block.id)
             bdu.uses.extend(sdu.uses)
 
-    return FunctionDefUse(blocks=blocks, definitions=definitions, params=params)
+    captured: list[Occurrence] = []
+    dialect.collect_captured_reads(fn_node.child_by_field_name("body"), captured)
+    return FunctionDefUse(
+        blocks=blocks, definitions=definitions, params=params, captured=tuple(captured)
+    )

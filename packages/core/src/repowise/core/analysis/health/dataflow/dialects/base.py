@@ -172,6 +172,49 @@ class BaseDefUseDialect:
         for child in node.named_children:
             self.collect_reads(child, out)
 
+    def collect_captured_reads(self, node: Node | None, out: list[Occurrence]) -> None:
+        """Append the reads made inside nested scopes under *node* to *out*.
+
+        :meth:`collect_reads` stops at a nested function or lambda because its
+        reads are not the statement's own. A closure still reads the enclosing
+        function's variables, though, so code that moves one of them has to
+        see those reads: a span whose closure reads a local needs it passed in,
+        and a span defining a local a later closure reads has to return it.
+        Names the nested scope binds as its own parameters are left out; a
+        local it declares that shadows an outer name is not, which can only
+        add a parameter or a return, never drop one.
+        """
+        if node is None:
+            return
+        if not self._is_scope_boundary(node):
+            for child in node.named_children:
+                self.collect_captured_reads(child, out)
+            return
+        inner: list[Occurrence] = []
+        for child in node.named_children:
+            self.collect_reads(child, inner)
+            self.collect_captured_reads(child, inner)
+        bound = self._closure_bound_names(node)
+        out.extend(occ for occ in inner if occ.name not in bound)
+
+    def _closure_bound_names(self, node: Node) -> set[str]:
+        """Names a nested scope binds as its own parameters.
+
+        A closure's parameter list is often shaped unlike a function's
+        (``x => ...``, ``|x| ...``), so the identifiers under it are read
+        directly on top of what :meth:`parameter_defs` finds.
+        """
+        bound = {occ.name for occ in self.parameter_defs(node)}
+        stack = [node.child_by_field_name("parameters"), node.child_by_field_name("parameter")]
+        while stack:
+            cur = stack.pop()
+            if cur is None:
+                continue
+            if cur.type in self.identifier_kinds and cur.text:
+                bound.add(cur.text.decode("utf-8", "replace"))
+            stack.extend(cur.named_children)
+        return bound
+
     def _is_scope_boundary(self, node: Node) -> bool:
         """True if *node* opens a nested scope whose reads are not this
         statement's (a nested function / lambda). Default: never. Subclasses
