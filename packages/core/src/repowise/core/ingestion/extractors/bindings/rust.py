@@ -12,7 +12,8 @@ def extract_rust_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
     """Extract bindings from Rust use declarations and mod items."""
     # `mod foo;` (without body) declares a child module — treat as wildcard
     # import because all public symbols become accessible via `foo::Name`.
-    if stmt_node.type == "mod_item":
+    # In a macro body the statement is the module name token itself.
+    if stmt_node.type in ("mod_item", "identifier"):
         return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
 
     # `extern crate foo;` or `extern crate foo as bar;`

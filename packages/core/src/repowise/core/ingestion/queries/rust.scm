@@ -176,6 +176,18 @@
   !body
 ) @import.statement
 
+;; `mod foo;` written in a macro body (`macro_rules!`, `cfg_if!`) declares the
+;; same child module once expanded. The grammar leaves it as tokens, so match
+;; exactly `mod`, a plain name and `;` (no `$meta`, no `mod foo { ... }`).
+;; The two tokens are captured because an uncaptured anonymous node in an
+;; anchored sequence matches only the first item of a token tree.
+(token_tree
+  "mod" @_mod
+  .
+  (identifier) @import.module @import.statement
+  .
+  ";" @_end)
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module
