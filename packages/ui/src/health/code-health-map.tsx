@@ -21,7 +21,7 @@ import type {
 } from "react";
 
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
-import { OVERLAY_ORDER, OVERLAY_SPECS } from "./map/lens";
+import { HEALTH_UNSUPPORTED_NOTICE, OVERLAY_ORDER, OVERLAY_SPECS, noFileScored } from "./map/lens";
 import { packGalaxies, rand } from "./map/layout";
 import { FileNodes } from "./map/node-layer";
 import { HoverCard, NodeHighlight, SearchMatches } from "./map/overlay";
@@ -38,14 +38,18 @@ export type {
   PerformanceActionability,
 } from "./map/types";
 export {
+  HEALTH_UNSUPPORTED_LABEL,
+  HEALTH_UNSUPPORTED_NOTICE,
   NEUTRAL_FILL,
   OVERLAY_ORDER,
   OVERLAY_SPECS,
   PERFORMANCE_STATE_LABEL,
   burdenBand,
+  noFileScored,
   performanceBurden,
   performanceFill,
   performanceSentence,
+  scoreText,
 } from "./map/lens";
 export type {
   LegendRow,
@@ -621,6 +625,16 @@ export function CodeHealthMap({
       ) : null}
 
       {scope ? <MapScopeNote scope={scope} matches={matches.length} query={q} /> : null}
+
+      {noFileScored(files) ? (
+        <div
+          role="status"
+          data-testid="map-unanalysed"
+          className="pointer-events-none absolute bottom-3 left-3 max-w-[64%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-[11px] text-[var(--color-text-secondary)] shadow-sm backdrop-blur-sm sm:max-w-[44%]"
+        >
+          {HEALTH_UNSUPPORTED_NOTICE}
+        </div>
+      ) : null}
 
       {hovered && pointer ? (
         <HoverCard

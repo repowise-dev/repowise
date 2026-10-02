@@ -33,6 +33,7 @@ import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { healthBand, healthBandColor, scoreTextColor } from "./tokens";
 import { HealthDistributionBar } from "./health-distribution-bar";
+import { HEALTH_UNSUPPORTED_NOTICE } from "./map/lens";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -103,15 +104,30 @@ function windowLabel(days: number): string {
   return months === 1 ? "month" : `${months} months`;
 }
 
-export function CodeHealthLede({
+export function CodeHealthLede(props: CodeHealthLedeProps) {
+  const health = props.summary.average_health;
+  // No file scored: every file is in a language health has no dialect for.
+  // There is no figure to lead with, so the lede says that instead of a 10.
+  if (health == null) {
+    return (
+      <PageLede label="Code health" value="Not analysed" action={props.action}>
+        <p>{HEALTH_UNSUPPORTED_NOTICE}</p>
+      </PageLede>
+    );
+  }
+  return <ScoredLede {...props} health={health} />;
+}
+
+function ScoredLede({
   summary,
   accuracy,
   distribution,
   pillar = "health",
   action,
   variant = "lead",
-}: CodeHealthLedeProps) {
-  const health = summary.average_health;
+  health,
+}: CodeHealthLedeProps & { health: number }) {
+  const unanalysed = summary.unanalysed_file_count ?? 0;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
@@ -224,6 +240,14 @@ export function CodeHealthLede({
           duplication, coverage
           {codeShape ? "" : ", churn and ownership"}.
           {healthChip ? <> That puts it in the {healthChip.label} band.</> : null}
+          {unanalysed > 0 && (
+            <>
+              {" "}
+              {formatNumber(unanalysed)} more {unanalysed === 1 ? "file is" : "files are"} in a
+              language health does not analyse yet, so {unanalysed === 1 ? "it is" : "they are"}{" "}
+              left out of this figure.
+            </>
+          )}
           {perf != null && (
             <>
               {" "}

@@ -87,7 +87,7 @@ export function HealthFileDrawerHost({
       loading={isLoading}
       metric={data?.metric ?? null}
       breakdown={
-        data
+        data?.breakdown
           ? {
               score: data.breakdown.score,
               total_deduction: data.breakdown.total_deduction,
