@@ -106,6 +106,10 @@ class MatchState:
         self.matched.add(id(consumer))
         return True
 
+    def mark_served(self, consumer: Contract) -> None:
+        """Record *consumer* as served internally without emitting a link."""
+        self.matched.add(id(consumer))
+
 
 def find_matching_keys(consumer_id: str, provider_index: dict[str, list[Contract]]) -> list[str]:
     """Provider index keys that match *consumer_id*, wildcards included."""

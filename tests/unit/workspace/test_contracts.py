@@ -1209,6 +1209,20 @@ class TestCandidateMatching:
         links = match_contracts(contracts)
         assert links == []
 
+    def test_internally_served_exact_path_does_not_fall_through_to_candidate(self) -> None:
+        # When a consumer's own service serves the exact contract it calls, it is
+        # marked served and must not fall through to candidate matching against a
+        # foreign provider (closes #2804).
+        contracts = [
+            self._c(repo="web", role="provider", contract_id="http::GET::/api/orders", service="web"),
+            self._c(repo="web", role="consumer", contract_id="http::GET::/api/orders",
+                    file_path="c.ts", service="web"),
+            self._c(repo="legacy", role="provider", contract_id="http::GET::/orders", service="legacy"),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
+
+
 
 # ---------------------------------------------------------------------------
 # ContractStore persistence

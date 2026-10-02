@@ -71,6 +71,7 @@ def _exact_pass(state: MatchState) -> None:
         providers = [p for k in keys for p in state.provider_index[k]]
         for provider in prefer_target_repo(providers, consumer):
             if internal(provider, consumer):
+                state.mark_served(consumer)
                 continue
             if rules.accepts is not None and not rules.accepts(provider, consumer):
                 continue
