@@ -19,10 +19,9 @@ declaration of the same name (a method ``func (e *Exec) New`` or a build-tag
 twin), a method's receiver, a method spec of a declared interface, a field name
 of a declared struct, a composite-literal key, a selector on something else
 (``x.Name`` in the package, or ``y.Name`` under an unrelated qualifier in an
-importer), a local declared with ``:=``, and comments and string literals. A
-parameter, a ``var`` local or a field of an anonymous struct spelled like the
-symbol still counts: that is the textual ceiling, and it only ever costs a true
-finding.
+importer), and comments and string literals. A local, a parameter or a field
+of an anonymous struct spelled like the symbol still counts: that is the
+textual ceiling, and it only ever costs a true finding.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
-from .models import DeadCodeFindingData
+from .models import DeadCodeFindingData, drop_used
 from .name_occurrences import IDENTIFIER_RE, occurrence_files
 
 #: Comments and string literals, raw strings included, so ``"http://x"`` and a
@@ -59,9 +58,6 @@ _RECEIVER = re.compile(rb"^\s*func\s*\(([^)]*)\)")
 #: arm. Neither can be a use of a function or a type, the kinds judged here.
 _KEY = re.compile(rb"\s*:(?!=)")
 _CASE = re.compile(rb"^\s*case\b")
-#: The rest of a short variable declaration (``name, err :=``): a local that
-#: shadows the package-level name, not a use of it.
-_SHORT_DECL = re.compile(rb"(?:\s*,\s*[A-Za-z_]\w*)*\s*:=")
 _NOT_NEWLINE = re.compile(rb"[^\n]")
 
 
@@ -197,7 +193,6 @@ def _uses_on_line(
         match.group() == token
         and match.start() not in declared
         and not _is_key(line, match.end())
-        and not _SHORT_DECL.match(line, match.end())
         and _qualified_as(line, match.start(), qualifiers)
         for match in IDENTIFIER_RE.finditer(line)
     )
@@ -267,10 +262,17 @@ def drop_go_package_uses(
     findings: list[DeadCodeFindingData], source_map: Mapping[str, bytes], graph: Any
 ) -> list[DeadCodeFindingData]:
     """Drop Go symbol findings their package or an importer names. Returns a new list."""
-    candidates = [f for f in findings if f.is_spanned_symbol and f.file_path.endswith(".go")]
+    candidates = [f for f in findings if _is_candidate(f)]
     if not candidates or not source_map:
         return findings
-    wanted = {f.symbol_name.encode() for f in candidates if f.symbol_name.isascii()}
-    uses = _GoUses(source_map, graph, wanted)
-    dropped = {id(f) for f in candidates if f.symbol_name.isascii() and uses.is_used(f)}
-    return [f for f in findings if id(f) not in dropped]
+    uses = _GoUses(source_map, graph, {f.symbol_name.encode() for f in candidates})
+    return drop_used(findings, candidates, uses.is_used)
+
+
+def _is_candidate(finding: DeadCodeFindingData) -> bool:
+    """A spanned Go symbol finding whose name the identifier scan can see."""
+    return (
+        finding.is_spanned_symbol
+        and finding.file_path.endswith(".go")
+        and finding.symbol_name.isascii()
+    )

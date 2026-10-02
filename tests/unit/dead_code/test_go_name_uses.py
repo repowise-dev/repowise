@@ -86,11 +86,6 @@ def test_comment_and_strings_in_a_sibling_are_not_uses():
     assert _parser_case(one_word) == {"parsePubspec"}
 
 
-def test_a_local_declared_with_the_same_name_is_not_a_use():
-    local = b"package dart\n\nfunc f() {\n\tparsePubspec, err := 5, 6\n\t_ = err\n}\n"
-    assert _parser_case(local) == {"parsePubspec"}
-
-
 def test_selector_on_something_else_is_not_a_use():
     assert _parser_case(b"package dart\n\nvar f = other.parsePubspec\n") == {"parsePubspec"}
 

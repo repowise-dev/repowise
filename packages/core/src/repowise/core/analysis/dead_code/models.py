@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -51,6 +52,16 @@ class DeadCodeFindingData:
             and self.start_line is not None
             and self.end_line is not None
         )
+
+
+def drop_used(
+    findings: list[DeadCodeFindingData],
+    candidates: list[DeadCodeFindingData],
+    is_used: Callable[[DeadCodeFindingData], bool],
+) -> list[DeadCodeFindingData]:
+    """*findings* without the *candidates* that *is_used* holds for. Returns a new list."""
+    dropped = {id(f) for f in candidates if is_used(f)}
+    return [f for f in findings if id(f) not in dropped]
 
 
 @dataclass
