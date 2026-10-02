@@ -592,19 +592,22 @@ def code_origin(
         and _third_party_header(header, project)
     ):
         return "vendored"
+    return _maintained_origin(normalized, name, dirs, is_test)
 
+
+def _maintained_origin(
+    normalized: str, name: str, dirs: list[str], is_test: bool | None
+) -> CodeOrigin:
+    """The origin of code this repository maintains: build, test, docs or
+    examples, tooling, or production, in that precedence."""
     if _is_build_name(name, dirs):
         return "build"
-
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
-
     if _is_docs_example(dirs):
         return "docs_example"
-
     if _is_tooling(name, dirs):
         return "tooling"
-
     return "production"
 
 
