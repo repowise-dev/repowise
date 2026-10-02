@@ -180,9 +180,11 @@ class BaseDefUseDialect:
         function's variables, though, so code that moves one of them has to
         see those reads: a span whose closure reads a local needs it passed in,
         and a span defining a local a later closure reads has to return it.
-        Names the nested scope binds as its own parameters are left out; a
-        local it declares that shadows an outer name is not, which can only
-        add a parameter or a return, never drop one.
+        Left out: names the nested scope binds as its own parameters, its own
+        name (a nested ``def``), and locals it writes on a line before it first
+        reads them (``const t2 = v * 2``), which are its own variables. A local
+        written and read on one line is kept, which can only add a parameter or
+        a return, never drop one.
         """
         if node is None:
             return
@@ -190,12 +192,22 @@ class BaseDefUseDialect:
             for child in node.named_children:
                 self.collect_captured_reads(child, out)
             return
-        inner: list[Occurrence] = []
-        for child in node.named_children:
-            self.collect_reads(child, inner)
-            self.collect_captured_reads(child, inner)
-        bound = self._closure_bound_names(node)
-        out.extend(occ for occ in inner if occ.name not in bound)
+        writes: list[Occurrence] = []
+        reads: list[Occurrence] = []
+        body = node.child_by_field_name("body")
+        process = getattr(self, "_process", None)
+        if body is not None and process is not None:
+            # The dialect's own walk tells a declaration from a read.
+            process(body, writes, reads)
+            self.collect_captured_reads(body, reads)
+        else:
+            name = node.child_by_field_name("name")
+            for child in node.named_children:
+                if name is None or child.id != name.id:
+                    self.collect_reads(child, reads)
+                    self.collect_captured_reads(child, reads)
+        bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
+        out.extend(occ for occ in reads if occ.name not in bound)
 
     def _closure_bound_names(self, node: Node) -> set[str]:
         """Names a nested scope binds as its own parameters.
@@ -263,6 +275,14 @@ class BaseDefUseDialect:
         self, node: Node, lmap: LanguageNodeMap, *, head_only: bool
     ) -> StatementDefUse:  # pragma: no cover - abstract
         raise NotImplementedError
+
+
+def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:
+    """Names whose first write comes on an earlier line than their first read."""
+    first_read: dict[str, int] = {}
+    for occ in reads:
+        first_read[occ.name] = min(occ.line, first_read.get(occ.name, occ.line))
+    return {w.name for w in writes if w.line < first_read.get(w.name, w.line + 1)}
 
 
 # The registry, populated by ``dialects/__init__.py`` from each language module.
