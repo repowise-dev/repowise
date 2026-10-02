@@ -964,6 +964,8 @@ class HealthAnalyzer:
                 methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
+            # Every dataflow consumer has read this file by now.
+            dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
             findings.extend(file_findings)
             suggestions.extend(file_suggestions)
@@ -1174,6 +1176,8 @@ class HealthAnalyzer:
                 methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
+            # Every dataflow consumer has read this file by now.
+            dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
             findings.extend(file_findings)
             suggestions.extend(file_suggestions)
