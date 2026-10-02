@@ -480,8 +480,11 @@ class ExtractHelperDetector(RefactoringDetector):
             return None
 
         is_intra = len(occ_files) == 1
-        impact = 0.0 if is_intra else self._cross_file_impact(
-            ctx, occurrences, anchor_region, impact_lookup
+        impact = (
+            0.0
+            if is_intra
+            else self._impact_for_block(anchor_region, impact_lookup)
+            * clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
         )
 
         suggested_site = self._suggested_site(occ_files)
@@ -615,20 +618,6 @@ class ExtractHelperDetector(RefactoringDetector):
                 out.append((int(start), int(end), impact))
         return out
 
-    def _cross_file_impact(
-        self,
-        ctx: RefactoringContext,
-        occurrences: list[tuple[str, int, int]],
-        anchor_region: tuple[int, int],
-        impact_lookup: list[tuple[int, int, float]],
-    ) -> float:
-        cross_lines = union_line_count(
-            clone_ranges(ctx.file_path, ctx.clones, cross_file_only=True)
-        )
-        return self._impact_for_block(anchor_region, impact_lookup) * clone_share(
-            occurrences, ctx.file_path, cross_lines
-        )
-
     @staticmethod
     def _impact_for_block(
         region: tuple[int, int], impact_lookup: list[tuple[int, int, float]]
@@ -641,6 +630,11 @@ class ExtractHelperDetector(RefactoringDetector):
             if start <= f_end and end >= f_start and impact > best:
                 best = impact
         return best
+
+
+def _cross_file_lines(ctx: RefactoringContext) -> int:
+    """Lines of the file covered by clones shared with other files."""
+    return union_line_count(clone_ranges(ctx.file_path, ctx.clones, cross_file_only=True))
 
 
 def clone_share(
