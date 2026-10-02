@@ -550,7 +550,7 @@ def _weighted_graph(
 
     # Signals are added strongest first (see module docstring).
     edges = _EdgeWeights(spine)
-    for a, b in signals.local_pairs:
+    for a, b in sorted(signals.local_pairs):
         edges.add(a, b, _DIRECT_CALL_WEIGHT)
     cochange_edges = _add_cochange_edges(edges, commits_of)
     _add_shared_helper_edges(edges, signals.callers_of)
