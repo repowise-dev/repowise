@@ -160,11 +160,13 @@ def _find_extractions_reference(analysis, lmap):
         Extraction,
         _all_blocks,
         _declared_before_read,
+        _function_lines,
         _infer_in_out,
     _loop_carry_free,
     _outs_definitely_assigned,
         _sorted,
         _span_metrics,
+        _stmts_nloc,
         _unwrap_container,
         _var_lines,
     )
@@ -176,7 +178,8 @@ def _find_extractions_reference(analysis, lmap):
     if body is None:
         return []
     body_container = _unwrap_container(body, lmap.block_kinds)
-    body_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in body_container.named_children)
+    lines = _function_lines(fn_node)
+    body_nloc = _stmts_nloc(body_container.named_children, lines)
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
     decision_kinds = (
@@ -220,7 +223,7 @@ def _find_extractions_reference(analysis, lmap):
                 decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
-                slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
+                slice_nloc = _stmts_nloc(span, lines)
                 if slice_nloc < _MIN_SLICE_NLOC or slice_nloc >= _MAX_BODY_SHARE * body_nloc:
                     continue
                 s = span[0].start_point[0] + 1

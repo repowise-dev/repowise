@@ -16,7 +16,8 @@ branch or a mid-``try`` split), contains no control-flow jump that leaves the
 region (``return`` / ``raise`` / ``break`` / ``continue`` -> single clean exit),
 removes real complexity (at least one decision point), is substantial enough to
 matter without being nearly the whole body, and has at most one return and a
-small parameter list. Everything else is suppressed -- ten great extractions, not two hundred maybes.
+small parameter list. Everything else is suppressed -- ten great extractions,
+not two hundred maybes.
 
 Line-based liveness over D2's def/use occurrences realises the IN/OUT inference;
 the CFG/jump scan realises the single-exit predicate. The jump and nested-scope
@@ -105,10 +106,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     # inside the ``block``); spans covering it whole are not extractions.
     body_container = _unwrap_container(body, lmap.block_kinds)
     lines = _function_lines(fn_node)
-    body_nloc = sum(
-        len(_code_line_numbers(st, lines, drop_docstrings=True))
-        for st in body_container.named_children
-    )
+    max_slice_nloc = _MAX_BODY_SHARE * _stmts_nloc(body_container.named_children, lines)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
@@ -158,9 +156,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 nested_prefix.append(
                     nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
                 )
-                code_prefix.append(
-                    code_prefix[-1] + len(_code_line_numbers(st, lines, drop_docstrings=True))
-                )
+                code_prefix.append(code_prefix[-1] + _stmts_nloc([st], lines))
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -183,7 +179,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
                 slice_nloc = code_prefix[j + 1] - code_prefix[i]
-                if slice_nloc < _MIN_SLICE_NLOC or slice_nloc >= _MAX_BODY_SHARE * body_nloc:
+                if not _MIN_SLICE_NLOC <= slice_nloc < max_slice_nloc:
                     continue
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
@@ -222,6 +218,11 @@ def _function_lines(fn_node: Node) -> list[str]:
     """
     text = (fn_node.text or b"").decode("utf-8", errors="replace")
     return [""] * fn_node.start_point[0] + text.splitlines()
+
+
+def _stmts_nloc(stmts: list[Node], lines: list[str]) -> int:
+    """Code lines of *stmts* by the walker's NLOC rule, summed per statement."""
+    return sum(len(_code_line_numbers(st, lines, drop_docstrings=True)) for st in stmts)
 
 
 def _sorted(candidates: list[Extraction]) -> list[Extraction]:
