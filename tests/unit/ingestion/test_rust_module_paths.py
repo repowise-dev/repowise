@@ -220,42 +220,58 @@ class TestImportedNamesInScope:
         caller = "use crate::a::*;\npub fn go() { other(); }\n"
         assert "src/a.rs::other" in self._callees(tmp_path, caller)
 
-
 class TestModInMacroBody:
-    """``mod foo;`` in a macro body declares ``foo`` once the macro expands."""
+    """``mod foo;`` written in macro tokens declares ``foo`` where the macro runs."""
 
-    def test_only_a_plain_mod_declaration_is_an_import(self) -> None:
+    @staticmethod
+    def _build(repo: Path, sources: dict[str, str]) -> nx.DiGraph:
+        builder = GraphBuilder(repo_path=repo)
+        source_map = {}
+        for rel, body in sources.items():
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+            source_map[rel] = body.encode("utf-8")
+            info = _file_info(rel, str(p.resolve()))
+            builder.add_file(_PARSER.parse_file(info, source_map[rel]))
+        builder.set_source_map(source_map)
+        return builder.build()
+
+    def test_only_plain_declarations_in_a_top_level_call_are_imports(self) -> None:
         body = (
-            "macro_rules! root {\n"
-            "    () => {\n"
-            '        #[cfg_attr(docsrs, path = "x.rs")]\n'
-            "        mod format;\n"
-            "        pub(crate) mod shared;\n"
-            "        mod $name;\n"
-            "        mod inline { }\n"
-            "        let mod_x = 1;\n"
-            "    };\n"
+            "cfg_if::cfg_if! {\n"
+            "    if #[cfg(unix)] { mod unix; } else { pub(crate) mod windows; }\n"
             "}\n"
-            "cfg_if::cfg_if! { if #[cfg(unix)] { mod unix; } else { pub mod windows; } }\n"
-            "fn f() { dsl!(mod e : f;); }\n"
+            "cfg_if! { if #[cfg(x)] { mod $name; mod inline { mod nested; } } }\n"
+            "macro_rules! template { () => { mod templated; }; }\n"
+            "fn f() { cfg_if! { mod in_fn; } }\n"
+            "mod m { cfg_if! { mod in_inline_mod; } }\n"
         )
-        assert _imports(body) == [
-            ("format", ["*"]),
-            ("shared", ["*"]),
-            ("unix", ["*"]),
-            ("windows", ["*"]),
-        ]
+        assert _imports(body) == [("unix", ["*"]), ("windows", ["*"])]
 
-    def test_macro_declared_module_is_reachable(self, tmp_path: Path) -> None:
-        graph = _build(
+    def test_macro_rules_mod_resolves_from_the_calling_file(self, tmp_path: Path) -> None:
+        graph = self._build(
             tmp_path,
             {
-                "src/lib.rs": "mod crate_root;\ncrate_root!();\n",
-                "src/crate_root.rs": "macro_rules! crate_root {\n    () => { mod format; };\n}\n",
+                "src/lib.rs": "#[macro_use]\nmod macros;\ncrate_root!();\n",
+                "src/macros.rs": "macro_rules! crate_root {\n    () => { mod format; };\n}\n",
                 "src/format.rs": "pub struct Buf;\n",
+                "src/macros/format.rs": "pub struct Decoy;\n",
             },
         )
-        assert graph.has_edge("src/crate_root.rs", "src/format.rs")
+        assert graph.has_edge("src/lib.rs", "src/format.rs")
+        assert not graph.has_edge("src/macros.rs", "src/macros/format.rs")
         unused = TestIntraCrateDeadCode()._unused(graph)
         assert "src/format.rs" not in unused
         assert "src/format.rs::Buf" not in unused
+
+    def test_macro_rules_nobody_calls_declares_nothing(self, tmp_path: Path) -> None:
+        graph = self._build(
+            tmp_path,
+            {
+                "src/lib.rs": "macro_rules! unused {\n    () => { mod ghost; };\n}\n",
+                "src/ghost.rs": "pub struct Ghost;\n",
+            },
+        )
+        assert not graph.has_edge("src/lib.rs", "src/ghost.rs")
+        assert "src/ghost.rs" in TestIntraCrateDeadCode()._unused(graph)

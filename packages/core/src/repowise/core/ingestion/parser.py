@@ -984,6 +984,10 @@ def _statement_imports(
         return [_dart_import(stmt_node, module_node, module_text, raw, src)]
     if language == "rust" and stmt_node.type == "use_declaration":
         return _rust_use_imports(stmt_node, module_text, raw, src)
+    if language == "rust" and stmt_node.type == "macro_invocation":
+        from .extractors.bindings.rust import macro_mod_imports
+
+        return macro_mod_imports(module_node, raw)
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
         # wildcard, which keeps the target's exports live.

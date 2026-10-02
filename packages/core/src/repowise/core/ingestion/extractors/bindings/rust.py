@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tree_sitter import Node
 
-from ...models import NamedBinding
+from ...models import Import, NamedBinding
 from ..helpers import node_text
 
 
@@ -12,8 +12,7 @@ def extract_rust_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
     """Extract bindings from Rust use declarations and mod items."""
     # `mod foo;` (without body) declares a child module — treat as wildcard
     # import because all public symbols become accessible via `foo::Name`.
-    # In a macro body the statement is the module name token itself.
-    if stmt_node.type in ("mod_item", "identifier"):
+    if stmt_node.type == "mod_item":
         return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
 
     # `extern crate foo;` or `extern crate foo as bar;`
@@ -121,3 +120,46 @@ def _walk_use_tree(
     exported = path.rsplit("::", 1)[-1]
     if exported and exported != "*":
         leaves.append((path, alias or exported, exported))
+
+
+def macro_mod_imports(token_tree: Node, raw: str) -> list[Import]:
+    """One ``mod`` import per module a macro's tokens declare.
+
+    ``cfg_if! { if #[cfg(unix)] { mod unix; } }`` declares ``unix`` in the
+    module that makes the call, the same as a ``mod unix;`` item there.
+    """
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=name,
+            imported_names=["*"],
+            is_relative=False,
+            resolved_file=None,
+            bindings=[NamedBinding(local_name="*", exported_name=None, source_file=None)],
+        )
+        for name in dict.fromkeys(macro_body_mod_names(token_tree))
+    ]
+
+
+def macro_body_mod_names(token_tree: Node) -> list[str]:
+    """Module names declared in a macro token tree, nested trees included.
+
+    Only the exact tokens ``mod``, a plain name and ``;`` count: a ``$name``
+    metavariable or a ``mod x { ... }`` with a body is no file declaration,
+    and a declaration inside such a body belongs to that inline module, so
+    its tokens are not read.
+    """
+    names: list[str] = []
+    kids = token_tree.children
+    for i, kid in enumerate(kids):
+        if kid.type == "token_tree":
+            if not (i >= 2 and kids[i - 2].type == "mod"):
+                names.extend(macro_body_mod_names(kid))
+        elif (
+            kid.type == "mod"
+            and i + 2 < len(kids)
+            and kids[i + 1].type == "identifier"
+            and kids[i + 2].type == ";"
+        ):
+            names.append(node_text(kids[i + 1], ""))
+    return names
