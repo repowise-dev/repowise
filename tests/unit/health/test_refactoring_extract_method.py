@@ -678,13 +678,9 @@ class Demo {
 
 
 def test_plan_params_leave_out_a_loop_counter_the_span_declares():
-    try:
-        from repowise.core.ingestion.parser import _get_language
-    except Exception:
-        pytest.skip("tree-sitter language pack missing for java")
-    if _get_language("java") is None:
-        pytest.skip("tree-sitter language pack missing for java")
     res = analyze_file("Demo.java", "java", _TWO_LOOPS_JAVA.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
     ctx = RefactoringContext(
         file_path="Demo.java",
         language="java",

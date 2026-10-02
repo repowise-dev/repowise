@@ -256,14 +256,11 @@ def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
     for bdu in def_use.blocks.values():
         for u in bdu.uses:
             key = (u.name, u.line)
-            if key not in first_read or u.column < first_read[key]:
-                first_read[key] = u.column
+            first_read[key] = min(u.column, first_read.get(key, u.column))
     declared: dict[str, set[int]] = defaultdict(set)
     for d in def_use.definitions:
-        if d.declared_at is None:
-            continue
-        read = first_read.get((d.var, d.line))
-        if read is not None and d.declared_at <= read:
+        # No read on the line sorts before any declarator, so it never matches.
+        if d.declared_at is not None and d.declared_at <= first_read.get((d.var, d.line), -1):
             declared[d.var].add(d.line)
     return {var: frozenset(lines) for var, lines in declared.items()}
 
@@ -294,7 +291,7 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            declared = declared_first is not None and first_use in declared_first.get(var, ())
+            declared = first_use in (declared_first or {}).get(var, ())
             if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 
