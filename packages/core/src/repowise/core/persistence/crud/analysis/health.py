@@ -705,36 +705,12 @@ async def get_health_summary(
         }
     avg = nloc_weighted_attr(metrics, "score")
 
-    # Maintainability headline: NLOC-weighted average over the per-file
-    # maintainability scores (skipping rows that predate the split / lack one).
-    # ``None`` when no row carries a maintainability score so the surface reads
-    # "not measured" rather than a misleading 10.0.
-    maint_scored = [m for m in metrics if getattr(m, "maintainability_score", None) is not None]
-    maintainability_average: float | None = None
-    if maint_scored:
-        maint_nloc = sum(max(m.nloc, 1) for m in maint_scored)
-        if maint_nloc:
-            maintainability_average = (
-                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_scored) / maint_nloc
-            )
-        else:
-            maintainability_average = sum(m.maintainability_score for m in maint_scored) / len(
-                maint_scored
-            )
-
-    # Performance headline: same NLOC-weighted average over the per-file
-    # performance scores (static performance RISK). ``None`` when no row carries
-    # a performance score so the surface reads "not measured" rather than 10.0.
+    # The two co-surfaced pillars: the same NLOC weighting over their own
+    # columns, ``None`` when no row carries one so a surface reads "not
+    # measured" rather than a misleading 10.0.
+    maintainability_average = nloc_weighted_attr(metrics, "maintainability_score")
+    performance_average = nloc_weighted_attr(metrics, "performance_score")
     perf_scored = [m for m in metrics if getattr(m, "performance_score", None) is not None]
-    performance_average: float | None = None
-    if perf_scored:
-        perf_nloc = sum(max(m.nloc, 1) for m in perf_scored)
-        if perf_nloc:
-            performance_average = (
-                sum(m.performance_score * max(m.nloc, 1) for m in perf_scored) / perf_nloc
-            )
-        else:
-            performance_average = sum(m.performance_score for m in perf_scored) / len(perf_scored)
 
     # Worst-performance file: the lowest per-file performance score, surfaced only
     # when there is genuine risk (score < 10) so a clean repo shows no actionable
