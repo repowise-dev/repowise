@@ -964,6 +964,11 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 # is a deliberate act.
 _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
+# Languages whose symbols the preprocessor reaches without naming them: a
+# ``typedef struct _X {...} X`` tag used only through ``X``, a function called
+# through a ``#define`` alias or a ``##``-pasted name, an icall table entry.
+_PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
+
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
 # matched against the raw decorator text rather than its base name.
 _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (

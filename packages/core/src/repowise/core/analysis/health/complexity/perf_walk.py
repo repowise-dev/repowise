@@ -19,6 +19,7 @@ registered.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -93,6 +94,73 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # child only — a sink in the lock-object expression
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
+
+# A whole condition that is one null test, and the name it tests: ``x == null``,
+# ``this.x.get() == null``, ``o.x is null`` (the last segment, ``.get()`` stripped).
+_NULL_GUARD = re.compile(
+    r"(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\.get\(\))?"
+    r"\s*(?:===?\s*(?:null|nil|None)|is\s+null)"
+)
+_IF_KINDS = frozenset({"if_statement", "if_expression"})
+# ``x = ...`` / ``x ??= ...`` / ``x.set(...)``: the held body stores the guarded name.
+_ASSIGNS = r"\b{}\s*(?:=(?!=)|\?\?=|\.set\(|\.compareAndSet\()"
+
+
+def _null_guarded_name(node: Node | None) -> str | None:
+    """The name *node* tests when it is exactly ``if (x == null) {...}``, with no ``else``."""
+    if node is None or node.type not in _IF_KINDS or node.child_by_field_name("alternative"):
+        return None
+    cond = node.child_by_field_name("condition")
+    text = (cond.text if cond is not None else b"").decode("utf-8", "replace")
+    guard = _NULL_GUARD.fullmatch(text.strip("() \t\r\n"))
+    return guard.group(1) if guard is not None else None
+
+
+def _sole_statement(body: Node) -> Node | None:
+    """The one statement a held body runs, ignoring comments and a trailing ``return``."""
+    stmts = [c for c in body.children if c.is_named and "comment" not in c.type]
+    if len(stmts) == 2 and stmts[1].type == "return_statement":
+        stmts = stmts[:1]
+    return stmts[0] if len(stmts) == 1 else None
+
+
+def _is_coalescing_assignment(stmt: Node | None) -> bool:
+    """``x ??= Load();``: assigns only when ``x`` is still null."""
+    if stmt is None or stmt.type != "expression_statement":
+        return False
+    return b"??=" in (stmt.text or b"")
+
+
+def _enclosing_statement(lock: Node) -> Node | None:
+    """The statement around *lock*, looking through the block it sits in."""
+    outer = lock.parent
+    if outer is not None and outer.type in _LOCK_BODY_KINDS:
+        outer = outer.parent
+    return outer
+
+
+def _is_memoizing_lock(lock: Node) -> bool:
+    """The lock only makes a one-time initialisation thread-safe.
+
+    The held body assigns the name a null guard tests, where the guard either
+    wraps the lock (``if (x == null) { synchronized (m) { x = ... } }``) or is
+    the whole held body (double-checked locking); or the whole body is
+    ``x ??= Load()``. A trailing ``return`` is allowed. The I/O then runs once,
+    and moving it out of the lock would run it more than once, so such a lock
+    is not a ``blocking_io_under_lock`` region.
+    """
+    body = next((c for c in lock.children if c.type in _LOCK_BODY_KINDS), None)
+    if body is None:
+        return False
+    only = _sole_statement(body)
+    if _is_coalescing_assignment(only):
+        return True
+    held = (body.text or b"").decode("utf-8", "replace")
+    for guard in (only, _enclosing_statement(lock)):
+        name = _null_guarded_name(guard)
+        if name and re.search(_ASSIGNS.format(re.escape(name)), held):
+            return True
+    return False
 
 
 def _perf_func_name(node: Node) -> str | None:
@@ -173,6 +241,63 @@ def _enclosing_loops(
             loops.append(cur)
         cur = cur.parent
     return loops
+
+
+# Loop-header fields that bind the element a for-each loop yields, across the
+# grammars (``left`` Python/JS/C#, ``name`` Java, ``pattern`` Rust/Ruby,
+# ``declarator`` C++ range-for), and the init fields of a counted loop, which
+# bind its index only when they declare (``for (int i = 0; ...)``, not
+# ``for (p = head; ...)``, which walks a list it was handed).
+_ELEMENT_FIELDS = ("left", "name", "pattern", "declarator")
+_INIT_FIELDS = ("initializer", "init")
+# Go keeps both shapes in a child clause; Kotlin declares the element unfielded.
+_LOOP_CLAUSE_KINDS = frozenset({"range_clause", "for_clause"})
+
+
+def _identifiers(node: Node) -> set[bytes]:
+    """Every identifier under *node*, type names excluded."""
+    names: set[bytes] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.type.endswith("identifier") and cur.type != "type_identifier" and cur.text:
+            names.add(cur.text)
+        stack.extend(cur.children)
+    return names
+
+
+def _bound_in(part: Node) -> set[bytes]:
+    """Names one loop-header part binds through an element field or a declaring init field."""
+    nodes = [part.child_by_field_name(field) for field in _ELEMENT_FIELDS]
+    nodes += [
+        node
+        for field in _INIT_FIELDS
+        if (node := part.child_by_field_name(field)) is not None and "declaration" in node.type
+    ]
+    return set().union(*(_identifiers(node) for node in nodes if node is not None))
+
+
+def _loop_bound_names(loop: Node) -> set[bytes]:
+    """The element or index names *loop*'s header binds; empty for a ``while`` loop."""
+    parts = [loop, *(c for c in loop.children if c.type in _LOOP_CLAUSE_KINDS)]
+    unfielded = [c for c in loop.children if c.type == "variable_declaration"]
+    return set().union(*(_bound_in(p) for p in parts), *(_identifiers(c) for c in unfielded))
+
+
+def _loop_key_feeds(call: Node, loop: Node) -> bool:
+    """The loop's element or index appears in *call*, which makes the call per-key.
+
+    A retry or fallback loop (``while (true)``, ``while (tries < max)``), a
+    partial-write loop and a walk down a list handed in bind no element, so
+    nothing per-key reaches the call and there is no set of keys to batch. A key
+    that reaches the call only through a derived local is not counted (recall
+    ceiling).
+    """
+    return bool(_loop_bound_names(loop) & _identifiers(call))
+
+
+def _key_unused(hit: PerfHit) -> bool:
+    return hit.loop is not None and hit.loop.key_unused
 
 
 def _overrides(dialect: BasePerfDialect, hook: str) -> bool:
@@ -293,9 +418,13 @@ def _collect_perf_hits(
             return "grows_with_data"
         return "bounded" if found == {"bounded"} else "unknown"
 
-    def loop_facts(node: Node, sink: bool) -> LoopFacts | None:
-        """Facts of *node*'s innermost loop; batch and bound only mean something at a sink."""
-        if not do_loop_facts:
+    def loop_facts(node: Node, sink: bool, per_call: bool = False) -> LoopFacts | None:
+        """Facts of *node*'s innermost loop; batch and bound only mean something at a sink.
+
+        *per_call* marks the call each iteration makes, a sink or a helper that
+        reaches one: only there does it matter whether the loop's key feeds it.
+        """
+        if not (do_loop_facts or per_call):
             return None
         loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
         if not loops:
@@ -306,6 +435,7 @@ def _collect_perf_hits(
             magnitude=magnitude(loops) if do_magnitude else "unknown",
             batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
             concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
+            key_unused=per_call and not _loop_key_feeds(node, loop),
         )
         return facts if facts != LoopFacts() else None
 
@@ -463,7 +593,7 @@ def _collect_perf_hits(
             )
             if kind is not None:
                 if loop_depth >= 1:
-                    facts = loop_facts(call_node, sink=True)
+                    facts = loop_facts(call_node, sink=True, per_call=True)
                     hits.append(
                         PerfHit("io_in_loop", line, next_func, kind, func_start=next_start, loop=facts)
                     )
@@ -549,7 +679,7 @@ def _collect_perf_hits(
                             targets[method] = line
                             if loop_line:
                                 call_loop_lines.setdefault(next_start, {})[line] = loop_line
-                            facts = loop_facts(call_node, sink=False)
+                            facts = loop_facts(call_node, sink=False, per_call=True)
                             if facts is not None:
                                 call_facts.setdefault(next_start, {})[line] = facts
                 if do_lock_io and lock_depth >= 1 and method:
@@ -613,7 +743,9 @@ def _collect_perf_hits(
         # Only its BLOCK body runs with the lock held — a sink in the lock-object
         # expression (``synchronized(repo.find(id)){…}``) runs before the lock is
         # taken — so ``lock_depth`` is raised per-child, for the body block only.
-        entering_lock = do_lock_io and dialect.is_lock_scope(node)
+        entering_lock = (
+            do_lock_io and dialect.is_lock_scope(node) and not _is_memoizing_lock(node)
+        )
 
         if is_loop:
             # The outermost loop in a nest fixes ``outer_iter``; deeper loops
@@ -690,15 +822,18 @@ def _collect_perf_hits(
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
     # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
-    # one logical query, one finding. Collapse per (kind, line, function).
-    seen: set[tuple[str, int, str | None]] = set()
+    # one logical query, one finding. Collapse per (kind, line, function),
+    # keeping a call the loop's key reaches when one of them does.
+    kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
     for h in _name_lambda_hits(hits, lambda_spans):
         key = (h.kind, h.line, h.function)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(h)
+        at = kept.get(key)
+        if at is None:
+            kept[key] = len(deduped)
+            deduped.append(h)
+        elif _key_unused(deduped[at]) and not _key_unused(h):
+            deduped[at] = h
     deduped.sort(key=lambda h: (h.line, h.kind))
 
     fn_facts = [
