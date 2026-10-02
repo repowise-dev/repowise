@@ -39,7 +39,7 @@ DISPATCH_SHARE = 0.6
 WORTH_MAGNITUDE = 2
 #: From this size (CCN 80, 400 lines or nesting 8) a function is worth doing
 #: first whatever its branching looks like: a dispatch that big has arms worth
-#: splitting out, and a straight sequence that long is a module in one body.
+#: splitting out. Length with simple control flow stays lower priority.
 EXTREME_MAGNITUDE = 3
 #: A function at least this branchy and this deep is worth doing first even
 #: under the size bars: tangled, not just long.
@@ -194,8 +194,8 @@ def low_priority(
     both branchy and deep (CCN 25 and nesting 5), or when it is past
     :data:`EXTREME_MAGNITUDE` whatever its branching. An else-if or ternary
     chain is flat however deep it counts; length with CCN under 20 and nesting
-    under 5 is a table or a straight sequence. Other kinds keep their own
-    rules, so they get ``None``.
+    under 5 is a table or a straight sequence, however long. Other kinds keep
+    their own rules, so they get ``None``.
     """
     if marker in _DESIGN_MARKERS:
         return "design"
@@ -216,6 +216,10 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
     if _chained(shape):
         return "chain"
     size = worth_size(shape)
+    # Past the bar on length alone, however long: wiring, a table, a sequence.
+    simple = shape.get("ccn", 0) < SIZE_CCN[0] and shape.get("max_nesting", 0) < SIZE_NESTING[0]
+    if size >= WORTH_MAGNITUDE and simple:
+        return "straight"
     if size >= EXTREME_MAGNITUDE:
         return None
     if dispatch_shaped(shape):
@@ -224,9 +228,6 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
         return None
     if size < WORTH_MAGNITUDE:
         return "deep_block" if magnitude(shape) >= WORTH_MAGNITUDE else "near_bar"
-    # Past the bar on length alone.
-    if shape.get("ccn", 0) < SIZE_CCN[0] and shape.get("max_nesting", 0) < SIZE_NESTING[0]:
-        return "straight"
     return None
 
 

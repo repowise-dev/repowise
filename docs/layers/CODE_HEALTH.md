@@ -691,8 +691,8 @@ read "value within later" and its shape-only size. A function-size problem is
 8 counts only in a function of 100 lines or more) and not both CCN 25 and nesting
 5; when one dispatch on one value holds 60% of its decisions; when its nesting is
 one else-if or ternary chain; or when it is long with CCN under 20 and nesting
-under 5. From CCN 80, 400 lines or nesting 8 a function is worth doing whatever
-its branching. A complex condition and a single error site (a swallowed or broad
+under 5, however long. Otherwise, from CCN 80, 400 lines or nesting 8 a
+function is worth doing whatever its branching. A complex condition and a single error site (a swallowed or broad
 catch, an unwrap or panic) are `later` too: each is a local fix. The same rule orders the
 default findings list (`get_health`, the REST findings list): findings worth doing
 first lead, and each other one carries `lower_priority`, the reason it can wait.

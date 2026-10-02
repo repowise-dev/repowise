@@ -29,7 +29,9 @@ from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority,
         ("large_method", {"ccn": 18, "nloc": 212, "max_nesting": 3}, "straight"),
         # Extreme size is worth doing whatever the branching looks like.
         ("complex_method", {"ccn": 530, "nloc": 2564, "max_nesting": 9, "dispatch_pct": 90}, None),
-        ("large_method", {"ccn": 13, "nloc": 809, "max_nesting": 3}, None),
+        # Length alone stays lower priority however long it is.
+        ("large_method", {"ccn": 13, "nloc": 809, "max_nesting": 3}, "straight"),
+        ("large_method", {"ccn": 14, "nloc": 60, "max_nesting": 3}, "near_bar"),
         # Nesting 8 counts at any length; under it, only past 100 lines.
         ("nested_complexity", {"ccn": 12, "nloc": 34, "max_nesting": 8}, None),
         ("nested_complexity", {"ccn": 12, "nloc": 99, "max_nesting": 6}, "deep_block"),
