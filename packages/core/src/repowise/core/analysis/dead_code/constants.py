@@ -147,9 +147,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Source-generator output directories, wired in at build time.
     "*/Generated/*.cs",
     "*/generated/*.cs",
-    # .NET reference-assembly sources: public API declarations compiled into
-    # the ref assembly, never imported by the implementation they describe.
-    "*/ref/*.cs",
     # Win32 P/Invoke surfaces, reached only via `[DllImport]` calls.
     "*NativeMethods.cs",
     "*SafeNativeMethods.cs",

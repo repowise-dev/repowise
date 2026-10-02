@@ -87,11 +87,9 @@ def test_near_misses_stay_flaggable(path):
         "src/native/external/zlib/trees.c",
         "src/Monaco/monacoSRC/min/vs/base/common/worker/simpleWorker.nls.de.js",
         "x-pack/plugin/esql/src/main/generated/org/x/FooEvaluator.java",
-        # .NET reference-assembly sources declare API the implementation provides.
-        "src/libraries/System.Runtime/ref/System.Runtime.cs",
     ],
 )
-def test_vendored_generated_and_reference_files_are_never_flagged(path):
+def test_vendored_and_generated_files_are_never_flagged(path):
     assert never_flag_path(path)
     assert not _unreachable(path)
 
