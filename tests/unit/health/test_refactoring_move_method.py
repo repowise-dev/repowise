@@ -430,6 +430,7 @@ def test_override_virtual_and_abstract_modifiers_never_move():
         ("cs", "csharp", ("public", "virtual")),
         ("cs", "csharp", ("public", "abstract")),
         ("kt", "kotlin", ("override",)),
+        ("kt", "kotlin", ("open",)),
         ("vb", "vbnet", ("public", "overrides")),
     ):
         g = _envy_graph_in(ext, language)
@@ -445,6 +446,25 @@ def test_csharp_static_class_is_never_a_move_target():
     g = _java_envy_graph()
     g.nodes["T.java::T"].update(language="java", modifiers=("static",))
     assert len(_detect_java(g)) == 1
+
+
+def test_static_written_on_another_partial_fragment_of_the_target():
+    g = _envy_graph_in("cs", "csharp")
+    g.add_node("T.Part.cs", node_type="file")
+    g.add_node(
+        "T.Part.cs::T",
+        node_type="symbol",
+        kind="class",
+        name="T",
+        file_path="T.Part.cs",
+        language="csharp",
+        modifiers=("public", "static", "partial"),
+    )
+    assert len(_detect_in(g, "C.cs", "csharp")) == 1  # unlinked fragment: no say
+    g.add_edge(
+        "T.cs", "T.Part.cs", edge_type="imports", imported_names=["T"], hint_source="partial_class"
+    )
+    assert _detect_in(g, "C.cs", "csharp") == []
 
 
 def test_other_partial_fragments_of_the_own_class_are_home():

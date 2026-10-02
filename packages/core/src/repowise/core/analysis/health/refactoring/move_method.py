@@ -94,9 +94,10 @@ _OVERRIDE_DECORATOR = re.compile(r"@(?:[\w.]+\.)?[Oo]verride\b")
 # Keyword modifiers (``Symbol.modifiers``) that bind a member to a type
 # hierarchy: it overrides a base member (C#, Kotlin, Swift, Scala, TypeScript
 # ``override``; VB.NET ``Overrides``) or is declared for subclasses to
-# override (``virtual`` / ``abstract``; VB.NET ``Overridable`` / ``MustOverride``).
+# override (C# ``virtual``, Kotlin/Swift ``open``, ``abstract``; VB.NET
+# ``Overridable`` / ``MustOverride``).
 _CONTRACT_MODIFIERS = frozenset(
-    {"override", "overrides", "virtual", "overridable", "abstract", "mustoverride"}
+    {"override", "overrides", "virtual", "open", "overridable", "abstract", "mustoverride"}
 )
 # The class modifier that makes a type instance-less, per language: a C#
 # ``static class`` holds only static helpers, like a ``*Util`` class. Java's
@@ -226,13 +227,24 @@ def _builds(graph: Any, class_id: str, accessed: set[str]) -> bool:
     )
 
 
+def _is_static_holder(graph: Any, class_id: str) -> bool:
+    """A C# ``static class``. C# lets one ``partial`` fragment carry the
+    ``static`` for all of them, so every fragment is asked."""
+    node = _node(graph, class_id) or {}
+    modifier = _STATIC_HOLDER_MODIFIER.get(node.get("language") or "")
+    if modifier is None:
+        return False
+    file_path, _sep, name = class_id.rpartition("::")
+    fragments = _partial_fragments(graph, file_path, name) | {class_id}
+    return any(modifier in ((_node(graph, f) or {}).get("modifiers") or ()) for f in fragments)
+
+
 def _never_a_target(graph: Any, class_id: str) -> bool:
     """An interface, an exception type or a utility class (by name, or a C#
     ``static class``)."""
-    node = _node(graph, class_id) or {}
-    if node.get("kind") in _NON_TARGET_KINDS:
+    if (_node(graph, class_id) or {}).get("kind") in _NON_TARGET_KINDS:
         return True
-    if _STATIC_HOLDER_MODIFIER.get(node.get("language") or "") in (node.get("modifiers") or ()):
+    if _is_static_holder(graph, class_id):
         return True
     names = [_class_name(graph, class_id)]
     names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]

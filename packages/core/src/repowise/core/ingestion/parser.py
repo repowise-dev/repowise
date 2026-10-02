@@ -25,6 +25,7 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Iterable
 from dataclasses import replace
 from functools import cache
@@ -796,10 +797,13 @@ def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
 def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
     """Lowercased keyword modifiers written in *def_node*'s modifier children.
 
-    Keywords are the leaves of those children (C# ``modifier`` > ``override``,
-    Kotlin ``modifiers`` > ``member_modifier`` > ``override``, VB.NET's leaf
-    ``modifier`` ``Overrides``). Annotations and attributes nested among them
-    are skipped: they are decorators, not modifiers.
+    Keywords are the anonymous leaves of those children (C# ``modifier`` >
+    ``override``, Kotlin ``modifiers`` > ``member_modifier`` > ``override``) or
+    a named leaf that is itself a modifier (VB.NET ``modifier`` ``Overrides``).
+    Named leaves such as Scala's ``protected[this]`` qualifier are not
+    keywords. Annotations and attributes nested among them are skipped: they
+    are decorators, not modifiers. The words are interned: a handful of
+    distinct values repeat on every symbol.
     """
     if not node_types:
         return ()
@@ -811,8 +815,9 @@ def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) ->
             continue
         if node.child_count == 0:
             text = _node_text(node, src).strip()
-            if text.isalpha():
-                words.append(text.lower())
+            keyword = not node.is_named or "modifier" in node.type
+            if keyword and text.isalpha():
+                words.append(sys.intern(text.lower()))
             continue
         stack.extend(reversed(node.children))
     return tuple(words)

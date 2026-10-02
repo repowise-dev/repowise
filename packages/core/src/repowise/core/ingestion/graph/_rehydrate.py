@@ -49,6 +49,12 @@ _NODE_ATTR_KEYS = (
     "parent_symbol_id",
 )
 
+# Symbol attributes ``graph_nodes`` has no column for. They come from the parse
+# alone, so a rehydrated graph takes them back from the re-parse
+# (:meth:`RehydrateMixin.restore_parse_only_attrs`); without them the
+# refactoring detectors lose the ``@Override`` / ``override`` exemptions.
+_PARSE_ONLY_SYMBOL_ATTRS = ("decorators", "modifiers")
+
 
 class RehydrateMixin:
     """Construct a :class:`GraphBuilder` from persisted rows instead of ASTs."""
@@ -130,3 +136,18 @@ class RehydrateMixin:
             metrics=len(metrics) if metrics else 0,
         )
         return builder
+
+    def restore_parse_only_attrs(self, parsed_files: Iterable[Any]) -> None:
+        """Stamp the parse-only symbol attributes back onto rehydrated nodes.
+
+        The first symbol under an id keeps its values, as in ``add_file``,
+        where the first declared overload keeps the node.
+        """
+        nodes = self._graph.nodes  # type: ignore[attr-defined]
+        for parsed in parsed_files:
+            for sym in parsed.symbols:
+                node = nodes.get(sym.id)
+                if node is None:
+                    continue
+                for key in _PARSE_ONLY_SYMBOL_ATTRS:
+                    node.setdefault(key, getattr(sym, key))

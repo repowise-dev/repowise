@@ -159,6 +159,13 @@ _MODIFIER_CASES = (
     ("typescript", "a.ts", b"class A extends B { override f() {} }", {"f": ("override",)}),
     # Java writes ``@Override`` as an annotation; it stays a decorator.
     ("java", "A.java", b"class A { @Override public void f() {} }", {"f": ()}),
+    # Scala access qualifiers name a scope, not a modifier.
+    (
+        "scala",
+        "A.scala",
+        b"class A { protected[this] def f(): Int = 1; override private[pkg] def g() = 2 }",
+        {"f": ("protected",), "g": ("override", "private")},
+    ),
 )
 
 
