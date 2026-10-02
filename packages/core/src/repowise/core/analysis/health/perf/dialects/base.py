@@ -524,45 +524,62 @@ class BasePerfDialect:
         found inside the function the walker's own loop verdict stands.
         """
         exit_kind = self._exit_after(node, loop_kinds)
-        if exit_kind is not None and exit_kind != "break_statement":
+        if exit_kind not in (None, "break_statement"):
             return False
-        skip_innermost = exit_kind is not None
-        seen = False
+        loops = self._enclosing_loops(node, loop_kinds)
+        if not loops:
+            return True
+        for depth, loop in enumerate(loops):
+            if self._rebinds(loop, name):
+                return False
+            if depth or exit_kind is None:
+                return True
+        return False
+
+    def _enclosing_loops(self, node: Node, loop_kinds: frozenset[str]) -> list[Node]:
+        """The loops around *node* inside its own function, innermost first."""
+        loops: list[Node] = []
         cur = node.parent
         while cur is not None and cur.type not in self.scope_kinds:
             if cur.type in loop_kinds:
-                seen = True
-                body = self.loop_body(cur) or cur
-                if any(self.binds_name(n, name) for n in self._walk(body, self.scope_kinds)):
-                    return False
-                if not skip_innermost:
-                    return True
-                skip_innermost = False
+                loops.append(cur)
             cur = cur.parent
-        return not seen
+        return loops
+
+    def _rebinds(self, loop: Node, name: bytes) -> bool:
+        body = self.loop_body(loop) or loop
+        return any(self.binds_name(n, name) for n in self._walk(body, self.scope_kinds))
 
     def _exit_after(self, node: Node, loop_kinds: frozenset[str]) -> str | None:
-        """The exit statement later in the block of the statement holding *node*.
+        """The kind of exit statement later in the block of the statement holding
+        *node*, or ``None``; a ``break`` that only leaves a ``switch`` is none."""
+        parent = node.parent
+        stmt = parent if parent is not None and parent.type == "expression_statement" else node
+        exit_stmt = self._next_exit(stmt)
+        if exit_stmt is None or exit_stmt.type == "continue_statement":
+            return None
+        if exit_stmt.type == "break_statement" and self._in_switch(stmt, loop_kinds):
+            return None
+        return exit_stmt.type
 
-        ``None`` when there is none, when a statement in between can
-        ``continue`` the loop instead, or when the exit is a ``break`` that
-        only leaves a ``switch``.
-        """
-        stmt = node.parent if node.parent is not None and node.parent.type == "expression_statement" else node
+    def _next_exit(self, stmt: Node) -> Node | None:
+        """The first exit statement after *stmt* in its block, unless a statement
+        in between can ``continue`` the loop instead."""
         sib = stmt.next_named_sibling
         while sib is not None and sib.type not in self.exit_kinds:
             if any(n.type == "continue_statement" for n in self._walk(sib, self.scope_kinds)):
                 return None
             sib = sib.next_named_sibling
-        if sib is None or sib.type == "continue_statement":
-            return None
-        if sib.type == "break_statement":
-            cur = stmt.parent
-            while cur is not None and cur.type not in loop_kinds:
-                if cur.type in self.switch_kinds:
-                    return None
-                cur = cur.parent
-        return sib.type
+        return sib
+
+    def _in_switch(self, stmt: Node, loop_kinds: frozenset[str]) -> bool:
+        """A ``switch`` sits between *stmt* and its nearest loop."""
+        cur = stmt.parent
+        while cur is not None and cur.type not in loop_kinds:
+            if cur.type in self.switch_kinds:
+                return True
+            cur = cur.parent
+        return False
 
     def _rhs_is_stringish(self, node: Node) -> bool:
         """True if an augmented-assignment's RHS is provably string-typed.
