@@ -396,7 +396,13 @@ class GoPerfDialect(BasePerfDialect):
 
     @staticmethod
     def _is_buffered_make(call: Node) -> bool:
-        """True if ``call`` is ``make(chan T, N)`` with a positive buffer size."""
+        """True if ``call`` is ``make(chan T, N)`` and ``N`` is not a literal ``0``.
+
+        The size is usually a variable, a field or a call (``nParallel``,
+        ``cfg.Workers``, ``runtime.NumCPU()``), which is taken as a bound. One
+        that happens to be 0 at run time cannot be seen from here and is not
+        claimed; the literal ``0`` is the one size known to be unbuffered.
+        """
         if call.type != "call_expression":
             return False
         fn = call.child_by_field_name("function")
@@ -410,11 +416,10 @@ class GoPerfDialect(BasePerfDialect):
             return False
         size = named[1]
         if size.type != "int_literal" or size.text is None:
-            return False
-        try:
-            return int(size.text.decode("utf-8", "replace")) > 0
-        except ValueError:
-            return False
+            return True
+        digits = size.text.decode("utf-8", "replace").lower().replace("_", "")
+        # 0, 00, 0x0, 0b0, 0o0: no digit other than zero after the base prefix.
+        return any(ch not in "0xob" for ch in digits)
 
     @staticmethod
     def _nearest_for_is_range(node: Node) -> bool:

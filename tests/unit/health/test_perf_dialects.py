@@ -551,6 +551,54 @@ def test_go_goroutine_in_range_loop_but_not_accept_loop():
     assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", count))
 
 
+_GO_SEMAPHORE = (
+    "package p\nfunc f(items []int, n int, cfg Config) {{\n"
+    "\tsem := {make}\n"
+    "\tfor _, it := range items {{\n"
+    "{acquire}"
+    "\t\tgo func() {{ defer func(){{ <-sem }}(); _ = it }}()\n"
+    "\t}}\n}}\n"
+)
+_GO_ACQUIRE = "\t\tsem <- struct{}{}\n"
+
+
+def _go_semaphore_hits(make: str, acquire: str = _GO_ACQUIRE) -> list[tuple[str, str]]:
+    hits = _hits("go", _GO_SEMAPHORE.format(make=make, acquire=acquire))
+    return [hit for hit in hits if hit[0] == "goroutine_in_unbounded_loop"]
+
+
+@pytest.mark.parametrize(
+    "size",
+    ["4", "0x10", "1_000", "n", "nParallel", "cfg.Workers", "runtime.NumCPU()", "n * 2", "int64(n)"],
+)
+def test_go_semaphore_bounds_the_loop_whatever_sizes_it(size):
+    """A semaphore sized from a flag or a config value is the usual form; only
+    an integer literal used to count as a bound (#2966)."""
+    assert _go_semaphore_hits(f"make(chan struct{{}}, {size})") == []
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        "make(chan struct{})",
+        "make(chan struct{}, 0)",
+        "make(chan struct{}, 00)",
+        "make(chan struct{}, 0x0)",
+        "make(chan struct{}, 0b0)",
+        "make(chan struct{}, 0o0)",
+        "make(chan struct{}, 0_0)",
+    ],
+)
+def test_go_unbuffered_channel_is_not_a_semaphore(make):
+    assert _go_semaphore_hits(make) == [("goroutine_in_unbounded_loop", "")]
+
+
+def test_go_semaphore_never_acquired_does_not_bound_the_loop():
+    assert _go_semaphore_hits("make(chan struct{}, n)", acquire="") == [
+        ("goroutine_in_unbounded_loop", "")
+    ]
+
+
 def test_python_list_insert_zero_vs_variable_index():
     front = "def f(xs):\n    out = []\n    for x in xs:\n        out.insert(0, x)\n"
     idx = "def f(xs):\n    out = []\n    for i, x in enumerate(xs):\n        out.insert(i, x)\n"
