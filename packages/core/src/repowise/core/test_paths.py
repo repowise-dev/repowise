@@ -279,45 +279,58 @@ def _has_test_segment(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
-    for seg, orig in zip(segments, original, strict=True):
-        words = _words(seg)
-        head = words[-1] if words else ""
-        if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
-            return True
-        if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
-            return True
-        if _CAMEL_TESTS_HEAD_RE.search(orig):
-            return True
-    return False
+    return any(
+        _is_test_segment(seg, orig, lang_tokens, corroborated)
+        for seg, orig in zip(segments, original, strict=True)
+    )
+
+
+def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+    words = _words(seg)
+    head = words[-1] if words else ""
+    if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
+        return True
+    if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
+        return True
+    return _CAMEL_TESTS_HEAD_RE.search(orig) is not None
 
 
 def _has_test_layout(segments: list[str], original: list[str]) -> bool:
     """Whether the directories form a known test layout (``src/test/java``)."""
     rules = _conventions()
-    if any(
+    return (
+        _in_test_project(segments)
+        or any(_contains_run(segments, needle) for needle in rules.dir_paths)
+        or any(
+            _has_wildcard_pair(segments, original, prefix_seg, camel_suffix)
+            for prefix_seg, camel_suffix in rules.dir_wildcards
+        )
+        or any(seg.endswith(rules.dir_suffixes) for seg in original)
+    )
+
+
+def _in_test_project(segments: list[str]) -> bool:
+    return any(
         seg in _TEST_PROJECT_CONTAINERS and segments[i + 2] == "src"
         for i, seg in enumerate(segments[:-2])
-    ):
-        return True
+    )
 
-    for needle in rules.dir_paths:
-        span = len(needle)
-        if span <= len(segments) and any(
-            tuple(segments[i : i + span]) == needle for i in range(len(segments) - span + 1)
-        ):
-            return True
 
-    for prefix_seg, camel_suffix in rules.dir_wildcards:
-        for i in range(len(segments) - 1):
-            nxt = original[i + 1]
-            if (
-                segments[i] == prefix_seg
-                and nxt.endswith(camel_suffix)
-                and len(nxt) > len(camel_suffix)
-            ):
-                return True
+def _contains_run(segments: list[str], needle: tuple[str, ...]) -> bool:
+    span = len(needle)
+    return any(tuple(segments[i : i + span]) == needle for i in range(len(segments) - span + 1))
 
-    return any(seg.endswith(rules.dir_suffixes) for seg in original)
+
+def _has_wildcard_pair(
+    segments: list[str], original: list[str], prefix_seg: str, camel_suffix: str
+) -> bool:
+    """``src/*Test``: a *prefix_seg* directly above a name ending in *camel_suffix*."""
+    return any(
+        segments[i] == prefix_seg
+        and original[i + 1].endswith(camel_suffix)
+        and len(original[i + 1]) > len(camel_suffix)
+        for i in range(len(segments) - 1)
+    )
 
 
 def _classify(path: str, language: str | None) -> str:
