@@ -239,6 +239,15 @@ def test_break_cycle_needs_the_import_line() -> None:
     assert lined.lead.action.steps[0].text == "Cut the import of b.py in a.py (line 7)"
 
 
+def test_an_idiomatic_cycle_is_never_a_cut_to_make() -> None:
+    edges = [{"from": "src/a.py", "to": "src/b.py", "line": 7}]
+    plan = {"cut_edges": edges, "idiom": "same_directory"}
+    assert _refactor_queue("break_cycle", plan).totals.excluded["no_concrete_step"] == 1
+    text = _step_text("break_cycle", plan)
+    assert text.startswith("Optional:") and "idiomatic" in text
+    assert "Cut the import" not in text
+
+
 def test_split_file_needs_named_groups() -> None:
     unnamed = {"groups": [{"symbols": ["a", "b"]}]}
     assert _refactor_queue("split_file", unnamed).totals.excluded["no_concrete_step"] == 1

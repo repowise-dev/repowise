@@ -594,7 +594,7 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
             f"Cut the import of {text.basename(edge['to'])} in "
             f"{text.basename(edge['from'])} (line {edge['line']})"
             if edge
-            else f"Break the import cycle at {text.basename(path)}"
+            else _uncut_cycle_text(path, plan)
         )
     elif kind == "move_method":
         dest = _plan_body(plan).get("to_class") or text.basename(
@@ -609,8 +609,24 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
     return FixStep(order, line_text, path, start or step.get("line_start"), mechanical)
 
 
+def _uncut_cycle_text(path: str, plan: Any) -> str:
+    """A cycle step with no import line to cut, labelled when it is idiomatic."""
+    if _plan_body(plan).get("idiom"):
+        return (
+            f"Optional: {text.basename(path)} is in an import cycle within one "
+            "directory, which is idiomatic in this language"
+        )
+    return f"Break the import cycle at {text.basename(path)}"
+
+
 def _cut_edge(plan: Any) -> dict[str, Any] | None:
-    """The first cut edge whose import line is stored."""
+    """The first cut edge whose import line is stored.
+
+    An idiomatic cycle (one directory of a language that compiles mutual
+    references in one pass) has no edge to cut, so it never reads as a must-do.
+    """
+    if _plan_body(plan).get("idiom"):
+        return None
     for edge in _plan_body(plan).get("cut_edges") or ():
         if isinstance(edge, dict) and edge.get("line") and edge.get("from") and edge.get("to"):
             return edge
@@ -828,7 +844,8 @@ def _refactor_measure(
             f"{evidence.get('group_count') or 'several'} loosely coupled groups"
         )
     if kind == "break_cycle" and evidence.get("cycle_size"):
-        return f"{name} is in an import cycle of {evidence['cycle_size']} files"
+        idiom = " within one directory (idiomatic)" if evidence.get("idiom") else ""
+        return f"{name} is in an import cycle of {evidence['cycle_size']} files{idiom}"
     if kind == "extract_class" and evidence.get("method_count"):
         return (
             f"{sym}: {evidence['method_count']} methods in "

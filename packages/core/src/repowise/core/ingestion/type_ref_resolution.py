@@ -43,13 +43,12 @@ language tag.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from .cohesion import withdraw_declaration_hint
+from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import ParsedFile
 
 if TYPE_CHECKING:
@@ -118,13 +117,14 @@ def _stamp_local_type_uses(graph: nx.DiGraph, from_path: str, names: set[str]) -
 # or imported type of that name. A JVM policy class with its own nested
 # ``Node`` means that ``Node``, never a sibling's; a Kotlin ``expect class`` and
 # its platform ``actual`` each name their own declaration; a C# class naming
-# itself means itself, not a same-named class in another project. Resolving
-# those names elsewhere minted edges in both directions between unrelated
-# files, which read as dependency cycles.
+# itself means itself, not a same-named class in another project. The
+# strategies below resolve such names to another file anyway, which minted
+# edges in both directions between files that never name each other.
 #
-# Ceiling: the head extractor drops qualifiers, so ``Other.Node`` written in a
-# file that also declares ``Node`` binds to the local one and loses the edge to
-# ``Other``. Upgrade path: keep the qualifier on ``TypeReference``.
+# Those edges are only kept out of cycle detection (see :data:`OWN_TYPE_NAME_HINT`):
+# call resolution and dead code read them as scope, and dropping them moved
+# call edges onto worse candidates. Upgrade path: resolve own names to the file
+# itself in every strategy once call resolution no longer leans on them.
 _OWN_TYPE_FIRST_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "csharp"})
 
 # Symbol kinds that declare a type name. Properties and fields are left out on
@@ -135,28 +135,28 @@ _TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
 )
 
 
-def _without_own_type_refs(parsed: ParsedFile, graph: nx.DiGraph) -> ParsedFile:
-    """*parsed* minus the type references that name a type it declares itself.
+def _mark_own_name_edges(parsed: ParsedFile, graph: nx.DiGraph) -> None:
+    """Stamp each ``type_use`` edge whose every type name *parsed* declares itself.
 
-    The dropped names are stamped as local uses, except a reference inside the
-    span of the declaration it names (``class Foo { Foo next; }``): a type
-    naming itself is not a use of it.
+    Such an edge carries no reference the file could not satisfy on its own,
+    so it cannot close a dependency cycle. An edge with one name the file does
+    not declare is real evidence and is left alone.
     """
-    spans: dict[str, list[tuple[int, int]]] = {}
-    for sym in parsed.symbols:
-        if sym.name and sym.kind in _TYPE_DECLARATION_KINDS:
-            spans.setdefault(sym.name, []).append((sym.start_line, sym.end_line))
-    kept = [ref for ref in parsed.type_refs if ref.type_name not in spans]
-    if len(kept) == len(parsed.type_refs):
-        return parsed
-    used_here = {
-        ref.type_name
-        for ref in parsed.type_refs
-        if ref.type_name in spans
-        and not any(start <= ref.line <= end for start, end in spans[ref.type_name])
-    }
-    _stamp_local_type_uses(graph, parsed.file_info.path, used_here)
-    return replace(parsed, type_refs=kept)
+    own = {s.name for s in parsed.symbols if s.name and s.kind in _TYPE_DECLARATION_KINDS}
+    if not own:
+        return
+    src = parsed.file_info.path
+    if not graph.has_node(src):
+        return
+    for _, _, data in graph.out_edges(src, data=True):
+        names = data.get("type_uses")
+        if (
+            data.get("edge_type") == "type_use"
+            and "hint_source" not in data
+            and names
+            and own.issuperset(names)
+        ):
+            data["hint_source"] = OWN_TYPE_NAME_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -849,9 +849,9 @@ def resolve_type_refs(
         strategy = _STRATEGIES.get(lang)
         if strategy is None:
             continue
-        if lang in _OWN_TYPE_FIRST_LANGUAGES:
-            parsed = _without_own_type_refs(parsed, graph)
         emitted = strategy(parsed, ctx, graph, defined_names)
+        if lang in _OWN_TYPE_FIRST_LANGUAGES:
+            _mark_own_name_edges(parsed, graph)
         if emitted:
             counts[lang] = counts.get(lang, 0) + emitted
     if counts:

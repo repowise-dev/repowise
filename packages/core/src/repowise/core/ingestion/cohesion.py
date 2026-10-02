@@ -45,6 +45,12 @@ DOC_COMMENT_HINT = "doc_comment"
 #: (:func:`withdraw_declaration_hint`).
 MODULE_DECLARATION_HINT = "module_declaration"
 
+#: Hint stamped on a Java, Kotlin or C# ``type_use`` edge whose every type name
+#: the source file declares itself (two classes that each nest a ``Node``, an
+#: ``expect``/``actual`` pair). The language binds those names to the file's own
+#: declaration, so the edge depends on nothing in its target.
+OWN_TYPE_NAME_HINT = "own_type_name"
+
 #: Languages whose import statement names a *compilation unit* that is exactly a
 #: directory, so a fan-out landing in the importer's own directory landed on its
 #: siblings — and a unit cannot depend on itself.
@@ -86,6 +92,7 @@ COHESION_HINTS: frozenset[str] = frozenset(
         DOC_COMMENT_HINT,  # PHP name seen only in a comment: not co-membership,
         # but the same split applies (reachability yes, cycle no)
         MODULE_DECLARATION_HINT,  # Rust parent module declaring its child
+        OWN_TYPE_NAME_HINT,  # JVM / C# name the source file declares itself
     }
 )
 

@@ -492,8 +492,6 @@ def _rust_head_type_identifier(type_node: Node, src: str) -> str | None:
         ``std::io::Error``      -> "Error"  (rightmost component)
         ``u32`` / ``String``    -> None     (builtin)
         ``T``                   -> None     (single-letter generic param)
-        ``Self::Ok`` / ``S::Ok`` -> None    (associated type of Self or a param)
-        ``Seq<Ok = X>`` binding -> "X"      (the bound type, not the name)
 
     Generic arguments are not recursed into: ``Vec<Foo>`` yields the head
     ``Vec`` only. Foo reaches the resolver through its own capture, matching
@@ -507,18 +505,8 @@ def _rust_head_step(node: Node, src: str) -> str | Node | None:
     if kind == "type_identifier":
         return node_text(node, src)
     if kind == "scoped_type_identifier":
-        # ``std::io::Error``: the type is the rightmost component. ``Self::Ok``
-        # and ``S::Ok`` (single-letter generic param, the rule ``T`` follows)
-        # name an associated type, never a type another file declares.
-        path = node.child_by_field_name("path")
-        path_text = node_text(path, src) if path is not None else ""
-        if path_text == "Self" or (len(path_text) == 1 and path_text.isupper()):
-            return None
+        # ``std::io::Error`` — the type is the rightmost component.
         return node.child_by_field_name("name")
-    if kind == "type_binding":
-        # ``Ok = X`` inside type arguments names the associated type ``Ok`` of
-        # the trait; only the bound type ``X`` is a reference.
-        return node.child_by_field_name("type")
     if kind in ("reference_type", "pointer_type", "generic_type"):
         # ``&T`` / ``&mut T`` / ``*const T`` put the referent in the type
         # field (``mut`` and ``const`` are unnamed children), and

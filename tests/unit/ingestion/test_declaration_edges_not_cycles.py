@@ -5,7 +5,9 @@ Two shapes produced phantom break-cycle plans:
 * A type name the referencing file declares itself (a nested ``Node`` in two
   sibling Java policies, a Kotlin ``expect``/``actual`` pair, two C# projects
   each with a ``Contributor`` class) was resolved to the *other* file, minting
-  edges in both directions between files that never name each other.
+  edges in both directions between files that never name each other. The
+  edges stay (call resolution and dead code read them) but are stamped so the
+  cycle views skip them.
 * A Rust parent's ``mod child;`` was an ``imports`` edge to the child, so the
   child importing its parent read as a two-file cycle.
 """
@@ -17,7 +19,7 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-from repowise.core.ingestion.cohesion import MODULE_DECLARATION_HINT
+from repowise.core.ingestion.cohesion import MODULE_DECLARATION_HINT, OWN_TYPE_NAME_HINT
 
 
 def _build(repo: Path, files: dict[str, str]) -> GraphBuilder:
@@ -57,11 +59,10 @@ class TestJvmOwnTypeFirst:
             },
         )
         g = b.graph()
-        assert not g.has_edge(_PKG + "LruPolicy.java", _PKG + "FifoPolicy.java")
-        assert not g.has_edge(_PKG + "FifoPolicy.java", _PKG + "LruPolicy.java")
+        for src, dst in (("LruPolicy", "FifoPolicy"), ("FifoPolicy", "LruPolicy")):
+            edge = g.get_edge_data(_PKG + src + ".java", _PKG + dst + ".java")
+            assert edge["hint_source"] == OWN_TYPE_NAME_HINT, edge
         assert _cycles(b) == []
-        # The nested type is still seen as used by its own file.
-        assert "Node" in g.nodes[_PKG + "LruPolicy.java"]["local_type_uses"]
 
     def test_real_same_package_mutual_reference_is_still_a_cycle(self, tmp_path: Path) -> None:
         b = _build(
@@ -84,14 +85,8 @@ class TestJvmOwnTypeFirst:
                 _PKG + "Stats.java": "package com.acme;\npublic class Stats {}\n",
             },
         )
-        assert b.graph().has_edge(_PKG + "Cache.java", _PKG + "Stats.java")
-
-    def test_a_type_naming_itself_is_not_a_local_use(self, tmp_path: Path) -> None:
-        b = _build(
-            tmp_path,
-            {_PKG + "Chain.java": "package com.acme;\npublic class Chain { Chain next; }\n"},
-        )
-        assert "Chain" not in (b.graph().nodes[_PKG + "Chain.java"].get("local_type_uses") or ())
+        edge = b.graph().get_edge_data(_PKG + "Cache.java", _PKG + "Stats.java")
+        assert edge is not None and "hint_source" not in edge
 
     def test_kotlin_expect_and_actual_are_not_a_cycle(self, tmp_path: Path) -> None:
         common = "src/commonMain/kotlin/io/acme/ByteOrder.kt"
@@ -113,7 +108,7 @@ class TestJvmOwnTypeFirst:
 
 
 class TestCSharpOwnTypeFirst:
-    def test_same_named_classes_in_two_projects_do_not_link(self, tmp_path: Path) -> None:
+    def test_same_named_classes_in_two_projects_are_not_a_cycle(self, tmp_path: Path) -> None:
         csproj = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
         src = "src/Core/Contributor.cs"
         tpl = "template/Core/Contributor.cs"
@@ -132,8 +127,10 @@ class TestCSharpOwnTypeFirst:
             },
         )
         g = b.graph()
-        assert not g.has_edge(src, tpl)
-        assert not g.has_edge(tpl, src)
+        for a, z in ((src, tpl), (tpl, src)):
+            edge = g.get_edge_data(a, z)
+            assert edge is None or edge.get("hint_source") == OWN_TYPE_NAME_HINT, edge
+        assert _cycles(b) == []
 
 
 class TestRustModuleDeclaration:
@@ -174,37 +171,3 @@ class TestRustModuleDeclaration:
         assert edge is not None
         assert edge.get("hint_source") != MODULE_DECLARATION_HINT
         assert _cycles(b) == [{"src/ser/mod.rs", "src/ser/impossible.rs"}]
-
-    def test_associated_type_names_do_not_bind_to_a_child_impl(self, tmp_path: Path) -> None:
-        # The parent names ``Self::Ok``, ``S::Error`` and ``Ok = Self::Ok``; the
-        # child declares associated ``type Ok`` / ``type Error`` aliases. None
-        # of that is a parent-to-child dependency.
-        b = _build(
-            tmp_path,
-            {
-                "Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\n',
-                "src/lib.rs": "pub mod ser;\n",
-                "src/ser/mod.rs": (
-                    "mod fmt;\n"
-                    "pub trait Seq { type Ok; }\n"
-                    "pub trait Serializer {\n"
-                    "    type Ok;\n    type Error;\n"
-                    "    type Seq: Seq<Ok = Self::Ok>;\n"
-                    "    fn run<S: Serializer>(s: S) -> Result<S::Ok, S::Error>;\n"
-                    "    fn ok(self) -> Self::Ok;\n}\n"
-                ),
-                "src/ser/fmt.rs": (
-                    "use crate::ser::{Seq, Serializer};\n"
-                    "pub struct Fmt;\npub struct E;\n"
-                    "impl Seq for Fmt { type Ok = (); }\n"
-                    "impl Serializer for Fmt {\n    type Ok = ();\n    type Error = E;\n"
-                    "    type Seq = Fmt;\n"
-                    "    fn run<S: Serializer>(s: S) -> Result<S::Ok, S::Error> { todo!() }\n"
-                    "    fn ok(self) -> Self::Ok {}\n}\n"
-                ),
-            },
-        )
-        edge = b.graph().get_edge_data("src/ser/mod.rs", "src/ser/fmt.rs")
-        assert edge is not None
-        assert edge.get("hint_source") == MODULE_DECLARATION_HINT, edge
-        assert _cycles(b) == []

@@ -251,12 +251,13 @@ def _detect_lang(g: nx.DiGraph, file_path: str, language: str) -> list:
     return [s for s in detect_refactorings(ctx) if s.refactoring_type == "break_cycle"]
 
 
-def test_same_package_java_cycle_is_kept_but_demoted():
+def test_same_directory_java_cycle_is_kept_but_demoted():
     a, b = "src/com/acme/Project.java", "src/com/acme/User.java"
     out = _detect_lang(_import_graph([(a, b), (b, a)]), a, "java")
     assert len(out) == 1
     assert out[0].confidence == "low"
-    assert out[0].evidence["idiom"] == "same_package"
+    assert out[0].evidence["idiom"] == out[0].plan["idiom"] == "same_directory"
+    assert out[0].target_symbol.startswith("cycle[2] (same directory, idiomatic): ")
 
 
 def test_cross_package_java_cycle_is_not_demoted():
