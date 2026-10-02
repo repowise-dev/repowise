@@ -325,6 +325,7 @@ class TestAssemblyScanDiscovery:
                 "Program.cs": (
                     "// builder.Services.AddMediator();\n"
                     'var hint = "call AddMediator() to enable handlers";\n'
+                    'var doc = """\n    services.AddMediator();\n    """;\n'
                 ),
                 "Orders/CreateOrderHandler.cs": (
                     "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
