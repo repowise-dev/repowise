@@ -45,6 +45,12 @@ SAFE_CONFIDENCE_THRESHOLD: float = 0.7
 # below the deletion-ready threshold so no verdict is issued on it.
 NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
 
+# Confidence for an unused export whose absence nothing could have shown: no
+# importer of its file names the symbols it takes (a C ``#include``, a C#
+# ``using``, or no importer at all). Below the deletion-ready threshold, above
+# the review cap: still ranked, never issued as a deletion.
+UNPROVEN_EXPORT_CONFIDENCE: float = 0.6
+
 # Confidence ceiling applied to a finding that carries a runtime-load risk
 # factor. 0.4 is the default ``min_confidence`` floor across CLI, REST router,
 # and MCP tools (which import this value as their single source of truth), so the

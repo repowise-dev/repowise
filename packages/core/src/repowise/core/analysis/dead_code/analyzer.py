@@ -25,6 +25,11 @@ import structlog
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from .c_name_uses import (
+    DEFINITION_HEADER_LINES,
+    DeclarationSites,
+    drop_preprocessed_named_elsewhere,
+)
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
@@ -34,12 +39,13 @@ from .constants import (
     _FRAMEWORK_DECORATORS,
     _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
+    _PREPROCESSED_LANGUAGES,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
     _is_fixture_path,
     never_flag_path,
 )
-from .contract_methods import is_contract_method
+from .contract_methods import is_com_method_implementation, is_contract_method
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
@@ -65,6 +71,7 @@ from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
+    UNPROVEN_EXPORT_CONFIDENCE,
     path_risk_factors,
     risk_evidence,
 )
@@ -471,6 +478,10 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
         "WinMain",  # ANSI WinMain
         "wmain",  # Unicode console main
         "ServiceMain",  # Win32 service entry
+        # Screen savers: scrnsave.lib calls these three by name.
+        "ScreenSaverProc",
+        "ScreenSaverConfigureDialog",
+        "RegisterDialogClasses",
         # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
         # The fuzzer driver invokes these by name via dlsym; no static
         # caller will ever exist.
@@ -712,7 +723,13 @@ class _ExportFile:
     node: Any
     node_data: dict
     symbol_pairs: list[tuple[str, dict]]
-    file_has_importers: bool
+    # An importer names a symbol this file defines, so a name missing from
+    # every importer means something. A C ``#include`` names nothing and a C#
+    # ``using`` names a namespace, so neither says anything about a symbol.
+    importers_name_symbols: bool
+    # Classes holding C# extension methods, called as ``x.Method()`` without
+    # naming the class, so no importer would name them either.
+    extension_containers: frozenset[str]
     imported_as_namespace: bool
     enclosing_ranges: list[tuple[int, int]]
 
@@ -914,6 +931,14 @@ class DeadCodeAnalyzer:
             if on_step:
                 on_step("zombie_packages")
 
+        # First: a C/C++ name written outside its declaration is a use, which
+        # settles the finding before any clamp re-scores it.
+        findings = drop_preprocessed_named_elsewhere(
+            findings,
+            self._source_map,
+            self._preprocessed_declaration_sites(),
+            self._unindexed_identifier_tokens(),
+        )
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
@@ -984,6 +1009,19 @@ class DeadCodeAnalyzer:
 
         return findings
 
+    def _preprocessed_declaration_sites(self) -> DeclarationSites:
+        """Where each C/C++ symbol name is declared: a prototype's whole span, a
+        definition's header lines. An occurrence there is not a use of it."""
+        sites: dict[str, list[tuple[str, int, int]]] = {}
+        for _, data in self.graph.nodes(data=True):
+            if data.get("node_type") != "symbol" or data.get("language") not in _PREPROCESSED_LANGUAGES:
+                continue
+            start, end = data.get("start_line") or 0, data.get("end_line") or 0
+            if not data.get("is_declaration"):
+                end = min(end, start + DEFINITION_HEADER_LINES - 1)
+            sites.setdefault(data.get("name", ""), []).append((data.get("file_path", ""), start, end))
+        return sites
+
     def _unindexed_identifier_tokens(self) -> frozenset[str]:
         """Identifiers appearing in the source files ingestion never read.
 
@@ -1043,7 +1081,9 @@ class DeadCodeAnalyzer:
         if not tokens:
             return findings
 
-        skipped_names = ", ".join(path for path, _ in self._unindexed_source_files[:3])
+        # Sorted so the same skipped set always yields the same evidence text.
+        skipped = sorted(path for path, _ in self._unindexed_source_files)
+        skipped_names = ", ".join(skipped[:3])
         if len(self._unindexed_source_files) > 3:
             skipped_names += f" (+{len(self._unindexed_source_files) - 3} more)"
 
@@ -1303,7 +1343,8 @@ class DeadCodeAnalyzer:
             node=node,
             node_data=node_data,
             symbol_pairs=symbol_pairs,
-            file_has_importers=self.graph.in_degree(node) > 0,
+            importers_name_symbols=self._importers_name_symbols(node, symbols),
+            extension_containers=self._extension_containers(node_data, symbol_pairs),
             imported_as_namespace=self._imported_as_namespace(node, node_data),
             # Function bodies, so nested defs (closures) can be skipped.
             enclosing_ranges=[
@@ -1312,6 +1353,26 @@ class DeadCodeAnalyzer:
                 if sym.get("kind") in ("function", "method", "async_function")
                 and sym.get("end_line", 0) > sym.get("start_line", 0)
             ],
+        )
+
+    def _importers_name_symbols(self, node: Any, symbols: list[dict]) -> bool:
+        """Whether any edge into *node* names a symbol the file defines."""
+        defined = {sym.get("name") for sym in symbols}
+        return any(
+            not defined.isdisjoint(imported)
+            for imported in self._imported_names_by_edge(node, edge_types=None)
+        )
+
+    def _extension_containers(
+        self, node_data: dict, symbol_pairs: list[tuple[str, dict]]
+    ) -> frozenset[str]:
+        """Names of the classes in this file that declare a C# extension method."""
+        if node_data.get("language") not in _CONTAINER_USE_LANGUAGES:
+            return frozenset()
+        return frozenset(
+            sym.get("name", "")
+            for sym_id, sym in symbol_pairs
+            if self._declares_extension_method(sym_id)
         )
 
     def _imported_as_namespace(self, node: Any, node_data: dict) -> bool:
@@ -1329,11 +1390,13 @@ class DeadCodeAnalyzer:
             return False
         return any(file_stem in imported for imported in self._imported_names_by_edge(node))
 
-    def _imported_names_by_edge(self, node: Any) -> Iterator[list[str]]:
-        """``imported_names`` of every ``imports`` edge into *node*."""
+    def _imported_names_by_edge(
+        self, node: Any, edge_types: tuple[str, ...] | None = ("imports",)
+    ) -> Iterator[list[str]]:
+        """``imported_names`` of every edge of *edge_types* into *node* (any type if None)."""
         for pred in self.graph.predecessors(node):
             edge = self.graph.get_edge_data(pred, node, {})
-            if edge.get("edge_type") != "imports":
+            if edge_types is not None and edge.get("edge_type") not in edge_types:
                 continue
             yield edge.get("imported_names", [])
 
@@ -1366,6 +1429,9 @@ class DeadCodeAnalyzer:
         if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
             return False
         if _is_compiler_invoked(sym, sym_name):
+            return False
+        # A COM interface method the runtime calls through the vtable.
+        if is_com_method_implementation(sym.get("signature"), sym.get("language")):
             return False
         if _is_declaration_only(sym):
             return False
@@ -1502,6 +1568,28 @@ class DeadCodeAnalyzer:
             **self._git_fields(str(node)),
         )
 
+    @staticmethod
+    def _import_absence_is_evidence(file_ctx: _ExportFile, sym: dict) -> bool:
+        """Whether a use of *sym* would have shown up as an importer naming it.
+
+        Not when no importer names this file's symbols; not where the
+        preprocessor reaches a symbol through macros, typedef aliases and token
+        pasting; not for a class holding C# extension methods.
+        """
+        return (
+            file_ctx.importers_name_symbols
+            and sym.get("language") not in _PREPROCESSED_LANGUAGES
+            and sym.get("name") not in file_ctx.extension_containers
+        )
+
+    def _declares_extension_method(self, sym_id: str) -> bool:
+        """Whether this container declares a C# extension method (``this T x``)."""
+        return any(
+            data.get("edge_type") == "has_method"
+            and "(this " in (self.graph.nodes[method_id].get("signature") or "")
+            for _, method_id, data in self.graph.out_edges(sym_id, data=True)
+        )
+
     def _unused_export_confidence(
         self, file_ctx: _ExportFile, sym: dict, risk_factors: Any
     ) -> float:
@@ -1510,10 +1598,11 @@ class DeadCodeAnalyzer:
         sym_name = sym.get("name", "")
         if _is_symbol_deprecated(sym_name, sym.get("decorators") or []):
             confidence = 0.3
-        elif file_ctx.file_has_importers:
+        elif self._import_absence_is_evidence(file_ctx, sym):
             confidence = 1.0
         else:
-            confidence = 0.7
+            # Ranked, never deletion-ready.
+            confidence = UNPROVEN_EXPORT_CONFIDENCE
 
         if sym.get("kind") == "interface" and not self._file_has_implementors(node):
             confidence = min(confidence, RISK_CAP_CONFIDENCE)

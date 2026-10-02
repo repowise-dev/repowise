@@ -973,6 +973,11 @@ _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 # needs no ``using``, and one ``using`` stands for every file of the namespace.
 _NAMESPACE_IMPORT_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
+# Languages whose symbols the preprocessor reaches without naming them: a
+# ``typedef struct _X {...} X`` tag used only through ``X``, a function called
+# through a ``#define`` alias or a ``##``-pasted name, an icall table entry.
+_PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
+
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
 # matched against the raw decorator text rather than its base name.
 _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
