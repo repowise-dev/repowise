@@ -72,3 +72,23 @@ def test_dry_violation_picks_worst_clone():
     out = DryViolationDetector().detect(ctx)
     # Active clone wins regardless of size.
     assert out[0].details["worst_clone_partner"] == "c.py"
+
+
+def test_dry_violation_ignores_a_file_cloned_only_with_itself():
+    ctx = _ctx("a.py", [_pair("a.py", "a.py", lines=30)], dup_pct=60.0)
+    assert DryViolationDetector().detect(ctx) == []
+
+
+def test_dry_violation_grades_and_names_only_cross_file_clones():
+    # Intra-file lines 10-39 and 20-49 plus a cross-file clone on 60-71: 52
+    # covered lines at 52%, of which the cross-file clone holds 12.
+    intra = _pair("a.py", "a.py", lines=30)
+    cross = ClonePair("a.py", "b.py", 60, 71, 5, 16, token_count=80)
+    out = DryViolationDetector().detect(_ctx("a.py", [intra, cross], dup_pct=52.0))
+    assert len(out) == 1
+    assert out[0].details["worst_clone_partner"] == "b.py"
+    assert out[0].details["duplication_pct"] == 12.0
+    assert out[0].details["clone_pair_count"] == 1
+    assert out[0].reason.startswith("12% of file duplicated in other files")
+    # The same file below the floor once its own clones stop counting.
+    assert DryViolationDetector().detect(_ctx("a.py", [intra, cross], dup_pct=30.0)) == []

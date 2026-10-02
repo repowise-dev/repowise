@@ -208,7 +208,7 @@
   ],
   "web": [
     {
-      "addresses_primary_problem": false,
+      "addresses_primary_problem": true,
       "affected_files": [
         "handlers.py"
       ],
@@ -244,7 +244,7 @@
       ],
       "file_path": "handlers.py",
       "judgment_steps": 0,
-      "lead_biomarker": "dry_violation",
+      "lead_biomarker": "complex_method",
       "lead_refactoring_type": "extract_method",
       "mechanical_steps": 3,
       "opportunity_id": "refop4_2b1f7e87189e7adb819c",
@@ -252,10 +252,10 @@
         "benefit": 0.249,
         "cost": 3.0,
         "mechanical_share": 0.5,
-        "primary_problem": 0.0,
+        "primary_problem": 0.5,
         "risk": 0.0
       },
-      "rank_score": 0.0934,
+      "rank_score": 0.1245,
       "recoverable_health": 0.249,
       "refactoring_model_version": 4,
       "step_count": 3,
@@ -346,8 +346,8 @@
           "value": 0.5
         },
         {
-          "factor": "benefit",
-          "value": 0.249
+          "factor": "primary_problem",
+          "value": 0.5
         }
       ]
     }
