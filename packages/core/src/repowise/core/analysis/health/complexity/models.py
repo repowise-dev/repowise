@@ -205,7 +205,8 @@ class ErrorHandlingHit:
       the BaseException-only interrupts), regardless of body.
     - ``unsafe_unwrap`` — Rust ``.unwrap()`` / ``.expect()`` /
       ``.unwrap_unchecked()`` calls (latent panic-on-error). Suppressed inside
-      ``#[test]`` / ``#[cfg(test)]`` items.
+      ``#[test]`` / ``#[cfg(test)]`` items and where the call provably cannot
+      panic (a guarded receiver, a ``write!`` into a ``String``).
     - ``panic_macro`` — Rust ``panic!`` / ``unreachable!`` / ``todo!`` /
       ``unimplemented!`` macros (unconditional abort). Suppressed inside tests.
     - ``go_swallow`` — Go empty ``if err != nil {}`` block, or a trailing
@@ -214,6 +215,10 @@ class ErrorHandlingHit:
 
     kind: str
     line: int  # 1-indexed
+    # Rust only: the idiomatic invariant assertion this hit is (``lock_poison``,
+    # ``thread_join``, ``invariant_expect``, ``unreachable``), see
+    # ``complexity.rust_unwrap``. ``None`` for a plain occurrence.
+    idiom: str | None = None
 
 
 @dataclass(frozen=True)

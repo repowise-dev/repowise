@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from . import rust_unwrap
 from .languages import LanguageNodeMap
 from .models import ErrorHandlingHit
 
@@ -183,6 +184,19 @@ def _eh_rust_hit(node: Node) -> bool:
     return False
 
 
+def _eh_rust_append(node: Node, hits: list[ErrorHandlingHit]) -> None:
+    """Record a Rust hit unless it provably cannot panic, labelled with its idiom."""
+    if node.type == "macro_invocation":
+        kind = "panic_macro"
+    elif rust_unwrap.cannot_panic(node):
+        return
+    else:
+        kind = "unsafe_unwrap"
+    hits.append(
+        ErrorHandlingHit(kind, rust_unwrap.anchor_line(node), rust_unwrap.idiom(node))
+    )
+
+
 def _eh_go_cond_is_err_check(cond_text: str) -> bool:
     t = cond_text.replace(" ", "")
     return "err!=nil" in t or "err==nil" in t
@@ -268,7 +282,6 @@ def _eh_visit(
         # a Result/Option into a panic. Different claims → different kinds.
         # ``.unwrap()`` inside a ``#[test]`` is the intended failure signal.
         if not _eh_rust_in_test(node):
-            kind = "panic_macro" if node.type == "macro_invocation" else "unsafe_unwrap"
-            hits.append(ErrorHandlingHit(kind, node.start_point[0] + 1))
+            _eh_rust_append(node, hits)
     elif language == "go" and _eh_go_hit(node):
         hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))
