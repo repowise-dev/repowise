@@ -7,15 +7,15 @@
  * older server.
  */
 export function LowerPriorityTag({ reason }: { reason?: string | null | undefined }) {
-  if (!reason) return null;
-  const text = reason.replace(/^lower priority:\s*/i, "");
+  const text = reason?.trim().replace(/^lower priority:\s*/i, "").trim();
+  if (!text) return null;
   return (
     <span
       data-lower-priority
       className="text-xs text-[var(--color-text-tertiary)]"
       title="Listed after the rest because this can wait. It is still true."
     >
-      Lower priority: {text}
+      Lower priority: {text} (listed after the rest)
     </span>
   );
 }

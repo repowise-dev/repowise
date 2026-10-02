@@ -8,15 +8,15 @@ import { adapter, opportunity, page } from "./fixtures/performance";
 describe("LowerPriorityTag", () => {
   it("shows the reason once, without doubling the prefix", () => {
     render(<LowerPriorityTag reason="lower priority: long, but its control flow is simple" />);
-    expect(screen.getByText("Lower priority: long, but its control flow is simple")).toBeTruthy();
+    expect(screen.getByText(/Lower priority: long, but its control flow is simple/)).toBeTruthy();
   });
 
   it("shows a bare reason under the prefix", () => {
     render(<LowerPriorityTag reason="near the bar" />);
-    expect(screen.getByText("Lower priority: near the bar")).toBeTruthy();
+    expect(screen.getByText(/Lower priority: near the bar/)).toBeTruthy();
   });
 
-  it.each([undefined, null, ""])("renders nothing for %p", (reason) => {
+  it.each([undefined, null, "", "   "])("renders nothing for %p", (reason) => {
     const { container } = render(<LowerPriorityTag reason={reason} />);
     expect(container.firstChild).toBeNull();
   });

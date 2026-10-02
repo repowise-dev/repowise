@@ -47,6 +47,21 @@ function findings(): RefactoringTargetFinding[] {
   ];
 }
 
+describe("RefactoringCard lower priority", () => {
+  it("labels a demoted finding and leaves the others unlabelled", () => {
+    const [a, b] = findings();
+    render(
+      <RefactoringCard
+        target={target({
+          all_findings: [{ ...a!, lower_priority: "lower priority: near the bar" }, b!],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Show all 3 findings/ }));
+    expect(screen.getAllByText(/Lower priority: near the bar/)).toHaveLength(1);
+  });
+});
+
 describe("RefactoringCard lazy findings", () => {
   it("offers the expander from finding_count, without the findings themselves", () => {
     // The list response no longer ships `all_findings`; the expander must not
