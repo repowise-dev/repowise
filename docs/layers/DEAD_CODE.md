@@ -84,6 +84,21 @@ Rust helper is never flagged here. And the `lines` count on file and package fin
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
+### A C or C++ name written anywhere else is a use
+
+C, C++ and Objective-C symbols are used in ways that carry no edge: a callback
+passed to `SetTimer`, a function reached through a `#define` alias, a P/Invoke
+export named in a C# `[LibraryImport]`, an icall registered in a table header,
+a `.def` EXPORTS line, an assembly label. So an `unused_export` or
+`unused_internal` in these languages is dropped when any of the names its
+declaration introduces is written outside a declaration of it, in any code
+file or in a `.def`, `.asm` or `.s` file. A typedef contributes its tag and
+every alias (`typedef struct _X {...} X, *PX;`), and an enum its enumerators.
+Declarations do not count (the header prototype of a `.cpp` function), and
+neither do comments, prose strings and documentation. A COM method declared
+with `IFACEMETHODIMP` or `STDMETHODIMP` fills an interface slot and is never
+reported.
+
 ### How unreachable-file confidence is scored
 
 An orphaned file that nobody has touched in a year is a much stronger signal than

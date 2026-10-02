@@ -25,6 +25,11 @@ import structlog
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from .c_name_uses import (
+    DEFINITION_HEADER_LINES,
+    DeclarationSites,
+    drop_preprocessed_named_elsewhere,
+)
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
@@ -33,12 +38,13 @@ from .constants import (
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
     _NEVER_PACKAGE_DIRS,
+    _PREPROCESSED_LANGUAGES,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
     _is_fixture_path,
     never_flag_match,
 )
-from .contract_methods import is_contract_method
+from .contract_methods import is_com_method_implementation, is_contract_method
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
@@ -462,6 +468,10 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
         "WinMain",  # ANSI WinMain
         "wmain",  # Unicode console main
         "ServiceMain",  # Win32 service entry
+        # Screen savers: scrnsave.lib calls these three by name.
+        "ScreenSaverProc",
+        "ScreenSaverConfigureDialog",
+        "RegisterDialogClasses",
         # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
         # The fuzzer driver invokes these by name via dlsym; no static
         # caller will ever exist.
@@ -893,6 +903,14 @@ class DeadCodeAnalyzer:
             if on_step:
                 on_step("zombie_packages")
 
+        # First: a C/C++ name written outside its declaration is a use, which
+        # settles the finding before any clamp re-scores it.
+        findings = drop_preprocessed_named_elsewhere(
+            findings,
+            self._source_map,
+            self._preprocessed_declaration_sites(),
+            self._unindexed_identifier_tokens(),
+        )
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
@@ -959,6 +977,19 @@ class DeadCodeAnalyzer:
                 findings.append(finding)
 
         return findings
+
+    def _preprocessed_declaration_sites(self) -> DeclarationSites:
+        """Where each C/C++ symbol name is declared: a prototype's whole span, a
+        definition's header lines. An occurrence there is not a use of it."""
+        sites: dict[str, list[tuple[str, int, int]]] = {}
+        for _, data in self.graph.nodes(data=True):
+            if data.get("node_type") != "symbol" or data.get("language") not in _PREPROCESSED_LANGUAGES:
+                continue
+            start, end = data.get("start_line") or 0, data.get("end_line") or 0
+            if not data.get("is_declaration"):
+                end = min(end, start + DEFINITION_HEADER_LINES - 1)
+            sites.setdefault(data.get("name", ""), []).append((data.get("file_path", ""), start, end))
+        return sites
 
     def _unindexed_identifier_tokens(self) -> frozenset[str]:
         """Identifiers appearing in the source files ingestion never read.
@@ -1328,6 +1359,9 @@ class DeadCodeAnalyzer:
         if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
             return False
         if _is_compiler_invoked(sym, sym_name):
+            return False
+        # A COM interface method the runtime calls through the vtable.
+        if is_com_method_implementation(sym.get("signature"), sym.get("language")):
             return False
         if _is_declaration_only(sym):
             return False
