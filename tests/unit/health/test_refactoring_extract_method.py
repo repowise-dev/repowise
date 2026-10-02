@@ -158,6 +158,7 @@ def _find_extractions_reference(analysis, lmap):
         _MIN_STMTS,
         Extraction,
         _all_blocks,
+        _declared_before_read,
         _infer_in_out,
     _loop_carry_free,
     _outs_definitely_assigned,
@@ -175,6 +176,7 @@ def _find_extractions_reference(analysis, lmap):
         return []
     body_container = _unwrap_container(body, lmap.block_kinds)
     def_lines, use_lines = _var_lines(analysis.def_use)
+    declared_first = _declared_before_read(analysis.def_use)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -221,7 +223,7 @@ def _find_extractions_reference(analysis, lmap):
                     continue
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e)
+                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -648,3 +650,52 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
     (s,) = ExtractMethodDetector().detect(ctx)
     assert s.plan["span"] == {"start": 20, "end": 25}
     assert s.impact_delta == round(1.2 * 3 / 12, 3)
+
+
+# A plan that names the extracted loop's own counter as a parameter cannot
+# compile: the call site has no such variable. Two loops sharing ``i`` used to
+# produce exactly that, because the first loop's ``i`` looked like a definition
+# before the span and the header's same-line read looked like an input.
+_TWO_LOOPS_JAVA = """
+class Demo {
+    int run(int[] a, int n) {
+        int sum = 0;
+        for (int i = 0; i < n; i++) {
+            sum += a[i];
+        }
+        int total = 0;
+        for (int i = 0; i < n; i++) {
+            if (a[i] > 0) {
+                total += a[i];
+            } else {
+                total -= a[i];
+            }
+        }
+        return sum + total;
+    }
+}
+"""
+
+
+def test_plan_params_leave_out_a_loop_counter_the_span_declares():
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip("tree-sitter language pack missing for java")
+    if _get_language("java") is None:
+        pytest.skip("tree-sitter language pack missing for java")
+    res = analyze_file("Demo.java", "java", _TWO_LOOPS_JAVA.encode(), flagged_only=False)
+    ctx = RefactoringContext(
+        file_path="Demo.java",
+        language="java",
+        nloc=100,
+        findings=[_Finding("complex_method", "run", line_start=3, health_impact=1.5)],
+        function_analyses=res.functions,
+    )
+
+    suggestions = ExtractMethodDetector().detect(ctx)
+
+    assert len(suggestions) == 1
+    plan = suggestions[0].plan
+    assert plan["params"] == ["a", "n"]
+    assert plan["returns"] == ["total"]

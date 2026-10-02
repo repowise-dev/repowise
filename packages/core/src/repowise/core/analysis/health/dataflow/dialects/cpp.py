@@ -196,16 +196,19 @@ class CppDefUseDialect(BaseDefUseDialect):
             return
         if t in _DECL_KINDS:
             for child in node.named_children:
+                start = len(defs)
                 if child.type == _INIT_DECLARATOR:
                     binder = self._binder_identifier(child.child_by_field_name("declarator"))
                     if binder is not None:
                         defs.append(self._occ(binder))
+                    self._declare(defs, start, child)
                     self._process(child.child_by_field_name("value"), defs, uses)
                 elif child.type in self.identifier_kinds or child.type in _DECLARATOR_WRAPPERS:
                     # ``int x;`` / ``int* p;`` — a binding with no initialiser.
                     binder = self._binder_identifier(child)
                     if binder is not None:
                         defs.append(self._occ(binder))
+                    self._declare(defs, start, child)
             return
         if t == _CALL:
             self.collect_reads(node, uses)

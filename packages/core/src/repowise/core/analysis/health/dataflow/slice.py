@@ -99,6 +99,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     body_container = _unwrap_container(body, lmap.block_kinds)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    declared_first = _declared_before_read(analysis.def_use)
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decision_kinds = (
         lmap.branch_kinds
@@ -176,7 +177,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e)
+                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -239,17 +240,48 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     return def_lines, use_lines
 
 
+def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines where a declaration of it comes before its first
+    read on the same line.
+
+    Lines alone cannot order a write and a read that share one. A C-style
+    ``for (int i = 0; i < n; i++)`` declares ``i`` and then reads it, while
+    ``total = total + a[i]`` reads ``total`` and then writes it. Only a
+    declaration is ordered here, by where its declarator ends: a read past that
+    point sees the new name, and a read inside the declaration's own
+    initializer (Go's ``x := x + 1`` in an inner scope) still sees the outer
+    one. A plain assignment keeps the line rule.
+    """
+    first_read: dict[tuple[str, int], int] = {}
+    for bdu in def_use.blocks.values():
+        for u in bdu.uses:
+            key = (u.name, u.line)
+            if key not in first_read or u.column < first_read[key]:
+                first_read[key] = u.column
+    declared: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        if d.declared_at is None:
+            continue
+        read = first_read.get((d.var, d.line))
+        if read is not None and d.declared_at <= read:
+            declared[d.var].add(d.line)
+    return {var: frozenset(lines) for var, lines in declared.items()}
+
+
 def _infer_in_out(
     def_lines: dict[str, list[int]],
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
+    declared_first: dict[str, frozenset[int]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
     IN: a variable read in the span whose first in-span read is not preceded by
     an in-span write, and which has a definition before the span (a parameter or
-    an earlier assignment). OUT: a variable written in the span and read after
+    an earlier assignment). A write on the same line as that read precedes it
+    only where *declared_first* (:func:`_declared_before_read`) says the line
+    declares the name first. OUT: a variable written in the span and read after
     it, with no redefinition between the span and that first later read.
     """
     params: list[str] = []
@@ -262,7 +294,8 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            if not any(ln < first_use for ln in in_defs):
+            declared = declared_first is not None and first_use in declared_first.get(var, ())
+            if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 
         if in_defs:

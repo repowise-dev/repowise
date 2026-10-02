@@ -159,7 +159,9 @@ class JavaDefUseDialect(BaseDefUseDialect):
             for declarator in node.named_children:
                 if declarator.type != _DECLARATOR:
                     continue
+                start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
+                self._declare(defs, start, declarator)
                 self._process(declarator.child_by_field_name("value"), defs, uses)
             return
         if t == _METHOD_INVOCATION:  # the ``name`` is a method, not a variable
