@@ -44,6 +44,13 @@ log = structlog.get_logger(__name__)
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
+# Page cache per connection, in KiB (negative = size, not pages). The 2 MiB
+# default makes every insert into a large index miss: writing 1.8M graph edges
+# (random-uuid primary key plus the unique edge key) took 77s at the default
+# and 44s at 64 MiB in raw sqlite3. The cache fills only as pages are touched,
+# so a small store pays nothing for the ceiling.
+_SQLITE_CACHE_KIB = 65536
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
     """Return the pragma list to apply to a SQLite connection.
@@ -57,6 +64,7 @@ def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
         ("foreign_keys", "ON"),
+        ("cache_size", str(-_SQLITE_CACHE_KIB)),
     )
 
 
