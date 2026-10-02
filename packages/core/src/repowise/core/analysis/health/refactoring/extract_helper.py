@@ -45,6 +45,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
 from .models import RefactoringContext, RefactoringSuggestion
@@ -262,16 +263,7 @@ def _is_generated_path(path: str) -> bool:
     helper is the wrong advice — a migration must stay self-contained — so
     these occurrences are dropped like test ones (plan's "no generated-file
     noise" gate)."""
-    p = path.lower().replace("\\", "/")
-    return (
-        "/migrations/versions/" in p
-        or "/alembic/versions/" in p
-        or "/migrations/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or p.endswith(".min.js")
-    )
+    return is_vendored_or_generated_path(path) or is_migration_path(path)
 
 
 def _is_skippable_occurrence(path: str, language: str | None = None) -> bool:

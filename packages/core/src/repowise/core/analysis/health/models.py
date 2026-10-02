@@ -189,7 +189,7 @@ class HealthFileMetricData:
     # production reads a column instead of re-deriving the answer.
     is_test: bool = False
     # Where the file's code comes from: ``production``, ``test``, ``vendored``,
-    # ``docs_example``, ``generated`` or ``tooling``
+    # ``docs_example``, ``generated``, ``tooling`` or ``build``
     # (:func:`repowise.core.code_origin.code_origin`). ``None`` when unknown.
     code_origin: str | None = None
 

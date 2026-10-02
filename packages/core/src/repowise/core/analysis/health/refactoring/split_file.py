@@ -56,6 +56,7 @@ from typing import Any
 
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
 from .models import RefactoringContext, RefactoringSuggestion
@@ -115,18 +116,11 @@ _HIGH_CONFIDENCE_MODULARITY = 0.45
 def _is_generated_path(path: str) -> bool:
     """Generated / vendored / append-only code: a migration or a barrel
     re-export file must stay self-contained, so it is never a split target."""
-    p = path.lower().replace("\\", "/")
-    base = p.rsplit("/", 1)[-1]
     return (
-        "/migrations/" in p
-        or "/alembic/versions/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or ".generated." in base
-        or base.endswith(".min.js")
+        is_vendored_or_generated_path(path)
+        or is_migration_path(path)
         # Barrel / package-init re-export files: nothing of substance to split.
-        or base in BARREL_FILENAMES
+        or path.replace("\\", "/").rsplit("/", 1)[-1].lower() in BARREL_FILENAMES
     )
 
 

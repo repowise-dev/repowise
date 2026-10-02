@@ -42,3 +42,33 @@ def test_migrations_are_tooling(path: str) -> None:
 )
 def test_lookalikes_stay_production(path: str) -> None:
     assert execution_context(path) == "production"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "build.gradle.kts",  # a root build file is tooling, no longer unknown
+        "ktor-client/ktor-client-core/build.gradle.kts",
+        "crates/core/build.rs",
+        "packages/app/vite.config.ts",
+        "src/lib/CMakeLists.txt",
+    ],
+)
+def test_build_files_are_tooling(path: str) -> None:
+    assert execution_context(path) == "tooling"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/build.rs", "production"),
+        ("src/x/examples/a.py", "unknown"),  # a nested example may or may not ship
+        ("pkg/doc/gen.go", "unknown"),
+        ("vendor/github.com/x/y.go", "unknown"),
+        ("src/__generated__/schema.ts", "unknown"),
+        ("benches/parse.rs", "tooling"),
+        ("main.py", "unknown"),  # no directory, no evidence
+    ],
+)
+def test_contexts_follow_the_shared_origin(path: str, expected: str) -> None:
+    assert execution_context(path) == expected

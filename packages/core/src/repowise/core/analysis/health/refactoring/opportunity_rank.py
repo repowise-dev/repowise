@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.code_origin import ship_rank
 
 from .models import CONFIDENCE_LEVELS, RefactoringSuggestion
 from .recommendations import EFFORT_COST, detector_native_benefit, priority_score
@@ -135,12 +135,14 @@ def why_ranked(factors: dict[str, float], *, limit: int = 3) -> list[dict[str, A
     return [{"factor": name, "value": value} for name, value in ordered[:limit]]
 
 
-def rank_sort_key(opportunity: Any) -> tuple[bool, bool, float, str, str]:
+def rank_sort_key(opportunity: Any) -> tuple[int, bool, float, str, str]:
     """A total order, production files first. The id tail is what stops ties
     floating between runs.
 
     A test file never leads: it has no users, and its helpers score badly by
     design. Tests still rank among themselves, after every production file.
+    Build scripts, tools and copied code rank between the two
+    (:func:`~repowise.core.code_origin.ship_rank`).
 
     Within each, work that recovers health comes first. A detector-native
     benefit (a cycle's size, a split's group count) is not health, and on this
@@ -149,7 +151,7 @@ def rank_sort_key(opportunity: Any) -> tuple[bool, bool, float, str, str]:
     in their own order.
     """
     return (
-        is_test_related_path(opportunity.file_path),
+        ship_rank(opportunity.file_path),
         not has_credit(opportunity),
         -opportunity.rank_score,
         opportunity.file_path,

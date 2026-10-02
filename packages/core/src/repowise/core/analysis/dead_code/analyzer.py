@@ -22,6 +22,7 @@ from typing import Any
 
 import structlog
 
+from ...code_origin import is_build_file
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
@@ -2019,10 +2020,12 @@ class DeadCodeAnalyzer:
             return False
         # A real package contains at least one source file something could
         # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
-        # folder of Dockerfiles and shell scripts is run, never imported.
+        # folder of Dockerfiles, shell scripts and build files is run, never
+        # imported.
         return any(
             self.graph.nodes.get(f, {}).get("language", "unknown")
             not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
+            and not is_build_file(f)
             for f in files
         )
 

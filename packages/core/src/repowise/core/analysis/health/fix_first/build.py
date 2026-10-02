@@ -57,11 +57,11 @@ from repowise.core.analysis.health.perf.opportunity_rank import (
     DEFAULT_QUEUE_CONTEXTS,
     default_queue_exclusion,
 )
-from repowise.core.analysis.health.refactoring.extract_helper import _is_generated_path
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.next_call import ActionCommand
+from repowise.core.code_origin import path_origin
 
 from . import text
 from .model import (
@@ -181,14 +181,15 @@ class _Unit:
     may_lead: bool = True
 
 
-_VENDORED = frozenset({"vendor", "third_party", "thirdparty", "node_modules"})
-#: Stored code origins that do not ship, by the exclusion each counts as.
+#: Code origins that do not ship, by the exclusion each counts as. A build
+#: script is tooling to a reader choosing what to fix.
 _ORIGIN_EXCLUSION = {
     "test": "test",
     "vendored": "vendored",
     "docs_example": "docs_example",
     "generated": "generated",
     "tooling": "tooling",
+    "build": "tooling",
 }
 
 
@@ -212,24 +213,23 @@ def _path_exclusion(
 
     The stored ``code_origin`` decides first: it read the file's head, so it
     knows a vendored library or a docs tutorial the path alone does not.
-    Then the path rules. Code-shape work reads :func:`code_context`, where a
-    CLI ships. A performance fix passes ``production``: its stored execution
-    context is judged by the performance default queue, so only the path
-    rules apply. The stored ``is_test`` flag also marks a test.
+    Then the same classifier on the path (an index stored before the origin
+    column, or a build file classed before build files were), then the path
+    context. Code-shape work reads :func:`code_context`, where a CLI ships. A
+    performance fix passes ``production``: its stored execution context is
+    judged by the performance default queue. The stored ``is_test`` flag also
+    marks a test.
     """
     if origin in _ORIGIN_EXCLUSION:
         return _ORIGIN_EXCLUSION[origin]
     ctx = context or _code_context(path)
     if is_test or ctx == "test":
         return "test"
-    parts = set(path.lower().split("/")[:-1])
-    if parts & _VENDORED:
-        return "vendored"
-    if _is_generated_path(path):
-        return "generated"
-    # ``unknown`` under a directory is docs, examples or demos: code that does
-    # not ship. A root-level file stays eligible.
-    if ctx == "tooling" or (ctx == "unknown" and parts):
+    if reason := _ORIGIN_EXCLUSION.get(path_origin(path)):
+        return reason
+    # ``unknown`` under a directory is docs, examples or demos at any depth:
+    # code that may not ship. A root-level file stays eligible.
+    if ctx == "tooling" or (ctx == "unknown" and "/" in path):
         return "tooling"
     return None
 

@@ -648,7 +648,7 @@ that is worth doing. Everything else is left out and counted in
 | Reason | What it leaves out |
 |---|---|
 | `test` | Test files. `scope=all` keeps them, labelled. |
-| `tooling` | Scripts, tools, benchmarks, build and CI files, migrations, and code under a directory whose role is unknown (docs, demos). |
+| `tooling` | Scripts, tools, benchmarks, CI files, migrations, code under a directory whose role is unknown (docs, demos), and build files by type wherever they sit (Gradle scripts, `CMakeLists.txt`, `*.cmake`, Makefiles, Bazel files, MSBuild `.props` / `.targets`, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs). |
 | `generated` | Generated files. |
 | `vendored` | Third-party code: `vendor/`, `third_party/`, `node_modules/` and similar directories, minified files, and a library with its own license header among served assets. |
 | `docs_example` | Documentation code and examples: `docs/`, `docs_src/`, `examples/`, tutorials, samples. |

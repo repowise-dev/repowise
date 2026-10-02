@@ -16,7 +16,7 @@ import os
 import re
 from functools import lru_cache
 
-from repowise.core.code_origin import is_vendored_or_generated_path
+from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").
@@ -467,9 +467,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "submodules/**",
     "*/.deps/**",
     # ---- Rust / Cargo conventions ----------------------------------------
-    # Build scripts (executed by Cargo at compile time, never imported)
-    "**/build.rs",
-    "build.rs",
+    # Build scripts are build files (``code_origin.is_build_file``).
     # Examples (run via `cargo run --example <name>`)
     "**/examples/*.rs",
     "**/examples/**/*.rs",
@@ -516,10 +514,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "doc.go",
     "*/docs.go",
     "docs.go",
-    # Mage build files (``//go:build mage``, ``package main``) â€” run by the
-    # ``mage`` tool, excluded from normal builds, never imported.
-    "*/magefile.go",
-    "magefile.go",
     # Generated code (stringer, protobuf, go-bindata, ``zz_generated*``).
     "*.gen.go",
     "*_gen.go",
@@ -974,19 +968,14 @@ _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 _RUN_NOT_IMPORTED_LANGUAGES: frozenset[str] = frozenset({"dockerfile", "makefile", "shell"})
 
 # Files that run, build or ship what they name by path: CI workflows, build
-# and task files, package manifests and shell scripts. A file named there is
-# executed or packaged, which is a use, not a mention.
+# files (``code_origin.is_build_file``), task files, package manifests and
+# shell scripts. A file named there is executed or packaged, which is a use,
+# not a mention.
 _RUNNER_FILE_NAMES: frozenset[str] = frozenset(
     {
-        "Makefile",
-        "makefile",
-        "GNUmakefile",
-        "Justfile",
-        "justfile",
         "Dockerfile",
         "Jenkinsfile",
         "Procfile",
-        "noxfile.py",
         "tox.ini",
         "pyproject.toml",
         "setup.cfg",
@@ -1004,6 +993,7 @@ def is_runner_file(path: str) -> bool:
     name = path.rpartition("/")[2]
     return (
         name in _RUNNER_FILE_NAMES
+        or is_build_file(path)
         or name.startswith("Dockerfile")
         or name.endswith(_RUNNER_SUFFIXES)
         or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
@@ -1186,12 +1176,13 @@ def never_flag_match(path: str) -> bool:
 
 
 def never_flag_path(path: str) -> bool:
-    """The never-flag globs, plus vendored and generated code by path.
+    """The never-flag globs, plus vendored, generated and build files by path.
 
     A copied library or a generator's output is not this repository's to
-    delete, whatever its importers look like.
+    delete, whatever its importers look like, and a build tool runs a build
+    file by its name, so it has no importer by design.
     """
-    return never_flag_match(path) or is_vendored_or_generated_path(path)
+    return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
 
 
 def _is_fixture_path(path: str) -> bool:

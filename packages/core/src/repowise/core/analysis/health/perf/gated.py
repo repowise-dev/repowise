@@ -27,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.code_origin import is_build_file
+
 from .callgraph import CallGraphIndex
 from .sink_reach import collect_sink_reaching_hits
 
@@ -66,6 +68,8 @@ def collect_centrality_gated(
     sits inside Rust inline test code (``_in_rust_test_range``) is skipped
     before the hotness check even runs — test code doing blocking I/O is
     normal, not a finding, regardless of how central or churny its file is.
+    A build file is never a hot path either: the build tool runs it, no
+    request does.
     """
     from ..complexity import PerfHit
 
@@ -74,6 +78,8 @@ def collect_centrality_gated(
         if not fcx.perf_fn_facts:
             continue
         path = pf.file_info.path
+        if is_build_file(path):
+            continue
         file_hits: list[PerfHit] = []
         test_ranges = fcx.rust_test_line_ranges
         for fact in fcx.perf_fn_facts:

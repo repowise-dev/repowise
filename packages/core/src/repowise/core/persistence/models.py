@@ -2156,7 +2156,8 @@ class HealthFileMetric(Base):
     # fills those in without re-scoring anything.
     is_test: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Where the file's code comes from (``production`` / ``test`` /
-    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling``), decided
+    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling`` /
+    # ``build``), decided
     # by ``repowise.core.code_origin`` with the file's head in hand, so a
     # reader ranking what to fix never re-reads or re-parses the file. NULL on
     # rows written before the column existed.

@@ -65,6 +65,17 @@ def test_a_vendored_directory_counts_as_vendored() -> None:
     assert queue.totals.excluded["vendored"] == 1
 
 
+def test_a_build_file_counts_as_tooling_by_stored_origin_or_by_path() -> None:
+    stored = _queue([_finding("src/a.py")], [_metric("src/a.py", code_origin="build")])
+    assert stored.items == () and stored.totals.excluded["tooling"] == 1
+    # An index stored before build files were classed says production; the
+    # path still decides.
+    path = "ktor-server/build.gradle.kts"
+    old = _queue([_finding(path)], [_metric(path, code_origin="production")])
+    assert old.items == () and old.totals.excluded["tooling"] == 1
+    assert len(_queue([_finding("src/build_info.py")]).items) == 1
+
+
 def test_a_deprecated_function_is_no_item() -> None:
     queue = _queue([_finding(deprecated=True)])
     assert queue.items == () and queue.totals.excluded["deprecated"] == 1

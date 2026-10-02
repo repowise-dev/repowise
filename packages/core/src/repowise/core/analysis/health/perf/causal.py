@@ -17,10 +17,10 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from itertools import pairwise
 from typing import Any, Literal
 
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.code_origin import path_origin
+from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 
 from .facts import ObservationFacts, detail_map, is_performance, observation_facts
 
@@ -53,71 +53,37 @@ CausalKey = tuple[Any, ...]
 _ID_PREFIX = "perf"
 _ID_PATTERN = re.compile(rf"^{_ID_PREFIX}(\d*)_[0-9a-f]{{20}}$")
 
-_TOOLING_PARTS = frozenset(
-    {
-        ".github",
-        "benchmarks",
-        "build",
-        "devtools",
-        # Schema migrations run once per deploy, not per request: Django and
-        # Flask-Migrate ``migrations/``, EF Core ``Migrations/``.
-        "migrations",
-        "scripts",
-        "tooling",
-        "tools",
-    }
-)
-
-_TOOLING_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
-"""Adjacent directories that mark migrations where neither name does alone.
-
-Rails keeps them in ``db/migrate``. Alembic keeps them in ``versions/`` under
-its script directory; a bare ``versions/`` is too common (API versions) to
-class on its own. Ceiling: an Alembic script directory with another name is
-recognised only by its sibling ``env.py``, which a path-only classifier cannot
-see.
-"""
-
-_UNCLASSIFIABLE_PARTS = frozenset(
-    {
-        "demo",
-        "demos",
-        "doc",
-        "docs",
-        "example",
-        "examples",
-        "sample",
-        "samples",
-        "third_party",
-        "thirdparty",
-        "vendor",
-    }
-)
-"""Directories that do not say whether their code ships.
-
-Reporting these as production would assert exposure the tree does not support,
-which is the one thing the fallback must not do.
-"""
+# Origins whose code may or may not ship: a copied library, a generator's
+# output, a docs tree. Calling such code production would assert an exposure
+# the tree does not support, which is the one thing the fallback must not do.
+_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example"})
+_TOOLING_ORIGINS = frozenset({"tooling", "build"})
+# Example, demo and docs trees at any depth. Not ``website/``: a site can serve
+# a shipped installer script.
+_UNKNOWN_DIRS = EXAMPLE_DIR_TOKENS | (DOC_DIR_TOKENS - {"website"})
 
 
 def code_context(file_path: str) -> ExecutionContext:
     """Whether this code ships, without :func:`execution_context`'s CLI rule.
 
-    A CLI is product code an edit can improve, so code-shape surfaces read
-    this; only performance treats a CLI loop as off the request path.
+    Read from the shared :func:`~repowise.core.code_origin.path_origin`, so a
+    build script, a tool, a test or a copied library means the same here as in
+    every other layer. Two rules are this layer's own: a file with no
+    directory, and an example, demo or docs tree at any depth, carry no
+    evidence either way and are ``unknown``. A CLI is product code an edit can
+    improve, so code-shape surfaces read this; only performance treats a CLI
+    loop as off the request path.
     """
     normalized = file_path.replace("\\", "/")
     if not normalized:
         return "unknown"
-    if is_test_related_path(file_path):
+    origin = path_origin(normalized)
+    if origin == "test":
         return "test"
-    segments = normalized.lower().split("/")
-    parts = set(segments)
-    if parts & _TOOLING_PARTS:
+    if origin in _TOOLING_ORIGINS:
         return "tooling"
-    if any(pair in _TOOLING_DIR_PAIRS for pair in pairwise(segments[:-1])):
-        return "tooling"
-    if parts & _UNCLASSIFIABLE_PARTS or "/" not in normalized:
+    dirs = normalized.lower().split("/")[:-1]
+    if origin in _UNKNOWN_ORIGINS or not dirs or any(d in _UNKNOWN_DIRS for d in dirs):
         return "unknown"
     return "production"
 

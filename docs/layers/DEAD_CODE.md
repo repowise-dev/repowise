@@ -189,10 +189,11 @@ these, so they are never flagged rather than flagged and down-weighted.
 
 | Group | Examples |
 |-------|---------|
-| Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go`, `build.rs` |
+| Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go` |
+| Build files | Any file a build tool runs by name, classified by type in `code_origin`: Gradle `*.gradle(.kts)`, `pom.xml`, `CMakeLists.txt`, `*.cmake`, Makefiles, `meson.build`, Bazel `BUILD` / `*.bzl`, MSBuild `.props` / `.targets`, crate-root `build.rs`, `magefile.go`, `noxfile.py`, bundler configs. A directory holding only build files is not a package |
 | Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
 | Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
-| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build or task file (`Makefile`, `Justfile`, `Dockerfile`, `noxfile.py`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
+| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build file (above), task file (`Dockerfile`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
 | Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
 | Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
 | Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
