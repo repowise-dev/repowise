@@ -162,7 +162,7 @@ def _uses_in_own_file(
     wanted: dict[bytes, list[DeadCodeFindingData]] = {}
     headers: dict[bytes, set[int]] = {}
     for finding in spanned:
-        token = _token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name)
         wanted.setdefault(token, []).append(finding)
         headers.setdefault(token, set()).add(finding.start_line)
 
@@ -180,7 +180,7 @@ def _uses_in_own_file(
     return out
 
 
-def _token(name: str) -> bytes:
+def searchable_token(name: str) -> bytes:
     """The searchable form of *name*, or empty when the scan cannot find it.
 
     The one rule is that the result must be something :data:`IDENTIFIER_RE`
@@ -229,7 +229,7 @@ def _verdicts(
     """One verdict per candidate, from one repo-wide scan plus targeted reads."""
     # Built from the candidates alone, which is what keeps a whole-repo scan
     # affordable: the index only ever holds the names some finding asks about.
-    answerable = {_token(f.symbol_name) for f in candidates} - {b""}
+    answerable = {searchable_token(f.symbol_name) for f in candidates} - {b""}
     occurrences = occurrence_files(source_map, answerable)
 
     out: dict[int, _Verdict] = {}
@@ -240,7 +240,7 @@ def _verdicts(
     same_file_only: dict[str, list[DeadCodeFindingData]] = {}
 
     for finding in candidates:
-        token = _token(finding.symbol_name)
+        token = searchable_token(finding.symbol_name)
         if not token:
             out[id(finding)] = _NOT_SEARCHABLE
             continue
@@ -372,7 +372,7 @@ def drop_internals_used_in_own_file(
         if verdict is not None:
             if verdict.answer is _Answer.USED:
                 continue
-            if verdict.answer is _Answer.SPAN_UNKNOWN or not _token(finding.symbol_name):
+            if verdict.answer is _Answer.SPAN_UNKNOWN or not searchable_token(finding.symbol_name):
                 finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
                 finding.evidence.append(
                     f"'{finding.symbol_name}' could not be checked against the rest of "
@@ -515,7 +515,7 @@ def _writers(
     source_map: dict[str, bytes], names: Mapping[int, frozenset[str]]
 ) -> dict[bytes, set[str]]:
     """For every searchable name in *names*, the files of *source_map* writing it."""
-    tokens = {_token(name) for group in names.values() for name in group} - {b""}
+    tokens = {searchable_token(name) for group in names.values() for name in group} - {b""}
     return occurrence_files(source_map, tokens)
 
 
@@ -543,7 +543,7 @@ def drop_reference_assembly_api(
     return [
         f
         for f in findings
-        if not any(_token(name) in listed for name in names.get(id(f), ()))
+        if not any(searchable_token(name) in listed for name in names.get(id(f), ()))
     ]
 
 
@@ -591,7 +591,7 @@ def _first_writer(
         (
             (path, name)
             for name in names
-            for path in writers.get(_token(name), ())
+            for path in writers.get(searchable_token(name), ())
             if path != file_path and not _is_own_type_sibling(path, file_path)
         ),
         default=None,

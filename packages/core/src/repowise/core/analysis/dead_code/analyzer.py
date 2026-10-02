@@ -60,6 +60,7 @@ from .file_reachability import (
     build_package_file_map,
     is_file_reachable,
 )
+from .kotlin_multiplatform import settle_platform_declarations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .name_occurrences import (
     IDENTIFIER_RE,
@@ -959,6 +960,9 @@ class DeadCodeAnalyzer:
         # out entirely, rather than being reported at a number it no longer
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
+        # Before the name search: an ``expect``'s own ``actual`` files write its
+        # name, which that search would read as a use elsewhere.
+        findings = settle_platform_declarations(findings, self._source_map)
         # Same position and for the same reason. This one asks the wider
         # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
