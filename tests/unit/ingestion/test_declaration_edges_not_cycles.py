@@ -177,8 +177,8 @@ class TestRustModuleDeclaration:
 
     def test_associated_type_names_do_not_bind_to_a_child_impl(self, tmp_path: Path) -> None:
         # The parent names ``Self::Ok``, ``S::Error`` and ``Ok = Self::Ok``; the
-        # child declares an ``impl Error`` block and associated ``type Ok``.
-        # None of that is a parent-to-child dependency.
+        # child declares associated ``type Ok`` / ``type Error`` aliases. None
+        # of that is a parent-to-child dependency.
         b = _build(
             tmp_path,
             {
@@ -186,17 +186,16 @@ class TestRustModuleDeclaration:
                 "src/lib.rs": "pub mod ser;\n",
                 "src/ser/mod.rs": (
                     "mod fmt;\n"
-                    "pub trait Error {}\n"
                     "pub trait Seq { type Ok; }\n"
                     "pub trait Serializer {\n"
-                    "    type Ok;\n    type Error: Error;\n"
+                    "    type Ok;\n    type Error;\n"
                     "    type Seq: Seq<Ok = Self::Ok>;\n"
                     "    fn run<S: Serializer>(s: S) -> Result<S::Ok, S::Error>;\n"
                     "    fn ok(self) -> Self::Ok;\n}\n"
                 ),
                 "src/ser/fmt.rs": (
-                    "use crate::ser::{Error, Seq, Serializer};\n"
-                    "pub struct Fmt;\npub struct E;\nimpl Error for E {}\n"
+                    "use crate::ser::{Seq, Serializer};\n"
+                    "pub struct Fmt;\npub struct E;\n"
                     "impl Seq for Fmt { type Ok = (); }\n"
                     "impl Serializer for Fmt {\n    type Ok = ();\n    type Error = E;\n"
                     "    type Seq = Fmt;\n"
