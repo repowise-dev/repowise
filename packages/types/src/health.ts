@@ -337,6 +337,9 @@ export interface HealthFinding {
   /** `"unverified"` for a provisional finding type, shown because it was asked
    *  for by name. Null or absent for a validated type. */
   verification?: string | null;
+  /** Why the finding can wait ("lower priority: ..."); null when it is worth
+   *  doing first. Lower-priority findings are listed after the rest. */
+  lower_priority?: string | null;
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
@@ -485,6 +488,9 @@ export interface PerformanceOpportunity {
   /** Whether this cause may lead the dashboard. False for a marker below the
    *  leading bar (lazy loads outside Django). Absent on an older store. */
   may_lead?: boolean;
+  /** Why the opportunity can wait ("lower priority: ..."); null when its
+   *  production loop is known to grow with the data. */
+  lower_priority?: string | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;

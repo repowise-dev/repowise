@@ -21,6 +21,7 @@ import { ValidationSummary } from "../../refactoring/validation-summary";
 import { EFFORT_LABEL, WORK_UNIT_LABEL } from "../labels";
 import { RelatedWork, useRelatedWork } from "../related-work";
 import type { PerformanceViewAdapter } from "./adapter";
+import { LowerPriorityTag } from "../lower-priority-tag";
 import { RawObservations } from "./evidence";
 import {
   ACTIONABILITY_LABEL,
@@ -294,6 +295,11 @@ function PlanSection({
   return (
     <Section title="Plan">
       <p className="text-sm font-medium text-[var(--color-text-primary)]">{presentation.label}</p>
+      {opportunity.lower_priority ? (
+        <p className="mt-1">
+          <LowerPriorityTag reason={opportunity.lower_priority} />
+        </p>
+      ) : null}
       <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{presentation.detail}</p>
       {opportunity.fix ? (
         <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
