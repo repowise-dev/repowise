@@ -70,7 +70,10 @@ STORE_FORMAT_VERSION: int = 2
 #: ``notNull#2``) and a C# generic type beside a same-named one gets its arity
 #: (``IFoo`1``); the first update re-keys symbols and graph nodes repo-wide. A
 #: C++ template function is one ``function`` symbol, no longer also a ``class``.
-PARSER_SCHEMA_VERSION: int = 6
+#:
+#: v7: CallSite carries ``is_construction`` from syntax (e.g. C# ``new Foo()``)
+#: so bare-name resolution does not bind object creation to a same-named method.
+PARSER_SCHEMA_VERSION: int = 7
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
