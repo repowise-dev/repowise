@@ -1117,7 +1117,8 @@ def _generic_import(
     stmt_node: Node, module_text: str, raw: str, language: str, src: str
 ) -> Import:
     """The single Import of a statement no language-specific shape claims."""
-    if language == "rust" and stmt_node.type == "mod_item":
+    is_module_declaration = language == "rust" and stmt_node.type == "mod_item"
+    if is_module_declaration:
         module_text = _rust_mod_path_attribute(stmt_node, src) or module_text
 
     # JVM wildcard imports: the query captures the scoped identifier only,
@@ -1142,6 +1143,7 @@ def _generic_import(
         resolved_file=None,
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
+        is_module_declaration=is_module_declaration,
     )
 
 
