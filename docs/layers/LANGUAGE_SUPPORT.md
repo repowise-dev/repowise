@@ -297,8 +297,8 @@ This table is why a language is Full and not Good.
 | Svelte · Vue | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Go | ✅ | n/a | ✅ | no | no | ✅ | ✅ |
-| Rust · C++ | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
-| C# · Scala · Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
+| Rust · C++ · C# | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Scala · Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | n/a | ✅ | no | no | no | ✅ |
 | Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
@@ -348,7 +348,7 @@ Mechanics behind these:
 |----------|------|
 | Vue · Svelte | Template binding forms (`v-for`, `{#each}`) |
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
-| Scala · Ruby · C# | Extract Method (dataflow dialect) |
+| Scala · Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
 | Object Pascal | A dedicated `uses` resolver |
 | COBOL | Copybook resolution, dialect coverage, health markers |
