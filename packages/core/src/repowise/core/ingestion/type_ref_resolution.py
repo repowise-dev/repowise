@@ -143,20 +143,20 @@ def _mark_own_name_edges(parsed: ParsedFile, graph: nx.DiGraph) -> None:
     not declare is real evidence and is left alone.
     """
     own = {s.name for s in parsed.symbols if s.name and s.kind in _TYPE_DECLARATION_KINDS}
-    if not own:
-        return
     src = parsed.file_info.path
-    if not graph.has_node(src):
+    if not own or not graph.has_node(src):
         return
     for _, _, data in graph.out_edges(src, data=True):
-        names = data.get("type_uses")
-        if (
-            data.get("edge_type") == "type_use"
-            and "hint_source" not in data
-            and names
-            and own.issuperset(names)
-        ):
+        if _names_only_own_types(data, own):
             data["hint_source"] = OWN_TYPE_NAME_HINT
+
+
+def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
+    """An unstamped ``type_use`` edge whose type names are all in *own*."""
+    if data.get("edge_type") != "type_use" or "hint_source" in data:
+        return False
+    names = data.get("type_uses")
+    return bool(names) and own.issuperset(names)
 
 
 # ---------------------------------------------------------------------------
