@@ -112,6 +112,7 @@ class _GenerationRun:
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -129,6 +130,9 @@ class _GenerationRun:
         # wiki the resumed run was there to protect. None when the caller does
         # not care (every non-resume path).
         self.preserved_page_ids = preserved_page_ids
+        # Resume: the ids that already have a stored page row, or None when the
+        # caller cannot tell. See ``_seed_resume``.
+        self.persisted_page_ids = persisted_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -233,7 +237,8 @@ class _GenerationRun:
             if self.repo_path
             else str(getattr(self.repo_structure, "root_path", "."))
         )
-        # On resume, query the vector store directly — it is the ground truth.
+        # On resume, completed ids come from the vector store (narrowed to
+        # pages with a stored row when the caller knows them).
         if self.resume and self.vector_store is not None:
             # Note: caller drives this synchronously enough; resume seeding is
             # awaited in execute() to keep __init__ side-effect free.
@@ -267,6 +272,12 @@ class _GenerationRun:
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
+            # The vector and the page row are written separately, so a run
+            # killed between the two leaves a vector with no page. Counting it
+            # as done would skip it forever, so a page is done only when both
+            # landed.
+            if self.persisted_page_ids is not None:
+                self.completed_ids &= self.persisted_page_ids
             if self.completed_ids:
                 log.info(
                     "Resuming generation from vector store",
