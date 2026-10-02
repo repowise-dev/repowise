@@ -1047,14 +1047,14 @@ def _scala_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
 
 def _php_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
     """PHP: one ``use`` declaration can name several classes, each its own file."""
-    from .extractors.bindings.php import php_use_clauses
+    from .extractors.bindings.php import php_class_name, php_use_clauses
     from .models import NamedBinding
 
     return [
         Import(
             raw_statement=raw,
             module_path=fqn,
-            imported_names=[local],
+            imported_names=[php_class_name(fqn)],
             is_relative=False,
             resolved_file=None,
             bindings=[NamedBinding(local_name=local, exported_name=fqn, source_file=None)],
