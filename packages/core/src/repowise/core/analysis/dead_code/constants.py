@@ -1,4 +1,4 @@
-﻿"""Static configuration for dead-code detection.
+"""Static configuration for dead-code detection.
 
 These tuples / frozensets shape what the analyzer treats as "always
 alive" (framework decorators, never-flag path globs) and where to skip

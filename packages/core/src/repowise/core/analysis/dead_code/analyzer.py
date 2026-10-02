@@ -1,4 +1,4 @@
-﻿"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
+"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
 
 All analysis is graph traversal + SQL. No LLM calls. Must complete in
 < 10 seconds.

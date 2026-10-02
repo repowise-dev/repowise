@@ -1,4 +1,4 @@
-﻿"""Did we actually look â€” the knowledge term behind a dead-code confidence.
+"""Did we actually look â€” the knowledge term behind a dead-code confidence.
 
 Every other input to a dead-code confidence scores *how strong the evidence
 for deadness is*. None of them asks the second question a confidence has to
