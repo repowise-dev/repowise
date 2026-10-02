@@ -52,26 +52,34 @@ def extractions_for(language: str, filename: str) -> dict[str, list[dict[str, An
     """Every span the slicer offers, per function, for one corpus file.
 
     Keyed by function name so a golden diff names the archetype that moved.
+
+    The archetypes are small on purpose, so most of their spans hold nearly the
+    whole body. The body-share gate is a worth rule, not a soundness one, and
+    left on it would hide the soundness gates this corpus exists to pin; it is
+    lifted here and tested on its own.
     """
+    from unittest import mock
+
     from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.analysis.health.dataflow import slice as slicer
     from repowise.core.analysis.health.dataflow.analyze import analyze_file
-    from repowise.core.analysis.health.dataflow.slice import find_extractions
 
     lmap = get_language_map(language)
     result = analyze_file(filename, language, source_for(filename), flagged_only=False)
     out: dict[str, list[dict[str, Any]]] = {}
-    for analysis in result.functions:
-        out[analysis.name] = [
-            {
-                "start_line": item.start_line,
-                "end_line": item.end_line,
-                "params": list(item.params),
-                "returns": list(item.returns),
-                "slice_nloc": item.slice_nloc,
-                "ccn_removed": item.ccn_removed,
-            }
-            for item in find_extractions(analysis, lmap)
-        ]
+    with mock.patch.object(slicer, "_MAX_BODY_SHARE", float("inf")):
+        for analysis in result.functions:
+            out[analysis.name] = [
+                {
+                    "start_line": item.start_line,
+                    "end_line": item.end_line,
+                    "params": list(item.params),
+                    "returns": list(item.returns),
+                    "slice_nloc": item.slice_nloc,
+                    "ccn_removed": item.ccn_removed,
+                }
+                for item in slicer.find_extractions(analysis, lmap)
+            ]
     return out
 
 
