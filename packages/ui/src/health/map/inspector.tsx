@@ -206,29 +206,7 @@ export function MapInspector({
             The mark is the node as the canvas draws it, from the same
             function, so the selection and the field it was picked out of can
             never describe the file differently. */}
-        {overlay === "performance" ? (
-          <span
-            aria-hidden
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-            style={{ backgroundColor: performanceFill(file) }}
-          />
-        ) : file.score == null ? (
-          // The same grey mark the field draws for it, not a score pill.
-          <span
-            aria-hidden
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-            style={{ backgroundColor: NEUTRAL_FILL }}
-          />
-        ) : (
-          <span
-            className={cn(
-              "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
-              scoreBadgeClass(file.score),
-            )}
-          >
-            {file.score.toFixed(1)}
-          </span>
-        )}
+        <InspectorMark file={file} overlay={overlay} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">
           {name}
         </span>
@@ -296,5 +274,37 @@ export function MapInspector({
         Open details
       </button>
     </section>
+  );
+}
+
+/** The lead mark: the node as the field draws it, or the score pill. */
+function InspectorMark({
+  file,
+  overlay,
+}: {
+  file: CodeHealthMapFile;
+  overlay: CodeHealthOverlay;
+}) {
+  // Under performance, or for a file with no score, the mark is the node as
+  // the field draws it: a score pill would claim a figure the lens is not
+  // about, or one nothing measured.
+  if (overlay === "performance" || file.score == null) {
+    return (
+      <span
+        aria-hidden
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+        style={{ backgroundColor: overlay === "performance" ? performanceFill(file) : NEUTRAL_FILL }}
+      />
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
+        scoreBadgeClass(file.score),
+      )}
+    >
+      {file.score.toFixed(1)}
+    </span>
   );
 }
