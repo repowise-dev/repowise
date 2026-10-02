@@ -302,56 +302,66 @@ def _enclosing_function(node: Node) -> Node | None:
     return fn
 
 
+def _callee_name(call: Node) -> str:
+    """Last ``::`` segment of a call's callee text (``::connect`` -> ``connect``)."""
+    callee = call.child_by_field_name("function")
+    return (callee.text or b"").decode("utf-8", "replace").split("::")[-1] if callee else ""
+
+
 def _calls_named(fn: Node | None, names: frozenset[str]) -> bool:
     """*fn* makes a call whose last callee segment is one of *names*."""
-    for n in _subtree(fn):
-        callee = n.child_by_field_name("function") if n.type == "call_expression" else None
-        if callee is not None and (callee.text or b"").decode("utf-8", "replace").split(
-            "::"
-        )[-1] in names:
-            return True
-    return False
+    return any(n.type == "call_expression" and _callee_name(n) in names for n in _subtree(fn))
+
+
+def _pointee(node: Node) -> Node:
+    """``&hints`` -> ``hints``; any other node unchanged."""
+    inner = node.child_by_field_name("argument") if node.type == "pointer_expression" else None
+    return inner or node
+
+
+def _field_write(node: Node) -> tuple[bytes | None, bytes | None]:
+    """``(object, field)`` an assignment writes (``(b"hints", b"ai_flags")``), or
+    ``(object, None)`` for a whole-object write."""
+    left = node.child_by_field_name("left") if node.type == "assignment_expression" else None
+    if left is None:
+        return None, None
+    if left.type != "field_expression":
+        return left.text, None
+    obj, field = left.child_by_field_name("argument"), left.child_by_field_name("field")
+    return (obj.text if obj else None), (field.text if field else None)
 
 
 def _touches_hints(node: Node, hints: bytes) -> str | None:
     """How *node* writes the hints struct: ``"flags"`` for ``hints.ai_flags op
     ...``, ``"reset"`` for ``hints = ...`` or a call handed ``&hints`` /
     ``hints`` (``memset`` / ``bzero``), else ``None``."""
-    if node.type == "assignment_expression":
-        left = node.child_by_field_name("left")
-        if left is not None and left.text == hints:
-            return "reset"
-        if (
-            left is not None
-            and left.type == "field_expression"
-            and (left.child_by_field_name("argument") or left).text == hints
-            and (left.child_by_field_name("field") or left).text == b"ai_flags"
-        ):
-            return "flags"
-        return None
+    obj, field = _field_write(node)
+    if obj == hints:
+        return {None: "reset", b"ai_flags": "flags"}.get(field)
     args = node.child_by_field_name("arguments") if node.type == "call_expression" else None
-    for arg in args.named_children if args is not None else ():
-        if arg.type == "pointer_expression":
-            arg = arg.child_by_field_name("argument") or arg
-        if arg.text == hints:
-            return "reset"
-    return None
+    passed = args.named_children if args is not None else ()
+    return "reset" if any(_pointee(a).text == hints for a in passed) else None
+
+
+def _or_chain_top(node: Node) -> Node:
+    """The highest ancestor reached from *node* through parentheses and ``|``."""
+    cur = node
+    while cur.parent is not None and (
+        cur.parent.type == "parenthesized_expression" or _operator(cur.parent) == "|"
+    ):
+        cur = cur.parent
+    return cur
 
 
 def _sets_flag_unmasked(expr: Node | None) -> bool:
     """*expr* ORs a numeric-only flag in: the flag sits under nothing but
     ``|`` and parentheses (``~AI_NUMERICHOST`` / ``f & AI_NUMERICHOST`` do not count)."""
-    for n in _subtree(expr):
-        if n.type != "identifier" or (n.text or b"").decode() not in NUMERIC_ONLY_RESOLVER_FLAGS:
-            continue
-        cur = n.parent
-        while cur is not None and cur != expr.parent and (
-            cur.type == "parenthesized_expression" or _operator(cur) == "|"
-        ):
-            cur = cur.parent
-        if cur is not None and cur == expr.parent:
-            return True
-    return False
+    return any(
+        n.type == "identifier"
+        and (n.text or b"").decode() in NUMERIC_ONLY_RESOLVER_FLAGS
+        and _or_chain_top(n) == expr
+        for n in _subtree(expr)
+    )
 
 
 def _unconditional_before(write: Node, call: Node) -> bool:
@@ -369,10 +379,18 @@ def _unconditional_before(write: Node, call: Node) -> bool:
 def _hints_argument(args: Node) -> bytes | None:
     """The name of ``getaddrinfo``'s third argument (``&hints`` -> ``hints``)."""
     named = args.named_children
-    hints = named[2] if len(named) >= 3 else None
-    if hints is not None and hints.type == "pointer_expression":
-        hints = hints.child_by_field_name("argument")
+    hints = _pointee(named[2]) if len(named) >= 3 else None
     return hints.text if hints is not None and hints.type == "identifier" else None
+
+
+def _last_hints_write(call: Node, hints: bytes) -> Node | None:
+    """The last statement before *call* in its function that writes *hints*."""
+    writes = [
+        n
+        for n in _subtree(_enclosing_function(call))
+        if n.end_byte <= call.start_byte and _touches_hints(n, hints)
+    ]
+    return max(writes, key=lambda n: n.start_byte, default=None)
 
 
 def _resolves_numeric_only(call: Node) -> bool:
@@ -387,18 +405,11 @@ def _resolves_numeric_only(call: Node) -> bool:
     """
     args = call.child_by_field_name("arguments")
     hints = _hints_argument(args) if args is not None else None
-    if not hints:
+    last = _last_hints_write(call, hints) if hints else None
+    if last is None or _touches_hints(last, hints) != "flags":
         return False
-    writes = [
-        n
-        for n in _subtree(_enclosing_function(call))
-        if n.end_byte <= call.start_byte and _touches_hints(n, hints)
-    ]
-    last = max(writes, key=lambda n: n.start_byte, default=None)
     return (
-        last is not None
-        and _touches_hints(last, hints) == "flags"
-        and _operator(last) in ("=", "|=")
+        _operator(last) in ("=", "|=")
         and _sets_flag_unmasked(last.child_by_field_name("right"))
         and _unconditional_before(last, call)
     )
@@ -540,15 +551,18 @@ class CppPerfDialect(BasePerfDialect):
         method = self.callee_method_name(call)
         if kind == "network" and method in RESOLVER_FUNCTIONS:
             return None if _resolves_numeric_only(call) else kind
-        if (
-            kind is None
-            and method in SOCKET_OPENERS
-            and method == self.callee_root_name(call)
-            and not self.callee_is_attribute(call)
-            and _calls_named(_enclosing_function(call), SOCKET_TRAFFIC_CALLS)
-        ):
+        if kind is None and method in SOCKET_OPENERS and self._opens_traffic_socket(call):
             return "network"
         return kind
+
+    def _opens_traffic_socket(self, call: Node) -> bool:
+        """An unqualified ``socket()`` in a function that also connects or moves data."""
+        unqualified = self.callee_method_name(call) == self.callee_root_name(call)
+        return (
+            unqualified
+            and not self.callee_is_attribute(call)
+            and _calls_named(_enclosing_function(call), SOCKET_TRAFFIC_CALLS)
+        )
 
     # -- loops ----------------------------------------------------------------
 
