@@ -16,6 +16,7 @@ import os
 import re
 from functools import lru_cache
 
+from repowise.core.code_origin import is_vendored_or_generated_path
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").
@@ -164,18 +165,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Styles/*.xaml",
     "*/Resources/*.xaml",
     # ---- Test infrastructure conventions -----------------------------
-    # Test classes are loaded by the runner via attribute reflection. Both
-    # locations and suffixes are matched, to catch tests at arbitrary paths.
-    "*Tests/*.cs",
-    "*.Tests/*.cs",
-    "*UnitTests/*.cs",
-    "*.UnitTests/*.cs",
-    "*IntegrationTests/*.cs",
-    "*.IntegrationTests/*.cs",
-    "*FuzzTests/*.cs",
-    "*.FuzzTests/*.cs",
-    "*UITests/*.cs",
-    "*.UITests/*.cs",
+    # Test classes are loaded by the runner via attribute reflection. The
+    # plural suite folders (``Foo.Tests/``, ``UnitTests/``, ``UITests/``) are
+    # test paths (``test_paths``), which every dead-code pass already skips;
+    # these are the shapes it does not read as tests.
     "*UITest/*.cs",
     "*UITestAutomation/*.cs",
     # Singular forms.
@@ -1145,6 +1138,15 @@ def never_flag_match(path: str) -> bool:
         if bucket is not None and bucket.match(norm):
             return True
     return False
+
+
+def never_flag_path(path: str) -> bool:
+    """The never-flag globs, plus vendored and generated code by path.
+
+    A copied library or a generator's output is not this repository's to
+    delete, whatever its importers look like.
+    """
+    return never_flag_match(path) or is_vendored_or_generated_path(path)
 
 
 def _is_fixture_path(path: str) -> bool:

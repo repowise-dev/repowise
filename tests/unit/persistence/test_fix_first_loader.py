@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from repowise.core.analysis.health.fix_first import build_fix_first
+from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -42,7 +43,12 @@ async def seed_fix_first(session, rid: str | None = None) -> str:
                                 in_degree=m["dependents"]))
     session.add_all(HealthFinding(repository_id=rid, **_with_json(f, "details")) for f in FINDINGS)
     session.add_all(
-        RefactoringOpportunity(repository_id=rid, **_with_json(r, "details")) for r in REFACTORING
+        RefactoringOpportunity(
+            repository_id=rid,
+            refactoring_model_version=REFACTORING_MODEL_VERSION,
+            **_with_json(r, "details"),
+        )
+        for r in REFACTORING
     )
     session.add_all(
         PerformanceOpportunity(repository_id=rid, **_with_json(p, "details")) for p in PERFORMANCE

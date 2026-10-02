@@ -45,7 +45,7 @@ from typing import Any
 from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
-from .constants import never_flag_match
+from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
@@ -289,7 +289,7 @@ def is_file_reachable(
     # routes, migration scripts. Reached from outside the import graph the same
     # way an entry point is, so this belongs to the question, not to the
     # analyzer that used to own the matcher.
-    if never_flag_match(path):
+    if never_flag_path(path):
         return True
     if path in rescues.whitelist:
         return True
