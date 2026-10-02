@@ -97,6 +97,7 @@ def test_lcom4_returns_components_for_split_class():
     assert ["render_b", "render_b2", "render_b3"] in [list(k) for k in groups]
     for g in cls.components:
         assert g.fields  # each cluster touches at least one field
+        assert g.calls == ()  # sibling calls are edges, not outside calls
 
 
 def test_cohesive_class_has_single_or_no_component():

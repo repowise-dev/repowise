@@ -587,6 +587,8 @@ def _indexed_groups(
     def _pos(i: int) -> tuple[int, str]:
         return (method_fcs[i].start_line, method_fcs[i].name)
 
+    # A call to a sibling method is an edge, not a use of something inherited.
+    outside_calls = call_targets - {fc.name for fc in method_fcs}
     indexed: list[tuple[list[int], CohesionGroup]] = []
     for member_idxs in by_root.values():
         member_idxs.sort(key=_pos)
@@ -594,7 +596,7 @@ def _indexed_groups(
         group = CohesionGroup(
             methods=[method_fcs[i].name for i in member_idxs],
             fields=sorted(referenced - method_names),
-            calls=tuple(sorted(referenced & call_targets)),
+            calls=tuple(sorted(referenced & outside_calls)),
         )
         indexed.append((member_idxs, group))
     indexed.sort(key=lambda pair: _pos(pair[0][0]))
