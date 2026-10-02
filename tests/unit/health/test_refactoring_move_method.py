@@ -328,8 +328,25 @@ def test_method_its_base_type_declares_never_moves():
 
 def test_static_factory_on_target_counts_as_instantiation():
     g = _java_envy_graph()
-    g.nodes["T.java::T.alpha"]["signature"] = "alpha(String key) -> T"
+    g.nodes["T.java::T.alpha"].update(name="of", signature="of(String key) -> T")
     assert _detect_java(g) == []
+
+
+def test_getter_returning_the_target_type_is_not_instantiation():
+    g = _java_envy_graph()
+    g.nodes["T.java::T.alpha"]["signature"] = "alpha() -> T"
+    assert len(_detect_java(g)) == 1
+
+
+def test_python_override_decorator_and_classmethod_factory():
+    g = _envy_graph()
+    g.nodes["c.py::C.envious"]["decorators"] = ["@typing.override"]
+    assert _detect(g, "c.py") == []
+    g = _envy_graph()
+    g.nodes["t.py::T.alpha"].update(signature="def alpha(cls) -> T", decorators=["@classmethod"])
+    assert _detect(g, "c.py") == []
+    # Control: plain Python envy still fires.
+    assert len(_detect(_envy_graph(), "c.py")) == 1
 
 
 def test_exception_interface_and_utility_targets_are_rejected():
@@ -338,6 +355,10 @@ def test_exception_interface_and_utility_targets_are_rejected():
     g = _java_envy_graph()
     g.nodes["T.java::T"]["kind"] = "interface"
     assert _detect_java(g) == []
+    # An enum carries real behaviour; it stays a valid target.
+    g = _java_envy_graph()
+    g.nodes["T.java::T"]["kind"] = "enum"
+    assert len(_detect_java(g)) == 1
 
 
 def test_method_sharing_its_class_state_does_not_move():

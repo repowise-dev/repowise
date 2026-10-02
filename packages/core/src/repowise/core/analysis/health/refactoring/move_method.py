@@ -83,10 +83,22 @@ _MAX_TARGET_DISTANCE = 0.7
 _MIN_DISTANCE_MARGIN = 0.25
 
 # Target kinds that hold no instance behaviour to move a method onto.
-_NON_TARGET_KINDS = frozenset({"interface", "trait", "protocol", "enum"})
+_NON_TARGET_KINDS = frozenset({"interface", "trait", "protocol"})
 # Name suffixes of classes that are never a home for a moved method: an
 # exception carries an error, a utility class only static helpers.
 _NON_TARGET_SUFFIXES = ("Exception", "Error", "Util", "Utils", "Helper", "Helpers")
+# Java ``@Override``, Python ``@override`` / ``@typing.override``.
+_OVERRIDE_DECORATOR = re.compile(r"@(?:[\w.]+\.)?[Oo]verride\b")
+# Factory-shaped names: a member returning its own class under one of these
+# names builds an instance (``OperationResult.Ok()``, ``Foo.of(...)``); a
+# getter such as ``parent() -> T`` does not.
+_FACTORY_NAME = re.compile(
+    r"^(?:of|from|create|new|build|make|ok|fail|success|failure|empty|parse|"
+    r"value_?of|get_?instance|instance)",
+    re.IGNORECASE,
+)
+# Python marks a factory with a decorator.
+_FACTORY_DECORATORS = ("@staticmethod", "@classmethod")
 
 
 def _node(graph: Any, node_id: str) -> dict | None:
@@ -125,12 +137,17 @@ def _class_name(graph: Any, class_id: str) -> str:
     return (_node(graph, class_id) or {}).get("name") or class_id.rsplit("::", 1)[-1]
 
 
-def _method_names(graph: Any, class_id: str) -> set[str]:
-    return {
-        (_node(graph, member) or {}).get("name") or ""
-        for _u, member, data in graph.out_edges(class_id, data=True)
-        if data.get("edge_type") == "has_method"
-    }
+def _class_members(graph: Any, class_id: str, cache: dict[str, set[str]]) -> set[str]:
+    cached = cache.get(class_id)
+    if cached is not None:
+        return cached
+    members: set[str] = set()
+    if class_id in graph:
+        for _u, v, data in graph.out_edges(class_id, data=True):
+            if data.get("edge_type") == "has_method":
+                members.add(v)
+    cache[class_id] = members
+    return members
 
 
 def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool:
@@ -138,11 +155,16 @@ def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool
     runtime contract name, or a member an ancestor class or interface also
     declares."""
     name = data.get("name") or ""
-    if any("@Override" in d for d in data.get("decorators") or ()):
+    if any(_OVERRIDE_DECORATOR.search(d) for d in data.get("decorators") or ()):
         return True
     if is_contract_method(name, data.get("kind"), language):
         return True
-    return any(name in _method_names(graph, base) for base in _ancestors(graph, own_class_id))
+    declared = {
+        (_node(graph, member) or {}).get("name")
+        for base in _ancestors(graph, own_class_id)
+        for member in _class_members(graph, base, {})
+    }
+    return name in declared
 
 
 def _returns(signature: str | None, class_name: str) -> bool:
@@ -151,14 +173,25 @@ def _returns(signature: str | None, class_name: str) -> bool:
     return bool(signature) and re.search(pattern, signature) is not None
 
 
+def _is_factory(member: dict, class_name: str) -> bool:
+    """A constructor, or a factory returning *class_name*: factory-named or
+    marked static/class-level (Python decorators)."""
+    if member.get("name") == class_name:
+        return True
+    if not _returns(member.get("signature"), class_name):
+        return False
+    decorators = " ".join(member.get("decorators") or ())
+    return bool(_FACTORY_NAME.match(member.get("name") or "")) or any(
+        d in decorators for d in _FACTORY_DECORATORS
+    )
+
+
 def _builds(graph: Any, class_id: str, accessed: set[str]) -> bool:
     """Whether the method instantiates *class_id*: a constructor call, or a
-    call to a member that returns the class (a static factory such as
-    ``OperationResult.Ok()``)."""
+    call to a factory of the class (``OperationResult.Ok()``)."""
     class_name = _class_name(graph, class_id)
-    members = [_node(graph, member) or {} for member in accessed]
     return class_id in accessed or any(
-        m.get("name") == class_name or _returns(m.get("signature"), class_name) for m in members
+        _is_factory(_node(graph, member) or {}, class_name) for member in accessed
     )
 
 
@@ -264,18 +297,6 @@ class MoveMethodDetector(RefactoringDetector):
                 ):
                     out.append(node_id)
         return sorted(set(out))
-
-    def _class_members(self, graph: Any, class_id: str, cache: dict[str, set[str]]) -> set[str]:
-        cached = cache.get(class_id)
-        if cached is not None:
-            return cached
-        members: set[str] = set()
-        if class_id in graph:
-            for _u, v, data in graph.out_edges(class_id, data=True):
-                if data.get("edge_type") == "has_method":
-                    members.add(v)
-        cache[class_id] = members
-        return members
 
     def _envy_for(
         self,
@@ -403,7 +424,7 @@ class MoveMethodDetector(RefactoringDetector):
         """Jaccard distance between the method's accessed-entity set and a
         class's members. 0 = the method only touches this class; 1 = no
         overlap. Empty union degrades to max distance."""
-        members = self._class_members(graph, class_id, cache)
+        members = _class_members(graph, class_id, cache)
         union = accessed | members
         if not union:
             return 1.0
