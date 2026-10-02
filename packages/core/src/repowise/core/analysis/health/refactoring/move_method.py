@@ -215,16 +215,19 @@ def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) ->
 
 
 def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None) -> bool:
-    """Whether the method shares a cohesion component that holds fields, or
-    calls an inherited or abstract member, with the rest of its class. The
-    ``calls`` graph sees neither; the components do
-    (``ClassComplexity.components``)."""
+    """Whether the method is bound to its class: its class implements a
+    contract that fixes every method (a Rust trait impl), or it shares a
+    cohesion component that holds fields, or calls an inherited or abstract
+    member, with the rest of its class. The ``calls`` graph sees none of
+    these; the class analysis does (``ClassComplexity``)."""
     own = [
         cls
         for cls in classes
         if getattr(cls, "name", None) == parent
         and (line is None or cls.start_line <= line <= cls.end_line)
     ]
+    if own and getattr(own[0], "contract_impl", False):
+        return True
     groups = [g for cls in own[:1] for g in getattr(cls, "components", None) or ()]
     return any(name in g.methods and (g.fields or g.calls) for g in groups)
 

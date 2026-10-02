@@ -378,3 +378,22 @@ def test_method_sharing_its_class_state_does_not_move():
     stateless = CohesionGroup(methods=["envious"], fields=[])
     cls.components = [stateless]
     assert len(_detect_java(_java_envy_graph(), classes=[cls])) == 1
+
+
+def test_method_calling_an_inherited_member_or_in_a_trait_impl_does_not_move():
+    from repowise.core.analysis.health.complexity import ClassComplexity, CohesionGroup
+
+    cls = ClassComplexity(
+        name="C",
+        start_line=1,
+        end_line=40,
+        method_count=2,
+        total_nloc=30,
+        methods=[],
+        lcom4=1,
+        components=[CohesionGroup(methods=["envious"], fields=[], calls=("base",))],
+    )
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []
+    cls.components = []
+    cls.contract_impl = True
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []

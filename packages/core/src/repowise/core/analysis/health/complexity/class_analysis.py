@@ -303,7 +303,9 @@ def _explicit_refs(method_nodes: list[Node], lmap: LanguageNodeMap) -> _MemberRe
     """Each method's ``self.x`` references. A member no method reads or
     writes, only calls, is a method the class gets from elsewhere (a base
     class, an abstract declaration, a trait default): a call target, never
-    this class's state."""
+    this class's state. Without field declarations a callback field that is
+    only ever invoked reads the same way; that can merge or drop a split,
+    never invent one."""
     pairs = [_collect_self_members(node, lmap) for node in method_nodes]
     referenced: set[str] = set().union(*(members for members, _ in pairs))
     read: set[str] = set().union(*(names for _, names in pairs))
@@ -682,7 +684,8 @@ def _collect_classes(
         body = body._replace(methods=[m for m in body.methods if m.id in fc_by_node_id])
         # A partial class's other parts live in files this pass does not see;
         # a trait impl's methods are the trait's, so none can move out.
-        if "partial" in _decl_words(class_node) or is_trait_impl(class_node, lmap):
+        contract_impl = is_trait_impl(class_node, lmap)
+        if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
             refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
@@ -702,6 +705,7 @@ def _collect_classes(
                 field_count=field_count,
                 components=components,
                 tcc=tcc,
+                contract_impl=contract_impl,
             )
         )
     return classes

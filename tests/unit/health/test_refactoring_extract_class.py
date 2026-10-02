@@ -295,6 +295,43 @@ class Adapter extends Base {
     assert _suggest("adapter.ts", "typescript", src) == []
 
 
+def test_python_called_only_members_are_not_fields_and_real_clusters_still_split():
+    src = """
+class Worker(Base):
+    def parse(self):
+        return self.a + self.a2 + self.log()
+    def parse2(self):
+        return self.parse() + self.a
+    def render(self):
+        return self.b + self.b2 + self.log()
+    def render2(self):
+        return self.render() * self.b
+    def reset(self):
+        self.b2 = self.log()
+"""
+    fc = walk_file("worker.py", "python", src.encode())
+    cls = fc.classes[0]
+    assert {f for g in cls.components for f in g.fields} == {"a", "a2", "b", "b2"}
+    # ``log`` is only called: it links the clusters it reaches, it is not state.
+    assert all("log" not in g.fields for g in cls.components)
+
+
+def test_two_clusters_one_calling_an_inherited_method_still_split():
+    src = """
+class Two extends Base {
+    p1() { return this.a + this.a2 }
+    p2() { return this.p1() + this.a }
+    p3() { return this.a2 + this.p2() }
+    r1() { return this.b + this.b2 + this.helper() }
+    r2() { return this.r1() * this.b }
+    r3() { return this.b2 + this.r2() }
+}
+"""
+    assert _suggest("two.ts", "typescript", src) == ["Two"]
+    fc = walk_file("two.ts", "typescript", src.encode())
+    assert [sorted(g.fields) for g in fc.classes[0].components] == [["a", "a2"], ["b", "b2"]]
+
+
 def test_rust_trait_impl_is_not_scored():
     src = """
 struct M { a: u8, b: u8, c: u8, d: u8 }
@@ -318,6 +355,7 @@ impl M {
     fc = walk_file("lib.rs", "rust", src.encode())
     trait_impl, inherent = sorted(fc.classes, key=lambda c: c.start_line)
     assert (trait_impl.lcom4, trait_impl.components) == (1, [])
+    assert trait_impl.contract_impl and not inherent.contract_impl
     # The inherent impl with the same two stateful clusters still splits.
     assert inherent.lcom4 == 2
     assert _suggest("lib.rs", "rust", src) == ["M"]

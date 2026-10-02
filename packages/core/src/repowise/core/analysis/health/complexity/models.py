@@ -189,6 +189,9 @@ class ClassComplexity:
     # safety valve. A cohesive Extract Class split raises the worst split
     # class's TCC toward ``1``; the enrich self-check reads it before/after.
     tcc: float = 1.0
+    # Every method is fixed by a contract the class implements (a Rust
+    # ``impl Trait for T``): none can move out, and cohesion is not scored.
+    contract_impl: bool = False
 
 
 @dataclass(frozen=True)
