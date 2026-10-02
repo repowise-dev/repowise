@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from repowise.core.providers.embedding.base import Embedder
 
@@ -23,11 +24,18 @@ __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore", "read_recorded_vector_d
 # gigabytes before returning even though the selected result is small.
 _SUMMARY_PATH_BATCH_SIZE = 100
 
-# LanceDB caches each table version's manifest (default cap 1 GiB). Generation
-# upserts in embedder-sized chunks, one version each, and every manifest lists
-# all fragments so far, so the cache grew quadratically: about 0.55 GiB over
-# 22k pages, held until exit. Reads only need the latest version.
+# LanceDB caches each table version's manifest (default cap 1 GiB), and every
+# manifest lists all fragments so far. Writes are batched below, but update runs
+# and long-lived servers still accumulate versions; reads only need the latest.
 _METADATA_CACHE_BYTES = 64 * 1024 * 1024
+
+# Rows per LanceDB write in ``embed_batch``. Every write is a table version
+# and a fragment, and ``merge_insert`` joins against the whole table, so
+# writing each 16-item embedder chunk on its own made a level's writes grow
+# with the square of its size (22k pages: about 1,400 versions). Rows are
+# buffered as float32 Arrow data, about 8 KB each at 1,536 dimensions, so a
+# full buffer stays near 32 MB.
+_UPSERT_BATCH_ROWS = 4096
 
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
@@ -107,6 +115,23 @@ def _page_ids_in_filter(page_ids: list[str]) -> str:
     """
     quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in page_ids)
     return f"page_id IN ({quoted})"
+
+
+def _last_row_per_page(batches: list[Any]) -> Any:
+    """One Arrow table from *batches*, keeping each page_id's last row.
+
+    ``merge_insert`` rejects a source holding a key twice once that key is
+    in the table, and inserts both rows when it is not. Written chunk by
+    chunk, a repeated page simply overwrote itself, so the last occurrence
+    is the one that wins here too.
+    """
+    import pyarrow as pa  # type: ignore[import]
+
+    table = pa.Table.from_batches(batches)
+    last = {page_id: i for i, page_id in enumerate(table.column("page_id").to_pylist())}
+    if len(last) < table.num_rows:
+        table = table.take(sorted(last.values()))
+    return table
 
 
 class LanceDBVectorStore(VectorStore):
@@ -236,7 +261,8 @@ class LanceDBVectorStore(VectorStore):
             "content_snippet": content[:STORED_SNIPPET_CHARS],
         }
 
-    async def _upsert_rows(self, rows: list[dict]) -> None:
+    async def _upsert_rows(self, rows: list[dict] | Any) -> None:
+        """Upsert by ``page_id``; *rows* is a list of row dicts or an Arrow table."""
         # merge_insert: upsert by page_id (LanceDB 0.12+)
         try:
             await (
@@ -247,6 +273,8 @@ class LanceDBVectorStore(VectorStore):
             )
         except AttributeError:
             # Fallback for older LanceDB versions: delete + add
+            if not isinstance(rows, list):
+                rows = rows.to_pylist()
             for row in rows:
                 safe_id = str(row["page_id"]).replace("'", "''")
                 await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
@@ -261,18 +289,38 @@ class LanceDBVectorStore(VectorStore):
         await self._upsert_rows([self._row(page_id, vector, meta)])
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
-        """Embed and upsert in request-sized chunks with failure isolation.
+        """Embed in request-sized chunks and write in a few large upserts.
 
         One embedder call per :data:`EMBED_BATCH_MAX_ITEMS` items — a whole
         generation level in a single request blew OpenAI's 300k-token cap
-        and silently lost every file-page embedding. A failed chunk no
-        longer sinks the rest; the summary error is raised at the end so
-        callers still see the loss.
+        and silently lost every file-page embedding. Writes are buffered up
+        to :data:`_UPSERT_BATCH_ROWS` rows (see there for why). A failed
+        chunk no longer sinks the rest; the summary error is raised at the
+        end so callers still see the loss. A failed write reports every
+        chunk it carried, at the ``persistence`` stage.
         """
         if not items:
             return
         await self._ensure_connected()
         failures: list[BatchChunkFailure] = []
+        pending: list[Any] = []  # Arrow record batches, one per embedded chunk
+        pending_chunks: list[list[tuple[str, str, dict]]] = []
+        pending_rows = 0
+
+        async def flush() -> None:
+            nonlocal pending_rows
+            if not pending:
+                return
+            try:
+                await self._upsert_rows(_last_row_per_page(pending))
+            except Exception as exc:  # preserve vectors' failure stage for callers
+                failures.extend(
+                    BatchChunkFailure(tuple(chunk), "persistence", exc) for chunk in pending_chunks
+                )
+            pending.clear()
+            pending_chunks.clear()
+            pending_rows = 0
+
         for chunk, texts in iter_embed_chunks(items):
             try:
                 vectors = await self._embedder.embed(texts)
@@ -285,11 +333,24 @@ class LanceDBVectorStore(VectorStore):
                     self._row(page_id, vector, {"content": text, **metadata})
                     for (page_id, text, metadata), vector in zip(chunk, vectors, strict=True)
                 ]
-                await self._upsert_rows(rows)
+                pending.append(await self._record_batch(rows))
             except Exception as exc:  # preserve vectors' failure stage for callers
                 failures.append(BatchChunkFailure(tuple(chunk), "persistence", exc))
+                continue
+            pending_chunks.append(chunk)
+            pending_rows += len(rows)
+            if pending_rows >= _UPSERT_BATCH_ROWS:
+                await flush()
+        await flush()
         if failures:
             raise BatchEmbeddingError(failures=failures, total_items=len(items))
+
+    async def _record_batch(self, rows: list[dict]) -> Any:
+        """*rows* as Arrow data in the table's schema (float32 vectors)."""
+        import pyarrow as pa  # type: ignore[import]
+
+        schema = await self._table.schema()  # type: ignore[union-attr]
+        return pa.RecordBatch.from_pylist(rows, schema=schema)
 
     async def _search_by_vector(
         self, q_vec: list[float], limit: int, query: str | None = None
