@@ -859,6 +859,19 @@ _CSHARP = LanguageNodeMap(
     # invocations whose callee chain begins with ``Assert``.
     assert_call_kinds=frozenset({"invocation_expression"}),
     call_kinds=frozenset({"invocation_expression"}),
+    # ``x = ...`` and ``x += ...`` are both an ``assignment_expression`` (the
+    # dialect tells them apart by the ``operator`` token, as in Java and Go), so
+    # the augmented set stays empty.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset(
+        {"local_declaration_statement", "using_statement", "variable_declaration"}
+    ),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement", "yield_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 
