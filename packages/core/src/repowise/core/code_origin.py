@@ -220,6 +220,13 @@ def _generated_suffixes() -> tuple[str, ...]:
     return tuple(sorted(REGISTRY.generated_suffixes()))
 
 
+@cache
+def _deps_suffixes() -> tuple[str, ...]:
+    from .ingestion.languages.registry import REGISTRY
+
+    return tuple(sorted(REGISTRY.extensions_for(_DEPS_LANGUAGES)))
+
+
 def _is_generated_name(name: str) -> bool:
     return ".generated." in name or name.endswith(_generated_suffixes())
 
@@ -249,8 +256,11 @@ _VENDORED_ROOT_TOKENS = frozenset({"external", "externals"})
 _NATIVE_TREE = "native"
 # A ``deps/`` directory holding a library directory (aria2's ``deps/wslay/``,
 # hugo's ``internal/warpc/deps/parson/``). A file directly in ``deps/`` is the
-# repository's own (hugo's ``deps/deps.go``).
+# repository's own (hugo's ``deps/deps.go``). C and C++ only: those trees copy
+# libraries in by hand, while a Go, Rust or JS ``deps/`` package with
+# sub-packages (``internal/deps/resolver/``) is usually first-party.
 _DEPS_DIR = "deps"
+_DEPS_LANGUAGES = ("c", "cpp")
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
 
 
@@ -264,7 +274,7 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
         d == _NATIVE_TREE and dirs[i + 1] in _VENDORED_ROOT_TOKENS for i, d in enumerate(dirs[:-2])
     ):
         return True
-    if _DEPS_DIR in dirs[:-1]:
+    if _DEPS_DIR in dirs[:-1] and lowered_name.endswith(_deps_suffixes()):
         return True
     return lowered_name.endswith(_MINIFIED_SUFFIXES)
 

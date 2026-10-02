@@ -70,7 +70,7 @@ class TestParityGoldens:
 
     def test_test_fixture_stems_match_historical_set(self) -> None:
         assert frozenset(
-            {"conftest", "spec_helper", "test_helper", "testutil"}
+            {"conftest", "spec_helper", "test_helper"}
         ) == REGISTRY.test_fixture_stems()
 
     def test_suite_anchor_stems(self) -> None:

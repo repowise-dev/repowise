@@ -23,9 +23,6 @@ SPEC = LanguageSpec(
     display_name="Rust",
     import_support="full",
     entry_stems=("mod",),
-    # A crate's shared test helpers, compiled under ``#[cfg(test)] mod
-    # testutil;`` (ripgrep's ``searcher/src/testutil.rs``).
-    test_fixture_stems=("testutil",),
     # Cargo conventions: src/bin/ holds extra binaries; workspace binary
     # crates are conventionally named <project>-cli (typst-cli, …).
     layer_dir_hints=(("src/bin", "CLI"), ("-cli", "CLI")),

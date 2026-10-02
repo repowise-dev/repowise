@@ -189,8 +189,6 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("absl/log/log_basic_test_impl.inc", None, "test"),
     ("util/env_posix_test_helper.h", None, "test"),
     ("absl/strings/str_cat.h", None, ""),
-    # a crate's shared test module
-    ("crates/searcher/src/testutil.rs", None, "support"),
     ("crates/searcher/src/searcher/util.rs", None, ""),
 )
 

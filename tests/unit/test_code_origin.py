@@ -459,6 +459,11 @@ def test_build_rs_under_src_is_a_dead_code_root_but_keeps_its_origin() -> None:
         ("deps/wslay/lib/wslay_event.c", "vendored"),
         ("internal/warpc/deps/parson/parson.c", "vendored"),
         ("deps/deps.go", "production"),  # hugo's own package named deps
+        # C and C++ only: a first-party deps package elsewhere stays production.
+        ("internal/deps/resolver/resolve.go", "production"),
+        ("src/deps/graph/mod.rs", "production"),
+        ("lib/deps/tree/walk.js", "production"),
+        ("deps/Makefile.am", "production"),
         ("src/deps.py", "production"),
         # Benchmarks beside the code they measure are tooling.
         ("absl/synchronization/mutex_benchmark.cc", "tooling"),
