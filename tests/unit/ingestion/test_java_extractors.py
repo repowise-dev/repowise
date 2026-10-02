@@ -106,6 +106,12 @@ class TestJavaBindings:
         # Only the member is bound: the type's bare name is not in scope.
         assert [b.local_name for b in imp.bindings] == ["baz"]
 
+    def test_static_wildcard_import_names_only_the_type(self, parser: ASTParser) -> None:
+        # The member is "*", so the last name is already the type.
+        src = b"package x;\nimport static com.example.Bar.*;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["Bar"]
+
     def test_plain_import_names_only_the_type(self, parser: ASTParser) -> None:
         src = b"package x;\nimport com.example.Foo;\npublic class App {}\n"
         (imp,) = parser.parse_file(_file(), src).imports
