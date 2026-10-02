@@ -388,6 +388,36 @@ def test_a_truncated_test_list_widens_the_command_past_the_shown_tests() -> None
     assert plan.commands == ["pytest tests/test_orders.py"]
 
 
+def test_a_plan_in_a_language_with_no_known_runner_suggests_no_command() -> None:
+    """The fallback used to be ``npm run test`` for every file that was not
+    Python or JS, in repos with no ``package.json``. A wrong command is worse
+    than none: every consumer treats an empty list as nothing to suggest."""
+    for path in ("src/Foo/Bar.cs", "src/native/foo.cpp", "server/Translog.java", "a/b.go"):
+        plan = build_validation_plan(_plan("target", file_path=path), {}, {})
+        assert plan.commands == [], path
+
+
+def test_tests_in_a_language_with_no_known_runner_suggest_no_command() -> None:
+    reached = ReachedBy(
+        via="call-graph",
+        total=1,
+        tests=["tests/BarTests.cs::Ok"],
+        all_tests=["tests/BarTests.cs::Ok"],
+    )
+    plan = build_validation_plan(
+        _plan("target", file_path="src/Foo/Bar.cs"), {}, {"src/Foo/Bar.cs": reached}
+    )
+    assert plan.tests == ["tests/BarTests.cs::Ok"]
+    assert plan.commands == []
+
+
+def test_python_and_js_plans_keep_their_default_commands() -> None:
+    python = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {})
+    assert python.commands == ["pytest"]
+    typescript = build_validation_plan(_plan("target", file_path="web/app.ts"), {}, {})
+    assert typescript.commands == ["npm test", "npm run type-check"]
+
+
 def test_an_untruncated_test_list_keeps_the_precise_command() -> None:
     reached = ReachedBy(
         via="call-graph",

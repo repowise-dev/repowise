@@ -528,6 +528,10 @@ def _commands(tests: list[str], files: list[str], *, total: int | None = None) -
     read as a complete validation run while silently skipping the rest, so the
     selection widens to the files those tests live in: bounded by file count
     rather than test count, and never narrower than the evidence.
+
+    An empty list means the plan has no command to suggest. Nothing here looks
+    at the repository's tooling, so a language other than Python or JS/TS gets
+    none in place of a guess that would fail when run.
     """
     if total is not None and total > len(tests):
         tests = sorted({test.split("::", 1)[0] for test in tests})
@@ -546,7 +550,7 @@ def _commands(tests: list[str], files: list[str], *, total: int | None = None) -
         return ["pytest"]
     if any(path.endswith((".ts", ".tsx", ".js", ".jsx")) for path in files):
         return ["npm test", "npm run type-check"]
-    return ["npm run test"]
+    return []
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
