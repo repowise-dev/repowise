@@ -188,20 +188,6 @@ class JavaDefUseDialect(BaseDefUseDialect):
         for child in node.named_children:
             self._process(child, defs, uses)
 
-    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
-        """Process *node* whose writes execute only on some path (a switch arm).
-
-        Each def found within is recorded as a def AND a use: the may-def keeps
-        the variable in every "written in this region" set while its paired use
-        stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less.
-        """
-        inner_defs: list[Occurrence] = []
-        for child in node.named_children:  # not the node itself: no re-dispatch
-            self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
-        uses.extend(inner_defs)
-
     # -- write-target extraction ----------------------------------------------
 
     def _targets(self, node: Node | None, defs: list[Occurrence], uses: list[Occurrence]) -> None:

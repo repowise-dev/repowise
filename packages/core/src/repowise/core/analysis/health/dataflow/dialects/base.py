@@ -62,6 +62,11 @@ class Occurrence:
     #: initializer) reads an outer variable of the same name. None for any
     #: other write, and for a declarator that ends on a later line.
     declared_at: int | None = None
+    #: A use recorded only because the paired write may not happen (a write
+    #: inside a ``switch`` / ``match`` arm the CFG keeps as one statement), not
+    #: a read in the source. It keeps must-def proofs conservative; code that
+    #: asks what a span actually reads skips it.
+    echo: bool = False
 
 
 @dataclass(frozen=True)
@@ -283,6 +288,31 @@ class BaseDefUseDialect:
         self, node: Node, lmap: LanguageNodeMap, *, head_only: bool
     ) -> StatementDefUse:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    def _process(
+        self, node: Node | None, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """Process *node* whose writes execute only on some path (a switch or
+        match arm, an expression-position ``if`` / loop, a ``let-else`` arm).
+
+        Each def found within is recorded as a def AND a use: the may-def keeps
+        the variable in every "written in this region" set while its paired use
+        stays upward-exposed, so a downstream must-def proof can only get more
+        conservative, never less. The paired use is marked :attr:`Occurrence.echo`.
+        """
+        inner_defs: list[Occurrence] = []
+        for child in node.named_children:  # not the node itself: no re-dispatch
+            self._process(child, inner_defs, uses)
+        defs.extend(inner_defs)
+        uses.extend(echoes(inner_defs))
+
+
+def echoes(defs: list[Occurrence]) -> list[Occurrence]:
+    """The may-def uses paired with *defs* (see :attr:`Occurrence.echo`)."""
+    return [replace(occ, echo=True) for occ in defs]
 
 
 def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:

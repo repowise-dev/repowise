@@ -253,7 +253,10 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
         def_lines[d.var].append(d.line)
     for bdu in def_use.blocks.values():
         for u in bdu.uses:
-            use_lines[u.name].append(u.line)
+            # A may-def's paired use is bookkeeping, not a read: counted, a
+            # binder declared inside a ``match`` arm became its own parameter.
+            if not u.echo:
+                use_lines[u.name].append(u.line)
     # A closure's read counts where the closure is written: lifting the code
     # around it moves the read with it. Only names this function binds matter.
     for u in def_use.captured:

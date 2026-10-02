@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import BaseDefUseDialect, Occurrence, StatementDefUse, echoes
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -168,7 +168,7 @@ class RustDefUseDialect(BaseDefUseDialect):
             binders: list[Occurrence] = []
             self._targets(node.child_by_field_name("pattern"), binders, uses)
             defs.extend(binders)
-            uses.extend(binders)
+            uses.extend(echoes(binders))
             self._process(node.child_by_field_name("value"), defs, uses)
         else:
             self._process(node, defs, uses)
@@ -217,19 +217,6 @@ class RustDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
-
-    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
-        """Process *node* whose writes execute only on some path (a match arm,
-        an expression-position ``if`` / loop, a ``let-else`` arm).
-
-        Each def found within is recorded as a def AND a use, so a downstream
-        must-def proof can only get more conservative, never less.
-        """
-        inner_defs: list[Occurrence] = []
-        for child in node.named_children:  # not the node itself: no re-dispatch
-            self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
-        uses.extend(inner_defs)
 
     # -- write-target extraction (assignment LHS + binding patterns) ----------
 
