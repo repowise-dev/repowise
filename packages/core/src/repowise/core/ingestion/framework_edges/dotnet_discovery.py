@@ -7,26 +7,29 @@ instantiate every ``IEntityTypeConfiguration<T>`` in the assembly;
 discovered class, so the import graph sees nothing and dead code called every
 one of them unused.
 
-A type is wired here only on two pieces of evidence together: it derives from
-or implements a base the framework discovers (read from the parser's heritage,
-so the name is the declared base and not a naming convention), and the
-repository makes that framework's registration call. The edge runs from the
-file making the call to the file declaring the type, with no names, like the
-controller edges in :mod:`.aspnet`: the framework constructs the type and its
-file's public types are the request, response and mapper types it binds.
+A type is wired here only on evidence: it derives from or implements a base
+the framework discovers (read from the parser's heritage, so the name is the
+declared base and not a naming convention), and a file of the type's project,
+or of a project that references it, makes that framework's registration call
+in code (a call in a comment or a string does not count). The edge runs from
+the registering file to the type's file and names only the discovered types, so
+a dead sibling type in the same file is still reported. MVC controllers are
+wired by :mod:`.aspnet`.
 
-Ceiling: the call is matched anywhere in the repository rather than in the
-project whose assembly it scans, which only widens a rescue. A type discovered
-with no registration call at all (EF's ``IDesignTimeDbContextFactory``, found
-by the ``dotnet ef`` tool) is not covered.
+Ceiling: with no .NET project index (no ``.csproj`` in the repository) the
+call is matched anywhere in the repository. A type discovered with no
+registration call at all (EF's ``IDesignTimeDbContextFactory``, found by the
+``dotnet ef`` tool) is not covered.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..resolvers.dotnet.index import get_or_build_index
 from .base import _add_edge_if_new, read_text
 
 if TYPE_CHECKING:
@@ -114,57 +117,106 @@ _DISCOVERIES: tuple[_Discovery, ...] = (
     _Discovery(frozenset({"IEndpoint"}), ("AddEndpoints",)),
     # AutoMapper profiles.
     _Discovery(frozenset({"Profile"}), ("AddAutoMapper",)),
-    # ASP.NET Core MVC controllers, including Ardalis.ApiEndpoints bases.
-    _Discovery(
-        frozenset({"Controller", "ControllerBase", "EndpointBaseAsync", "EndpointBaseSync"}),
-        ("AddControllers", "AddControllersWithViews", "AddMvc", "AddMvcCore", "MapControllers"),
-    ),
 )
 
 _CALL_RE = re.compile(
     r"\b(" + "|".join(sorted({c for d in _DISCOVERIES for c in d.calls})) + r")\s*[<(]"
 )
 
+#: A comment or a string literal, blanked so a call written in one is not read
+#: as the registration. Read from the text rather than the parsed call sites,
+#: which miss a call on a member chain in top-level statements
+#: (``builder.Services.AddMediator();`` in ``Program.cs``).
+_COMMENT_OR_STRING = re.compile(
+    r"""//[^\n]*|/\*.*?\*/|@"(?:[^"]|"")*"|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""",
+    re.DOTALL,
+)
 
-def _registering_files(cs_files: list[tuple[str, Any]]) -> dict[str, str]:
-    """Registration call -> the first file (in path order) that makes it."""
-    found: dict[str, str] = {}
+
+def _calls_made(parsed: Any) -> set[str]:
+    """Registration calls written in *parsed*'s code, comments and strings excluded."""
+    text = read_text(parsed, encoding="utf-8-sig")
+    if not text:
+        return set()
+    return set(_CALL_RE.findall(_COMMENT_OR_STRING.sub(" ", text)))
+
+
+class _Projects:
+    """Which project holds a file, and which projects can see a project."""
+
+    def __init__(self, index: Any | None, repo_path: Path | None) -> None:
+        self._index = index
+        self._root = repo_path
+        self._seen_by: dict[Any, frozenset[Any]] = {}
+
+    def of(self, path: str) -> Any | None:
+        if self._index is None or self._root is None:
+            return None
+        project = self._index.project_for_file(self._root / path)
+        return None if project is None else project.path
+
+    def can_register(self, registrar: Any | None, owner: Any | None) -> bool:
+        """Whether a call in *registrar*'s project scans *owner*'s project.
+
+        Its own project or one it references, directly or transitively. With no
+        project for either side there is no scope to check.
+        """
+        if registrar is None or owner is None:
+            return True
+        return owner in self._closure(registrar)
+
+    def _closure(self, project: Any) -> frozenset[Any]:
+        cached = self._seen_by.get(project)
+        if cached is None:
+            seen, stack = {project}, [project]
+            while stack:
+                for ref in self._index.referenced_projects(stack.pop()):
+                    if ref not in seen:
+                        seen.add(ref)
+                        stack.append(ref)
+            cached = self._seen_by[project] = frozenset(seen)
+        return cached
+
+
+def _registrars(
+    cs_files: list[tuple[str, Any]], projects: _Projects
+) -> dict[str, list[tuple[str, Any]]]:
+    """Discovered base -> ``(file, project)`` of every file registering its framework."""
+    by_call: dict[str, list[tuple[str, Any]]] = {}
     for path, parsed in sorted(cs_files, key=lambda item: item[0]):
-        text = read_text(parsed, encoding="utf-8-sig")
-        for call in _CALL_RE.findall(text):
-            found.setdefault(call, path)
-    return found
-
-
-def _discovered_bases(registrars: dict[str, str]) -> dict[str, str]:
-    """Base name -> the file registering a framework that discovers it."""
-    out: dict[str, str] = {}
+        for call in _calls_made(parsed):
+            by_call.setdefault(call, []).append((path, projects.of(path)))
+    out: dict[str, list[tuple[str, Any]]] = {}
     for discovery in _DISCOVERIES:
-        source = next((registrars[c] for c in discovery.calls if c in registrars), None)
-        if source is not None:
-            for base in discovery.bases:
-                out.setdefault(base, source)
+        sites = [site for call in discovery.calls for site in by_call.get(call, ())]
+        for base in discovery.bases:
+            out.setdefault(base, []).extend(sites)
     return out
 
 
 def _add_discovery_edges(
-    graph: nx.DiGraph, parsed_files: dict[str, Any], path_set: set[str]
+    graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
 ) -> int:
     cs_files = [
         (path, parsed)
         for path, parsed in parsed_files.items()
         if parsed.file_info.language == "csharp" and path in path_set
     ]
-    bases = _discovered_bases(_registering_files(cs_files))
-    if not bases:
+    projects = _Projects(get_or_build_index(ctx), ctx.repo_path)
+    registrars = _registrars(cs_files, projects)
+    if not registrars:
         return 0
-    count = 0
+    wired: dict[tuple[str, str], list[str]] = {}
     for path, parsed in cs_files:
-        for relation in parsed.heritage:
-            source = bases.get(relation.parent_name.rsplit(".", 1)[-1])
-            if source is not None and _add_edge_if_new(graph, source, path):
-                count += 1
-    return count
+        owner = projects.of(path)
+        for relation in getattr(parsed, "heritage", ()):
+            sites = registrars.get(relation.parent_name.rsplit(".", 1)[-1], ())
+            source = next((f for f, p in sites if projects.can_register(p, owner)), None)
+            if source is not None and source != path:
+                names = wired.setdefault((source, path), [])
+                if relation.child_name not in names:
+                    names.append(relation.child_name)
+    return sum(_add_edge_if_new(graph, src, dst, names) for (src, dst), names in wired.items())
 
 
 class _AssemblyScanHandler:
@@ -178,7 +230,7 @@ class _AssemblyScanHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_discovery_edges(graph, parsed_files, path_set)
+        return _add_discovery_edges(graph, parsed_files, ctx, path_set)
 
 
 HANDLERS = [_AssemblyScanHandler()]

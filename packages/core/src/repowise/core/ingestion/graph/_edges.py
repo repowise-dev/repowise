@@ -198,6 +198,10 @@ class EdgesMixin:
             source_map=self._source_map,
         )
 
+        # The .NET project index ``build()`` already made; handlers that scope
+        # by project read it instead of walking the tree for every .csproj again.
+        if getattr(self, "dotnet_index", None) is not None:
+            ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
         if count:
             log.info("Framework edges added", count=count)

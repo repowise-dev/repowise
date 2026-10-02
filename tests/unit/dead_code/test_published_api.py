@@ -7,6 +7,7 @@ from pathlib import Path
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeKind
 from repowise.core.analysis.dead_code.published_api import (
     PUBLISHED_API_CONFIDENCE,
+    BuildFacts,
     demote_published_api,
 )
 from repowise.core.ingestion.resolvers.dotnet.index import build_index
@@ -40,9 +41,11 @@ def _export(path: str, name: str) -> DeadCodeFindingData:
 
 def _demote(root: Path, *findings: DeadCodeFindingData) -> list[DeadCodeFindingData]:
     languages = {f.file_path: "csharp" for f in findings}
-    return demote_published_api(
-        list(findings), languages, repo_root=root, dotnet_index=build_index(root)
-    )
+    return demote_published_api(list(findings), languages, _facts(root))
+
+
+def _facts(root: Path) -> BuildFacts:
+    return BuildFacts(repo_root=root, dotnet_index=build_index(root))
 
 
 def test_a_packable_project_publishes_its_public_types(tmp_path: Path) -> None:
@@ -75,7 +78,16 @@ def test_an_app_project_is_left_alone(tmp_path: Path) -> None:
 def test_a_language_without_a_rule_is_left_alone(tmp_path: Path) -> None:
     _project(tmp_path, "src/Lib/Lib.csproj", "<PackageId>Acme.Lib</PackageId>")
     finding = _export("src/Lib/tool.py", "helper")
-    demote_published_api(
-        [finding], {finding.file_path: "python"}, repo_root=tmp_path, dotnet_index=build_index(tmp_path)
-    )
+    demote_published_api([finding], {finding.file_path: "python"}, _facts(tmp_path))
     assert finding.confidence == 0.6
+
+
+def test_a_project_nested_in_a_packaged_one_is_judged_on_its_own(tmp_path: Path) -> None:
+    """A samples project inside the library folder ships nothing."""
+    _project(tmp_path, "Lib/Lib.csproj", "<PackageId>My.Lib</PackageId>")
+    _project(tmp_path, "Lib/Samples/Sample.csproj")
+    sample = _export("Lib/Samples/Demo.cs", "Demo")
+    library = _export("Lib/Api.cs", "Api")
+    _demote(tmp_path, sample, library)
+    assert sample.confidence == 0.6 and sample.evidence == []
+    assert library.confidence == PUBLISHED_API_CONFIDENCE

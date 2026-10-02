@@ -8,8 +8,10 @@ still sees it, labelled as published surface rather than as a cleanup item.
 
 Only a build that declares the package counts, never a guess from layout. The
 evidence is read per language from :data:`_PUBLISHED_ROOTS`, each entry
-returning ``{project dir: package name}``; a file belongs to its innermost
-project. Today that is .NET: a project that opts into packing (``IsPackable``,
+returning ``{project dir: package name, or None when that project publishes
+nothing}``. A file belongs to its innermost project, and only that project's
+own build decides: a sample or test project nested in a packaged library's
+folder is not part of the package. Today that is .NET: a project that opts into packing (``IsPackable``,
 ``PackageId``, ``GeneratePackageOnBuild``), or one that keeps a public-API
 baseline (``PublicAPI.Shipped.txt``, the analyzer file a library commits so
 every change to its shipped surface is reviewed).
@@ -34,8 +36,8 @@ _API_BASELINE = "PublicAPI.Shipped.txt"
 
 
 @dataclass(frozen=True)
-class _BuildFacts:
-    """What the per-language readers may consult."""
+class BuildFacts:
+    """What the per-language readers may consult; a new language adds a field."""
 
     repo_root: Path | None
     dotnet_index: Any | None
@@ -57,13 +59,13 @@ def _keeps_api_baseline(project_dir: Path) -> bool:
         return False
 
 
-def _dotnet_published(facts: _BuildFacts) -> dict[str, str]:
-    """Project dirs of the .NET projects that ship a package."""
+def _dotnet_published(facts: BuildFacts) -> dict[str, str | None]:
+    """Every .NET project dir, mapped to the package it ships or None."""
     index = facts.dotnet_index
     if index is None:
         return {}
     root = Path(index.repo_path)
-    out: dict[str, str] = {}
+    out: dict[str, str | None] = {}
     for project in index.projects.values():
         rel = _relative(project.project_dir, root)
         if rel is None:
@@ -71,34 +73,31 @@ def _dotnet_published(facts: _BuildFacts) -> dict[str, str]:
         name = project.published_id
         if name is None and _keeps_api_baseline(project.project_dir):
             name = project.assembly_name or project.path.stem
-        if name is not None:
-            out[rel] = name
+        out[rel] = name
     return out
 
 
 #: Language -> reader of the build files that declare a published package.
 #: A language without an entry has no published-surface rule yet.
-_PUBLISHED_ROOTS: dict[str, Callable[[_BuildFacts], Mapping[str, str]]] = {
+_PUBLISHED_ROOTS: dict[str, Callable[[BuildFacts], Mapping[str, str | None]]] = {
     "csharp": _dotnet_published,
     "vbnet": _dotnet_published,
 }
 
 
-def _package_of(path: str, roots: Mapping[str, str]) -> str | None:
-    """The package of the innermost published project enclosing *path*."""
+def _package_of(path: str, roots: Mapping[str, str | None]) -> str | None:
+    """The package of the innermost project enclosing *path*, if it ships one."""
     for parent in PurePosixPath(path).parents:
-        name = roots.get("" if str(parent) == "." else parent.as_posix())
-        if name is not None:
-            return name
+        key = "" if str(parent) == "." else parent.as_posix()
+        if key in roots:
+            return roots[key]
     return None
 
 
 def demote_published_api(
     findings: list[DeadCodeFindingData],
     languages: Mapping[str, str],
-    *,
-    repo_root: Path | None = None,
-    dotnet_index: Any | None = None,
+    facts: BuildFacts,
 ) -> list[DeadCodeFindingData]:
     """Cap unused exports and unreachable files of a published package.
 
@@ -106,8 +105,7 @@ def demote_published_api(
     the caller leaves out an unreachable file that declares no public type.
     Mutates in place and returns the same list.
     """
-    facts = _BuildFacts(repo_root=repo_root, dotnet_index=dotnet_index)
-    roots: dict[str, Mapping[str, str]] = {}
+    roots: dict[str, Mapping[str, str | None]] = {}
     for finding in _published_candidates(findings):
         language = languages.get(finding.file_path)
         reader = _PUBLISHED_ROOTS.get(language or "")

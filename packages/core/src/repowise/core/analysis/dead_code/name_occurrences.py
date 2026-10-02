@@ -180,6 +180,34 @@ def _uses_in_own_file(
     return out
 
 
+def demote_used_in_own_file(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> None:
+    """Cap *findings* whose name their own file writes outside their span.
+
+    For an unused export no other file names: a use beside it (a request type
+    its endpoint takes, a helper the class below calls) means it is used and
+    at most exported wider than it needs to be. Kept below the review floor
+    with the line that uses it, rather than dropped, since a same-file use by
+    a symbol that is itself dead keeps it alive. Mutates in place.
+    """
+    by_file: dict[str, list[DeadCodeFindingData]] = {}
+    for finding in findings:
+        if finding.symbol_name and finding.file_path in source_map:
+            by_file.setdefault(finding.file_path, []).append(finding)
+    for path, pending in by_file.items():
+        verdicts = _uses_in_own_file(source_map, path, pending)
+        for finding in pending:
+            verdict = verdicts[id(finding)]
+            if verdict.answer is not _Answer.USED:
+                continue
+            finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
+            finding.safe_to_delete = False
+            finding.evidence.append(
+                f"Used in its own file at {verdict.used_at}; at most it need not be public"
+            )
+
+
 def searchable_token(name: str) -> bytes:
     """The searchable form of *name*, or empty when the scan cannot find it.
 

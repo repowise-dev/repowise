@@ -71,10 +71,11 @@ from .name_occurrences import (
     clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
+    demote_used_in_own_file,
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
-from .published_api import demote_published_api
+from .published_api import BuildFacts, demote_published_api
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
@@ -1004,8 +1005,7 @@ class DeadCodeAnalyzer:
         findings = demote_published_api(
             findings,
             self._published_api_languages(findings, type_names),
-            repo_root=self._repo_root,
-            dotnet_index=self._dotnet_index,
+            BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
@@ -1023,8 +1023,10 @@ class DeadCodeAnalyzer:
 
         The symbol-level counterpart of the file rescue in
         :func:`build_csharp_named_files`: a C# type is used from its own
-        namespace with no import, so "no importer" says nothing about it.
-        Returns a new list.
+        namespace with no import, so "no importer" says nothing about it. A
+        project-scoped name is the same evidence the file pass drops on. One
+        its own file uses is capped below the floor instead (see
+        :func:`demote_used_in_own_file`). Returns a new list.
         """
         wanted: dict[str, set[str]] = {}
         for f in findings:
@@ -1039,11 +1041,16 @@ class DeadCodeAnalyzer:
             dotnet_index=self._dotnet_index,
             repo_root=self._repo_root,
         )
-        return [
+        kept = [
             f
             for f in findings
             if f.kind is not DeadCodeKind.UNUSED_EXPORT or (f.file_path, f.symbol_name) not in named
         ]
+        demote_used_in_own_file(
+            [f for f in kept if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path in wanted],
+            self._source_map,
+        )
+        return kept
 
     def _published_api_languages(
         self, findings: list[DeadCodeFindingData], type_names: dict[str, frozenset[str]]

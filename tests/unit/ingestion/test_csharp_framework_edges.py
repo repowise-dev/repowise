@@ -297,7 +297,64 @@ class TestAssemblyScanDiscovery:
                 ),
             },
         )
-        assert graph.has_edge("Program.cs", "Cart/AddToCart.cs")
+        edge = graph.get_edge_data("Program.cs", "Cart/AddToCart.cs")
+        assert edge is not None
+        assert sorted(edge["imported_names"]) == ["AddToCartEndpoint", "AddToCartValidator"]
+
+    def test_the_edge_names_only_the_discovered_type(self, tmp_path: Path) -> None:
+        """A dead sibling type in a handler's file is not vouched for."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrder.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                    "public class DeadSibling {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Orders/CreateOrder.cs")
+        assert edge is not None and edge["imported_names"] == ["CreateOrderHandler"]
+
+    def test_a_registration_call_in_a_comment_or_string_does_not_count(
+        self, tmp_path: Path
+    ) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": (
+                    "// builder.Services.AddMediator();\n"
+                    'var hint = "call AddMediator() to enable handlers";\n'
+                ),
+                "Orders/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+    def test_a_project_the_registering_one_cannot_see_is_not_scanned(
+        self, tmp_path: Path
+    ) -> None:
+        sdk = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>{}</ItemGroup></Project>'
+        ref = '<ProjectReference Include="../Core/Core.csproj" />'
+        graph = self._edges(
+            tmp_path,
+            {
+                "App/App.csproj": sdk.format(ref),
+                "Core/Core.csproj": sdk.format(""),
+                "Other/Other.csproj": sdk.format(""),
+                "App/Program.cs": "builder.Services.AddMediator();\n",
+                "Core/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+                "Other/StrayHandler.cs": (
+                    "public class StrayHandler : IRequestHandler<Stray, int> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("App/Program.cs", "Core/CreateOrderHandler.cs")
+        assert graph.in_degree("Other/StrayHandler.cs") == 0
 
     def test_a_class_named_like_a_handler_is_not_a_handler(self, tmp_path: Path) -> None:
         """Name patterns do not count; only the declared base does."""
