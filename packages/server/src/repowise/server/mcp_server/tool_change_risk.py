@@ -149,20 +149,20 @@ async def get_change_risk(
     """Review a commit, ``base..head`` range, or uncommitted work.
 
     Leads with ``directive`` (what to do) and ``health_delta`` (what this
-    change newly made worse). A finding is reported only when the diff explains
-    it, and each names its ``attribution`` basis; findings the change wrote
-    sort above pre-existing ones it only touched.
+    change newly made worse). Findings are reported only when the diff explains
+    them, name their ``attribution`` basis, and sort change-written above
+    pre-existing.
 
     Trust ``health_delta.status``: ``partial`` means files were skipped and the
     change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
     ``patch_coverage`` is the share of changed executable lines stored coverage
-    ran (no revspec: from the merge-base); ``hints`` name tests to extend.
-    ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
-    fixes on these exact lines. ``branch_overlap`` names other branches editing
-    them. ``diff_shape`` is one line on size, not a danger verdict. An empty
-    diff returns ``status: "nothing_to_score"`` and names the tree it read.
+    ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
+    bug-fix record, ``overlap`` the past fixes on these exact lines,
+    ``branch_overlap`` other branches editing them. ``diff_shape`` is one line
+    on size, not a danger verdict. An empty diff returns
+    ``status: "nothing_to_score"``.
 
     Args:
         revspec: Commit or ``base..head`` range. Omit to review uncommitted
@@ -173,9 +173,8 @@ async def get_change_risk(
         include_paths: Gitignore-style paths to keep, as a list or one
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"`` for every change finding, ``"diagnostics"`` for
-            raw score mechanics, ``"scales"`` for units. All identical on
-            repeat, so ask once.
+        include: ``"findings"``, ``"diagnostics"`` (raw score mechanics) or
+            ``"scales"`` (units).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
