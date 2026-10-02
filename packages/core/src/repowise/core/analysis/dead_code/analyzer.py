@@ -1,4 +1,4 @@
-"""DeadCodeAnalyzer — pure graph + git-metadata dead-code detection.
+﻿"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
 
 All analysis is graph traversal + SQL. No LLM calls. Must complete in
 < 10 seconds.
@@ -37,20 +37,23 @@ from .constants import (
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
+    _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
+    _RUN_NOT_IMPORTED_LANGUAGES,
     _is_fixture_path,
     never_flag_path,
 )
 from .contract_methods import is_com_method_implementation, is_contract_method
+from .csharp_reachability import build_csharp_named_files
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
     read_source_text,
 )
-from .entry_shape import clamp_entry_shaped
+from .entry_shape import clamp_entry_shaped, drop_program_entries
 from .file_reachability import (
     PackageFileMap,
     ReachabilityRescues,
@@ -60,9 +63,11 @@ from .file_reachability import (
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .name_occurrences import (
     IDENTIFIER_RE,
+    clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
     drop_internals_used_in_own_file,
+    drop_reference_assembly_api,
 )
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
@@ -88,7 +93,7 @@ _IDENTIFIER_RE = IDENTIFIER_RE
 #: omission is the bug.
 
 #: Read budgets for the unindexed scan. These files are skipped *because* they
-#: are large — one corpus repo ships a 104 MB generated parser — so the scan is
+#: are large â€” one corpus repo ships a 104 MB generated parser â€” so the scan is
 #: bounded per file and in total. Tree-sitter costs ~95 MB of RSS per MB of
 #: source; this pass is a byte scan and costs far less, but the bound is what
 #: keeps it from ever becoming the expensive thing.
@@ -100,7 +105,7 @@ _UNINDEXED_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
 # ---------------------------------------------------------------------------
 
 #: Normalised decorator/annotation bases (after stripping leading ``@`` and
-#: any call-argument ``(…)`` tail) that signal a symbol is deprecated.
+#: any call-argument ``(â€¦)`` tail) that signal a symbol is deprecated.
 #:
 #: Rust inner-attr form (``deprecated``), C# stripped form (``Obsolete``), and
 #: C++ stripped form (``deprecated``) are included verbatim because the
@@ -142,7 +147,7 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
     """
     for blob in decorators:
         # A Java/Kotlin modifiers node delivers every annotation concatenated,
-        # so the blob is split the way ``_is_symbol_deprecated`` splits it —
+        # so the blob is split the way ``_is_symbol_deprecated`` splits it â€”
         # without this, ``@Named("unused-legacy-bean")`` beside an unrelated
         # ``@SuppressWarnings`` reads as the author's statement.
         for token in str(blob).split("@"):
@@ -161,7 +166,7 @@ def _decorator_base(raw: str) -> str:
     """Return the normalised base name of a single decorator/annotation token.
 
     Strips a leading ``@``, trims whitespace, and drops any call-argument
-    ``(…)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
+    ``(â€¦)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
     ``"Deprecated\n    public"``) only the first whitespace-delimited word is
     kept, so visibility keywords that trail the annotation name are discarded.
 
@@ -174,7 +179,7 @@ def _decorator_base(raw: str) -> str:
         base = base[:paren].strip()
     else:
         # Handle trailing visibility keywords in modifier blobs:
-        # "Deprecated\n    public" → "Deprecated"
+        # "Deprecated\n    public" â†’ "Deprecated"
         parts = base.split()
         base = parts[0] if parts else base
     return base
@@ -197,7 +202,7 @@ def _is_framework_registered(decorators: list[str]) -> bool:
       (``@nox.session``), see :func:`_is_receiver_registration`;
     * a registration verb in the final path segment. Every suffix entry begins
       with a dot, so that list can only ever see a *dotted* decorator, and
-      celery's ``@register_drainer('eventlet')`` is bare — invisible to all of
+      celery's ``@register_drainer('eventlet')`` is bare â€” invisible to all of
       them. Reading the final segment covers both spellings at once:
       ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
       ``register`` exactly or a ``register_`` stem so that a past participle
@@ -264,15 +269,15 @@ def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
     The *decorators* list is produced by ``parser.py`` ``_extract_symbols``:
     - Python / Scala / Swift: full decorator text with leading ``@``
       (e.g. ``"@deprecated"``, ``"@typing.deprecated"``).
-    - Java / Kotlin: full modifier-node text — one blob per declaration that
+    - Java / Kotlin: full modifier-node text â€” one blob per declaration that
       may contain several annotations plus visibility keywords
       (e.g. ``"@Deprecated\n    public"``,
       ``"@Override\n  @Deprecated\n  public"``).
-    - Rust: inner attribute content stripped of ``#[…]``
+    - Rust: inner attribute content stripped of ``#[â€¦]``
       (e.g. ``"deprecated"`` from ``#[deprecated]``).
-    - C#: inner attribute content stripped of ``[…]``
+    - C#: inner attribute content stripped of ``[â€¦]``
       (e.g. ``"Obsolete"`` from ``[Obsolete]``).
-    - C++: inner attribute content stripped of ``[[…]]``
+    - C++: inner attribute content stripped of ``[[â€¦]]``
       (e.g. ``"deprecated"`` from ``[[deprecated]]``).
     """
     # 1. Name suffix
@@ -298,7 +303,7 @@ def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
-# false-positive — they're always accessed through an enclosing class /
+# false-positive â€” they're always accessed through an enclosing class /
 # namespace. C# auto-properties land in the graph as ``variable``;
 # fields / enum members / type aliases / namespace anchors share the
 # same property.
@@ -319,14 +324,14 @@ _UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset(
 
 # Additional kinds skipped only for languages where the graph cannot yet
 # observe interface usage. In practice these are DI-heavy languages
-# whose canonical interface-consumption path is constructor injection —
+# whose canonical interface-consumption path is constructor injection â€”
 # resolved by the type-use edge pass (see
 # ``ingestion/type_ref_resolution.py``). Once a language emits
 # ``via=type_use`` edges, its entry here can be removed.
 #
 # C# already has type-use coverage (ctor + method + delegate +
 # primary-ctor param.type captures), so ``interface`` is *not* skipped
-# for C# — a genuinely unused C# interface is now observable.
+# for C# â€” a genuinely unused C# interface is now observable.
 #
 # TS / Python / JS interfaces were always imported by name and never
 # needed the skip; treating them uniformly produced false negatives.
@@ -341,11 +346,11 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
 # Single-file-component languages: the whole file is one component, so their
-# exports behave unlike an ordinary module's — see _non_importable_kinds.
+# exports behave unlike an ordinary module's â€” see _non_importable_kinds.
 _SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
 
 # Every kind an SFC component prop can take, plus "class" for the synthetic
-# component symbol itself — see _non_importable_kinds.
+# component symbol itself â€” see _non_importable_kinds.
 _SFC_NON_IMPORTABLE_KINDS: frozenset[str] = frozenset(
     {"constant", "variable", "function", "class", "interface", "type_alias"}
 )
@@ -355,7 +360,7 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     """Per-language set of symbol kinds excluded from unused-export passes.
 
     Returns the union of the universal set and any language-specific
-    additions. Cheap to call — short lookup, no per-call allocation
+    additions. Cheap to call â€” short lookup, no per-call allocation
     when the language has no additions.
     """
     # An SFC's top-level exports are its props: Svelte's ``export let x`` is
@@ -365,9 +370,9 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     # would read as an unused export.
     #
     # The component symbol itself needs the same treatment, which is why
-    # "class" is in the set. A component is reached as a whole module — by a
+    # "class" is in the set. A component is reached as a whole module â€” by a
     # markup tag, or by a router's ``import('@/views/profile')``, which binds
-    # no name at all — so it never carries the symbol-level inbound edge the
+    # no name at all â€” so it never carries the symbol-level inbound edge the
     # unused-export pass looks for. On vue-element-admin that alone accounted
     # for 45 of 53 findings, every one of them a false positive.
     #
@@ -392,8 +397,8 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | froze
 # Aggregate *type* kinds that are never call targets. The unused-internal
 # pass is a call-graph check ("private symbol with no incoming CALL edges"),
 # which is meaningful for functions/methods but not for types: a struct or
-# interface used only as a field/parameter/return type — especially within
-# its own file — has no call edge and no observable symbol-level type edge,
+# interface used only as a field/parameter/return type â€” especially within
+# its own file â€” has no call edge and no observable symbol-level type edge,
 # so "no callers" is not evidence of deadness. Such types are still subject
 # to the *unused-export* pass (which reasons over import names / type_use),
 # so genuinely-dead exported types are still surfaced there.
@@ -410,7 +415,13 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
 
 #: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
 #: Paired with ``is_declaration`` this identifies a type forward declaration,
-#: which is never a deletable unit — see the guard in ``_detect_unused_exports``.
+#: which is never a deletable unit â€” see the guard in ``_detect_unused_exports``.
+#: Kinds that declare a type, which Java and C# use from their own package or
+#: namespace without an import.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "struct", "enum", "record", "trait", "object"}
+)
+
 _CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
     {
         "class",
@@ -420,13 +431,13 @@ _CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
 )
 
 # Symbol names that are language-runtime entry points or compiler-implicit
-# anchors — never invoked by user-authored callers, never dead.
+# anchors â€” never invoked by user-authored callers, never dead.
 _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
     {
         "Main",  # C#, Java, Kotlin, Go, Rust, Swift, Scala
         "main",  # most others
         # ---- Go runtime / test conventions ------------------------------
-        # ``func init`` is run by the Go runtime when the package is linked —
+        # ``func init`` is run by the Go runtime when the package is linked â€”
         # never called by name, so it has no inbound call edge. ``TestMain``
         # is the test-binary entry the ``go test`` runner invokes by reflection.
         "init",
@@ -503,7 +514,7 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
         # distinctive enough not to risk masking dead code in unrelated
         # files; common identifiers (``load``, ``action``, ``metadata``,
         # ``config``, ``headers``, ``meta``, ``links``, ``runtime``) are
-        # deliberately omitted — they get file-level protection via the
+        # deliberately omitted â€” they get file-level protection via the
         # convention globs in :data:`_NEVER_FLAG_PATTERNS`.
         "generateStaticParams",
         "generateMetadata",
@@ -551,7 +562,7 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
 # \n#define __has_include(h) 0``). The tree-sitter cpp grammar extracts the
 # ``#define`` as a ``preproc_function_def`` symbol, but the call sites are
 # preprocessor ``#if __has_include(...)`` directives, which the static
-# graph cannot observe — so without this skip every such fallback flags
+# graph cannot observe â€” so without this skip every such fallback flags
 # as an unused export.
 _CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
     {
@@ -591,7 +602,7 @@ def _find_jsx_namespace_files(
 
     Symbols whose name is in :data:`_TS_JSX_NAMESPACE_TYPES` and whose
     defining file lives in this set are integration points with the JSX
-    transformer — referenced implicitly by every JSX expression, never
+    transformer â€” referenced implicitly by every JSX expression, never
     imported by name. The scan is a cheap substring check; tree-sitter
     grammar work for a richer signal would be wasted effort.
     """
@@ -605,7 +616,7 @@ def _find_jsx_namespace_files(
             if src_path.suffix not in (".ts", ".tsx", ".d.ts"):
                 continue
             source = read_source_text(path, file_info.abs_path, source_map)
-            # Match ``namespace JSX`` and ``declare namespace JSX`` — both
+            # Match ``namespace JSX`` and ``declare namespace JSX`` â€” both
             # are JSX transformer integration points in practice.
             if "namespace JSX" in source:
                 matches.add(path)
@@ -632,7 +643,7 @@ def _find_bundler_alias_targets(
     """Repo-relative paths referenced from bundler config files.
 
     Vite/webpack ``resolve.alias`` entries substitute a bare package import
-    with a local file (``shiki`` → ``src/shims/shiki.ts``): no source file
+    with a local file (``shiki`` â†’ ``src/shims/shiki.ts``): no source file
     ever imports the shim path, only the config names it, so the shim reads
     as unreachable. Any relative path string inside a bundler config that
     resolves to an indexed file marks that file reachable.
@@ -695,8 +706,8 @@ def _is_synthetic_node(node: str) -> bool:
     """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
 
     Two synthetic prefixes exist:
-      - ``external:`` — third-party / unresolved imports.
-      - ``framework:`` — anchors added by ``framework_edges`` to model
+      - ``external:`` â€” third-party / unresolved imports.
+      - ``framework:`` â€” anchors added by ``framework_edges`` to model
         convention-based loading (e.g. TYPO3 core loading ``ext_localconf.php``).
 
     Both are skipped when the analyzer asks "is this node itself dead?",
@@ -761,6 +772,18 @@ def _is_declaration_only(sym: dict) -> bool:
 _LINES_UNKNOWN = "Line count unavailable: source was not read"
 
 
+#: ``(days, confidence)`` rungs for a file with no commit in 90 days, oldest
+#: first. ``_is_old`` uses strict >, so days-1 gives >= semantics: a year or
+#: more untouched is 1.0, very likely dead.
+_GIT_AGE_RUNGS: tuple[tuple[int, float], ...] = ((364, 1.0), (179, 0.9), (89, 0.8))
+
+
+def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
+    if sym.get("visibility") != "public" or sym.get("parent_name"):
+        return False
+    return kinds is None or sym.get("kind") in kinds
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
@@ -786,12 +809,17 @@ class DeadCodeAnalyzer:
         source_map: dict[str, bytes] | None = None,
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
+        dotnet_index: Any | None = None,
     ) -> None:
         self.graph = graph
+        # The C# resolver's project index (``GraphBuilder.dotnet_index``):
+        # scopes the C# name rescue to the projects that can see a file.
+        self._dotnet_index = dotnet_index
+        self._csharp_named_files: frozenset[str] | None = None
         self.git_meta_map = git_meta_map or {}
         # Source files ingestion could not read (currently: dropped on size).
         # An unread importer is invisible to the graph, so "no importers" stops
-        # meaning "unused" and starts meaning "we did not look" — which is how
+        # meaning "unused" and starts meaning "we did not look" â€” which is how
         # one skipped entry point turned into 38 deletion-ready components at
         # high confidence (#1237). ``(path, reason)`` pairs; the reason rides
         # along so the evidence line can say why.
@@ -836,7 +864,7 @@ class DeadCodeAnalyzer:
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
             parsed_files or {}, source_map
         )
-        # Files substituted in via bundler ``resolve.alias`` config — named
+        # Files substituted in via bundler ``resolve.alias`` config â€” named
         # by the config, never imported by path.
         self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(
             parsed_files or {}, source_map
@@ -853,7 +881,7 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
-        # Cache for JSX prop-guard extraction: maps pred_file → list of
+        # Cache for JSX prop-guard extraction: maps pred_file â†’ list of
         # (parent_fn, child_component, guard_prop) triples. Populated lazily
         # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
         # disk and parsed by tree-sitter at most once per analysis run.
@@ -865,10 +893,18 @@ class DeadCodeAnalyzer:
         """Assemble the rescue state the shared predicate reads."""
         if self._package_files is None:
             self._package_files = build_package_file_map(self.graph)
+        if self._csharp_named_files is None:
+            self._csharp_named_files = build_csharp_named_files(
+                self.graph,
+                self._source_map,
+                dotnet_index=self._dotnet_index,
+                repo_root=self._repo_root,
+            )
         return ReachabilityRescues(
             bundler_alias_targets=frozenset(self._bundler_alias_targets),
             whitelist=frozenset(whitelist),
             package_files=self._package_files,
+            csharp_named_files=self._csharp_named_files,
         )
 
     def analyze(
@@ -924,11 +960,15 @@ class DeadCodeAnalyzer:
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
         # Same position and for the same reason. This one asks the wider
-        # version of the same question — not "could an unread file explain
+        # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
+        findings = drop_program_entries(findings, self._source_map)
+        type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
+        findings = drop_reference_assembly_api(findings, self._source_map, type_names)
+        findings = clamp_named_types(findings, self._source_map, type_names)
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
         )
@@ -964,9 +1004,9 @@ class DeadCodeAnalyzer:
             # The three skips left here are *scoping*, not reachability: a test
             # file is perfectly reachable, it is just not something this pass
             # reports. Everything that answers "can anything get to this file"
-            # — entry points, API contracts, never-flag globs, the whitelist,
+            # â€” entry points, API contracts, never-flag globs, the whitelist,
             # barrels, bundler-alias shims and the package-granular languages
-            # (Go / JVM / C-C++) — lives in the predicate, which the overview
+            # (Go / JVM / C-C++) â€” lives in the predicate, which the overview
             # assembler calls with the same state so the two cannot disagree.
             # See :mod:`file_reachability`.
             if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
@@ -1073,7 +1113,7 @@ class DeadCodeAnalyzer:
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
             # internal one is a name collision rather than evidence. That is
-            # not hypothetical — a published API dump lists a public `add`, and
+            # not hypothetical â€” a published API dump lists a public `add`, and
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
@@ -1105,21 +1145,11 @@ class DeadCodeAnalyzer:
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
-        # _is_old uses strict >, so pass days-1 to get >= semantics.
-        if no_git_signal:
-            confidence = NO_GIT_SIGNAL_CONFIDENCE
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
-            confidence = 1.0  # Untouched for a year+ — very likely dead
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
-            confidence = 0.9
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=89):
-            confidence = 0.8
-        elif commit_90d == 0 and age_days is not None and age_days < 30:
-            confidence = 0.55  # Recently created — may be WIP
-        elif commit_90d == 0:
-            confidence = 0.7
-        else:
-            confidence = 0.4
+        confidence = (
+            NO_GIT_SIGNAL_CONFIDENCE
+            if no_git_signal
+            else self._git_age_confidence(commit_90d, last_commit, age_days)
+        )
 
         # The ladder above is an evidence scale, not a tier boundary: its rungs
         # stay literal so moving a threshold does not silently re-score how
@@ -1134,10 +1164,16 @@ class DeadCodeAnalyzer:
         # environment / script / asset). These are files the never-flag allowlist
         # didn't catch but that are commonly referenced outside static
         # imports, so "in_degree=0" is weak evidence. Cap confidence below the
-        # deletion-ready threshold and surface the factors as evidence — the
+        # deletion-ready threshold and surface the factors as evidence â€” the
         # finding still shows up as a review candidate.
         risk_factors = path_risk_factors(node)
         if risk_factors:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+        # A namespace-imported file is reached without an edge (a same-namespace
+        # ``new T()``), so no edge says little and its age says nothing more.
+        namespace_imported = node_data.get("language") in _NAMESPACE_IMPORT_LANGUAGES
+        if namespace_imported:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
         # A whole file is a review candidate, never deletion-ready: see
@@ -1154,6 +1190,10 @@ class DeadCodeAnalyzer:
         risk_line = risk_evidence(risk_factors)
         if risk_line:
             evidence.append(risk_line)
+        if namespace_imported:
+            evidence.append(
+                "Imported by namespace, not by file, so having no importer is weak evidence"
+            )
         lines = self._file_line_count(node)
         if lines is None:
             evidence.append(_LINES_UNKNOWN)
@@ -1175,6 +1215,20 @@ class DeadCodeAnalyzer:
             risk_factors=list(risk_factors),
         )
 
+    def _git_age_confidence(
+        self, commit_90d: int, last_commit: Any, age_days: int | None
+    ) -> float:
+        """The git-age evidence ladder for a file no edge reaches."""
+        if commit_90d != 0:
+            return 0.4
+        if last_commit:
+            for days, confidence in _GIT_AGE_RUNGS:
+                if self._is_old(last_commit, days=days):
+                    return confidence
+        if age_days is not None and age_days < 30:
+            return 0.55  # Recently created â€” may be WIP
+        return 0.7
+
     def _member_is_used(self, sym_id: str, language: str | None) -> bool:
         """True when this container declares a method something else uses.
 
@@ -1185,7 +1239,7 @@ class DeadCodeAnalyzer:
 
         **The use must come from outside the container.** A class's own methods
         are predecessors of each other, so counting them would make any class
-        with two methods where one calls the other rescue itself — evidence
+        with two methods where one calls the other rescue itself â€” evidence
         about the inside of a container is not evidence that anything reaches
         it.
 
@@ -1245,14 +1299,14 @@ class DeadCodeAnalyzer:
         ]
 
     def _public_top_level_names(
-        self, findings: list[DeadCodeFindingData]
+        self, findings: list[DeadCodeFindingData], kinds: AbstractSet[str] | None = None
     ) -> dict[str, frozenset[str]]:
-        """Top-level public symbol names of each unreachable file in *findings*."""
+        """Top-level public symbol names (of *kinds*, if given) of each unreachable file."""
         return {
             f.file_path: frozenset(
                 sym["name"]
                 for _, sym in self._defined_symbols(f.file_path)
-                if sym.get("visibility") == "public" and not sym.get("parent_name")
+                if _is_public_top_level(sym, kinds)
             )
             for f in findings
             if f.kind is DeadCodeKind.UNREACHABLE_FILE and self.graph.has_node(f.file_path)
@@ -1473,7 +1527,7 @@ class DeadCodeAnalyzer:
         # Symbol-level usage signal: any incoming ``calls`` /
         # ``method_implements`` / ``reads`` / ``extends`` /
         # ``implements`` / ``type_use`` edge means somewhere in
-        # the codebase actually uses this symbol — even if the
+        # the codebase actually uses this symbol â€” even if the
         # file-level ``imported_names`` machinery missed it. A use of one
         # member of an overload set uses the set.
         if unsatisfied_guard is None and self._has_inbound_use(sym_id):
@@ -1717,7 +1771,7 @@ class DeadCodeAnalyzer:
             # symbol-level edge of their own; reading only ``calls`` here
             # reported all three as unused. The set is shared with the
             # unused-export pass, so it also carries types this population can
-            # never hold — a method or an interface is filtered out above.
+            # never hold â€” a method or an interface is filtered out above.
             # ``new X(..)`` lands on X's constructor (``path::X::X``) when X
             # declares one, and constructing a type uses it.
             if self._has_inbound_use(node) or self._has_inbound_use(
@@ -1729,7 +1783,7 @@ class DeadCodeAnalyzer:
             # into a sibling module and stored in a lookup dict
             # (``HANDLERS = {"python": _extract_python_heritage, ...}``).
             # The function is reached at runtime via dict lookup, so no
-            # direct ``calls`` edge ever lands in the graph — but the
+            # direct ``calls`` edge ever lands in the graph â€” but the
             # ``imports`` edge into its file carries the symbol name. If
             # any cross-file importer pulled this symbol by name,
             # something is actively referencing it; do not flag.
@@ -1740,7 +1794,7 @@ class DeadCodeAnalyzer:
                 continue
 
             # Private symbols keep the standard 0.65 base confidence even if deprecated.
-            # A private symbol has no external consumer by construction —
+            # A private symbol has no external consumer by construction â€”
             # deprecated + uncalled is the strongest possible delete signal and
             # must not be buried below the default min_confidence floor.
             # (0.3 is reserved for unused *exports*, where an invisible consumer
@@ -1853,7 +1907,7 @@ class DeadCodeAnalyzer:
         if self._name_matches_dynamic(sym_name, dynamic_patterns):
             return False
 
-        # Framework-decorator skip — same shape as unused-export. A
+        # Framework-decorator skip â€” same shape as unused-export. A
         # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
         # method is invoked by the container, not by a source call.
         decorators = node_data.get("decorators") or []
@@ -1865,7 +1919,7 @@ class DeadCodeAnalyzer:
         """Detect monorepo packages with no incoming inter_package edges.
 
         ``framework:`` predecessors (synthetic anchors added by
-        ``framework_edges``) count as cross-package importers — TYPO3 / Django
+        ``framework_edges``) count as cross-package importers â€” TYPO3 / Django
         / etc. wiring is a real cross-cutting dependency. ``external:``
         predecessors do not count (they represent third-party imports).
         """
@@ -1927,12 +1981,12 @@ class DeadCodeAnalyzer:
         # and any other dotfile directory at the repo root.
         if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
             return False
-        # A real package contains at least one source-code file. If
-        # every file under the candidate dir is config/data (YAML,
-        # JSON, MD, TOML), it is not a package — it is metadata.
+        # A real package contains at least one source file something could
+        # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
+        # folder of Dockerfiles and shell scripts is run, never imported.
         return any(
             self.graph.nodes.get(f, {}).get("language", "unknown")
-            not in _DEAD_CODE_EXEMPT_LANGUAGES
+            not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
             for f in files
         )
 
@@ -1958,7 +2012,7 @@ class DeadCodeAnalyzer:
         owner_counts: dict[str, int] = {}
         for f in files:
             # git_meta_map values are plain dicts (see pipeline/phases/analysis.py);
-            # use .get() not getattr() — getattr on a dict never finds arbitrary
+            # use .get() not getattr() â€” getattr on a dict never finds arbitrary
             # string keys and always returns the default, silently zeroing all
             # git-activity metadata on zombie-package findings.
             gm = self.git_meta_map.get(f)
@@ -1999,9 +2053,9 @@ class DeadCodeAnalyzer:
             return True
         if never_flag_path(path):
             return True
-        # Workspace-driven never-flag — set by language warmups that read
+        # Workspace-driven never-flag â€” set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo
-        # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
+        # ``[[example]]`` / ``[[bench]]`` targets, â€¦). Lets each language
         # learn conventions from its own build files instead of us
         # extending the hardcoded glob list every time a repo defines a
         # custom source set like ``testFixtures`` / ``javaPoet`` /
@@ -2029,7 +2083,7 @@ class DeadCodeAnalyzer:
         for pred in self.graph.predecessors(file_node):
             if self.graph[pred][file_node].get("edge_type") in implementor_edges:
                 return True
-        # Symbol-level incoming edges — interfaces typically receive
+        # Symbol-level incoming edges â€” interfaces typically receive
         # ``implements`` edges on the type symbol, not on the file.
         for succ in self.graph.successors(file_node):
             succ_data = self.graph.nodes.get(succ, {})

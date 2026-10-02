@@ -84,6 +84,10 @@ Rust helper is never flagged here. And the `lines` count on file and package fin
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
+A .NET reference assembly (`ref/*.cs`) is the compile-time API of a library.
+Its files are never reported, and neither is a C# file or type it lists: that
+is public API, used outside the repository.
+
 ### A C or C++ name written anywhere else is a use
 
 C, C++ and Objective-C symbols are used in ways that carry no edge: a callback
@@ -113,10 +117,17 @@ one added last week. Confidence starts from git activity:
 | No commits in 90 days, but the file is under 30 days old | `0.55` (may be work in progress) |
 | Still being committed to | `0.40` |
 
-Then it only ever goes down. Two caps apply:
+Then it only ever goes down. These caps apply:
 
 - **Dynamic imports nearby.** If any file in the same directory uses a runtime
   loader, confidence is capped at `0.40`.
+- **Imported by namespace.** A C# `using` names a namespace, never a file, and
+  a same-namespace `new T()` needs no `using` at all, so a C# file is capped at
+  `0.40` whatever its age.
+- **Its type is named elsewhere.** When another file writes the name of a type
+  the file declares, confidence is capped at `0.40` and the evidence names
+  that file: Java, C# and Swift use a type from its own package or module
+  without an import.
 - **Runtime-load risk factors.** If the path looks like config, environment,
   bootstrap, database, script, or runtime-asset code, confidence is capped at
   `0.40` and the finding carries an evidence line explaining why. These are
@@ -180,6 +191,8 @@ these, so they are never flagged rather than flagged and down-weighted.
 |-------|---------|
 | Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go`, `build.rs` |
 | Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
+| Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
+| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build or task file (`Makefile`, `Justfile`, `Dockerfile`, `noxfile.py`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
 | Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
 | Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
 | Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
@@ -213,7 +226,9 @@ the pass.
 
 Zombie-package detection additionally ignores directories that are not packages
 at all: `.github`, `.vscode`, `.devcontainer`, `docs`, `scripts`, `assets`,
-`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings.
+`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings, and any
+directory whose code is only Dockerfiles, Makefiles and shell scripts, which
+are run rather than imported.
 
 ## Dynamic-import awareness
 

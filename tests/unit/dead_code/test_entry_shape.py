@@ -184,7 +184,7 @@ def test_an_already_capped_sibling_still_counts_but_is_not_touched_again():
 # --- through the analyzer --------------------------------------------------------
 
 
-def test_the_analyzer_applies_the_cap_and_keeps_the_finding():
+def test_the_analyzer_drops_a_program_and_keeps_a_library_module():
     g = _build_graph(
         nodes={
             "pkg/main.py": {"is_entry_point": True, "symbols": []},
@@ -209,7 +209,8 @@ def test_the_analyzer_applies_the_cap_and_keeps_the_finding():
     )
     by_path = {f.file_path: f for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
     assert by_path["pkg/old.py"].confidence == 1.0
-    assert by_path["pkg/run_once.py"].confidence == RISK_CAP_CONFIDENCE
+    # A main guard makes it a program: nothing imports an entry point.
+    assert "pkg/run_once.py" not in by_path
 
 
 # --- members of a loaded set that export more --------------------------------------

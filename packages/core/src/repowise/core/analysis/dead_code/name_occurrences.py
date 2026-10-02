@@ -1,4 +1,4 @@
-"""Did we actually look — the knowledge term behind a dead-code confidence.
+﻿"""Did we actually look â€” the knowledge term behind a dead-code confidence.
 
 Every other input to a dead-code confidence scores *how strong the evidence
 for deadness is*. None of them asks the second question a confidence has to
@@ -6,7 +6,7 @@ answer before a user can act on it without checking: **would a use have been
 visible to us at all?**
 
 ``_detect_unused_exports`` promotes a finding to the top of the scale when the
-defining file has importers — the argument being that our import graph
+defining file has importers â€” the argument being that our import graph
 demonstrably works for this file, so the symbol's absence from every importer's
 imported names means something. That argument assumes *using a symbol requires
 importing it*. It holds in Python and TypeScript. It is false for:
@@ -46,20 +46,22 @@ where this answers it from the repository in front of us.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
+from .constants import is_runner_file
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
 
-#: Identifier shape, matched over raw bytes so nothing has to be decoded — the
+#: Identifier shape, matched over raw bytes so nothing has to be decoded â€” the
 #: scan covers every indexed file, and decoding them all would dominate it.
 #: ASCII-only is deliberate: a non-ASCII identifier that fails to match can
 #: only under-suppress, which is the safe direction.
 IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 
 #: Shortest name this check can answer for. :data:`IDENTIFIER_RE` needs three
-#: characters, so a two-character name matches nowhere — including on its own
+#: characters, so a two-character name matches nowhere â€” including on its own
 #: declaration. Reading that as "the name appears nowhere" would turn the
 #: strongest verdict into the least reliable one, so a name this short is
 #: treated as a question we cannot ask rather than as an answer.
@@ -107,7 +109,7 @@ def occurrence_files(
     One pass over the whole indexed source. The candidate names are known
     before the scan starts, so the returned map only ever holds the few names
     some finding actually asks about rather than every identifier in the
-    repository — which is what keeps this affordable on a large tree.
+    repository â€” which is what keeps this affordable on a large tree.
     """
     found: dict[bytes, set[str]] = {}
     if not names:
@@ -127,7 +129,7 @@ def _uses_in_own_file(
 ) -> dict[int, _Verdict]:
     """Where each of *findings* is named in its own file outside its own span.
 
-    Reached only for a name no other file mentions — the same-translation-unit
+    Reached only for a name no other file mentions â€” the same-translation-unit
     shape, where a C++ helper struct used inside the very function below it is
     the use the import graph cannot see. A recursive call sits *inside* the
     declaration and correctly does not count; a doc comment above it sits
@@ -137,7 +139,7 @@ def _uses_in_own_file(
 
     * The split is on ``\\n`` alone. ``bytes.splitlines`` also breaks on a bare
       ``\\r`` and on the form-feed family, which the parser's row counter does
-      not — so a lone ``\\r`` inside a string literal (a progress-bar ``print``
+      not â€” so a lone ``\\r`` inside a string literal (a progress-bar ``print``
       is the common one) would shift every line after it and make a symbol's
       own recursive call land outside its recorded span.
     * A sibling declaration's *header line* is excluded as well as the judged
@@ -183,12 +185,12 @@ def _token(name: str) -> bytes:
 
     The one rule is that the result must be something :data:`IDENTIFIER_RE`
     would actually match, because a token the scan cannot produce is absent
-    from every file including the one that declares it — and reading that as
+    from every file including the one that declares it â€” and reading that as
     "the name appears nowhere" would turn the strongest verdict into the least
     reliable one. Two shapes fail it, for different reasons:
 
     * a non-ASCII name, since ``encode(errors="ignore")`` drops characters
-      rather than failing and would search for ``caf`` on behalf of ``café``,
+      rather than failing and would search for ``caf`` on behalf of ``cafÃ©``,
       letting an unrelated ``caf`` elsewhere read as a use;
     * a name carrying a character the identifier shape does not admit, such as
       the ``$`` in a JVM or JavaScript synthetic name, which the scan would
@@ -208,7 +210,7 @@ def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
     It declares the same names a second time and calls none of them, so
     counting it as a use makes every symbol in a generated binding module look
-    alive — measured as the single largest source of lost true positives on
+    alive â€” measured as the single largest source of lost true positives on
     this corpus.
 
     Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
@@ -303,15 +305,15 @@ def clamp_unverified_absence(
         name = finding.symbol_name
         # ``reason`` carries this, not only ``evidence``. The unchanged reason
         # asserts "has no importers" as the ground for the finding, which is
-        # the very inference this check has just declined to make — and it is
+        # the very inference this check has just declined to make â€” and it is
         # the field every surface renders, where the evidence list reaches
         # only the JSON ones.
         if verdict.answer is _Answer.USED:
             finding.reason = f"'{name}' is not imported, but is named elsewhere in the repo"
             detail = f"is written at {verdict.used_at}"
         else:
-            # Both remaining answers mean the same thing to a reader — we did
-            # not establish an absence — so they share a reason and differ only
+            # Both remaining answers mean the same thing to a reader â€” we did
+            # not establish an absence â€” so they share a reason and differ only
             # in the evidence line, which is where the distinction is useful.
             finding.reason = f"'{name}' is not imported, and its use could not be verified"
             detail = (
@@ -430,8 +432,8 @@ def _token_spellings(token: str) -> list[str]:
         start = slash + 1
 
 
-def _first_file_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, str]:
-    """For each of *targets* another file names by path, the first such file."""
+def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, list[str]]:
+    """For each of *targets* other files name by path, those files in path order."""
     wanted: dict[str, set[str]] = {}
     for target in targets:
         for key in _path_keys(target):
@@ -440,13 +442,20 @@ def _first_file_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[
     # every path-shaped token in a repository names none of the candidates.
     tails = {key.rpartition("/")[2] for key in wanted}
 
-    named_in: dict[str, str] = {}
+    named_in: dict[str, list[str]] = {}
     for path, blob in sorted(source_map.items()):
-        for match in _PATH_TOKEN_RE.finditer(blob):
-            for target in _targets_named_by(match.group().decode("ascii"), wanted, tails):
-                if target != path:
-                    named_in.setdefault(target, path)
+        for target in _targets_in(blob, wanted, tails) - {path}:
+            named_in.setdefault(target, []).append(path)
     return named_in
+
+
+def _targets_in(blob: bytes, wanted: dict[str, set[str]], tails: set[str]) -> set[str]:
+    """The targets any path-shaped token of *blob* names."""
+    return {
+        target
+        for match in _PATH_TOKEN_RE.finditer(blob)
+        for target in _targets_named_by(match.group().decode("ascii"), wanted, tails)
+    }
 
 
 def _targets_named_by(token: str, wanted: dict[str, set[str]], tails: set[str]) -> set[str]:
@@ -460,36 +469,140 @@ def _targets_named_by(token: str, wanted: dict[str, set[str]], tails: set[str]) 
 def clamp_path_mentions(
     findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
 ) -> list[DeadCodeFindingData]:
-    """Cap unreachable files that another file names by path.
+    """Cap unreachable files another file names by path; drop those a runner names.
 
     "Nothing imports this" is not "nothing uses this". A build script reads a
     template by path, a JSON manifest lists example files, a doc links a
     script, ``package.json`` names a bin: each loads the file without an import
     edge, and such a file reported as deletion-ready breaks whatever reads it.
-    A mention is not proof of use either, so the finding is capped to the
-    review tier rather than dropped.
+    A mention in a doc is not proof of use, so that finding is capped to the
+    review tier. A CI workflow, build file, manifest or shell script runs or
+    ships what it names (``python scripts/emit_sample_dsl.py`` in a workflow),
+    so a file one of those names is dropped.
 
     One scan over the indexed source. That already holds JSON, YAML, Markdown,
     shell and ``package.json``: each has a language spec, so ingestion reads
-    it. A file's mention of itself is not a use. Mutates in place and returns
-    the same list; never raises a confidence and never removes a finding.
+    it. A file's mention of itself is not a use. Returns a new list; never
+    raises a confidence.
     """
-    if not source_map:
+    unreachable = [f for f in findings if f.kind is DeadCodeKind.UNREACHABLE_FILE]
+    if not source_map or not unreachable:
         return findings
+
+    named_in = _files_naming({f.file_path for f in unreachable}, source_map)
+    run = {
+        id(f) for f in unreachable if any(map(is_runner_file, named_in.get(f.file_path, ())))
+    }
+    for finding in unreachable:
+        if id(finding) not in run:
+            _cap_named_by_path(finding, named_in.get(finding.file_path))
+    return [f for f in findings if id(f) not in run]
+
+
+def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -> None:
+    """Cap *finding* to the review tier when a file names it by path."""
+    if not namers or finding.confidence <= RISK_CAP_CONFIDENCE:
+        return
+    finding.confidence = RISK_CAP_CONFIDENCE
+    finding.safe_to_delete = False
+    finding.evidence.append(f"Named by path in {namers[0]}, which may load it without an import")
+def _is_reference_assembly(path: str) -> bool:
+    """A .NET reference-assembly source: ``src/libraries/X/ref/X.cs``."""
+    return path.endswith(".cs") and "/ref/" in f"/{path}"
+
+
+def _writers(
+    source_map: dict[str, bytes], names: Mapping[int, frozenset[str]]
+) -> dict[bytes, set[str]]:
+    """For every searchable name in *names*, the files of *source_map* writing it."""
+    tokens = {_token(name) for group in names.values() for name in group} - {b""}
+    return occurrence_files(source_map, tokens)
+
+
+def drop_reference_assembly_api(
+    findings: list[DeadCodeFindingData],
+    source_map: dict[str, bytes],
+    type_names: Mapping[str, frozenset[str]],
+) -> list[DeadCodeFindingData]:
+    """Drop C# findings whose type a reference assembly lists.
+
+    A ``ref/*.cs`` file is the compile-time surface of a .NET library: every
+    type it names is public API, used by code outside the repository, so
+    neither the type nor the file declaring it is dead. *type_names* maps an
+    unreachable file to the types it declares. Returns a new list.
+    """
+    references = {p: b for p, b in source_map.items() if _is_reference_assembly(p)}
+    names = {
+        id(f): _type_names_of(f, type_names)
+        for f in findings
+        if f.file_path.endswith(".cs") and not _is_reference_assembly(f.file_path)
+    }
+    if not references or not names:
+        return findings
+    listed = _writers(references, names)
+    return [
+        f
+        for f in findings
+        if not any(_token(name) in listed for name in names.get(id(f), ()))
+    ]
+
+
+def clamp_named_types(
+    findings: list[DeadCodeFindingData],
+    source_map: dict[str, bytes],
+    type_names: Mapping[str, frozenset[str]],
+) -> list[DeadCodeFindingData]:
+    """Cap unreachable files whose types another file names.
+
+    The file-level counterpart of :func:`clamp_unverified_absence`. A Java or
+    C# type is used from its own package or namespace without any import, so
+    a file no edge reaches but whose type another file writes has not been
+    shown unused. Capped to the review tier, never dropped: a name is not
+    proof of use. Mutates in place and returns the same list.
+    """
     candidates = [
         f
         for f in findings
-        if f.kind is DeadCodeKind.UNREACHABLE_FILE and f.confidence > RISK_CAP_CONFIDENCE
+        if f.kind is DeadCodeKind.UNREACHABLE_FILE
+        and f.confidence > RISK_CAP_CONFIDENCE
+        and type_names.get(f.file_path)
     ]
-    if not candidates:
+    if not candidates or not source_map:
         return findings
-
-    named_in = _first_file_naming({f.file_path for f in candidates}, source_map)
+    names = {id(f): type_names[f.file_path] for f in candidates}
+    writers = _writers(source_map, names)
     for finding in candidates:
-        where = named_in.get(finding.file_path)
-        if where is None:
+        written = _first_writer(finding.file_path, names[id(finding)], writers)
+        if written is None:
             continue
+        path, name = written
         finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
-        finding.safe_to_delete = False
-        finding.evidence.append(f"Named by path in {where}, which may load it without an import")
+        finding.evidence.append(
+            f"Its type '{name}' is written in {path}, which may use it without an import"
+        )
     return findings
+
+
+def _first_writer(
+    file_path: str, names: frozenset[str], writers: dict[bytes, set[str]]
+) -> tuple[str, str] | None:
+    """The first ``(path, name)`` where another file writes one of *names*."""
+    return min(
+        (
+            (path, name)
+            for name in names
+            for path in writers.get(_token(name), ())
+            if path != file_path and not _is_own_type_sibling(path, file_path)
+        ),
+        default=None,
+    )
+
+
+def _type_names_of(
+    finding: DeadCodeFindingData, type_names: Mapping[str, frozenset[str]]
+) -> frozenset[str]:
+    if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
+        return type_names.get(finding.file_path, frozenset())
+    if finding.kind is DeadCodeKind.UNUSED_EXPORT and finding.symbol_name:
+        return frozenset({finding.symbol_name})
+    return frozenset()

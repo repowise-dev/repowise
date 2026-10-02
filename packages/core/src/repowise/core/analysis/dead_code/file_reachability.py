@@ -80,6 +80,8 @@ _NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
 
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
+CSHARP_SUFFIX = ".cs"
+
 #: Objective-C implementation files, which no source ever imports.
 _OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
 
@@ -151,6 +153,11 @@ class ReachabilityRescues:
     bundler_alias_targets: AbstractSet[str] = frozenset()
     whitelist: AbstractSet[str] = frozenset()
     package_files: PackageFileMap | None = None
+    #: C# files with no importer that another file of a project able to see
+    #: them names by type (see :mod:`csharp_reachability`). Needs source text,
+    #: so ``None`` is "not checked" and, like ``package_files``, resolves a
+    #: ``.cs`` file to reachable.
+    csharp_named_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -321,5 +328,9 @@ def is_file_reachable(
         return True if packages is None else is_jvm_file_reachable(path, graph, packages.jvm)
     if is_cpp_path(path):
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
+    if path.endswith(CSHARP_SUFFIX) and (
+        rescues.csharp_named_files is None or path in rescues.csharp_named_files
+    ):
+        return True
 
     return has_dependency_importer(graph, path)

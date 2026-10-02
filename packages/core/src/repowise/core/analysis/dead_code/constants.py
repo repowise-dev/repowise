@@ -1,4 +1,4 @@
-"""Static configuration for dead-code detection.
+﻿"""Static configuration for dead-code detection.
 
 These tuples / frozensets shape what the analyzer treats as "always
 alive" (framework decorators, never-flag path globs) and where to skip
@@ -71,7 +71,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files — loaded by the
+    # Next.js / Remix / SvelteKit framework route files â€” loaded by the
     # framework at runtime, never imported via module imports.
     "*/page.tsx",
     "*/page.ts",
@@ -102,7 +102,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
+    "*GlobalUsings.cs",  # global usings â€” file-implicit, never imported by symbol
     "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
@@ -122,7 +122,11 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*AssemblyInfo.vb",
     "*/My Project/*.vb",
     "*ApplicationEvents.vb",  # My.MyApplication hooks, raised by the VB runtime
-    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
+    # .NET reference assemblies: compile-time API stubs (``throw null`` bodies)
+    # the build packs as the public surface. Nothing imports them, and every
+    # type they list is public API.
+    "*/ref/*.cs",
+    "*MauiProgram.cs",  # MAUI app entry â€” invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -512,7 +516,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "doc.go",
     "*/docs.go",
     "docs.go",
-    # Mage build files (``//go:build mage``, ``package main``) — run by the
+    # Mage build files (``//go:build mage``, ``package main``) â€” run by the
     # ``mage`` tool, excluded from normal builds, never imported.
     "*/magefile.go",
     "magefile.go",
@@ -570,13 +574,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.spec.cts",
     "*/__tests__/*",
     "*/__mocks__/*",
-    # Storybook stories — loaded by Storybook indexer via glob.
+    # Storybook stories â€” loaded by Storybook indexer via glob.
     "*.stories.ts",
     "*.stories.tsx",
     "*.stories.js",
     "*.stories.jsx",
     "*.stories.mdx",
-    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
+    # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
     "*.bench.js",
@@ -628,7 +632,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "proxy.ts",
     "sitemap.ts",
     "robots.ts",
-    # Remix root/entry files — invoked by the framework runtime.
+    # Remix root/entry files â€” invoked by the framework runtime.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
@@ -736,7 +740,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
-    # Unqualified ``from pytest import fixture`` form — the decorator text is
+    # Unqualified ``from pytest import fixture`` form â€” the decorator text is
     # bare ``fixture``, which the dotted prefixes above never match.
     "fixture",
     # Flask
@@ -762,7 +766,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.websocket",
     "app.middleware",
     "app.exception_handler",
-    # asynccontextmanager / contextmanager — used as values
+    # asynccontextmanager / contextmanager â€” used as values
     # (e.g. FastAPI(lifespan=...)) rather than imported by name.
     "asynccontextmanager",
     "contextmanager",
@@ -775,10 +779,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.task",
     "celery.task",
     "shared_task",
-    # Click CLI commands — registered with the parent group/command.
+    # Click CLI commands â€” registered with the parent group/command.
     "click.command",
     "click.group",
-    # Typer — same shape.
+    # Typer â€” same shape.
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
@@ -866,7 +870,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ArchTest",
     "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",  # Jackson factory method — reflectively invoked
+    "JsonCreator",  # Jackson factory method â€” reflectively invoked
     "JsonProperty",
     "Mojo",  # Maven plugin entry
     "Goal",
@@ -963,6 +967,51 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 # because it names only the member (C# extension methods). A set so widening it
 # is a deliberate act.
 _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+
+# Languages whose files are run, never imported: a directory holding only these
+# (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package
+# anything could import.
+_RUN_NOT_IMPORTED_LANGUAGES: frozenset[str] = frozenset({"dockerfile", "makefile", "shell"})
+
+# Files that run, build or ship what they name by path: CI workflows, build
+# and task files, package manifests and shell scripts. A file named there is
+# executed or packaged, which is a use, not a mention.
+_RUNNER_FILE_NAMES: frozenset[str] = frozenset(
+    {
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "Justfile",
+        "justfile",
+        "Dockerfile",
+        "Jenkinsfile",
+        "Procfile",
+        "noxfile.py",
+        "tox.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "package.json",
+        ".gitlab-ci.yml",
+        ".pre-commit-config.yaml",
+    }
+)
+_RUNNER_DIRS: tuple[str, ...] = (".github/workflows/", ".circleci/", ".buildkite/")
+_RUNNER_SUFFIXES: tuple[str, ...] = (".sh", ".bash", ".ps1", ".bat", ".cmd", ".dockerfile")
+
+
+def is_runner_file(path: str) -> bool:
+    """Whether *path* is a file that runs or ships the files it names."""
+    name = path.rpartition("/")[2]
+    return (
+        name in _RUNNER_FILE_NAMES
+        or name.startswith("Dockerfile")
+        or name.endswith(_RUNNER_SUFFIXES)
+        or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
+    )
+# Languages whose imports name a namespace, never a file, so a file no edge
+# reaches is not evidence that nothing uses it: a same-namespace ``new T()``
+# needs no ``using``, and one ``using`` stands for every file of the namespace.
+_NAMESPACE_IMPORT_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
 # Languages whose symbols the preprocessor reaches without naming them: a
 # ``typedef struct _X {...} X`` tag used only through ``X``, a function called
