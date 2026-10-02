@@ -388,6 +388,8 @@ def test_reference_stub_markers_are_anchored() -> None:
         "gulpfile.js",
         "Rakefile",
         "foo.gemspec",
+        "build.cake",
+        "build/tasks.cake",
     ],
 )
 def test_build_files_by_type(path: str) -> None:
@@ -409,6 +411,8 @@ def test_build_files_by_type(path: str) -> None:
         ("src/cmake.py", "production"),
         ("app/props.ts", "production"),
         ("src/Button.props.ts", "production"),
+        ("cake.cs", "production"),  # an app named cake, not a Cake script
+        ("src/Cake/CakeHost.cs", "production"),
         ("src/BuildInfo.java", "production"),
         ("src/main/kotlin/Settings.kt", "production"),
         ("lib/rake_task.rb", "production"),

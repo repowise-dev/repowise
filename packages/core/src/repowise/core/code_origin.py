@@ -392,6 +392,8 @@ _BUILD_SUFFIXES = (
     ".targets",
     ".gemspec",
     ".podspec",
+    # Cake (C# make): ``build.cake`` and its loaded ``*.cake`` scripts
+    ".cake",
     ".rockspec",
 )
 # Bundler configs and gulp files, any extension a JS tool's config takes.
