@@ -1,16 +1,16 @@
-"""Hot-path sync I/O — a blocking I/O call in a hot, request-reachable function.
+"""Hot-path sync I/O: a blocking I/O call in a hot, central function.
 
-A synchronous (non-awaited) database / network / filesystem / subprocess
-round-trip blocks its thread for the duration of the call. Outside a loop that is
-usually fine — but in a *hot, central* function (one on many request paths) the
-blocking wait is paid on every request, a latency risk a loop-only detector never
-sees. This generalizes the performance pillar beyond loops using the centrality
-the engine already computes.
+A synchronous (non-awaited) filesystem or subprocess call blocks its thread for
+the duration of the call. Outside a loop that is usually fine, but in a *hot,
+central* function (one many call sites go through) the wait is paid on every
+one of those calls, a latency risk a loop-only detector never sees.
 
-The walker emits every loop-depth-0 blocking sink as a candidate; the centrality
-gate (``perf.gated.apply_centrality_gate``) keeps only those in a top-quintile-
-central or churny function. A ``performance`` dimension signal — this detector
-lifts the (already-gated) hits into findings.
+"Hot" is top-quintile direct-caller count in the execution graph
+(``perf.ranking.PerfRanker``). That says the function is widely called, not
+that a request reaches it: no request-handler entry set exists to prove that,
+so the reason text claims only what the gate establishes. Test and tooling code
+never emits (``perf.gated``). A ``performance`` dimension signal; this
+detector lifts the (already-gated) hits into findings.
 """
 
 from __future__ import annotations
@@ -48,8 +48,9 @@ class HotPathSyncIoDetector:
                     line_end=hit.line,
                     details={"boundary_kind": hit.detail},
                     reason=(
-                        f"{phrasing} runs on a hot, request-reachable path; "
-                        "its latency is paid on every call through this function"
+                        f"{phrasing} in a hot/central function (top fifth of "
+                        "this repo by direct callers); every call through it "
+                        "waits for the I/O"
                     ),
                 )
             )

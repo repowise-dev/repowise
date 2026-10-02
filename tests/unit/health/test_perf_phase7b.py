@@ -226,6 +226,50 @@ def test_db_materializer_is_not_a_blocking_fact():
     assert fact is None or fact.blocking_sink_kind is None
 
 
+@pytest.mark.parametrize(
+    "src, kind",
+    [
+        # Node's async launchers return a ChildProcess at once: not blocking.
+        ('import { spawn } from "child_process";\nfunction run(c) { return spawn(c); }\n', None),
+        (
+            'import * as cp from "child_process";\nfunction run(c) { return cp.execFile(c); }\n',
+            None,
+        ),
+        # Their *Sync forms wait for the child, and sync fs stays a sink.
+        (
+            'import * as cp from "child_process";\nfunction run(c) { return cp.spawnSync(c); }\n',
+            "subprocess",
+        ),
+        (
+            'import * as fs from "fs";\nfunction run(p) { return fs.readFileSync(p); }\n',
+            "filesystem",
+        ),
+    ],
+)
+def test_ts_async_child_process_is_not_a_blocking_fact(src, kind):
+    fact = _facts("typescript", src).get("run")
+    assert (fact.blocking_sink_kind if fact else None) == kind
+
+
+def test_ts_async_spawn_in_a_loop_is_still_io_in_loop():
+    src = 'import { spawn } from "child_process";\nfunction f(xs) { for (const x of xs) { spawn(x); } }\n'
+    assert ("io_in_loop", "subprocess") in _hits("typescript", src)
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        # ``exec.Command`` only builds a Cmd; no process runs.
+        ('return exec.Command("git", "status")', None),
+        ('out, _ := exec.Command("git", "status").Output()\n\t_ = out\n\treturn nil', "subprocess"),
+    ],
+)
+def test_go_exec_command_constructor_is_not_a_blocking_fact(body, kind):
+    src = f'package p\nimport "os/exec"\nfunc run() *exec.Cmd {{\n\t{body}\n}}\n'
+    fact = _facts("go", src).get("run")
+    assert (fact.blocking_sink_kind if fact else None) == kind
+
+
 # ---------------------------------------------------------------------------
 # The centrality gate — emits the two markers ONLY for a hot function
 # ---------------------------------------------------------------------------
@@ -274,11 +318,11 @@ def test_centrality_gate_silent_without_a_graph():
     assert collect_centrality_gated(walked, ranker) == {}
 
 
-def test_centrality_gate_fires_for_a_central_function_end_to_end():
-    """The surviving arm still ships both gated markers."""
+def _central_graph(path: str) -> nx.MultiDiGraph:
+    """``hot`` at *path* (lines 2-6) with four distinct callers: top-quintile central."""
     g = nx.MultiDiGraph()
     g.add_node(
-        "svc.py::hot", node_type="symbol", name="hot", file_path="svc.py", start_line=2, end_line=6
+        f"{path}::hot", node_type="symbol", name="hot", file_path=path, start_line=2, end_line=6
     )
     for i in range(4):
         cid = f"c.py::caller{i}"
@@ -290,13 +334,33 @@ def test_centrality_gate_fires_for_a_central_function_end_to_end():
             start_line=10 + i,
             end_line=11 + i,
         )
-        g.add_edge(cid, "svc.py::hot", edge_type="calls")
-    walked = _walked("svc.py", _HOT_SRC)
-    out = collect_centrality_gated(walked, PerfRanker(CallGraphIndex(g)))
-    assert sorted(h.kind for h in out.get("svc.py", [])) == [
-        "hot_path_sync_io",
-        "nested_loop_quadratic",
-    ]
+        g.add_edge(cid, f"{path}::hot", edge_type="calls")
+    return g
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        # The surviving arm still ships both gated markers.
+        ("svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        ("pkg/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        # Tests and tooling serve no request: the blocking call is the idiom there.
+        ("tests/test_svc.py", ["nested_loop_quadratic"]),
+        ("scripts/svc.py", ["nested_loop_quadratic"]),
+        ("pkg/cli/svc.py", ["nested_loop_quadratic"]),
+    ],
+)
+def test_centrality_gate_end_to_end(path, expected):
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker)
+    assert sorted(h.kind for h in out.get(path, [])) == expected
+
+
+def test_hot_path_sync_io_reason_claims_centrality_not_a_request_path():
+    hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem")
+    (finding,) = HotPathSyncIoDetector().detect(_ctx([hit]))
+    assert "request" not in finding.reason
+    assert "hot/central" in finding.reason
 
 
 def test_centrality_gate_fires_for_a_central_function():

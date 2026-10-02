@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from repowise.core.code_origin import is_build_file
 
 from .callgraph import CallGraphIndex
+from .causal import execution_context
 from .sink_reach import collect_sink_reaching_hits
 
 if TYPE_CHECKING:
@@ -38,6 +39,11 @@ if TYPE_CHECKING:
 
 # The boundary-kind detail convention shared with the cross-function N+1 pass.
 LOCK_IO_KIND = "blocking_io_under_lock"
+
+# Contexts that serve no request: tests, and tooling (build and CI scripts, a
+# CLI). A blocking call there is the normal way to do the job, so it never
+# becomes a ``hot_path_sync_io`` finding however many callers it has.
+_NON_SERVING_CONTEXTS = frozenset({"test", "tooling"})
 
 
 def _in_rust_test_range(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -69,7 +75,8 @@ def collect_centrality_gated(
     before the hotness check even runs — test code doing blocking I/O is
     normal, not a finding, regardless of how central or churny its file is.
     A build file is never a hot path either: the build tool runs it, no
-    request does.
+    request does. The same holds for a blocking sink in any test or tooling
+    file (:data:`_NON_SERVING_CONTEXTS`).
     """
     from ..complexity import PerfHit
 
@@ -99,7 +106,10 @@ def collect_centrality_gated(
                         func_start=fact.func_start,
                     )
                 )
-            if fact.blocking_sink_kind is not None:
+            if (
+                fact.blocking_sink_kind is not None
+                and execution_context(path) not in _NON_SERVING_CONTEXTS
+            ):
                 file_hits.append(
                     PerfHit(
                         kind="hot_path_sync_io",

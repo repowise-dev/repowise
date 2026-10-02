@@ -645,8 +645,8 @@ def _collect_perf_hits(
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,
                         # so record it as a fact; the engine emits
-                        # ``hot_path_sync_io`` only for a hot, request-reachable
-                        # function (centrality gate). ``db`` is excluded — see
+                        # ``hot_path_sync_io`` only for a hot, central function
+                        # (centrality gate). ``db`` is excluded — see
                         # ``_HOT_PATH_SINK_KINDS``; point-sized reads/writes are
                         # excluded per-dialect — see ``hot_path_excluded_methods``
                         # (outside a loop their cost is bounded, so they belong to

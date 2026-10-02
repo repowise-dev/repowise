@@ -206,6 +206,12 @@ class TsJsPerfDialect(TsJsMarkerHooks):
     string_literal_kinds = _TS_STRING_KINDS
     aug_assign_kinds = _TS_AUG_ASSIGN_KINDS
     switch_kinds = frozenset({"switch_statement"})
+    # Node's ``child_process`` launchers return a ChildProcess at once and report
+    # through callbacks or events; only their ``*Sync`` forms wait for the child.
+    # They stay sinks for the loop markers (one process per item is still a
+    # cost) but are not blocking calls. Ceiling: shelljs's synchronous ``exec``
+    # is excluded with them, a recall loss only.
+    hot_path_excluded_methods = frozenset({"spawn", "exec", "execFile"})
 
     def is_string_concat(self, node: Node) -> bool:
         """``s += "x"`` that can grow ``s`` across loop iterations.

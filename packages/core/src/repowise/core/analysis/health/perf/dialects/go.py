@@ -131,6 +131,9 @@ class GoPerfDialect(BasePerfDialect):
             "goroutine_in_unbounded_loop",
         }
     )
+    # ``exec.Command`` only builds a Cmd; the process runs at ``Run`` / ``Output``
+    # / ``CombinedOutput`` / ``Start``, which are sinks of their own.
+    hot_path_excluded_methods = frozenset({"Command"})
 
     def sink_kind(
         self,

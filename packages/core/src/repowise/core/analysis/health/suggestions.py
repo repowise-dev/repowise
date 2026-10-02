@@ -281,8 +281,8 @@ _TEMPLATES: dict[str, str] = {
         "asyncio subprocess), or run the blocking call in a thread executor."
     ),
     "hot_path_sync_io": (
-        "Take the I/O off the hot path. Cache the result, move the call to "
-        "startup, or make it asynchronous."
+        "If this function runs on a latency-sensitive path, cache the result, "
+        "move the call to startup, or make it asynchronous."
     ),
     "blocking_io_under_lock": (
         "Do the I/O outside the lock. Read or write first, then take the lock "

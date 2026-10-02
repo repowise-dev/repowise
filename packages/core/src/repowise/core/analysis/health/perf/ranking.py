@@ -5,20 +5,20 @@ widely-called function matters more than the same hit in a cold leaf. The
 ranker is also used as a **precision gate**, not only a sort key. Some patterns
 are noisy when flagged everywhere (a bare O(n^2) nested loop; a blocking I/O
 call outside any loop) but become high-signal the moment they sit in a hot,
-request-reachable function. The gate fires those markers *only there*.
+widely-called function. The gate fires those markers *only there*.
 
 "Hot" is one whole-program signal a file-local linter cannot compute:
 
   * **centrality** - the function's symbol node has a top-quintile number of
     distinct direct predecessors in the reliable execution graph (the
-    ``CallGraphIndex`` in-degree). A widely-reached function is on many request
-    paths, so a latency or quadratic cost there is paid often. Direct in-degree
-    is a deterministic, ``O(E)`` proxy for request-reachability; transitive
-    fan-in would be stronger but is quadratic to compute per function.
+    ``CallGraphIndex`` in-degree). A latency or quadratic cost in a widely
+    called function is paid at every one of those call sites. It is not proof
+    that a request reaches the function (no request-handler entry set exists),
+    so the markers it gates say "hot/central", never "request-reachable".
 
 Churn is deliberately not a second arm. How often a file is edited is not how
-often it runs, so it cannot support the request-reachability these markers
-assert in their own reason text. Churn still earns rank in
+often it runs, so it cannot support the call-frequency claim these markers
+make in their own reason text. Churn still earns rank in
 ``opportunity_rank``; it does not decide whether a finding exists.
 
 Without a graph the gate degrades to "nothing is hot" - the markers behind it
@@ -82,7 +82,7 @@ class PerfRanker:
         return self._index.in_degree.get(sid, 0) >= self._hot_in_degree
 
     def is_hot(self, path: str, func_start: int) -> bool:
-        """Central enough to carry a marker that claims request-reachability.
+        """Central enough to carry a marker that claims a hot, widely-called function.
 
         Pure when no graph is available: nothing is hot, so nothing fires.
         """
