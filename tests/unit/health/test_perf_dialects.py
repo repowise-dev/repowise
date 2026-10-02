@@ -67,6 +67,16 @@ _JAVA_CASES = [
         "a lock taken per item in an ordinary method still fires",
     ),
     (
+        "class A{void lockAll(java.util.List<Object> ks){for(Object k:ks){ locks.get(k).lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock() that iterates over items takes a lock per item",
+    ),
+    (
+        "class A{void lock(java.util.List<Object> ks){for(;;){ for(Object k:ks){ locks.get(k).lock(); } return; }}}",
+        [("lock_in_loop", "")],
+        "a per-item loop nested in the spin loop still locks per item",
+    ),
+    (
         "class A{void m(java.util.List<String> ids){"
         "for(String id:ids){ this.repo.findById(id); }}}",
         [("io_in_loop", "db")],
@@ -1392,6 +1402,11 @@ _KOTLIN_CASES = [
         [],
         "the retry loop inside lock() is the acquisition, not a lock taken per item",
     ),
+    (
+        "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an iterating lock() is not a retry loop",
+    ),
 ]
 
 
@@ -1768,3 +1783,10 @@ def test_cpp_same_collection_nested_range_for_fact():
     fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+def test_python_acquire_spin_vs_per_item():
+    spin = "def acquire(self):\n    while True:\n        if self.flag.acquire(False):\n            return\n"
+    assert _hits("python", spin) == []
+    each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
+    assert _hits("python", each) == [("lock_in_loop", "")]

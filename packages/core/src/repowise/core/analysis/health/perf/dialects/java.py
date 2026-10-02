@@ -157,6 +157,9 @@ JAVA_RESOURCE_CTORS: frozenset[str] = frozenset({"RestTemplate", "OkHttpClient"}
 JAVA_RESOURCE_METHODS: frozenset[str] = frozenset({"getConnection"})
 # ``java.util.concurrent.locks.Lock`` acquisition (the contention side only).
 JAVA_LOCK_METHODS: frozenset[str] = frozenset({"lock", "lockInterruptibly"})
+# A function of these names takes the lock; ``while (true)`` / ``for (;;)`` is its retry loop.
+JAVA_LOCK_ACQUIRE_FUNCTIONS: frozenset[str] = frozenset({"lock", "lockinterruptibly", "trylock"})
+JAVA_SPIN_LOOP_HEADER = re.compile(r"while\s*\(\s*true\s*\)|for\s*\(\s*;\s*;\s*\)")
 # ``Lists.partition`` / ``ListUtils.partition`` / ``Iterables.partition`` and
 # hand-rolled peers, matched on the call's method name (the receiver is not
 # gated: a local helper counts too).
@@ -217,6 +220,8 @@ def _receiver_root(receiver: str) -> str:
 
 class JavaPerfDialect(BasePerfDialect):
     language = "java"
+    lock_acquire_functions = JAVA_LOCK_ACQUIRE_FUNCTIONS
+    spin_loop_header = JAVA_SPIN_LOOP_HEADER
     markers = frozenset(
         {
             "io_in_loop",

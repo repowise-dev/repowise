@@ -100,11 +100,6 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
-# A function that IS a lock acquisition (``lock()``, ``lockInterruptibly()``,
-# ``acquire()``): the retry / CAS / tryLock loop inside it is the implementation
-# of taking the lock, so "take the lock outside the loop" has nothing to hoist.
-_LOCK_ACQUIRE_FUNCS = frozenset({"lock", "lockinterruptibly", "trylock", "acquire"})
-
 # A whole condition that is one null test, and the name it tests: ``x == null``,
 # ``this.x.get() == null``, ``o.x is null`` (the last segment, ``.get()`` stripped).
 _NULL_GUARD = re.compile(
@@ -235,6 +230,26 @@ def _enclosing_loop_iterables(
                 names.add(nm)
         cur = cur.parent
     return names
+
+
+def _is_lock_acquire_spin(
+    node: Node,
+    func: str | None,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+) -> bool:
+    """Is *node* inside the unbounded retry loop of a lock-acquiring function?
+
+    Only the nearest enclosing loop counts: a per-item loop nested in (or
+    instead of) the spin loop still takes a lock per iteration.
+    """
+    cur = node.parent
+    while cur is not None and cur.type not in fn_kinds:
+        if cur.type in loop_kinds and cur.is_named:
+            return dialect.is_lock_acquire_spin(func, cur)
+        cur = cur.parent
+    return False
 
 
 def _enclosing_loops(
@@ -673,6 +688,10 @@ def _collect_perf_hits(
                         if do_loop_call_marker
                         else None
                     )
+                    if marker == "lock_in_loop" and _is_lock_acquire_spin(
+                        call_node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        marker = None
                     if marker is not None:
                         hits.append(
                             PerfHit(
@@ -734,6 +753,10 @@ def _collect_perf_hits(
                     )
                 elif do_loop_stmt_marker:
                     sm = dialect.loop_stmt_marker(node, list_names)
+                    if sm == "lock_in_loop" and _is_lock_acquire_spin(
+                        node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        sm = None
                     if sm is not None:
                         hits.append(
                             PerfHit(
@@ -837,8 +860,6 @@ def _collect_perf_hits(
     kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
     for h in _name_lambda_hits(hits, lambda_spans):
-        if h.kind == "lock_in_loop" and (h.function or "").lower() in _LOCK_ACQUIRE_FUNCS:
-            continue
         key = (h.kind, h.line, h.function)
         at = kept.get(key)
         if at is None:

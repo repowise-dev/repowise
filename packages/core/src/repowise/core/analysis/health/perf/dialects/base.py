@@ -70,6 +70,7 @@ pillar depends on.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
@@ -726,6 +727,20 @@ class BasePerfDialect:
         for ``unbounded_read_reduced_in_memory`` (v1 is Python-only).
         """
         return frozenset()
+
+    # Functions that ARE a lock acquisition, and the header of an unbounded
+    # retry loop in this language. A spin loop inside such a function is how the
+    # lock gets taken (tryLock retry, CAS spin): there is nothing to hoist. Both
+    # default empty, so a language that sets neither changes nothing.
+    lock_acquire_functions: frozenset[str] = frozenset()
+    spin_loop_header: re.Pattern[str] | None = None
+
+    def is_lock_acquire_spin(self, func: str | None, loop: Node) -> bool:
+        """True when *loop* is an unbounded spin loop inside a lock-acquiring *func*."""
+        if self.spin_loop_header is None or (func or "").lower() not in self.lock_acquire_functions:
+            return False
+        head = (loop.text or b"")[:64].decode("utf-8", "replace")
+        return bool(self.spin_loop_header.match(head))
 
     def is_lock_scope(self, node: Node) -> bool:
         """True if *node* opens a block-scoped held-lock region.

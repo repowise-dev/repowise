@@ -48,9 +48,11 @@ from .java import (
     AMBIGUOUS_DB,
     FILES_METHODS,
     FS_CONSTRUCTORS,
+    JAVA_LOCK_ACQUIRE_FUNCTIONS,
     JAVA_LOCK_METHODS,
     JAVA_RESOURCE_CTORS,
     JAVA_RESOURCE_METHODS,
+    JAVA_SPIN_LOOP_HEADER,
     NET_CONSTRUCTORS,
     RECEIVER_DB_METHODS,
     REST_TEMPLATE_METHODS,
@@ -200,6 +202,8 @@ def _callee(call_node: Node) -> Node | None:
 
 class KotlinPerfDialect(BasePerfDialect):
     language = "kotlin"
+    lock_acquire_functions = JAVA_LOCK_ACQUIRE_FUNCTIONS
+    spin_loop_header = JAVA_SPIN_LOOP_HEADER
     markers = frozenset(
         {
             "io_in_loop",
