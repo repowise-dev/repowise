@@ -960,6 +960,27 @@ class TestMatchContracts:
         links = match_contracts(contracts)
         assert len(links) == 2
 
+    def test_consumer_served_by_own_service_exact_does_not_fall_through_to_candidate(self) -> None:
+        contracts = [
+            self._contract(repo="web", role="provider", contract_id="http::GET::/api/orders", file_path="server.ts"),
+            self._contract(repo="web", role="consumer", contract_id="http::GET::/api/orders", file_path="client.ts"),
+            self._contract(repo="legacy", role="provider", contract_id="http::GET::/orders", file_path="routes.py"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 0
+
+    def test_consumer_without_internal_provider_still_matches_candidate(self) -> None:
+        contracts = [
+            self._contract(repo="web", role="consumer", contract_id="http::GET::/api/orders", file_path="client.ts"),
+            self._contract(repo="legacy", role="provider", contract_id="http::GET::/orders", file_path="routes.py"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].provider_repo == "legacy"
+        assert links[0].consumer_repo == "web"
+        assert links[0].match_type == "candidate"
+
+
 
 # ---------------------------------------------------------------------------
 # Candidate matching (mount / version / base-prefix tolerant)
