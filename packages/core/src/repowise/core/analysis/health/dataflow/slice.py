@@ -244,23 +244,29 @@ def _block_value_used(block: Node, fn_node: Node, lmap: LanguageNodeMap) -> bool
     """Whether the value of *block* reaches anything, climbing through the
     conditional chain that carries it (``else`` / ``match`` arms)."""
     node = block
-    while node is not None and node.id != fn_node.id:
+    while True:
         parent = node.parent
         if parent is None or parent.id == fn_node.id:
             return fn_node.child_by_field_name("return_type") is not None
-        if parent.type in lmap.loop_kinds:
-            return False
-        if parent.type in lmap.block_kinds or parent.type in lmap.statement_wrapper_kinds:
-            # In a block, only the last statement carries the value onward.
-            siblings = parent.named_children
-            if parent.type in lmap.block_kinds and siblings and siblings[-1].id != node.id:
-                return False
-            if parent.type in lmap.statement_wrapper_kinds and parent.children[-1].type == ";":
-                return False
-        elif parent.type not in lmap.value_passthrough_kinds:
-            return True  # a let initializer, an argument, an operand
+        verdict = _value_hop(node, parent, lmap)
+        if verdict is not None:
+            return verdict
         node = parent
-    return True
+
+
+def _value_hop(node: Node, parent: Node, lmap: LanguageNodeMap) -> bool | None:
+    """One step of :func:`_block_value_used`: True or False when *parent*
+    settles whether *node*'s value is used, None to keep climbing."""
+    if parent.type in lmap.loop_kinds:
+        return False  # a loop body's value is discarded
+    if parent.type in lmap.block_kinds:
+        # Only the last statement carries a block's value onward.
+        return None if parent.named_children[-1].id == node.id else False
+    if parent.type in lmap.statement_wrapper_kinds:
+        return False if parent.children[-1].type == ";" else None
+    if parent.type in lmap.value_passthrough_kinds:
+        return None
+    return True  # a let initializer, an argument, an operand
 
 
 def _function_lines(fn_node: Node) -> list[str]:
