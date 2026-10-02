@@ -141,6 +141,21 @@ def test_go_cases(src, expected, note):
     assert _hits("go", src) == sorted(expected), note
 
 
+def test_go_string_concat_reset_per_iteration_not_flagged():
+    reassigned = (
+        'package p\nfunc f(rows []string){ for _, row := range rows { line = row; line += "," } }\n'
+    )
+    short_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { line := row; line += "," } }\n'
+    var_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { var line string; line += "," } }\n'
+    accumulator = (
+        'package p\nfunc f(rows []string){ out := ""; for _, row := range rows { out += "," } }\n'
+    )
+
+    for source in (reassigned, short_declared, var_declared):
+        assert not any(kind == "string_concat_in_loop" for kind, _ in _hits("go", source))
+    assert ("string_concat_in_loop", "") in _hits("go", accumulator)
+
+
 # ---------------------------------------------------------------------------
 # C#
 # ---------------------------------------------------------------------------
