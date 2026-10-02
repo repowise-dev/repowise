@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....test_paths import is_test_related_path
@@ -447,10 +447,9 @@ async def _reconcile_opportunities(
             await session.execute(
                 select(RefactoringOpportunity).where(
                     RefactoringOpportunity.repository_id == repository_id,
-                    # Rows an older model minted are left exactly as they are:
-                    # their keys can never be composed again, so reading them
-                    # only to re-resolve them would grow this read for the life
-                    # of the repository.
+                    # Rows an older model minted can never be composed again;
+                    # they are retired below without being read, so this read
+                    # does not grow for the life of the repository.
                     RefactoringOpportunity.refactoring_model_version
                     == REFACTORING_MODEL_VERSION,
                 )
@@ -489,6 +488,19 @@ async def _reconcile_opportunities(
         if key not in seen and row.status not in _DECIDED_STATUSES:
             row.status = "resolved"
             row.updated_at = now
+    # Same rule for every row an older model minted, in one statement. Left
+    # open, they kept serving beside the current model's rows after a model
+    # bump, even though the plans they were folded from were already resolved.
+    await session.execute(
+        update(RefactoringOpportunity)
+        .where(
+            RefactoringOpportunity.repository_id == repository_id,
+            RefactoringOpportunity.refactoring_model_version != REFACTORING_MODEL_VERSION,
+            RefactoringOpportunity.status.not_in(tuple(_DECIDED_STATUSES)),
+        )
+        .values(status="resolved", updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
     await session.flush()
 
 
@@ -543,11 +555,17 @@ def _predicate(rule: Any, value: Any) -> Any:
 
 
 def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
-    """The ``WHERE`` for *params*, built from the serving layer's filter table."""
+    """The ``WHERE`` for *params*, built from the serving layer's filter table.
+
+    Only the current model's rows are served: an older model's ids are never
+    composed again, so a row of one is history, not queue.
+    """
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
     from ....analysis.health.refactoring.serving import active_filters
 
     return [
         RefactoringOpportunity.repository_id == repository_id,
+        RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
         *(_predicate(rule, value) for rule, value in active_filters(params)),
     ]
 

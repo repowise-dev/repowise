@@ -250,3 +250,14 @@ class TestRescoreKeepsHistoryMarkers:
         assert {"prior_defect", "co_change_scatter"} <= types
         # No blame index is persisted, so the stored finding is kept, not deleted.
         assert "function_hotspot" in types
+
+
+class TestRescoreKeepsGovernanceFindings:
+    async def test_an_ungoverned_hotspot_survives_the_rescore(self, git_repo: Path):
+        # A hotspot no decision names: the governance pass, not the analyzer,
+        # writes its finding, and the re-score replaces every open finding.
+        repo_id = await _seed_history(git_repo)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        assert "ungoverned_hotspot" in await _finding_types(git_repo, repo_id)

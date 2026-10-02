@@ -228,6 +228,27 @@ def test_distinct_lock_owners_behind_one_helper_do_not_claim_one_lock_fix():
     assert opportunity.prerequisites == ("single_lock_owner",)
 
 
+@pytest.mark.parametrize("boundary", ["filesystem", "subprocess"])
+def test_lock_that_serializes_local_io_gets_no_move_it_out_plan(boundary):
+    """A file store's save or a once-only launch under its lock: the lock is the point."""
+    opportunity = build_performance_opportunities(
+        [
+            _finding(
+                "store.py",
+                3,
+                marker="blocking_io_under_lock",
+                boundary=boundary,
+                call_path=("store.py::save", "store.py::write_file"),
+            )
+        ]
+    )[0]
+
+    assert opportunity.fix is None
+    assert opportunity.actionability_state == "investigate"
+    assert opportunity.prerequisites == ("io_not_guarded_by_lock",)
+    assert performance_fix_suggestions([opportunity]) == []
+
+
 def test_performance_fix_plan_carries_closed_strategy_and_true_totals():
     opportunity = build_performance_opportunities(
         [

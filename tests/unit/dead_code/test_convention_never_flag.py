@@ -9,7 +9,7 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
-from repowise.core.analysis.dead_code.constants import never_flag_match
+from repowise.core.analysis.dead_code.constants import never_flag_match, never_flag_path
 from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
 
 
@@ -78,3 +78,28 @@ def test_python_startup_hooks_are_never_flagged(path):
 )
 def test_near_misses_stay_flaggable(path):
     assert not never_flag_match(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Copied libraries and generator output are not this repository's to delete.
+        "src/native/external/zlib/trees.c",
+        "x-pack/plugin/esql/src/main/generated/org/x/FooEvaluator.java",
+    ],
+)
+def test_vendored_and_generated_files_are_never_flagged(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/pkg/external/client.py",
+        "x-pack/plugin/inference/src/main/java/org/x/external/Sender.java",
+        "src/libraries/System.Runtime/src/System/DateTime.cs",
+    ],
+)
+def test_origin_near_misses_stay_flaggable(path):
+    assert not never_flag_path(path)

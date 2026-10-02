@@ -19,7 +19,7 @@ from repowise.core.analysis.health.duplication import (
 from repowise.core.analysis.health.duplication.detector import (
     ClonePair,
     _aggregate,
-    _union_line_count,
+    union_line_count,
 )
 from repowise.core.analysis.health.duplication.rabin_karp import (
     index_by_hash,
@@ -331,8 +331,8 @@ def _pair(
         ([(1, 10), (1, 10), (1, 10)], 10),  # identical repeats
     ],
 )
-def test_union_line_count(ranges: list[tuple[int, int]], expected: int):
-    assert _union_line_count(ranges) == expected
+def testunion_line_count(ranges: list[tuple[int, int]], expected: int):
+    assert union_line_count(ranges) == expected
 
 
 def test_aggregate_overlapping_pairs_do_not_double_count():
