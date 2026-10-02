@@ -136,3 +136,35 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
     # The valid page still persisted despite the bad one.
     stored = await _read_db_page_ids(repo_dir)
     assert "delta" in stored
+
+
+async def test_batched_flush_stores_every_page_and_times_the_drain(repo_dir, monkeypatch):
+    """Pages queued faster than they are written go out in batches, none lost,
+    and the drain after generation is recorded in the run's phase table."""
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd import _generation_persist
+    from repowise.core.pipeline import PhaseTimings
+
+    monkeypatch.setattr(_generation_persist, "_FLUSH_BATCH", 7)
+    emitted = [_page(f"p{i:02d}") for i in range(30)]
+
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        # No await between pages: all 30 are queued before the consumer runs.
+        for p in emitted:
+            on_page_ready(p)
+        return emitted
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    table = PhaseTimings()
+
+    await run_generation_with_persistence(
+        repo_path=repo_dir,
+        repo_name=repo_dir.name,
+        progress=SimpleNamespace(table=table),
+    )
+
+    assert await _read_db_page_ids(repo_dir) == {p.page_id for p in emitted}
+    assert "generation.persist_drain" in table.totals

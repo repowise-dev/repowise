@@ -43,6 +43,11 @@ logger = structlog.get_logger(__name__)
 # generation finishes, so a wedged DB write can never hang the CLI.
 _DRAIN_TIMEOUT_SECS = 60.0
 
+# Pages written per transaction. The consumer only runs between generation's
+# awaits, so pages pile up in the queue; one commit per page left a CPU-bound
+# run draining thousands of single-row transactions after generation ended.
+_FLUSH_BATCH = 200
+
 
 async def run_generation_with_persistence(
     *,
@@ -67,7 +72,7 @@ async def run_generation_with_persistence(
         upsert_repository,
     )
     from repowise.core.persistence.crud import upsert_page_from_generated
-    from repowise.core.pipeline import run_generation
+    from repowise.core.pipeline import run_generation, timed
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -95,25 +100,43 @@ async def run_generation_with_persistence(
     sentinel = object()
     saved = 0
 
-    async def _consumer() -> None:
-        nonlocal saved
-        while True:
-            page = await queue.get()
-            try:
-                if page is sentinel:
-                    return
+    async def _write(pages: list[Any]) -> int:
+        try:
+            async with get_session(sf) as session:
+                for page in pages:
+                    await upsert_page_from_generated(session, page, repo_id)
+            return len(pages)
+        except Exception:
+            # One bad page must not cost its batch: retry them one at a time.
+            written = 0
+            for page in pages:
                 try:
                     async with get_session(sf) as session:
                         await upsert_page_from_generated(session, page, repo_id)
-                    saved += 1
+                    written += 1
                 except Exception as exc:
                     logger.debug(
                         "generation.incremental_persist_failed",
                         page_id=getattr(page, "page_id", "?"),
                         error=str(exc),
                     )
+            return written
+
+    async def _consumer() -> None:
+        nonlocal saved
+        while True:
+            batch = [await queue.get()]
+            while len(batch) < _FLUSH_BATCH and not queue.empty():
+                batch.append(queue.get_nowait())
+            try:
+                pages = [page for page in batch if page is not sentinel]
+                if pages:
+                    saved += await _write(pages)
+                if len(pages) < len(batch):
+                    return
             finally:
-                queue.task_done()
+                for _ in batch:
+                    queue.task_done()
 
     consumer_task = asyncio.create_task(_consumer())
 
@@ -131,14 +154,16 @@ async def run_generation_with_persistence(
         )
     finally:
         await queue.put(sentinel)
-        try:
-            await asyncio.wait_for(consumer_task, timeout=_DRAIN_TIMEOUT_SECS)
-        except TimeoutError:
-            logger.warning("generation.persist_drain_timeout", saved=saved)
-            consumer_task.cancel()
-        except Exception as exc:
-            logger.debug("generation.persist_consumer_error", error=str(exc))
-        await engine.dispose()
+        progress = generation_kwargs.get("progress")
+        with timed(getattr(progress, "table", None), "generation.persist_drain"):
+            try:
+                await asyncio.wait_for(consumer_task, timeout=_DRAIN_TIMEOUT_SECS)
+            except TimeoutError:
+                logger.warning("generation.persist_drain_timeout", saved=saved)
+                consumer_task.cancel()
+            except Exception as exc:
+                logger.debug("generation.persist_consumer_error", error=str(exc))
+            await engine.dispose()
 
     if saved:
         logger.info("generation.incremental_persist_done", pages_flushed=saved)
