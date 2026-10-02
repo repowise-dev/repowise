@@ -114,3 +114,65 @@ def __getattr__(name):
     )
     files = {f.file_path for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE}
     assert files == {"cli/ui/orphan.py"}
+
+
+_BACKENDS = "hc/accounts/backends.py"
+_BACKENDS_SRC = b"class EmailBackend:\n    pass\n\n\ndef helper():\n    pass\n"
+
+
+def _backend_findings():
+    return [
+        _finding(DeadCodeKind.UNREACHABLE_FILE, _BACKENDS),
+        _finding(DeadCodeKind.UNUSED_EXPORT, _BACKENDS, "EmailBackend"),
+        _finding(DeadCodeKind.UNUSED_EXPORT, _BACKENDS, "helper"),
+    ]
+
+
+def test_a_django_setting_naming_a_class_uses_its_module_and_the_class():
+    settings = b'AUTHENTICATION_BACKENDS = [\n    "hc.accounts.backends.EmailBackend",\n]\n'
+    source = {"hc/settings.py": settings, _BACKENDS: _BACKENDS_SRC}
+    assert _kept(_backend_findings(), source) == {(_BACKENDS, "helper")}
+
+
+def test_a_colon_entry_names_the_module_and_the_attribute():
+    redis = "celery/backends/redis.py"
+    findings = [
+        _finding(DeadCodeKind.UNREACHABLE_FILE, redis),
+        _finding(DeadCodeKind.UNUSED_EXPORT, redis, "RedisBackend"),
+    ]
+    source = {
+        "celery/app/backends.py": b"BACKEND_ALIASES = {'redis': 'celery.backends.redis:RedisBackend'}\n",
+        redis: b"class RedisBackend: ...\n",
+    }
+    assert _kept(findings, source) == set()
+
+
+def test_a_dotted_name_the_module_does_not_define_names_nothing():
+    settings = b'MIDDLEWARE = ["hc.accounts.backends.Missing"]\n'
+    source = {"hc/settings.py": settings, _BACKENDS: _BACKENDS_SRC}
+    kept = _kept(_backend_findings(), source)
+    assert kept == {(_BACKENDS, None), (_BACKENDS, "EmailBackend"), (_BACKENDS, "helper")}
+
+
+def test_a_docstring_comment_or_test_patch_target_names_nothing():
+    doc = b'"""Mirrors "hc.accounts.backends.EmailBackend"."""\n# see "hc.accounts.backends"\nX = 1\n'
+    test = b'@patch("hc.accounts.backends.EmailBackend")\ndef test_login(): ...\n'
+    toml = b'# tool = "hc.accounts.backends:EmailBackend"\n'
+    source = {
+        "hc/other.py": doc,
+        "hc/tests/test_backends.py": test,
+        "pyproject.toml": toml,
+        _BACKENDS: _BACKENDS_SRC,
+    }
+    assert _kept(_backend_findings(), source) == {
+        (_BACKENDS, None),
+        (_BACKENDS, "EmailBackend"),
+        (_BACKENDS, "helper"),
+    }
+
+
+def test_a_test_loading_a_fixture_app_by_module_path_uses_it():
+    app = "t/unit/bin/proj/app.py"
+    findings = [_finding(DeadCodeKind.UNREACHABLE_FILE, app)]
+    source = {"t/unit/bin/test_control.py": b"OPTS = ['-A', 't.unit.bin.proj.app']\n", app: b"app = 1\n"}
+    assert _kept(findings, source) == set()

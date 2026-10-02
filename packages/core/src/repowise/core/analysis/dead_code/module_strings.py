@@ -15,17 +15,29 @@ Two spellings count:
   (an ``import_module`` caller), and only for a module in that file's
   directory or below it, which is where such a loader looks.
 
-``module:attr`` additionally uses ``attr`` of that module. Each match drops the
-finding: a string that resolves to the module is how the module is loaded.
+``module:attr`` additionally uses ``attr`` of that module. A Django or plugin
+table names a member with a dot instead (``"hc.accounts.backends.EmailBackend"``
+in ``AUTHENTICATION_BACKENDS``): when the whole string names no module, its
+parent does, and the last segment is a top-level name that module defines, the
+string uses both. Each match drops the finding: a string that resolves to the
+module is how the module is loaded.
+
+Only strings that run count: a comment or a Python docstring that mentions a
+dotted name loads nothing. A test file counts only whole module paths (a
+fixture app it loads by name), never a member path (a ``mock.patch`` target).
 """
 
 from __future__ import annotations
 
+import io
 import re
-from collections.abc import Iterable
+import tokenize
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from ...ingestion.languages.registry import REGISTRY
+from ...test_paths import is_test_related_path
 from .models import DeadCodeFindingData, DeadCodeKind
 
 #: A quoted module path, optionally followed by ``:attr``.
@@ -82,25 +94,28 @@ def drop_named_modules(
     *runtime_importers* are the files that import by name at runtime, the
     only place a bare module name is read as one. Returns a new list.
     """
-    candidates = [
-        f
-        for f in findings
-        if f.kind in (DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.UNUSED_EXPORT)
-        and _is_python(f.file_path)
-    ]
+    candidates = {f.file_path for f in findings if _is_candidate(f)}
     if not candidates or not source_map:
         return findings
-    index = _ModuleIndex({f.file_path for f in candidates})
     loaders = {path: _directory(path) for path in runtime_importers}
-    named, attrs = _named_by_strings(source_map, index, loaders)
-    return [
-        f
-        for f in findings
-        if not (
-            (f.kind is DeadCodeKind.UNREACHABLE_FILE and f.file_path in named)
-            or (f.kind is DeadCodeKind.UNUSED_EXPORT and (f.file_path, f.symbol_name) in attrs)
-        )
-    ]
+    named, attrs = _named_by_strings(source_map, _ModuleIndex(candidates), loaders)
+    return [f for f in findings if not _is_named(f, named, attrs)]
+
+
+def _is_candidate(finding: DeadCodeFindingData) -> bool:
+    kinds = (DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.UNUSED_EXPORT)
+    return finding.kind in kinds and _is_python(finding.file_path)
+
+
+def _is_named(
+    finding: DeadCodeFindingData, named: set[str], attrs: set[tuple[str, str]]
+) -> bool:
+    if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
+        return finding.file_path in named
+    return (
+        finding.kind is DeadCodeKind.UNUSED_EXPORT
+        and (finding.file_path, finding.symbol_name) in attrs
+    )
 
 
 def _named_by_strings(
@@ -110,11 +125,96 @@ def _named_by_strings(
     named: set[str] = set()
     attrs: set[tuple[str, str]] = set()
     for path, blob in source_map.items():
-        loader_dir = loaders.get(path)
-        for match in _MODULE_STRING_RE.finditer(blob):
-            module = match.group(1).decode("ascii")
-            for target in index.resolve(module, loader_dir) - {path}:
-                named.add(target)
-                if match.group(2):
-                    attrs.add((target, match.group(2).decode("ascii")))
+        # A test that loads a fixture module by name (``"t.unit.proj.app"``)
+        # uses it; a member path in a test is a ``mock.patch`` target, not a load.
+        members = None if is_test_related_path(path) else source_map
+        reader = _Reader(path, index, loaders.get(path), members)
+        # Tokenize only a file whose raw text names a candidate at all.
+        if next(reader.uses(blob), None) is None:
+            continue
+        for target, attr in reader.uses(_live_text(path, blob)):
+            named.add(target)
+            if attr:
+                attrs.add((target, attr))
     return named, attrs
+
+
+@dataclass(frozen=True)
+class _Reader:
+    """Resolves the module-path strings written in one file.
+
+    *members* is the source to look a ``"pkg.module.Name"`` member up in, or
+    None to read only whole module paths.
+    """
+
+    path: str
+    index: _ModuleIndex
+    loader_dir: str | None
+    members: dict[str, bytes] | None
+
+    def uses(self, text: bytes) -> Iterator[tuple[str, str | None]]:
+        """``(module, attr)`` for each module-path string in *text*."""
+        for match in _MODULE_STRING_RE.finditer(text):
+            module = match.group(1).decode("ascii")
+            attr = match.group(2).decode("ascii") if match.group(2) else None
+            targets = self._resolve(module)
+            if not (targets or attr) and self.members is not None:
+                targets, attr = self._member_owners(module, self.members)
+            yield from ((target, attr) for target in targets)
+
+    def _resolve(self, module: str) -> set[str]:
+        return self.index.resolve(module, self.loader_dir) - {self.path}
+
+    def _member_owners(self, module: str, members: dict[str, bytes]) -> tuple[set[str], str]:
+        """For ``"pkg.module.Name"``: the modules ``pkg.module`` names that define ``Name``."""
+        parent, _, name = module.rpartition(".")
+        owners = self._resolve(parent) if parent else set()
+        return {t for t in owners if _defines_top_level(members.get(t, b""), name)}, name
+
+
+def _defines_top_level(blob: bytes, name: str) -> bool:
+    """Whether a Python module defines *name* at top level (def, class, assignment)."""
+    word = re.escape(name.encode("ascii"))
+    pattern = (
+        rb"^(?:(?:async[ \t]+)?def|class)[ \t]+" + word + rb"\b"
+        rb"|^" + word + rb"[ \t]*(?::[^=\n]*)?=(?!=)"
+    )
+    return re.search(pattern, blob, re.MULTILINE) is not None
+
+
+#: Tokens after which a string starts an expression statement (a docstring).
+_STATEMENT_START = frozenset(
+    {tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING}
+)
+_TRIVIA = frozenset({tokenize.NL, tokenize.COMMENT})
+_COMMENT_LINE_RE = re.compile(rb"^[ \t]*#.*$", re.MULTILINE)
+
+
+def _live_text(path: str, blob: bytes) -> bytes:
+    """*blob* without comments and, for Python, without docstrings.
+
+    Python keeps only its string literals that are not a statement on their
+    own; other files drop ``#`` comment lines. Python that does not tokenize
+    is kept whole, as before this filter.
+    """
+    if not _is_python(path):
+        return _COMMENT_LINE_RE.sub(b"", blob)
+    try:
+        tokens = [
+            t for t in tokenize.tokenize(io.BytesIO(blob).readline) if t.type not in _TRIVIA
+        ]
+    except (tokenize.TokenError, SyntaxError):
+        return blob
+    return b"\n".join(
+        tok.string.encode("utf-8")
+        for i, tok in enumerate(tokens)
+        if tok.type == tokenize.STRING and not _is_statement(tokens, i)
+    )
+
+
+def _is_statement(tokens: list[tokenize.TokenInfo], i: int) -> bool:
+    """Whether ``tokens[i]`` is a statement on its own (a docstring)."""
+    # ENDMARKER always closes the stream, so ``i + 1`` exists.
+    if tokens[i - 1].type not in _STATEMENT_START:
+        return False
+    return tokens[i + 1].type in (tokenize.NEWLINE, tokenize.ENDMARKER)
