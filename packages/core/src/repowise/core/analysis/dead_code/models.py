@@ -42,6 +42,16 @@ class DeadCodeFindingData:
     start_line: int | None = None
     end_line: int | None = None
 
+    @property
+    def is_spanned_symbol(self) -> bool:
+        """A named symbol finding whose declaration lines are known."""
+        return (
+            self.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
+            and bool(self.symbol_name)
+            and self.start_line is not None
+            and self.end_line is not None
+        )
+
 
 @dataclass
 class DeadCodeReport:

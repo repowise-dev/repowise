@@ -8,13 +8,17 @@ resolve to the other file.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 from repowise.core.analysis.dead_code.go_name_uses import drop_go_package_uses
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeKind
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from tests.unit.dead_code._helpers import _build_graph
 
 
-def _finding(path, name, start, end, kind=DeadCodeKind.UNUSED_INTERNAL):
+def _finding(path, name, span, kind=DeadCodeKind.UNUSED_INTERNAL):
+    start, end = span
     return DeadCodeFindingData(
         kind=kind,
         file_path=path,
@@ -63,7 +67,7 @@ def _parser_case(sibling: bytes, sibling_path="dart/cataloger.go"):
         {"dart/parse_pubspec.go": _go("dart/parse_pubspec.go", ("parsePubspec", 4, 6)),
          sibling_path: {"language": "go"}}
     )
-    return _kept([_finding("dart/parse_pubspec.go", "parsePubspec", 4, 6)], source, graph)
+    return _kept([_finding("dart/parse_pubspec.go", "parsePubspec", (4, 6))], source, graph)
 
 
 def test_value_passed_from_a_sibling_file_is_a_use():
@@ -75,9 +79,16 @@ def test_doc_comment_and_recursive_call_are_not_uses():
     assert _parser_case(b"package dart\n") == {"parsePubspec"}
 
 
-def test_comment_and_prose_in_a_sibling_are_not_uses():
+def test_comment_and_strings_in_a_sibling_are_not_uses():
     sibling = b'package dart\n\n// see parsePubspec\nvar s = `parsePubspec runs` + "parsePubspec here"\n'
     assert _parser_case(sibling) == {"parsePubspec"}
+    one_word = b'package dart\n\nvar s = map[string]int{"parsePubspec": 1, `parsePubspec`: 2}\n'
+    assert _parser_case(one_word) == {"parsePubspec"}
+
+
+def test_a_local_declared_with_the_same_name_is_not_a_use():
+    local = b"package dart\n\nfunc f() {\n\tparsePubspec, err := 5, 6\n\t_ = err\n}\n"
+    assert _parser_case(local) == {"parsePubspec"}
 
 
 def test_selector_on_something_else_is_not_a_use():
@@ -104,7 +115,7 @@ def _importer_case(importer: bytes, names):
         [("commands/server.go", "common/types/queue.go",
           {"edge_type": "imports", "imported_names": names})],
     )
-    finding = _finding("common/types/queue.go", "NewEvictingQueue", 3, 5, DeadCodeKind.UNUSED_EXPORT)
+    finding = _finding("common/types/queue.go", "NewEvictingQueue", (3, 5), DeadCodeKind.UNUSED_EXPORT)
     return _kept([finding], source, graph)
 
 
@@ -123,11 +134,6 @@ def test_other_qualifier_or_bare_name_in_an_importer_is_not_a_use():
     assert _importer_case(importer, ["types"]) == {"NewEvictingQueue"}
 
 
-def test_dot_import_makes_the_bare_name_a_use():
-    importer = b"package commands\n\nvar r = NewEvictingQueue[int](1)\n"
-    assert _importer_case(importer, ["."]) == set()
-
-
 _STDLIB = b"//go:build !re2\n\npackage regexp\n\nfunc MustCompile(s string) *R {\n\treturn nil\n}\n"
 _RE2 = b"//go:build re2\n\npackage regexp\n\nfunc MustCompile(s string) *R {\n\treturn nil\n}\n"
 
@@ -141,7 +147,7 @@ def _twin_case(importer: bytes):
         [("config/rule.go", "regexp/stdlib.go", {"edge_type": "imports", "imported_names": ["regexp"]}),
          ("config/rule.go", "regexp/re2.go", {"edge_type": "imports", "imported_names": ["regexp"]})],
     )
-    finding = _finding("regexp/re2.go", "MustCompile", 5, 7, DeadCodeKind.UNUSED_EXPORT)
+    finding = _finding("regexp/re2.go", "MustCompile", (5, 7), DeadCodeKind.UNUSED_EXPORT)
     return _kept([finding], source, graph)
 
 
@@ -163,7 +169,7 @@ def test_same_named_method_header_is_not_a_use():
          "hexec/run.go": _go("hexec/run.go", ("Exec::New", 3, 4))}
     )
     graph.nodes["hexec/run.go::Exec::New"]["name"] = "New"
-    finding = _finding("hexec/exec.go", "New", 3, 5, DeadCodeKind.UNUSED_EXPORT)
+    finding = _finding("hexec/exec.go", "New", (3, 5), DeadCodeKind.UNUSED_EXPORT)
     assert _kept([finding], source, graph) == {"New"}
 
 
@@ -198,7 +204,7 @@ def _member_case(sibling: bytes, kind: str):
          "compare/types.go": {"language": "go", "symbols": [
              {"name": "T", "kind": kind, "language": "go", "start_line": 3, "end_line": 6}]}}
     )
-    finding = _finding("compare/compare.go", "ProbablyEq", 3, 5, DeadCodeKind.UNUSED_EXPORT)
+    finding = _finding("compare/compare.go", "ProbablyEq", (3, 5), DeadCodeKind.UNUSED_EXPORT)
     return _kept([finding], source, graph)
 
 
@@ -233,3 +239,47 @@ def test_composite_literal_key_is_not_a_use_but_its_value_and_a_case_arm_are():
     assert _member_case(value, "function") == set()
     arm = b"package compare\n\nfunc f(v any) {\n\tswitch v.(type) {\n\tcase *ProbablyEq:\n\t}\n}\n"
     assert _member_case(arm, "function") == set()
+
+
+def test_versioned_import_path_is_qualified_by_the_package_clause():
+    source = {"lib/v2/queue.go": _QUEUE.replace(b"package types", b"package lib"),
+              "app/main.go": b"package app\n\nvar q = lib.NewEvictingQueue[int](1)\n"}
+    graph = _build_graph(
+        {"lib/v2/queue.go": _go("lib/v2/queue.go", ("NewEvictingQueue", 3, 5)),
+         "app/main.go": {"language": "go"}},
+        [("app/main.go", "lib/v2/queue.go", {"edge_type": "imports", "imported_names": ["v2"]})],
+    )
+    finding = _finding("lib/v2/queue.go", "NewEvictingQueue", (3, 5), DeadCodeKind.UNUSED_EXPORT)
+    assert _kept([finding], source, graph) == set()
+
+
+def test_real_pipeline_dot_import_and_qualified_generic_call(tmp_path):
+    root = tmp_path
+    # The dot import is covered before this pass ("*" counts every export as
+    # imported); the generic call through ``gen.`` has no call edge at all.
+    files = {
+        "go.mod": "module example.com/m\n\ngo 1.22\n",
+        "dot/dot.go": "package dot\n\nfunc DotUsed() int { return 1 }\n",
+        "gen/gen.go": (
+            "package gen\n\nfunc NewQ[T any](n int) []T { return make([]T, n) }\n\n"
+            "func GenDead() int { return 2 }\n"
+        ),
+        "cmd/app/main.go": (
+            'package main\n\nimport (\n\t. "example.com/m/dot"\n\t"example.com/m/gen"\n)\n\n'
+            "func main() {\n\t_ = DotUsed()\n\t_ = gen.NewQ[string](2)\n}\n"
+        ),
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    traverser, parser, builder = FileTraverser(root), ASTParser(), GraphBuilder(repo_path=root)
+    source_map = {}
+    for fi in traverser.traverse():
+        source_map[fi.path] = Path(fi.abs_path).read_bytes()
+        builder.add_file(parser.parse_file(fi, source_map[fi.path]))
+    graph = builder.build()
+    assert graph["cmd/app/main.go"]["dot/dot.go"]["imported_names"] == ["*"]
+    report = DeadCodeAnalyzer(graph, source_map=source_map).analyze({"min_confidence": 0.0})
+    exports = {f.symbol_name for f in report.findings if f.kind is DeadCodeKind.UNUSED_EXPORT}
+    assert "GenDead" in exports
+    assert not exports & {"DotUsed", "NewQ"}

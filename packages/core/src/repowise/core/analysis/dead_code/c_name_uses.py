@@ -32,7 +32,7 @@ from pathlib import PurePosixPath
 
 from ...ingestion.languages.registry import REGISTRY
 from .constants import _NON_CODE_LANGUAGES, _PREPROCESSED_LANGUAGES
-from .models import DeadCodeFindingData, DeadCodeKind
+from .models import DeadCodeFindingData
 from .name_occurrences import IDENTIFIER_RE, occurrence_files
 
 #: Kinds a C/C++ type declaration's finding can carry.
@@ -118,7 +118,7 @@ def _matching_brace(text: str, open_at: int) -> int:
     return -1
 
 
-def blank_prose(match: re.Match[bytes]) -> bytes:
+def _blank_prose(match: re.Match[bytes]) -> bytes:
     """Blank a comment, or a string holding a space; keep a one-word string.
 
     ``dlsym(h, "SymbolName")`` names a symbol; ``"505 Version Not Supported"``
@@ -147,7 +147,7 @@ class _CodeOnly(Mapping[str, bytes]):
 
     def __getitem__(self, path: str) -> bytes:
         blob = self._source[path]
-        return _COMMENT_OR_STRING.sub(blank_prose, blob) if is_preprocessed(path) else blob
+        return _COMMENT_OR_STRING.sub(_blank_prose, blob) if is_preprocessed(path) else blob
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._paths)
@@ -205,16 +205,6 @@ class _UseIndex:
         return self._lines[path]
 
 
-def _is_candidate(finding: DeadCodeFindingData) -> bool:
-    """A spanned C/C++ symbol finding."""
-    return (
-        finding.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
-        and bool(finding.symbol_name)
-        and finding.end_line is not None
-        and is_preprocessed(finding.file_path)
-    )
-
-
 def drop_preprocessed_named_elsewhere(
     findings: list[DeadCodeFindingData],
     source_map: Mapping[str, bytes],
@@ -227,7 +217,9 @@ def drop_preprocessed_named_elsewhere(
     *unread_tokens* are the identifiers of files ingestion could not read (a
     ``.def`` EXPORTS list), any of which is a use. Returns a new list.
     """
-    candidates = [f for f in findings if _is_candidate(f)]
+    candidates = [
+        f for f in findings if f.is_spanned_symbol and is_preprocessed(f.file_path)
+    ]
     if not candidates or not source_map:
         return findings
     names = {id(f): declared_names(f, source_map.get(f.file_path, b"")) for f in candidates}
