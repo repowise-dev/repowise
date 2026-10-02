@@ -36,7 +36,7 @@ from .constants import (
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
     _is_fixture_path,
-    never_flag_match,
+    never_flag_path,
 )
 from .contract_methods import is_contract_method
 from .dynamic_markers import (
@@ -1908,7 +1908,7 @@ class DeadCodeAnalyzer:
         """
         if path in whitelist:
             return True
-        if never_flag_match(path):
+        if never_flag_path(path):
             return True
         # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo

@@ -141,9 +141,14 @@ export function BiomarkerDetails({
 
   if (biomarkerType === "dry_violation") {
     const partner = str(details.worst_clone_partner);
-    const dup = num(details.duplication_pct);
+    // Cross-file share; rows stored before it was split out carry the
+    // whole-file ``duplication_pct``.
+    const crossDup = num(details.cross_file_duplication_pct);
+    const dup = crossDup ?? num(details.duplication_pct);
     const stats = joinStats(
-      dup != null ? `${dup.toFixed(0)}% duplicated` : null,
+      dup != null
+        ? `${dup.toFixed(0)}% duplicated${crossDup != null ? " in other files" : ""}`
+        : null,
       num(details.clone_pair_count) != null
         ? `${num(details.clone_pair_count)} clone pairs`
         : null,
