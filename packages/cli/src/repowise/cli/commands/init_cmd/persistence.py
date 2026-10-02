@@ -185,12 +185,14 @@ async def persist_result(
             # transaction: it heals a best-effort checkpoint failure, and if
             # this write also fails the ledger below cannot claim ANALYSIS is
             # complete with parser-default complexity still on disk.
-            if getattr(result, "health_report", None) is not None:
-                await persist_symbol_analysis(
-                    session, repo.id, getattr(result, "parsed_files", None)
-                )
-            await persist_analysis(result, session, repo.id)
-            await persist_generation(result, session, repo.id)
+            with timed(timings, "persist.analysis"):
+                if getattr(result, "health_report", None) is not None:
+                    await persist_symbol_analysis(
+                        session, repo.id, getattr(result, "parsed_files", None)
+                    )
+                await persist_analysis(result, session, repo.id)
+            with timed(timings, "persist.generation"):
+                await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
