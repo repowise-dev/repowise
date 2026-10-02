@@ -105,12 +105,22 @@ def _greet(account: dict) -> None:
 
 
 def _link_anonymous_id() -> None:
-    """Best-effort: stitch this machine's pre-login telemetry id to the account."""
+    """Best-effort: stitch this machine's pre-login telemetry id to the account.
+
+    The HTTP status (``0`` when there was no answer) goes on this run's
+    telemetry as ``link_anon_status``, and to stderr under
+    ``REPOWISE_TELEMETRY_DEBUG``, so a link that silently fails is visible.
+    """
     with contextlib.suppress(Exception):
-        from repowise.cli.platform import identity
+        from repowise.cli.platform import identity, settings, telemetry
         from repowise.cli.platform.client import default_client
 
-        default_client.post("auth/link-anon", {"anon_id": identity.get_anonymous_id()})
+        status = default_client.post_status(
+            "auth/link-anon", {"anon_id": identity.get_anonymous_id()}
+        )
+        telemetry.add_command_outcome(link_anon_status=status)
+        if settings.debug_mode():
+            click.echo(f"[repowise telemetry] auth/link-anon -> HTTP {status}", err=True)
 
 
 @click.command(name="login")
@@ -131,6 +141,10 @@ def login_command(with_token: bool, device_name: str | None) -> None:
 
     existing = credentials.load()
     if existing and not existing.get("stale"):
+        from repowise.cli.platform import telemetry
+
+        # Not a new sign-in, so this run's "ok" must not count as one.
+        telemetry.add_command_outcome(already_signed_in=True)
         account = existing.get("account") or {}
         who = account.get("github_username") or "an account"
         console.print(
