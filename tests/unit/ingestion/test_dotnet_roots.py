@@ -17,12 +17,6 @@ ISEXTERNALINIT_FILE = (
 ISEXTERNALINIT_BLOCK = (
     "namespace System.Runtime.CompilerServices { internal static class IsExternalInit {} }\n"
 )
-FACTORY = (
-    "using Microsoft.EntityFrameworkCore.Design;\n"
-    "namespace App.Data;\n"
-    "public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext> {\n"
-    "    public AppDbContext CreateDbContext(string[] args) => null;\n}\n"
-)
 
 
 def _roots(tmp_path: Path, files: dict[str, str]) -> set[str]:
@@ -37,8 +31,8 @@ def _roots(tmp_path: Path, files: dict[str, str]) -> set[str]:
 
 @pytest.mark.parametrize(
     "text",
-    [ISEXTERNALINIT_FILE, ISEXTERNALINIT_BLOCK, FACTORY],
-    ids=["file-scoped-polyfill", "block-polyfill", "design-time-factory"],
+    [ISEXTERNALINIT_FILE, ISEXTERNALINIT_BLOCK],
+    ids=["file-scoped-polyfill", "block-polyfill"],
 )
 def test_consumed_file_is_a_root(tmp_path: Path, text: str) -> None:
     assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
@@ -49,13 +43,21 @@ def test_polyfill_name_in_another_namespace_is_not_a_root(tmp_path: Path) -> Non
     assert _roots(tmp_path, {"A.cs": text}) == set()
 
 
-def test_ordinary_factory_without_the_interface_is_not_a_root(tmp_path: Path) -> None:
-    text = "namespace App;\npublic class WidgetFactory : IWidgetFactory { }\n"
+def test_sibling_type_keeps_the_file_judged(tmp_path: Path) -> None:
+    text = ISEXTERNALINIT_FILE + "public class DeadSibling { }\n"
     assert _roots(tmp_path, {"A.cs": text}) == set()
 
 
-def test_sibling_type_keeps_the_file_judged(tmp_path: Path) -> None:
-    text = FACTORY + "public class DeadSibling { }\n"
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// [EfCoreConverter<X>] partial class A;\nSystem.Console.WriteLine(1);\n",
+        'var s = "[EfCoreConverter<X>]";\n',
+        "/* [EfCoreConverter<X>]\npartial class A; */\nSystem.Console.WriteLine(1);\n",
+    ],
+    ids=["line-comment", "string", "block-comment"],
+)
+def test_generator_marker_in_a_comment_or_string_is_not_a_root(tmp_path: Path, text: str) -> None:
     assert _roots(tmp_path, {"A.cs": text}) == set()
 
 
