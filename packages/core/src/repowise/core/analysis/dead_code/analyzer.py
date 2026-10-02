@@ -807,6 +807,23 @@ def _nested_class_used(node_data: dict, sym: dict) -> bool:
     return f"{parent}.{name}" in (node_data.get("local_refs") or ())
 
 
+def _csharp_exports(findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
+    """The unused-export findings in ``.cs`` files."""
+    return [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
+    ]
+
+
+def _names_by_file(findings: list[DeadCodeFindingData]) -> dict[str, set[str]]:
+    """File -> the symbol names *findings* report there."""
+    out: dict[str, set[str]] = {}
+    for f in findings:
+        out.setdefault(f.file_path, set()).add(f.symbol_name or "")
+    return out
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
@@ -1028,20 +1045,13 @@ class DeadCodeAnalyzer:
         its own file uses is capped below the floor instead (see
         :func:`demote_used_in_own_file`). Returns a new list.
         """
-        exports = [
-            f
-            for f in findings
-            if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
-        ]
+        exports = _csharp_exports(findings)
         if not exports:
             return findings
-        wanted: dict[str, set[str]] = {}
-        for f in exports:
-            wanted.setdefault(f.file_path, set()).add(f.symbol_name or "")
         named = build_csharp_named_types(
             self.graph,
             self._source_map,
-            wanted,
+            _names_by_file(exports),
             dotnet_index=self._dotnet_index,
             repo_root=self._repo_root,
         )

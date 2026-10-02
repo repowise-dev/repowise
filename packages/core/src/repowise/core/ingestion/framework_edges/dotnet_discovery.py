@@ -128,7 +128,10 @@ _CALL_RE = re.compile(
 #: which miss a call on a member chain in top-level statements
 #: (``builder.Services.AddMediator();`` in ``Program.cs``).
 _COMMENT_OR_STRING = re.compile(
-    r"""//[^\n]*|/\*.*?\*/|@"(?:[^"]|"")*"|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""",
+    # A C# 11 raw string (three or more quotes) first, so its quotes are not
+    # read as an empty string followed by code.
+    r'("{3,}).*?\1'
+    r"""|//[^\n]*|/\*.*?\*/|@"(?:[^"]|"")*"|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""",
     re.DOTALL,
 )
 
