@@ -148,6 +148,7 @@ async def get_change_risk(
     change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``patch_coverage`` is the share of changed executable lines stored coverage ran.
     ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
     fixes on these exact lines. ``branch_overlap`` names other branches editing
     them. ``diff_shape`` is one line on size, not a danger verdict. An empty
@@ -228,6 +229,11 @@ async def get_change_risk(
         payload["impacted_tests"] = await _impacted_tests_block(
             ctx, changed, changed_error, collector
         )
+        patch = await _patch_coverage_block(
+            ctx, changed, changed_error, revspec, result, collector
+        )
+        if patch is not None:
+            payload["patch_coverage"] = patch
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
             # One fix record, not two. The blocks answered the same question
@@ -486,22 +492,6 @@ async def _repository(ctx: Any) -> Any | None:
         return None
 
 
-def _normalize_revspec(revspec: str | None) -> str:
-    """Mirror ``score_live_change``'s three-dot handling for ``changed_lines``.
-
-    ``changed_lines`` verifies each side of a ``base..head`` range as a ref, so a
-    three-dot ``base...head`` (whose head parses as ``.head``) would fail its
-    ref check. Strip the extra dot to the two-dot form the scorer already uses.
-    """
-    if revspec is None:
-        return "HEAD"
-    if ".." in revspec:
-        base, _, head = revspec.partition("..")
-        head = head.lstrip(".") or "HEAD"
-        return f"{base}..{head}"
-    return revspec
-
-
 def _filter_changed(
     changed: dict[str, set[int]],
     extensions: tuple[str, ...],
@@ -705,11 +695,18 @@ def _cross_repo_block(
 
 
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
-    """Uniform impacted-tests block for the degraded (no tests to name) paths."""
+    """Uniform impacted-tests block for the degraded (no tests to name) paths.
+
+    ``basis`` says which signal named the tests (``none`` here) and
+    ``tests_to_run_kind`` what each entry is: a coverage-map ``test_id`` on
+    the measured basis, a ``test_file`` on the inferred one.
+    """
     return {
         "status": status,
+        "basis": "none",
         "map_present": False,
         "tests_to_run": [],
+        "tests_to_run_kind": None,
         "total": 0,
         "truncated": False,
         "line_coverage": {
@@ -769,7 +766,7 @@ async def _changed_in_scope(
             partial(
                 changed_lines,
                 repo_path,
-                _normalize_revspec(revspec),
+                revspec or "HEAD",
                 working_tree=working_tree,
             )
         )
@@ -941,7 +938,7 @@ async def _independent_changes_block(
         return None
     # Returns [] without a git call for anything that is not a range, so the
     # range test lives in one place rather than here as well.
-    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), _normalize_revspec(revspec))
+    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), revspec)
     try:
         async with get_session(session_factory) as session:
             repo_id = (await _get_repo(session)).id
@@ -1085,6 +1082,7 @@ async def _inferred_impacted(
         {
             "basis": "inferred",
             "tests_to_run": _cap_tests(tests, collector, "inferred"),
+            "tests_to_run_kind": "test_file",
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
@@ -1099,6 +1097,59 @@ async def _inferred_impacted(
             ),
         }
     )
+    return block
+
+
+async def _patch_coverage_block(
+    ctx: Any,
+    changed: dict[str, set[int]],
+    changed_error: tuple[str, str] | None,
+    revspec: str | None,
+    result: Any,
+    collector: OmissionCollector,
+) -> dict[str, Any] | None:
+    """Share of the change's executable lines the stored coverage ran, or ``None``.
+
+    The same computation ``repowise coverage check`` gates on, read from the
+    coverage the index stores. ``None`` when there is no index, no stored
+    coverage, or no readable change: ``impacted_tests`` already says why.
+    ``files`` lists only the files that need attention, capped; the totals and
+    ``file_counts`` still count every file.
+    """
+    from repowise.core import git_refs
+    from repowise.core.analysis.change_risk.features import revspec_head
+    from repowise.core.analysis.patch_coverage import attention_rows, stored_patch_coverage
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or changed_error is not None or not changed:
+        return None
+    # Uncommitted edits were never measured, so no commit can vouch for them.
+    head_commit = None
+    if not result.working_tree:
+        head_commit = git_refs.resolve(str(ctx.path), revspec_head(revspec)) or None
+    try:
+        async with get_session(session_factory) as session:
+            patch = await stored_patch_coverage(
+                session,
+                (await _get_repo(session)).id,
+                changed,
+                label=result.features.ref,
+                head_commit=head_commit,
+            )
+    except (LookupError, SQLAlchemyError):
+        return None
+    if patch is None:
+        return None
+    block = patch.to_dict()
+    rows = [f.to_dict() for f in attention_rows(patch)]
+    if len(rows) > _IMPACTED_TESTS_LIMIT:
+        collector.add(
+            f"patch_coverage.files beyond cap={_IMPACTED_TESTS_LIMIT} "
+            f"({len(rows) - _IMPACTED_TESTS_LIMIT} dropped)",
+            [row["file_path"] for row in rows[_IMPACTED_TESTS_LIMIT:]],
+        )
+    block["files"] = rows[:_IMPACTED_TESTS_LIMIT]
     return block
 
 
@@ -1154,6 +1205,7 @@ async def _impacted_tests_block(
         "basis": "measured",
         "map_present": True,
         "tests_to_run": _cap_tests(tests, collector, "measured"),
+        "tests_to_run_kind": "test_id",
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
         "line_coverage": _serialize_missing(report),

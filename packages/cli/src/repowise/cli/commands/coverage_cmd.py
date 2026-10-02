@@ -15,14 +15,17 @@ from pathlib import Path
 import click
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands.coverage_check_cmd import coverage_check
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.workspace.update import get_head_commit
 
 
@@ -53,7 +56,10 @@ async def _repo_file_keys(session, repo_id: str) -> set[str]:
 
 @click.group("coverage")
 def coverage_group() -> None:
-    """Ingest and inspect test-coverage reports."""
+    """Ingest and inspect test-coverage reports, and gate changes on them in CI."""
+
+
+coverage_group.add_command(coverage_check)
 
 
 @coverage_group.command("add")
@@ -64,7 +70,7 @@ def coverage_group() -> None:
 @click.option(
     "--format",
     "coverage_format",
-    type=click.Choice(["lcov", "cobertura", "clover", "repowise-json"]),
+    type=click.Choice(list(COVERAGE_PARSERS)),
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
@@ -160,7 +166,10 @@ def coverage_add(
             save_test_coverage,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
@@ -190,7 +199,7 @@ def coverage_add(
                 or getattr(repo_row, "head_commit", None)
             )
 
-            # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
+            # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             agg_matched = 0
             unmapped = 0
             mapping_partial = False
@@ -219,7 +228,7 @@ def coverage_add(
                         resolved.files,
                         source_format=resolved.source_format or "lcov",
                         ingested_commit_sha=head_sha,
-                        mapping_partial=mapping_partial,
+                        provenance=resolved.provenance,
                     )
                     agg_matched = resolved.matched
                     console.print(
@@ -348,7 +357,7 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 # Safe to spell this ``--format`` here: the ``--format`` that names an *input*
-# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# parser (a COVERAGE_PARSERS key) lives on ``coverage add``, not on the
 # group, so the two never meet on one command line.
 @format_option()
 def coverage_status(repo: str | None, fmt: str) -> None:
@@ -368,7 +377,10 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_test_coverage_summary,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
@@ -377,7 +389,9 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 if fmt == "json":
                     emit_json({"repo": str(repo_path), "indexed": False})
                 return
-            summary = await get_coverage_summary(session, repo_row.id)
+            summary = await get_coverage_summary(
+                session, repo_row.id, reference_commit=repo_row.head_commit
+            )
             map_summary = await get_test_coverage_summary(session, repo_row.id)
 
             if fmt == "json":
@@ -418,6 +432,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
                 if branch_pct is not None:
                     console.print(f"  Branch: {branch_pct:.1f}%")
+                paths = summary.get("report_paths")
+                if paths:
+                    console.print(
+                        f"  Report paths matched: {paths['matched']} of {paths['total']}"
+                    )
+                if (summary.get("freshness") or {}).get("status") == "stale":
+                    console.print(
+                        f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
+                        "not the indexed commit; re-run the tests and ingest again.[/yellow]"
+                    )
 
             if map_summary.get("pair_count"):
                 console.print(

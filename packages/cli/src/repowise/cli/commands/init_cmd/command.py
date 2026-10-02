@@ -78,6 +78,7 @@ from repowise.cli.ui import (
     should_offer_fast_mode,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -772,7 +773,7 @@ def _interactive_gate(
     multiple=True,
     metavar="PATH",
     help=(
-        "Test-coverage report(s) to ingest (lcov / Cobertura / Clover). "
+        f"Test-coverage report(s) to ingest ({' / '.join(COVERAGE_PARSERS)}). "
         "Repeatable. When omitted, common locations (coverage/lcov.info, "
         "**/cobertura.xml, ...) are auto-discovered. This is test coverage for "
         "code-health, not a documentation-breadth knob."

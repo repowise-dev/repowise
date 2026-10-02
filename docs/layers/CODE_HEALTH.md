@@ -635,7 +635,8 @@ repowise health --trend
 ```
 
 Coverage reports light up the test-coverage markers. **LCOV**, **Cobertura**,
-**Clover** and a normalized JSON format are auto-detected:
+**Clover**, **JaCoCo**, **Go coverprofile** and a normalized JSON format are
+auto-detected:
 
 ```bash
 pytest --cov --cov-report=lcov:coverage.lcov

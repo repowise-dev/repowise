@@ -3,7 +3,9 @@
 Ingest a coverage report and repowise can answer two questions your CI cannot:
 which files are risky *and* untested, and which tests a given diff actually
 exercises. That second one turns a 4,000-test suite into the 40 tests that guard
-the change you just made.
+the change you just made. The same report also gates a pull request on its
+patch coverage, with no index at all (see
+[Patch coverage in CI](#patch-coverage-in-ci)).
 
 Without a coverage report there is still an answer, a weaker one. The dependency
 graph records which test files import which source files, so repowise can say
@@ -74,27 +76,64 @@ line up.
 | **LCOV** | Leading `TN:` / `SF:`, or any `TN\|SF\|DA\|BRDA\|LF\|LH\|BRF\|BRH:` line | Yes, when each record carries a non-blank `TN:` test name |
 | **Cobertura** XML | `<coverage` plus `<packages` or `line-rate` | No |
 | **Clover** XML | `<coverage` plus `<project` | No |
+| **JaCoCo** XML | The JaCoCo doctype, or a `<report` root | No |
+| **Go coverprofile** (`go test -coverprofile`) | Leading `mode:` line | No |
 | **coverage.py `.coverage`** | SQLite magic bytes | Yes, when written with `--contexts` |
 | **Normalized JSON** (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` | No |
 
-Force a parser with `--format lcov|cobertura|clover|repowise-json`. The normalized
-JSON shape lets you feed any runner once you map it:
+A UTF-8 byte-order mark at the start of a report is ignored. Go percentages are
+line-based, not the statement percentage `go tool cover -func` prints. A Go
+profile records blocks rather than lines, so every line a block spans counts as
+executable, and a comment inside an unexecuted block reads as uncovered.
+
+Force a parser with
+`--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco`. The
+normalized JSON shape lets you feed any runner once you map it:
 
 ```json
 { "format": "repowise-coverage-v1",
   "files": { "src/foo.py": { "line_coverage_pct": 87.5,
-                             "total_coverable_lines": 40 } } }
+                             "total_coverable_lines": 40,
+                             "covered_lines": [1, 2, 5],
+                             "coverable_lines": [1, 2, 3, 5] } } }
 ```
+
+`covered_lines` and `coverable_lines` are optional. Patch coverage needs
+`coverable_lines` (the executable-line set); without it a file reads as having
+no line data, never as 0%.
 
 With no path argument, `add` auto-discovers `coverage/lcov.info`, `lcov.info`,
 `coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
-`target/llvm-cov/**/*.lcov`, and a repo-root `.coverage`. Multiple reports merge
-with hit-wins: covered lines union, coverable counts take the max.
+`target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
+`**/target/site/jacoco*/jacoco.xml`, a root-module
+`build/reports/jacoco/**/*.xml` (pass a nested Gradle module's report
+explicitly), and a repo-root `.coverage`. Multiple reports merge with hit-wins:
+covered lines and coverable lines are each unioned.
 
 Report paths are matched to indexed files by exact key first, then basename, then
 the longest trailing-path overlap. A tie refuses to guess and is reported as
 ambiguous rather than mapped to the wrong file. If a whole report comes back
 unmatched, set `coverage.strip_prefix` in `.repowise/config.yaml`.
+
+Each ingest records how the report mapped: every format merged, how many of
+its paths matched, did not match or tied, a short sample of the misses, and
+the commit it was measured at. The coverage summary (REST `/health/coverage`,
+MCP `get_health`) reports it as `report_paths`, and its `freshness` says
+whether the measurement matches the indexed commit. Stored patch coverage
+reads the same record, so its report path counts are real numbers rather than
+null.
+
+A few rules keep that matching honest in monorepos and mixed layouts:
+
+- A match needs more than the basename when the report names a directory:
+  `other/pkg/utils.py` never maps to `src/utils.py`. A root-level file still
+  matches under an absolute path, because the whole key is the path's tail.
+- A relative path is first tried under the report's own directory and its
+  parents, nearest first, so `packages/web/coverage/lcov.info` naming
+  `src/index.ts` maps to `packages/web/src/index.ts`. A remaining tie prefers
+  the file nearest the report.
+- Cobertura paths are joined to each `<source>` root before matching, which
+  separates files that share a name under different packages.
 
 ## Building a per-test map
 
@@ -133,7 +172,8 @@ map, and returns the tests whose recorded coverage intersects them.
 
 ```bash
 repowise impacted-tests                        # staged changes (the default)
-repowise impacted-tests main..HEAD             # a branch or PR range
+repowise impacted-tests main...HEAD            # a branch or PR, from the merge-base
+repowise impacted-tests main..HEAD             # a plain range
 repowise impacted-tests abc123                 # a single commit
 repowise impacted-tests main..HEAD --format list | xargs pytest
 ```
@@ -159,6 +199,82 @@ Deletion-only files are dropped from the diff (there are no new lines to cover).
 With `--format list` the caveats go to stderr so the stdout pipe into `pytest`
 stays clean. The command exits `0` in every one of these cases, including "no
 tests found": it is a reporting tool, not a gate.
+
+A `base...head` range diffs from the merge-base of the two, so it is what a pull
+request changed: commits that landed on `base` after the branch forked stay out.
+`base..head` is the plain range. Every command that reads a range follows the
+same rule, change risk (`repowise risk`, `get_change_risk`) included.
+
+## Patch coverage in CI
+
+`repowise coverage check [REVSPEC]` is the gate: of the lines a change touched
+that the report calls executable, what share did the tests run?
+
+```bash
+repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
+```
+
+It needs git and a report, nothing else: no index, no ingest, no LLM key.
+Report paths are resolved against `git ls-files` rather than an index, so a file
+the change adds resolves too. Without `REVSPEC` the base comes from the CI's
+pull-request variables, else the default branch; pass it explicitly in CI so the
+job says what it measures. Reports come from `--report`, else `coverage.paths`,
+else discovery, else (locally) the coverage an index already stores from
+`coverage add`.
+
+The same figure is on every surface, from the same computation over stored
+coverage: `get_change_risk`'s `patch_coverage` block, and
+`GET /api/repos/{id}/health/coverage/patch?base=&head=` (diffs `base...head`; `null`
+when nothing is ingested), which the editor's branch-risk view reads. Stored
+coverage measured at another commit than the change's head is marked `stale`.
+
+The denominator is changed lines the report marks executable, so a changed
+comment or blank line is neither covered nor uncovered. What counts is decided by
+the report:
+
+| Status | Meaning | In the % |
+|--------|---------|----------|
+| `measured` | The report names the file and some changed lines are executable | Yes |
+| `no_coverable_changes` | The report names the file, but no changed line is executable | No |
+| `not_in_report` | The report does not name the file, but it has an extension the report measures, e.g. a new source file no test loaded | No. Listed as "not in report", never 0% |
+| `no_line_data` | The report names the file but gives no executable-line set for it | No |
+
+Changed test files, and file types the report never measures (docs, config), are
+out of scope and only counted. A change with no measured lines has nothing to
+judge and passes.
+
+The threshold comes from `--fail-under`, else `coverage.fail_under` in
+`.repowise/config.yaml` (read at the repository root, even with `--path`); with
+neither, the check reports without gating. The gate compares the unrounded
+figure; the displayed one is floored to one decimal, so 79.99% reads 79.9% and
+fails an 80% gate. Exit `0` passes (or had nothing to judge), `1` is below the
+gate, `2` means the check could not run: no report found, readable or matching a
+repository file, an unknown revision, no merge-base (a shallow clone), a single
+commit at a shallow clone's boundary, bad config, or not a git repository.
+
+`--format github` writes up to 10 `::warning` annotations (largest uncovered
+ranges first), a notice counting the rest, and an `::error::` when the gate
+fails, then appends the markdown summary to `$GITHUB_STEP_SUMMARY`. `markdown`
+and `json` suit other CI systems. A coverage.py `.coverage` database is not a
+text report: export it with `coverage lcov` or `coverage xml` first.
+
+CI checkouts are often shallow, which leaves no merge-base to diff from. Fetch
+full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on GitLab).
+Workflow snippets for GitHub Actions, GitLab and Jenkins are in the
+[CLI reference](../reference/CLI_REFERENCE.md#repowise-coverage-check-revspec).
+
+A new file no test loads must still appear in the report, or it reads "not in
+report" and is not counted. Per language:
+
+- **Python:** `pytest --cov=<src> --cov-report=lcov` (prefer lcov: its paths are
+  relative to the working directory).
+- **JavaScript / TypeScript:** `c8 --all --reporter=lcov`, or jest with
+  `collectCoverageFrom` set.
+- **Go:** `go test -coverprofile=coverage.out ./...`; add `-coverpkg=./...` to
+  include packages that have no tests.
+- **Java:** Maven `jacoco:report` (`report-aggregate` for multi-module), or Gradle
+  `jacocoTestReport`.
+- **Rust:** `cargo llvm-cov --lcov --output-path lcov.info`.
 
 ## Untested hotspots
 
@@ -279,7 +395,7 @@ no setup at all.
 | Comes from | a coverage report you ingested | the call graph, already indexed |
 | Granularity | lines | files |
 | Proves | this test executed these lines | this test's calls reach this file |
-| Decays | yes, see the coverage age report | no |
+| Decays | yes: rows carry the commit they were ingested at, and `test_impact.coverage.freshness` reads `stale` once the index moves past it | no |
 | May produce a percentage | yes | **never** |
 | Labelled | `basis: "measured"` | `basis: "inferred"` |
 
@@ -415,6 +531,7 @@ coverage:
   format: lcov                   # skip format sniffing
   strip_prefix: "/build/src/"    # trim an absolute prefix from report paths
   reingest_on_update: false
+  fail_under: 80                 # patch-coverage gate for `coverage check` (0-100)
 ```
 
 Coverage is also auto-discovered and ingested during `init` and `update`, and
@@ -428,6 +545,7 @@ Note that `--coverage-report` is test coverage, while `--coverage` controls
 |---------|--------------|
 | `repowise coverage add [PATHS...]` | Ingest reports. Auto-discovers when no path is given, merges multiple, builds the per-test map when contexts are present. Flags: `--path`, `--format`, `--verbose` |
 | `repowise coverage status` | Coverage summary plus test-to-code map counts. Flag: `--path` |
+| `repowise coverage check [REVSPEC]` | Patch-coverage gate for CI, no index needed. Flags: `--report`, `--report-format`, `--fail-under`, `--path`, `--format` |
 | `repowise impacted-tests [REVSPEC]` | The tests a change exercises. Flags: `--path`, `--staged`, `--format` |
 
 Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage).

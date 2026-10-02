@@ -958,18 +958,9 @@ def _git_tracked_paths(root: Path) -> frozenset[str]:
     witness has nothing to say, and the caller treats silence as "no opinion"
     rather than as "nothing is tracked".
     """
-    import subprocess
+    from repowise.core.git_refs import tracked_paths
 
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True,
-            timeout=60,
-            check=True,
-        ).stdout
-    except Exception:
-        return frozenset()
-    return frozenset(p for p in out.decode("utf-8", "replace").split("\0") if p)
+    return tracked_paths(str(root))
 
 
 class _FileLiveness:
@@ -1967,7 +1958,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
                 ingested_commit_sha=head_sha,
-                mapping_partial=bool(getattr(hr, "coverage_mapping_partial", False)),
+                provenance=getattr(hr, "coverage_provenance", None),
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)

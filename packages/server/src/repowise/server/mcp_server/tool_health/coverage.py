@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
+from repowise.core.persistence.crud import coverage_row_dict
 from repowise.server.mcp_server.tool_health.paging import Pager
 
 
@@ -24,11 +24,13 @@ def _coverage_block(
     """
     if scoped:
         selected_coverage = pager.bound(rows, "coverage.files")
-        coverage_payload = [_serialize_coverage_row(r) for r in selected_coverage]
+        coverage_payload = [
+            coverage_row_dict(r, include_covered_lines=True) for r in selected_coverage
+        ]
         _attach_coverage_decay(coverage_payload, selected_coverage, repo_path)
     else:
         # Built narrow: these rows were read without the column (see ``loading``).
-        full_coverage_payload = [_serialize_coverage_row(r, covered_lines=False) for r in rows]
+        full_coverage_payload = [coverage_row_dict(r, include_covered_lines=False) for r in rows]
         coverage_payload = pager.bound(full_coverage_payload, "coverage.files")
     # ``ingested_at`` is a datetime on the summary too — coerce.
     if summary.get("ingested_at") is not None:
@@ -86,33 +88,6 @@ def _attach_coverage_decay(payload: list[dict[str, Any]], rows: list[Any], repo_
             "confirmed_lines": d.confirmed,
             "invalidated_lines": d.invalidated,
             "drift_pct": d.drift_pct,
-            "stale": d.is_stale,
+            "drifted": d.is_drifted,
             "measured_at_commit": ref[:12],
         }
-
-
-def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str, Any]:
-    """One coverage row. ``covered_lines=False`` omits the per-line array.
-
-    The narrow form is not the wide form minus a key: a row read with
-    ``include_covered_lines=False`` carries no ``covered_lines_json`` at all, so
-    touching it would raise rather than merely waste the parse.
-    """
-    out: dict[str, Any] = {
-        "file_path": row.file_path,
-        "source_format": row.source_format,
-        "line_coverage_pct": row.line_coverage_pct,
-        "branch_coverage_pct": row.branch_coverage_pct,
-    }
-    # Inserted here, not appended, so the wide form's key order is unchanged.
-    if covered_lines:
-        try:
-            out["covered_lines"] = (
-                json.loads(row.covered_lines_json) if row.covered_lines_json else []
-            )
-        except Exception:
-            out["covered_lines"] = []
-    out["total_coverable_lines"] = row.total_coverable_lines
-    out["ingested_at"] = row.ingested_at.isoformat() if row.ingested_at else None
-    out["ingested_commit_sha"] = row.ingested_commit_sha
-    return out

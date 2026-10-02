@@ -1,3 +1,5 @@
+import { SUGGESTION_BASIS_LABELS } from "@repowise-dev/types/doc-drift";
+
 import {
   bulletList,
   closingSections,
@@ -27,6 +29,9 @@ export interface DocDriftPromptFinding {
   raw?: string | null;
   /** The resolver's trace, including the enclosing heading trail. */
   evidence?: string[] | null;
+  /** What the target is likely called now; evidence the agent must verify. */
+  suggestion?: string | null;
+  suggestion_basis?: string | null;
 }
 
 export interface BuildDocDriftPromptOptions {
@@ -56,6 +61,10 @@ const EXPECTED = [
 
 const SECTION_PREFIX = "under: ";
 
+function basisSuffix(basis: string | null | undefined): string {
+  return basis ? ` (${SUGGESTION_BASIS_LABELS[basis] ?? basis})` : "";
+}
+
 function findingEntry(f: DocDriftPromptFinding): string {
   // The heading trail locates the passage, so it gets its own label.
   const trail = (f.evidence ?? []).find((line) => line.startsWith(SECTION_PREFIX));
@@ -63,6 +72,9 @@ function findingEntry(f: DocDriftPromptFinding): string {
   return [
     `- \`${f.file_path}:${f.line_number}\` claims \`${f.target}\` exists`,
     f.reason ? `  - Why flagged: ${f.reason}` : null,
+    f.suggestion
+      ? `  - Likely replacement: \`${f.suggestion}\`${basisSuffix(f.suggestion_basis)}. A lead, not a verdict: confirm it before editing.`
+      : null,
     f.context ? `  - The line as written: \`${f.context.trim()}\`` : null,
     f.raw && f.raw !== f.context ? `  - The reference itself: \`${f.raw}\`` : null,
     trail ? `  - Section: ${trail.slice(SECTION_PREFIX.length)}` : null,

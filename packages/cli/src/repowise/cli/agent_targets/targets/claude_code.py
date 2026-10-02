@@ -118,28 +118,46 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     Repo-shared and frequently committed, so it keeps the bare ``repowise``
     command: one contributor's absolute path would break every other checkout.
     Other servers the user configured are preserved.
+
+    The merge is a *minimal edit* (``merge_json_object_member``): only the
+    ``mcpServers.repowise`` value is touched, so unrelated servers and the
+    file's own formatting stay byte-identical. Re-rendering the whole document
+    from a dict would reformat pre-existing entries (issue #1603).
     """
     from repowise.cli.mcp_config import generate_mcp_config
 
     from ..formats.json_merge import (
-        load_json_object,
-        merge_server_entries,
+        merge_json_object_member,
         write_json_config,
     )
 
     config_path = project_mcp_config_path(repo_path)
-    new_entry = generate_mcp_config(repo_path)["mcpServers"]
+    new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
 
     if config_path.exists():
-        existing = load_json_object(config_path)
-        servers = dict(existing.get("mcpServers", {}))
-        merge_server_entries(servers, new_entry)
-        existing["mcpServers"] = servers
-        merged = existing
+        # Surgical, minimal-edit write. ``KEPT`` means the file's shape is one we
+        # cannot edit safely (``mcpServers`` present but not an object, or the
+        # insertion point unresolvable), and it is not a licence to re-render.
+        # Re-rendering from a dict would replace the whole document, dropping
+        # every other server the user configured: a ``.mcp.json`` holding
+        # ``"mcpServers": null`` or ``[]`` is exactly the case ``KEPT`` exists
+        # for, and the old fallback here destroyed it instead of reporting it.
+        action = merge_json_object_member(config_path, "mcpServers", "repowise", new_entry)
     else:
-        merged = {"mcpServers": new_entry}
+        action = write_json_config(config_path, {"mcpServers": {"repowise": new_entry}})
 
-    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
+    if action is FileAction.KEPT:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.KEPT,
+            reason=(
+                "the existing mcpServers entry is not an object, so adding "
+                "repowise would rewrite the file and drop the other servers in "
+                "it; make mcpServers an object or add the repowise entry by hand"
+            ),
+        )
+
+    return FileWrite(path=config_path, action=action)
 
 
 def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
@@ -393,7 +411,7 @@ class ClaudeCodeTarget:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
             written = write_project_mcp_config(repo_path)
-            result.record(written.path, written.action)
+            result.record(written.path, written.action, written.reason)
             return result
 
         if repo_path is None:

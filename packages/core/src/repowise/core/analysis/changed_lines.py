@@ -21,13 +21,21 @@ feature extractor (no new dependency, deterministic).
 from __future__ import annotations
 
 import re
+import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from .change_risk.features import _git
+from .change_risk.features import _git, split_revspec
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+#: Pinned header prefixes: ``diff.noprefix`` or a custom prefix in the user's
+#: config would otherwise make :func:`_header_path` strip a real ``a/`` or
+#: ``b/`` directory, or keep a prefix that names no file.
+DIFF_PREFIXES = ("--src-prefix=a/", "--dst-prefix=b/")
 
 
 @dataclass
@@ -51,14 +59,36 @@ class FileDiff:
     added: list[str] = field(default_factory=list)
 
 
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13}
+
+
+def _c_unquote(text: str) -> str:
+    """Undo git's C-style path quoting: ``caf\\303\\251.py`` -> ``café.py``."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in "01234567":
+                out.append(int(text[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+            out += bytes([_C_ESCAPES[nxt]]) if nxt in _C_ESCAPES else nxt.encode("utf-8")
+            i += 2
+            continue
+        out += text[i].encode("utf-8")
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
 def _header_path(raw: str) -> str | None:
     """Normalize a ``--- a/x`` / ``+++ b/x`` header path. ``None`` for /dev/null."""
     path = raw.strip()
-    # git quotes paths with special chars ("b/pa\tth"); strip the quotes so the
-    # common (unquoted) key still resolves. Rare enough to accept the imperfect
-    # unescaping.
+    # git quotes a path holding a non-ASCII byte, a tab, a quote or a backslash
+    # ("b/caf\303\251.py"); left escaped it names no file, and a reader that
+    # looks the file up would skip it.
     if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
-        path = path[1:-1]
+        path = _c_unquote(path[1:-1])
     if path == "/dev/null":
         return None
     return path[2:] if path[:2] in ("a/", "b/") else path
@@ -116,6 +146,17 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return result
 
 
+def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
+    """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
+    spans: list[tuple[int, int]] = []
+    for line in sorted(lines):
+        if spans and line == spans[-1][1] + 1:
+            spans[-1] = (spans[-1][0], line)
+        else:
+            spans.append((line, line))
+    return tuple(spans)
+
+
 def _parse_unified_diff(diff: str) -> dict[str, set[int]]:
     """New-side changed lines per file - the coverage-intersection view.
 
@@ -143,8 +184,8 @@ def changed_lines(
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
-    *revspec* mirrors ``repowise risk``: ``base..head`` is a range, a bare ref
-    is a single commit. With no *revspec* (or *staged*), the staged diff
+    *revspec* mirrors ``repowise risk``: ``base..head`` is a range,
+    ``base...head`` the change since the two forked, a bare ref a single commit. With no *revspec* (or *staged*), the staged diff
     (``git diff --cached``) is used - the "what will I commit" case.
     *working_tree* widens that to everything ``HEAD`` does not have, staged or
     not, matching what change risk counts for an uncommitted change. *label*
@@ -155,24 +196,53 @@ def changed_lines(
     if working_tree:
         # Untracked files are absent by design: they are new, so neither caller
         # (prior fixes, per-test coverage) has a row to find for them anyway.
-        diff = _git(["diff", "--unified=0", "HEAD"], repo_path)
+        diff = _git(["diff", "--unified=0", *DIFF_PREFIXES, "HEAD"], repo_path)
         return _parse_unified_diff(diff), "working tree"
 
     if staged or not revspec:
-        diff = _git(["diff", "--cached", "--unified=0"], repo_path)
+        diff = _git(["diff", "--cached", "--unified=0", *DIFF_PREFIXES], repo_path)
         return _parse_unified_diff(diff), "staged changes"
 
-    if ".." in revspec:
-        base, _, head = revspec.partition("..")
-        head = head or "HEAD"
+    if (parts := split_revspec(revspec)) is not None:
+        # ``base...head`` is what a pull request changed: git diffs from the
+        # merge-base, so commits that landed on base meanwhile stay out.
+        base, sep, head = parts
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
-        diff = _git(["diff", "--unified=0", f"{base}..{head}"], repo_path)
-        return _parse_unified_diff(diff), f"{base}..{head}"
+        label = f"{base}{sep}{head}"
+        diff = _diff(repo_path, ["diff", "--unified=0", *DIFF_PREFIXES, label])
+        return _parse_unified_diff(diff), label
 
     _verify_ref(repo_path, revspec)
+    if is_shallow_root(repo_path, revspec):
+        # A shallow clone's oldest commit has its parents cut off, so git would
+        # diff it against the empty tree and every line would read as changed.
+        raise ValueError(f"{revspec!r} has no parent in this shallow clone; fetch more history")
     # --format= drops the commit message so only the diff body is parsed.
     # -m --first-parent matches what change risk counts on a merge; without it
     # git's combined diff emits nothing at all and a merged PR reads as empty.
-    diff = _git(["show", "--unified=0", "--format=", "-m", "--first-parent", revspec], repo_path)
-    return _parse_unified_diff(diff), revspec
+    args = ["show", "--unified=0", *DIFF_PREFIXES, "--format=", "-m", "--first-parent", revspec]
+    return _parse_unified_diff(_diff(repo_path, args)), revspec
+
+
+def _diff(repo_path: str, args: list[str]) -> str:
+    """Run a diff, turning git's refusal (e.g. no merge-base) into ``ValueError``."""
+    try:
+        return _git(args, repo_path)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines()
+        raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
+
+
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from.
+
+    Read from git's own list of grafted commits, so a genuine root commit is
+    never mistaken for a cut one.
+    """
+    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+    path = Path(repo_path, shallow)
+    if not shallow or not path.is_file():
+        return False
+    sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
+    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()

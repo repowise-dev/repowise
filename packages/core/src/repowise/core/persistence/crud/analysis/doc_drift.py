@@ -141,6 +141,9 @@ def _row_kwargs(finding: Any, repository_id: str) -> dict:
         "evidence_json": json.dumps(list(finding.evidence or [])),
         "raw": finding.raw,
         "context": finding.context,
+        # Empty means no suggestion; stored as NULL so the column says so.
+        "suggestion": (getattr(finding, "suggestion", "") or "")[:_PATH_COLUMN_WIDTH] or None,
+        "suggestion_basis": getattr(finding, "suggestion_basis", "") or None,
     }
 
 
@@ -392,6 +395,8 @@ def serialize_doc_drift_row(row: DocDriftFinding, *, evidence: bool = True) -> d
         raw=row.raw,
         context=row.context,
         evidence=_decode_evidence(row.evidence_json) if evidence else None,
+        suggestion=row.suggestion,
+        suggestion_basis=row.suggestion_basis,
     )
 
 

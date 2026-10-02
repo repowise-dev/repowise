@@ -590,7 +590,7 @@ compares the two revisions directly and needs no index refresh.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
+| `revspec` | string | No | Commit, `base..head` range, or `base...head` (diffed from the merge-base) to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
@@ -659,9 +659,21 @@ change is never reported as untested: `status` becomes `inferred` when the
 import graph can name test files reaching the change (candidates, file-level, no
 line attribution, and `line_coverage` stays empty because reaching cannot speak
 to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
-the same distinction in one word: `measured`, `inferred`, or absent. Build the
+the same distinction in one word, always present: `measured`, `inferred`, or
+`none`. `tests_to_run_kind` says what each entry is: `test_id` (a coverage-map
+test id, measured) or `test_file` (inferred), null when `basis` is `none`;
+`get_risk`'s directive carries the same field beside `tests_to_run_basis`. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
+
+When the index stores coverage, the response also carries `patch_coverage`:
+the share of the change's executable lines the stored coverage ran, the same
+computation and JSON shape `repowise coverage check --format json` gates on.
+`patch_coverage_pct` is null when no changed line is executable, files the
+coverage never names read `not_in_report` rather than 0%, and
+`scope.freshness` is `stale` when the coverage was measured at another commit
+than the change's head (`unknown` for uncommitted work), so its line numbers
+may describe other code. The block is absent when no coverage is stored.
 
 In workspace mode the response also carries `cross_repo`, and every
 `cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
@@ -1077,7 +1089,8 @@ The opt-in enrichments:
   imputed zero).
 - **`doc_drift`** returns a `doc_drift` block: `findings` (each naming the
   **document** to edit, its line, the `target` it wrongly claims exists, a
-  `reason` sentence, `kind`, `origin` and `confidence`), plus `findings_total`,
+  `reason` sentence, `kind`, `origin` and `confidence`, plus `suggestion` and
+  `suggestion_basis` only when a likely replacement was found), plus `findings_total`,
   `documents` and the high/medium/low `confidence` split. Its `basis` field is
   load-bearing: the detector checks only references it can resolve, most
   references in a typical repository are uncheckable by design, and a finding is
@@ -1188,6 +1201,26 @@ get_health(include=["accuracy"], only=["accuracy"])   # the block, without the d
 get_health(only=["top_findings"])                     # + top_findings_total, automatically
 get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
+
+### Coverage: the stored report and how far to trust it
+
+`include=["coverage"]` returns the stored per-file rows and a repo-wide
+`summary`. Every row carries `covered_line_count` beside
+`total_coverable_lines`; targeted mode adds the `covered_lines` array. The
+summary's `freshness.status` is `current` when the report was measured at the
+indexed commit, `stale` when at another one (its line numbers may describe
+code that has moved), and `unknown` when either commit is missing.
+`report_paths` says how the report's own file entries mapped at ingest
+(`total`, `matched`, `unmatched`, `ambiguous`, and a short `unmatched_sample`);
+it is null for coverage stored before that record existed. `source_formats`
+lists every report format merged.
+
+In targeted mode each row also carries a `decay` block: how many of the
+report's covered lines are unchanged since it ran (`confirmed_lines`) and how
+many have moved since (`invalidated_lines`, now unknown rather than uncovered).
+`decay.drifted` is true once a fifth of a file's measurement has moved. It is a
+per-file statement about lines, separate from the summary's commit-level
+`freshness`.
 
 ### Performance: one lead, then drill down
 

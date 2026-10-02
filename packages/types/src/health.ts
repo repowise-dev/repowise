@@ -16,6 +16,7 @@
  */
 
 import type { C4IoKind } from "./external-systems.js";
+import type { CoverageSummary } from "./generated/http.js";
 import type { Paginated } from "./pagination.js";
 import type { StepClassification, ValidationBasis, ValidationVia } from "./refactoring.js";
 
@@ -1034,16 +1035,17 @@ export interface ModuleCoverageRow {
   line_coverage_pct: number;
 }
 
-export interface CoverageSummary {
-  file_count: number;
-  covered_lines: number;
-  total_lines: number;
-  line_coverage_pct: number | null;
-  branch_coverage_pct: number | null;
-  source_format: string | null;
-  ingested_at: string | null;
-  ingested_commit_sha: string | null;
-}
+/**
+ * The summary is generated from the server's response model. `freshness` is
+ * `stale` when the report was measured at another commit than the indexed
+ * one; `report_paths` is how the report's own entries mapped, `null` for an
+ * ingest that did not record it.
+ */
+export type {
+  CoverageReportPaths,
+  CoverageSummary,
+  CoverageSummaryFreshness,
+} from "./generated/http.js";
 
 /**
  * Which signal answered "is this tested". `measured` is a coverage report: it

@@ -147,6 +147,17 @@ ORIGIN_CONFIDENCE: dict[str, float] = {
 #: Every origin in the ``DriftOrigin`` vocabulary, for parity checks.
 DRIFT_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(DriftOrigin))
 
+#: How a finding's suggested replacement was found. A suggestion is evidence,
+#: never a verdict: it does not move a finding's confidence.
+SuggestionBasis = Literal[
+    "package_split",
+    "git_rename",
+    "similar_heading",
+    "similar_target",
+]
+
+SUGGESTION_BASIS_VALUES: frozenset[str] = frozenset(get_args(SuggestionBasis))
+
 
 # ---------------------------------------------------------------------------
 # Document selection
@@ -205,6 +216,9 @@ GUIDE_STEM_RE = re.compile(
     r"quickstart|walkthrough|cookbook|recipes|example|examples|template)",
     re.I,
 )
+
+#: Basenames the analyzer reads command targets from.
+MANIFEST_NAMES: frozenset[str] = frozenset({"Makefile", "makefile", "GNUmakefile", "package.json"})
 
 #: Ceiling for a single document, mirroring the 500KB ``max_file_size_kb``
 #: that already applies to non-AST files. A document larger than this is not

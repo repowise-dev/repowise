@@ -248,6 +248,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     it = result["impacted_tests"]
     assert it["status"] == "map_present"
     assert it["basis"] == "measured"
+    assert it["tests_to_run_kind"] == "test_id"
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test is named; other/new are not covering.
     assert it["tests_to_run"] == ["tests/test_app.py::test_app"]
@@ -334,6 +335,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
 
     assert it["status"] == "inferred"
     assert it["basis"] == "inferred"
+    assert it["tests_to_run_kind"] == "test_file"
     assert it["map_present"] is False
     assert it["tests_to_run"] == ["tests/test_round_trips.py"]
     assert it["line_coverage"]["untested_changes"] == []
@@ -410,6 +412,9 @@ async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -
     empty = module._empty_impacted("no_map", "run the suite")
 
     assert "missing_tests" not in empty
+    # Every shape says which signal named the tests, including none.
+    assert empty["basis"] == "none"
+    assert empty["tests_to_run_kind"] is None
     assert set(empty["line_coverage"]) == {
         "untested_changes",
         "stale_test_candidates",

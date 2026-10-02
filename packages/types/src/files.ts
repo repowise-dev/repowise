@@ -228,6 +228,9 @@ export interface FileRow {
   churn_pct: number | null;
   commit_count: number | null;
   last_commit_at: string | null;
+  /** Measured line coverage, 0-100, from the stored report. Optional so older servers parse. */
+  line_coverage_pct?: number | null;
+  /** @deprecated The same figure as `line_coverage_pct`; read that. */
   coverage_pct: number | null;
   is_test: boolean;
   is_entry_point: boolean;

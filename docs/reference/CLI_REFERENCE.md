@@ -161,7 +161,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--concurrency` | Max concurrent LLM calls (default: 10) |
 | `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (default: `auto`) |
 | `--max-file-pages` | Most file pages to emit, highest importance first. Omit to let the size policy decide (see Page volume above), `0` for one page per eligible file however many that is, or a positive number for a hard cap. Saved to `config.yaml`. |
-| `--coverage-report` | Test-coverage report to ingest (LCOV / Cobertura / Clover). Repeatable. Auto-discovered when omitted. This is test coverage for code-health, not a documentation-breadth knob: every code file is documented either way. |
+| `--coverage-report` | Test-coverage report to ingest (LCOV / Cobertura / Clover / JaCoCo / Go coverprofile). Repeatable. Auto-discovered when omitted. This is test coverage for code-health, not a documentation-breadth knob: every code file is documented either way. |
 | `--onboarding` / `--no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI.md](../layers/WIKI.md#styles). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
@@ -739,20 +739,31 @@ Show documentation this repository's own tree no longer satisfies: a path a
 document names that no longer exists, a link pointing at a heading that was
 renamed, a `make` target the manifest no longer declares.
 
-Reads what the last `init` or `update` stored rather than re-scanning, so it
-agrees with `get_health(include=["doc_drift"])` on the same tree.
+By default it reads what the last `init` or `update` stored instead of
+re-scanning, so it agrees with `get_health(include=["doc_drift"])` on the same
+tree. With `--check` it reads the working tree directly, needs no index,
+and exits non-zero when the gate fails: the mode for CI.
 
 It checks only references it can resolve. Most references in a typical
 repository are uncheckable by design and are neither counted nor reported, so a
 clean run is not a claim that every sentence is true.
 
+Where the analysis can see a likely replacement, a finding carries it: a module
+that became a package, a file git recorded as renamed, a heading or build target
+with a close match. It is a suggestion to check, never applied.
+
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--min-confidence` | Hide findings below this confidence (default: 0.4) |
+| `--min-confidence` | Hide findings below this confidence (default: show everything stored) |
 | `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`. Repeatable |
-| `--format` | Output: `table` (default), `json` |
+| `--document` | Only findings in this document. Repeatable |
+| `--check` | Read the working tree without an index and gate on the result |
+| `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
+| `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
+| `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
+| `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif` |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
 
@@ -761,11 +772,22 @@ repowise doc-drift
 repowise doc-drift --kind anchor            # just the renamed-heading links
 repowise doc-drift --min-confidence 0.9     # the near-certain ones
 repowise doc-drift --format json
+
+repowise doc-drift --check                               # CI gate, no index needed
+repowise doc-drift --check --format github               # annotations + step summary
+repowise doc-drift --check --format sarif > drift.sarif  # code scanning upload
+repowise doc-drift --check --write-baseline .doc-drift-baseline.json
+repowise doc-drift --check --baseline .doc-drift-baseline.json
 ```
 
-Exits non-zero when there is no readable index, or when the index predates
-drift storage; in both cases `--format json` still emits a document naming the
-reason, rather than an empty finding list that would read as a clean tree.
+`github` prints workflow annotations and, when `$GITHUB_STEP_SUMMARY` is set,
+appends a markdown summary to it.
+
+Without `--check`, exits non-zero when there is no readable index, or when the
+index predates drift storage; in both cases `--format json` still emits a
+document naming the reason, not an empty finding list that would read as
+a clean tree. With `--check`, exit codes are `0` gate passed, `1` gate failed,
+`2` could not evaluate (not a git repository, unreadable baseline).
 
 ---
 
@@ -776,7 +798,8 @@ risk of a change from the same calibrated signals the code-health layer uses -
 no LLM calls, and it works without `repowise init` (pure git + learned
 constants). With no `REVSPEC` it scores your uncommitted work, falling back to
 `HEAD` when the tree is clean; pass `HEAD` to always mean the last commit, or a
-`base..head` range to score a whole branch / PR as one change.
+`base..head` range to score a whole branch / PR as one change (`base...head`
+diffs from the merge-base, so commits that landed on `base` meanwhile stay out).
 
 The headline is **repo-relative**: the change's percentile and review priority
 (`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
@@ -879,12 +902,14 @@ counts. See [Branch overlap](../layers/CHANGE_RISK.md#branch-overlap).
 Security signal scanning. Working-tree scanning already runs during
 `repowise init` / `repowise update`. The CLI group exists so you can also walk
 **full git history** for leaked secrets and risky patterns that were later
-removed (something the working-tree scan cannot see).
+removed (something the working-tree scan cannot see), and to gate a change in
+CI.
 
 **Subcommands:**
 
 ```bash
 repowise security scan --history [OPTIONS]
+repowise security check [REVSPEC] [OPTIONS]   # CI gate on what a change adds
 ```
 
 Without `--history`, `security scan` prints a short hint and exits — it does
@@ -898,7 +923,7 @@ not re-run the working-tree scan.
 | `--since <rev>` | Lower git revision bound (exclusive). Defaults to all history |
 | `--to <rev>` | Upper git revision bound (inclusive). Defaults to HEAD / all history |
 | `--path <dir>` | Repo path (defaults to cwd / workspace primary) |
-| `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (`hardcoded_password` / `hardcoded_secret`) to avoid noise |
+| `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (the credential assignments and vendor key shapes) to avoid noise |
 | `--format` | `table` (default) or `json`. `--output` is a deprecated alias, still accepted; when both are given `--output` wins |
 
 ```bash
@@ -908,7 +933,43 @@ repowise security scan --history --all-patterns --format json
 ```
 
 Findings are written to the `security_findings` table (idempotent on re-run)
-and surface in the local server security API / UI.
+and surface in the local server security API / UI. The command prints counts;
+read the findings there.
+
+#### `repowise security check [REVSPEC]`
+
+Gate a change on the security findings it adds. Built for CI: it needs git and
+nothing else (no index, no database, no API key) and stores nothing. It scans
+the files the change touched, as its head has them, and keeps the findings on
+changed lines; secret kinds are also checked in every commit of the change, so
+a key committed and then deleted inside it still fails. Snippets are masked in
+every format.
+
+REVSPEC is the change: `origin/main...HEAD` (the pull-request view),
+`base..head`, or one commit. Without it, the base comes from the CI's
+pull-request variables (GitHub, GitLab, Jenkins, Bitbucket), else the remote's
+default branch.
+
+| Flag | Description |
+|------|-------------|
+| `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low`. A secret under a test, fixture, spec, mock or example path is `low` |
+| `--baseline` | Accept the findings recorded in this file; only new ones fail |
+| `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif` |
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --format github --baseline .security-baseline.json
+repowise security check --format sarif > security.sarif
+repowise security check --write-baseline .security-baseline.json
+```
+
+Exit codes: `0` gate passed, `1` gate failed, `2` could not evaluate (not a git
+repository, unknown revision, a shallow clone missing the merge-base or cutting
+a commit of the change, an unreadable baseline). Check out with full history
+(`fetch-depth: 0`). See [In CI](../layers/SECURITY.md#in-ci-repowise-security-check)
+for the scoping rules and a GitHub Actions recipe with SARIF upload.
 
 ---
 
@@ -920,8 +981,9 @@ built by [`repowise coverage add`](#repowise-coverage) and returns the tests
 whose recorded coverage intersects the diff. No LLM, no network - a straight
 index lookup.
 
-`REVSPEC` is a `base..head` range or a single commit; with no argument (or
-`--staged`) it diffs the staged changes. It is honest about what it does not
+`REVSPEC` is a `base...head` range (the change since the branch forked from
+`base`, what a pull request shows), a `base..head` range, or a single commit;
+with no argument (or `--staged`) it diffs the staged changes. It is honest about what it does not
 know, and always says which path fired:
 
 - a changed file with per-test coverage -> the exact covering tests (`via: coverage`);
@@ -950,7 +1012,8 @@ line up.
 
 ```bash
 repowise impacted-tests                        # staged changes
-repowise impacted-tests main..HEAD             # a branch / PR range
+repowise impacted-tests main...HEAD            # a branch / PR (diffed from the merge-base)
+repowise impacted-tests main..HEAD             # a plain range
 repowise impacted-tests abc123                 # a single commit
 repowise impacted-tests main..HEAD --format list | xargs pytest
 ```
@@ -1161,17 +1224,19 @@ typo from a successful transition. `dismiss` skips its confirmation prompt under
 
 ### `repowise coverage`
 
-Ingest and inspect test-coverage reports. Coverage is auto-discovered and
-ingested during `init` / `update`; this group is the manual path, point it at
-a report (or let it auto-discover one) to populate per-file line/branch
-coverage, which clears `untested_hotspot` findings for files that are tested
-regardless of where their tests live.
+Ingest and inspect test-coverage reports, and gate a change on its patch
+coverage in CI. Coverage is auto-discovered and ingested during `init` /
+`update`; `add` is the manual path, point it at a report (or let it
+auto-discover one) to populate per-file line/branch coverage, which clears
+`untested_hotspot` findings for files that are tested regardless of where
+their tests live.
 
 **Subcommands:**
 
 ```bash
 repowise coverage add [PATHS...]        # ingest coverage reports (+ per-test map when contexts are present)
 repowise coverage status                # show ingested coverage + the map
+repowise coverage check [REVSPEC]       # gate a change on its patch coverage (CI)
 ```
 
 **`add` options:**
@@ -1179,12 +1244,14 @@ repowise coverage status                # show ingested coverage + the map
 | Flag | Description |
 |------|-------------|
 | `--path` | Repo path (defaults to cwd / workspace primary) |
-| `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json` |
+| `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
 | `--verbose` / `-v` | Show debug logs while discovering and ingesting coverage |
 
-`add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover, or a
-coverage.py `.coverage` file. It auto-discovers `coverage/lcov.info`,
-`.coverage`, and similar reports at the repo root when no path is given, and
+`add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover,
+JaCoCo XML, a Go coverprofile (`go test -coverprofile`), or a coverage.py
+`.coverage` file. It auto-discovers `coverage/lcov.info`, `.coverage`,
+`coverage.out`, `target/site/jacoco/jacoco.xml`, and similar reports when no
+path is given, and
 merges multiple reports (hit wins). When the report carries per-test contexts,
 a coverage.py `.coverage` written with `coverage run --contexts=test`, or a
 per-test lcov, `add` also builds the per-test *test-to-code map*, which test
@@ -1205,6 +1272,130 @@ repowise coverage status --format json      # machine-readable (note: the --form
 > The per-test map is a separate dimension from the per-file aggregate that
 > `add` always stores (a file is covered, merged over all tests) and from what
 > `health` reads. It's used to answer "which tests exercise this change".
+
+#### `repowise coverage check [REVSPEC]`
+
+Gate a change on its **patch coverage**: of the changed lines the report calls
+executable, the share the tests ran. Built for CI: it needs git and a coverage
+report, nothing else (no index, no LLM key). Report paths are resolved against
+`git ls-files`, so a file the change adds resolves too.
+
+`REVSPEC` is the change: `base...head` (the change since the branch forked
+from `base`, the pull-request view), `base..head`, or a single commit. Without
+it the check diffs `<base>...HEAD`, taking the base branch from `GITHUB_BASE_REF`,
+`CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CHANGE_TARGET` or
+`BITBUCKET_PR_DESTINATION_BRANCH` (read as `origin/<name>`),
+else `origin/HEAD`, a local `main` / `master`, or `origin/main` /
+`origin/master`; with none of those it exits 2 and asks for `REVSPEC`. Pass it
+explicitly in CI so the job says what it measures.
+
+Reports come from `--report`, else `coverage.paths` in `.repowise/config.yaml`,
+else discovery (when `coverage.auto_discover` is on) of the usual locations,
+including `coverage/lcov.info`, `coverage.xml`, `coverage.out`,
+`**/target/site/jacoco*/jacoco.xml` and a root-module
+`build/reports/jacoco/**/*.xml`. A nested Gradle module's report needs
+`--report`. Config is read at the repository root (git toplevel), even with
+`--path`.
+
+A changed comment or blank line is neither covered nor uncovered. Each changed
+file lands in one status:
+
+| Status | Meaning | Counts toward the % |
+|--------|---------|---------------------|
+| `measured` | The report names the file and some changed lines are executable | Yes |
+| `no_coverable_changes` | The report names the file, but no changed line is executable | No |
+| `not_in_report` | Code of a kind the report measures (same extension), but the report does not name it, e.g. a new untested file | No, listed as "not in report", never 0% |
+| `no_line_data` | The report names the file but carries no executable-line set for it | No |
+
+Changed test files and file types the report never measures (docs, config)
+are out of scope and only counted.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--report` | Coverage report to read. Repeatable, merged hit-wins. Defaults to `coverage.paths`, else discovery |
+| `--report-format` | Force a parser: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
+| `--fail-under` | Exit 1 when patch coverage is below this percentage (0-100). Defaults to `coverage.fail_under` in `.repowise/config.yaml`; with neither set the command reports without gating |
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `table` (default), `json`, `markdown`, or `github` |
+
+`github` writes up to 10 `::warning` annotations (largest uncovered ranges
+first), a `::notice` counting the rest, and an `::error::` when the gate fails,
+then appends the markdown summary to `$GITHUB_STEP_SUMMARY` when set.
+`json` carries `patch_coverage_pct`, `covered_line_count`,
+`coverable_line_count`, `threshold`, `gate` (`pass`, `fail`, `no_data`,
+`not_set`), `file_counts` (`measured`, `not_in_report`, `no_line_data`,
+`no_coverable_changes`, `out_of_scope`), `files[]` (`file_path`, `status`,
+`changed_line_count`, `coverable_line_count`, `covered_line_count`,
+`patch_coverage_pct`, `uncovered_ranges`) and `scope` (`label`,
+`source_formats`, `reports`, `report_path_count`,
+`unmatched_report_path_count`). Percentages are shown floored to one decimal
+(79.99% reads 79.9%); the gate compares the unrounded figure.
+
+**Exit codes:** `0` the gate passes or there is nothing to judge (no threshold,
+or no measurable changed lines); `1` patch coverage is below `--fail-under`;
+`2` the check could not run: no report found, none readable, or none matching a
+repository file; an unknown revision; no merge-base (a shallow clone); a single
+commit at a shallow clone's boundary; bad config or a malformed
+`coverage.fail_under`; not a git repository.
+
+A coverage.py `.coverage` database is not a text report: export it first with
+`coverage lcov` or `coverage xml`. A new file no test loads must still appear
+in the report, or it is "not in report" and not counted; the per-language
+commands are in
+[Patch coverage in CI](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci).
+
+```bash
+repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
+repowise coverage check HEAD --format json      # one commit, machine-readable
+repowise coverage check origin/main...HEAD --report coverage.out --report-format go-coverprofile
+```
+
+CI clones are often shallow, so the merge-base is missing and the check exits 2.
+Fetch full history.
+
+GitHub Actions (`pull_request` only: `github.base_ref` is empty on `push`, where
+`"${{ github.event.before }}..${{ github.sha }}"` is the range instead):
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
+- run: pip install repowise
+- run: >
+    repowise coverage check "origin/${{ github.base_ref }}...HEAD"
+    --report coverage/lcov.info --fail-under 80 --format github
+```
+
+A cheaper checkout: `fetch-depth: 2` and `HEAD^1..HEAD`, which on a
+`pull_request` run diffs the merge commit GitHub builds against the base.
+
+GitLab merge request (`markdown` goes to the job log; redirect it to a file to
+post it as a note or keep it as an artifact):
+
+```yaml
+coverage-gate:
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - pytest --cov=src --cov-report=lcov:coverage/lcov.info
+    - pip install repowise
+    - >
+      repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
+      --report coverage/lcov.info --fail-under 80 --format markdown
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+```
+
+Jenkins multibranch pull request:
+
+```bash
+git fetch --no-tags origin "+refs/heads/$CHANGE_TARGET:refs/remotes/origin/$CHANGE_TARGET"
+repowise coverage check "origin/$CHANGE_TARGET...HEAD" --report coverage/lcov.info --fail-under 80
+```
 
 ---
 

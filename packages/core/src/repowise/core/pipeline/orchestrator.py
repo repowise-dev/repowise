@@ -546,6 +546,7 @@ async def run_pipeline(
             _run_doc_drift_analysis(
                 source_map,
                 file_infos=file_infos,
+                repo_path=repo_path,
                 progress=progress,
             ),
         )

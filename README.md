@@ -231,10 +231,10 @@ request. Zero LLM calls.
 
 ## Which tests cover this file, without a coverage report
 
-Ingest LCOV, Cobertura or Clover and you get the measured answer. **Most
-repositories never produce one**, so the graph answers instead: a test file that
-imports a source file *reaches* it, which is a recorded edge rather than the
-name-shaped guess everything else falls back to.
+Ingest LCOV, Cobertura, Clover, JaCoCo or a Go coverprofile and you get the
+measured answer. **Most repositories never produce one**, so the graph answers
+instead: a test file that imports a source file *reaches* it, which is a
+recorded edge rather than the name-shaped guess everything else falls back to.
 
 That fallback fails in both directions, and this repo is the proof. Five of its
 six worst bug-magnet files have no test named for them and read as untested while
@@ -861,7 +861,7 @@ August 2026. Unmarked rows are capability presence, not measurements.</sub>
 | Bus factor analysis | ✅ | ✅ |
 | Concrete cross-file refactoring plans | ✅ graph-aware + blast radius | ⚠️ within-function only |
 | Dataflow-verified within-function plans | ✅ CFG + reaching definitions | ⚠️ LLM-generated, unverified |
-| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ |
+| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover/JaCoCo/Go | ❌ |
 | Untested-hotspot detection | ✅ coverage × hotspot | ❌ |
 | Dead code detection | ✅ | ❌ |
 | Serves it to an AI agent over MCP | ✅ | ✅ |

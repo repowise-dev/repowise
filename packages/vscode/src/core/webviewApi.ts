@@ -29,7 +29,7 @@ import {
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
-import { getRiskRange } from "@repowise-dev/api-client/risk";
+import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
 import {
   buildRefactoringOpportunityPrompt,
   buildRefactoringPlanPrompt,
@@ -347,9 +347,13 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
         .get<string>("risk.baseBranch", "")
         .trim();
       const base = configured || ctx.repo?.default_branch || "main";
-      const result = await getRiskRange(id, { base, head: "HEAD" });
+      const range = { base, head: "HEAD" };
+      const [result, patchCoverage] = await Promise.all([
+        getRiskRange(id, range),
+        getPatchCoverage(id, range).catch(() => null),
+      ]);
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result };
+      return { base, branch, result, patchCoverage };
     },
 
     // Change impact: reads the working tree, so it tracks the live change set

@@ -7,7 +7,6 @@ per-test map. A ``repowise health`` run must not overwrite that data.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
-        load_coverage_for_repo,
+        load_coverage_map,
     )
 
     async def _do() -> dict[str, dict]:
@@ -44,21 +43,7 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return {}
-            rows = await load_coverage_for_repo(session, repo.id)
-            out: dict[str, dict] = {}
-            for r in rows:
-                try:
-                    covered = list(json.loads(r.covered_lines_json))
-                except (ValueError, TypeError):
-                    covered = []
-                out[r.file_path] = {
-                    "line_coverage_pct": r.line_coverage_pct,
-                    "branch_coverage_pct": r.branch_coverage_pct,
-                    "covered_lines": covered,
-                    "total_coverable_lines": r.total_coverable_lines,
-                    "source_format": r.source_format,
-                }
-            return out
+            return await load_coverage_map(session, repo.id)
 
     try:
         return run_async(_do())

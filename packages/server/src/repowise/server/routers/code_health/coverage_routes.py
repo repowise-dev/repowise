@@ -14,7 +14,7 @@ any ratio built from it would be a coverage figure the data cannot support.
 
 from __future__ import annotations
 
-import json
+import asyncio
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query
@@ -27,30 +27,20 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
+from repowise.server.routers._local_git import resolve_local_repo, revision_exists
+from repowise.server.schemas.coverage import CoverageResponse
+from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 
 from ._router import router
 
 
-def _coverage_row_to_dict(row: Any, *, include_covered_lines: bool = False) -> dict:
-    out: dict[str, Any] = {
-        "file_path": row.file_path,
-        "source_format": row.source_format,
-        "line_coverage_pct": row.line_coverage_pct,
-        "branch_coverage_pct": row.branch_coverage_pct,
-        "total_coverable_lines": row.total_coverable_lines,
-        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
-        "ingested_commit_sha": row.ingested_commit_sha,
-    }
-    if include_covered_lines:
-        try:
-            out["covered_lines"] = json.loads(row.covered_lines_json or "[]")
-        except Exception:
-            out["covered_lines"] = []
-    return out
-
-
-@router.get("/api/repos/{repo_id}/health/coverage")
+@router.get(
+    "/api/repos/{repo_id}/health/coverage",
+    response_model=CoverageResponse,
+    response_model_exclude_unset=True,
+)
 async def health_coverage(
     repo_id: str,
     file_path: str | None = Query(None),
@@ -82,6 +72,9 @@ async def health_coverage(
     and no modules. A declined response omits ``basis`` rather than reporting
     ``"none"`` - the graph was not consulted, which is not the same as the graph
     having nothing to say.
+
+    ``summary.freshness`` compares the measurement's commit with the indexed
+    one, the tree every other figure on the page describes.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -99,13 +92,15 @@ async def health_coverage(
         # reach this", so answer that instead of an empty measured shape.
         if not include_inferred:
             return {
-                "summary": _empty_summary(),
+                "summary": crud.empty_coverage_summary(),
                 "files": [],
                 "modules": [],
                 "modules_total": 0,
             }
         return await _inferred_coverage(session, repo_id, limit)
-    summary = await crud.get_coverage_summary(session, repo_id, rows=all_rows)
+    summary = await crud.get_coverage_summary(
+        session, repo_id, rows=all_rows, reference_commit=repo.head_commit
+    )
     if summary.get("ingested_at") is not None:
         summary = {**summary, "ingested_at": summary["ingested_at"].isoformat()}
 
@@ -114,10 +109,12 @@ async def health_coverage(
         detail = await crud.load_coverage_for_repo(
             session, repo_id, file_paths=[file_path], include_covered_lines=True
         )
-        files = [_coverage_row_to_dict(r, include_covered_lines=True) for r in detail]
+        files = [crud.coverage_row_dict(r, include_covered_lines=True) for r in detail]
     else:
         rows_sorted = sorted(all_rows, key=lambda r: r.line_coverage_pct)
-        files = [_coverage_row_to_dict(r) for r in rows_sorted[:limit]]
+        files = [
+            crud.coverage_row_dict(r, include_covered_lines=False) for r in rows_sorted[:limit]
+        ]
         # Attach per-file health score so the UI can render a coverage
         # x score matrix without a second request. Scoped to the rows we are
         # actually returning: a repo-wide read hydrates every metric row and
@@ -133,29 +130,9 @@ async def health_coverage(
                 f["health_score"] = round(m.score, 2)
                 f["nloc"] = m.nloc
 
-    # Aggregate by directory for module-level bars (cheap; one pass).
     # Always over the repo-wide read, never over ``files``: this is what the
     # repo's coverage looks like by directory, not what this page of it does.
-    modules: dict[str, dict[str, Any]] = {}
-    for r in all_rows:
-        mod = r.file_path.rsplit("/", 1)[0] if "/" in r.file_path else "(root)"
-        bucket = modules.setdefault(mod, {"covered": 0, "total": 0, "files": 0})
-        bucket["files"] += 1
-        bucket["total"] += r.total_coverable_lines
-        bucket["covered"] += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
-    module_rows = [
-        {
-            "module": name,
-            "files": v["files"],
-            "covered_lines": v["covered"],
-            "total_lines": v["total"],
-            "line_coverage_pct": (
-                round(v["covered"] / v["total"] * 100.0, 2) if v["total"] else 0.0
-            ),
-        }
-        for name, v in modules.items()
-    ]
-    module_rows.sort(key=lambda x: x["line_coverage_pct"])
+    module_rows = crud.coverage_by_module(all_rows)
 
     # The hybrid gap. A single stored row is enough to select the measured
     # basis for the whole repository, but most files in most repos have no
@@ -192,26 +169,6 @@ async def health_coverage(
     }
 
 
-def _empty_summary() -> dict[str, Any]:
-    """The measured summary's zero shape.
-
-    Sent on the inferred basis so the field keeps one type. It is empty because
-    nothing measured this repo, which is a different statement from "measured at
-    zero percent" - and the only field that distinguishes them is ``basis``.
-    """
-    return {
-        "file_count": 0,
-        "covered_lines": 0,
-        "total_lines": 0,
-        "line_coverage_pct": None,
-        "branch_coverage_pct": None,
-        "source_format": None,
-        "mapping_partial": None,
-        "ingested_at": None,
-        "ingested_commit_sha": None,
-    }
-
-
 async def _inferred_coverage(
     session: AsyncSession,
     repo_id: str,
@@ -245,7 +202,7 @@ async def _inferred_coverage(
         if not test_files:
             return {
                 "basis": "none",
-                "summary": _empty_summary(),
+                "summary": crud.empty_coverage_summary(),
                 "files": [],
                 "modules": [],
                 "modules_total": 0,
@@ -269,7 +226,7 @@ async def _inferred_coverage(
             # just to learn there is nothing to add.
             return {
                 "basis": "inferred",
-                "summary": _empty_summary(),
+                "summary": crud.empty_coverage_summary(),
                 "files": [],
                 "modules": [],
                 "modules_total": 0,
@@ -286,7 +243,7 @@ async def _inferred_coverage(
     except Exception:
         return {
             "basis": "none",
-            "summary": _empty_summary(),
+            "summary": crud.empty_coverage_summary(),
             "files": [],
             "modules": [],
             "modules_total": 0,
@@ -304,7 +261,7 @@ async def _inferred_coverage(
     ]
     return {
         "basis": "inferred",
-        "summary": _empty_summary(),
+        "summary": crud.empty_coverage_summary(),
         "files": [],
         "modules": [],
         "modules_total": 0,
@@ -373,3 +330,45 @@ async def health_tests_reaching(
         "total": total,
         "truncated": total > len(reached.tests),
     }
+
+
+def _read_change(local_path: str, base: str, head: str) -> tuple[dict[str, set[int]], str, str]:
+    """``(changed lines, label, head sha)`` for ``base...head``; git only, run off the loop."""
+    import subprocess
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.changed_lines import changed_lines
+
+    if not revision_exists(local_path, base) or not revision_exists(local_path, head):
+        raise HTTPException(status_code=400, detail=f"Unknown revision in {base!r}...{head!r}")
+    try:
+        changed, label = changed_lines(local_path, f"{base}...{head}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="git timed out reading the change") from exc
+    return changed, label, git_refs.resolve(local_path, head)
+
+
+@router.get(
+    "/api/repos/{repo_id}/health/coverage/patch",
+    response_model=PatchCoverageResponse | None,
+)
+async def health_coverage_patch(
+    base: str = Query(..., description="Base revision; the change is what head did since"),
+    head: str = Query("HEAD", description="Head revision"),
+    repo: Repository = Depends(resolve_local_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> PatchCoverageResponse | None:
+    """Patch coverage of ``base...head`` from the coverage the index stores.
+
+    The computation ``repowise coverage check`` gates on. ``null`` when no
+    coverage has been ingested, which is not the same as 0%.
+    """
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
+    patch = await stored_patch_coverage(
+        session, repo.id, changed, label=label, head_commit=head_sha or None
+    )
+    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None

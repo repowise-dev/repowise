@@ -114,6 +114,7 @@ async def _run_doc_drift_analysis(
     *,
     file_infos: list[Any] | None = None,
     repo_id: str = "",
+    repo_path: Path | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Check the repository's own markdown against the tree (no LLM).
@@ -140,6 +141,7 @@ async def _run_doc_drift_analysis(
             repo_id,
             source_map=source_map,
             tracked_paths=tracked_paths,
+            repo_root=repo_path,
         )
 
         def _step(_stage: str) -> None:
@@ -171,10 +173,11 @@ def _build_pipeline_coverage(
     explicit_paths: list[Path] | None,
     *,
     progress: ProgressCallback | None,
-) -> tuple[dict[str, dict], list[Any], str | None, bool]:
+) -> tuple[dict[str, dict], list[Any], str | None, Any]:
     """Discover/parse/resolve coverage reports for an indexing run.
 
-    Returns ``(coverage_map, resolved_files, source_format, mapping_partial)``.
+    Returns ``(coverage_map, resolved_files, source_format, provenance)``, the
+    last a ``CoverageProvenance`` or ``None`` when no report was read.
     Best-effort: any failure logs and yields an empty map so health analysis
     proceeds without coverage. Unmatched report files are surfaced via
     *progress* so "coverage didn't show up" is never silent.
@@ -183,23 +186,14 @@ def _build_pipeline_coverage(
         from repowise.core.analysis.health.coverage import (
             CoverageConfig,
             build_coverage_map,
-            discover_artifacts,
         )
         from repowise.core.repo_config import load_repo_config
 
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-        if explicit_paths:
-            report_paths = list(explicit_paths)
-        elif cfg.paths:
-            report_paths = [repo_path / p for p in cfg.paths if (repo_path / p).is_file()]
-        elif cfg.auto_discover:
-            report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
-        else:
-            return {}, [], None, False
-
+        report_paths = list(explicit_paths) if explicit_paths else cfg.report_paths(repo_path)
         if not report_paths:
-            return {}, [], None, False
+            return {}, [], None, None
 
         repo_keys = {pf.file_info.path for pf in parsed_files}
         resolved, errors = build_coverage_map(
@@ -240,13 +234,13 @@ def _build_pipeline_coverage(
             resolved.coverage_map,
             resolved.files,
             resolved.source_format,
-            resolved.mapping_partial,
+            resolved.provenance,
         )
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Coverage ingestion skipped: {exc}")
         logger.debug("pipeline_coverage_failed", error=str(exc))
-        return {}, [], None, False
+        return {}, [], None, None
 
 
 async def _run_health_analysis(
@@ -291,13 +285,13 @@ async def _run_health_analysis(
         coverage_map: dict[str, dict] = {}
         coverage_files: list[Any] = []
         coverage_format: str | None = None
-        coverage_mapping_partial = False
+        coverage_provenance: Any = None
         if repo_path is not None:
             (
                 coverage_map,
                 coverage_files,
                 coverage_format,
-                coverage_mapping_partial,
+                coverage_provenance,
             ) = _build_pipeline_coverage(
                 repo_path, parsed_files, coverage_report_paths, progress=progress
             )
@@ -341,7 +335,7 @@ async def _run_health_analysis(
         if coverage_files:
             report.coverage_files = coverage_files
             report.coverage_format = coverage_format
-            report.coverage_mapping_partial = coverage_mapping_partial
+            report.coverage_provenance = coverage_provenance
 
         if progress:
             findings_count = len(report.findings)

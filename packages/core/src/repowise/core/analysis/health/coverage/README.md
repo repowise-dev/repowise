@@ -17,10 +17,17 @@ from repowise.core.analysis.health.coverage import (
 
 - `parse(text, format=None)` → `CoverageReport`. Auto-detects format
   when `format` is ``None``; pass an explicit ``"lcov" | "cobertura" |
-  "clover" | "repowise-json"`` to override.
+  "clover" | "repowise-json" | "go-coverprofile" | "jacoco"`` to override
+  (`detector.PARSERS` is the registry).
 - `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)`,
-  `parse_repowise_json(text)` — format-specific entry points (used by
+  `parse_repowise_json(text)`, `parse_go_coverprofile(text)`,
+  `parse_jacoco(text)` — format-specific entry points (used by
   tests / programmatic callers).
+- Go cover profiles (`go test -coverprofile`) are expanded from statement
+  blocks to lines, so their percentages are line-based, not Go's statement
+  percentage. JaCoCo XML is read from per-line `<sourcefile>` data (lines
+  and branches); package paths such as `com/foo/Bar.java` and Go module
+  paths are mapped to repo files by suffix matching.
 
 ### Repowise normalized JSON (`repowise-coverage-v1`)
 
@@ -63,7 +70,9 @@ writes paths relative to its own `<source>` root — so we reconcile them.
 - `discover_artifacts(repo_root, globs=None)` — glob the filesystem for
   report files (`coverage/lcov.info`, `**/cobertura.xml`, ...). The report
   dirs are excluded from the indexed file set, so discovery hits the FS
-  directly; results are pruned of vendored dirs and capped.
+  directly; results are pruned of vendored dirs and capped. A pruned dir
+  spelled literally in a pattern (Gradle's `build/reports/jacoco/**/*.xml`)
+  is searched; one reached only through `**` is not.
 - `resolve_reports(reports, repo_keys, ...)` — map each report path to a
   canonical key by **longest trailing-segment overlap**, refusing to guess
   on a true tie. Merges multiple reports hit-wins. Returns a
@@ -96,7 +105,8 @@ coverage:
 ## Inputs
 
 - A raw coverage report (the contents of `coverage.lcov`, a Cobertura
-  `coverage.xml`, or a Clover `clover.xml`).
+  `coverage.xml`, a Clover `clover.xml`, a Go `coverage.out`, or a JaCoCo
+  `jacoco.xml`).
 - For the test-file heuristic: a POSIX-style relative path and optionally
   the file contents (used to detect framework imports for files that
   don't follow naming conventions).
@@ -110,8 +120,9 @@ coverage:
 
 ## Extension points
 
-- Add a parser: drop a new file (e.g. `jacoco.py`), return a
-  `CoverageReport`, and route to it from `detector.parse`.
+- Add a parser: drop a new file, return a `CoverageReport` built with
+  `model.file_coverage`, register it in `detector.PARSERS` and add a sniff
+  rule to `detector.detect_format`.
 - Tune the test-file heuristic: edit the module-level `_TEST_*` tuples in
   `detector.py`. Keep the rule deterministic (no globs that require
   recursion).

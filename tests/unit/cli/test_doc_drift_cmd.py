@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from repowise.cli.commands import doc_drift_cmd
 from repowise.core.analysis.doc_drift.constants import DETECTION_BASIS
 from repowise.core.persistence.crud import serialize_doc_drift_row
+from tests.unit.cli.test_format_json_rollout import _split_runner
 
 
 class _Row:
@@ -32,6 +33,8 @@ class _Row:
         self.evidence_json = kw.get("evidence_json", '["docs/a.md:7 states `src/gone.py`"]')
         self.raw = kw.get("raw", "src/gone.py")
         self.context = kw.get("context", "see src/gone.py")
+        self.suggestion = kw.get("suggestion")
+        self.suggestion_basis = kw.get("suggestion_basis")
 
 
 def _invoke(monkeypatch, tmp_path, result, args=()):
@@ -102,6 +105,22 @@ def test_an_unreadable_index_refuses_rather_than_reporting_zero(
     payload = json.loads(result.output)
     assert payload["error"] == code
     assert "findings" not in payload
+
+
+@pytest.mark.parametrize("fmt", ["sarif", "markdown", "github"])
+def test_a_refusal_under_a_machine_format_keeps_stdout_empty(monkeypatch, tmp_path, fmt):
+    """A refusal must not land in the file a CI step redirects stdout into."""
+    monkeypatch.setattr(doc_drift_cmd, "_repo_path", lambda *a, **k: tmp_path)
+
+    def _run(coro):
+        coro.close()
+        return doc_drift_cmd._NO_INDEX
+
+    monkeypatch.setattr(doc_drift_cmd, "run_async", _run)
+    result = _split_runner().invoke(doc_drift_cmd.doc_drift_command, ["--format", fmt])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "No readable Repowise index" in result.stderr
 
 
 def test_a_missing_drift_table_becomes_the_stale_sentinel(monkeypatch, tmp_path):

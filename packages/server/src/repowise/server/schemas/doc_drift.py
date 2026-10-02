@@ -14,16 +14,16 @@ claim that the tree is clean, and only a populated store can support it.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from repowise.core.analysis.doc_drift.constants import (
     UNAVAILABLE_NO_TABLE,
     UNAVAILABLE_NOT_COMPUTED,
     UNAVAILABLE_READ_FAILED,
 )
-from repowise.core.analysis.doc_drift.serialize import derive_doc_drift_id
+from repowise.core.analysis.doc_drift.serialize import derive_doc_drift_id, fingerprint_of
 
 #: Why a drift answer could not be given, from the engine's own vocabulary so
 #: the literal cannot be renamed on one side alone.
@@ -55,6 +55,22 @@ class DocDriftFindingResponse(BaseModel):
     raw: str
     context: str
     evidence: list[str]
+    #: Line-independent key a baseline holds; see :func:`fingerprint_of`.
+    fingerprint: str
+    #: Likely replacement for a missing target, and the basis that found it.
+    suggestion: str | None = None
+    suggestion_basis: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_fingerprint(cls, data: Any) -> Any:
+        """Fill ``fingerprint`` for dicts that lack it (hosted builds from artifacts)."""
+        if isinstance(data, dict) and not data.get("fingerprint"):
+            try:
+                return {**data, "fingerprint": fingerprint_of(data)}
+            except KeyError:
+                return data  # let field validation name what is missing
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> DocDriftFindingResponse:
@@ -76,6 +92,8 @@ class DocDriftFindingResponse(BaseModel):
             raw=data["raw"],
             context=data["context"],
             evidence=data.get("evidence", []),
+            suggestion=data.get("suggestion") or None,
+            suggestion_basis=data.get("suggestion_basis") or None,
         )
 
 

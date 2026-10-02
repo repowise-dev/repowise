@@ -10,16 +10,17 @@ from .contexts import (
     parse_lcov_contexts,
 )
 from .decay import (
-    STALE_DRIFT_PCT,
-    STALE_MIN_MEASURED,
+    DRIFT_MIN_MEASURED,
+    DRIFT_PCT,
     CoverageDecay,
     decay_for_file,
     decay_since,
     measurement_ref,
 )
-from .detector import detect_format, is_test_file, paired_test_file, parse
+from .detector import PARSERS, detect_format, is_test_file, paired_test_file, parse
 from .discovery import (
     CoverageConfig,
+    CoverageProvenance,
     ResolvedCoverage,
     ResolvedTestCoverage,
     build_coverage_map,
@@ -28,31 +29,40 @@ from .discovery import (
     resolve_reports,
     resolve_test_reports,
 )
+from .freshness import FreshnessStatus, coverage_freshness
+from .goprofile import parse_go_coverprofile
+from .jacoco import parse_jacoco
 from .lcov import parse_lcov
 from .model import (
     ContextCoverageReport,
     CoverageReport,
     FileCoverage,
     TestCoverage,
+    file_coverage,
 )
 from .repowise_json import parse_repowise_json
 
 __all__ = [
-    "STALE_DRIFT_PCT",
-    "STALE_MIN_MEASURED",
+    "DRIFT_MIN_MEASURED",
+    "DRIFT_PCT",
+    "PARSERS",
     "ContextCoverageReport",
     "CoverageConfig",
     "CoverageDecay",
+    "CoverageProvenance",
     "CoverageReport",
     "FileCoverage",
+    "FreshnessStatus",
     "ResolvedCoverage",
     "ResolvedTestCoverage",
     "TestCoverage",
     "build_coverage_map",
+    "coverage_freshness",
     "decay_for_file",
     "decay_since",
     "detect_format",
     "discover_artifacts",
+    "file_coverage",
     "is_test_file",
     "measurement_ref",
     "normalize_report_path",
@@ -62,6 +72,8 @@ __all__ = [
     "parse_cobertura",
     "parse_contexts_file",
     "parse_coverage_sqlite",
+    "parse_go_coverprofile",
+    "parse_jacoco",
     "parse_lcov",
     "parse_lcov_contexts",
     "parse_repowise_json",

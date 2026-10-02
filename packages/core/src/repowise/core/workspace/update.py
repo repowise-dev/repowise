@@ -490,7 +490,9 @@ async def _incremental_repo_update(
         coverage_map=stored_coverage_map,
         log=_log.info,
     )
-    doc_drift_report = run_doc_drift_partial(graph_builder, source_map, log=_log.info)
+    doc_drift_report = run_doc_drift_partial(
+        graph_builder, source_map, repo_path=repo_path, log=_log.info
+    )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence so the transient, non-serializable

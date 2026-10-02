@@ -29,10 +29,16 @@ from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
 
-from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot
+from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
 from .detector import parse as parse_coverage
-from .model import ContextCoverageReport, CoverageReport, FileCoverage, TestCoverage
+from .model import (
+    ContextCoverageReport,
+    CoverageReport,
+    FileCoverage,
+    TestCoverage,
+    coverage_map_entry,
+)
 
 # Default glob patterns, relative to the repo root. Ordered roughly by how
 # canonical/common the location is. Kept curated (not a blind ``**/*.info``)
@@ -52,13 +58,21 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     "**/clover.xml",
     "target/llvm-cov/**/*.lcov",
     "target/nextest/**/*.xml",
+    "coverage.out",
+    "cover.out",
+    "target/site/jacoco/jacoco.xml",
+    "**/target/site/jacoco*/jacoco.xml",
+    # Root module only: ``build`` is pruned under ``**``, so a nested
+    # module's report is passed explicitly.
+    "build/reports/jacoco/**/*.xml",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
 # vendored, or irrelevant. The shared junk set plus derived-output names;
 # NOT ``coverage``/``target`` (that is where the reports live). Applied at
 # traversal time via the shared pruned walk, and post-hoc as a safety net
-# for the non-recursive glob paths.
+# for the non-recursive glob paths. A pruned name spelled literally in a
+# pattern (``build/reports/...``) is an explicit opt-in and is not pruned.
 _PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 
 # Hard cap on discovered artifacts — a sane upper bound that still covers
@@ -87,6 +101,8 @@ class CoverageConfig:
     # Re-discover + re-parse reports on every ``repowise update`` (default:
     # reuse the rows already in the DB; only re-ingest if a report is found).
     reingest_on_update: bool = False
+    # Patch-coverage gate for ``repowise coverage check`` (percent, 0-100).
+    fail_under: float | None = None
 
     @classmethod
     def from_repo_config(cls, repo_config: dict | None) -> CoverageConfig:
@@ -109,7 +125,23 @@ class CoverageConfig:
             strip_prefix=block.get("strip_prefix") or None,
             path_prefix=block.get("path_prefix") or None,
             reingest_on_update=bool(block.get("reingest_on_update", False)),
+            fail_under=_percent(block.get("fail_under")),
         )
+
+    def report_paths(self, repo_root: Path) -> list[Path]:
+        """The reports this config names: explicit ``paths``, else discovery when on."""
+        if self.paths:
+            return [repo_root / p for p in self.paths if (repo_root / p).is_file()]
+        if self.auto_discover:
+            return discover_artifacts(repo_root, globs=self.artifacts or None)
+        return []
+
+
+def _percent(value: object) -> float | None:
+    """A 0-100 percentage from config, ``None`` when absent or not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 <= value <= 100 else None
 
 
 @dataclass
@@ -122,7 +154,10 @@ class ResolvedCoverage:
     # ``FileCoverage`` rows with ``file_path`` rewritten to canonical keys,
     # for DB persistence (``save_coverage_files``).
     files: list[FileCoverage] = field(default_factory=list)
+    # The first report's format (the single-valued persisted column) and every
+    # distinct format merged, in report order.
     source_format: str | None = None
+    source_formats: list[str] = field(default_factory=list)
     # Diagnostics — surfaced to the user so "coverage didn't show up" is
     # never silent.
     matched_exact: int = 0
@@ -141,6 +176,39 @@ class ResolvedCoverage:
     @property
     def total(self) -> int:
         return self.matched + len(self.unmatched) + len(self.ambiguous)
+
+    @property
+    def provenance(self) -> CoverageProvenance:
+        return CoverageProvenance(
+            source_formats=tuple(self.source_formats),
+            report_path_count=self.total,
+            matched_path_count=self.matched,
+            unmatched_path_count=len(self.unmatched),
+            ambiguous_path_count=len(self.ambiguous),
+            unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
+            mapping_partial=self.mapping_partial,
+        )
+
+
+#: Unmatched report paths kept for the diagnostic; the counts stay exact.
+UNMATCHED_SAMPLE_CAP = 10
+
+
+@dataclass(frozen=True)
+class CoverageProvenance:
+    """Where an ingest's coverage came from, stored beside its rows.
+
+    Counts are over the report's file entries. ``None`` means the writer did
+    not know them, which is not zero.
+    """
+
+    source_formats: tuple[str, ...] = ()
+    report_path_count: int | None = None
+    matched_path_count: int | None = None
+    unmatched_path_count: int | None = None
+    ambiguous_path_count: int | None = None
+    unmatched_sample: tuple[str, ...] = ()
+    mapping_partial: bool = False
 
 
 def discover_artifacts(
@@ -164,6 +232,15 @@ def discover_artifacts(
     patterns = tuple(globs) if globs else DEFAULT_DISCOVERY_GLOBS
     snapshot: WalkSnapshot | None = None
 
+    def _literal_depth(pattern: str) -> int:
+        """How many leading directory segments of *pattern* are spelled literally."""
+        depth = 0
+        for seg in pattern.split("/")[:-1]:
+            if any(ch in seg for ch in "*?["):
+                break
+            depth += 1
+        return depth
+
     def _expand(pattern: str) -> Iterable[Path]:
         nonlocal snapshot
         if not any(ch in pattern for ch in "*?["):
@@ -184,11 +261,16 @@ def discover_artifacts(
             roots = [d for d in repo_root.glob(prefix) if d.is_dir()]
         else:
             roots = [repo_root / prefix]
+            # The snapshot never enters a pruned dir, so a root spelled under
+            # one is walked live (still pruning below it).
+            if any(part in _PRUNE_DIRS for part in Path(prefix).parts):
+                return iter_glob(roots[0], tail, prune_dirs=_PRUNE_DIRS)
         return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
 
     seen: set[Path] = set()
     out: list[Path] = []
     for pattern in patterns:
+        literal = _literal_depth(pattern)
         for match in _expand(pattern):
             if not match.is_file():
                 continue
@@ -196,7 +278,7 @@ def discover_artifacts(
                 rel_parts = match.relative_to(repo_root).parts
             except ValueError:
                 rel_parts = match.parts
-            if any(part in _PRUNE_DIRS for part in rel_parts[:-1]):
+            if any(part in _PRUNE_DIRS for part in rel_parts[literal:-1]):
                 continue
             resolved = match.resolve()
             if resolved in seen:
@@ -257,12 +339,23 @@ def _match_key(
     norm_path: str,
     repo_keys: set[str],
     suffix_index: dict[str, list[str]],
+    *,
+    prefer_dir: str | None = None,
 ) -> tuple[str | None, bool]:
     """Resolve a normalized report path to a canonical key.
 
     Returns ``(key, ambiguous)``. ``key`` is None when nothing matched;
     ``ambiguous`` is True when several repo files tie on the longest
-    trailing-segment overlap (we refuse to guess).
+    trailing-segment overlap and *prefer_dir* (the report's own directory)
+    does not single one out: we refuse to guess.
+
+    A match must agree on more than the basename when the report names a
+    directory: ``other/pkg/utils.py`` is not ``src/utils.py``. It is accepted
+    when at least one directory also matches, or when the whole repo key is
+    the tail of the report path (a root-level file under an absolute path).
+    A path that runs through a dependency or environment directory
+    (``node_modules``, ``site-packages``) is someone else's file and never
+    matches by suffix.
     """
     if norm_path in repo_keys:
         return norm_path, False
@@ -271,28 +364,128 @@ def _match_key(
     candidates = suffix_index.get(base)
     if not candidates:
         return None, False
-    if len(candidates) == 1:
-        return candidates[0], False
 
     report_segs = norm_path.split("/")
     best_overlap = 0
     winners: list[str] = []
     for cand in candidates:
-        cand_segs = cand.split("/")
-        overlap = 0
-        for a, b in zip(reversed(report_segs), reversed(cand_segs), strict=False):
-            if a != b:
-                break
-            overlap += 1
+        overlap = _agreed_overlap(report_segs, cand.split("/"))
+        if overlap is None:
+            continue
         if overlap > best_overlap:
             best_overlap = overlap
             winners = [cand]
         elif overlap == best_overlap:
             winners.append(cand)
 
+    if len(winners) > 1 and prefer_dir:
+        winners = _nearest(winners, prefer_dir)
     if len(winners) == 1:
         return winners[0], False
-    return None, True
+    return None, bool(winners)
+
+
+#: Directories whose files belong to a dependency or environment, not the repo.
+_VENDORED_DIRS = PRUNED_DIRS | frozenset({"site-packages", "dist-packages", "vendor"})
+
+
+def _common_run(a: Iterable[str], b: Iterable[str]) -> int:
+    """How many leading items *a* and *b* share."""
+    n = 0
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _agreed_overlap(report_segs: list[str], cand_segs: list[str]) -> int | None:
+    """Trailing segments shared, or ``None`` when the match rests on too little.
+
+    See :func:`_match_key` for what counts as agreement.
+    """
+    overlap = _common_run(reversed(report_segs), reversed(cand_segs))
+    if not (overlap >= 2 or overlap == len(cand_segs) or len(report_segs) == 1):
+        return None
+    if _VENDORED_DIRS.intersection(report_segs[: len(report_segs) - overlap]):
+        return None
+    return overlap
+
+
+def _nearest(keys: list[str], directory: str) -> list[str]:
+    """The keys sharing the longest leading directory run with *directory*."""
+    dir_segs = directory.split("/")
+
+    def shared(key: str) -> int:
+        return _common_run(key.split("/")[:-1], dir_segs)
+
+    best = max(shared(k) for k in keys)
+    return [k for k in keys if shared(k) == best] if best else keys
+
+
+def _is_absolute(raw: str) -> bool:
+    p = raw.strip().replace("\\", "/")
+    return p.startswith("/") or (len(p) >= 2 and p[1] == ":")
+
+
+def _resolve_path(
+    raw: str,
+    report: CoverageReport,
+    repo_keys: set[str],
+    suffix_index: dict[str, list[str]],
+    *,
+    strip_prefix: str | None,
+    path_prefix: str | None,
+) -> tuple[str | None, bool, bool]:
+    """``(key, ambiguous, exact)`` for one report path.
+
+    Tried in order: the path joined to each Cobertura ``<source>`` root, the
+    report's own statement of where its paths live (roots that disagree are
+    ambiguous); then a relative path under the report's own directory and its
+    parents, nearest first, since runners write paths relative to the package
+    they ran in (a monorepo's ``packages/web/coverage/lcov.info`` naming
+    ``src/index.ts``); then the path as written. Ties prefer the report's own
+    directory. A configured *path_prefix* already says where the paths live,
+    so it skips the report-directory step.
+    """
+    norm = normalize_report_path(raw, strip_prefix=strip_prefix, path_prefix=path_prefix)
+    origin = report.origin_dir
+    relative = not _is_absolute(raw)
+    if relative and report.source_roots:
+        found: dict[str, bool] = {}  # key -> matched a path exactly
+        for root in report.source_roots:
+            joined = normalize_report_path(
+                f"{root.rstrip('/')}/{raw}", strip_prefix=strip_prefix, path_prefix=path_prefix
+            )
+            key, _ = _match_key(joined, repo_keys, suffix_index, prefer_dir=origin)
+            if key is not None:
+                found[key] = found.get(key, False) or key in (joined, norm)
+        if found:
+            return _one_root(found)
+    if origin and relative and not path_prefix:
+        key = _under_origin(norm, origin, repo_keys)
+        if key is not None:
+            return key, False, True
+    key, ambiguous = _match_key(norm, repo_keys, suffix_index, prefer_dir=origin)
+    return key, ambiguous, key is not None and norm == key
+
+
+def _one_root(found: dict[str, bool]) -> tuple[str | None, bool, bool]:
+    """The source-root step's answer: one key, or ambiguous when roots disagree."""
+    if len(found) > 1:
+        return None, True, False
+    key, exact = next(iter(found.items()))
+    return key, False, exact
+
+
+def _under_origin(norm: str, origin: str, repo_keys: set[str]) -> str | None:
+    """*norm* under the report's directory or its nearest parent that has it."""
+    segs = origin.split("/")
+    for depth in range(len(segs), 0, -1):
+        candidate = "/".join([*segs[:depth], norm])
+        if candidate in repo_keys:
+            return candidate
+    return None
 
 
 def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
@@ -302,9 +495,12 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     multi-suite / multi-language ingestion with no config.
     """
     covered = set(dst.covered_lines) | set(src.covered_lines)
+    coverable = set(dst.coverable_lines) | set(src.coverable_lines)
     total = max(dst.total_coverable_lines, src.total_coverable_lines, len(covered))
     dst.covered_lines = sorted(covered)
+    dst.coverable_lines = sorted(coverable)
     dst.total_coverable_lines = total
+    dst.covered_line_count = len(covered)
     dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
     if src.branch_coverage_pct is not None:
         dst.branch_coverage_pct = (
@@ -332,21 +528,28 @@ def resolve_reports(
     by_key: dict[str, FileCoverage] = {}
     report_file_count = 0
     for report in reports:
-        if result.source_format is None and report.source_format not in (None, "unknown"):
-            result.source_format = report.source_format
+        if report.source_format not in (None, "unknown"):
+            if result.source_format is None:
+                result.source_format = report.source_format
+            if report.source_format not in result.source_formats:
+                result.source_formats.append(report.source_format)
         for fc in report.files:
             report_file_count += 1
-            norm = normalize_report_path(
-                fc.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
+            key, ambiguous, exact = _resolve_path(
+                fc.file_path,
+                report,
+                repo_keys,
+                suffix_index,
+                strip_prefix=strip_prefix,
+                path_prefix=path_prefix,
             )
-            key, ambiguous = _match_key(norm, repo_keys, suffix_index)
             if key is None:
                 if ambiguous:
                     result.ambiguous.append(fc.file_path)
                 else:
                     result.unmatched.append(fc.file_path)
                 continue
-            if norm == key:
+            if exact:
                 result.matched_exact += 1
             else:
                 result.matched_suffix += 1
@@ -356,6 +559,8 @@ def resolve_reports(
                 branch_coverage_pct=fc.branch_coverage_pct,
                 covered_lines=list(fc.covered_lines),
                 total_coverable_lines=fc.total_coverable_lines,
+                coverable_lines=list(fc.coverable_lines),
+                covered_line_count=fc.covered_line_count,
             )
             if key in by_key:
                 _merge_into(by_key[key], resolved_fc)
@@ -372,13 +577,7 @@ def resolve_reports(
         result.mapping_partial = result.matched * 2 < report_file_count
 
     for key, fc in by_key.items():
-        result.coverage_map[key] = {
-            "line_coverage_pct": fc.line_coverage_pct,
-            "branch_coverage_pct": fc.branch_coverage_pct,
-            "covered_lines": list(fc.covered_lines),
-            "total_coverable_lines": fc.total_coverable_lines,
-            "source_format": result.source_format,
-        }
+        result.coverage_map[key] = coverage_map_entry(fc, result.source_format)
     result.files = list(by_key.values())
     return result
 
@@ -504,12 +703,27 @@ def build_coverage_map(
         except OSError as exc:
             errors.append((path, f"could not read: {exc}"))
             continue
+        except UnicodeDecodeError:
+            # A binary artifact, most often a coverage.py ``.coverage`` database:
+            # export it with ``coverage lcov`` or ``coverage xml`` first.
+            errors.append((path, "not a text coverage report"))
+            continue
         report = parse_coverage(text, format=coverage_format)
         if not report.files:
             errors.append((path, f"no coverage entries (detected={report.source_format})"))
             continue
+        report.origin_dir = _repo_relative_dir(path, repo_root)
         parsed.append(report)
     resolved = resolve_reports(
         parsed, repo_keys, strip_prefix=strip_prefix, path_prefix=path_prefix
     )
     return resolved, errors
+
+
+def _repo_relative_dir(path: Path, repo_root: Path) -> str | None:
+    """*path*'s directory relative to *repo_root* (POSIX), ``None`` outside it or at its root."""
+    try:
+        rel = path.resolve().parent.relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    return rel if rel not in ("", ".") else None

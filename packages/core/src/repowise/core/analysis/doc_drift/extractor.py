@@ -342,12 +342,44 @@ def _from_commands(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
 _EXTRACTORS = (_from_links, _from_inline_code, _from_commands)
 
 
+# Inline suppression. Lives in the document, not config, because config
+# is local state, and a CI check has to agree with the author's machine.
+_IGNORE_RE = re.compile(r"<!--\s*repowise-drift-ignore(-file)?\s*-->")
+# A marker quoted in a code span is being documented, not applied.
+_CODE_SPAN_RE = re.compile(r"(`+).+?\1")
+
+
 def extract(text: str, doc_path: str) -> list[DocReference]:
-    """Every checkable assertion *text* makes, deduplicated, in document order."""
+    """Every checkable assertion *text* makes, deduplicated, in document order.
+
+    References silenced by a ``repowise-drift-ignore`` marker are left out; use
+    :func:`extract_with_suppressed` to count them.
+    """
+    return extract_with_suppressed(text, doc_path)[0]
+
+
+def extract_with_suppressed(
+    text: str, doc_path: str
+) -> tuple[list[DocReference], list[DocReference]]:
+    """``(references, suppressed)`` for *text*, both deduplicated, in order.
+
+    ``<!-- repowise-drift-ignore -->`` silences its own line and the next one;
+    ``<!-- repowise-drift-ignore-file -->`` silences the whole document. Both
+    count only in prose, so a fenced or backticked example does nothing.
+    """
     seen: set[DocReference] = set()
     out: list[DocReference] = []
+    suppressed: list[DocReference] = []
+    ignore_file = False
+    ignored_lines: set[int] = set()
     trail = _SectionTrail()
     for lineno, line in prose_lines(text):
+        marker = "<!--" in line and _IGNORE_RE.search(_CODE_SPAN_RE.sub("", line))
+        if marker:
+            if marker.group(1):
+                ignore_file = True
+            else:
+                ignored_lines.update((lineno, lineno + 1))
         # A heading updates the trail AND is still scanned: a section title
         # like "### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)"
         # asserts a path exactly as body prose does, and skipping headings
@@ -360,10 +392,10 @@ def extract(text: str, doc_path: str) -> list[DocReference]:
                 if ref in seen:
                     continue
                 seen.add(ref)
-                out.append(ref)
-    return out
-
-
+                (suppressed if lineno in ignored_lines else out).append(ref)
+    if ignore_file:
+        return [], sorted(out + suppressed, key=lambda ref: ref.line)
+    return out, suppressed
 
 
 # ---------------------------------------------------------------------------

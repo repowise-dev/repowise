@@ -163,6 +163,11 @@ async def files_index(
     degrees = await crud.get_graph_metrics(session, repo_id)
     metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
     git_by_path = await crud.get_all_git_metadata(session, repo_id)
+    # The stored report, not the copy the health pass took of it.
+    coverage_by_path = {
+        c.file_path: c.line_coverage_pct
+        for c in await crud.load_coverage_for_repo(session, repo_id, include_covered_lines=False)
+    }
 
     pagerank_pct = _percentile_map({n.node_id: (n.pagerank or 0.0) for n in nodes})
 
@@ -198,7 +203,9 @@ async def files_index(
                 "last_commit_at": (
                     git.last_commit_at.isoformat() if git and git.last_commit_at else None
                 ),
-                "coverage_pct": metric.line_coverage_pct if metric else None,
+                "line_coverage_pct": coverage_by_path.get(path),
+                # Deprecated alias of ``line_coverage_pct``, kept for older clients.
+                "coverage_pct": coverage_by_path.get(path),
                 "is_test": n.is_test,
                 "is_entry_point": n.is_entry_point,
                 "community_id": n.community_id,
@@ -321,23 +328,15 @@ async def file_detail(
         )
 
     # --- Coverage (incl. line-level set for the heatmap) --------------------
-    coverage_rows = await crud.load_coverage_for_repo(session, repo_id, file_paths=[file_path])
+    # ``covered_line_count`` is sent in both modes so "N of M lines hit" never
+    # has to count the array client-side, which is what forced it to travel.
+    coverage_rows = await crud.load_coverage_for_repo(
+        session, repo_id, file_paths=[file_path], include_covered_lines=not slim
+    )
     coverage: dict | None = None
     if coverage_rows:
-        c = coverage_rows[0]
-        covered_lines = _json_or(c.covered_lines_json, [])
-        coverage = {
-            "line_coverage_pct": c.line_coverage_pct,
-            "branch_coverage_pct": c.branch_coverage_pct,
-            "total_coverable_lines": c.total_coverable_lines,
-            # Sent in both modes so "N of M lines hit" never has to count the
-            # array client-side, which is what forced the array to travel.
-            "covered_line_count": len(covered_lines),
-            "covered_lines": [] if slim else covered_lines,
-            "source_format": c.source_format,
-            "ingested_at": c.ingested_at.isoformat() if c.ingested_at else None,
-            "ingested_commit_sha": c.ingested_commit_sha,
-        }
+        coverage = crud.coverage_row_dict(coverage_rows[0], include_covered_lines=not slim)
+        coverage.setdefault("covered_lines", [])
 
     # --- Graph context ------------------------------------------------------
     graph: dict | None = None

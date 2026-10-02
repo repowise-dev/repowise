@@ -140,6 +140,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "fix_history",
             "branch_overlap",
             "cross_repo",
+            "patch_coverage.files[]",
+            "patch_coverage",
             "impacted_tests",
             "health_delta.limits",
             "health_delta.skipped",

@@ -412,6 +412,17 @@ repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on review priority
 repowise export --format markdown --output ./docs/wiki/   # static hosting
 ```
 
+To gate a pull request on the coverage of the lines it changed, run the tests
+with a coverage report and add:
+
+```bash
+repowise coverage check "origin/$BASE_BRANCH...HEAD" --report coverage/lcov.info --fail-under 80
+```
+
+It needs no index and no key, only git and the report. A shallow clone needs
+full history for the merge-base. Exit `1` means below the gate, `2` means it could not
+run. See [Patch coverage in CI](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci).
+
 ### Changing provider or model
 
 ```bash

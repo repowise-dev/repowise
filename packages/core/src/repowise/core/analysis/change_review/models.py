@@ -26,6 +26,7 @@ from ..change_contracts import ContractImpact
 from ..change_health.models import ChangeHealthDelta, RevisionId
 from ..change_health.sources import FileChange
 from ..change_risk import ChangeRiskResult, change_risk_payload
+from ..changed_lines import line_ranges
 from ..independent_changes import IndependentChanges
 from ..review_directive import EvidenceState, ReviewDirective
 
@@ -57,17 +58,6 @@ class LaneState:
 
     def as_dict(self) -> dict[str, Any]:
         return {"state": self.state, "reason": self.reason}
-
-
-def _collapse(lines: set[int]) -> tuple[tuple[int, int], ...]:
-    """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
-    spans: list[tuple[int, int]] = []
-    for line in sorted(lines):
-        if spans and line == spans[-1][1] + 1:
-            spans[-1] = (spans[-1][0], line)
-        else:
-            spans.append((line, line))
-    return tuple(spans)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +94,7 @@ class ChangeManifestEntry:
             head_path=change.head_path,
             status=change.status,
             diff_reliability=change.diff_reliability,
-            added_ranges=_collapse(change.added_lines),
+            added_ranges=line_ranges(change.added_lines),
         )
 
     def as_dict(self) -> dict[str, Any]:

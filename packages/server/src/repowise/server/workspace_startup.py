@@ -22,6 +22,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
+from repowise.core.store_location import resolve_store_dir
 
 # Startup events keep the app logger's name, so log filters written against
 # ``repowise.server.app`` still see them.
@@ -146,7 +147,7 @@ async def _open_member_db(app_state, repo_id: str, repo_db: Path) -> None:
 async def _open_member_dbs(app_state, ws_config, ws_root: Path, fts, db_url: str) -> None:
     for repo_entry in ws_config.repos:
         repo_path = (ws_root / repo_entry.path).resolve()
-        repo_db = repo_path / ".repowise" / "wiki.db"
+        repo_db = resolve_store_dir(repo_path) / "wiki.db"
         if not repo_db.exists():
             continue
         row = _read_repo_row(repo_db)

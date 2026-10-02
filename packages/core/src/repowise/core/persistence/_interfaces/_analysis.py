@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..models import (
     CoverageFile,
@@ -23,6 +23,9 @@ from ..models import (
     HealthFinding,
     HealthSnapshot,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
 
 
 class AnalysisIndexStore(ABC):
@@ -246,7 +249,7 @@ class AnalysisIndexStore(ABC):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
-        mapping_partial: bool = False,
+        provenance: CoverageProvenance | None = None,
     ) -> None: ...
 
     @abstractmethod

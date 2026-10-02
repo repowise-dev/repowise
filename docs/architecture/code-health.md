@@ -86,6 +86,8 @@ analysis/health/
 │   ├── lcov.py                     # LCOV parser (stdlib only)
 │   ├── cobertura.py                # Cobertura XML parser
 │   ├── clover.py                   # Clover XML parser
+│   ├── jacoco.py                   # JaCoCo XML parser
+│   ├── goprofile.py                # Go coverprofile parser (line-based)
 │   └── repowise_json.py            # normalized repowise-coverage-v1 JSON parser
 │
 ├── duplication/                    # native Rabin-Karp clone detection
@@ -159,7 +161,7 @@ cli/src/repowise/cli/commands/
 server/src/repowise/server/
 ├── mcp_server/
 │   ├── tool_health/                # @mcp.tool get_health(targets, include, repo, limit)
-│   ├── tool_risk.py                # enriched: health_score, top_biomarkers, coverage_pct
+│   ├── tool_risk.py                # enriched: health_score, top_biomarkers, line_coverage_pct
 │   ├── tool_context.py             # include=["health"]: score, top 2 biomarkers, suggestion
 │   └── tool_overview.py            # code_health block with KPIs
 └── routers/
@@ -205,7 +207,7 @@ tests/unit/health/                  # 99+ tests
 ├── test_organizational_biomarkers.py
 ├── test_dry_violation.py
 ├── test_duplication.py             # tokenizer, hash, detector
-├── test_coverage_parsers.py        # LCOV/Cobertura/Clover/JSON
+├── test_coverage_parsers.py        # LCOV/Cobertura/Clover/JaCoCo/Go/JSON
 ├── test_scoring.py                 # category caps, clamping
 ├── test_scoring_snapshot.py        # stability snapshot: locks caps + deductions
 ├── test_health_config.py           # .repowise/health-rules.json
@@ -716,6 +718,7 @@ repowise health --refactoring-targets      # ranked by impact / effort
 repowise health --trend                    # last 10 snapshots + active alerts
 repowise coverage add coverage.lcov        # ingest coverage; can repeat
 repowise coverage add coverage.xml --format cobertura
+repowise coverage check --fail-under 80    # patch-coverage gate for CI, no index needed
 repowise health --format json | jq ...
 ```
 
@@ -758,7 +761,7 @@ Defined in `tool_health/tool.py`, which dispatches to one module per mode and bl
 ### Enrichments on existing tools
 
 - `get_risk(targets)`: each per-target row carries `health_score`,
-  `top_biomarkers`, `coverage_pct`, `branch_coverage_pct`.
+  `top_biomarkers`, `line_coverage_pct`, `branch_coverage_pct`.
 - `get_context(targets, include=["health"])`: per-file `score`,
   `max_ccn`, `max_nesting`, `nloc`, `module`, `duplication_pct`, top
   2 markers (each with a `suggestion` string), a coverage block, and a
@@ -894,7 +897,7 @@ Other perf notes:
 | `tests/unit/health/test_complexity_walker.py` | Per-language CCN, nesting, cognitive assertions on handcrafted fixtures |
 | `tests/unit/health/test_<biomarker>.py` | Each marker: positive in two languages + one negative |
 | `tests/unit/health/test_duplication.py` | Tokenizer normalization, rolling-hash determinism, co-change weighting |
-| `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover / repowise-JSON happy paths + edge cases |
+| `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover / JaCoCo / Go coverprofile / repowise-JSON happy paths + edge cases |
 | `tests/unit/health/test_scoring.py` | Deduction caps, clamping, KPI math |
 | `tests/unit/health/test_scoring_snapshot.py` | **Stability guard**: caps, severity table, marker-to-category mapping, two known fixture scores |
 | `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering, per-file series + `file_trend` |
