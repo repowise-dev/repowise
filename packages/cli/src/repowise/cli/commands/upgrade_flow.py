@@ -288,6 +288,8 @@ async def _run_upgrade(
     # 4. Re-parse for ASTs + source (the only unavoidable re-work). The graph
     # is NOT rebuilt — generation traverses the rehydrated SQL graph.
     parsed_files, source_map, repo_structure = _reparse(repo_path, exclude_patterns)
+    # The health pass below reads attributes SQL does not store.
+    graph_builder.restore_parse_only_attrs(parsed_files)
     console.print(
         f"Re-parsed [cyan]{len(parsed_files)}[/cyan] files for doc generation "
         "(graph reused from index — not re-resolved)."
