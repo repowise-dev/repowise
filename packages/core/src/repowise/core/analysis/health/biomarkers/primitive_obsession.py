@@ -33,6 +33,7 @@ scoring weight; larger modules and the per-function param logic are unchanged.
 
 from __future__ import annotations
 
+from ..complexity import FunctionComplexity
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -53,29 +54,14 @@ class PrimitiveObsessionDetector:
             return []
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            # A test case's parameters are fixtures the runner injects, not a
-            # signature anyone calls.
-            if fn.is_test_case or fn.signature_fixed:
-                continue
-            threshold = _PARAM_THRESHOLD
-            if fn.is_constructor:
-                threshold += _CTOR_GRACE
-            if fn.param_count < threshold:
+            threshold = _threshold(fn)
+            if threshold is None:
                 continue
             primitive = fn.primitive_param_count
-            if primitive is not None and primitive * 2 <= fn.param_count:
-                continue
-            severity = (
-                Severity.HIGH
-                if fn.param_count >= threshold + 4
-                else Severity.MEDIUM
-                if fn.param_count >= threshold + 2
-                else Severity.LOW
-            )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=severity,
+                    severity=_severity(fn.param_count, threshold),
                     function_name=fn.name,
                     line_start=fn.start_line,
                     line_end=fn.end_line,
@@ -91,5 +77,25 @@ class PrimitiveObsessionDetector:
             )
         return out
 
+
+def _threshold(fn: FunctionComplexity) -> int | None:
+    """The parameter count *fn* is held to, or ``None`` when it does not qualify."""
+    # A test case's parameters are fixtures the runner injects, not a
+    # signature anyone calls.
+    if fn.is_test_case or fn.signature_fixed:
+        return None
+    threshold = _PARAM_THRESHOLD + (_CTOR_GRACE if fn.is_constructor else 0)
+    if fn.param_count < threshold:
+        return None
+    primitive = fn.primitive_param_count
+    if primitive is not None and primitive * 2 <= fn.param_count:
+        return None
+    return threshold
+
+
+def _severity(param_count: int, threshold: int) -> Severity:
+    if param_count >= threshold + 4:
+        return Severity.HIGH
+    return Severity.MEDIUM if param_count >= threshold + 2 else Severity.LOW
 
 BIOMARKER = PrimitiveObsessionDetector()

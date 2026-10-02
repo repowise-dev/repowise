@@ -86,3 +86,22 @@ def test_untyped_signature_has_no_primitive_count():
     typed = _fns("b.py", "python", "class C:\n    def __init__(self, a: int, b: str):\n        pass\n")
     assert typed["__init__"].is_constructor
     assert typed["__init__"].primitive_param_count == 2
+
+
+def test_optional_scalars_count_as_scalars():
+    fns = _fns(
+        "a.py",
+        "python",
+        "def f(a: str, b: str | None, c: Optional[int], d: Path, e: int):\n    pass\n",
+    )
+    assert fns["f"].primitive_param_count == 4
+
+
+def test_csharp_logger_message_is_a_generated_binding():
+    fns = _fns(
+        "L.cs",
+        "csharp",
+        'static partial class L { [LoggerMessage(1, LogLevel.Info, "{a} {b}")]'
+        " private static partial void M(ILogger l, string a, int b, int c, int d); }",
+    )
+    assert fns["M"].signature_fixed

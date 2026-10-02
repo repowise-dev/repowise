@@ -10,7 +10,9 @@ Three facts, read by ``primitive_obsession`` and nothing else:
   than this declaration, so "group these parameters" is advice nobody can
   take here. An override (Java ``@Override``; ``override`` in C#, Kotlin,
   Swift, TypeScript), a C# explicit interface implementation, a Rust trait
-  impl, a native binding (``extern``, ``[DllImport]``, ``[LibraryImport]``),
+  impl, a native or generated binding (``extern``, ``[DllImport]``,
+  ``[LibraryImport]``, ``[LoggerMessage]`` whose parameters are the message
+  template's holes),
   and a data-driven C# test (``[Theory]``, ``[DataRow]``, ``[TestCase]``...),
   whose arguments the runner supplies. In C#, so is a public or protected
   member of a public type: C# has ``internal`` for code shared inside an
@@ -41,7 +43,9 @@ _CTOR_NAMES = frozenset({"__init__", "init", "constructor"})
 _TYPE_DECL_RE = re.compile(r"class|struct|record|enum|interface|object")
 
 _OVERRIDE_RE = re.compile(r"@(?:[\w.]+\.)?Override\b|\boverride\b")
-_INTEROP_RE = re.compile(r"\bextern\b|\[\s*(?:[\w.]+\.)?(?:DllImport|LibraryImport)\b")
+_BINDING_RE = re.compile(
+    r"\bextern\b|\[\s*(?:[\w.]+\.)?(?:DllImport|LibraryImport|LoggerMessage)\b"
+)
 _DATA_TEST_RE = re.compile(
     r"[\[,]\s*(?:[\w.]+\.)?(?:Theory|InlineData|MemberData|ClassData|DataRow|DataTestMethod"
     r"|DynamicData|TestCase|TestCaseSource)\b"
@@ -81,11 +85,15 @@ _PRIMITIVE_TYPES = frozenset(
         "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
     }
 )
-# Words that qualify a type without changing what it holds.
+# Words that qualify a type without changing what it holds, nullability
+# spelled as a union or as ``Optional[...]`` included.
 _TYPE_QUALIFIERS = frozenset(
-    {"const", "volatile", "final", "ref", "in", "out", "readonly", "scoped", "mut", "params"}
+    {
+        "const", "volatile", "final", "ref", "in", "out", "readonly", "scoped", "mut", "params",
+        "None", "null", "undefined", "Optional",
+    }
 )
-_TYPE_PUNCT_RE = re.compile(r"[*&?\[\]]|'\w+")
+_TYPE_PUNCT_RE = re.compile(r"[*&?|\[\]]|'\w+")
 # Nodes of a parameter list that are not parameters, as ``_count_parameters``
 # skips them.
 _NON_PARAMS = frozenset(
@@ -155,7 +163,7 @@ def is_signature_fixed(fn_node: Node, head: str, language: str) -> bool:
     *head* is the declaration text before the parameter list (modifiers,
     annotations, attributes), from ``ast_utils.declaration_head``.
     """
-    if _OVERRIDE_RE.search(head) or _INTEROP_RE.search(head):
+    if _OVERRIDE_RE.search(head) or _BINDING_RE.search(head):
         return True
     if any(c.type == "explicit_interface_specifier" for c in fn_node.children):
         return True
@@ -187,23 +195,24 @@ def _is_primitive(type_node: Node) -> bool:
     return bool(words) and all(w in _PRIMITIVE_TYPES for w in words)
 
 
+def _arity(param: Node) -> int:
+    """Names one parameter node declares. Pascal declares ``A, B: Integer`` as
+    one node, and ``_count_parameters`` counts its names."""
+    if param.type != "declArg":
+        return 1
+    return sum(1 for c in param.children if c.type == "identifier")
+
+
 def primitive_param_count(params: Node | None) -> int | None:
     """Parameters of *params* declared as a scalar or a string.
 
     ``None`` when no parameter in the list declares a type.
     """
-    if params is None:
+    typed_params = [
+        (param, type_node)
+        for param in (params.named_children if params is not None else ())
+        if param.type not in _NON_PARAMS and (type_node := _param_type(param)) is not None
+    ]
+    if not typed_params:
         return None
-    typed = primitive = 0
-    for param in params.named_children:
-        if param.type in _NON_PARAMS:
-            continue
-        type_node = _param_type(param)
-        if type_node is None:
-            continue
-        # Pascal declares ``A, B: Integer`` as one node, as ``_count_parameters`` counts it.
-        names = sum(1 for c in param.children if c.type == "identifier") if param.type == "declArg" else 1
-        typed += names
-        if _is_primitive(type_node):
-            primitive += names
-    return primitive if typed else None
+    return sum(_arity(param) for param, type_node in typed_params if _is_primitive(type_node))

@@ -240,26 +240,35 @@ def _parameter_list(fn_node: Node) -> Node | None:
     """The node holding *fn_node*'s declared parameters, or ``None``."""
     params = fn_node.child_by_field_name("parameters")
     if params is None:
-        for child in fn_node.children:
-            if child.type in ("parameters", "parameter_list", "formal_parameters"):
-                params = child
-                break
-    if params is None and fn_node.type == "function_body":
+        params = next(
+            (
+                c
+                for c in fn_node.children
+                if c.type in ("parameters", "parameter_list", "formal_parameters")
+            ),
+            None,
+        )
+    return params if params is not None else _dialect_parameter_list(fn_node)
+
+
+def _dialect_parameter_list(fn_node: Node) -> Node | None:
+    """Dart and Pascal keep the parameter list off the function node."""
+    if fn_node.type == "function_body":
         # Dart: the parameter list lives on the preceding signature sibling.
         sig = _dart_signature_sibling(fn_node)
         if sig is not None:
-            params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
-    if params is None and fn_node.type == "lambda":
+            return next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+    if fn_node.type == "lambda":
         # Pascal anonymous procedure/function: the arg list is its own
         # ``args`` field directly (parameterless procedures omit it).
-        params = fn_node.child_by_field_name("args")
-    if params is None and fn_node.type == "defProc":
+        return fn_node.child_by_field_name("args")
+    if fn_node.type == "defProc":
         # Pascal named procedure/function: the arg list lives on the
         # ``header`` field's own ``args`` field, not on ``defProc`` itself.
         header = fn_node.child_by_field_name("header")
         if header is not None:
-            params = header.child_by_field_name("args")
-    return params
+            return header.child_by_field_name("args")
+    return None
 
 
 def _count_parameters(fn_node: Node) -> int:
