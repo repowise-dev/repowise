@@ -814,6 +814,18 @@ int helper() { return 3; }
         assert symbols[("Reader", "Read")] == "method"
         assert symbols[(None, "helper")] == "function"
 
+    def test_keeps_a_macro_function_with_an_aggregate_return_type(self, parser: ASTParser) -> None:
+        source = b"""namespace api {
+MYAPI struct S make_s() { return S(); }
+EXPORT_API const struct S *find_s(int a) { return nullptr; }
+}
+"""
+        fi = _make_file_info("cpp_pkg/api.cc", "cpp")
+        result = parser.parse_file(fi, source)
+        names = {symbol.name for symbol in result.symbols}
+
+        assert {"make_s", "find_s"} <= names
+
     def test_still_drops_a_function_nested_in_a_real_function(self, parser: ASTParser) -> None:
         source = b"""MYLIB_API int outer() {
   struct Local { int f() { return 1; } };

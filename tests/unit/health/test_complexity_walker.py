@@ -559,6 +559,10 @@ EXPORT_MACRO class Queue {
   int pop() { return 0; }
 };
 struct foo *make_foo(void) { return 0; }
+FMT_BEGIN_NAMESPACE
+FMT_EXPORT template <typename Context> class Store {
+  int put() { return 1; }
+};
 """
 
 
@@ -571,9 +575,33 @@ def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
     if not results:
         pytest.skip("tree-sitter language pack missing for cpp")
     names = {r.name for r in results}
-    assert {"GetCpuType", "helper", "size", "pop", "make_foo"} <= names
-    assert not names & {"namespace", "base_internal", "FixedArray", "Queue"}
+    assert {"GetCpuType", "helper", "size", "put", "pop", "make_foo"} <= names
+    assert not names & {"namespace", "base_internal", "FixedArray", "Store", "Queue"}
     assert _find(results, "GetCpuType").ccn == 2
+
+
+@pytest.mark.parametrize("language", ["cpp", "c"])
+def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(
+    tmp_path, language
+):
+    # The stray ``struct S`` lands in the head as it does for a misread scope,
+    # but the declarator is a real function_declarator.
+    source = b"""int plain(void) { return 0; }
+MYAPI struct S fn1(void) { return s; }
+MYAPI enum E fn2(void) { return A; }
+MYAPI union U fn4(void) { return u; }
+EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
+"""
+    if language == "cpp":
+        source += b"MYAPI class C fn3() { return C(); }\n"
+    p = tmp_path / ("api.h" if language == "cpp" else "api.c")
+    p.write_bytes(source)
+    results = walk_file_complexity(str(p), language, source)
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    expected = {"fn1", "fn2", "fn4", "fn5"} | ({"fn3"} if language == "cpp" else set())
+    assert "plain" in {r.name for r in results}
+    assert expected <= {r.name for r in results}
 
 
 def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):

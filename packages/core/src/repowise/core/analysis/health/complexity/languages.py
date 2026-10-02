@@ -284,7 +284,10 @@ class LanguageNodeMap:
     #   * ``misread_scope`` -- truthy for a ``function_kinds`` node that is
     #     really a namespace or type the grammar misread (C/C++: a macro line
     #     before ``namespace x {``). Such a node is a container: its members
-    #     are walked, it is never scored. None means no such misread.
+    #     are walked, it is never scored. None means no such misread. Checked
+    #     where a scope could be taken for a function (function collection,
+    #     class bodies, perf naming); passes that only run inside a collected
+    #     function's body never meet one.
     misread_scope: Callable[[Node], object] | None = None
 
 

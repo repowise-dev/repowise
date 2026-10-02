@@ -24,6 +24,10 @@ _CPP_EXPORT_FORWARD_DECLARATION_NODES = frozenset({"declaration", "field_declara
 _CPP_SCOPE_KEYWORDS = frozenset({"namespace", "class", "struct", "union", "enum"})
 # Name tokens a stray keyword is read as: ``field_identifier`` inside a class body.
 _CPP_NAME_TOKENS = frozenset({"identifier", "field_identifier"})
+# Declarators a misread scope can have: its bare name, qualified or not, or a
+# stray ``template <...>`` (``MACRO template <typename T> class X {``). A real
+# function wraps each of these in a function_declarator.
+_CPP_SCOPE_DECLARATORS = _CPP_NAME_TOKENS | {"qualified_identifier", "template_function"}
 
 
 def _keyword_token(node: Node) -> str | None:
@@ -61,6 +65,11 @@ def misread_scope_keyword(node: Node) -> str | None:
     macro_named = _macro_named_type_keyword(node)
     if macro_named is not None:
         return macro_named
+    # A real function behind a macro (``API struct S *f()``) can also carry the
+    # keyword in its head, but its declarator wraps a function_declarator.
+    declarator = node.child_by_field_name("declarator")
+    if declarator is None or declarator.type not in _CPP_SCOPE_DECLARATORS:
+        return None
     keywords = (_keyword_token(token) for token in _head_tokens(node))
     return next((keyword for keyword in keywords if keyword is not None), None)
 
