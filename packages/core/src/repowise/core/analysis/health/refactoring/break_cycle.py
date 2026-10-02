@@ -36,12 +36,13 @@ from .registry import RefactoringDetector, register
 _MAX_CYCLE_FILES = 20
 _MAX_CUT_EDGES = 4
 
-# Languages whose files in one package name each other's types with no import
-# and compile the mutual reference in one pass. A cycle held inside one such
+# Languages whose files in one package (a Rust crate's module directory) name
+# each other's items and compile the mutual reference in one pass. A cycle held
+# inside one such
 # package (a class and its builder, two entities that point at each other) is a
 # real cycle but an idiomatic one: it is still reported, at low confidence and
 # labelled ``same_package``, rather than as a cut to make.
-_SAME_PACKAGE_IDIOM_LANGUAGES = frozenset({"java", "kotlin", "scala", "csharp"})
+_SAME_PACKAGE_IDIOM_LANGUAGES = frozenset({"java", "kotlin", "scala", "csharp", "rust"})
 
 
 def _greedy_mfas(members: tuple[str, ...], edges: list[tuple[str, str]]) -> list[tuple[str, str]]:

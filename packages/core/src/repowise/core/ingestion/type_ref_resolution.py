@@ -83,19 +83,32 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     candidate's symbol-successor set cannot change mid-pass. Falsy symbol
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
+
+    Symbols that declare no name another file can write bare are left out: an
+    ``impl Error for X`` block is named after the trait it implements, and an
+    associated ``type Error = ...`` inside an impl is reached only through its
+    owner. Counting them made a file that implements ``Error`` look like the
+    home of every ``Error`` its importers name.
     """
     sym_name: dict[str, str] = {}
     for node, data in graph.nodes(data=True):
-        if data.get("node_type") == "symbol":
-            name = data.get("name")
-            if name:
-                sym_name[node] = name
+        if data.get("node_type") != "symbol" or _not_a_type_home(data):
+            continue
+        name = data.get("name")
+        if name:
+            sym_name[node] = name
     index: dict[str, set[str]] = {}
     for src, dst in graph.edges():
         name = sym_name.get(dst)
         if name is not None:
             index.setdefault(src, set()).add(name)
     return index
+
+
+def _not_a_type_home(data: dict[str, Any]) -> bool:
+    """An impl block, or a type alias owned by an impl or trait."""
+    kind = data.get("kind")
+    return kind == "impl" or (kind == "type_alias" and bool(data.get("parent_name")))
 
 
 def _stamp_local_type_uses(graph: nx.DiGraph, from_path: str, names: set[str]) -> None:
