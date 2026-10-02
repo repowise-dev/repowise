@@ -99,35 +99,44 @@ export interface CodeHealthLedeProps {
 }
 
 /** "3 months" / "1 month", from a day count. */
+function UnanalysedLede({ action }: { action?: React.ReactNode }) {
+  return (
+    <PageLede label="Code health" value="Not analysed" action={action}>
+      <p>{HEALTH_UNSUPPORTED_NOTICE}</p>
+    </PageLede>
+  );
+}
+
+/** The files a scored figure left out because health has no dialect for them. */
+function UnanalysedNote({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const one = count === 1;
+  return (
+    <>
+      {" "}
+      {formatNumber(count)} more {one ? "file is" : "files are"} in a language health does not
+      analyse yet, so {one ? "it is" : "they are"} left out of this figure.
+    </>
+  );
+}
+
 function windowLabel(days: number): string {
   const months = Math.max(1, Math.round(days / 30));
   return months === 1 ? "month" : `${months} months`;
 }
 
-export function CodeHealthLede(props: CodeHealthLedeProps) {
-  const health = props.summary.average_health;
-  // No file scored: every file is in a language health has no dialect for.
-  // There is no figure to lead with, so the lede says that instead of a 10.
-  if (health == null) {
-    return (
-      <PageLede label="Code health" value="Not analysed" action={props.action}>
-        <p>{HEALTH_UNSUPPORTED_NOTICE}</p>
-      </PageLede>
-    );
-  }
-  return <ScoredLede {...props} health={health} />;
-}
-
-function ScoredLede({
+export function CodeHealthLede({
   summary,
   accuracy,
   distribution,
   pillar = "health",
   action,
   variant = "lead",
-  health,
-}: CodeHealthLedeProps & { health: number }) {
-  const unanalysed = summary.unanalysed_file_count ?? 0;
+}: CodeHealthLedeProps) {
+  const health = summary.average_health;
+  // No file scored: every file is in a language health has no dialect for.
+  // There is no figure to lead with, so the lede says that instead of a 10.
+  if (health == null) return <UnanalysedLede action={action} />;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
@@ -240,14 +249,7 @@ function ScoredLede({
           duplication, coverage
           {codeShape ? "" : ", churn and ownership"}.
           {healthChip ? <> That puts it in the {healthChip.label} band.</> : null}
-          {unanalysed > 0 && (
-            <>
-              {" "}
-              {formatNumber(unanalysed)} more {unanalysed === 1 ? "file is" : "files are"} in a
-              language health does not analyse yet, so {unanalysed === 1 ? "it is" : "they are"}{" "}
-              left out of this figure.
-            </>
-          )}
+          <UnanalysedNote count={summary.unanalysed_file_count ?? 0} />
           {perf != null && (
             <>
               {" "}

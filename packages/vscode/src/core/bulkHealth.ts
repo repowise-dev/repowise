@@ -33,6 +33,14 @@ const PAGE_LIMIT = 2000;
  */
 const inFlight = new Map<string, Promise<Map<string, FileScores> | null>>();
 
+/**
+ * A file with no score (no health dialect for its language) gets no
+ * decoration, the same as a file the index has no row for.
+ */
+function hasScore(metric: HealthFileMetric): metric is HealthFileMetric & { score: number } {
+  return metric.score != null;
+}
+
 function toScores(metric: HealthFileMetric & { score: number }): FileScores {
   return {
     score: metric.score,
@@ -58,11 +66,8 @@ async function fetchAll(
     let offset = 0;
     for (;;) {
       const page = await listHealthFiles(repoId, { limit: PAGE_LIMIT, offset });
-      for (const metric of page.files) {
-        // No score (no health dialect for the language): no decoration, the
-        // same as a file the index has no row for.
-        if (metric.score == null) continue;
-        map.set(metric.file_path, toScores({ ...metric, score: metric.score }));
+      for (const metric of page.files.filter(hasScore)) {
+        map.set(metric.file_path, toScores(metric));
       }
       offset += page.files.length;
       // Stop on an empty page (guards a mismatched total) or once the reported
