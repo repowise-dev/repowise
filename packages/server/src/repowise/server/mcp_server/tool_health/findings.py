@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, worth_first
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -58,11 +58,14 @@ class FindingSets:
     lower_priority: dict[Any, str] = field(default_factory=dict)
 
 
-def _tiered(rows: list[Any]) -> tuple[list[Any], dict[Any, str]]:
-    """Ranked rows with those worth doing first ahead, and each later row's reason."""
-    paired = worth_first(_rank_emitted(rows))
-    labels = {r.id: LOW_PRIORITY_LABEL[reason] for r, reason in paired if reason is not None}
-    return [r for r, _reason in paired], labels
+def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[Any, str]]:
+    """Ranked *rows* with those worth doing first ahead, and each later row's
+    reason. Shapes are measured over *measured_over*, the set before any
+    dimension filter, so a filter never changes a function's tier."""
+    reasons = dict(zip((r.id for r in measured_over), finding_priorities(measured_over), strict=True))
+    ranked = sorted(_rank_emitted(rows), key=lambda r: reasons.get(r.id) is not None)
+    labels = {r.id: LOW_PRIORITY_LABEL[why] for r in ranked if (why := reasons.get(r.id))}
+    return ranked, labels
 
 
 def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
@@ -93,7 +96,7 @@ async def load_targeted_findings(
         "file_path",
     ))
     emitted, labels = _tiered(
-        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)]
+        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)], finding_rows
     )
     return FindingSets(
         finding_rows=emitted,
@@ -119,7 +122,7 @@ async def load_dashboard_findings(
     # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
     # change because the caller asked to see one dimension.
     emitted, labels = _tiered(
-        [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)]
+        [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)], lead_rows
     )
     # Test findings get their own bucket instead of crowding the headline
     # list. Split before the cap, so each list is the top ``limit`` of its

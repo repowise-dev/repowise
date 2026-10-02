@@ -34,7 +34,7 @@ from ....analysis.health.ranking import (
 from ....analysis.health.rows import detail_map, split_tests, split_unscored
 from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
-from ....analysis.health.worth import worth_first
+from ....analysis.health.worth import LowPriority, finding_priorities
 from ....test_paths import is_test_related_path
 from ...models import (
     DocDriftFinding,
@@ -545,9 +545,40 @@ async def get_health_findings(
         list(result.scalars().all()),
         await _health_exclude_spec(session, repository_id),
     )
-    # The tier needs every finding on a function, so the cap applies after it.
-    ordered = [f for f, _reason in worth_first(kept)]
+    # A filter that drops some of a function's findings would misread its
+    # shape, so the tier then reads every open finding on the kept files.
+    narrowed = bool(types or exact or min_severity or dimension) or statuses != ["open"]
+    reasons = (
+        await health_finding_priorities(session, repository_id, kept)
+        if narrowed
+        else dict(zip((f.id for f in kept), finding_priorities(kept), strict=True))
+    )
+    # Stable: each tier keeps the impact order. The cap applies after the tier.
+    ordered = sorted(kept, key=lambda f: reasons[f.id] is not None)
     return ordered if limit is None else ordered[:limit]
+
+
+async def health_finding_priorities(
+    session: AsyncSession, repository_id: str, findings: Sequence[HealthFinding]
+) -> dict[str, LowPriority | None]:
+    """Each finding's ``worth`` reason by id, measured over every open,
+    shown finding on its file: a list filtered by marker, severity or status
+    still tiers a function by its whole shape."""
+    paths = sorted({f.file_path for f in findings})
+    peers: list[HealthFinding] = []
+    for i in range(0, len(paths), _BATCH_SIZE):
+        q = select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.file_path.in_(paths[i : i + _BATCH_SIZE]),
+            HealthFinding.biomarker_type.not_in(excluded_types()),
+        )
+        peers.extend((await session.execute(q)).scalars().all())
+    known = {f.id for f in peers}
+    # A finding outside the open set (resolved, acknowledged) is measured with it.
+    peers.extend(f for f in findings if f.id not in known)
+    reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
+    return {f.id: reasons[f.id] for f in findings}
 
 
 async def get_deduction_by_path(

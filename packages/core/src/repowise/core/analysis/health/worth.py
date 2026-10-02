@@ -62,6 +62,8 @@ LowPriority = Literal[
     "bounded_loop",
     "unmeasured_cost",
     "not_production",
+    "unknown_context",
+    "unreached_call",
 ]
 
 #: Why an item can wait, as the tier reason a surface shows beside it.
@@ -82,8 +84,10 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
     "design": "lower priority: a design signal that seldom needs a change on its own",
     "history": "lower priority: it rests on git history alone, not on the code's shape",
     "bounded_loop": "lower priority: the loop is bounded",
-    "unmeasured_cost": "lower priority: nothing shows the cost grows with the data",
+    "unmeasured_cost": "lower priority: nothing shows the loop grows with the data",
     "not_production": "lower priority: it runs outside production code",
+    "unknown_context": "lower priority: where this code runs is unknown",
+    "unreached_call": "lower priority: no entry point is known to reach it",
 }
 
 #: Findings about one expression or one error site: real, and small to fix.
@@ -258,19 +262,28 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     return out
 
 
-def worth_first(findings: Sequence[Any]) -> list[tuple[Any, LowPriority | None]]:
-    """``findings`` with their reasons, worth doing first ahead of the rest,
-    each part in its given order. Nothing is dropped."""
-    paired = list(zip(findings, finding_priorities(findings), strict=True))
-    return sorted(paired, key=lambda pair: pair[1] is not None)
+#: Performance causes that cost once per call, not once per loop iteration:
+#: they lead when an entry point reaches them.
+_PER_CALL_MARKERS = frozenset({"hot_path_sync_io", "blocking_sync_in_async", "blocking_io_under_lock"})
+#: Causes whose cost grows with the data by their shape alone.
+_GROWING_MARKERS = frozenset({"goroutine_in_unbounded_loop", "sql_cartesian_join"})
 
 
 def perf_low_priority(row: Any) -> LowPriority | None:
-    """Why a performance opportunity can wait: unless production code runs it
-    over data that grows, its cost is small or unmeasured."""
-    if field(row, "execution_context") != "production":
-        return "not_production"
-    magnitude_ = (detail_map(row).get("facets") or {}).get("loop_magnitude")
+    """Why a performance opportunity can wait. In production code a loop cause
+    leads when its loop grows with the data, a per-call cause when an entry
+    point reaches it, and an unbounded goroutine loop or a cartesian join
+    always; the reason names whichever fact is missing."""
+    context = field(row, "execution_context")
+    if context != "production":
+        return "unknown_context" if context in (None, "unknown") else "not_production"
+    marker = field(row, "biomarker_type")
+    facets = detail_map(row).get("facets") or {}
+    if marker in _GROWING_MARKERS:
+        return None
+    if marker in _PER_CALL_MARKERS:
+        return None if facets.get("exposure") == "entry_reachable" else "unreached_call"
+    magnitude_ = facets.get("loop_magnitude")
     if magnitude_ == "grows_with_data":
         return None
     return "bounded_loop" if magnitude_ == "bounded" else "unmeasured_cost"
@@ -295,6 +308,5 @@ __all__ = [
     "magnitude",
     "measure",
     "perf_low_priority",
-    "worth_first",
     "worth_size",
 ]

@@ -48,6 +48,7 @@
     "file_path",
     "fix",
     "intervention_symbol",
+    "lower_priority",
     "observations_total",
     "opportunity_id",
     "performance_model_version",

@@ -46,6 +46,8 @@ export function opportunity(
     affected_call_sites_total: 2,
     affected_files_total: 2,
     observations_total: 6,
+    // Carried on the wire; the queue does not render it yet.
+    lower_priority: null,
     evidence: [
       {
         finding_id: "finding_1111",

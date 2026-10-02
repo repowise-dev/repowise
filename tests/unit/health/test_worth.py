@@ -155,7 +155,7 @@ def test_a_cloned_dispatcher_stays_listed_but_waits() -> None:
 
 
 def test_findings_are_tiered_per_function_and_history_waits() -> None:
-    from repowise.core.analysis.health.worth import finding_priorities, worth_first
+    from repowise.core.analysis.health.worth import finding_priorities
 
     big = _finding("src/a.py", "big", {"ccn": 47, "nloc": 191, "max_nesting": 5}, 0.4)
     # Two findings on one function: the nesting finding alone says nothing
@@ -166,7 +166,6 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
              "severity": "high", "health_impact": 2.5, "dimension": "defect"}
     rows = [churn, small, deep, big]
     assert finding_priorities(rows) == ["history", "near_bar", None, None]
-    assert [f for f, _ in worth_first(rows)] == [deep, big, churn, small]
 
 
 @pytest.mark.parametrize(
@@ -177,10 +176,30 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
         ("production", {"loop_magnitude": "unknown"}, "unmeasured_cost"),
         ("production", {}, "unmeasured_cost"),
         ("tooling", {"loop_magnitude": "grows_with_data"}, "not_production"),
+        ("unknown", {"loop_magnitude": "grows_with_data"}, "unknown_context"),
     ],
 )
 def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected) -> None:
     from repowise.core.analysis.health.worth import perf_low_priority
 
-    row = {"execution_context": context, "details": {"facets": facets}}
+    row = {"execution_context": context, "biomarker_type": "io_in_loop",
+           "details": {"facets": facets}}
+    assert perf_low_priority(row) == expected
+
+
+@pytest.mark.parametrize(
+    ("marker", "facets", "expected"),
+    [
+        ("hot_path_sync_io", {"exposure": "entry_reachable"}, None),
+        ("hot_path_sync_io", {"exposure": "not_entry_reachable"}, "unreached_call"),
+        ("blocking_sync_in_async", {}, "unreached_call"),
+        ("goroutine_in_unbounded_loop", {}, None),
+        ("sql_cartesian_join", {"loop_magnitude": "unknown"}, None),
+    ],
+)
+def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
+    from repowise.core.analysis.health.worth import perf_low_priority
+
+    row = {"execution_context": "production", "biomarker_type": marker,
+           "details": {"facets": facets}}
     assert perf_low_priority(row) == expected
