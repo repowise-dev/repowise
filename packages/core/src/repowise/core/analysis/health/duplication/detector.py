@@ -884,13 +884,30 @@ def _aggregate(
         # Cap at 100% — covered ranges count physical lines (blanks and
         # comments included) while the denominator is NLOC, so dense
         # clone coverage can still nudge past 100.
-        pct = 100.0 * _union_line_count(ranges) / nloc
+        pct = 100.0 * union_line_count(ranges) / nloc
         duplication_pct[path] = round(min(100.0, pct), 2)
 
     return dict(pairs_by_file), duplication_pct
 
 
-def _union_line_count(ranges: list[tuple[int, int]]) -> int:
+def clone_ranges(
+    path: str, clones: list[ClonePair], *, cross_file_only: bool = False
+) -> list[tuple[int, int]]:
+    """*path*'s line ranges among *clones*: its side of each cross-file pair
+    and, unless *cross_file_only*, both regions of a clone inside the file."""
+    ranges: list[tuple[int, int]] = []
+    for p in clones:
+        if p.is_intra_file:
+            if not cross_file_only:
+                ranges += [(p.a_start_line, p.a_end_line), (p.b_start_line, p.b_end_line)]
+        elif p.file_a == path:
+            ranges.append((p.a_start_line, p.a_end_line))
+        else:
+            ranges.append((p.b_start_line, p.b_end_line))
+    return ranges
+
+
+def union_line_count(ranges: list[tuple[int, int]]) -> int:
     """Total number of distinct lines covered by inclusive ``ranges``."""
     merged_total = 0
     cur_start, cur_end = -1, -2  # empty sentinel

@@ -23,6 +23,10 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from functools import lru_cache
+from typing import Literal
+
+IdentityKind = Literal["human", "agent", "bot"]
 
 _NOREPLY_DOMAIN = "@users.noreply.github.com"
 
@@ -98,19 +102,31 @@ def author_identity_key(author_name: str | None, author_email: str | None) -> st
     return (canonical or author_name or "").strip().lower()
 
 
-def is_bot(name: str | None, email: str | None) -> bool:
-    """True when this author is automation (CI or a coding agent's own identity).
-
-    Identity only: an agent-*assisted* commit still has a human author.
-    """
+@lru_cache(maxsize=4096)
+def _identity(name: str | None, email: str | None) -> tuple[IdentityKind, str | None]:
+    """``(kind, agent label)`` for one author observation."""
     # Imported here: the provenance module loads the whole git indexer package.
     from repowise.core.ingestion.git_indexer.agent_provenance import agent_from_identity
 
-    if agent_from_identity(name, email):
-        return True
-    if name and _BOT_NAME_RE.search(name):
-        return True
-    return bool(email and _BOT_EMAIL_RE.search(email))
+    agent = agent_from_identity(name, email)
+    if agent:
+        return "agent", agent
+    if (name and _BOT_NAME_RE.search(name)) or (email and _BOT_EMAIL_RE.search(email)):
+        return "bot", None
+    return "human", None
+
+
+def identity_kind(name: str | None, email: str | None) -> IdentityKind:
+    """Who an author identity is: a coding agent, other automation, or a person.
+
+    Identity only: an agent-*assisted* commit still has a human author.
+    """
+    return _identity(name, email)[0]
+
+
+def is_bot(name: str | None, email: str | None) -> bool:
+    """True when this author is automation (CI or a coding agent's own identity)."""
+    return identity_kind(name, email) != "human"
 
 
 def _is_machine_local(canonical_email: str) -> bool:
@@ -164,10 +180,18 @@ class IdentityResolver:
     resolver was not built from resolves to its own canonical email.
     """
 
-    def __init__(self, key_of: dict[str, str], names: dict[str, Counter[str]], bots: set[str]):
+    def __init__(
+        self,
+        key_of: dict[str, str],
+        names: dict[str, Counter[str]],
+        kinds: dict[str, IdentityKind],
+        agents: dict[str, str],
+    ):
         self._key_of = key_of
         self._names = names
-        self._bots = bots
+        # Automation identities only; every other key is a person.
+        self._kinds = kinds
+        self._agents = agents
 
     def __call__(self, name: str | None, email: str | None) -> str:
         node = _node(name, email)
@@ -182,12 +206,19 @@ class IdentityResolver:
         # Ties break alphabetically so the name is stable across runs.
         return min(pool, key=lambda n: (-pool[n], n))
 
+    def kind(self, key: str) -> IdentityKind:
+        return self._kinds.get(key, "human")
+
+    def agent_of(self, key: str) -> str | None:
+        """The coding agent behind an agent identity, else ``None``."""
+        return self._agents.get(key)
+
     def is_bot(self, key: str) -> bool:
-        return key in self._bots
+        return key in self._kinds
 
     def people(self) -> set[str]:
         """Every human identity the resolver was built from."""
-        return set(self._names) - self._bots
+        return set(self._names) - set(self._kinds)
 
 
 def build_identity_resolver(
@@ -225,22 +256,31 @@ def build_identity_resolver(
     whose email the author pairs already know.
     """
     names: dict[str, Counter[str]] = defaultdict(Counter)
-    bot_votes: Counter[str] = Counter()
-    bot_cache: dict[tuple[str | None, str | None], bool] = {}
+    kind_votes: dict[str, Counter[str]] = defaultdict(Counter)
+    agent_votes: dict[str, Counter[str]] = defaultdict(Counter)
+    identity_cache: dict[tuple[str | None, str | None], tuple[IdentityKind, str | None]] = {}
     logins: dict[str, str] = {}
     for name, email in pairs:
         node = _node(name, email)
         if not node:
             continue
         names[node][_clean_name(name) or node] += 1
-        if (name, email) not in bot_cache:
-            bot_cache[(name, email)] = is_bot(name, email)
-        bot_votes[node] += 1 if bot_cache[(name, email)] else -1
+        if (name, email) not in identity_cache:
+            identity_cache[(name, email)] = _identity(name, email)
+        obs_kind, agent = identity_cache[(name, email)]
+        kind_votes[node][obs_kind] += 1
+        if agent:
+            agent_votes[node][agent] += 1
         m = _GH_NOREPLY_RE.match((email or "").strip().lower())
         if m:
             logins[node] = m.group("login")
-    # A node is automation when most of its observations say so.
-    bots = {n for n, v in bot_votes.items() if v > 0}
+    # A node is automation when most of its observations say so (a tie stays
+    # human); an agent/bot tie goes to the more specific agent.
+    auto_kinds: dict[str, IdentityKind] = {}
+    for node, votes in kind_votes.items():
+        if votes["agent"] + votes["bot"] > votes["human"]:
+            auto_kinds[node] = "agent" if votes["agent"] >= votes["bot"] else "bot"
+    bots = set(auto_kinds)
 
     def kind(node: str) -> str:
         if node.startswith("name:"):
@@ -311,4 +351,9 @@ def build_identity_resolver(
             merged[key][_clean_name(name)] += 1
 
     # Bots never merge, so a bot's identity is its own node.
-    return IdentityResolver(key_of, merged, bots)
+    agents = {
+        n: min(agent_votes[n], key=lambda a: (-agent_votes[n][a], a))
+        for n, k in auto_kinds.items()
+        if k == "agent" and agent_votes[n]
+    }
+    return IdentityResolver(key_of, merged, auto_kinds, agents)

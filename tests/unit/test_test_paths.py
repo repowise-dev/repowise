@@ -53,6 +53,28 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/main/java/Latest.java", None, ""),
     # .net sibling test projects
     ("Foo.Tests/Bar.cs", None, "test"),
+    # PascalCase suite folders, one word with no separator (PowerToys)
+    ("src/common/updating/UnitTests/UpdatingTests.cpp", None, "test"),
+    ("src/modules/AdvancedPaste/AdvancedPaste.UnitTests/Mocks/Clipboard.cs", None, "support"),
+    ("src/modules/peek/Peek.UITests/PeekFilePreviewTests.cs", None, "test"),
+    ("src/modules/x/FuzzTests/fuzz.cpp", None, "test"),
+    ("src/unitTests/parser.ts", None, "test"),
+    # ...plural only, and only with the capital: singular names one thing
+    ("src/ui/HitTest/hit.cpp", None, ""),
+    ("src/contests/rules.py", None, ""),
+    ("src/Latests/x.cs", None, ""),
+    # gradle test fixtures and QA projects (elasticsearch)
+    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "test"),
+    ("x-pack/plugin/sql/qa/server/src/main/java/org/x/JdbcBase.java", None, "test"),
+    ("qa/logging-spi/src/main/java/org/x/Spi.java", None, "test"),
+    ("src/qa/answer.py", None, ""),  # a question-answering module
+    ("app/qa/src/model.py", None, ""),  # qa is the project itself
+    ("gradle/internal/testfixtures/DeployPlugin.java", None, ""),
+    ("src/testfixtures/pkg/mod.py", None, ""),  # the Python testfixtures library
+    ("packages/qa/cli/src/main.ts", None, ""),  # shipped QA tooling
+    ("src/qa/tools/src/x.py", None, ""),
+    ("qa/tools/src/report.py", None, ""),
+    ("docs/qa/guide/src/x.md", None, ""),
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),
