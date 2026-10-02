@@ -40,12 +40,24 @@ And the target must draw more of the method's calls than its home file does.
 The Jaccard sets see only class-owned callees, so a method whose work is three
 module-level helpers plus ``result.record`` / ``result.note`` on a collector it
 was handed looked like it envied the collector.
+
+The ``calls`` graph does not see field reads, so own-class use is also read
+off the class's cohesion components: a method that shares a component holding
+fields works on its own class's state and stays. A method that fulfils a
+contract (``@Override``, a member its base class or interface declares, a
+runtime contract name such as ``toString``) cannot move either, since the
+type it overrides for is the reason it exists. Building the target through a
+static factory (``OperationResult.Ok()``, any target member returning the
+target type) counts as instantiating it, and an interface, an exception type
+or a ``*Util``/``*Helper`` class is never a home for instance behaviour.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
 from ....test_paths import is_test_related_path
@@ -69,6 +81,24 @@ _MAX_TARGET_DISTANCE = 0.7
 # The target must be clearly nearer than the own class by this margin, so a
 # near-tie (the method is about as related to both) never fires.
 _MIN_DISTANCE_MARGIN = 0.25
+
+# Target kinds that hold no instance behaviour to move a method onto.
+_NON_TARGET_KINDS = frozenset({"interface", "trait", "protocol"})
+# Name suffixes of classes that are never a home for a moved method: an
+# exception carries an error, a utility class only static helpers.
+_NON_TARGET_SUFFIXES = ("Exception", "Error", "Util", "Utils", "Helper", "Helpers")
+# Java ``@Override``, Python ``@override`` / ``@typing.override``.
+_OVERRIDE_DECORATOR = re.compile(r"@(?:[\w.]+\.)?[Oo]verride\b")
+# Factory-shaped names: a member returning its own class under one of these
+# names builds an instance (``OperationResult.Ok()``, ``Foo.of(...)``); a
+# getter such as ``parent() -> T`` does not.
+_FACTORY_NAME = re.compile(
+    r"^(?:of|from|create|new|build|make|ok|fail|success|failure|empty|parse|"
+    r"value_?of|get_?instance|instance)",
+    re.IGNORECASE,
+)
+# Python marks a factory with a decorator.
+_FACTORY_DECORATORS = ("@staticmethod", "@classmethod")
 
 
 def _node(graph: Any, node_id: str) -> dict | None:
@@ -101,6 +131,101 @@ def _ancestors(graph: Any, class_id: str) -> set[str]:
                 seen.add(base)
                 stack.append(base)
     return seen
+
+
+def _class_name(graph: Any, class_id: str) -> str:
+    return (_node(graph, class_id) or {}).get("name") or class_id.rsplit("::", 1)[-1]
+
+
+def _class_members(graph: Any, class_id: str, cache: dict[str, set[str]]) -> set[str]:
+    cached = cache.get(class_id)
+    if cached is not None:
+        return cached
+    members: set[str] = set()
+    if class_id in graph:
+        for _u, v, data in graph.out_edges(class_id, data=True):
+            if data.get("edge_type") == "has_method":
+                members.add(v)
+    cache[class_id] = members
+    return members
+
+
+def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool:
+    """Whether the method fulfils a contract: an ``@Override`` annotation, a
+    runtime contract name, or a member an ancestor class or interface also
+    declares."""
+    name = data.get("name") or ""
+    if any(_OVERRIDE_DECORATOR.search(d) for d in data.get("decorators") or ()):
+        return True
+    if is_contract_method(name, data.get("kind"), language):
+        return True
+    declared = {
+        (_node(graph, member) or {}).get("name")
+        for base in _ancestors(graph, own_class_id)
+        for member in _class_members(graph, base, {})
+    }
+    return name in declared
+
+
+def _returns(signature: str | None, class_name: str) -> bool:
+    """Whether a ``name(params) -> Type`` signature returns *class_name*."""
+    pattern = rf"->\s*(?:[\w.]+\.)?{re.escape(class_name)}\b"
+    return bool(signature) and re.search(pattern, signature) is not None
+
+
+def _is_factory(member: dict, class_name: str) -> bool:
+    """A constructor, or a factory returning *class_name*: factory-named or
+    marked static/class-level (Python decorators)."""
+    if member.get("name") == class_name:
+        return True
+    if not _returns(member.get("signature"), class_name):
+        return False
+    decorators = " ".join(member.get("decorators") or ())
+    return bool(_FACTORY_NAME.match(member.get("name") or "")) or any(
+        d in decorators for d in _FACTORY_DECORATORS
+    )
+
+
+def _builds(graph: Any, class_id: str, accessed: set[str]) -> bool:
+    """Whether the method instantiates *class_id*: a constructor call, or a
+    call to a factory of the class (``OperationResult.Ok()``)."""
+    class_name = _class_name(graph, class_id)
+    return class_id in accessed or any(
+        _is_factory(_node(graph, member) or {}, class_name) for member in accessed
+    )
+
+
+def _never_a_target(graph: Any, class_id: str) -> bool:
+    """An interface, an exception type or a utility class."""
+    if (_node(graph, class_id) or {}).get("kind") in _NON_TARGET_KINDS:
+        return True
+    names = [_class_name(graph, class_id)]
+    names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]
+    return any(n.endswith(_NON_TARGET_SUFFIXES) for n in names)
+
+
+def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) -> bool:
+    """A foreign class the method could move to: not its own class or an
+    ancestor (*home*), not a class it builds, not a non-target kind."""
+    return (
+        class_id not in home
+        and not _builds(graph, class_id, accessed)
+        and not _never_a_target(graph, class_id)
+    )
+
+
+def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None) -> bool:
+    """Whether the method shares a cohesion component that holds fields with
+    the rest of its class. The ``calls`` graph sees no field reads; the
+    components do (``ClassComplexity.components``)."""
+    own = [
+        cls
+        for cls in classes
+        if getattr(cls, "name", None) == parent
+        and (line is None or cls.start_line <= line <= cls.end_line)
+    ]
+    groups = [g for cls in own[:1] for g in getattr(cls, "components", None) or ()]
+    return any(name in g.methods and g.fields for g in groups)
 
 
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:
@@ -173,18 +298,6 @@ class MoveMethodDetector(RefactoringDetector):
                     out.append(node_id)
         return sorted(set(out))
 
-    def _class_members(self, graph: Any, class_id: str, cache: dict[str, set[str]]) -> set[str]:
-        cached = cache.get(class_id)
-        if cached is not None:
-            return cached
-        members: set[str] = set()
-        if class_id in graph:
-            for _u, v, data in graph.out_edges(class_id, data=True):
-                if data.get("edge_type") == "has_method":
-                    members.add(v)
-        cache[class_id] = members
-        return members
-
     def _envy_for(
         self,
         ctx: RefactoringContext,
@@ -203,6 +316,10 @@ class MoveMethodDetector(RefactoringDetector):
             return None
         own_class_id = f"{ctx.file_path}::{parent}"
         if own_class_id not in graph:
+            return None
+        if _overrides(graph, data, own_class_id, ctx.language) or _uses_own_state(
+            ctx.classes, parent, name, data.get("start_line")
+        ):
             return None
 
         # Group the method's class-owned callees by the class they belong to.
@@ -234,11 +351,11 @@ class MoveMethodDetector(RefactoringDetector):
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
-        inherited = _ancestors(graph, own_class_id)
+        own_and_inherited = _ancestors(graph, own_class_id) | {own_class_id}
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()
-            if c != own_class_id and c not in inherited and c not in m
+            if _is_target(graph, c, m, own_and_inherited)
         ]
         if not foreign:
             return None
@@ -307,7 +424,7 @@ class MoveMethodDetector(RefactoringDetector):
         """Jaccard distance between the method's accessed-entity set and a
         class's members. 0 = the method only touches this class; 1 = no
         overlap. Empty union degrades to max distance."""
-        members = self._class_members(graph, class_id, cache)
+        members = _class_members(graph, class_id, cache)
         union = accessed | members
         if not union:
             return 1.0

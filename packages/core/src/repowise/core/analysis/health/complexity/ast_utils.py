@@ -236,37 +236,73 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     return out
 
 
+def _parameter_list(fn_node: Node) -> Node | None:
+    """The node holding *fn_node*'s declared parameters, or ``None``."""
+    params = fn_node.child_by_field_name("parameters")
+    if params is None:
+        params = next(
+            (
+                c
+                for c in fn_node.children
+                if c.type in ("parameters", "parameter_list", "formal_parameters")
+            ),
+            None,
+        )
+    return params if params is not None else _dialect_parameter_list(fn_node)
+
+
+def _dialect_parameter_list(fn_node: Node) -> Node | None:
+    """Dart and Pascal keep the parameter list off the function node."""
+    if fn_node.type == "function_body":
+        # Dart: the parameter list lives on the preceding signature sibling.
+        sig = _dart_signature_sibling(fn_node)
+        if sig is not None:
+            return next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+    if fn_node.type == "lambda":
+        # Pascal anonymous procedure/function: the arg list is its own
+        # ``args`` field directly (parameterless procedures omit it).
+        return fn_node.child_by_field_name("args")
+    if fn_node.type == "defProc":
+        # Pascal named procedure/function: the arg list lives on the
+        # ``header`` field's own ``args`` field, not on ``defProc`` itself.
+        header = fn_node.child_by_field_name("header")
+        if header is not None:
+            return header.child_by_field_name("args")
+    return None
+
+
+# A method's explicit receiver: Python's conventional first ``self`` / ``cls``
+# and Rust's ``self`` / ``&self`` / ``&mut self``. No caller passes it, so it is
+# no part of the parameter list anyone reads at a call site.
+_RECEIVER_NAMES = frozenset({"self", "cls"})
+
+
+def _receiver_parameter(params: Node) -> Node | None:
+    """The receiver among *params*' children, when the first parameter is one."""
+    first = next((c for c in params.named_children if c.type != "comment"), None)
+    if first is None:
+        return None
+    if first.type == "self_parameter":
+        return first
+    if first.type == "identifier" and (first.text or b"").decode() in _RECEIVER_NAMES:
+        return first
+    return None
+
+
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
     Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
     children. Returns 0 when no parameter list is found.
     """
-    params = fn_node.child_by_field_name("parameters")
-    if params is None:
-        for child in fn_node.children:
-            if child.type in ("parameters", "parameter_list", "formal_parameters"):
-                params = child
-                break
-    if params is None and fn_node.type == "function_body":
-        # Dart: the parameter list lives on the preceding signature sibling.
-        sig = _dart_signature_sibling(fn_node)
-        if sig is not None:
-            params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
-    if params is None and fn_node.type == "lambda":
-        # Pascal anonymous procedure/function: the arg list is its own
-        # ``args`` field directly (parameterless procedures omit it).
-        params = fn_node.child_by_field_name("args")
-    if params is None and fn_node.type == "defProc":
-        # Pascal named procedure/function: the arg list lives on the
-        # ``header`` field's own ``args`` field, not on ``defProc`` itself.
-        header = fn_node.child_by_field_name("header")
-        if header is not None:
-            params = header.child_by_field_name("args")
+    params = _parameter_list(fn_node)
     if params is None:
         return 0
     count = 0
+    receiver = _receiver_parameter(params)
     for child in params.children:
+        if child == receiver:
+            continue
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity, so they must be skipped alongside the
@@ -278,8 +314,6 @@ def _count_parameters(fn_node: Node) -> int:
             "(",
             ")",
             ",",
-            "self",
-            "cls",
             ":",
             "*",
             "**",
