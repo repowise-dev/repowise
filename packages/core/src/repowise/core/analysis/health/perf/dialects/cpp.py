@@ -46,6 +46,8 @@ from typing import TYPE_CHECKING
 from .base import BasePerfDialect
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
     from tree_sitter import Node
 
 # POSIX filesystem round-trips — unqualified free functions that reach the
@@ -116,19 +118,31 @@ STD_FILESYSTEM_METHODS: frozenset[str] = frozenset(
 # functions without type resolution — seastar's ``ipv4::get_packet`` calls its
 # own ``send(...)`` exactly this way. Those six are therefore excluded; the
 # suffixed forms below are not plausible member names.
+#
+# ``socket`` / ``setsockopt`` / ``getsockopt`` are absent too: they create or
+# configure a descriptor in the local kernel and put nothing on the wire, so a
+# loop of them is not N round-trips (aria2's per-address connect loop matched).
 C_NET_FUNCTIONS: frozenset[str] = frozenset(
     {
-        "socket",
         "sendto",
         "sendmsg",
         "recvfrom",
         "recvmsg",
         "getaddrinfo",
         "gethostbyname",
-        "setsockopt",
-        "getsockopt",
     }
 )
+# ``getaddrinfo`` with one of these flags only parses a numeric address and
+# never asks a name server (``AI_NUMERICHOST``).
+RESOLVER_FUNCTIONS: frozenset[str] = frozenset({"getaddrinfo"})
+NUMERIC_ONLY_RESOLVER_FLAGS: frozenset[str] = frozenset({"AI_NUMERICHOST"})
+# A ``while`` / ``do`` loop whose condition requires one of these errno values
+# repeats only when a signal interrupted the call: a retry, not a walk over data.
+# Matched as a suffix, so project spellings (``A2_EINTR``, ``WSAEINTR``) count.
+SIGNAL_RETRY_ERRNOS: tuple[str, ...] = ("EINTR",)
+# Links of lists that hold a handful of candidates for ONE operation (the
+# addresses one host name resolved to), walked to try each until one works.
+CANDIDATE_LIST_LINKS: frozenset[str] = frozenset({"ai_next"})
 # libcurl — the dominant C/C++ HTTP client.
 CURL_FUNCTIONS: frozenset[str] = frozenset({"curl_easy_perform", "curl_easy_setopt"})
 # Subprocess spawning.
@@ -187,6 +201,110 @@ def _qualified_segments(call_node: Node) -> list[str] | None:
     txt = fn.text.decode("utf-8", "replace").split("<")[0]
     segs = [s for s in txt.split("::") if s]
     return segs or None
+
+
+def _subtree(node: Node | None) -> Iterator[Node]:
+    return BasePerfDialect._walk(node) if node is not None else iter(())
+
+
+def _names_identifier(node: Node | None, suffixes: Iterable[str]) -> bool:
+    """True when *node*'s subtree holds an identifier ending in one of *suffixes*."""
+    ends = tuple(suffixes)
+    return any(
+        n.type == "identifier" and (n.text or b"").decode("utf-8", "replace").endswith(ends)
+        for n in _subtree(node)
+    )
+
+
+def _conjuncts(node: Node | None) -> list[Node]:
+    """The ``&&`` operands of a loop condition, through parentheses and the
+    ``condition_clause`` wrapper (one operand when there is no ``&&``)."""
+    if node is None:
+        return []
+    if node.type in ("condition_clause", "parenthesized_expression") and node.named_child_count == 1:
+        return _conjuncts(node.named_children[0])
+    op = node.child_by_field_name("operator")
+    if node.type == "binary_expression" and op is not None and op.type == "&&":
+        return _conjuncts(node.child_by_field_name("left")) + _conjuncts(
+            node.child_by_field_name("right")
+        )
+    return [node]
+
+
+def _is_signal_retry_loop(node: Node) -> bool:
+    """``while ((n = f()) == -1 && errno == EINTR);``: every pass past the first
+    needs an interrupted call, so the loop retries one call rather than walking
+    data. An ``||`` condition can repeat for another reason and does not match."""
+    if node.type not in ("while_statement", "do_statement"):
+        return False
+    return any(
+        c.type == "binary_expression"
+        and (op := c.child_by_field_name("operator")) is not None
+        and op.type == "=="
+        and _names_identifier(c, SIGNAL_RETRY_ERRNOS)
+        for c in _conjuncts(node.child_by_field_name("condition"))
+    )
+
+
+def _walks_candidate_list(node: Node) -> bool:
+    """``for (rp = res; rp; rp = rp->ai_next)``: tries each address one name
+    resolved to, a bounded candidate list rather than a data collection."""
+    update = node.child_by_field_name("update") if node.type == "for_statement" else None
+    return any(
+        n.type == "field_identifier" and (n.text or b"").decode() in CANDIDATE_LIST_LINKS
+        for n in _subtree(update)
+    )
+
+
+def _assigned_field(node: Node) -> tuple[bytes | None, bytes | None]:
+    """``(object, field)`` of an ``obj.field = ...`` assignment, else ``(None, None)``."""
+    left = node.child_by_field_name("left") if node.type == "assignment_expression" else None
+    if left is None or left.type != "field_expression":
+        return None, None
+    obj, field = left.child_by_field_name("argument"), left.child_by_field_name("field")
+    return (obj.text if obj else None), (field.text if field else None)
+
+
+def _hints_flags_assignment(call: Node, hints: bytes) -> Node | None:
+    """The last ``<hints>.ai_flags = ...`` written before *call* in its function."""
+    fn = call.parent
+    while fn is not None and fn.type not in ("function_definition", "lambda_expression"):
+        fn = fn.parent
+    writes = [
+        n
+        for n in _subtree(fn)
+        if n.end_byte <= call.start_byte and _assigned_field(n) == (hints, b"ai_flags")
+    ]
+    return max(writes, key=lambda n: n.start_byte, default=None)
+
+
+def _hints_argument(args: Node) -> bytes | None:
+    """The name of ``getaddrinfo``'s third argument (``&hints`` -> ``hints``)."""
+    named = args.named_children
+    hints = named[2] if len(named) >= 3 else None
+    if hints is not None and hints.type == "pointer_expression":
+        hints = hints.child_by_field_name("argument")
+    return hints.text if hints is not None and hints.type == "identifier" else None
+
+
+def _resolves_numeric_only(call: Node) -> bool:
+    """A ``getaddrinfo`` call made with a numeric-only flag, passed directly or
+    as the last ``<hints>.ai_flags`` assignment before the call.
+
+    Ceiling: a wrapper that forwards the flag through its own parameter
+    (``callGetaddrinfo(..., AI_NUMERICHOST)``) is still read as a lookup,
+    since the flag would have to be followed across the call.
+    """
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return False
+    if _names_identifier(args, NUMERIC_ONLY_RESOLVER_FLAGS):
+        return True
+    hints = _hints_argument(args)
+    flags = _hints_flags_assignment(call, hints) if hints else None
+    return flags is not None and _names_identifier(
+        flags.child_by_field_name("right"), NUMERIC_ONLY_RESOLVER_FLAGS
+    )
 
 
 def _declared_type_name(node: Node) -> str | None:
@@ -316,12 +434,25 @@ class CppPerfDialect(BasePerfDialect):
             return "filesystem"
         return None
 
+    def call_sink_kind(
+        self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
+    ) -> str | None:
+        kind = super().call_sink_kind(
+            call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
+        )
+        if kind == "network" and self.callee_method_name(call) in RESOLVER_FUNCTIONS:
+            return None if _resolves_numeric_only(call) else kind
+        return kind
+
     # -- loops ----------------------------------------------------------------
 
     def is_constant_loop(self, node: Node) -> bool:
-        """``for (int i = 0; i < 8; i++)`` with a literal bound is a compile-time
-        count, not a data-dependent multiplier. A range-for always iterates data,
-        and ``while`` / ``do`` bounds are opaque."""
+        """Not a data-dependent multiplier: ``for (int i = 0; i < 8; i++)`` with
+        a literal bound, an ``EINTR`` retry loop, or a walk over the addresses
+        one name resolved to. A range-for always iterates data, and any other
+        ``while`` / ``do`` bound is opaque."""
+        if _is_signal_retry_loop(node) or _walks_candidate_list(node):
+            return True
         if node.type != "for_statement":
             return False
         cond = node.child_by_field_name("condition")
