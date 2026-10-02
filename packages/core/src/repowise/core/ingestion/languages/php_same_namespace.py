@@ -203,10 +203,18 @@ def resolve_php_same_namespace_refs(
     # pair already linked, so it only adds files no code names.
     code_texts = sorted((path, blank_php_comments(text)) for path, text in texts.items())
     added = emit_scope_edges(
-        graph, code_texts, plan,
-        skip_names=frozenset(), ident_re=_NAME_RE, declared_name=php_class_name,
+        graph,
+        code_texts,
+        plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
     )
     return added + emit_scope_edges(
-        graph, sorted(texts.items()), comment_plan,
-        skip_names=frozenset(), ident_re=_NAME_RE, declared_name=php_class_name,
+        graph,
+        sorted(texts.items()),
+        comment_plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
     )
