@@ -277,7 +277,8 @@ def test_batch_none_for_while_loop():
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
         b"        r = repos.pop() if repos else None\n"
     )
-    assert facts is None
+    # A cursor loop binds no element, so nothing per-key reaches the call.
+    assert facts is not None and facts.batch is None and facts.key_unused
 
 
 # ---------------------------------------------------------------------------

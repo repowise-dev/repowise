@@ -242,6 +242,10 @@ def assess_fix(
                 ),
                 ("result_equivalence",),
             )
+        if details and all(detail.get("loop_key_unused") for detail in details):
+            # No element or index of the loop reaches the call: a retry,
+            # fallback or partial-write loop, with no set of keys to batch.
+            return FixAssessment(None, ("per_key_call",))
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
