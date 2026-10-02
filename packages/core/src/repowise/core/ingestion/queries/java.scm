@@ -7,35 +7,27 @@
 ; Symbols
 ; ---------------------------------------------------------------------------
 
+; One pattern per declaration, modifiers optional: with a second pattern
+; that captured them, the bare one matched first and a class's annotations
+; (``@Component``, ``@State``) never reached its symbol.
 (class_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(class_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (interface_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(interface_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (enum_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 ; Java 16+ records: record Point(double x, double y) {}
 (record_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(record_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 

@@ -194,6 +194,7 @@ these, so they are never flagged rather than flagged and down-weighted.
 | Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
 | Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
 | Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build file (above), task file (`Dockerfile`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
+| Build-named JVM classes | A class whose fully-qualified name a `build.gradle(.kts)` quotes: `esplugin { classname '...' }`, `implementationClass`, `mainClass` |
 | Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
 | Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
 | Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
@@ -206,7 +207,12 @@ Symbols decorated by a framework are treated as live too: pytest fixtures, Flask
 and FastAPI routes, Django `admin.register` and signal receivers, Celery tasks,
 Click and Typer commands, and the JVM stereotype and routing annotations
 (`@Component`, `@Service`, `@RestController`, `@Entity`, `@KafkaListener`,
-`@GetMapping`, `@Test`, JAX-RS `@Path` / `@GET`). Decorator *suffixes* are matched
+`@GetMapping`, `@Test`, JAX-RS `@Path` / `@GET`), and JMH `@State`,
+`@BenchmarkMode` and `@Benchmark`. Every annotation of a Java or Kotlin
+declaration counts, not only the first. A Java, Kotlin or Scala export whose
+name is written in another code file, or further down its own file, is
+dropped: those languages use a type from its own package by its bare name,
+with no import. Decorator *suffixes* are matched
 too, so `@my_local_group.command` and `@api.get` register even when the receiver
 has a project-local name.
 

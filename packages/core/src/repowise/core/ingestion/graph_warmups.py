@@ -86,6 +86,11 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         entry_fqns.update(impls)
     for fqns in index.autoconfig_imports.values():
         entry_fqns.update(fqns)
+    # Classes a Gradle build script names (plugin ``classname``,
+    # ``implementationClass``, ``mainClass``) and loads by reflection.
+    from .resolvers.jvm_gradle import build_script_class_names
+
+    entry_fqns.update(build_script_class_names(ctx))
 
     for fqn in entry_fqns:
         for path in index.files_for_fqn(fqn):
