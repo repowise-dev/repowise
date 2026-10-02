@@ -241,3 +241,32 @@ def test_php_use_both_ways_is_a_cycle(tmp_path):
         "src/Identity/HostIdentity.php",
         "src/Validation/HostValidator.php",
     ]
+
+
+def _detect_lang(g: nx.DiGraph, file_path: str, language: str) -> list:
+    idx = build_file_scc_index(g)
+    ctx = RefactoringContext(
+        file_path=file_path, language=language, nloc=50, graph=g, file_scc=idx.get(file_path)
+    )
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "break_cycle"]
+
+
+def test_same_package_java_cycle_is_kept_but_demoted():
+    a, b = "src/com/acme/Project.java", "src/com/acme/User.java"
+    out = _detect_lang(_import_graph([(a, b), (b, a)]), a, "java")
+    assert len(out) == 1
+    assert out[0].confidence == "low"
+    assert out[0].evidence["idiom"] == "same_package"
+
+
+def test_cross_package_java_cycle_is_not_demoted():
+    a, b = "src/com/acme/api/Client.java", "src/com/acme/core/Engine.java"
+    out = _detect_lang(_import_graph([(a, b), (b, a)]), a, "java")
+    assert out[0].confidence == "high"
+    assert "idiom" not in out[0].evidence
+
+
+def test_same_directory_python_cycle_is_not_demoted():
+    # A Python import cycle fails at import time; it is never an idiom.
+    out = _detect_lang(_import_graph([("pkg/a.py", "pkg/b.py"), ("pkg/b.py", "pkg/a.py")]), "pkg/a.py", "python")
+    assert out[0].confidence == "high"
