@@ -382,20 +382,27 @@ def directive_from_summary(row: Any | None, *, include_unverified: bool = False)
             "arguments": {"opportunity_id": lead.get("opportunity_id")},
         },
     }
-    # The honest half. A file's plans very often answer a different question
-    # from the one that made it the worst file, and saying so beats routing
-    # an agent to cleanup it will read as the fix.
+    note = _addresses_note(addresses, lead.get("lead_biomarker"))
+    if note:
+        directive["note"] = note
+    return directive
+
+
+def _addresses_note(addresses: bool | None, lead_biomarker: str | None) -> str | None:
+    """The honest half. A file's plans very often answer a different question
+    from the one that made it the worst file, and saying so beats routing an
+    agent to cleanup it will read as the fix."""
     if addresses is False:
-        directive["note"] = (
-            f"These steps do not address {lead.get('lead_biomarker')!r}, this file's "
+        return (
+            f"These steps do not address {lead_biomarker!r}, this file's "
             "dominant finding. Treat them as related cleanup, not the fix for it."
         )
-    elif addresses is None:
-        directive["note"] = (
+    if addresses is None:
+        return (
             "No dominant finding was recorded for this file, so whether these steps "
             "address it is unknown rather than no."
         )
-    return directive
+    return None
 
 
 def next_actions(row: Any, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from ...support_paths import is_doc_or_config_path
 from ...test_paths import is_test_related_path
-from ..finding_registry import excluded_types, gate_for
+from ..finding_registry import excluded_types, gate_for, is_served
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -293,20 +293,9 @@ class ChangeHealthDeltaService:
         base_findings = [
             f
             for f in base_run.findings
-            if rename.get(f.file_path, f.file_path) in subject
-            and not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
-            and gate_for("health", f.file_path, f.biomarker_type) is None
+            if rename.get(f.file_path, f.file_path) in subject and _comparable(f, withheld)
         ]
-        head_findings = [
-            f
-            for f in head_run.findings_for(subject)
-            if not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
-            and gate_for("health", f.file_path, f.biomarker_type) is None
-        ]
+        head_findings = [f for f in head_run.findings_for(subject) if _comparable(f, withheld)]
         match = matcher.match(base_findings, head_findings)
 
         by_file: dict[str, list[HealthFindingData]] = {}
@@ -452,6 +441,16 @@ def _limits(head_findings: list[HealthFindingData]) -> list[str]:
             "measured below the precision bar there, so none is reported for them."
         )
     return limits
+
+
+def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
+    """A finding both sides of a comparison count: not advisory, not a test's
+    performance finding, and one the registry serves."""
+    return (
+        not is_advisory(finding.biomarker_type)
+        and not _is_test_perf(finding)
+        and is_served("health", finding.biomarker_type, finding.file_path, withheld)
+    )
 
 
 def _is_test_perf(finding: HealthFindingData) -> bool:

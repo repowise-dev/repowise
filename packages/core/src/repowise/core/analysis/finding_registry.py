@@ -169,6 +169,15 @@ def gate_for(layer: GateLayer, path: str, kind: str | None = None) -> LanguageGa
     return None
 
 
+def is_served(
+    layer: GateLayer, finding_type: Any, path: str, excluded: frozenset[str]
+) -> bool:
+    """A row of *finding_type* on *path* reaches a default surface: its type is
+    not in *excluded* (an :func:`excluded_types` result) and no gate holds back
+    *layer* on its language."""
+    return finding_type not in excluded and gate_for(layer, path, finding_type) is None
+
+
 def gated_extensions(language: str) -> tuple[str, ...]:
     """Every extension mapped to *language*, lower-case with the dot."""
     return tuple(sorted(ext for ext, tag in EXTENSION_TO_LANGUAGE.items() if tag == language))
@@ -271,6 +280,7 @@ __all__ = [
     "gated_extensions",
     "gated_summary",
     "gates_on",
+    "is_served",
     "is_shown",
     "language_of",
     "split_gated",

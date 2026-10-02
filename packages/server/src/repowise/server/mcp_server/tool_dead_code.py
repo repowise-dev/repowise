@@ -285,10 +285,9 @@ async def get_dead_code(
         # A lookup by id still answers for a gated finding; lists do not show it.
         all_findings, gated = filters.split_gated(every_shown_kind)
 
-        # Phase 4: load git metadata for "last meaningful change" enrichment
-        git_meta_map = await _load_git_meta_map(
-            session, repository.id, every_shown_kind if finding_id else all_findings
-        )
+        # Phase 4: load git metadata for "last meaningful change" enrichment,
+        # over the gated rows too so a lookup by id is enriched the same way.
+        git_meta_map = await _load_git_meta_map(session, repository.id, every_shown_kind)
 
     reference_repository = ctx.alias or repository.name
     if finding_id:

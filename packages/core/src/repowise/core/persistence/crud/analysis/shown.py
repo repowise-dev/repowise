@@ -68,7 +68,6 @@ async def gated_counts(
     layer: GateLayer,
     model: Any,
     *where: Any,
-    path_col: Any = None,
     kind_col: Any = None,
     include_unverified: bool = False,
 ) -> dict[str, dict]:
@@ -78,8 +77,7 @@ async def gated_counts(
     surface can say how many rows it left out and why instead of reading empty.
     Empty when ``include_unverified``: nothing was held back.
     """
-    path_col = model.file_path if path_col is None else path_col
-    cells = [] if include_unverified else _cells(layer, path_col, kind_col)
+    cells = [] if include_unverified else _cells(layer, model.file_path, kind_col)
     if not cells:
         return {}
     language = case(*((match, lang) for lang, match in cells))
