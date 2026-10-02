@@ -369,6 +369,40 @@ class TestAssemblyScanDiscovery:
         assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
 
 
+class TestToolDiscoveredRoots:
+    """A type a tool finds with no call in code: its file is a root, not an edge target."""
+
+    _FACTORY = (
+        "using Microsoft.EntityFrameworkCore.Design;\n"
+        "namespace App.Data;\n"
+        "public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext> {\n"
+        "    public AppDbContext CreateDbContext(string[] args) => null;\n}\n"
+    )
+
+    def _roots(self, repo: Path, files: dict[str, str]) -> set[str]:
+        for rel, text in files.items():
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return {p for p, d in graph.nodes(data=True) if d.get("is_reachability_root")}
+
+    def test_design_time_factory_is_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Factory.cs": self._FACTORY}) == {"Factory.cs"}
+
+    def test_design_time_services_is_a_root(self, tmp_path: Path) -> None:
+        text = "public class DesignServices : IDesignTimeServices {}\n"
+        assert self._roots(tmp_path, {"Design.cs": text}) == {"Design.cs"}
+
+    def test_an_ordinary_class_is_not_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Plain.cs": "public class Plain : Base {}\n"}) == set()
+
+    def test_a_dead_sibling_keeps_the_file_judged(self, tmp_path: Path) -> None:
+        text = self._FACTORY + "public class Dead {}\n"
+        assert self._roots(tmp_path, {"Factory.cs": text}) == set()
+
+
 class TestDotNetDynamicHints:
     def test_di_registration_emits_interface_to_impl(self, tmp_path: Path) -> None:
         (tmp_path / "IUserService.cs").write_text(

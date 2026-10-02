@@ -16,10 +16,12 @@ the registering file to the type's file and names only the discovered types, so
 a dead sibling type in the same file is still reported. MVC controllers are
 wired by :mod:`.aspnet`.
 
+A type a tool discovers with no call in code (EF's
+``IDesignTimeDbContextFactory``, found by ``dotnet ef``) makes its file a
+reachability root instead, when every top-level type in the file is one.
+
 Ceiling: with no .NET project index (no ``.csproj`` in the repository) the
-call is matched anywhere in the repository. A type discovered with no
-registration call at all (EF's ``IDesignTimeDbContextFactory``, found by the
-``dotnet ef`` tool) is not covered.
+call is matched anywhere in the repository.
 """
 
 from __future__ import annotations
@@ -41,7 +43,17 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _Discovery:
-    """One framework: the bases it discovers and the calls that start it."""
+    """One framework: the bases it discovers and the calls that start it.
+
+    No calls means a tool, not code, does the discovering (``dotnet ef``), so a
+    file whose every top-level type derives from one of the bases is a root
+    rather than an edge target.
+
+    Bases are matched by short name: the parser's heritage drops a namespace
+    qualifier, and a ``global using`` in another file can bring the namespace
+    in, so neither can be checked per type. The registration call, or the
+    tool's own base name, is what keeps a short name from matching at random.
+    """
 
     bases: frozenset[str]
     calls: tuple[str, ...]
@@ -49,6 +61,11 @@ class _Discovery:
 
 #: Base names are as the heritage records them: generic arity dropped.
 _DISCOVERIES: tuple[_Discovery, ...] = (
+    # EF Core design-time services, instantiated by ``dotnet ef``.
+    _Discovery(
+        frozenset({"IDesignTimeDbContextFactory", "IDesignTimeServices"}),
+        (),
+    ),
     # EF Core model configuration.
     _Discovery(frozenset({"IEntityTypeConfiguration"}), ("ApplyConfigurationsFromAssembly",)),
     # FastEndpoints: endpoints, validators, mappers, summaries, groups, processors.
@@ -227,6 +244,7 @@ def _add_discovery_edges(
         for path, parsed in parsed_files.items()
         if parsed.file_info.language == "csharp" and path in path_set
     ]
+    _mark_tool_roots(graph, cs_files)
     projects = _Projects(get_or_build_index(ctx), ctx.repo_path)
     registrars = _registrars(cs_files, projects)
     if not registrars:
@@ -234,6 +252,34 @@ def _add_discovery_edges(
     wired = _wired_types(cs_files, projects, registrars)
     # A type with no registrar in scope maps to its own file, which adds nothing.
     return sum(_add_edge_if_new(graph, src, dst, names) for (src, dst), names in wired.items())
+
+
+_TYPE_KINDS = frozenset({"class", "struct", "record"})
+
+
+_TOOL_BASES = frozenset(b for d in _DISCOVERIES if not d.calls for b in d.bases)
+
+
+def _is_tool_root(parsed: Any) -> bool:
+    """Whether every top-level type of *parsed* is one a tool discovers."""
+    modules = {s.name for s in parsed.symbols if s.kind == "module"}
+    types = {
+        s.name
+        for s in parsed.symbols
+        if s.kind in _TYPE_KINDS and (not s.parent_name or s.parent_name in modules)
+    }
+    found = {
+        r.child_name
+        for r in getattr(parsed, "heritage", ())
+        if r.parent_name.rsplit(".", 1)[-1] in _TOOL_BASES
+    }
+    return bool(types) and types <= found
+
+
+def _mark_tool_roots(graph: nx.DiGraph, cs_files: list[tuple[str, Any]]) -> None:
+    for path, parsed in cs_files:
+        if path in graph and _is_tool_root(parsed):
+            graph.nodes[path]["is_reachability_root"] = True
 
 
 class _AssemblyScanHandler:
