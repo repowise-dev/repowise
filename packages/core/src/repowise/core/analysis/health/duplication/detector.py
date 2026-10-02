@@ -36,8 +36,8 @@ from repowise.core.cancellation import check_cancelled
 from repowise.core.co_change import parse_partners
 
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
-from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
-from .tokenizer import tokenize_file
+from .rabin_karp import WindowHash, WindowRow, index_by_hash, window_rows
+from .tokenizer import tokenize_file_rows
 
 log = structlog.get_logger(__name__)
 
@@ -136,33 +136,12 @@ def _is_noise(kind: str) -> bool:
     return kind == "LIT" or not any(ch.isalnum() for ch in kind)
 
 
-def _informative_windows(
-    windows: list[WindowHash], kinds: list[str], window: int
-) -> list[WindowHash]:
+def _informative_windows(windows: list[WindowRow], kinds: list[str], window: int) -> list[WindowRow]:
     """Drop windows that are more than ``_MAX_NOISE_SHARE`` literals/punctuation."""
-    noise = list(accumulate((_is_noise(k) for k in kinds), initial=0))
+    noisy = {kind: _is_noise(kind) for kind in set(kinds)}
+    noise = list(accumulate((noisy[k] for k in kinds), initial=0))
     limit = _MAX_NOISE_SHARE * window
-    return [w for w in windows if noise[w.start_index + window] - noise[w.start_index] <= limit]
-
-
-def _windows_match(a: _Stream, b: _Stream, a_start: int, b_start: int, window: int) -> bool:
-    """Confirm a hash match: equal token kinds, then shared identifier names.
-
-    Operates on the per-file streams so cached token streams round-trip
-    without rebuilding Token objects.
-    """
-    a_kinds, a_names = a
-    b_kinds, b_names = b
-    if a_start + window > len(a_kinds) or b_start + window > len(b_kinds):
-        return False
-    if a_kinds[a_start : a_start + window] != b_kinds[b_start : b_start + window]:
-        return False
-    a_set = set(a_names[a_start : a_start + window])
-    b_set = set(b_names[b_start : b_start + window])
-    a_set.discard("")
-    b_set.discard("")
-    union = len(a_set | b_set)
-    return union > 0 and len(a_set & b_set) >= _MIN_NAME_JACCARD * union
+    return [w for w in windows if noise[w[1] + window] - noise[w[1]] <= limit]
 
 
 def _merge_adjacent_pairs(raw: list[ClonePair]) -> list[ClonePair]:
@@ -396,35 +375,26 @@ def _collect_windows(
 
         if cached is not None:
             kinds, names, nloc, window_tuples = cached
-            windows = [
-                WindowHash(
-                    file_path=path,
-                    hash_value=h,
-                    start_index=si,
-                    start_line=sl,
-                    end_line=el,
-                )
-                for h, si, sl, el in window_tuples
-            ]
         else:
-            toks = tokenize_file(language, source, path)
-            if len(toks) > limits.max_tokens_per_file:
+            rows = tokenize_file_rows(language, source, path)
+            if len(rows) > limits.max_tokens_per_file:
                 diag.skipped_token_cap += 1
                 continue
-            kinds = [t.kind for t in toks]
-            names = [t.name for t in toks]
+            kinds, start_lines, end_lines, names = [], [], [], []
+            if rows:
+                kinds, start_lines, end_lines, _, _, names = map(list, zip(*rows, strict=True))
+            del rows
             nloc = _nloc(source)
-            windows = _informative_windows(
-                rolling_hashes(path, toks, window_tokens), kinds, window_tokens
+            window_tuples = _informative_windows(
+                window_rows(kinds, start_lines, end_lines, window_tokens), kinds, window_tokens
             )
+            del start_lines, end_lines
             if cache is not None:
-                cache.put(
-                    content_hash,
-                    kinds,
-                    names,
-                    nloc,
-                    [(w.hash_value, w.start_index, w.start_line, w.end_line) for w in windows],
-                )
+                cache.put(content_hash, kinds, names, nloc, window_tuples)
+        windows = [
+            WindowHash(file_path=path, hash_value=h, start_index=si, start_line=sl, end_line=el)
+            for h, si, sl, el in window_tuples
+        ]
 
         if len(kinds) < window_tokens:
             continue
@@ -468,7 +438,6 @@ def _pairs_from_buckets(
     return the pairs found so far rather than spinning indefinitely.
     """
     raw_pairs: list[ClonePair] = []
-    seen: set[tuple[str, int, str, int]] = set()
     deadline = (time.monotonic() + limits.time_budget_secs) if limits.time_budget_secs else None
 
     for i, windows in enumerate(bucket.values()):
@@ -483,7 +452,7 @@ def _pairs_from_buckets(
         if deadline is not None and (i & 0x3FF) == 0 and time.monotonic() > deadline:
             diag.timed_out = True
             break
-        _verify_bucket(windows, per_file_streams, window_tokens, seen, raw_pairs)
+        _verify_bucket(windows, per_file_streams, window_tokens, raw_pairs)
 
     return raw_pairs
 
@@ -492,32 +461,45 @@ def _verify_bucket(
     windows: list[WindowHash],
     per_file_streams: dict[str, _Stream],
     window_tokens: int,
-    seen: set[tuple[str, int, str, int]],
     out: list[ClonePair],
 ) -> None:
     """Confirm every unordered pair in one (bounded) hash bucket.
 
-    Hash equality is necessary but not sufficient — ``_windows_match``
-    rejects collisions and renamed look-alikes.
+    Hash equality is necessary but not sufficient: a pair must have equal
+    token kinds (rules out collisions) and share at least
+    ``_MIN_NAME_JACCARD`` of their raw identifier names (rules out renamed
+    look-alikes). Each window's kind slice and name set is built once per
+    bucket rather than once per pair. A window has one hash, so it sits in
+    exactly one bucket and no pair is seen twice.
     """
+    kind_slices: list[list[str] | None] = []
+    name_sets: list[set[str] | None] = []
+    for w in windows:
+        kinds = per_file_streams[w.file_path][0]
+        end = w.start_index + window_tokens
+        kind_slices.append(kinds[w.start_index : end] if end <= len(kinds) else None)
+        name_sets.append(None)
+
     for i in range(len(windows)):
+        a_kinds = kind_slices[i]
+        if a_kinds is None:
+            continue
         for j in range(i + 1, len(windows)):
+            if kind_slices[j] != a_kinds:
+                continue
+            a_names = name_sets[i]
+            if a_names is None:
+                a_names = name_sets[i] = _window_names(windows[i], per_file_streams, window_tokens)
+            b_names = name_sets[j]
+            if b_names is None:
+                b_names = name_sets[j] = _window_names(windows[j], per_file_streams, window_tokens)
+            union = len(a_names | b_names)
+            if not (union > 0 and len(a_names & b_names) >= _MIN_NAME_JACCARD * union):
+                continue
             a, b = windows[i], windows[j]
             # Canonicalize so (file_a, file_b) ordering is stable.
             if (a.file_path, a.start_index) > (b.file_path, b.start_index):
                 a, b = b, a
-            key = (a.file_path, a.start_index, b.file_path, b.start_index)
-            if key in seen:
-                continue
-            seen.add(key)
-            if not _windows_match(
-                per_file_streams[a.file_path],
-                per_file_streams[b.file_path],
-                a.start_index,
-                b.start_index,
-                window_tokens,
-            ):
-                continue
             out.append(
                 ClonePair(
                     file_a=a.file_path,
@@ -529,6 +511,13 @@ def _verify_bucket(
                     token_count=window_tokens,
                 )
             )
+
+
+def _window_names(w: WindowHash, per_file_streams: dict[str, _Stream], window_tokens: int) -> set[str]:
+    """The raw identifier names inside one window."""
+    names = set(per_file_streams[w.file_path][1][w.start_index : w.start_index + window_tokens])
+    names.discard("")
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -775,12 +764,9 @@ def _bucket_contributions(
     The degenerate-bucket cap applies to each bucket's full membership
     (rows here cover it: every window with a touched hash was gathered),
     so a bucket crossing the cap in either direction contributes pairs on
-    exactly one side of the splice. The shared ``seen`` set mirrors the
-    full pipeline's; (file, start_index) pairs are unique to one bucket,
-    so per-run scoping is equivalent.
+    exactly one side of the splice.
     """
     out: list[ClonePair] = []
-    seen: set[tuple[str, int, str, int]] = set()
     for rows in rows_by_hash.values():
         if len(rows) < 2:
             continue
@@ -789,7 +775,7 @@ def _bucket_contributions(
                 diag.degenerate_buckets += 1
             continue
         check_cancelled()
-        _verify_bucket(rows, streams_map, window_tokens, seen, out)
+        _verify_bucket(rows, streams_map, window_tokens, out)
     return out
 
 

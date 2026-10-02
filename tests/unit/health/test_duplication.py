@@ -426,6 +426,26 @@ def test_tokenize_file_keeps_raw_identifier_names():
     assert [t.name for t in toks] == ["total", "", "count", "", ""]
 
 
+def test_tokenize_file_lines_match_tree_sitter_points():
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    source = b'x = 1\r\n\r\ns = """a\r\nb\n"""\nif x:\n    y = (s,\n         x)\n'
+    tree = Parser(_get_language("python")).parse(source)
+    leaves = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.child_count == 0 and source[node.start_byte : node.end_byte].strip():
+            leaves.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        stack.extend(reversed(node.children))
+
+    toks = tokenize_file("python", source)
+    assert [(t.start_line, t.end_line) for t in toks] == leaves
+    assert (3, 5) in [(t.start_line, t.end_line) for t in toks]  # the multi-line string
+
+
 def test_detect_clones_ignores_identical_import_blocks(tmp_path: Path):
     imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(12))
     a = _write(tmp_path, "a.py", imports + "def f():\n    return 1\n")
