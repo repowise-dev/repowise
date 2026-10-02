@@ -16,6 +16,7 @@ import os
 import re
 from functools import lru_cache
 
+from repowise.core.code_origin import is_vendored_or_generated_path
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").
@@ -146,6 +147,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Source-generator output directories, wired in at build time.
     "*/Generated/*.cs",
     "*/generated/*.cs",
+    # .NET reference-assembly sources: public API declarations compiled into
+    # the ref assembly, never imported by the implementation they describe.
+    "*/ref/*.cs",
     # Win32 P/Invoke surfaces, reached only via `[DllImport]` calls.
     "*NativeMethods.cs",
     "*SafeNativeMethods.cs",
@@ -1136,6 +1140,15 @@ def never_flag_match(path: str) -> bool:
         if bucket is not None and bucket.match(norm):
             return True
     return False
+
+
+def never_flag_path(path: str) -> bool:
+    """The never-flag globs, plus vendored and generated code by path.
+
+    A copied library or a generator's output is not this repository's to
+    delete, whatever its importers look like.
+    """
+    return never_flag_match(path) or is_vendored_or_generated_path(path)
 
 
 def _is_fixture_path(path: str) -> bool:
