@@ -1989,3 +1989,37 @@ def test_rust_span_ending_on_an_if_in_a_loop_body_is_still_offered():
     lmap = get_language_map("rust")
     fn = _first("rust", src)
     assert any(e.end_line == 12 for e in find_extractions(fn, lmap))
+
+
+def test_rust_match_arm_binders_are_params_of_a_span_in_the_arm():
+    src = """
+        fn class_regex(re: &mut String, tokens: &[Token]) {
+            for tok in tokens.iter() {
+                match *tok {
+                    Token::Class { negated, ref ranges } => {
+                        re.push('[');
+                        if negated {
+                            re.push('^');
+                        }
+                        for r in ranges {
+                            if r.0 == r.1 {
+                                re.push(r.0);
+                            } else {
+                                re.push(r.1);
+                            }
+                        }
+                        re.push(']');
+                    }
+                    None => {}
+                    y if y > 2 => {}
+                }
+            }
+        }
+        """
+    fn = _first("rust", src)
+    defs = {(d.var, d.line) for d in fn.def_use.definitions}
+    assert ("negated", 5) in defs and ("ranges", 5) in defs
+    assert not any(var in {"None", "Token", "Class"} for var, _ in defs)
+    spans = [e for e in find_extractions(fn, get_language_map("rust")) if e.start_line <= 7]
+    assert spans
+    assert all({"negated", "ranges"} <= set(e.params) for e in spans)
