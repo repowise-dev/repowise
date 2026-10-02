@@ -1235,11 +1235,11 @@ class TestGetDiagnostics:
         assert len(data["orphan_providers"]) == 1
         assert data["orphan_providers"][0]["contract_id"] == "http::GET::/orphan"
 
-        def test_extraction_diagnostics_schema_matches_core_payload(self) -> None:
-            diagnostics = ExtractionDiagnostics()
-            payload = diagnostics.to_dict()
+    def test_extraction_diagnostics_schema_matches_core_payload(self) -> None:
+        diagnostics = ExtractionDiagnostics()
+        payload = diagnostics.to_dict()
 
-            assert set(payload) == set(WorkspaceExtractionDiagnostics.model_fields)
+        assert set(payload) == set(WorkspaceExtractionDiagnostics.model_fields)
 
 
 # ---------------------------------------------------------------------------
