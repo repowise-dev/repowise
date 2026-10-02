@@ -68,6 +68,7 @@ async def _get_dead_code_all_repos(
     merged_findings: list[dict] = []
     count_parts: list[dict[str, Any]] = []
     merged_withheld: dict[str, dict] = {}
+    merged_gated: dict[str, dict] = {}
 
     for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
@@ -79,9 +80,11 @@ async def _get_dead_code_all_repos(
                 _get_exclude_spec(ctx.path),
             )
             repo_findings, repo_withheld = filters.split_withheld(repo_findings)
-            for name, entry in repo_withheld.items():
-                merged = merged_withheld.setdefault(name, {**entry, "count": 0})
-                merged["count"] += entry["count"]
+            repo_findings, repo_gated = filters.split_gated(repo_findings)
+            for into, held in ((merged_withheld, repo_withheld), (merged_gated, repo_gated)):
+                for name, entry in held.items():
+                    merged = into.setdefault(name, {**entry, "count": 0})
+                    merged["count"] += entry["count"]
 
             git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
 
@@ -92,7 +95,11 @@ async def _get_dead_code_all_repos(
         count_parts.append(summary_counts(repo_findings))
 
     summary = build_summary(
-        merge_summary_counts(count_parts), len(merged_findings), filters, merged_withheld
+        merge_summary_counts(count_parts),
+        len(merged_findings),
+        filters,
+        merged_withheld,
+        merged_gated,
     )
     tiers = build_tiers(merged_findings, limit, tier)
     adjust_cross_repo(tiers, _cross_repo_lookup())
@@ -164,6 +171,7 @@ async def get_dead_code(
     no_unreachable: bool = False,
     no_unused_exports: bool = False,
     finding_id: str | None = None,
+    include_unverified: bool = False,
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
@@ -188,6 +196,8 @@ async def get_dead_code(
         include_zombie_packages: monorepo package findings (default true).
         no_unreachable: skip file-level reachability findings.
         no_unused_exports: skip public-export findings.
+        include_unverified: also show kinds and languages measured below
+            the precision bar (``summary.gated`` counts what is held back).
         finding_id: stable ``id`` emitted by a dead-code finding.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
@@ -221,8 +231,10 @@ async def get_dead_code(
         # Naming a kind, or ``include_internals`` for ``unused_internal``, is the
         # explicit request a provisional kind needs; a hidden kind stays out.
         withheld_kinds=excluded_types(
-            requested=[k for k in (kind, "unused_internal" if include_internals else None) if k]
+            requested=[k for k in (kind, "unused_internal" if include_internals else None) if k],
+            include_provisional=include_unverified,
         ),
+        include_unverified=include_unverified,
     )
 
     def _maybe_limit_note(target: dict[str, Any]) -> None:
@@ -267,19 +279,23 @@ async def get_dead_code(
 
         # Fetch all open findings for summary computation. Withheld kinds are
         # read too, so the summary can count what it leaves out.
-        all_findings, withheld = filters.split_withheld(
+        every_shown_kind, withheld = filters.split_withheld(
             await get_dead_code_findings(session, repository.id, include_withheld=True)
         )
+        # A lookup by id still answers for a gated finding; lists do not show it.
+        all_findings, gated = filters.split_gated(every_shown_kind)
 
         # Phase 4: load git metadata for "last meaningful change" enrichment
-        git_meta_map = await _load_git_meta_map(session, repository.id, all_findings)
+        git_meta_map = await _load_git_meta_map(
+            session, repository.id, every_shown_kind if finding_id else all_findings
+        )
 
     reference_repository = ctx.alias or repository.name
     if finding_id:
         match = next(
             (
                 row
-                for row in all_findings
+                for row in every_shown_kind
                 if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
             ),
             None,
@@ -315,7 +331,7 @@ async def get_dead_code(
         )
 
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld)
+    summary = build_summary(summary_counts(all_findings), len(filtered), filters, withheld, gated)
     adjust_cross_repo(tiers, _cross_repo_lookup(), ctx.alias)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}

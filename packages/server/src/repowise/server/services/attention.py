@@ -27,6 +27,7 @@ from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.persistence.crud.analysis.refactoring import shown_plan_predicate
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
@@ -83,6 +84,7 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
         HealthFinding.status == "open",
         HealthFinding.file_path.not_in(_test_paths(repo_id)),
         HealthFinding.biomarker_type.not_in(excluded_types()),
+        ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
     )
     rows = (
         await session.execute(

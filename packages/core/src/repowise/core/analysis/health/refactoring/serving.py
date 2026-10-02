@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.finding_registry import gate_for
 from repowise.core.analysis.health import queue_rules
 from repowise.core.analysis.health.effort import EFFORT_ORDER
 from repowise.core.analysis.health.queue_rules import Facet, FilterRule, SortKeys
@@ -301,18 +302,33 @@ def evidence_block(
     return block
 
 
-def summary_payload(row: Any | None) -> dict[str, Any]:
-    """The Level-1 rollup from the stored summary row."""
+def _gated_lead(lead: Any, include_unverified: bool) -> bool:
+    """True when the stored lead sits on a file a language gate holds back."""
+    return bool(
+        lead
+        and not include_unverified
+        and gate_for("refactoring", lead.get("file_path") or "", lead.get("lead_refactoring_type"))
+    )
+
+
+def summary_payload(row: Any | None, *, include_unverified: bool = False) -> dict[str, Any]:
+    """The Level-1 rollup from the stored summary row.
+
+    A lead on a gated language is not named (``lead`` is ``None``); the stored
+    totals still count every opportunity.
+    """
     if row is None:
         return dict(UNAVAILABLE)
     payload = _loads_dict(field(row, "summary_json"))
+    if _gated_lead(payload.get("lead"), include_unverified):
+        payload["lead"] = None
     payload["status"] = "available"
     payload["refactoring_model_version"] = field(row, "refactoring_model_version")
     payload["analyzed_commit"] = field(row, "analyzed_commit")
     return payload
 
 
-def directive_from_summary(row: Any | None) -> dict[str, Any]:
+def directive_from_summary(row: Any | None, *, include_unverified: bool = False) -> dict[str, Any]:
     """The Level-0 lead from the stored summary row: one opportunity, and the
     exact call that opens it."""
     if row is None:
@@ -320,6 +336,19 @@ def directive_from_summary(row: Any | None) -> dict[str, Any]:
     payload = _loads_dict(field(row, "summary_json"))
     lead = payload.get("lead")
     total = int(payload.get("opportunities_total") or 0)
+    if _gated_lead(lead, include_unverified):
+        # Deliberate shortcut: the finalizer stores one lead, so a gated lead
+        # is withheld rather than replaced by the best shown opportunity.
+        # Upgrade path: store the best lead per gate state at finalize time.
+        return {
+            "status": "clear",
+            "reason": "lead_in_gated_language",
+            "detail": (
+                "The leading refactoring opportunity is in a language whose plans "
+                "measured below the precision bar; include unverified results to see it."
+            ),
+            "opportunities_total": total,
+        }
     if not lead:
         # The finalizer never leads with a test file, so opportunities
         # without a lead are all in tests.

@@ -26,6 +26,7 @@ from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
@@ -225,6 +226,7 @@ async def overview_summary(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.kind == "unused_export",
                 DeadCodeFinding.status == "open",
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
         or 0

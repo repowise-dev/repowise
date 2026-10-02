@@ -8,6 +8,8 @@
  * first segment of `file_path`.
  */
 
+import type { GatedByLanguage } from "./health.js";
+
 export type DeadCodeStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
 /**
@@ -124,4 +126,6 @@ export interface DeadCodeSummary {
    * report it, and a zero then reads as clean.
    */
   analyzed_at?: string | null;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }

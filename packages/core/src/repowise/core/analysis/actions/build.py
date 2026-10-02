@@ -64,7 +64,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, gate_for
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.rows import field
@@ -206,7 +206,12 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
     by_path: dict[str, list] = defaultdict(list)
     for f in findings:
         path = field(f, "file_path")
-        if path in wanted and _open(f) and field(f, "biomarker_type") not in hidden:
+        if (
+            path in wanted
+            and _open(f)
+            and field(f, "biomarker_type") not in hidden
+            and gate_for("health", path, field(f, "biomarker_type")) is None
+        ):
             by_path[path].append(f)
     out = dict(files)
     for path, found in by_path.items():
@@ -304,6 +309,8 @@ def _recent_candidates(
         if at is None or at < week or not _authored_regression(f):
             continue
         if _is_test(field(f, "file_path"), files):
+            continue
+        if gate_for("health", field(f, "file_path"), field(f, "biomarker_type")):
             continue
         if _shown_code_shape(field(f, "biomarker_type"), hidden):
             out.append((f, at))
@@ -439,6 +446,7 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             if _open(r)
             and field(r, "safe_to_delete")
             and field(r, "kind") not in skipped
+            and gate_for("dead_code", field(r, "file_path"), field(r, "kind")) is None
             and not _is_test(field(r, "file_path"), files)
             and not _test_path(field(r, "file_path"))
         )

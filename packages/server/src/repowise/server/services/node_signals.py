@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -87,6 +88,7 @@ async def collect_node_signals(
     dead_q = select(DeadCodeFinding).where(
         DeadCodeFinding.repository_id == repo_id,
         DeadCodeFinding.status == "open",
+        ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         DeadCodeFinding.kind == "unreachable_file",
     )
     if node_ids is not None:

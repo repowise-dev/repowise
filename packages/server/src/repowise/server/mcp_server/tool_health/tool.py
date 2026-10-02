@@ -251,6 +251,10 @@ async def get_health(
             await _attach_repository_analysis_meta(session, repository, result["_meta"])
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
+        if data.gated:
+            # In ``_meta`` so no ``only`` projection drops it: an agent must
+            # read "held back", never "nothing found".
+            result["_meta"]["gated"] = {**data.gated, "opt_in": {"include": ["unverified"]}}
         pager.report_omissions(result, omission_collector)
         omission_collector.attach(result)
         _attach_semantics(result, req)

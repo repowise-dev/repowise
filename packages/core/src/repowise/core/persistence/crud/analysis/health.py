@@ -48,6 +48,7 @@ from ...models import (
 )
 from .._shared import _BATCH_SIZE
 from .plain_rows import plain_rows
+from .shown import shown
 
 
 def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -493,6 +494,7 @@ async def get_health_findings(
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    include_unverified: bool = False,
     limit: int | None = None,
 ) -> list[HealthFinding]:
     """Findings for one repository: worth doing first ahead of lower-priority
@@ -501,7 +503,10 @@ async def get_health_findings(
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
     provisional type named in ``biomarker_type`` is an explicit request and is
-    returned. ``include_withheld`` is for analysis that must see every row.
+    returned. Files of a language the registry gates for health findings are
+    left out too, unless ``include_unverified`` (which also opts into every
+    provisional type). ``include_withheld`` is for analysis that must see every
+    row.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
@@ -536,7 +541,15 @@ async def get_health_findings(
     if types:
         q = q.where(HealthFinding.biomarker_type.in_(types))
     if not include_withheld:
-        q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
+        q = q.where(
+            shown(
+                "health",
+                HealthFinding.biomarker_type,
+                HealthFinding.file_path,
+                requested=types,
+                include_unverified=include_unverified,
+            )
+        )
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
     if file_paths is not None:
@@ -750,7 +763,7 @@ async def _open_finding_totals_rows(session: AsyncSession, repository_id: str) -
         .where(
             HealthFinding.repository_id == repository_id,
             HealthFinding.status == "open",
-            HealthFinding.biomarker_type.not_in(excluded_types()),
+            shown("health", HealthFinding.biomarker_type, HealthFinding.file_path),
         )
         .order_by(HealthFinding.health_impact.desc(), HealthFinding.id)
     )

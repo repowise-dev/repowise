@@ -52,6 +52,7 @@ from repowise.core.persistence.crud import (
     load_coverage_for_repo,
     serialize_doc_drift_reference_row,
 )
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
@@ -733,6 +734,7 @@ async def _resolve_health(
             HealthFinding.file_path == file_path,
             HealthFinding.status == "open",
             HealthFinding.biomarker_type.not_in(excluded_types()),
+            ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
         )
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)

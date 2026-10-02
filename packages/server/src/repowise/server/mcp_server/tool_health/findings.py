@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
+from repowise.core.persistence.crud.analysis.shown import gated_counts, ungated
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -80,9 +81,39 @@ def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[
 
 def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
     return (
+        *_open_typed(repository, req),
+        ungated(
+            "health",
+            HealthFinding.file_path,
+            HealthFinding.biomarker_type,
+            include_unverified=req.include_unverified,
+        ),
+    )
+
+
+def _open_typed(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings of a type the registry shows, before any language gate."""
+    return (
         HealthFinding.repository_id == repository.id,
         HealthFinding.status == "open",
         HealthFinding.biomarker_type.not_in(req.withheld_types),
+    )
+
+
+async def gated_findings(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> dict[str, dict]:
+    """The open findings a language gate held back from this call, by language."""
+    where = list(_open_typed(repository, req))
+    if pop.scoped:
+        where.append(HealthFinding.file_path.in_(pop.effective_targets))
+    return await gated_counts(
+        session,
+        "health",
+        HealthFinding,
+        *where,
+        kind_col=HealthFinding.biomarker_type,
+        include_unverified=req.include_unverified,
     )
 
 

@@ -914,6 +914,7 @@ export interface DeadCodeSummaryResponse {
   total_lines: number;
   by_kind: Record<string, unknown>;
   analyzed_at?: string | null;
+  gated?: Record<string, unknown>;
 }
 
 /** A link from a decision to a governed file or module. */
@@ -2747,6 +2748,7 @@ export interface RefactoringOpportunitiesResponse {
   scope?: "fix_first" | "all";
   hidden?: RefactoringHiddenCounts | null;
   counts?: QueueCounts | null;
+  gated?: Record<string, Record<string, unknown>> | null;
 }
 
 /**
@@ -2902,6 +2904,7 @@ export interface RefactoringSummary {
 export interface RefactoringTargetsResponse {
   summary: RefactoringSummary;
   plans: RefactoringPlanResponse[];
+  gated?: Record<string, Record<string, unknown>>;
 }
 
 export interface RefactoringTypeCount {

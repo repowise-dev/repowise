@@ -40,10 +40,12 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+from repowise.core.persistence.crud.analysis.refactoring import gated_plan_counts
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.findings import (
     FindingSets,
+    gated_findings,
     load_dashboard_findings,
     load_targeted_findings,
     read_accuracy_rows,
@@ -104,6 +106,8 @@ class HealthData:
     test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
     #: Dashboard only: files in neither list, by the scope reason that left them out.
     worst_files_hidden: dict[str, int] = field(default_factory=dict)
+    # What a language gate held back, ``{layer: {language: {count, ...}}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 async def load_health_data(
@@ -179,7 +183,30 @@ async def load_health_data(
     if "top_findings" in req.only_set and not pop.nothing_resolved:
         counts = await unit_counts(session, repository.id, "findings", file_paths=pop.target_paths)
         data.finding_counts = counts.as_dict()
+    data.gated = await _read_gated(session, repository, pop, req, data)
     return data
+
+
+async def _read_gated(
+    session: Any, repository: Any, pop: Population, req: HealthRequest, data: HealthData
+) -> dict[str, dict]:
+    """What a language gate held back, per layer this call read."""
+    refactoring = (
+        data.refactoring.page.gated
+        if data.refactoring.page
+        # Plans only: the queue was not read, so count the plans it held back.
+        else await gated_plan_counts(
+            session, repository.id, include_unverified=req.include_unverified
+        )
+        if req.plans_requested
+        else {}
+    )
+    layers = {
+        "health": await gated_findings(session, repository, pop, req),
+        "refactoring": refactoring,
+        "performance": data.performance.page.gated if data.performance.page else {},
+    }
+    return {layer: counts for layer, counts in layers.items() if counts}
 
 
 def _scope_reasons(metrics: list[HealthFileMetric]) -> dict[str, str | None]:
@@ -268,10 +295,10 @@ async def _read_pillars(
     linkage, and facets are the shared service's; this tool caps the
     collection, pages it, and serializes what comes back."""
     performance_service = PerformanceHealthService(
-        session, repository.id, reference_repository
+        session, repository.id, reference_repository, include_unverified=req.include_unverified
     )
     refactoring_service = RefactoringHealthService(
-        session, repository.id, reference_repository
+        session, repository.id, reference_repository, include_unverified=req.include_unverified
     )
     refactoring = await _refactoring_blocks(
         refactoring_service,
