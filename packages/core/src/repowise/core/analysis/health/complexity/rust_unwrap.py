@@ -14,16 +14,20 @@ labelled with the idiom so the biomarker can say so and not score them:
 ``.lock().unwrap()`` (poison propagation), ``.join().unwrap()`` (re-raise a
 thread's panic), ``expect("literal message")`` and ``unreachable!``.
 
-Purely syntactic. Ceiling: an early-return guard (``if v.is_empty() {
-return; }``) or a mutation between the check and the unwrap is not tracked;
-the first stays a finding, the second would be missed.
+Purely syntactic. A guard does not count once the guarded block rebinds or
+assigns the receiver before the unwrap. Ceiling: an early-return guard
+(``if v.is_empty() { return; }``) stays a finding, and a mutation through a
+method call between the check and the unwrap (``v.clear()``) is not seen.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Node
 
 # Adapters that keep the Some/Ok-ness the guard checked.
@@ -49,6 +53,24 @@ _SYNC_RECEIVER_IDIOMS = {
 _INVARIANT_MACROS = frozenset({"unreachable"})
 
 _SCOPE_KINDS = frozenset({"function_item", "closure_expression"})
+# Nodes whose ``pattern`` field binds names, and pattern nodes that bind any
+# identifier they hold directly.
+_PATTERN_FIELD_OWNERS = frozenset({"let_declaration", "parameter", "for_expression", "let_condition"})
+_PATTERN_KINDS = frozenset(
+    {
+        "closure_parameters",
+        "tuple_pattern",
+        "tuple_struct_pattern",
+        "slice_pattern",
+        "or_pattern",
+        "ref_pattern",
+        "mut_pattern",
+        "reference_pattern",
+        "captured_pattern",
+        "field_pattern",
+    }
+)
+_ROOT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _text(node: Node | None) -> str:
@@ -63,7 +85,7 @@ def _same(a: Node | None, b: Node) -> bool:
     return a is not None and (a.start_byte, a.end_byte) == (b.start_byte, b.end_byte)
 
 
-def _method_call_parts(node: Node) -> tuple[str, Node | None, Node | None]:
+def method_call_parts(node: Node) -> tuple[str, Node | None, Node | None]:
     """``(method name, receiver, arguments)`` of ``recv.method(args)``, else ``("", None, None)``."""
     fn = node.child_by_field_name("function") if node.type == "call_expression" else None
     if fn is None or fn.type != "field_expression":
@@ -74,7 +96,7 @@ def _method_call_parts(node: Node) -> tuple[str, Node | None, Node | None]:
 
 def _peel(node: Node) -> Node | None:
     """The expression inside one Some/Ok-preserving layer of *node*, else ``None``."""
-    method, receiver, _ = _method_call_parts(node)
+    method, receiver, _ = method_call_parts(node)
     if method:
         return receiver if method in _GUARD_ADAPTERS else None
     is_deref = node.type == "unary_expression" and node.children[0].type == "*"
@@ -123,13 +145,56 @@ def _guarding_condition(parent: Node, child: Node) -> Node | None:
     return None
 
 
+def _descendants(node: Node) -> Iterator[Node]:
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        yield cur
+        stack.extend(cur.named_children)
+
+
+def _is_binder(ident: Node) -> bool:
+    """*ident* names a new binding (a ``let``/parameter/closure/``for`` pattern)."""
+    parent = ident.parent
+    if parent is None:
+        return False
+    if parent.type in _PATTERN_FIELD_OWNERS:
+        return _same(parent.child_by_field_name("pattern"), ident)
+    return parent.type in _PATTERN_KINDS
+
+
+def _binders(scope: Node, name: str, before: int | None = None) -> list[Node]:
+    """Every binding of *name* in *scope*, those starting before byte *before* if given."""
+    return [
+        n
+        for n in _descendants(scope)
+        if n.type == "identifier"
+        and _text(n) == name
+        and _is_binder(n)
+        and (before is None or n.start_byte < before)
+    ]
+
+
+def _rebinds(region: Node, base: str, call: Node) -> bool:
+    """*region* rebinds or assigns the guarded receiver before *call* runs."""
+    root = _ROOT_NAME.match(base)
+    if root is not None and root.group() != "self" and _binders(region, root.group(), call.start_byte):
+        return True
+    return any(
+        n.type in ("assignment_expression", "compound_assignment_expr")
+        and n.start_byte < call.start_byte
+        and _norm(n.child_by_field_name("left")) in (base, root.group() if root else base)
+        for n in _descendants(region)
+    )
+
+
 def _is_guarded(call: Node, receiver: Node) -> bool:
     keys = _guard_keys(receiver)
     child, parent = call, call.parent
     while parent is not None and parent.type not in _SCOPE_KINDS:
         cond = _guarding_condition(parent, child)
         if cond is not None and keys.intersection(_conjuncts(cond)):
-            return True
+            return not _rebinds(child, _norm(_base_receiver(receiver)), call)
         child, parent = parent, parent.parent
     return False
 
@@ -146,19 +211,20 @@ def _write_target(macro: Node) -> str | None:
 
 
 def _declares_string(scope: Node, name: str) -> bool:
-    """*scope* binds *name* as a ``String`` (a ``let`` or a parameter)."""
-    stack = [scope]
-    while stack:
-        node = stack.pop()
-        if node.type in ("let_declaration", "parameter") and _norm(
-            node.child_by_field_name("pattern")
-        ) == name:
-            if _norm(node.child_by_field_name("type")) in _STRING_TYPES:
-                return True
-            if _norm(node.child_by_field_name("value")).startswith(_STRING_CTORS):
-                return True
-        stack.extend(node.named_children)
-    return False
+    """*scope* binds *name* exactly once, as a ``String`` (a ``let`` or a parameter).
+
+    A second binding anywhere in the function (a shadowing ``let``, a closure
+    parameter) could be what the write reaches, so it proves nothing.
+    """
+    binders = _binders(scope, name)
+    if len(binders) != 1:
+        return False
+    decl = binders[0].parent
+    if decl.type not in ("let_declaration", "parameter"):
+        return False
+    return _norm(decl.child_by_field_name("type")) in _STRING_TYPES or _norm(
+        decl.child_by_field_name("value")
+    ).startswith(_STRING_CTORS)
 
 
 def _writes_to_string(receiver: Node) -> bool:
@@ -175,7 +241,7 @@ def _writes_to_string(receiver: Node) -> bool:
 
 def cannot_panic(call: Node) -> bool:
     """True when the ``unwrap``/``expect`` *call* provably cannot panic."""
-    receiver = _method_call_parts(call)[1]
+    receiver = method_call_parts(call)[1]
     if receiver is None:
         return False
     return _writes_to_string(receiver) or _is_guarded(call, receiver)
@@ -184,7 +250,7 @@ def cannot_panic(call: Node) -> bool:
 def _sync_idiom(receiver: Node | None) -> str | None:
     if receiver is None:
         return None
-    method, _, args = _method_call_parts(receiver)
+    method, _, args = method_call_parts(receiver)
     if args is None or args.named_child_count:
         return None
     return _SYNC_RECEIVER_IDIOMS.get(method)
@@ -207,10 +273,10 @@ def idiom(node: Node) -> str | None:
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
         return "unreachable" if _text(mac) in _INVARIANT_MACROS else None
-    sync = _sync_idiom(_method_call_parts(node)[1])
+    sync = _sync_idiom(method_call_parts(node)[1])
     if sync is not None:
         return sync
-    if _method_call_parts(node)[0] == "expect" and _expect_message_is_literal(node):
+    if method_call_parts(node)[0] == "expect" and _expect_message_is_literal(node):
         return "invariant_expect"
     return None
 

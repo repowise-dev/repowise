@@ -45,12 +45,12 @@ _IDIOM_REASONS: dict[str, str] = {
         "unwrapping a thread join re-raises that thread's panic (idiomatic, low priority)"
     ),
     "invariant_expect": (
-        "expect panics with its stated message on failure, the idiomatic form when "
-        "failure is a bug or makes start-up impossible (low priority)"
+        "expect panics with its stated message on failure, the usual form when "
+        "failure is a bug or makes start-up impossible (often idiomatic, low priority)"
     ),
     "unreachable": (
         "unreachable! asserts this branch cannot run and panics only if it does "
-        "(idiomatic, low priority)"
+        "(often idiomatic, low priority)"
     ),
 }
 

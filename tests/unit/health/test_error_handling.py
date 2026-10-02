@@ -238,6 +238,24 @@ _RUST_CANNOT_PANIC = [
         1,
         "write into stdout can fail",
     ),
+    (
+        b"fn f() { let mut w = String::new(); { let mut w = io::stdout(); "
+        b'writeln!(w, "a").unwrap(); } }\n',
+        1,
+        "a shadowing rebind of the String",
+    ),
+    (
+        b'fn f(o: &mut File) { let c = |o: String| 1; writeln!(o, "a").unwrap(); }\n',
+        1,
+        "a closure parameter of the same name",
+    ),
+    (b"fn f(x: Option<u8>) { if x.is_some() { let x = h(); g(x.unwrap()); } }\n", 1, "rebind"),
+    (b"fn f(mut x: Option<u8>) { if x.is_some() { x = h(); g(x.unwrap()); } }\n", 1, "assign"),
+    (
+        b"fn f(s: &mut S) { if s.v.is_some() { s.v = None; g(s.v.unwrap()); } }\n",
+        1,
+        "field assigned after the guard",
+    ),
 ]
 
 

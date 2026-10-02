@@ -173,11 +173,7 @@ def _eh_rust_in_test(node: Node) -> bool:
 def _eh_rust_hit(node: Node) -> bool:
     """True when *node* is an unwrap/expect call or a panic-family macro."""
     if node.type == "call_expression":
-        fn = node.child_by_field_name("function")
-        if fn is not None and fn.type == "field_expression":
-            fld = fn.child_by_field_name("field")
-            return fld is not None and _eh_text(fld) in _RUST_UNWRAP_METHODS
-        return False
+        return rust_unwrap.method_call_parts(node)[0] in _RUST_UNWRAP_METHODS
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
         return mac is not None and _eh_text(mac) in _RUST_PANIC_MACROS
