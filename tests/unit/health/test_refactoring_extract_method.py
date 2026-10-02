@@ -349,6 +349,196 @@ def _ctx(src: str, findings):
     )
 
 
+def _process_sources() -> dict[str, tuple[str, str]]:
+    """``language -> (extension, source)`` for one shape in every language the
+    slicer has a dialect for. The source is the same algorithm spelled the way
+    each language writes it, so a name difference cannot come from the code."""
+    py = textwrap.dedent(_PROCESS)
+    java = textwrap.dedent(
+        """
+        class Demo {
+            int process(int[] records, int threshold) {
+                int errors = 0;
+                java.util.List<Integer> results = new java.util.ArrayList<>();
+                for (int r : records) {
+                    if (r < 0) {
+                        errors++;
+                        continue;
+                    }
+                    results.add(r);
+                }
+                int total = 0;
+                int count = 0;
+                for (int v : results) {
+                    if (v > threshold) {
+                        total += v;
+                        count++;
+                    } else {
+                        total -= v;
+                    }
+                }
+                int average = 0;
+                if (count > 0) {
+                    average = total / count;
+                }
+                return average + errors;
+            }
+        }
+        """
+    )
+    ts = textwrap.dedent(
+        """
+        function process(records: number[], threshold: number): number {
+            const results: number[] = [];
+            let errors = 0;
+            for (const r of records) {
+                if (r < 0) {
+                    errors += 1;
+                    continue;
+                }
+                results.push(r);
+            }
+            let total = 0;
+            let count = 0;
+            for (const v of results) {
+                if (v > threshold) {
+                    total += v;
+                    count += 1;
+                } else {
+                    total -= v;
+                }
+            }
+            let average = 0;
+            if (count > 0) {
+                average = total / count;
+            }
+            return average + errors;
+        }
+        """
+    )
+    go = textwrap.dedent(
+        """
+        package main
+
+        func process(records []int, threshold int) int {
+            errors := 0
+            results := []int{}
+            for _, r := range records {
+                if r < 0 {
+                    errors++
+                    continue
+                }
+                results = append(results, r)
+            }
+            total := 0
+            count := 0
+            for _, v := range results {
+                if v > threshold {
+                    total += v
+                    count++
+                } else {
+                    total -= v
+                }
+            }
+            average := 0
+            if count > 0 {
+                average = total / count
+            }
+            return average + errors
+        }
+        """
+    )
+    rust = textwrap.dedent(
+        """
+        fn process(records: &[i32], threshold: i32) -> i32 {
+            let mut errors = 0;
+            let mut results: Vec<i32> = Vec::new();
+            for r in records {
+                if *r < 0 {
+                    errors += 1;
+                    continue;
+                }
+                results.push(*r);
+            }
+            let mut total = 0;
+            let mut count = 0;
+            for v in &results {
+                if *v > threshold {
+                    total += v;
+                    count += 1;
+                } else {
+                    total -= v;
+                }
+            }
+            let mut average = 0;
+            if count > 0 {
+                average = total / count;
+            }
+            average + errors
+        }
+        """
+    )
+    cpp = textwrap.dedent(
+        """
+        int process(int* records, int n, int threshold) {
+            int errors = 0;
+            std::vector<int> results;
+            for (int i = 0; i < n; i++) {
+                if (records[i] < 0) {
+                    errors++;
+                    continue;
+                }
+                results.push_back(records[i]);
+            }
+            int total = 0;
+            int count = 0;
+            for (int v : results) {
+                if (v > threshold) {
+                    total += v;
+                    count++;
+                } else {
+                    total -= v;
+                }
+            }
+            int average = 0;
+            if (count > 0) {
+                average = total / count;
+            }
+            return average + errors;
+        }
+        """
+    )
+    return {
+        "python": ("py", py),
+        "java": ("java", java),
+        "typescript": ("ts", ts),
+        "go": ("go", go),
+        "rust": ("rs", rust),
+        "cpp": ("cpp", cpp),
+    }
+
+
+def _detect_in(language: str, ext: str, src: str):
+    from repowise.core.ingestion.parser import _get_language
+
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    res = analyze_file(f"m.{ext}", language, src.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    fn = res.functions[0]
+    ctx = RefactoringContext(
+        file_path=f"m.{ext}",
+        language=language,
+        nloc=100,
+        findings=[_Finding("complex_method", fn.name, fn.start_line, 1.5)],
+        function_analyses=res.functions,
+    )
+    plans = [s for s in ExtractMethodDetector().detect(ctx) if s.refactoring_type == "extract_method"]
+    assert plans, f"no extract_method plan for {language}"
+    return plans[0]
+
+
 def test_detector_emits_suggestion_for_flagged_function():
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     suggestions = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))
@@ -399,10 +589,20 @@ class _Analysis:
 
 def test_suggested_name_unit():
     name = ExtractMethodDetector._suggested_name
-    # Exactly one OUT -> name the helper for what it produces.
-    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
+    # Exactly one OUT -> name the helper for what it produces, in the language's
+    # own convention.
+    assert name(_Analysis("process"), _Extraction(["average"]), "python") == "compute_average"
     # Non-identifier characters normalised through the shared slug.
-    assert name(_Analysis("p"), _Extraction(["total-count"])) == "compute_total_count"
+    assert name(_Analysis("p"), _Extraction(["total-count"]), "python") == "compute_total_count"
+    # A call with no language keeps the snake_case default (the pre-existing
+    # behaviour), so an unset ``ctx.language`` degrades rather than changes shape.
+    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
+
+
+def test_suggested_name_none_cases_are_unchanged_by_the_language():
+    """Control: the no-anchor rules this change must not touch. Each of these
+    was ``None`` before it and must stay ``None`` after, in every language."""
+    name = ExtractMethodDetector._suggested_name
     # No single OUT -> no anchor, so no name. The enclosing function's name
     # described the span's context, never the span, and collided with every
     # sibling plan in the file.
@@ -415,6 +615,60 @@ def test_suggested_name_unit():
     assert name(_Analysis("process"), _Extraction(["result"])) is None
     # Nothing usable at all -> no name at all.
     assert name(_Analysis("___"), _Extraction([])) is None
+    # And none of the above becomes a name just because the language is camelCase.
+    for lang in ("java", "go", "typescript", "cpp", "python"):
+        assert name(_Analysis("process"), _Extraction([]), lang) is None
+        assert name(_Analysis("process"), _Extraction(["result"]), lang) is None
+        assert name(_Analysis("process"), _Extraction(["___"]), lang) is None
+
+
+def test_suggested_name_follows_the_language_convention():
+    name = ExtractMethodDetector._suggested_name
+    # camelCase languages.
+    for lang in ("java", "go", "typescript", "tsx", "javascript", "jsx", "svelte", "vue"):
+        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "computeAverage", lang
+    # snake_case languages, and C++ which has no single convention.
+    for lang in ("python", "rust", "cpp"):
+        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "compute_average", lang
+    # An unknown language falls back rather than raising.
+    assert name(_Analysis("process"), _Extraction(["average"]), "cobol") == "compute_average"
+    # A language whose file has several words keeps all of them.
+    assert (
+        name(_Analysis("process"), _Extraction(["total_count"]), "java") == "computeTotalCount"
+    )
+
+
+def test_suggested_name_keeps_the_out_values_own_casing():
+    name = ExtractMethodDetector._suggested_name
+    # ``meanValue`` must survive as word boundaries. Lowercasing the whole label
+    # first (the old slug) gave ``compute_meanvalue``, neither camelCase nor
+    # snake_case.
+    assert name(_Analysis("process"), _Extraction(["meanValue"]), "java") == "computeMeanValue"
+    assert name(_Analysis("process"), _Extraction(["mean_value"]), "java") == "computeMeanValue"
+    assert name(_Analysis("process"), _Extraction(["MeanValue"]), "java") == "computeMeanValue"
+    assert name(_Analysis("process"), _Extraction(["meanValue"]), "python") == "compute_mean_value"
+    # A run of capitals stays one word: splitting it needs a dictionary.
+    assert name(_Analysis("process"), _Extraction(["HTTPStatus"]), "java") == "computeHttpstatus"
+    # The role-word guard still sees a multi-word out value's joined slug.
+    assert name(_Analysis("process"), _Extraction(["item_value"]), "java") == "computeItemValue"
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("python", "compute_average"),
+        ("rust", "compute_average"),
+        ("cpp", "compute_average"),
+        ("java", "computeAverage"),
+        ("typescript", "computeAverage"),
+        ("go", "computeAverage"),
+    ],
+)
+def test_detector_names_the_helper_in_the_files_language(language: str, expected: str):
+    ext, src = _process_sources()[language]
+    plan = _detect_in(language, ext, src)
+    assert plan.plan["returns"] == ["average"], language
+    assert plan.plan["suggested_name"] == expected, language
 
 
 def test_detector_silent_without_matching_finding():
