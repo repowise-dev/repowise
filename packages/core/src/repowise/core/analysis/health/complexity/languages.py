@@ -40,7 +40,12 @@ without that mapping count explicit receivers only; (2) flat
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from tree_sitter import Node
+
+from ....ingestion.cpp_export_macros import misread_scope_keyword
 
 
 @dataclass(frozen=True)
@@ -274,6 +279,13 @@ class LanguageNodeMap:
     public_api_modifiers: frozenset[str] = frozenset()
     public_api_type_kinds: frozenset[str] = frozenset()
     scalar_type_names: frozenset[str] = frozenset()
+
+    # -- Grammar misreads ----------------------------------------------------
+    #   * ``misread_scope`` -- truthy for a ``function_kinds`` node that is
+    #     really a namespace or type the grammar misread (C/C++: a macro line
+    #     before ``namespace x {``). Such a node is a container: its members
+    #     are walked, it is never scored. None means no such misread.
+    misread_scope: Callable[[Node], object] | None = None
 
 
 
@@ -644,6 +656,7 @@ _DART = LanguageNodeMap(
 )
 
 _CPP = LanguageNodeMap(
+    misread_scope=misread_scope_keyword,
     fixed_signature_markers=frozenset({"override", "final"}),
     scalar_type_names=_C_SCALARS
     | frozenset({"string", "wstring", "string_view", "wstring_view"}),
@@ -706,6 +719,7 @@ _CPP = LanguageNodeMap(
 )
 
 _C = LanguageNodeMap(
+    misread_scope=misread_scope_keyword,
     scalar_type_names=_C_SCALARS,
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset(),

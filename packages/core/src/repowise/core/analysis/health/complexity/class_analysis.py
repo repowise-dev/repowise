@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path
-from .ast_utils import _IDENTIFIER_SUFFIX, _find_name
+from .ast_utils import _IDENTIFIER_SUFFIX, _find_name, is_function_node
 from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
@@ -109,6 +109,8 @@ def _collect_class_body(
         if node.type in lmap.class_kinds:
             body.nested.append(node)
         elif node.type in lmap.function_kinds:
+            if not is_function_node(node, lmap):
+                continue  # a nested type the grammar misread: its members are not ours
             if language == "python" and is_python_overload(node, source):
                 continue
             body.methods.append(node)

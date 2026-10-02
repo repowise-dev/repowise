@@ -212,6 +212,13 @@ def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     return f"<anonymous@{node.start_point[0] + 1}>"
 
 
+def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True for a function definition, False for a scope the grammar misread as one."""
+    if node.type not in lmap.function_kinds:
+        return False
+    return lmap.misread_scope is None or not lmap.misread_scope(node)
+
+
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     """All function / method definition nodes in the file.
 
@@ -219,7 +226,8 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     bodies but do **not** recurse below a function or lambda. Lambdas found
     before any function boundary are module-level executable units (for
     example route callbacks) and get their own entry; lambdas inside an
-    already-collected function still roll up into that function.
+    already-collected function still roll up into that function. A scope
+    the grammar misread as a function is descended like a class body.
     """
     out: list[Node] = []
     stack: list[Node] = [root]
@@ -228,7 +236,7 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
         if node.type in lmap.lambda_kinds and _is_test_suite_callback(node, lmap):
             stack.extend(node.children)
             continue
-        if node.type in lmap.function_kinds or node.type in lmap.lambda_kinds:
+        if is_function_node(node, lmap) or node.type in lmap.lambda_kinds:
             out.append(node)
             continue
         for child in node.children:

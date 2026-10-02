@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.loop_facts import LoopFacts
-from .ast_utils import _dart_signature_sibling, _find_function_entry_name, _find_name
+from .ast_utils import (
+    _dart_signature_sibling,
+    _find_function_entry_name,
+    _find_name,
+    is_function_node,
+)
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
 
@@ -524,7 +529,7 @@ def _collect_perf_hits(
         next_loop_line = loop_line if (body_scope or not entering_fn) else 0
         next_func = func_name
         next_start = func_start
-        if t in fn_kinds:
+        if t in fn_kinds and is_function_node(node, lmap):
             next_func = _perf_func_name(node) or func_name
             next_start = node.start_point[0] + 1
         elif t in lambda_kinds and func_name is None:

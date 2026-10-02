@@ -1550,7 +1550,7 @@ class ASTParser:
             config,
             language,
             src,
-            cpp_exports.parent_ids,
+            cpp_exports.container_ids,
             keep_nested=object_owner is not None,
         )
         if kind is None:
@@ -1638,7 +1638,7 @@ class ASTParser:
         config: LanguageConfig,
         language: str,
         src: str,
-        export_type_parent_ids: frozenset[int],
+        container_ids: frozenset[int],
         *,
         keep_nested: bool = False,
     ) -> str | None:
@@ -1655,7 +1655,7 @@ class ASTParser:
         if (
             not keep_nested
             and node_type not in _MODULE_ANCHORED_NODE_TYPES
-            and _has_callable_ancestor(def_node, config.symbol_node_types, export_type_parent_ids)
+            and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
         ):
             return None
 

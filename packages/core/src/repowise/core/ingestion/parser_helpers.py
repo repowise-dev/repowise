@@ -155,8 +155,8 @@ def _has_callable_ancestor(
     from the top-level symbol list. Class bodies don't count — methods
     inside classes have only a ``class`` ancestor before the module root.
 
-    ``ignored_node_ids`` covers grammar-recovery nodes that a language query
-    has positively identified as type containers rather than callables.
+    ``ignored_node_ids`` covers grammar-recovery nodes that a language has
+    positively identified as type or namespace containers rather than callables.
     """
     ancestor = node.parent
     while ancestor is not None:

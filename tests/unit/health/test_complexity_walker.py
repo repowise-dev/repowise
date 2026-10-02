@@ -539,6 +539,59 @@ def test_cpp_class_cohesion():
     assert splintered.field_count == 2
 
 
+_CPP_MACRO_SCOPES = b"""namespace absl {
+ABSL_NAMESPACE_BEGIN
+namespace base_internal {
+int GetCpuType(int x) { if (x) { return 1; } return 0; }
+}  // namespace base_internal
+ABSL_NAMESPACE_END
+}  // namespace absl
+FMT_END_EXPORT
+namespace detail {
+int helper() { return 3; }
+}
+template <typename T>
+class ABSL_ATTRIBUTE_WARN_UNUSED FixedArray {
+  int size() const { return n_; }
+  int n_;
+};
+EXPORT_MACRO class Queue {
+  int pop() { return 0; }
+};
+struct foo *make_foo(void) { return 0; }
+"""
+
+
+def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
+    # A macro line before ``namespace x {`` / ``class X {`` makes tree-sitter
+    # read the scope as a function: it must be walked, never scored.
+    p = tmp_path / "scopes.h"
+    p.write_bytes(_CPP_MACRO_SCOPES)
+    results = walk_file_complexity(str(p), "cpp", _CPP_MACRO_SCOPES)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {r.name for r in results}
+    assert {"GetCpuType", "helper", "size", "pop", "make_foo"} <= names
+    assert not names & {"namespace", "base_internal", "FixedArray", "Queue"}
+    assert _find(results, "GetCpuType").ccn == 2
+
+
+def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
+    source = b"""class Outer {
+ public:
+  int get() { return x_; }
+  EXPORT_MACRO class Inner { int a() { return 1; } int b() { return 2; } };
+  int x_;
+};
+"""
+    p = tmp_path / "outer.h"
+    p.write_bytes(source)
+    classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
+    if "Outer" not in classes:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    assert classes["Outer"].method_count == 1
+
+
 def test_cpp_assertion_blocks():
     results = _walk("cpp/assertions.cpp", "cpp")
     many = _find(results, "testManyAsserts")
