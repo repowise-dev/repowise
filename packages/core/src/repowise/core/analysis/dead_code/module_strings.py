@@ -173,7 +173,11 @@ class _Reader:
 
 
 def _defines_top_level(blob: bytes, name: str) -> bool:
-    """Whether a Python module defines *name* at top level (def, class, assignment)."""
+    """Whether a Python module defines *name* at top level (def, class, assignment).
+
+    A re-export (``from x import Name``) or a tuple target is not seen, so such
+    a member stays reported.
+    """
     word = re.escape(name.encode("ascii"))
     pattern = (
         rb"^(?:(?:async[ \t]+)?def|class)[ \t]+" + word + rb"\b"
@@ -194,7 +198,7 @@ def _live_text(path: str, blob: bytes) -> bytes:
     """*blob* without comments and, for Python, without docstrings.
 
     Python keeps only its string literals that are not a statement on their
-    own; other files drop ``#`` comment lines. Python that does not tokenize
+    own; other files drop only ``#`` comment lines. Python that does not tokenize
     is kept whole, as before this filter.
     """
     if not _is_python(path):
@@ -203,7 +207,7 @@ def _live_text(path: str, blob: bytes) -> bytes:
         tokens = [
             t for t in tokenize.tokenize(io.BytesIO(blob).readline) if t.type not in _TRIVIA
         ]
-    except (tokenize.TokenError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError, ValueError):
         return blob
     return b"\n".join(
         tok.string.encode("utf-8")

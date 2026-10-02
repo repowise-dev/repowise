@@ -176,3 +176,9 @@ def test_a_test_loading_a_fixture_app_by_module_path_uses_it():
     findings = [_finding(DeadCodeKind.UNREACHABLE_FILE, app)]
     source = {"t/unit/bin/test_control.py": b"OPTS = ['-A', 't.unit.bin.proj.app']\n", app: b"app = 1\n"}
     assert _kept(findings, source) == set()
+
+
+def test_python_that_does_not_decode_falls_back_to_the_whole_file():
+    settings = b'# -*- coding: utf-8 -*-\nB = "hc.accounts.backends.EmailBackend"\nX = "\xff"\n'
+    source = {"hc/settings.py": settings, _BACKENDS: _BACKENDS_SRC}
+    assert _kept(_backend_findings(), source) == {(_BACKENDS, "helper")}
