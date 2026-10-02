@@ -124,17 +124,19 @@ def test_primitive_obsession_skips_fixed_signatures():
 
 
 def test_primitive_obsession_needs_mostly_primitive_params_when_typed():
-    def fn(primitive: int | None) -> FunctionComplexity:
+    def fn(typed: int, primitive: int) -> FunctionComplexity:
         return FunctionComplexity(
             "run", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6,
-            primitive_param_count=primitive,
+            typed_param_count=typed, primitive_param_count=primitive,
         )
 
     d = PrimitiveObsessionDetector()
     # Three of six is not a majority: rich types already group the values.
-    assert d.detect(_ctx([fn(3), _FILLER])) == []
-    out = d.detect(_ctx([fn(4), _FILLER]))
+    assert d.detect(_ctx([fn(6, 3), _FILLER])) == []
+    out = d.detect(_ctx([fn(6, 4), _FILLER]))
     assert out and out[0].details["primitive_param_count"] == 4
-    assert "4 of them scalars or strings" in out[0].reason
+    assert "4 of 6 typed ones scalars or strings" in out[0].reason
+    # Untyped parameters leave the majority: one typed int of six still fires.
+    assert d.detect(_ctx([fn(1, 1), _FILLER]))
     # An untyped signature has nothing to count and is judged on size alone.
-    assert d.detect(_ctx([fn(None), _FILLER]))
+    assert d.detect(_ctx([fn(0, 0), _FILLER]))

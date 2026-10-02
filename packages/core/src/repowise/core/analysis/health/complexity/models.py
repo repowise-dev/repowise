@@ -46,10 +46,11 @@ class FunctionComplexity:
     # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
     # field; 0 when the language lacks an explicit list or extraction fails.
     param_count: int = 0
-    # Of those, the ones declared as a scalar or a string; ``None`` when no
-    # parameter declares a type. With the two flags below, read only by
-    # ``primitive_obsession``. ``complexity/signature.py``.
-    primitive_param_count: int | None = None
+    # Of those, the ones that declare a type, and the ones among them declared
+    # as a scalar or a string; untyped parameters are in neither. With the two
+    # flags below, read only by ``primitive_obsession``. ``complexity/signature.py``.
+    typed_param_count: int = 0
+    primitive_param_count: int = 0
     # A constructor, by node kind, conventional name, or its type's name.
     is_constructor: bool = False
     # The parameter list is set by another declaration (an override, an

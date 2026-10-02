@@ -271,6 +271,24 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
     return None
 
 
+# A method's explicit receiver: Python's conventional first ``self`` / ``cls``
+# and Rust's ``self`` / ``&self`` / ``&mut self``. No caller passes it, so it is
+# no part of the parameter list anyone reads at a call site.
+_RECEIVER_NAMES = frozenset({"self", "cls"})
+
+
+def _receiver_parameter(params: Node) -> Node | None:
+    """The receiver among *params*' children, when the first parameter is one."""
+    first = next((c for c in params.named_children if c.type != "comment"), None)
+    if first is None:
+        return None
+    if first.type == "self_parameter":
+        return first
+    if first.type == "identifier" and (first.text or b"").decode() in _RECEIVER_NAMES:
+        return first
+    return None
+
+
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
@@ -281,7 +299,10 @@ def _count_parameters(fn_node: Node) -> int:
     if params is None:
         return 0
     count = 0
+    receiver = _receiver_parameter(params)
     for child in params.children:
+        if child == receiver:
+            continue
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity, so they must be skipped alongside the
@@ -293,8 +314,6 @@ def _count_parameters(fn_node: Node) -> int:
             "(",
             ")",
             ",",
-            "self",
-            "cls",
             ":",
             "*",
             "**",
@@ -314,19 +333,6 @@ def _count_parameters(fn_node: Node) -> int:
         if child.is_named:
             count += 1
     return count
-
-
-def declaration_head(fn_node: Node, body: Node, source: bytes) -> str:
-    """The declaration text before the parameter list: modifiers, annotations
-    and attributes, where the grammar keeps them inside the declaration (Java,
-    Kotlin, C#, TypeScript). Empty when the declaration starts at its name."""
-    head_end = next(
-        (c.start_byte for c in fn_node.children if "parameter" in c.type or "body" in c.type),
-        body.start_byte if body is not fn_node else fn_node.start_byte,
-    )
-    if head_end <= fn_node.start_byte:
-        return ""
-    return source[fn_node.start_byte : head_end].decode("utf-8", errors="replace")
 
 
 def _identifier_chain(node: Node) -> list[str]:

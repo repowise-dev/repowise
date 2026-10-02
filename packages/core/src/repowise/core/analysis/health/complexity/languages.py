@@ -231,8 +231,52 @@ class LanguageNodeMap:
     decorator_kinds: frozenset[str] = frozenset()
     decorated_definition_kinds: frozenset[str] = frozenset()
 
+    # -- Signature ownership (``primitive_obsession``, ``signature.py``) -----
+    # All empty by default: a language with no row has no constructor beyond a
+    # function named like its type, nothing fixes its signatures, and no
+    # parameter counts as a scalar, so a typed signature there never fires.
+    #   * ``ctor_kinds`` / ``ctor_names`` -- a constructor by node or by name.
+    #   * ``fixed_signature_markers`` -- modifier, annotation, attribute or
+    #     decorator words saying the parameter list belongs to another
+    #     declaration: an override, a native or generated binding, a
+    #     data-driven test whose arguments the runner supplies.
+    #   * ``explicit_impl_kinds`` / ``trait_impl_kinds`` -- an explicit
+    #     interface implementation on the member, an enclosing trait impl.
+    #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
+    #     carrying one of these, inside types that all carry one too, is
+    #     published API. Only for a language with an assembly-internal level
+    #     (C# ``internal``), where ``public`` is a deliberate export; Java's
+    #     ``public`` is how one package reaches another and says nothing.
+    #   * ``scalar_type_names`` -- scalar and string type names, matched per
+    #     word once qualifiers, pointers, nullability and brackets are gone.
+    ctor_kinds: frozenset[str] = frozenset()
+    ctor_names: frozenset[str] = frozenset()
+    fixed_signature_markers: frozenset[str] = frozenset()
+    explicit_impl_kinds: frozenset[str] = frozenset()
+    trait_impl_kinds: frozenset[str] = frozenset()
+    public_api_modifiers: frozenset[str] = frozenset()
+    public_api_type_kinds: frozenset[str] = frozenset()
+    scalar_type_names: frozenset[str] = frozenset()
+
+
+
+# Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
+# Windows spells ints and strings that way.
+_C_SCALARS = frozenset(
+    {
+        "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool",
+        "_Bool", "wchar_t", "char8_t", "char16_t", "char32_t", "size_t", "ssize_t",
+        "ptrdiff_t", "intptr_t", "uintptr_t", "int8_t", "int16_t", "int32_t", "int64_t",
+        "uint8_t", "uint16_t", "uint32_t", "uint64_t", "BOOL", "BYTE", "WORD", "DWORD", "UINT",
+        "ULONG", "LONG", "INT", "WCHAR", "LPCWSTR", "LPWSTR", "LPCSTR", "LPSTR", "PCWSTR",
+        "PWSTR",
+    }
+)
 
 _PY = LanguageNodeMap(
+    ctor_names=frozenset({"__init__"}),
+    fixed_signature_markers=frozenset({"override"}),
+    scalar_type_names=frozenset({"str", "int", "float", "bool", "bytes"}),
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
     lambda_kinds=frozenset({"lambda"}),
     # ``if_clause`` is a comprehension filter (``[x for x in xs if a if b]``);
@@ -269,6 +313,9 @@ _PY = LanguageNodeMap(
 )
 
 _TS = LanguageNodeMap(
+    ctor_names=frozenset({"constructor"}),
+    fixed_signature_markers=frozenset({"override"}),
+    scalar_type_names=frozenset({"string", "number", "boolean", "bigint"}),
     function_kinds=frozenset(
         {
             "function_declaration",
@@ -323,6 +370,12 @@ _TS = LanguageNodeMap(
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
 
 _GO = LanguageNodeMap(
+    scalar_type_names=frozenset(
+        {
+            "string", "bool", "byte", "rune", "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "float32", "float64",
+        }
+    ),
     function_kinds=frozenset({"function_declaration", "method_declaration"}),
     lambda_kinds=frozenset({"func_literal"}),
     branch_kinds=frozenset({"if_statement"}),
@@ -357,6 +410,9 @@ _GO = LanguageNodeMap(
 )
 
 _JAVA = LanguageNodeMap(
+    ctor_kinds=frozenset({"constructor_declaration"}),
+    fixed_signature_markers=frozenset({"Override"}),
+    scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "ternary_expression"}),
@@ -401,6 +457,13 @@ _JAVA = LanguageNodeMap(
 )
 
 _RUST = LanguageNodeMap(
+    trait_impl_kinds=frozenset({"impl_item"}),
+    scalar_type_names=frozenset(
+        {
+            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128",
+            "usize", "f32", "f64", "bool", "char", "str", "String",
+        }
+    ),
     function_kinds=frozenset({"function_item"}),
     lambda_kinds=frozenset({"closure_expression"}),
     branch_kinds=frozenset({"if_expression", "if_let_expression"}),
@@ -455,6 +518,11 @@ _RUST = LanguageNodeMap(
 
 
 _KOTLIN = LanguageNodeMap(
+    ctor_kinds=frozenset({"secondary_constructor"}),
+    fixed_signature_markers=frozenset({"override"}),
+    scalar_type_names=frozenset(
+        {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
+    ),
     function_kinds=frozenset({"function_declaration"}),
     lambda_kinds=frozenset({"lambda_literal", "anonymous_function"}),
     branch_kinds=frozenset({"if_expression"}),
@@ -489,6 +557,7 @@ _KOTLIN = LanguageNodeMap(
 )
 
 _DART = LanguageNodeMap(
+    scalar_type_names=frozenset({"int", "double", "num", "bool", "String"}),
     # Dart splits a function into a ``function_signature`` node whose body is
     # a SIBLING ``function_body`` node (members wrap the signature in
     # ``method_signature``). Keying ``function_kinds`` on the body measures
@@ -531,6 +600,9 @@ _DART = LanguageNodeMap(
 )
 
 _CPP = LanguageNodeMap(
+    fixed_signature_markers=frozenset({"override", "final"}),
+    scalar_type_names=_C_SCALARS
+    | frozenset({"string", "wstring", "string_view", "wstring_view"}),
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
@@ -576,6 +648,7 @@ _CPP = LanguageNodeMap(
 )
 
 _C = LanguageNodeMap(
+    scalar_type_names=_C_SCALARS,
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset(),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
@@ -602,6 +675,32 @@ _C = LanguageNodeMap(
 )
 
 _CSHARP = LanguageNodeMap(
+    ctor_kinds=frozenset({"constructor_declaration"}),
+    # ``override`` and ``extern`` modifiers; P/Invoke and source-generated
+    # bindings, whose parameters a native ABI or a message template fixes; and
+    # data-driven tests, whose arguments the runner supplies.
+    fixed_signature_markers=frozenset(
+        {
+            "override", "extern", "DllImport", "LibraryImport", "LoggerMessage",
+            "Theory", "InlineData", "MemberData", "ClassData", "DataRow", "DataTestMethod",
+            "DynamicData", "TestCase", "TestCaseSource",
+        }
+    ),
+    explicit_impl_kinds=frozenset({"explicit_interface_specifier"}),
+    public_api_modifiers=frozenset({"public", "protected"}),
+    public_api_type_kinds=frozenset(
+        {
+            "class_declaration", "struct_declaration", "record_declaration",
+            "record_struct_declaration", "interface_declaration",
+        }
+    ),
+    scalar_type_names=frozenset(
+        {
+            "bool", "byte", "sbyte", "char", "short", "ushort", "int", "uint", "long", "ulong",
+            "float", "double", "decimal", "string", "nint", "nuint", "String", "Boolean",
+            "Int16", "Int32", "Int64", "UInt16", "UInt32", "UInt64", "Double", "Single",
+        }
+    ),
     function_kinds=frozenset(
         {"method_declaration", "constructor_declaration", "local_function_statement"}
     ),
@@ -628,6 +727,10 @@ _CSHARP = LanguageNodeMap(
 
 
 _SCALA = LanguageNodeMap(
+    fixed_signature_markers=frozenset({"override"}),
+    scalar_type_names=frozenset(
+        {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String"}
+    ),
     # ``function_definition`` is a ``def`` with a body (expression or block);
     # abstract ``def``s parse as ``function_declaration`` (no body, nothing to
     # measure). ``given_definition`` is deliberately NOT a function kind: a

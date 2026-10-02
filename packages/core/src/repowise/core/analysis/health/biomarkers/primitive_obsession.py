@@ -15,11 +15,11 @@ Two narrowings keep the finding to signatures someone can actually fix:
   interface or trait implementation, a native binding. Its parameters belong
   to the base method, the interface or the foreign ABI, and an SPI hook with
   nine parameters is not this method's smell.
-- When the signature declares types, a majority of its parameters must be
+- When parameters declare types, a majority of the typed ones must be
   scalars or strings. A wide list of rich domain types is already the value
-  objects this smell asks for. An untyped signature (unannotated Python or
-  JavaScript) has no types to read and is judged on the count alone, as
-  before.
+  objects this smell asks for. Untyped parameters are left out of that
+  majority, and a wholly untyped signature (unannotated Python or JavaScript)
+  is judged on the count alone, as before.
 
 A wide signature only counts as obsession in a file with enough substance to
 *have* a design (`_MIN_FILE_NLOC`). In a tiny module a long parameter list is
@@ -58,6 +58,7 @@ class PrimitiveObsessionDetector:
             if threshold is None:
                 continue
             primitive = fn.primitive_param_count
+            typed = fn.typed_param_count
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -67,11 +68,12 @@ class PrimitiveObsessionDetector:
                     line_end=fn.end_line,
                     details={
                         "param_count": fn.param_count,
+                        "typed_param_count": typed,
                         "primitive_param_count": primitive,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
-                        + (f", {primitive} of them scalars or strings" if primitive else "")
+                        + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
             )
@@ -87,8 +89,8 @@ def _threshold(fn: FunctionComplexity) -> int | None:
     threshold = _PARAM_THRESHOLD + (_CTOR_GRACE if fn.is_constructor else 0)
     if fn.param_count < threshold:
         return None
-    primitive = fn.primitive_param_count
-    if primitive is not None and primitive * 2 <= fn.param_count:
+    typed = fn.typed_param_count
+    if typed and fn.primitive_param_count * 2 <= typed:
         return None
     return threshold
 
@@ -97,5 +99,6 @@ def _severity(param_count: int, threshold: int) -> Severity:
     if param_count >= threshold + 4:
         return Severity.HIGH
     return Severity.MEDIUM if param_count >= threshold + 2 else Severity.LOW
+
 
 BIOMARKER = PrimitiveObsessionDetector()
