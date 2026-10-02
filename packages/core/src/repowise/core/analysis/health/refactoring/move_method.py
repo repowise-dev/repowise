@@ -215,9 +215,10 @@ def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) ->
 
 
 def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None) -> bool:
-    """Whether the method shares a cohesion component that holds fields with
-    the rest of its class. The ``calls`` graph sees no field reads; the
-    components do (``ClassComplexity.components``)."""
+    """Whether the method shares a cohesion component that holds fields, or
+    calls an inherited or abstract member, with the rest of its class. The
+    ``calls`` graph sees neither; the components do
+    (``ClassComplexity.components``)."""
     own = [
         cls
         for cls in classes
@@ -225,7 +226,7 @@ def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None
         and (line is None or cls.start_line <= line <= cls.end_line)
     ]
     groups = [g for cls in own[:1] for g in getattr(cls, "components", None) or ()]
-    return any(name in g.methods and g.fields for g in groups)
+    return any(name in g.methods and (g.fields or g.calls) for g in groups)
 
 
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:

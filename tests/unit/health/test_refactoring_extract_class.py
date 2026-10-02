@@ -287,6 +287,10 @@ class Adapter extends Base {
 """
     fc = walk_file("adapter.ts", "typescript", src.encode())
     assert {f for g in fc.classes[0].components for f in g.fields} == {"opts"}
+    # Still a use of the class: move_method must not read the method as free.
+    assert {c for g in fc.classes[0].components for c in g.calls} == {
+        "baseKill", "baseMode", "baseParse", "baseStop"
+    }
     assert _suggest("adapter.ts", "typescript", src) == []
 
 

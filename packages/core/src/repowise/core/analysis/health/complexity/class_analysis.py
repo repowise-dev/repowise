@@ -569,6 +569,7 @@ def _indexed_groups(
     method_fcs: list[FunctionComplexity],
     members_per_method: list[set[str]],
     method_names: set[str],
+    call_targets: frozenset[str],
 ) -> list[tuple[list[int], CohesionGroup]]:
     """The per-component membership behind the LCOM4 integer.
 
@@ -576,7 +577,8 @@ def _indexed_groups(
     position, ``(start_line, name)`` rather than collection index, so the
     split reads top-to-bottom and is stable across runs. Each group keeps its
     method indices, which stay correct when method names repeat. Its fields
-    are the members its methods reference that aren't method names.
+    are the members its methods reference that aren't method names; the
+    call targets they reach are kept apart as its calls.
     """
     by_root: dict[int, list[int]] = {}
     for i, root in enumerate(roots):
@@ -588,11 +590,11 @@ def _indexed_groups(
     indexed: list[tuple[list[int], CohesionGroup]] = []
     for member_idxs in by_root.values():
         member_idxs.sort(key=_pos)
-        group_fields: set[str] = set()
-        for i in member_idxs:
-            group_fields |= members_per_method[i] - method_names
+        referenced: set[str] = set().union(*(members_per_method[i] for i in member_idxs))
         group = CohesionGroup(
-            methods=[method_fcs[i].name for i in member_idxs], fields=sorted(group_fields)
+            methods=[method_fcs[i].name for i in member_idxs],
+            fields=sorted(referenced - method_names),
+            calls=tuple(sorted(referenced & call_targets)),
         )
         indexed.append((member_idxs, group))
     indexed.sort(key=lambda pair: _pos(pair[0][0]))
@@ -644,7 +646,9 @@ def _compute_lcom4(
 
     implicit = bool(lmap.field_decl_kinds)
     roots = _component_roots(members_per_method, method_fcs, implicit)
-    indexed = _indexed_groups(roots, method_fcs, members_per_method, method_names)
+    indexed = _indexed_groups(
+        roots, method_fcs, members_per_method, method_names, refs.call_targets
+    )
     if implicit:
         groups = _stateful_groups(indexed, refs.contracts)
         return max(len(groups), 1), field_count, groups, tcc
