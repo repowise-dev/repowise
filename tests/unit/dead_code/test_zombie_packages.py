@@ -25,6 +25,9 @@ def test_zombie_package_detected():
     """A package with no incoming inter-package imports should be flagged as zombie."""
     g = _build_graph(
         nodes={
+            # A package declares itself with a manifest.
+            "pkgA/pyproject.toml": {"language": "toml", "symbols": []},
+            "pkgB/pyproject.toml": {"language": "toml", "symbols": []},
             "pkgA/mod1.py": {
                 "is_entry_point": False,
                 "is_test": False,
@@ -93,6 +96,9 @@ def _zombie_graph() -> object:
     """
     return _build_graph(
         nodes={
+            # A package declares itself with a manifest.
+            "pkgA/pyproject.toml": {"language": "toml", "symbols": []},
+            "pkgB/pyproject.toml": {"language": "toml", "symbols": []},
             "pkgA/alpha.py": {
                 "is_entry_point": False,
                 "is_test": False,

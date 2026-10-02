@@ -196,6 +196,12 @@ _TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
 # publishes a name for a symbol the file declares itself; the other is a
 # re-export the import pipeline already carries.
 _TS_EXPORT_LIST_SOURCE_RE = re.compile(r"\bexport\s*\{([^}]*)\}\s*(from\b)?")
+# ``export default name`` with nothing after the name: the statement form of
+# ``export { name as default }``. A declaration (``export default function f``)
+# or an expression (``export default f()``) does not match.
+_TS_EXPORT_DEFAULT_NAME_RE = re.compile(
+    r"^[ \t]*export[ \t]+default[ \t]+([A-Za-z_$][\w$]*)[ \t]*;?[ \t]*$", re.MULTILINE
+)
 
 # Dropped outright rather than blanked: nothing downstream of the alias scan
 # reads a line number, and collapsing a comment between a clause and its
@@ -249,11 +255,13 @@ def ts_export_aliases(src: str) -> dict[str, str]:
 
     Clauses that do not rename are omitted: the two names agree, so the symbol
     table already answers and an entry would only duplicate it.
+    ``export default name`` is the same clause written as a statement, so it is
+    recorded as ``{"default": name}``.
     """
-    # Every alias is written ``local as exported``, so a file without that
-    # token cannot hold one and need not be scanned. Most files do not, and
-    # the scan is over the whole source.
-    if " as " not in src:
+    # Every alias is written ``local as exported`` or ``export default name``,
+    # so a file with neither token cannot hold one and need not be scanned.
+    # Most files do not, and the scan is over the whole source.
+    if " as " not in src and "export default" not in src:
         return {}
 
     # Comments are stripped first, and this map is the reason it is worth the
@@ -262,17 +270,22 @@ def ts_export_aliases(src: str) -> dict[str, str]:
     # a local symbol as some module's published API and mint a call edge to it.
     cleaned = _TS_LINE_COMMENT.sub("", _TS_BLOCK_COMMENT.sub("", src))
 
-    aliases: dict[str, str] = {}
+    pairs = [(m.group(1), "default") for m in _TS_EXPORT_DEFAULT_NAME_RE.finditer(cleaned)]
     for m in _TS_EXPORT_LIST_SOURCE_RE.finditer(cleaned):
         if m.group(2):  # ``export { a as b } from "./x"`` — a re-export
             continue
         for part in m.group(1).split(","):
             local, separator, exported = (p.strip() for p in part.partition(" as "))
-            if not separator or not local.isidentifier() or not exported.isidentifier():
-                continue
-            # A name published twice under one spelling has no single answer,
-            # and guessing costs a wrong edge where refusing costs none.
-            aliases[exported] = local if aliases.get(exported, local) == local else ""
+            if separator:
+                pairs.append((local, exported))
+
+    aliases: dict[str, str] = {}
+    for local, exported in pairs:
+        if not local.isidentifier() or not exported.isidentifier():
+            continue
+        # A name published twice under one spelling has no single answer,
+        # and guessing costs a wrong edge where refusing costs none.
+        aliases[exported] = local if aliases.get(exported, local) == local else ""
     return {exported: local for exported, local in aliases.items() if local}
 
 

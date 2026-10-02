@@ -986,6 +986,19 @@ _RUNNER_FILE_NAMES: frozenset[str] = frozenset(
 )
 _RUNNER_DIRS: tuple[str, ...] = (".github/workflows/", ".circleci/", ".buildkite/")
 _RUNNER_SUFFIXES: tuple[str, ...] = (".sh", ".bash", ".ps1", ".bat", ".cmd", ".dockerfile")
+# Tool configs load the files they name: a test runner's ``setupFiles``, a
+# bundler's entries (``vitest.config.ts``, ``jest.config.base.js``), and the
+# changelog module ``.changeset/config.json`` points changesets at.
+_RUNNER_CONFIG_RE = re.compile(
+    r"\.config(?:\.[\w-]+)*(?:" + "|".join(map(re.escape, _JS_TOOL_EXTS)) + ")$"
+)
+_RUNNER_PATHS: tuple[str, ...] = ("/.changeset/config.json",)
+
+
+def is_tool_config(path: str) -> bool:
+    """Whether *path* is a tool config that loads the modules it names."""
+    name = path.rpartition("/")[2]
+    return _RUNNER_CONFIG_RE.search(name) is not None or f"/{path}".endswith(_RUNNER_PATHS)
 
 
 def is_runner_file(path: str) -> bool:
@@ -996,6 +1009,7 @@ def is_runner_file(path: str) -> bool:
         or is_build_file(path)
         or name.startswith("Dockerfile")
         or name.endswith(_RUNNER_SUFFIXES)
+        or is_tool_config(path)
         or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
     )
 # Languages whose imports name a namespace, never a file, so a file no edge
@@ -1069,6 +1083,11 @@ _NEVER_PACKAGE_DIRS: frozenset[str] = frozenset(
         "fuzz",
     }
 )
+
+
+# Project files that declare a .NET package. Globs, so they cannot sit in the
+# registry's exact-name manifest list (see ``ingestion/package_roots.py``).
+_PROJECT_FILE_SUFFIXES: tuple[str, ...] = (".csproj", ".fsproj", ".vbproj")
 
 
 # Path segments that indicate test fixture / sample data directories.
