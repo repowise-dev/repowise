@@ -2011,6 +2011,8 @@ def test_rust_match_arm_binders_are_params_of_a_span_in_the_arm():
                         re.push(']');
                     }
                     None => {}
+                    std::i32::MAX => {}
+                    consts::PI => {}
                     y if y > 2 => {}
                 }
             }
@@ -2019,7 +2021,8 @@ def test_rust_match_arm_binders_are_params_of_a_span_in_the_arm():
     fn = _first("rust", src)
     defs = {(d.var, d.line) for d in fn.def_use.definitions}
     assert ("negated", 5) in defs and ("ranges", 5) in defs
-    assert not any(var in {"None", "Token", "Class"} for var, _ in defs)
+    bogus = {"None", "Token", "Class", "std", "i32", "MAX", "consts", "PI"}
+    assert not any(var in bogus for var, _ in defs)
     spans = [e for e in find_extractions(fn, get_language_map("rust")) if e.start_line <= 7]
     assert spans
     assert all({"negated", "ranges"} <= set(e.params) for e in spans)

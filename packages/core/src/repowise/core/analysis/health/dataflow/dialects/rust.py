@@ -253,6 +253,8 @@ class RustDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _SCOPED_IDENTIFIER:  # a path (``std::i32::MAX``) never binds
+            return
         if t in self.identifier_kinds or t == _SHORTHAND_BINDER:
             defs.append(self._occ(node))
             return
