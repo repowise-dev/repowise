@@ -594,10 +594,14 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
         or _is_migration_dir(dirs)
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
-        or (
-            name.lower().endswith(_code_suffixes())
-            and PurePosixPath(name).stem.lower().endswith(_TOOLING_STEM_SUFFIXES)
-        )
+        or _is_benchmark_file(name)
+    )
+
+
+def _is_benchmark_file(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.endswith(_code_suffixes()) and PurePosixPath(lowered).stem.endswith(
+        _TOOLING_STEM_SUFFIXES
     )
 
 
