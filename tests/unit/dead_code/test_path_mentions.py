@@ -185,3 +185,20 @@ def test_an_export_a_doc_names_by_path_keeps_its_confidence():
     source = {"docs/api.md": b"See src/lib/api.ts for the client.\n"}
     assert clamp_path_mentions([finding], source) == [finding]
     assert finding.confidence == 1.0
+
+
+def test_a_config_excluding_a_file_does_not_load_it():
+    config = "export default { test: { coverage: { exclude: ['src/legacy.ts'] } } }\n"
+    finding = _clamp("src/legacy.ts", {"vitest.config.ts": config})
+    assert finding.confidence == RISK_CAP_CONFIDENCE  # a mention, not a load
+
+
+def test_a_lint_config_ignoring_a_file_does_not_load_it():
+    config = "export default [{ ignores: ['src/old.ts'] }]\n"
+    assert not _dropped("src/old.ts", {"eslint.config.js": config})
+
+
+def test_a_config_comment_does_not_load_a_file():
+    config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
+    assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
+    assert _dropped("src/index.ts", {"tsup.config.ts": config})

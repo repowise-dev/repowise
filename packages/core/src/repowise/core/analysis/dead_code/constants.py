@@ -30,6 +30,12 @@ _DEAD_CODE_EXEMPT_LANGUAGES: frozenset[str] = (
 
 # Extensions a JS tool's config file may take.
 _JS_TOOL_EXTS: tuple[str, ...] = (".js", ".cjs", ".mjs", ".ts", ".cts", ".mts")
+# A JS tool's config file: ``<tool>.config.<ext>`` and variants like
+# ``jest.config.base.js``. Never flagged itself, and a reader of what it loads.
+_JS_TOOL_CONFIG_PATTERNS: tuple[str, ...] = (
+    *(f"*.config{ext}" for ext in _JS_TOOL_EXTS),
+    *(f"*.config.*{ext}" for ext in _JS_TOOL_EXTS),
+)
 
 # Patterns that should never be flagged as dead. ``fnmatch`` ``*`` spans ``/``,
 # so a leading ``*`` matches nested and repo-root paths alike.
@@ -60,8 +66,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # variants like ``jest.config.base.js``), ``.<tool>rc.<ext>`` and pnpm's
     # install hook. fnmatch ``*`` spans ``/``, so an ``*rc.<ext>`` file under a
     # dot-directory is exempt too; an accepted recall loss.
-    *(f"*.config{ext}" for ext in _JS_TOOL_EXTS),
-    *(f"*.config.*{ext}" for ext in _JS_TOOL_EXTS),
+    *_JS_TOOL_CONFIG_PATTERNS,
     *(f".*rc{ext}" for ext in _JS_TOOL_EXTS),
     *(f"*/.*rc{ext}" for ext in _JS_TOOL_EXTS),
     ".pnpmfile.cjs",
@@ -986,19 +991,32 @@ _RUNNER_FILE_NAMES: frozenset[str] = frozenset(
 )
 _RUNNER_DIRS: tuple[str, ...] = (".github/workflows/", ".circleci/", ".buildkite/")
 _RUNNER_SUFFIXES: tuple[str, ...] = (".sh", ".bash", ".ps1", ".bat", ".cmd", ".dockerfile")
-# Tool configs load the files they name: a test runner's ``setupFiles``, a
-# bundler's entries (``vitest.config.ts``, ``jest.config.base.js``), and the
-# changelog module ``.changeset/config.json`` points changesets at.
-_RUNNER_CONFIG_RE = re.compile(
-    r"\.config(?:\.[\w-]+)*(?:" + "|".join(map(re.escape, _JS_TOOL_EXTS)) + ")$"
+# Tool configs that load files they name under a load key (below): the JS
+# tool configs above and the changesets config.
+_TOOL_CONFIG_PATHS: tuple[str, ...] = ("/.changeset/config.json",)
+# The keys under which a tool config names a file it loads: a test runner's
+# setup files, a bundler's entries, a docs site's sidebars, the changesets
+# changelog module. A path under any other key (``coverage.exclude``,
+# ``ignores``) or in a comment is not loaded.
+_TOOL_CONFIG_LOAD_KEYS: tuple[str, ...] = (
+    "setupFiles",
+    "setupFilesAfterEnv",
+    "globalSetup",
+    "globalTeardown",
+    "entry",
+    "entryPoints",
+    "input",
+    "sidebarPath",
+    "changelog",
 )
-_RUNNER_PATHS: tuple[str, ...] = ("/.changeset/config.json",)
 
 
 def is_tool_config(path: str) -> bool:
-    """Whether *path* is a tool config that loads the modules it names."""
+    """Whether *path* is a tool config that loads the files its load keys name."""
     name = path.rpartition("/")[2]
-    return _RUNNER_CONFIG_RE.search(name) is not None or f"/{path}".endswith(_RUNNER_PATHS)
+    return any(fnmatch.fnmatchcase(name, p) for p in _JS_TOOL_CONFIG_PATTERNS) or (
+        f"/{path}".endswith(_TOOL_CONFIG_PATHS)
+    )
 
 
 def is_runner_file(path: str) -> bool:
@@ -1009,7 +1027,6 @@ def is_runner_file(path: str) -> bool:
         or is_build_file(path)
         or name.startswith("Dockerfile")
         or name.endswith(_RUNNER_SUFFIXES)
-        or is_tool_config(path)
         or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
     )
 # Languages whose imports name a namespace, never a file, so a file no edge

@@ -2028,7 +2028,8 @@ class DeadCodeAnalyzer:
         if not self._has_package_manifest(pkg, files):
             return False
         # Tests are run, never imported, and so is a package that ships a
-        # program (a CLI started by its shebang).
+        # program (a CLI started by its shebang). One program file is enough,
+        # even a stray script: this errs toward not calling a package dead.
         files = [f for f in files if not self.graph.nodes.get(f, {}).get("is_test")]
         if any(is_program(f, self._source_map.get(f, b"")) for f in files):
             return False
@@ -2044,7 +2045,12 @@ class DeadCodeAnalyzer:
         )
 
     def _has_package_manifest(self, pkg: str, files: list[str]) -> bool:
-        """Whether *pkg* holds a package manifest of its own, on disk or indexed."""
+        """Whether *pkg* holds a package manifest of its own, on disk or indexed.
+
+        A top-level folder whose manifest sits at the repository root (a
+        Python package built by the root ``pyproject.toml``) is the repository
+        itself, not a package of it, so it is never a candidate.
+        """
         names = {f.partition("/")[2] for f in files if f.count("/") == 1}
         if self._repo_root is not None:
             with contextlib.suppress(OSError):
