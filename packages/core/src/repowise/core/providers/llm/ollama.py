@@ -39,6 +39,7 @@ from repowise.core.providers.llm.base import (
     ProviderError,
     ProviderModelOption,
     RateLimitError,
+    SdkClientOwner,
     ensure_reasoning_supported,
     fallback_model_option,
     normalize_stop_reason,
@@ -131,7 +132,7 @@ def _ollama_model_options(
     return tuple(options)
 
 
-class OllamaProvider(BaseProvider):
+class OllamaProvider(SdkClientOwner, BaseProvider):
     """Ollama provider for local, offline LLM inference.
 
     Generation uses Ollama's native chat API; streaming chat uses the
@@ -159,8 +160,8 @@ class OllamaProvider(BaseProvider):
     ) -> None:
         resolved_base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
         self._base_url = resolved_base_url.rstrip("/")
-        self._client = AsyncOpenAI(
-            api_key="ollama", base_url=_normalize_base_url(resolved_base_url)
+        self._open_client(
+            lambda: AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(resolved_base_url))
         )
         self._native_url = self._base_url.removesuffix("/v1")
         self._model = model

@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -246,6 +247,13 @@ class BaseProvider(ABC):
     # a longer wait on calls that were going to fail regardless.
     interactive_timeout_s: float = 60.0
 
+    async def aclose(self) -> None:  # noqa: B027 - an optional hook, not an abstract one
+        """Release what this provider holds on the running event loop.
+
+        A no-op for a provider with nothing loop-bound. One that owns an SDK
+        client closes it and stays usable (see ``SdkClientOwner``).
+        """
+
     @abstractmethod
     async def generate(
         self,
@@ -327,6 +335,54 @@ class BaseProvider(ABC):
                 source="fallback",
             ),
         )
+
+
+# Providers holding an SDK client whose pooled connections belong to one event
+# loop. Weak, so a dropped provider is not kept alive to be closed.
+_CLIENT_OWNERS: weakref.WeakSet[SdkClientOwner] = weakref.WeakSet()
+
+
+class SdkClientOwner:
+    """Mixin for a provider whose ``_client`` is an ``AsyncAnthropic`` / ``AsyncOpenAI``.
+
+    The SDK client pools connections on the event loop that opened them. The
+    CLI runs one provider through several ``asyncio.run`` calls, and a
+    connection left pooled when its loop closes can no longer be closed: the
+    SDK's ``__del__`` then schedules ``aclose()`` on whichever loop is running
+    and Python prints ``Task exception was never retrieved ... Event loop is
+    closed`` (issue #2946). Closing once after the last step is too late for
+    the same reason, so ``aclose`` runs at the end of every loop
+    (``close_provider_clients``) and leaves a fresh client for the next one.
+    """
+
+    _client: Any
+    _client_factory: Callable[[], Any]
+    _owned_client: Any
+
+    def _open_client(self, factory: Callable[[], Any]) -> None:
+        self._client_factory = factory
+        self._client = self._owned_client = factory()
+        _CLIENT_OWNERS.add(self)
+
+    async def aclose(self) -> None:
+        owned = self._owned_client
+        fresh = self._client_factory()
+        # A client somebody put there in our place (a test double) is theirs.
+        if self._client is owned:
+            self._client = fresh
+        self._owned_client = fresh
+        await owned.close()
+
+
+async def close_provider_clients() -> None:
+    """Close every live provider's SDK client on the running event loop.
+
+    Called as an ``asyncio.run`` ends. A cleanup step must not turn a finished
+    command into a failed one, so a client that will not close is skipped.
+    """
+    for owner in list(_CLIENT_OWNERS):
+        with contextlib.suppress(Exception):
+            await owner.aclose()
 
 
 class ProviderError(Exception):
