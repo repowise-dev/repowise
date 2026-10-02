@@ -160,18 +160,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Styles/*.xaml",
     "*/Resources/*.xaml",
     # ---- Test infrastructure conventions -----------------------------
-    # Test classes are loaded by the runner via attribute reflection. Both
-    # locations and suffixes are matched, to catch tests at arbitrary paths.
-    "*Tests/*.cs",
-    "*.Tests/*.cs",
-    "*UnitTests/*.cs",
-    "*.UnitTests/*.cs",
-    "*IntegrationTests/*.cs",
-    "*.IntegrationTests/*.cs",
-    "*FuzzTests/*.cs",
-    "*.FuzzTests/*.cs",
-    "*UITests/*.cs",
-    "*.UITests/*.cs",
+    # Test classes are loaded by the runner via attribute reflection. The
+    # plural suite folders (``Foo.Tests/``, ``UnitTests/``, ``UITests/``) are
+    # test paths (``test_paths``), which every dead-code pass already skips;
+    # these are the shapes it does not read as tests.
     "*UITest/*.cs",
     "*UITestAutomation/*.cs",
     # Singular forms.
