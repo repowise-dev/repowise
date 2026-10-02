@@ -33,6 +33,7 @@ from repowise.core.pipeline.progress import (
 )
 from repowise.core.registry import HookProgressCallback
 
+from .phase_timing import timed
 from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 from .phases.analysis import (
     _run_dead_code_analysis,
@@ -676,16 +677,17 @@ async def run_pipeline(
                 # the wiki-page backfill (in ``finalize_knowledge_graph``), so
                 # rich page summaries win; FAST mode floors here.
                 will_generate = generate_docs and llm_client is not None
-                knowledge_graph_result = curate_knowledge_graph(
-                    knowledge_graph_result,
-                    parsed_files=parsed_files,
-                    graph_builder=graph_builder,
-                    repo_structure=repo_structure,
-                    community_info=graph_builder.community_info(),
-                    git_meta_map=git_meta_map,
-                    enabled=curation_enabled(),
-                    defer_summary_floor=will_generate,
-                )
+                with timed(getattr(progress, "table", None), "knowledge_graph.curate"):
+                    knowledge_graph_result = curate_knowledge_graph(
+                        knowledge_graph_result,
+                        parsed_files=parsed_files,
+                        graph_builder=graph_builder,
+                        repo_structure=repo_structure,
+                        community_info=graph_builder.community_info(),
+                        git_meta_map=git_meta_map,
+                        enabled=curation_enabled(),
+                        defer_summary_floor=will_generate,
+                    )
             except (ValueError, KeyError, RuntimeError) as cur_err:
                 logger.error("kg_curation_failed", error=str(cur_err), exc_info=True)
     except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
@@ -701,16 +703,19 @@ async def run_pipeline(
     # written, so it is the only pass that can fold a paraphrase into an
     # existing one. By the end-of-run persist every group matches on title.
     if resume_controller is not None and not skip_analysis:
-        await resume_controller.checkpoint_analysis(
-            parsed_files=parsed_files,
-            dead_code_report=dead_code_report,
-            health_report=health_report,
-            decision_report=decision_report,
-            doc_drift_report=doc_drift_report,
-            git_metadata_list=git_metadata_list,
-            vector_store=vector_store,
-            progress=progress,
-        )
+        # No progress phase covers this write either; time it like the INDEX
+        # checkpoint so it shows in the totals.
+        with timed(getattr(progress, "table", None), "persist.checkpoint_analysis"):
+            await resume_controller.checkpoint_analysis(
+                parsed_files=parsed_files,
+                dead_code_report=dead_code_report,
+                health_report=health_report,
+                decision_report=decision_report,
+                doc_drift_report=doc_drift_report,
+                git_metadata_list=git_metadata_list,
+                vector_store=vector_store,
+                progress=progress,
+            )
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
