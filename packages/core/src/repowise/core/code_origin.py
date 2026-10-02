@@ -141,23 +141,26 @@ def _declares_generated(name: str, header: str) -> bool:
     """
     if is_generated_header(header):
         return True
-    if not name.lower().endswith(_suffixes("code")):
-        return False
+    return name.lower().endswith(_suffixes("code")) and _leading_generated_sentence(header)
+
+
+def _leading_generated_sentence(header: str) -> bool:
+    """The generated sentence in a comment before the first line of real code."""
     lines = [line.strip() for line in header.splitlines()[:_GENERATED_SENTENCE_LINES]]
     for i, line in enumerate(lines):
-        if not line:
-            continue
-        text = _comment_text(line, False)
+        text = _comment_text(line, False) if line else ""
         if text is None:
-            if line.startswith(_PREAMBLE_PREFIXES):
-                continue
-            return False
-        # A comment right above an import is about that import ("this file is
-        # generated at build time" over the import of a build artifact).
-        about_import = i + 1 < len(lines) and lines[i + 1].startswith(_PREAMBLE_PREFIXES)
-        if not about_import and _GENERATED_SENTENCE_RE.search(text.upper()):
+            if not line.startswith(_PREAMBLE_PREFIXES):
+                return False
+        elif _GENERATED_SENTENCE_RE.search(text.upper()) and not _above_import(lines, i):
             return True
     return False
+
+
+def _above_import(lines: list[str], i: int) -> bool:
+    """A comment right above an import is about that import ("this file is
+    generated at build time" over the import of a build artifact)."""
+    return i + 1 < len(lines) and lines[i + 1].startswith(_PREAMBLE_PREFIXES)
 
 
 # .NET reference assemblies (``src/libraries/<Lib>/ref/<Lib>.cs``) declare the
