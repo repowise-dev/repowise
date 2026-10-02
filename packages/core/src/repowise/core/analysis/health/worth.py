@@ -159,6 +159,11 @@ def low_priority(
         return None
     if not any(shape.get(k) for k in ("ccn", "nloc", "max_nesting")):
         return None  # nothing measured: no grounds to call it small
+    return _size_reason(shape)
+
+
+def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
+    """:func:`low_priority` for a measured function-size problem."""
     if _chained(shape):
         return "chain"
     size = worth_size(shape)
