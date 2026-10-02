@@ -99,6 +99,18 @@ class TestJavaBindings:
         modules = [imp.module_path for imp in result.imports]
         assert "com.example.Foo" in modules
 
+    def test_static_member_import_names_its_declaring_type(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport static com.example.Outer.Bar.baz;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["baz", "Bar"]
+        # Only the member is bound: the type's bare name is not in scope.
+        assert [b.local_name for b in imp.bindings] == ["baz"]
+
+    def test_plain_import_names_only_the_type(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport com.example.Foo;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["Foo"]
+
 
 class TestJavaModuleDocstring:
     def test_module_javadoc_extracted(self, parser: ASTParser) -> None:
