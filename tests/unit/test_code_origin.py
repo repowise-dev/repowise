@@ -400,7 +400,6 @@ def test_build_files_by_type(path: str) -> None:
     [
         # Near misses: code named like a build step, which ships.
         ("src/build.rs", "production"),  # a ``mod build;``, not a Cargo build script
-        ("crates/cli/src/commands/build.rs", "production"),
         ("homeassistant/setup.py", "production"),  # a nested setup.py is a module
         ("src/build/compiler.ts", "tooling"),  # the build/ directory rule, not the type
         ("src/builder.py", "production"),
@@ -437,3 +436,13 @@ def test_ship_rank_puts_product_code_first_and_tests_last() -> None:
     assert ship_rank("scripts/release.py") == 1
     assert ship_rank("vendor/x/y.go") == 1
     assert ship_rank("tests/test_app.py") == 2
+
+
+def test_build_rs_under_src_is_a_dead_code_root_but_keeps_its_origin() -> None:
+    # A crate root under src/ (rust-lang/rust) is never flagged as dead...
+    assert is_build_file("src/bootstrap/build.rs")
+    assert is_build_file("src/tools/x/build.rs")
+    # ...but only a build.rs with no src/ above it leaves the fix lists.
+    assert code_origin("src/bootstrap/build.rs") == "production"
+    assert code_origin("crates/cli/src/commands/build.rs") == "production"
+    assert not is_build_file("src/build.rs")

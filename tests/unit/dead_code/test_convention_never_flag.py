@@ -117,6 +117,8 @@ def test_origin_near_misses_stay_flaggable(path):
         "gradle/plugins/ktorbuild.kmp.gradle.kts",
         "settings.gradle.kts",
         "crates/core/build.rs",
+        "src/bootstrap/build.rs",
+        "src/tools/x/build.rs",
         "magefile.go",
         "noxfile.py",
         "cmake/Toolchain.cmake",

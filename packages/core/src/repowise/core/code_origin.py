@@ -402,19 +402,30 @@ _BUILD_NAME_RE = re.compile(
 # Names a build tool reads only at the root: a nested ``setup.py`` is as often
 # a module (``homeassistant/setup.py`` sets up integrations).
 _BUILD_ROOT_NAMES = frozenset({"setup.py"})
-# Cargo runs ``build.rs`` from the crate root; under ``src/`` it is a module.
-_BUILD_OUTSIDE_SRC_NAMES = frozenset({"build.rs"})
+# Cargo runs ``build.rs`` from a crate root; directly in ``src/`` it is a
+# module (``mod build;``). A crate root can sit under ``src/`` too
+# (``src/bootstrap/build.rs`` in rust-lang/rust), so as a dead-code root every
+# ``build.rs`` not directly in ``src/`` counts: a module there is reached by
+# its ``mod`` edge anyway. As an origin, which hides code from fix lists, only
+# one with no ``src/`` above it counts (``cli/src/commands/build.rs`` is a
+# module).
+_CRATE_ROOT_NAMES = frozenset({"build.rs"})
+_SOURCE_DIR = "src"
 
 
-def _is_build_name(name: str, dirs: list[str]) -> bool:
+def _is_build_name(name: str, dirs: list[str], *, as_origin: bool = False) -> bool:
     lowered = name.lower()
     return (
         name in _BUILD_FILE_NAMES
         or lowered.endswith(_BUILD_SUFFIXES)
         or bool(_BUILD_NAME_RE.match(lowered))
         or (not dirs and name in _BUILD_ROOT_NAMES)
-        or (name in _BUILD_OUTSIDE_SRC_NAMES and "src" not in dirs)
+        or (name in _CRATE_ROOT_NAMES and _at_crate_root(dirs, as_origin=as_origin))
     )
+
+
+def _at_crate_root(dirs: list[str], *, as_origin: bool) -> bool:
+    return _SOURCE_DIR not in dirs if as_origin else dirs[-1:] != [_SOURCE_DIR]
 
 
 @lru_cache(maxsize=65536)
@@ -600,7 +611,7 @@ def _maintained_origin(
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
     examples, tooling, or production, in that precedence."""
-    if _is_build_name(name, dirs):
+    if _is_build_name(name, dirs, as_origin=True):
         return "build"
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
