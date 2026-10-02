@@ -592,6 +592,28 @@ def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
     assert classes["Outer"].method_count == 1
 
 
+def test_cpp_class_fused_into_a_misread_head_is_not_a_cohesion_unit(tmp_path):
+    # When the grammar loses the ``;`` after a class (a macro or recovery
+    # upstream), ``class Fused {...} MACRO class Next {`` reads as one function
+    # whose return type is ``Fused``; its extent and members are not its own.
+    source = b"""class Fused {
+  int push() { return 1; }
+}
+FMT_EXPORT class Next {
+  int get() { return 2; }
+};
+class Plain { int get() { return x_; } int x_; };
+"""
+    p = tmp_path / "fused.h"
+    p.write_bytes(source)
+    fcx = walk_file(str(p), "cpp", source)
+    if not fcx.functions:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {c.name for c in fcx.classes}
+    assert "Plain" in names
+    assert "Fused" not in names
+
+
 def test_cpp_assertion_blocks():
     results = _walk("cpp/assertions.cpp", "cpp")
     many = _find(results, "testManyAsserts")

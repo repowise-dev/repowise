@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path
-from .ast_utils import _IDENTIFIER_SUFFIX, _find_name, is_function_node
+from .ast_utils import _IDENTIFIER_SUFFIX, _find_name, is_function_node, is_misread_scope
 from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
@@ -629,7 +629,10 @@ def _collect_classes(
         return []
     source_str = source.decode("utf-8", errors="replace")
     classes: list[ClassComplexity] = []
-    for class_node in class_nodes:
+    # A class the grammar fused into a misread scope's head runs on over the
+    # code after it, so its member list is not the class's own.
+    trusted = [n for n in class_nodes if n.parent is None or not is_misread_scope(n.parent, lmap)]
+    for class_node in trusted:
         body = _collect_class_body(class_node, lmap, language, source_str)
         method_fcs = [fc_by_node_id[m.id] for m in body.methods if m.id in fc_by_node_id]
         # Keep nodes and FCs aligned (a method missing from the function

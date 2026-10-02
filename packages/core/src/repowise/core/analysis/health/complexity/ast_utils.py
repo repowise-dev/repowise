@@ -212,11 +212,14 @@ def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     return f"<anonymous@{node.start_point[0] + 1}>"
 
 
+def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True for a namespace or type the grammar misread as a function."""
+    return lmap.misread_scope is not None and bool(lmap.misread_scope(node))
+
+
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
     """True for a function definition, False for a scope the grammar misread as one."""
-    if node.type not in lmap.function_kinds:
-        return False
-    return lmap.misread_scope is None or not lmap.misread_scope(node)
+    return node.type in lmap.function_kinds and not is_misread_scope(node, lmap)
 
 
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
