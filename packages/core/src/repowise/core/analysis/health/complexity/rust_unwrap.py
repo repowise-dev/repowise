@@ -63,30 +63,32 @@ def _same(a: Node | None, b: Node) -> bool:
     return a is not None and (a.start_byte, a.end_byte) == (b.start_byte, b.end_byte)
 
 
-def _receiver(call: Node) -> Node | None:
-    fn = call.child_by_field_name("function")
-    return fn.child_by_field_name("value") if fn is not None else None
+def _method_call_parts(node: Node) -> tuple[str, Node | None, Node | None]:
+    """``(method name, receiver, arguments)`` of ``recv.method(args)``, else ``("", None, None)``."""
+    fn = node.child_by_field_name("function") if node.type == "call_expression" else None
+    if fn is None or fn.type != "field_expression":
+        return "", None, None
+    method = _text(fn.child_by_field_name("field"))
+    return method, fn.child_by_field_name("value"), node.child_by_field_name("arguments")
+
+
+def _peel(node: Node) -> Node | None:
+    """The expression inside one Some/Ok-preserving layer of *node*, else ``None``."""
+    method, receiver, _ = _method_call_parts(node)
+    if method:
+        return receiver if method in _GUARD_ADAPTERS else None
+    is_deref = node.type == "unary_expression" and node.children[0].type == "*"
+    if is_deref or node.type in ("parenthesized_expression", "reference_expression"):
+        return node.named_children[-1] if node.named_child_count else None
+    return None
 
 
 def _base_receiver(node: Node) -> Node:
     """*node* with Some/Ok-preserving adapters, parentheses and ``*``/``&`` peeled."""
-    while True:
-        if node.type == "call_expression":
-            fn = node.child_by_field_name("function")
-            if fn is None or fn.type != "field_expression":
-                return node
-            if _text(fn.child_by_field_name("field")) not in _GUARD_ADAPTERS:
-                return node
-            inner = fn.child_by_field_name("value")
-        elif node.type in ("parenthesized_expression", "reference_expression") or (
-            node.type == "unary_expression" and node.children[0].type == "*"
-        ):
-            inner = node.named_children[-1] if node.named_child_count else None
-        else:
-            return node
-        if inner is None:
-            return node
-        node = inner
+    inner = _peel(node)
+    while inner is not None:
+        node, inner = inner, _peel(inner)
+    return node
 
 
 def _guard_keys(receiver: Node) -> frozenset[str]:
@@ -173,20 +175,19 @@ def _writes_to_string(receiver: Node) -> bool:
 
 def cannot_panic(call: Node) -> bool:
     """True when the ``unwrap``/``expect`` *call* provably cannot panic."""
-    receiver = _receiver(call)
+    receiver = _method_call_parts(call)[1]
     if receiver is None:
         return False
     return _writes_to_string(receiver) or _is_guarded(call, receiver)
 
 
 def _sync_idiom(receiver: Node | None) -> str | None:
-    if receiver is None or receiver.type != "call_expression":
+    if receiver is None:
         return None
-    args = receiver.child_by_field_name("arguments")
-    fn = receiver.child_by_field_name("function")
-    if args is None or args.named_child_count or fn is None or fn.type != "field_expression":
+    method, _, args = _method_call_parts(receiver)
+    if args is None or args.named_child_count:
         return None
-    return _SYNC_RECEIVER_IDIOMS.get(_text(fn.child_by_field_name("field")))
+    return _SYNC_RECEIVER_IDIOMS.get(method)
 
 
 def _expect_message_is_literal(call: Node) -> bool:
@@ -206,12 +207,10 @@ def idiom(node: Node) -> str | None:
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
         return "unreachable" if _text(mac) in _INVARIANT_MACROS else None
-    sync = _sync_idiom(_receiver(node))
+    sync = _sync_idiom(_method_call_parts(node)[1])
     if sync is not None:
         return sync
-    fn = node.child_by_field_name("function")
-    method = _text(fn.child_by_field_name("field")) if fn is not None else ""
-    if method == "expect" and _expect_message_is_literal(node):
+    if _method_call_parts(node)[0] == "expect" and _expect_message_is_literal(node):
         return "invariant_expect"
     return None
 
