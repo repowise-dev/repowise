@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
@@ -50,6 +50,7 @@ from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
+from .duplication.detector import clone_ranges, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
 from .function_blame_rollup import blame_commit_entries, commit_spans
@@ -525,6 +526,22 @@ def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
     return list(git_meta.get("function_commit_shas") or ())
 
 
+def _partner(file_path: str, pair: ClonePair) -> str:
+    """The other file of *pair*: *file_path* itself for a clone inside it."""
+    return pair.file_b if pair.file_a == file_path else pair.file_a
+
+
+def _pct_of_kept(
+    file_path: str, clones: list[ClonePair], kept: list[ClonePair], dup_pct: float | None
+) -> float | None:
+    """*dup_pct* scaled to the lines the *kept* clones still cover."""
+    if len(kept) == len(clones) or not dup_pct:
+        return dup_pct
+    covered = union_line_count(clone_ranges(file_path, clones))
+    share = union_line_count(clone_ranges(file_path, kept)) / covered if covered else 0.0
+    return round(dup_pct * share, 2)
+
+
 def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
@@ -727,7 +744,7 @@ class HealthAnalyzer:
         # answer cannot live on the cached walk.
         self._project_name: str | None = None
         self._origins: dict[str, CodeOrigin] = {}
-        self._installed_ui_dirs: dict[str, Any] = {}
+        self._installed_ui_dirs: dict[str, tuple[PurePosixPath, ...]] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
@@ -1422,19 +1439,36 @@ class HealthAnalyzer:
         return self._project_name
 
     def _origin(self, pf: Any, source: bytes | None = None) -> CodeOrigin:
-        # A copy a component CLI installed is generated, the origin that wins
-        # over every other; deciding it needs the checkout's config files,
-        # which ``code_origin`` (path and head only) does not read.
-        if self.repo_root is not None and is_installed_component(
-            self.repo_root, pf.file_info.path, self._installed_ui_dirs
-        ):
-            return "generated"
         return code_origin(
             pf.file_info.path,
             source,
             is_test=bool(pf.file_info.is_test),
             project=self._project(),
         )
+
+    def _installed(self, path: str) -> bool:
+        return self.repo_root is not None and is_installed_component(
+            self.repo_root, path, self._installed_ui_dirs
+        )
+
+    def _without_kit_clones(
+        self, file_path: str, clones: list[ClonePair], dup_pct: float | None
+    ) -> tuple[list[ClonePair], float | None]:
+        """*clones* less those both of whose sides are components a component
+        CLI installed.
+
+        Copies of one upstream kit (shadcn/ui's ``dialog.tsx`` and
+        ``alert-dialog.tsx``, or the repeated item wrappers inside one of them)
+        are similar by design, so such a clone is not duplication anyone here
+        wrote. Every other finding on those files stands, and a clone with a
+        file outside the kit still counts.
+        The file's duplication share shrinks with the lines the dropped clones
+        alone covered.
+        """
+        if not clones or not self._installed(file_path):
+            return clones, dup_pct
+        kept = [p for p in clones if not self._installed(_partner(file_path, p))]
+        return kept, _pct_of_kept(file_path, clones, kept, dup_pct)
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
@@ -1522,8 +1556,11 @@ class HealthAnalyzer:
         covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
         total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
 
-        clones = dup_report.pairs_by_file.get(file_path, [])
-        dup_pct = dup_report.duplication_pct.get(file_path)
+        clones, dup_pct = self._without_kit_clones(
+            file_path,
+            dup_report.pairs_by_file.get(file_path, []),
+            dup_report.duplication_pct.get(file_path),
+        )
         # Read only for clone-bearing files, keeping the read proportional.
         source_lines = (
             _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None

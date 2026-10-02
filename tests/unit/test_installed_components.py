@@ -1,13 +1,14 @@
-"""Files a component CLI installed, decided from its components.json."""
+"""Files a component CLI installed, decided from its components.json, and the
+clones between them the health pass drops."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from repowise.core.analysis.health.duplication import ClonePair
 from repowise.core.analysis.health.engine import HealthAnalyzer
 from repowise.core.installed_components import is_installed_component
 
@@ -57,12 +58,44 @@ def test_malformed_config_is_ignored(tmp_path: Path) -> None:
     assert is_installed_component(tmp_path, "components/ui/dialog.tsx", {}) is False
 
 
-def test_health_origin_reads_components_json(tmp_path: Path) -> None:
+def _pair(a: str, b: str, lines: tuple[int, int] = (1, 40)) -> ClonePair:
+    start, end = lines
+    return ClonePair(
+        file_a=a,
+        file_b=b,
+        a_start_line=start,
+        a_end_line=end,
+        b_start_line=start,
+        b_end_line=end,
+        token_count=200,
+    )
+
+
+def test_clones_between_kit_files_are_dropped(tmp_path: Path) -> None:
     _config(tmp_path / "web", _ALIASES)
+    analyzer = HealthAnalyzer(graph=None, repo_root=tmp_path)
+    kit = "web/src/components/ui/dialog.tsx"
+    kit_pair = _pair(kit, "web/src/components/ui/alert-dialog.tsx")
+    inside = _pair(kit, kit, (60, 70))
+    own_pair = _pair(kit, "web/src/components/Header.tsx", (50, 59))
+    kept, pct = analyzer._without_kit_clones(kit, [kit_pair, inside, own_pair], 50.0)
+    # The clone with the team's own file still counts; the share shrinks to it.
+    assert kept == [own_pair]
+    assert pct == 8.2  # 50% scaled by 10 of the 61 cloned lines
 
-    def origin(path: str) -> str:
-        pf = SimpleNamespace(file_info=SimpleNamespace(path=path, is_test=False))
-        return HealthAnalyzer(graph=None, repo_root=tmp_path)._origin(pf)
 
-    assert origin("web/src/components/ui/dialog.tsx") == "generated"
-    assert origin("web/src/components/Header.tsx") == "production"
+def test_clones_of_a_file_outside_the_kit_are_untouched(tmp_path: Path) -> None:
+    _config(tmp_path / "web", _ALIASES)
+    analyzer = HealthAnalyzer(graph=None, repo_root=tmp_path)
+    own = "web/src/components/Header.tsx"
+    pair = _pair(own, "web/src/components/ui/dialog.tsx")
+    assert analyzer._without_kit_clones(own, [pair], 30.0) == ([pair], 30.0)
+
+
+def test_no_components_json_keeps_every_clone(tmp_path: Path) -> None:
+    analyzer = HealthAnalyzer(graph=None, repo_root=tmp_path)
+    pair = _pair("components/ui/dialog.tsx", "components/ui/alert-dialog.tsx")
+    assert analyzer._without_kit_clones("components/ui/dialog.tsx", [pair], 80.0) == (
+        [pair],
+        80.0,
+    )

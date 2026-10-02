@@ -3,11 +3,17 @@
 shadcn/ui's ``add`` command writes its primitive wrappers (``dialog.tsx``,
 ``context-menu.tsx``) into the directory that ``components.json`` names as the
 ``ui`` alias. The copies are near-identical to one another by design, so a
-clone detector reads the kit as duplication. Two pieces of evidence must agree:
-the config file declares the directory, and the file carries a registry
-component's name directly in it. A ``components/ui`` folder with no
-``components.json`` above it, and a team's own component, story or test kept
-beside the kit (``PathTooltip.tsx``, ``button.stories.tsx``), stay production.
+clone detector reads the kit as duplication; the health pass drops clones
+between two kit files and keeps every other finding on them, since teams edit
+their copies. Two pieces of evidence must agree: the config file declares the
+directory, and the file carries a registry component's name directly in it. A
+``components/ui`` folder with no ``components.json`` above it, and a team's
+own component, story or test kept beside the kit (``PathTooltip.tsx``,
+``button.stories.tsx``), are not kit files.
+
+Ceilings: the match is by name, so a heavily edited copy still counts as kit
+for clones between kit files; and the ``@/`` alias is taken to mean the
+config's directory or its ``src/``, without reading tsconfig ``paths``.
 """
 
 from __future__ import annotations
