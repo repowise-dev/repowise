@@ -179,6 +179,9 @@ _MAX_UNKNOWN_LANGUAGE_PATHS = 500
 _REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".api",  # also matches Kotlin's .klib.api
+        ".asm",  # assembly that calls or defines C/C++ symbols by name
+        ".def",  # a Windows module-definition file's EXPORTS list
+        ".s",  # .s and .S, matched lowercased
         ".properties",
         ".rst",
         ".topic",

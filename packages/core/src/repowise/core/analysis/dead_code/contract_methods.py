@@ -29,6 +29,8 @@ overrides without static callers, etc.
 
 from __future__ import annotations
 
+import re
+
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
 _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
@@ -58,6 +60,17 @@ _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
 # overwhelming majority; Rust ``windows-rs`` derivations also surface
 # these names in user code via the ``#[implement]`` macro.
 _COM_LANGUAGES: frozenset[str] = frozenset({"cpp", "c", "csharp", "rust"})
+
+#: The macros a C/C++ COM interface method implementation is declared with
+#: (``IFACEMETHODIMP GetTitle(...)``, ``STDMETHODIMP_(ULONG) AddRef()``). The
+#: method fills an interface slot the COM runtime calls through the vtable,
+#: whatever its name.
+_COM_METHOD_MACRO_RE = re.compile(r"\b(?:IFACE|STD)METHOD(?:IMP)?_?\b")
+
+
+def is_com_method_implementation(signature: str | None, language: str | None) -> bool:
+    """Whether a C/C++ signature declares a COM interface method implementation."""
+    return language in _CPP_LANGUAGES and bool(_COM_METHOD_MACRO_RE.search(signature or ""))
 
 
 # Method names reserved by JVM ``Object`` / ``Serializable`` / ``Comparable`` /

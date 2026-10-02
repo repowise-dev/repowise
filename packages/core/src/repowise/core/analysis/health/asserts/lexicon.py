@@ -45,6 +45,7 @@ behaviour.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 #: Callee-name prefixes of the narrow tier. Matched case-insensitively against
@@ -220,3 +221,66 @@ def assert_dialect(
         receiver_methods=dialect.receiver_methods,
         verify_names=dialect.verify_names,
     )
+
+
+# -- Flag checks (``duplicated_assertion_block``) ---------------------------
+#
+# A *flag check* asserts only that one plain name is set, unset, true or false:
+# ``assertNotNull(x)``, ``Assert.IsTrue(ok)``, ``expect(x).toBeDefined()``,
+# ``assert x is not None``. It is counted like any assertion; the duplicated
+# block marker just does not count it toward a block's real checks, because two
+# tests of one fixture repeat those lines without sharing logic worth a helper.
+# Matched per language against a whole, whitespace-collapsed line, so a check
+# spread over several lines is never one. A value check (``assertEquals(5,
+# count())``) or a check on an expression (``assertNull(x.getY())``) is not a
+# flag check in any row. A language without a row discounts nothing.
+
+# An optional message argument, before (JUnit 4, MSTest) or after the name.
+_MSG = r'(?:"[^"]*"|\'[^\']*\')'
+_NAME = r"!?\s*\w+"
+_CALL_ON_NAME = rf"\(\s*(?:{_MSG}\s*,\s*)?{_NAME}\s*(?:,\s*{_MSG})?\s*\)"
+_END = r"\s*;?$"
+
+_JVM_FLAG_CHECKS = (
+    # JUnit / TestNG
+    rf"^(?:\w+\.)?assert(?:Not)?Null{_CALL_ON_NAME}{_END}",
+    rf"^(?:\w+\.)?assert(?:True|False){_CALL_ON_NAME}{_END}",
+    # Hamcrest and AssertJ
+    rf"^assertThat\(\s*\w+\s*,\s*(?:is\()?(?:notNullValue|nullValue)\(\)\)?\s*\){_END}",
+    rf"^assertThat\(\s*\w+\s*,\s*is\((?:true|false)\)\s*\){_END}",
+    rf"^assertThat\(\s*\w+\s*\)\.is(?:Not)?(?:Null|True|False)\(\){_END}",
+)
+
+FLAG_CHECK_PATTERNS: dict[str, tuple[str, ...]] = {
+    "java": _JVM_FLAG_CHECKS,
+    "kotlin": _JVM_FLAG_CHECKS,
+    # MSTest / NUnit / xUnit, and FluentAssertions.
+    "csharp": (
+        rf"^Assert\.(?:Is)?(?:Not)?(?:Null|True|False){_CALL_ON_NAME}{_END}",
+        rf"^\w+\.Should\(\)\.(?:Not)?Be(?:Null|True|False)\(\){_END}",
+    ),
+    "python": (
+        r"^assert\s+(?:not\s+)?\w+(?:\s+is\s+(?:not\s+)?None)?(?:\s*,\s*.+)?$",
+        rf"^self\.assert(?:Is)?(?:Not)?(?:None|True|False){_CALL_ON_NAME}$",
+    ),
+    "typescript": (
+        r"^expect\(\s*\w+\s*\)\.(?:not\.)?(?:toBeDefined|toBeUndefined|toBeNull|toBeTruthy"
+        rf"|toBeFalsy)\(\){_END}",
+        rf"^expect\(\s*\w+\s*\)\.(?:not\.)?toBe\((?:true|false|null|undefined)\){_END}",
+        rf"^assert(?:\.ok)?{_CALL_ON_NAME}{_END}",
+    ),
+    "rust": (rf"^assert!{_CALL_ON_NAME}{_END}",),
+    "go": (r"^(?:assert|require)\.(?:Not)?(?:Nil|True|False)\(\s*\w+\s*,\s*!?\w+\s*\)$",),
+}
+for _alias, _base in (("tsx", "typescript"), ("javascript", "typescript"), ("jsx", "typescript")):
+    FLAG_CHECK_PATTERNS[_alias] = FLAG_CHECK_PATTERNS[_base]
+
+_FLAG_CHECK_RES = {
+    language: re.compile("|".join(patterns)) for language, patterns in FLAG_CHECK_PATTERNS.items()
+}
+
+
+def is_flag_check(language: str, line: str) -> bool:
+    """Whether *line*, whitespace collapsed, is one flag check in *language*."""
+    pattern = _FLAG_CHECK_RES.get(language)
+    return pattern is not None and pattern.match(" ".join(line.split())) is not None

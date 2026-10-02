@@ -441,7 +441,9 @@ def test_kotlin_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 
@@ -471,7 +473,9 @@ def test_cpp_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 
@@ -501,7 +505,9 @@ def test_csharp_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 

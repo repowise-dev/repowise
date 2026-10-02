@@ -42,6 +42,11 @@ BATCHABLE_BOUNDARIES = frozenset({"db", "network"})
 # Fanning out N awaits here spends a pool, rate limit or statement timeout.
 CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
 
+# I/O a lock usually exists to serialize: a file-backed store or log writes
+# under its lock, and a launcher spawns its process once under it. Moving that
+# I/O out of the lock reintroduces the race the lock prevents.
+LOCK_SERIALIZED_BOUNDARIES = frozenset({"filesystem", "subprocess"})
+
 
 @dataclass(frozen=True, slots=True)
 class PerformanceFix:
@@ -242,6 +247,10 @@ def assess_fix(
                 ),
                 ("result_equivalence",),
             )
+        if details and all(detail.get("loop_key_unused") for detail in details):
+            # No element or index of the loop reaches the call: a retry,
+            # fallback or partial-write loop, with no set of keys to batch.
+            return FixAssessment(None, ("per_key_call",))
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
@@ -252,6 +261,8 @@ def assess_fix(
             ("batch_api_contract", "result_equivalence"),
         )
     if marker == "blocking_io_under_lock":
+        if boundary in LOCK_SERIALIZED_BOUNDARIES:
+            return FixAssessment(None, ("io_not_guarded_by_lock",), refusal="lock_serializes_io")
         owners = {
             path[0] for detail in details if (path := detail.get("path")) and isinstance(path, list)
         }
@@ -308,6 +319,7 @@ def actionability(
 __all__ = [
     "BATCHABLE_BOUNDARIES",
     "BATCHABLE_MARKERS",
+    "LOCK_SERIALIZED_BOUNDARIES",
     "Actionability",
     "ActionabilityState",
     "FixAssessment",

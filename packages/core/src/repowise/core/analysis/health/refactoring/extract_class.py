@@ -32,6 +32,7 @@ extracted class and are dropped from the split so the plan reads honestly.
 
 from __future__ import annotations
 
+from ..complexity.class_analysis import cohesion_applies
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -68,6 +69,8 @@ class ExtractClassDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         out: list[RefactoringSuggestion] = []
+        if not cohesion_applies(ctx.file_path, ctx.language):
+            return out
         impact_by_class = self._impact_by_class(ctx)
 
         for cls in ctx.classes:
