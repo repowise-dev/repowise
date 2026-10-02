@@ -121,7 +121,8 @@ STD_FILESYSTEM_METHODS: frozenset[str] = frozenset(
 #
 # ``socket`` / ``setsockopt`` / ``getsockopt`` are absent too: they create or
 # configure a descriptor in the local kernel and put nothing on the wire, so a
-# loop of them is not N round-trips (aria2's per-address connect loop matched).
+# loop of them is not N round-trips (aria2's bind and sockopt helpers matched).
+# ``socket`` counts again in a function that also connects or moves data.
 C_NET_FUNCTIONS: frozenset[str] = frozenset(
     {
         "sendto",
@@ -131,6 +132,12 @@ C_NET_FUNCTIONS: frozenset[str] = frozenset(
         "getaddrinfo",
         "gethostbyname",
     }
+)
+# Next to a POSIX ``socket()`` in the same function these are the POSIX calls,
+# so the socket stands for a connection that carries traffic.
+SOCKET_OPENERS: frozenset[str] = frozenset({"socket"})
+SOCKET_TRAFFIC_CALLS: frozenset[str] = frozenset(
+    {"connect", "send", "recv", "sendto", "sendmsg", "recvfrom", "recvmsg"}
 )
 # ``getaddrinfo`` with one of these flags only parses a numeric address and
 # never asks a name server (``AI_NUMERICHOST``).
@@ -223,59 +230,140 @@ def _conjuncts(node: Node | None) -> list[Node]:
         return []
     if node.type in ("condition_clause", "parenthesized_expression") and node.named_child_count == 1:
         return _conjuncts(node.named_children[0])
-    op = node.child_by_field_name("operator")
-    if node.type == "binary_expression" and op is not None and op.type == "&&":
+    if _operator(node) == "&&":
         return _conjuncts(node.child_by_field_name("left")) + _conjuncts(
             node.child_by_field_name("right")
         )
     return [node]
 
 
+def _operator(node: Node) -> str | None:
+    """The operator token of a binary / assignment / unary expression."""
+    op = node.child_by_field_name("operator")
+    return op.type if op is not None else None
+
+
+def _tests_error_return(node: Node) -> bool:
+    """``(r = f()) == -1`` / ``n < 0`` / ``rc != 0``: a comparison against a
+    number literal, the shape of a call's error-return test."""
+    return node.type == "binary_expression" and any(
+        side is not None and side.type == "number_literal"
+        for side in (node.child_by_field_name("left"), node.child_by_field_name("right"))
+    )
+
+
 def _is_signal_retry_loop(node: Node) -> bool:
     """``while ((n = f()) == -1 && errno == EINTR);``: every pass past the first
-    needs an interrupted call, so the loop retries one call rather than walking
-    data. An ``||`` condition can repeat for another reason and does not match."""
+    needs a failed AND interrupted call, so the loop retries one call rather
+    than walking data.
+
+    Every conjunct must be either the ``errno == EINTR`` test or an error-return
+    test, so ``while (i < n && errno == EINTR)`` (a counter can keep it going)
+    and any ``||`` condition do not match.
+    """
     if node.type not in ("while_statement", "do_statement"):
         return False
+    conjuncts = _conjuncts(node.child_by_field_name("condition"))
+    retry = [
+        c for c in conjuncts if _operator(c) == "==" and _names_identifier(c, SIGNAL_RETRY_ERRNOS)
+    ]
+    others = [c for c in conjuncts if c not in retry]
+    return bool(retry) and bool(others) and all(_tests_error_return(c) for c in others)
+
+
+def _steps_through_candidates(node: Node | None) -> bool:
+    """*node* is or holds ``rp->ai_next`` (a candidate-list link)."""
     return any(
-        c.type == "binary_expression"
-        and (op := c.child_by_field_name("operator")) is not None
-        and op.type == "=="
-        and _names_identifier(c, SIGNAL_RETRY_ERRNOS)
-        for c in _conjuncts(node.child_by_field_name("condition"))
+        n.type == "field_identifier" and (n.text or b"").decode() in CANDIDATE_LIST_LINKS
+        for n in _subtree(node)
     )
 
 
 def _walks_candidate_list(node: Node) -> bool:
-    """``for (rp = res; rp; rp = rp->ai_next)``: tries each address one name
-    resolved to, a bounded candidate list rather than a data collection."""
-    update = node.child_by_field_name("update") if node.type == "for_statement" else None
-    return any(
-        n.type == "field_identifier" and (n.text or b"").decode() in CANDIDATE_LIST_LINKS
-        for n in _subtree(update)
+    """``for (rp = res; rp; rp = rp->ai_next)`` or ``while (rp) { ...; rp =
+    rp->ai_next; }``: tries each address one name resolved to, a bounded
+    candidate list rather than a data collection."""
+    if node.type == "for_statement":
+        return _steps_through_candidates(node.child_by_field_name("update"))
+    body = node.child_by_field_name("body") if node.type == "while_statement" else None
+    return body is not None and any(
+        stmt.type == "expression_statement"
+        and stmt.named_child_count == 1
+        and stmt.named_children[0].type == "assignment_expression"
+        and _steps_through_candidates(stmt.named_children[0].child_by_field_name("right"))
+        for stmt in body.named_children
     )
 
 
-def _assigned_field(node: Node) -> tuple[bytes | None, bytes | None]:
-    """``(object, field)`` of an ``obj.field = ...`` assignment, else ``(None, None)``."""
-    left = node.child_by_field_name("left") if node.type == "assignment_expression" else None
-    if left is None or left.type != "field_expression":
-        return None, None
-    obj, field = left.child_by_field_name("argument"), left.child_by_field_name("field")
-    return (obj.text if obj else None), (field.text if field else None)
-
-
-def _hints_flags_assignment(call: Node, hints: bytes) -> Node | None:
-    """The last ``<hints>.ai_flags = ...`` written before *call* in its function."""
-    fn = call.parent
+def _enclosing_function(node: Node) -> Node | None:
+    fn = node.parent
     while fn is not None and fn.type not in ("function_definition", "lambda_expression"):
         fn = fn.parent
-    writes = [
-        n
-        for n in _subtree(fn)
-        if n.end_byte <= call.start_byte and _assigned_field(n) == (hints, b"ai_flags")
-    ]
-    return max(writes, key=lambda n: n.start_byte, default=None)
+    return fn
+
+
+def _calls_named(fn: Node | None, names: frozenset[str]) -> bool:
+    """*fn* makes a call whose last callee segment is one of *names*."""
+    for n in _subtree(fn):
+        callee = n.child_by_field_name("function") if n.type == "call_expression" else None
+        if callee is not None and (callee.text or b"").decode("utf-8", "replace").split(
+            "::"
+        )[-1] in names:
+            return True
+    return False
+
+
+def _touches_hints(node: Node, hints: bytes) -> str | None:
+    """How *node* writes the hints struct: ``"flags"`` for ``hints.ai_flags op
+    ...``, ``"reset"`` for ``hints = ...`` or a call handed ``&hints`` /
+    ``hints`` (``memset`` / ``bzero``), else ``None``."""
+    if node.type == "assignment_expression":
+        left = node.child_by_field_name("left")
+        if left is not None and left.text == hints:
+            return "reset"
+        if (
+            left is not None
+            and left.type == "field_expression"
+            and (left.child_by_field_name("argument") or left).text == hints
+            and (left.child_by_field_name("field") or left).text == b"ai_flags"
+        ):
+            return "flags"
+        return None
+    args = node.child_by_field_name("arguments") if node.type == "call_expression" else None
+    for arg in args.named_children if args is not None else ():
+        if arg.type == "pointer_expression":
+            arg = arg.child_by_field_name("argument") or arg
+        if arg.text == hints:
+            return "reset"
+    return None
+
+
+def _sets_flag_unmasked(expr: Node | None) -> bool:
+    """*expr* ORs a numeric-only flag in: the flag sits under nothing but
+    ``|`` and parentheses (``~AI_NUMERICHOST`` / ``f & AI_NUMERICHOST`` do not count)."""
+    for n in _subtree(expr):
+        if n.type != "identifier" or (n.text or b"").decode() not in NUMERIC_ONLY_RESOLVER_FLAGS:
+            continue
+        cur = n.parent
+        while cur is not None and cur != expr.parent and (
+            cur.type == "parenthesized_expression" or _operator(cur) == "|"
+        ):
+            cur = cur.parent
+        if cur is not None and cur == expr.parent:
+            return True
+    return False
+
+
+def _unconditional_before(write: Node, call: Node) -> bool:
+    """*write* is a statement of a block that also holds *call*, so it runs on
+    every path that reaches the call (not under an ``if`` or ``?:``)."""
+    stmt = write.parent
+    block = stmt.parent if stmt is not None and stmt.type == "expression_statement" else None
+    return (
+        block is not None
+        and block.type == "compound_statement"
+        and block.start_byte <= call.start_byte < block.end_byte
+    )
 
 
 def _hints_argument(args: Node) -> bytes | None:
@@ -288,22 +376,31 @@ def _hints_argument(args: Node) -> bytes | None:
 
 
 def _resolves_numeric_only(call: Node) -> bool:
-    """A ``getaddrinfo`` call made with a numeric-only flag, passed directly or
-    as the last ``<hints>.ai_flags`` assignment before the call.
+    """A ``getaddrinfo`` call whose hints were last written by an unconditional
+    ``hints.ai_flags = AI_NUMERICHOST`` (or ``|=`` / ``x | AI_NUMERICHOST``).
 
-    Ceiling: a wrapper that forwards the flag through its own parameter
-    (``callGetaddrinfo(..., AI_NUMERICHOST)``) is still read as a lookup,
-    since the flag would have to be followed across the call.
+    Any later reset of the struct (``memset(&hints, ...)``, ``hints = {}``), a
+    masking write (``&= ~AI_NUMERICHOST``) or a write on one branch only keeps
+    the call a lookup. Ceiling: a wrapper that forwards the flag through its own
+    parameter (``callGetaddrinfo(..., AI_NUMERICHOST)``) is still read as a
+    lookup, since the flag would have to be followed across the call.
     """
     args = call.child_by_field_name("arguments")
-    if args is None:
+    hints = _hints_argument(args) if args is not None else None
+    if not hints:
         return False
-    if _names_identifier(args, NUMERIC_ONLY_RESOLVER_FLAGS):
-        return True
-    hints = _hints_argument(args)
-    flags = _hints_flags_assignment(call, hints) if hints else None
-    return flags is not None and _names_identifier(
-        flags.child_by_field_name("right"), NUMERIC_ONLY_RESOLVER_FLAGS
+    writes = [
+        n
+        for n in _subtree(_enclosing_function(call))
+        if n.end_byte <= call.start_byte and _touches_hints(n, hints)
+    ]
+    last = max(writes, key=lambda n: n.start_byte, default=None)
+    return (
+        last is not None
+        and _touches_hints(last, hints) == "flags"
+        and _operator(last) in ("=", "|=")
+        and _sets_flag_unmasked(last.child_by_field_name("right"))
+        and _unconditional_before(last, call)
     )
 
 
@@ -440,8 +537,17 @@ class CppPerfDialect(BasePerfDialect):
         kind = super().call_sink_kind(
             call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
         )
-        if kind == "network" and self.callee_method_name(call) in RESOLVER_FUNCTIONS:
+        method = self.callee_method_name(call)
+        if kind == "network" and method in RESOLVER_FUNCTIONS:
             return None if _resolves_numeric_only(call) else kind
+        if (
+            kind is None
+            and method in SOCKET_OPENERS
+            and method == self.callee_root_name(call)
+            and not self.callee_is_attribute(call)
+            and _calls_named(_enclosing_function(call), SOCKET_TRAFFIC_CALLS)
+        ):
+            return "network"
         return kind
 
     # -- loops ----------------------------------------------------------------

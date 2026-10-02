@@ -1466,6 +1466,89 @@ _CPP_CASES = [
         [("io_in_loop", "network")],
         "a getaddrinfo with no numeric flag is a name lookup",
     ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags |= AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "ORing the numeric flag in is the same numeric-only parse",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        hints.ai_flags &= ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "masking the flag off makes it a lookup again",
+    ),
+    (
+        "void m(std::vector<std::string> v, int f) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = f & ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a negated flag is not the flag",
+    ),
+    (
+        "void m(std::vector<std::string> v, bool numeric) {\n"
+        "    for (auto& h : v) {\n"
+        "        if (numeric) hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a flag set on one branch leaves the other a lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        memset(&hints, 0, sizeof(hints));\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a reset of the hints after the flag clears it",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        connect(fd, p.addr, p.len);\n"
+        "        send(fd, buf, len, 0);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a socket that connects and sends is a connection per element",
+    ),
+    (
+        "void m(int fd, int n) {\n"
+        "    while (i < n && errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "        i++;\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a counter beside EINTR can keep the loop going",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    do {\n        n = ::recvfrom(fd, buf, len, 0, a, l);\n"
+        "    } while (n < 0 && errno == EINTR);\n}\n",
+        [],
+        "the do-while spelling of an EINTR retry",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    addrinfo* rp = res;\n"
+        "    while (rp) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "        rp = rp->ai_next;\n"
+        "    }\n}\n",
+        [],
+        "the while spelling of the address-candidate walk",
+    ),
 ]
 
 
