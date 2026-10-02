@@ -315,3 +315,106 @@ public class PasteFormat
 """
     fmt = _classes("csharp", source, "PasteFormat.cs")["PasteFormat"]
     assert fmt.lcom4 == 1
+
+
+def test_constructor_only_component_is_not_a_split():
+    # Fields the constructor sets and only a property (C#) or an out-of-line
+    # method (C++) reads leave the constructor alone in its component.
+    csharp = """
+class Totals
+{
+    private readonly int a;
+    private readonly int b;
+    private int c;
+    private int d;
+    public int A => a + b;
+    public Totals(int x) { a = x; b = x; }
+    public void M1() { c = 1; d = 1; }
+    public void M2() { c = 2; d = 2; }
+    public int M3() { return c + d; }
+    public int M4() { return c - d; }
+}
+"""
+    assert _classes("csharp", csharp, "Totals.cs")["Totals"].lcom4 == 1
+    cpp = """
+class Totals {
+    int a;
+    int b;
+    int c;
+    int d;
+public:
+    Totals(int p) : a(p), b(p) {}
+    void m1() { c = 1; d = 1; }
+    void m2() { c = 2; d = 2; }
+    int m3() { return c + d; }
+    int m4() { return c - d; }
+    int sum();
+};
+"""
+    assert _classes("cpp", cpp, "totals.h")["Totals"].lcom4 == 1
+
+
+def test_pattern_and_scoped_names_shadow_or_skip_members():
+    java = """
+class Box {
+    private int a;
+    private int b;
+    Box(int x) { a = x; b = x; }
+    int f(Object o) { return switch (o) { case Integer a -> a; default -> 0; }; }
+}
+"""
+    box = _classes("java", java, "Box.java")["Box"]
+    f = next(g for g in box.components if "f" in g.methods) if box.components else None
+    assert f is None or "a" not in f.fields
+    csharp = """
+class Pair
+{
+    private int a;
+    private int q;
+    public void Read((int, int) t) { var (a, q) = t; }
+    public void Set() { a = 1; q = 2; }
+}
+"""
+    pair = _classes("csharp", csharp, "Pair.cs")["Pair"]
+    assert all("Read" not in g.methods for g in pair.components)
+    cpp = """
+class Node {
+    int a;
+    int b;
+    void reset() { Other::a = 1; Other::b = 2; }
+    void set() { a = 1; b = 2; }
+};
+"""
+    node = _classes("cpp", cpp, "node.h")["Node"]
+    assert all("reset" not in g.methods for g in node.components)
+
+
+def test_cohesion_does_not_apply_to_test_files_of_implicit_languages():
+    from repowise.core.analysis.health.complexity.class_analysis import cohesion_applies
+
+    assert not cohesion_applies("src/test/java/org/x/DateLiteralTest.java", "java")
+    assert not cohesion_applies("tests/Unit/LoggerTests.cs", "csharp")
+    assert cohesion_applies("src/main/java/org/x/Date.java", "java")
+    # Python keeps its old behaviour, test files included.
+    assert cohesion_applies("tests/test_thing.py", "python")
+
+
+def test_cpp_module_interface_overrides_and_constructor_are_not_a_split():
+    source = """
+class Module : public PowertoyModuleIface {
+    std::wstring app_name;
+    std::wstring app_key;
+    bool m_enabled = false;
+    PROCESS_INFORMATION p_info = {};
+    bool is_process_running() { return WaitForSingleObject(p_info.hProcess, 0) == 0; }
+    void launch_process() { CreateProcess(&p_info); }
+public:
+    Module() { app_name = L"x"; app_key = L"y"; }
+    virtual const wchar_t* get_key() override { return app_key.c_str(); }
+    virtual void set_config(const wchar_t* c) override { app_name = c; }
+    virtual void enable() { m_enabled = true; launch_process(); }
+    virtual void disable() { if (m_enabled) { TerminateProcess(p_info.hProcess, 1); } m_enabled = false; }
+    virtual bool is_enabled() override { return m_enabled; }
+};
+"""
+    assert _classes("cpp", source, "dllmain.cpp")["Module"].lcom4 == 1

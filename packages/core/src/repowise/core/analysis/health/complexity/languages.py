@@ -408,6 +408,7 @@ _JAVA = LanguageNodeMap(
             "inferred_parameters",
             "resource",
             "instanceof_expression",
+            "type_pattern",
         }
     ),
     identifier_kinds=frozenset({"identifier"}),
@@ -592,7 +593,8 @@ _CPP = LanguageNodeMap(
     # declared here and defined out of line, never a field.
     class_kinds=frozenset({"class_specifier", "struct_specifier"}),
     self_identifiers=frozenset({"this"}),
-    member_access_kinds=frozenset({"field_expression"}),
+    # ``qualified_identifier`` (``Other::a``) names another scope's member.
+    member_access_kinds=frozenset({"field_expression", "qualified_identifier"}),
     field_decl_kinds=frozenset({"field_declaration"}),
     binding_kinds=frozenset(
         {
@@ -689,6 +691,7 @@ _CSHARP = LanguageNodeMap(
             "catch_declaration",
             "declaration_expression",
             "declaration_pattern",
+            "tuple_pattern",
             "single_variable_designation",
             "implicit_parameter",
             "lambda_expression",

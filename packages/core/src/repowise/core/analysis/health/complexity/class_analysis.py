@@ -19,8 +19,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
+from ....test_paths import is_test_related_path
 from .ast_utils import _IDENTIFIER_SUFFIX, _find_name
-from .languages import LanguageNodeMap
+from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
 
@@ -50,11 +51,26 @@ class _ClassBody(NamedTuple):
 
 
 class _MemberRefs(NamedTuple):
-    """Each method's member references, and the methods the class body only
-    declares (a C++ method defined out of line: a call target, never a field)."""
+    """Each method's member references, the methods the class body only
+    declares (a C++ method defined out of line: a call target, never a field),
+    and the indices of the methods that are contracts rather than behaviour
+    (constructors and overrides)."""
 
     per_method: list[set[str]]
     out_of_line: frozenset[str]
+    contracts: frozenset[int] = frozenset()
+
+
+def cohesion_applies(file_path: str, language: str) -> bool:
+    """Whether class cohesion findings and splits apply to *file_path*.
+
+    Not in test files of implicit-receiver languages: a test class groups its
+    tests by the fixtures they share (a date fixture pair, a datetime pair),
+    which reads as a split but is how the tests are meant to be organised.
+    """
+    lmap = get_language_map(language)
+    implicit = lmap is not None and bool(lmap.field_decl_kinds)
+    return not (implicit and is_test_related_path(file_path, language))
 
 
 def _class_name(node: Node) -> str:
@@ -323,8 +339,27 @@ def _member_links(
     return links
 
 
+def _method_refs(
+    node: Node,
+    explicit: set[str],
+    lmap: LanguageNodeMap,
+    declared: frozenset[str],
+    links: dict[str, set[str]],
+) -> set[str]:
+    """One method's references: explicit, implicit, and what they link to."""
+    if "static" in _decl_words(node):
+        return set()
+    members = explicit | _collect_implicit_members(node, lmap, declared)
+    for name in [m for m in members if m in links]:
+        members |= links[name]
+    return members
+
+
 def _class_member_refs(
-    body: _ClassBody, method_fcs: list[FunctionComplexity], lmap: LanguageNodeMap
+    body: _ClassBody,
+    method_fcs: list[FunctionComplexity],
+    lmap: LanguageNodeMap,
+    class_name: str,
 ) -> _MemberRefs:
     """Each method's member references.
 
@@ -347,16 +382,24 @@ def _class_member_refs(
         named_decls.append((decl, decl_fields))
     declared = frozenset(fields | out_of_line | {fc.name for fc in method_fcs})
     links = _member_links(named_decls, body.nested, lmap, declared)
-    per_method: list[set[str]] = []
-    for node, members in zip(body.methods, explicit, strict=True):
-        if "static" in _decl_words(node):
-            per_method.append(set())
-            continue
-        members = members | _collect_implicit_members(node, lmap, declared)
-        for name in [m for m in members if m in links]:
-            members |= links[name]
-        per_method.append(members)
-    return _MemberRefs(per_method, frozenset(out_of_line))
+    per_method = [
+        _method_refs(node, members, lmap, declared, links)
+        for node, members in zip(body.methods, explicit, strict=True)
+    ]
+    return _MemberRefs(
+        per_method, frozenset(out_of_line), _contract_indices(body.methods, method_fcs, class_name)
+    )
+
+
+def _contract_indices(
+    method_nodes: list[Node], method_fcs: list[FunctionComplexity], class_name: str
+) -> frozenset[int]:
+    """Indices of the constructors and overrides among *method_nodes*."""
+    return frozenset(
+        i
+        for i, (node, fc) in enumerate(zip(method_nodes, method_fcs, strict=True))
+        if fc.name == class_name or _is_override(node)
+    )
 
 
 def _is_override(method_node: Node) -> bool:
@@ -364,13 +407,15 @@ def _is_override(method_node: Node) -> bool:
     if _decl_words(method_node) & {"@Override", "override"}:
         return True
     declarator = method_node.child_by_field_name("declarator")
+    while declarator is not None and declarator.type != "function_declarator":
+        declarator = declarator.child_by_field_name("declarator")  # ``T* f() override``
     return declarator is not None and any(
         c.type == "virtual_specifier" for c in declarator.children
     )
 
 
 def _stateful_groups(
-    indexed_groups: list[tuple[list[int], CohesionGroup]], method_nodes: list[Node]
+    indexed_groups: list[tuple[list[int], CohesionGroup]], contracts: frozenset[int]
 ) -> list[CohesionGroup]:
     """The components that are a responsibility of their own.
 
@@ -378,14 +423,15 @@ def _stateful_groups(
     an outer instance or a base constructor, so a method that touches no
     visible state is unplaced rather than a split. A component counts when it
     spans at least two fields (accessors over one field are how a data class
-    exposes state) and is not made only of overrides (``toString``,
-    ``Equals``: a contract, not a class to extract).
+    exposes state) and is not made only of constructors and overrides. A
+    constructor sets fields that properties or out-of-line methods this pass
+    cannot place may read, and ``toString`` / ``Equals`` are contracts; neither
+    is a class to extract.
     """
-    overrides = {i for i, node in enumerate(method_nodes) if _is_override(node)}
     return [
         group
         for idxs, group in indexed_groups
-        if len(group.fields) >= 2 and not overrides.issuperset(idxs)
+        if len(group.fields) >= 2 and not contracts.issuperset(idxs)
     ]
 
 
@@ -548,7 +594,7 @@ def _compute_lcom4(
     roots = _component_roots(members_per_method, method_fcs, implicit)
     indexed = _indexed_groups(roots, method_fcs, members_per_method, method_names)
     if implicit:
-        groups = _stateful_groups(indexed, method_nodes)
+        groups = _stateful_groups(indexed, refs.contracts)
         return max(len(groups), 1), field_count, groups, tcc
     return len(indexed), field_count, [g for _, g in indexed], tcc
 
@@ -577,7 +623,7 @@ def _collect_classes(
         if "partial" in _decl_words(class_node):
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
-            refs = _class_member_refs(body, method_fcs, lmap)
+            refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
             lcom4, field_count, components, tcc = _compute_lcom4(
                 body.methods, method_fcs, lmap, refs
             )
