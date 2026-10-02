@@ -14,7 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 from ...test_paths import is_test_related_path
-from ..finding_registry import excluded_types
+from ..finding_registry import excluded_types, gate_for, is_served
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -276,23 +276,15 @@ class ChangeHealthDeltaService:
         # Advisory markers deduct nothing, so adding one is not a regression
         # and removing one is not a fix. Dropped from BOTH sides before
         # matching, so every counter derived from the match agrees. Types the
-        # finding-type registry withholds go the same way, for the same reason.
+        # finding-type registry withholds go the same way, for the same reason,
+        # as do findings on a language the registry gates for health findings.
         withheld = excluded_types()
         base_findings = [
             f
             for f in base_run.findings
-            if rename.get(f.file_path, f.file_path) in subject
-            and not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
+            if rename.get(f.file_path, f.file_path) in subject and _comparable(f, withheld)
         ]
-        head_findings = [
-            f
-            for f in head_run.findings_for(subject)
-            if not is_advisory(f.biomarker_type)
-            and not _is_test_perf(f)
-            and f.biomarker_type not in withheld
-        ]
+        head_findings = [f for f in head_run.findings_for(subject) if _comparable(f, withheld)]
         match = matcher.match(base_findings, head_findings)
 
         by_file: dict[str, list[HealthFindingData]] = {}
@@ -328,7 +320,7 @@ class ChangeHealthDeltaService:
             resolved_total=len(match.resolved),
             unchanged_total=match.unchanged_total,
             skipped=skipped,
-            limits=_limits(),
+            limits=_limits(head_run.findings_for(subject)),
         )
         delta.timing_ms = (time.perf_counter() - started) * 1000
         return delta
@@ -415,11 +407,34 @@ def _status_for(
     return "available", f"Compared {scope.analyzed} changed files on both sides."
 
 
-def _limits() -> list[str]:
-    return [
+def _limits(head_findings: list[HealthFindingData]) -> list[str]:
+    limits = [
         "Both sides are analysed over the changed files only, so cross-file "
         "detectors (duplication, cross-function performance) see no wider context."
     ]
+    gated = sorted(
+        {
+            gate.language
+            for f in head_findings
+            if (gate := gate_for("health", f.file_path, f.biomarker_type)) is not None
+        }
+    )
+    if gated:
+        limits.append(
+            f"Health findings on {', '.join(gated)} files are not compared: they "
+            "measured below the precision bar there, so none is reported for them."
+        )
+    return limits
+
+
+def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
+    """A finding both sides of a comparison count: not advisory, not a test's
+    performance finding, and one the registry serves."""
+    return (
+        not is_advisory(finding.biomarker_type)
+        and not _is_test_perf(finding)
+        and is_served("health", finding.biomarker_type, finding.file_path, withheld)
+    )
 
 
 def _is_test_perf(finding: HealthFindingData) -> bool:

@@ -45,6 +45,7 @@ from ...models import (
     RefactoringOpportunity,
     RefactoringSuggestion,
 )
+from .refactoring import shown_plan_predicate
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -337,7 +338,13 @@ async def _plans(
                 s.target_symbol,
                 s.evidence_json,
                 s.plan_json,
-            ).where(s.repository_id == repo_id, or_(*wanted))
+            ).where(
+                s.repository_id == repo_id,
+                or_(*wanted),
+                # The registry's withheld types, as on every plan list. Fix
+                # first is its own measured lens, so no language gate applies.
+                shown_plan_predicate(include_unverified=True),
+            )
         )
     )
 

@@ -31,6 +31,7 @@ from ...models import (
     _now_utc,
 )
 from ...sql import LIKE_ESCAPE, escape_like
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
     from ....analysis.health.refactoring.opportunity import (
@@ -542,14 +543,45 @@ def _predicate(rule: Any, value: Any) -> Any:
     return column.is_(value)
 
 
-def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
-    """The ``WHERE`` for *params*, built from the serving layer's filter table."""
+def _opportunity_filters(
+    repository_id: str, *, include_unverified: bool = False, **params: Any
+) -> list[Any]:
+    """The ``WHERE`` for *params*, built from the serving layer's filter table.
+
+    Opportunities on a file of a language the registry gates for refactoring
+    are left out unless ``include_unverified``.
+    """
     from ....analysis.health.refactoring.serving import active_filters
 
     return [
         RefactoringOpportunity.repository_id == repository_id,
+        ungated(
+            "refactoring",
+            RefactoringOpportunity.file_path,
+            RefactoringOpportunity.lead_refactoring_type,
+            include_unverified=include_unverified,
+        ),
         *(_predicate(rule, value) for rule, value in active_filters(params)),
     ]
+
+
+async def gated_opportunity_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The opportunities a language gate holds back, by language."""
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringOpportunity,
+        RefactoringOpportunity.repository_id == repository_id,
+        RefactoringOpportunity.status == status,
+        kind_col=RefactoringOpportunity.lead_refactoring_type,
+        include_unverified=include_unverified,
+    )
 
 
 async def list_refactoring_opportunities(
@@ -569,10 +601,12 @@ async def list_refactoring_opportunities(
     order: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    include_unverified: bool = False,
 ) -> tuple[list[RefactoringOpportunity], int]:
     """One page and its total: two statements, whatever the row count."""
     predicates = _opportunity_filters(
         repository_id,
+        include_unverified=include_unverified,
         status=status,
         lead_types=lead_types,
         confidence=confidence,
@@ -615,10 +649,12 @@ async def refactoring_opportunity_ids(
     path_prefix: str | None = None,
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
+    include_unverified: bool = False,
 ) -> list[str]:
     """The ids the same filters match, unpaged: one narrow column."""
     predicates = _opportunity_filters(
         repository_id,
+        include_unverified=include_unverified,
         status=status,
         lead_types=lead_types,
         confidence=confidence,
@@ -736,6 +772,7 @@ async def refactoring_facet_counts(
     *,
     status: str = "open",
     opportunity_ids: list[str] | None = None,
+    include_unverified: bool = False,
 ) -> dict[str, dict[str, int]]:
     """Counts for every facet dimension, in one statement.
 
@@ -750,7 +787,10 @@ async def refactoring_facet_counts(
         select(*columns, func.count())
         .where(
             *_opportunity_filters(
-                repository_id, status=status, opportunity_ids=opportunity_ids
+                repository_id,
+                status=status,
+                opportunity_ids=opportunity_ids,
+                include_unverified=include_unverified,
             )
         )
         .group_by(*columns)
@@ -760,6 +800,7 @@ async def refactoring_facet_counts(
 
 __all__ = [
     "finalize_refactoring_opportunities",
+    "gated_opportunity_counts",
     "get_refactoring_opportunity",
     "get_refactoring_summary",
     "list_refactoring_opportunities",

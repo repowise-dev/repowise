@@ -13,6 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -79,6 +80,7 @@ async def _dead_export_figures(session: AsyncSession) -> _Figures:
         .where(
             DeadCodeFinding.kind == "unused_export",
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         )
         .group_by(DeadCodeFinding.repository_id)
     )

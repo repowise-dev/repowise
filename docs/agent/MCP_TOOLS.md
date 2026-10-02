@@ -1077,6 +1077,17 @@ for — `include=["unverified"]` here, `kind=` on `get_dead_code` — and each r
 carries `verification: "unverified"`. `get_dead_code` reports what it held back
 in `summary.withheld_types`.
 
+**A layer that failed an audit on a language is held back there.** The same
+registry's `LANGUAGE_GATES` names each layer (health findings, refactoring
+plans and opportunities, performance opportunities, dead code) measured below
+the precision bar on a language, read from the file's extension. Those rows are
+still computed and stored, and a lookup by id still answers, but lists, totals
+and leads leave them out. The response counts them per language with the
+measured precision and the reason: `_meta.gated` on `get_health`,
+`summary.gated` on `get_dead_code`. `include=["unverified"]` (`get_health`) or
+`include_unverified=true` (`get_dead_code`, and the REST routes) shows them.
+Fix first is not gated: it is measured as its own lens and vets its items itself.
+
 **Test material is bucketed, not hidden.** Every metric row carries `is_test`
 (distinct from `has_test_file`: "is this file a test" vs "is this file tested").
 In dashboard mode the ranked finding lists are split — `top_findings` /

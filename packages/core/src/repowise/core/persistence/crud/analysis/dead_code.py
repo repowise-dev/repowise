@@ -20,6 +20,7 @@ from repowise.core.analysis.finding_registry import excluded_types
 
 from ...models import DeadCodeFinding, _new_uuid
 from .._shared import _BATCH_SIZE, _finding_file_path
+from .shown import gated_counts, shown, ungated
 
 
 def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -229,12 +230,15 @@ async def get_dead_code_findings(
     safe_to_delete: bool | None = None,
     limit: int | None = None,
     include_withheld: bool = False,
+    include_unverified: bool = False,
     file_paths: Sequence[str] | None = None,
 ) -> list[DeadCodeFinding]:
     """Return dead code findings filtered by kind, confidence, and status.
 
     Kinds the finding-type registry withholds are left out unless
     ``include_withheld``; naming a provisional ``kind`` is an explicit request.
+    Files of a language the registry gates for dead code are left out unless
+    ``include_unverified``, which also opts into every provisional kind.
 
     ``safe_to_delete`` and ``limit`` exist so a caller that wants a short
     preview does not have to load every open finding in the repository and
@@ -250,7 +254,15 @@ async def get_dead_code_findings(
     if kind is not None:
         q = q.where(DeadCodeFinding.kind == kind)
     if not include_withheld:
-        q = q.where(DeadCodeFinding.kind.not_in(excluded_types(requested=[kind] if kind else ())))
+        q = q.where(
+            shown(
+                "dead_code",
+                DeadCodeFinding.kind,
+                DeadCodeFinding.file_path,
+                requested=[kind] if kind else (),
+                include_unverified=include_unverified,
+            )
+        )
     if safe_to_delete is not None:
         q = q.where(DeadCodeFinding.safe_to_delete.is_(safe_to_delete))
     if file_paths is not None:
@@ -279,16 +291,38 @@ async def update_dead_code_status(
     return finding
 
 
-async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> dict:
-    """Return aggregate dead code statistics."""
+async def get_dead_code_summary(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> dict:
+    """Return aggregate dead code statistics over the findings a surface shows.
+
+    ``gated`` counts the open findings a language gate held back, by language.
+    """
+    scope = (
+        DeadCodeFinding.repository_id == repository_id,
+        DeadCodeFinding.status == "open",
+        DeadCodeFinding.kind.not_in(excluded_types(include_provisional=include_unverified)),
+    )
     result = await session.execute(
         select(DeadCodeFinding).where(
-            DeadCodeFinding.repository_id == repository_id,
-            DeadCodeFinding.status == "open",
-            DeadCodeFinding.kind.not_in(excluded_types()),
+            *scope,
+            ungated(
+                "dead_code",
+                DeadCodeFinding.file_path,
+                DeadCodeFinding.kind,
+                include_unverified=include_unverified,
+            ),
         )
     )
     findings = list(result.scalars().all())
+    gated = await gated_counts(
+        session,
+        "dead_code",
+        DeadCodeFinding,
+        *scope,
+        kind_col=DeadCodeFinding.kind,
+        include_unverified=include_unverified,
+    )
 
     summary: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     total_lines = 0
@@ -321,4 +355,5 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
         "deletable_lines": deletable_lines,
         "total_lines": total_lines,
         "by_kind": by_kind,
+        "gated": gated,
     }

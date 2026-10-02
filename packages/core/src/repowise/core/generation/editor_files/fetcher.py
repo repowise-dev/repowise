@@ -26,6 +26,7 @@ from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
@@ -444,6 +445,7 @@ class EditorFileDataFetcher:
                     HealthFinding.status == "open",
                     HealthFinding.dimension == "performance",
                     HealthFinding.biomarker_type.not_in(excluded_types()),
+                    ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
                 )
             )
         ).scalar_one()

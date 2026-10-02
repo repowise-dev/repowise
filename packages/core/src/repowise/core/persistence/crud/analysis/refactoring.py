@@ -14,12 +14,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from .._shared import _BATCH_SIZE, _finding_file_path
+from .shown import gated_counts, ungated
 
 # The finding-triage vocabulary, shared with health findings so Code Health has
 # one triage system rather than one per layer.
@@ -371,15 +372,49 @@ async def get_refactoring_suggestion(
     return result.scalar_one_or_none()
 
 
-def shown_plan_predicate() -> Any:
-    """Plans whose source biomarker the finding registry does not withhold.
-
-    Plans are persisted whatever the registry says; every surface that lists
-    them filters here. A plan with no source biomarker (structural) is shown.
-    """
+def _registry_shown_plan() -> Any:
     return or_(
         RefactoringSuggestion.source_biomarker.is_(None),
         RefactoringSuggestion.source_biomarker.not_in(excluded_types()),
+    )
+
+
+def shown_plan_predicate(*, include_unverified: bool = False) -> Any:
+    """Plans whose source biomarker the finding registry does not withhold, on
+    files of a language no gate holds refactoring back on.
+
+    Plans are persisted whatever the registry says; every surface that lists
+    them filters here. A plan with no source biomarker (structural) is shown.
+    ``include_unverified`` opts into the gated languages.
+    """
+    return and_(
+        _registry_shown_plan(),
+        ungated(
+            "refactoring",
+            RefactoringSuggestion.file_path,
+            RefactoringSuggestion.refactoring_type,
+            include_unverified=include_unverified,
+        ),
+    )
+
+
+async def gated_plan_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The plans a language gate holds back, by language (see ``shown.gated_counts``)."""
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringSuggestion,
+        RefactoringSuggestion.repository_id == repository_id,
+        RefactoringSuggestion.status == status,
+        _registry_shown_plan(),
+        kind_col=RefactoringSuggestion.refactoring_type,
+        include_unverified=include_unverified,
     )
 
 
@@ -390,11 +425,12 @@ def _suggestion_filters(
     file_paths: list[str] | None,
     min_confidence: str | None,
     status: str,
+    include_unverified: bool = False,
 ) -> list[Any]:
     predicates: list[Any] = [
         RefactoringSuggestion.repository_id == repository_id,
         RefactoringSuggestion.status == status,
-        shown_plan_predicate(),
+        shown_plan_predicate(include_unverified=include_unverified),
     ]
     if refactoring_type is not None:
         predicates.append(RefactoringSuggestion.refactoring_type == refactoring_type)
@@ -418,10 +454,11 @@ async def get_refactoring_suggestions(
     status: str = "open",
     limit: int | None = None,
     offset: int | None = None,
+    include_unverified: bool = False,
 ) -> list[RefactoringSuggestion]:
     """Return refactoring suggestions, highest recovered impact first.
 
-    Plans from a registry-withheld biomarker are left out
+    Plans from a registry-withheld biomarker or a gated language are left out
     (:func:`shown_plan_predicate`). *limit* / *offset* page in SQL. Both default to ``None``, which returns the
     whole filtered set exactly as before, because the callers that still rank
     and page in memory have not been rewired yet (R4).
@@ -433,6 +470,7 @@ async def get_refactoring_suggestions(
             file_paths=file_paths,
             min_confidence=min_confidence,
             status=status,
+            include_unverified=include_unverified,
         )
     )
     # Secondary keys (file_path, target_symbol) make the read order stable for
@@ -459,6 +497,7 @@ async def count_refactoring_suggestions(
     file_paths: list[str] | None = None,
     min_confidence: str | None = None,
     status: str = "open",
+    include_unverified: bool = False,
 ) -> int:
     """The total behind a page, counted in SQL rather than by materializing it."""
     q = (
@@ -471,6 +510,7 @@ async def count_refactoring_suggestions(
                 file_paths=file_paths,
                 min_confidence=min_confidence,
                 status=status,
+                include_unverified=include_unverified,
             )
         )
     )

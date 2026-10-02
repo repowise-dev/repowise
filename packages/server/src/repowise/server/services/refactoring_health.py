@@ -38,6 +38,7 @@ from repowise.core.analysis.health.refactoring.serving import (
 from repowise.core.analysis.health.rows import detail_map, json_field
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    gated_opportunity_counts,
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
@@ -60,15 +61,29 @@ class RefactoringPage:
     #: Under ``fix_first``: the opportunities the same filters match that Fix
     #: first leaves out, ``{"total": n, "by_reason": {reason: n}}``.
     hidden: dict[str, Any] | None = None
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 class RefactoringHealthService:
-    """Query, page, detail and headline over the materialized opportunities."""
+    """Query, page, detail and headline over the materialized opportunities.
 
-    def __init__(self, session: AsyncSession, repository_id: str, repository: str) -> None:
+    Lists, counts, facets and the lead leave out what a language gate holds
+    back unless ``include_unverified``; a lookup by id never does.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository_id: str,
+        repository: str,
+        *,
+        include_unverified: bool = False,
+    ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
+        self._include_unverified = include_unverified
 
     # -- queue ------------------------------------------------------------
 
@@ -104,6 +119,7 @@ class RefactoringHealthService:
             "path_prefix": query.path_prefix,
             "mechanical_only": query.mechanical_only,
             "addresses_primary": query.addresses_primary,
+            "include_unverified": self._include_unverified,
         }
         shown_ids: list[str] | None = None
         hidden: dict[str, Any] | None = None
@@ -137,6 +153,7 @@ class RefactoringHealthService:
                     self._repository_id,
                     status=query.status,
                     opportunity_ids=shown_ids,
+                    include_unverified=self._include_unverified,
                 )
                 if with_facets
                 else {}
@@ -144,6 +161,7 @@ class RefactoringHealthService:
             summary=await self.summary() if with_summary else None,
             scope=query.scope,
             hidden=hidden,
+            gated=await self.gated(),
         )
 
     async def _fix_first_scope(
@@ -170,8 +188,20 @@ class RefactoringHealthService:
     # -- headline ---------------------------------------------------------
 
     async def summary(self) -> dict[str, Any]:
-        """The Level-1 rollup, read by primary key."""
-        return summary_payload(await get_refactoring_summary(self._session, self._repository_id))
+        """The Level-1 rollup, read by primary key, plus what the gates hold back."""
+        payload = summary_payload(
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
+        )
+        if payload.get("status") == "available":
+            payload["gated"] = await self.gated()
+        return payload
+
+    async def gated(self) -> dict[str, dict]:
+        """Open opportunities a language gate holds back; empty when opted in."""
+        return await gated_opportunity_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
 
     async def directive(self) -> dict[str, Any]:
         """The Level-0 lead: one opportunity, and the exact call that opens it.
@@ -180,7 +210,8 @@ class RefactoringHealthService:
         statement for it and never touches the queue.
         """
         return directive_from_summary(
-            await get_refactoring_summary(self._session, self._repository_id)
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
         )
 
     # -- detail -----------------------------------------------------------

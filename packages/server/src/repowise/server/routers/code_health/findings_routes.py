@@ -17,6 +17,7 @@ from repowise.server.schemas import (
     HealthFindingWithSymbolResponse,
 )
 
+from .._unverified import UnverifiedQuery
 from ._router import router
 from .counts import CountsQuery
 from .loaders import _attach_symbol_ids
@@ -51,6 +52,7 @@ async def list_health_findings(
     limit: int = Query(100, ge=1, le=1000),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Findings, ranked by health impact. Open work unless ``status`` says otherwise.
@@ -91,6 +93,7 @@ async def list_health_findings(
         exclude_dimensions=(
             tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
         ),
+        include_unverified=include_unverified,
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:

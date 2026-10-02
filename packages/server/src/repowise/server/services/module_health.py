@@ -26,6 +26,7 @@ from repowise.core.analysis.module_health import (
     summarize,
 )
 from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -65,6 +66,7 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
             select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).all()
@@ -150,6 +152,7 @@ async def build_single_file_health(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.file_path == file_path,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).one()

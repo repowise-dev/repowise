@@ -41,6 +41,8 @@ class RefactoringOpportunitiesResponse(BaseModel):
     scope: Literal["fix_first", "all"] = "all"
     #: Under ``fix_first``, the rest of the filtered set, by reason.
     hidden: RefactoringHiddenCounts | None = None
+    #: Open opportunities a language gate held back, by language.
+    gated: dict[str, dict[str, Any]] | None = None
 
 
 class RefactoringRollupResponse(BaseModel):

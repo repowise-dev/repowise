@@ -33,8 +33,9 @@ from repowise.core.analysis.health.refactoring.serving import (
 )
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES, gated_plan_counts
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     RefactoringOpportunitiesResponse,
     RefactoringOpportunityDetailResponse,
@@ -120,6 +121,8 @@ class RefactoringSummary(BaseModel):
 class RefactoringTargetsResponse(BaseModel):
     summary: RefactoringSummary
     plans: list[RefactoringPlanResponse]
+    #: Open plans a language gate held back, ``{language: {count, precision, reason}}``.
+    gated: dict[str, dict] = {}
 
 
 class RefactoringPlanPageResponse(BaseModel):
@@ -131,6 +134,8 @@ class RefactoringPlanPageResponse(BaseModel):
     next_offset: int | None
     summary: RefactoringSummary
     structural_leads: list[RefactoringPlanResponse]
+    #: Open plans a language gate held back, ``{language: {count, precision, reason}}``.
+    gated: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +225,7 @@ async def get_refactoring_targets(
     view: Literal["canonical", "file_spread"] = Query(
         "canonical", description="Named ordering view; canonical is the product default"
     ),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
     """Ranked refactoring plans for the repo, filterable by type, confidence,
@@ -233,7 +239,7 @@ async def get_refactoring_targets(
     # Summary is computed over the unfiltered-by-type set so the chips can show
     # every type's count even while one type is selected.
     all_rows = await crud.get_refactoring_suggestions(
-        session, repo_id, min_confidence=min_confidence
+        session, repo_id, min_confidence=min_confidence, include_unverified=include_unverified
     )
     by_type: dict[str, int] = {}
     for row in all_rows:
@@ -257,6 +263,7 @@ async def get_refactoring_targets(
     return RefactoringTargetsResponse(
         summary=summary,
         plans=[_to_response(recommendation.as_dict()) for recommendation in recommendations],
+        gated=await gated_plan_counts(session, repo_id, include_unverified=include_unverified),
     )
 
 
@@ -273,6 +280,7 @@ async def get_refactoring_plan_page(
     view: Literal["canonical", "file_spread"] = Query("canonical"),
     limit: int = Query(60, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringPlanPageResponse:
     """Bounded list with server-owned filters and deterministic ordering.
@@ -282,7 +290,9 @@ async def get_refactoring_plan_page(
     that orders each plan's tests is read only for the rows this response
     returns.
     """
-    rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
+    rows = await crud.get_refactoring_suggestions(
+        session, repo_id, min_confidence=min_confidence, include_unverified=include_unverified
+    )
     canonical = await hydrate_recommendations(
         session, repo_id, rows, view="canonical", rank_only=True
     )
@@ -328,6 +338,7 @@ async def get_refactoring_plan_page(
         next_offset=next_offset,
         summary=summary,
         structural_leads=[_to_response(item.as_dict()) for item in structural_leads],
+        gated=await gated_plan_counts(session, repo_id, include_unverified=include_unverified),
     )
 
 
@@ -385,8 +396,12 @@ async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
-    return RefactoringHealthService(session, repo_id, repo_id)
+def _service(
+    session: AsyncSession, repo_id: str, *, include_unverified: bool = False
+) -> RefactoringHealthService:
+    return RefactoringHealthService(
+        session, repo_id, repo_id, include_unverified=include_unverified
+    )
 
 
 @router.get(
@@ -426,6 +441,7 @@ async def get_refactoring_opportunities(
     ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One page of composed opportunities, with facets and the rollup.
@@ -449,7 +465,7 @@ async def get_refactoring_opportunities(
         offset=offset,
         scope=scope,
     )
-    page = await _service(session, repo_id).page(
+    page = await _service(session, repo_id, include_unverified=include_unverified).page(
         query,
         steps_per_item=step_preview if step_preview > 0 else None,
         with_facets=True,
@@ -464,6 +480,7 @@ async def get_refactoring_opportunities(
         "facets": page.facets,
         "summary": page.summary,
         "scope": page.scope,
+        "gated": page.gated,
     }
     if page.hidden is not None:
         body["hidden"] = page.hidden
@@ -475,10 +492,11 @@ async def get_refactoring_opportunities(
 @router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
 async def get_refactoring_rollup(
     repo_id: str,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """The repository rollup and its one lead, by primary key."""
-    service = _service(session, repo_id)
+    service = _service(session, repo_id, include_unverified=include_unverified)
     return {"summary": await service.summary(), "directive": await service.directive()}
 
 

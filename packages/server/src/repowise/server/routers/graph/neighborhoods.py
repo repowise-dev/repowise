@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -205,6 +206,7 @@ async def dead_code_graph(
         select(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             DeadCodeFinding.kind == "unreachable_file",
         )
     )

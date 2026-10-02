@@ -39,7 +39,8 @@ _KNOWN_INCLUDES = frozenset(
         "defect",
         "maintainability",
         "advisory",
-        # Opts into provisional finding types, each labelled "unverified".
+        # Opts into provisional finding types, each labelled "unverified", and
+        # into the layers a language gate holds back.
         "unverified",
         # The shared legend for deficit points and percentiles, in ``_meta``.
         "semantics",
@@ -84,6 +85,7 @@ class HealthRequest:
     module_targets: list[str] = field(init=False)
     file_targets: list[str] = field(init=False)
     withheld_types: frozenset[str] = field(init=False)
+    include_unverified: bool = field(init=False)
 
     def __post_init__(self) -> None:
         # ``0`` means totals and no rows, as on the REST coverage route.
@@ -100,7 +102,8 @@ class HealthRequest:
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
         # Finding types the registry keeps off this surface, dropped at the read
         # so no list, lead or total counts one.
-        self.withheld_types = excluded_types(include_provisional="unverified" in self.include_set)
+        self.include_unverified = "unverified" in self.include_set
+        self.withheld_types = excluded_types(include_provisional=self.include_unverified)
         # Performance findings carry zero impact, so an impact-ranked list
         # leaves them out unless asked for; the performance blocks rank them.
         self.ranked_dimensions = self.dimension_filter or _RANKED_DIMENSIONS_DEFAULT

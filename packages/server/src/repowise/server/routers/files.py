@@ -26,6 +26,7 @@ from repowise.core.analysis.health.trends import file_trend
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -456,6 +457,7 @@ async def file_detail(
                     DeadCodeFinding.file_path == file_path,
                     DeadCodeFinding.status == "open",
                     DeadCodeFinding.kind.not_in(excluded_types()),
+                    ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
                 )
             )
         )

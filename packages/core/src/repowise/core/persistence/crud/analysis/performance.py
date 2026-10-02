@@ -29,6 +29,7 @@ from ...models import (
 )
 from ...sql import order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
     from ....analysis.health.perf.opportunities import (
@@ -431,13 +432,25 @@ async def get_performance_opportunity(
     return result.scalars().first()
 
 
-def _predicates(repository_id: str, **params: Any) -> list[Any]:
-    """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table."""
+def _predicates(
+    repository_id: str, *, include_unverified: bool = False, **params: Any
+) -> list[Any]:
+    """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table.
+
+    Opportunities on a file of a language the registry gates for performance
+    are left out unless ``include_unverified``.
+    """
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
     return [
         PerformanceOpportunity.repository_id == repository_id,
+        ungated(
+            "performance",
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.biomarker_type,
+            include_unverified=include_unverified,
+        ),
         *(
             rule_predicate(PerformanceOpportunity, rule, value)
             for rule, value in active_filters(FILTERS, {"status": "open", **params})
@@ -457,6 +470,7 @@ async def list_performance_opportunities(
     sort: str = "rank",
     limit: int = 20,
     offset: int = 0,
+    include_unverified: bool = False,
 ) -> tuple[list[PerformanceOpportunity], int]:
     """One page in the requested order, plus the exact total behind it.
 
@@ -472,6 +486,7 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionabilities=actionabilities,
         file_paths=file_paths,
+        include_unverified=include_unverified,
     )
     total = int(
         (
@@ -501,6 +516,7 @@ async def performance_facet_counts(
     repository_id: str,
     *,
     file_paths: tuple[str, ...] | None = None,
+    include_unverified: bool = False,
 ) -> list[tuple[str, str | None, str, str, str, int]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
@@ -514,7 +530,11 @@ async def performance_facet_counts(
     columns = tuple(getattr(PerformanceOpportunity, name) for name in FACET_FIELDS)
     result = await session.execute(
         select(*columns, func.count())
-        .where(*_predicates(repository_id, file_paths=file_paths))
+        .where(
+            *_predicates(
+                repository_id, file_paths=file_paths, include_unverified=include_unverified
+            )
+        )
         .group_by(*columns)
     )
     return [tuple(row) for row in result.all()]
@@ -536,6 +556,21 @@ class PerformanceFileRollup(NamedTuple):
     expected: int
     best_rank: int
     """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
+
+
+async def gated_performance_counts(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> dict[str, dict]:
+    """The open opportunities a language gate holds back, by language."""
+    return await gated_counts(
+        session,
+        "performance",
+        PerformanceOpportunity,
+        PerformanceOpportunity.repository_id == repository_id,
+        PerformanceOpportunity.status == "open",
+        kind_col=PerformanceOpportunity.biomarker_type,
+        include_unverified=include_unverified,
+    )
 
 
 async def performance_file_rollups(
@@ -746,6 +781,7 @@ async def get_health_finding_by_public_id(
 
 __all__ = [
     "finalize_performance_opportunities",
+    "gated_performance_counts",
     "get_health_finding_by_public_id",
     "get_performance_opportunity",
     "get_performance_plan_rows",

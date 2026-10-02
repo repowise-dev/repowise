@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
-from ....analysis.finding_registry import excluded_types
 from ....analysis.health.finding_identity import (
     finding_public_id,
     legacy_finding_public_id,
@@ -45,6 +44,7 @@ from ...models import (
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+from .shown import shown
 
 
 def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -438,6 +438,7 @@ async def get_health_findings(
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    include_unverified: bool = False,
     limit: int | None = None,
 ) -> list[HealthFinding]:
     """Findings for one repository, ordered by health impact.
@@ -445,7 +446,10 @@ async def get_health_findings(
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
     provisional type named in ``biomarker_type`` is an explicit request and is
-    returned. ``include_withheld`` is for analysis that must see every row.
+    returned. Files of a language the registry gates for health findings are
+    left out too, unless ``include_unverified`` (which also opts into every
+    provisional type). ``include_withheld`` is for analysis that must see every
+    row.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
@@ -480,7 +484,15 @@ async def get_health_findings(
     if types:
         q = q.where(HealthFinding.biomarker_type.in_(types))
     if not include_withheld:
-        q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
+        q = q.where(
+            shown(
+                "health",
+                HealthFinding.biomarker_type,
+                HealthFinding.file_path,
+                requested=types,
+                include_unverified=include_unverified,
+            )
+        )
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
     if file_paths is not None:

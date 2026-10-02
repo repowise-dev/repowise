@@ -245,12 +245,20 @@ async def get_health(
             await _attach_repository_analysis_meta(session, repository, result["_meta"])
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
+        _attach_gated(result["_meta"], data)
         pager.report_omissions(result, omission_collector, reference_repository)
         omission_collector.attach(result)
         _attach_semantics(result, req)
         # Server-side wall clock, as ``get_context`` reports.
         result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
         return result
+
+
+def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
+    """What a language gate held back, in ``_meta`` so no ``only`` projection
+    drops it: an agent must read "held back", never "nothing found"."""
+    if data.gated:
+        meta["gated"] = {**data.gated, "opt_in": {"include": ["unverified"]}}
 
 
 def _attach_semantics(result: dict[str, Any], req: HealthRequest) -> None:

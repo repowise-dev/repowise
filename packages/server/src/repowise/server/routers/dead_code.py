@@ -11,6 +11,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
 )
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     DeadCodeAnalyzeResponse,
     DeadCodeFindingResponse,
@@ -35,6 +36,7 @@ async def list_dead_code(
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
@@ -44,6 +46,7 @@ async def list_dead_code(
         kind=kind,
         min_confidence=min_confidence,
         status=status,
+        include_unverified=include_unverified,
     )
     if safe_only:
         findings = [
@@ -108,10 +111,13 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
-    summary = await crud.get_dead_code_summary(session, repo_id)
+    summary = await crud.get_dead_code_summary(
+        session, repo_id, include_unverified=include_unverified
+    )
     return DeadCodeSummaryResponse(**summary)
 
 

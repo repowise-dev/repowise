@@ -94,6 +94,7 @@ from .health import (
 )
 from .performance import (
     finalize_performance_opportunities,
+    gated_performance_counts,
     get_health_finding_by_public_id,
     get_performance_opportunity,
     get_performance_plan_rows,
@@ -145,6 +146,7 @@ __all__ = [
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
     "finding_data_from_row",
+    "gated_performance_counts",
     "get_average_health",
     "get_coverage_summary",
     "get_dead_code_findings",

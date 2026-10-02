@@ -234,6 +234,7 @@ def test_only_a_recent_authored_code_shape_regression_is_a_candidate() -> None:
         "a test file": {"file_path": "tests/test_a.py"},
         "a history marker": {"biomarker_type": "change_entropy"},
         "a hidden marker": {"biomarker_type": "dry_violation"},
+        "a gated language": {"file_path": "src/A.java"},
     }
     files = {"tests/test_a.py": SimpleNamespace(is_test=True)}
 

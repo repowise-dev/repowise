@@ -29,6 +29,7 @@ from repowise.core.persistence.crud import (
     upsert_kg_project_meta,
     upsert_kg_tour_steps,
 )
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata, Page
 
 from .models import (
@@ -483,6 +484,7 @@ async def build_architecture_view(
         select(DeadCodeFinding.file_path).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             DeadCodeFinding.kind == "unreachable_file",
         )
     )

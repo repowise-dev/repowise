@@ -133,6 +133,11 @@ evidence, and so are they from the plan lists, the attention list and the
 `get_health` directive. A withheld finding never becomes a file's
 `lead_biomarker`. The plan rows stay stored and addressable by id.
 
+Plans and opportunities on a language the registry gates for refactoring
+(`LANGUAGE_GATES`) are composed and stored as usual, but the plan lists, the
+queue, its facets and the rollup's lead leave them out unless the caller opts
+in with `include_unverified`; responses count them in `gated`.
+
 **Split File ids across `init` and `update`.** A full index, an incremental
 update and a re-score from stored git metadata now build the same symbol graph
 for a file at one commit, so its `split_file` plan id is the same on every path:

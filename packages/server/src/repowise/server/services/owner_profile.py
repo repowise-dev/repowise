@@ -19,6 +19,7 @@ from repowise.core.analysis.owners import (
     silo_modules,
 )
 from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitCommit,
@@ -51,6 +52,7 @@ async def aggregate_owners(
             ).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).all()

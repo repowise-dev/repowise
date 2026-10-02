@@ -60,7 +60,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, is_served
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.rows import field
@@ -202,7 +202,8 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
     by_path: dict[str, list] = defaultdict(list)
     for f in findings:
         path = field(f, "file_path")
-        if path in wanted and _open(f) and field(f, "biomarker_type") not in hidden:
+        biomarker = field(f, "biomarker_type")
+        if path in wanted and _open(f) and is_served("health", biomarker, path, hidden):
             by_path[path].append(f)
     out = dict(files)
     for path, found in by_path.items():
@@ -249,9 +250,12 @@ def _authored_regression(row: Any) -> bool:
     )
 
 
-def _shown_code_shape(biomarker: Any, hidden: frozenset[str]) -> bool:
-    """A code-shape marker, not a history one, and not one the registry hides."""
-    return biomarker_category(biomarker) != HISTORY_CATEGORY and biomarker not in hidden
+def _shown_code_shape(row: Any, hidden: frozenset[str]) -> bool:
+    """A code-shape marker, not a history one, and one the registry serves."""
+    biomarker = field(row, "biomarker_type")
+    return biomarker_category(biomarker) != HISTORY_CATEGORY and is_served(
+        "health", biomarker, field(row, "file_path"), hidden
+    )
 
 
 def _recent_candidates(
@@ -268,7 +272,7 @@ def _recent_candidates(
             continue
         if _is_test(field(f, "file_path"), files):
             continue
-        if _shown_code_shape(field(f, "biomarker_type"), hidden):
+        if _shown_code_shape(f, hidden):
             out.append((f, at))
     return out
 
@@ -375,7 +379,7 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             for r in rows
             if _open(r)
             and field(r, "safe_to_delete")
-            and field(r, "kind") not in skipped
+            and is_served("dead_code", field(r, "kind"), field(r, "file_path"), skipped)
             and not _is_test(field(r, "file_path"), files)
             and not _test_path(field(r, "file_path"))
         )

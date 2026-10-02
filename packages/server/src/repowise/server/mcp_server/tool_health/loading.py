@@ -43,10 +43,12 @@ from repowise.core.persistence.crud import (
     load_coverage_history,
 )
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.refactoring import gated_plan_counts
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.findings import (
     FindingSets,
+    gated_findings,
     load_dashboard_findings,
     load_targeted_findings,
     read_accuracy_rows,
@@ -101,6 +103,8 @@ class HealthData:
     # Dashboard only: the worst-first test files, ranked apart from
     # ``metric_rows`` so a test never heads the production worklist.
     test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
+    # What a language gate held back, ``{layer: {language: {count, ...}}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 async def load_health_data(
@@ -169,7 +173,28 @@ async def load_health_data(
         pop, metric_rows, findings, req, data.test_metric_rows
     )
     data.fix_first = await _read_fix_first(session, repository, pop, req)
+    data.gated = await _read_gated(session, req, data)
     return data
+
+
+async def _read_gated(session: Any, req: HealthRequest, data: HealthData) -> dict[str, dict]:
+    """What a language gate held back, per layer this call read."""
+    refactoring = (
+        data.refactoring.page.gated
+        if data.refactoring.page
+        # Plans only: the queue was not read, so count the plans it held back.
+        else await gated_plan_counts(
+            session, data.repository.id, include_unverified=req.include_unverified
+        )
+        if req.plans_requested
+        else {}
+    )
+    layers = {
+        "health": await gated_findings(session, data.repository, data.pop, req),
+        "refactoring": refactoring,
+        "performance": data.performance.page.gated if data.performance.page else {},
+    }
+    return {layer: counts for layer, counts in layers.items() if counts}
 
 
 def _is_test(m: HealthFileMetric, test_paths: set[str]) -> bool:
@@ -230,6 +255,7 @@ async def _read_refactoring_plans(
             session,
             repository.id,
             file_paths=list(pop.effective_targets) if pop.scoped else None,
+            include_unverified=req.include_unverified,
         ),
         "file_path",
     )
@@ -260,10 +286,10 @@ async def _read_pillars(
     linkage, and facets are the shared service's; this tool caps the
     collection, pages it, and serializes what comes back."""
     performance_service = PerformanceHealthService(
-        session, repository.id, reference_repository
+        session, repository.id, reference_repository, include_unverified=req.include_unverified
     )
     refactoring_service = RefactoringHealthService(
-        session, repository.id, reference_repository
+        session, repository.id, reference_repository, include_unverified=req.include_unverified
     )
     refactoring = await _refactoring_blocks(
         refactoring_service,

@@ -99,6 +99,8 @@ class DeadCodeSummaryResponse(BaseModel):
     deletable_lines: int
     total_lines: int
     by_kind: dict
+    #: Open findings a language gate held back, ``{language: {count, precision, reason}}``.
+    gated: dict = {}
 
 
 class SecurityFindingResponse(BaseModel):

@@ -19,7 +19,11 @@ from repowise.core.analysis.dead_code.risk_factors import (
     effective_safe_to_delete,
     path_risk_factors,
 )
-from repowise.core.analysis.finding_registry import verification_label, withheld_summary
+from repowise.core.analysis.finding_registry import (
+    split_gated,
+    verification_label,
+    withheld_summary,
+)
 from repowise.core.analysis.health.rows import field
 from repowise.core.references import path_identity, stable_entity_id
 
@@ -101,6 +105,18 @@ class FindingFilters:
     # Kinds the finding-type registry keeps off this surface. Applied before
     # anything is counted, so no total describes a finding the caller cannot see.
     withheld_kinds: frozenset[str] = frozenset()
+    # Shows the findings a language gate holds back (``LANGUAGE_GATES``).
+    include_unverified: bool = False
+
+    def split_gated(self, findings: list) -> tuple[list, dict[str, dict]]:
+        """``(shown rows, {gated language: count/precision/reason})``."""
+        return split_gated(
+            "dead_code",
+            findings,
+            kind="kind",
+            get=field,
+            include_unverified=self.include_unverified,
+        )
 
     def split_withheld(self, findings: list) -> tuple[list, dict[str, dict]]:
         """``(shown rows, {withheld kind: count/status/reason})``."""
@@ -194,9 +210,10 @@ def build_summary(
     filtered_count: int,
     filters: FindingFilters,
     withheld: dict[str, dict],
+    gated: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """The summary block: *counts* from :func:`summary_counts`, plus what the
-    filters kept."""
+    filters kept and what the registry held back."""
     summary: dict[str, Any] = {
         "total_findings": counts["total_findings"],
         "filtered_findings": filtered_count,
@@ -207,6 +224,8 @@ def build_summary(
     filters.summarize(summary)
     if withheld:
         summary["withheld_types"] = withheld
+    if gated:
+        summary["gated"] = {**gated, "opt_in": {"include_unverified": True}}
     return summary
 
 

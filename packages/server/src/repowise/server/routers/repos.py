@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -414,6 +415,7 @@ async def get_repo_stats(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.kind == "unused_export",
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         ),
         0,
     )

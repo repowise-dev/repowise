@@ -7,12 +7,14 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import split_gated
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 
+from .._unverified import UnverifiedQuery
 from ._router import router
 from .breakdown import _score_breakdown_from_findings
 from .counts import CountsQuery, project
@@ -145,13 +147,21 @@ async def file_score_breakdown(
     repo_id: str,
     file_path: str = Query(..., description="File path to break down"),
     counts: str = CountsQuery,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
-    findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    findings = await crud.get_health_findings(
+        session, repo_id, file_path=file_path, include_unverified=True
+    )
+    # The score counts every finding; a gated one is held back from the list
+    # and the breakdown, and ``gated`` says how many.
+    findings, gated = split_gated(
+        "health", findings, kind="biomarker_type", include_unverified=include_unverified
+    )
     # This drawer opens from a row the reader just saw a score on. Reading it
     # under the other counts would answer a click on 8.5 with a 2.0 and list
     # the findings the page had just said were excluded.
@@ -169,6 +179,7 @@ async def file_score_breakdown(
         "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
         "breakdown": breakdown,
         "findings": finding_dicts,
+        "gated": gated,
         "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(await _load_file_signals(session, repo_id, file_path)),
