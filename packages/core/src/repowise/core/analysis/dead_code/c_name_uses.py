@@ -118,7 +118,7 @@ def _matching_brace(text: str, open_at: int) -> int:
     return -1
 
 
-def _blank_prose(match: re.Match[bytes]) -> bytes:
+def blank_prose(match: re.Match[bytes]) -> bytes:
     """Blank a comment, or a string holding a space; keep a one-word string.
 
     ``dlsym(h, "SymbolName")`` names a symbol; ``"505 Version Not Supported"``
@@ -147,7 +147,7 @@ class _CodeOnly(Mapping[str, bytes]):
 
     def __getitem__(self, path: str) -> bytes:
         blob = self._source[path]
-        return _COMMENT_OR_STRING.sub(_blank_prose, blob) if is_preprocessed(path) else blob
+        return _COMMENT_OR_STRING.sub(blank_prose, blob) if is_preprocessed(path) else blob
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._paths)

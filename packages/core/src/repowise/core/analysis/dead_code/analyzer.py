@@ -62,6 +62,7 @@ from .file_reachability import (
     build_package_file_map,
     is_file_reachable,
 )
+from .go_name_uses import drop_go_package_uses
 from .kotlin_multiplatform import settle_platform_declarations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
@@ -974,6 +975,8 @@ class DeadCodeAnalyzer:
             self._preprocessed_declaration_sites(),
             self._unindexed_identifier_tokens(),
         )
+        # Same for Go, scoped to the package and to importers naming it.
+        findings = drop_go_package_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
