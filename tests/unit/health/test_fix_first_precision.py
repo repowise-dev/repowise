@@ -313,7 +313,24 @@ def _value(**facets) -> str:
     row = _perf("perf3_v", "src/db.py::fetch")
     row["details"] = {**row["details"], "facets": facets}
     item = _perf_queue(row).lead
-    return next(f.value for f in item.why_ranked if f.factor == "value")
+    return next(f.value for f in item.why_ranked if f.factor in ("value", "value within later"))
+
+
+def test_only_a_loop_known_to_grow_leads() -> None:
+    from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+    from tests.unit.health.fix_first_rows import _perf
+
+    def lead(**facets):
+        row = _perf("perf3_t", "src/db.py::fetch")
+        row["details"] = {**row["details"], "facets": facets}
+        return _perf_queue(row).lead
+
+    unknown = lead(loop_magnitude="unknown", exposure="entry_reachable")
+    assert unknown.tier == "later"
+    assert ("tier", LOW_PRIORITY_LABEL["unmeasured_cost"]) in [
+        (f.factor, f.value) for f in unknown.why_ranked
+    ]
+    assert lead(loop_magnitude="grows_with_data").tier != "later"
 
 
 def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:

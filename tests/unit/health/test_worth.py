@@ -49,7 +49,8 @@ from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority,
         ("error_handling", {}, "handler"),
         # Other kinds keep their own rules.
         ("split_file", {"ccn": 3}, None),
-        ("god_class", {}, None),
+        ("god_class", {}, "design"),
+        ("low_cohesion", {"lcom4": 4}, "design"),
         # Nothing measured is no ground to call a function small.
         ("complex_method", {}, None),
     ],
@@ -149,3 +150,35 @@ def test_a_cloned_dispatcher_stays_listed_but_waits() -> None:
     (item,) = build_fix_first(metrics=metrics, findings=findings, plans=plans).items
     assert item.tier == "later"
     assert ("tier", LOW_PRIORITY_LABEL["dispatch"]) in [(f.factor, f.value) for f in item.why_ranked]
+
+
+def test_findings_are_tiered_per_function_and_history_waits() -> None:
+    from repowise.core.analysis.health.worth import finding_priorities, worth_first
+
+    big = _finding("src/a.py", "big", {"ccn": 47, "nloc": 191, "max_nesting": 5}, 0.4)
+    # Two findings on one function: the nesting finding alone says nothing
+    # about size, the function's other finding does.
+    deep = _finding("src/a.py", "big", {"max_nesting": 5}, 0.9, marker="nested_complexity")
+    small = _finding("src/b.py", "small", {"ccn": 12, "nloc": 40}, 1.5)
+    churn = {"file_path": "src/c.py", "biomarker_type": "change_entropy",
+             "severity": "high", "health_impact": 2.5, "dimension": "defect"}
+    rows = [churn, small, deep, big]
+    assert finding_priorities(rows) == ["history", "near_bar", None, None]
+    assert [f for f, _ in worth_first(rows)] == [deep, big, churn, small]
+
+
+@pytest.mark.parametrize(
+    ("context", "facets", "expected"),
+    [
+        ("production", {"loop_magnitude": "grows_with_data"}, None),
+        ("production", {"loop_magnitude": "bounded"}, "bounded_loop"),
+        ("production", {"loop_magnitude": "unknown"}, "unmeasured_cost"),
+        ("production", {}, "unmeasured_cost"),
+        ("tooling", {"loop_magnitude": "grows_with_data"}, "not_production"),
+    ],
+)
+def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected) -> None:
+    from repowise.core.analysis.health.worth import perf_low_priority
+
+    row = {"execution_context": context, "details": {"facets": facets}}
+    assert perf_low_priority(row) == expected

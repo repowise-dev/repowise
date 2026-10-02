@@ -1875,6 +1875,7 @@ export interface HealthFindingResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 /**
@@ -1897,6 +1898,7 @@ export interface HealthFindingWithSymbolResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
   symbol_id?: string | null;
 }
 

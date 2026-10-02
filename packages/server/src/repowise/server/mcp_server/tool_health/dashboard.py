@@ -64,13 +64,23 @@ def build_dashboard(
         "high_leverage_files": pager.bound(_high_leverage_rows(data, gap), "high_leverage_files"),
         "high_leverage_files_total": len(data.by_leverage),
         "top_findings": pager.bound(
-            [_serialize_finding(f, data.reference_repository) for f in findings.finding_rows],
+            [
+                _serialize_finding(
+                    f, data.reference_repository, findings.lower_priority.get(f.id)
+                )
+                for f in findings.finding_rows
+            ],
             "top_findings",
         ),
         "top_findings_total": findings.findings_total,
         # The test half of the same ranked set, kept out of the production list.
         "test_findings": pager.bound(
-            [_serialize_finding(f, data.reference_repository) for f in findings.test_finding_rows],
+            [
+                _serialize_finding(
+                    f, data.reference_repository, findings.lower_priority.get(f.id)
+                )
+                for f in findings.test_finding_rows
+            ],
             "test_findings",
         ),
         "test_findings_total": findings.test_findings_total,

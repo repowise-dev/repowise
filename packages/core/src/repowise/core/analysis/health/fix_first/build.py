@@ -69,6 +69,7 @@ from repowise.core.analysis.health.worth import (
     low_priority,
     magnitude,
     measure,
+    perf_low_priority,
     worth_size,
 )
 from repowise.core.analysis.next_call import ActionCommand
@@ -1077,6 +1078,7 @@ def _perf_unit(
         confidence=confidence,
         effort=effort or "M",
         improves="performance",
+        low=perf_low_priority(lead),
         rank_inputs=lambda: [
             FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
             FixRankFact("entry reachable", text.REACH_ANSWER.get(exposure or "", "unknown")),

@@ -693,7 +693,13 @@ read "value within later" and its shape-only size. A function-size problem is
 one else-if or ternary chain; or when it is long with CCN under 20 and nesting
 under 5. From CCN 80, 400 lines or nesting 8 a function is worth doing whatever
 its branching. A complex condition and a single error site (a swallowed or broad
-catch, an unwrap or panic) are `later` too: each is a local fix.
+catch, an unwrap or panic) are `later` too: each is a local fix. The same rule orders the
+default findings list (`get_health`, the REST findings list): findings worth doing
+first lead, and each other one carries `lower_priority`, the reason it can wait.
+Class-design findings (god class, low cohesion, long parameter lists) and findings
+that rest on git history alone are lower priority there. A performance
+opportunity carries `lower_priority` unless production code runs it over data
+that grows.
 
 **Verify.** Each item carries up to 5 tests from its stored validation profile,
 each with how it reaches the changed code (call graph, import graph, a matching

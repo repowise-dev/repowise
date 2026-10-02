@@ -10,6 +10,7 @@ from repowise.core.analysis.health.counts import parse_counts
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
+from repowise.core.analysis.health.worth import finding_priorities
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import (
@@ -53,7 +54,9 @@ async def list_health_findings(
     counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
-    """Findings, ranked by health impact. Open work unless ``status`` says otherwise.
+    """Findings worth doing first, then lower-priority ones labelled with why
+    they can wait, each part ranked by health impact. Open work unless
+    ``status`` says otherwise.
 
     The zero-impact dimensions, performance and advisory, are out of the
     unfiltered list by default. Their findings carry a health impact of zero by
@@ -102,8 +105,11 @@ async def list_health_findings(
     # it under one would show work that sums past the figure above it.
     if parse_counts(counts) == "code_shape":
         findings = split_by_origin(findings)[0]
+    shown = findings[:limit]
+    # Tiered over the whole list, so a function's other findings count.
+    reasons = dict(zip(map(id, findings), finding_priorities(findings), strict=True))
     return await _attach_symbol_ids(
-        session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
+        session, repo_id, [_finding_to_dict(f, reasons[id(f)]) for f in shown]
     )
 
 

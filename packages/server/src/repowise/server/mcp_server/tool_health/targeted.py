@@ -43,7 +43,12 @@ def build_targeted(
         "metrics": pager.bound(metric_payload, "metrics"),
         "metrics_total": len(metric_payload),
         "findings": pager.bound(
-            [_serialize_finding(f, data.reference_repository) for f in data.findings.finding_rows],
+            [
+                _serialize_finding(
+                    f, data.reference_repository, data.findings.lower_priority.get(f.id)
+                )
+                for f in data.findings.finding_rows
+            ],
             "findings",
         ),
         "findings_total": findings_total,

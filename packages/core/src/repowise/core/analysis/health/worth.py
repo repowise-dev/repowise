@@ -12,7 +12,8 @@ can wait and never reads as the next thing to do.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from .rows import detail_map, field
@@ -56,6 +57,11 @@ LowPriority = Literal[
     "broad_catch",
     "unwrap",
     "handler",
+    "design",
+    "history",
+    "bounded_loop",
+    "unmeasured_cost",
+    "not_production",
 ]
 
 #: Why an item can wait, as the tier reason a surface shows beside it.
@@ -73,6 +79,11 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
     "broad_catch": "lower priority: a broad catch, which may be deliberate at a boundary",
     "unwrap": "lower priority: an unwrap or panic that may be unreachable",
     "handler": "lower priority: error handling at one site",
+    "design": "lower priority: a design signal that seldom needs a change on its own",
+    "history": "lower priority: it rests on git history alone, not on the code's shape",
+    "bounded_loop": "lower priority: the loop is bounded",
+    "unmeasured_cost": "lower priority: nothing shows the cost grows with the data",
+    "not_production": "lower priority: it runs outside production code",
 }
 
 #: Findings about one expression or one error site: real, and small to fix.
@@ -80,6 +91,9 @@ _LOCAL_MARKERS: dict[str, LowPriority] = {
     "complex_conditional": "condition",
     "error_handling": "handler",
 }
+#: Class and signature findings whose fix raters seldom took (the Fix first
+#: low-value kinds): real, and a judgment call.
+_DESIGN_MARKERS = frozenset({"god_class", "low_cohesion", "primitive_obsession"})
 #: An error_handling finding's stored ``kind``, by the reason it can wait.
 _ERROR_KINDS: dict[str, LowPriority] = {
     "swallowed_catch": "swallow",
@@ -183,6 +197,8 @@ def low_priority(
     under 5 is a table or a straight sequence. Other kinds keep their own
     rules, so they get ``None``.
     """
+    if marker in _DESIGN_MARKERS:
+        return "design"
     local = _LOCAL_MARKERS.get(marker or "")
     if local == "handler":
         return _ERROR_KINDS.get(error_kind or "", "handler")
@@ -214,6 +230,51 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
     return None
 
 
+def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
+    """:func:`low_priority` for each finding, in order. A function's shape is
+    measured over every finding on it in ``findings``; a finding that rests
+    on git history alone is ``history``."""
+    from .models import split_by_origin
+
+    history = {id(f) for f in split_by_origin(findings)[1]}
+    by_function: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for f in findings:
+        if field(f, "function_name"):
+            by_function[(field(f, "file_path"), field(f, "function_name"))].append(f)
+    out: list[LowPriority | None] = []
+    for f in findings:
+        if id(f) in history:
+            out.append("history")
+            continue
+        key = (field(f, "file_path"), field(f, "function_name"))
+        out.append(
+            low_priority(
+                field(f, "biomarker_type"),
+                measure(by_function.get(key, [f])),
+                error_kind=detail_map(f).get("kind"),
+            )
+        )
+    return out
+
+
+def worth_first(findings: Sequence[Any]) -> list[tuple[Any, LowPriority | None]]:
+    """``findings`` with their reasons, worth doing first ahead of the rest,
+    each part in its given order. Nothing is dropped."""
+    paired = list(zip(findings, finding_priorities(findings), strict=True))
+    return sorted(paired, key=lambda pair: pair[1] is not None)
+
+
+def perf_low_priority(row: Any) -> LowPriority | None:
+    """Why a performance opportunity can wait: unless production code runs it
+    over data that grows, its cost is small or unmeasured."""
+    if field(row, "execution_context") != "production":
+        return "not_production"
+    magnitude_ = (detail_map(row).get("facets") or {}).get("loop_magnitude")
+    if magnitude_ == "grows_with_data":
+        return None
+    return "bounded_loop" if magnitude_ == "bounded" else "unmeasured_cost"
+
+
 __all__ = [
     "CHAIN_SHARE",
     "DISPATCH_SHARE",
@@ -228,8 +289,11 @@ __all__ = [
     "WORTH_MAGNITUDE",
     "LowPriority",
     "dispatch_shaped",
+    "finding_priorities",
     "low_priority",
     "magnitude",
     "measure",
+    "perf_low_priority",
+    "worth_first",
     "worth_size",
 ]
