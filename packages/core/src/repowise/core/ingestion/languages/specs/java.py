@@ -72,7 +72,12 @@ SPEC = LanguageSpec(
     fixture_camel_suffixes=("Fixture", "Fixtures"),
     # ``src/testFixtures`` is the Gradle java-test-fixtures source set: helpers
     # other projects' tests consume, never shipped.
-    test_dir_paths=("src/test/java", "src/it/java", "src/integrationtest/java", "src/testfixtures"),
+    test_dir_paths=(
+        "src/test/java",
+        "src/it/java",
+        "src/integrationtest/java",
+        "src/testfixtures/java",
+    ),
     # JPMS/javadoc descriptors — source files that declare, not implement.
     descriptor_filenames=("module-info.java", "package-info.java"),
     extensions=frozenset({".java"}),

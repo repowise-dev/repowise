@@ -70,6 +70,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/qa/answer.py", None, ""),  # a question-answering module
     ("app/qa/src/model.py", None, ""),  # qa is the project itself
     ("gradle/internal/testfixtures/DeployPlugin.java", None, ""),
+    ("src/testfixtures/pkg/mod.py", None, ""),  # the Python testfixtures library
+    ("packages/qa/cli/src/main.ts", None, ""),  # shipped QA tooling
+    ("src/qa/tools/src/x.py", None, ""),
+    ("qa/tools/src/report.py", None, ""),
+    ("docs/qa/guide/src/x.md", None, ""),
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),

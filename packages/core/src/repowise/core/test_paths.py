@@ -71,14 +71,17 @@ _TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
 # The same head written in PascalCase or camelCase, one word with no separator:
 # ``UnitTests/``, ``UITests/``, ``FuzzTests/``, ``AdvancedPaste.UnitTests/``.
 # Plural only, for the reason above (``HitTest/`` is a UI feature), and matched
-# on the original case so ``contests/`` stays one lowercase word.
+# on the original case so ``contests/`` stays one lowercase word. Ceiling: a
+# product folder that names a kind of test it runs for users (``LoadTests/``,
+# ``ABTests/``, ``PenTests/``) reads as a test tree too; none seen so far.
 _CAMEL_TESTS_HEAD_RE = re.compile(r"[A-Za-z0-9]Tests$")
 
-# Directories that hold whole test projects, each with its own source tree:
-# Gradle QA builds keep integration suites and the plugins they load in
-# ``qa/<project>/src/main``. Only that shape counts; a ``qa/`` module of an
-# application has its sources directly beneath it.
-_TEST_PROJECT_CONTAINERS: frozenset[str] = frozenset({"qa"})
+# Gradle QA builds keep integration suites and the plugins they load in their
+# own projects: ``qa/<project>/src/<source set>/<java|resources|...>``. The full
+# JVM source-set shape is required, so a ``qa/`` package of tooling
+# (``packages/qa/cli/src/main.ts``) stays production.
+_TEST_PROJECT_CONTAINER = "qa"
+_JVM_SOURCE_ROOTS: frozenset[str] = frozenset({"java", "kotlin", "groovy", "scala", "resources"})
 
 # GitHub's repository-metadata directory; see ``_classify``.
 _REPO_METADATA_DIR = ".github"
@@ -311,8 +314,10 @@ def _has_test_layout(segments: list[str], original: list[str]) -> bool:
 
 def _in_test_project(segments: list[str]) -> bool:
     return any(
-        seg in _TEST_PROJECT_CONTAINERS and segments[i + 2] == "src"
-        for i, seg in enumerate(segments[:-2])
+        seg == _TEST_PROJECT_CONTAINER
+        and segments[i + 2] == "src"
+        and segments[i + 4] in _JVM_SOURCE_ROOTS
+        for i, seg in enumerate(segments[:-4])
     )
 
 
