@@ -499,6 +499,8 @@ def _ts_concat_lines(src: str) -> list[int]:
     [
         # Declared fresh each pass: bounded per iteration.
         "function f(fs){ for (const f of fs){ let js = read(f);\n js += '\\n//map'; write(f, js) } }",
+        # Declared in the same branch that appends: fresh whenever the append runs.
+        "function f(fs){ for (const f of fs){ if (ok(f)) { let js = read(f); js += '//map'; write(js) } } }",
         # Reset by a plain assignment inside the loop.
         "function f(rs){ let v; for (const r of rs){ v = r.style; v += ';'; use(v) } }",
         # Appended once, right before leaving the loop or the function.
@@ -517,6 +519,9 @@ def test_ts_string_concat_bounded_per_iteration_not_flagged(src):
     "src",
     [
         "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
+        # A re-bind that only some passes run is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ if (x.first) { s = 'head' } s += `${x}` } return s }",
+        "function f(xs){ let s=''; for (const x of xs){ for (const y of x){ s = y } s += 'a' } return s }",
         # ``s = s + ...`` keeps the old value, so it is no reset.
         "function f(xs){ let s=''; for (const x of xs){ s = s + 'a'; s += 'b' } return s }",
         # A break that only leaves a switch, or only the inner of two loops.

@@ -530,7 +530,7 @@ class BasePerfDialect:
         if not loops:
             return True
         for depth, loop in enumerate(loops):
-            if self._rebinds(loop, name):
+            if self._rebinds(loop, node, name, loop_kinds):
                 return False
             if depth or exit_kind is None:
                 return True
@@ -546,9 +546,29 @@ class BasePerfDialect:
             cur = cur.parent
         return loops
 
-    def _rebinds(self, loop: Node, name: bytes) -> bool:
+    def _rebinds(self, loop: Node, append: Node, name: bytes, loop_kinds: frozenset[str]) -> bool:
+        """*loop*'s body re-binds *name* whenever *append* runs.
+
+        A binding under a branch or a nested loop that does not also hold the
+        append (``if (first) s = "head"``) may not run, so it is no reset.
+        """
         body = self.loop_body(loop) or loop
-        return any(self.binds_name(n, name) for n in self._walk(body, self.scope_kinds))
+        return any(
+            self.binds_name(n, name) and self._runs_with(n, append, body, loop_kinds)
+            for n in self._walk(body, self.scope_kinds)
+        )
+
+    def _runs_with(self, node: Node, append: Node, body: Node, loop_kinds: frozenset[str]) -> bool:
+        """*node* runs on every pass that runs *append*: climbing from *node*, a
+        block holding *append* is reached before any branch or nested loop."""
+        cur = node.parent
+        while cur is not None and cur != body:
+            if cur.type in self.branch_kinds or cur.type in loop_kinds:
+                return False
+            if self._within(cur, append):
+                return True
+            cur = cur.parent
+        return True
 
     def _exit_after(self, node: Node, loop_kinds: frozenset[str]) -> str | None:
         """The kind of exit statement later in the block of the statement holding
