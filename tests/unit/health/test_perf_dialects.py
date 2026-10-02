@@ -141,6 +141,118 @@ def test_go_cases(src, expected, note):
     assert _hits("go", src) == sorted(expected), note
 
 
+def _go_defer_count(src: str) -> int:
+    fc = walk_file("t.go", "go", src.encode())
+    return _kinds(fc.perf_hits)["defer_in_loop"]
+
+
+class TestDeferExitsBeforeTheLoopRepeats:
+    """A ``defer`` immediately before a loop-exiting ``break``/``return`` runs
+    once, not once per iteration — #2938."""
+
+    def test_bare_break_directly_in_the_loop_stops_firing(self):
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string) {\n"
+            "\tfor _, n := range names {\n"
+            "\t\tf, _ := os.Open(n)\n"
+            "\t\tdefer f.Close()\n"
+            "\t\tbreak\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 0
+
+    def test_break_inside_an_if_body_still_stops_firing(self):
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string, cached bool) {\n"
+            "\tfor _, n := range names {\n"
+            "\t\tif cached {\n"
+            "\t\t\tf, _ := os.Open(n)\n"
+            "\t\t\tdefer f.Close()\n"
+            "\t\t\tbreak\n"
+            "\t\t}\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 0
+
+    def test_defer_then_return_stops_firing(self):
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string) {\n"
+            "\tfor _, n := range names {\n"
+            "\t\tf, _ := os.Open(n)\n"
+            "\t\tdefer f.Close()\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 0
+
+    def test_defer_with_no_exit_right_after_it_still_fires(self):
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string) {\n"
+            "\tfor _, n := range names {\n"
+            "\t\tf, _ := os.Open(n)\n"
+            "\t\tdefer f.Close()\n"
+            "\t\tuse(f)\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 1
+
+    def test_break_inside_a_switch_case_still_fires(self):
+        """A bare ``break`` in a ``switch`` case exits the switch, not the loop."""
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string, mode string) {\n"
+            "\tfor _, n := range names {\n"
+            '\t\tswitch mode {\n\t\tcase "a":\n'
+            "\t\t\tf, _ := os.Open(n)\n"
+            "\t\t\tdefer f.Close()\n"
+            "\t\t\tbreak\n"
+            "\t\t}\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 1
+
+    def test_labeled_break_matching_the_loop_stops_firing(self):
+        src = (
+            'package m\nimport "os"\n'
+            "func f(names []string) {\n"
+            "outer:\n"
+            "\tfor _, n := range names {\n"
+            "\t\tf, _ := os.Open(n)\n"
+            "\t\tdefer f.Close()\n"
+            "\t\tbreak outer\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 0
+
+    def test_labeled_break_for_a_different_loop_still_fires(self):
+        """``break other`` leaves THIS loop running; only the outer one stops."""
+        src = (
+            'package m\nimport "os"\n'
+            "func f(xs []int, names []string) {\n"
+            "other:\n"
+            "\tfor _, x := range xs {\n"
+            "\t\t_ = x\n"
+            "\t\tfor _, n := range names {\n"
+            "\t\t\tf, _ := os.Open(n)\n"
+            "\t\t\tdefer f.Close()\n"
+            "\t\t\tbreak other\n"
+            "\t\t}\n"
+            "\t}\n"
+            "}\n"
+        )
+        assert _go_defer_count(src) == 1
+
+
 # ---------------------------------------------------------------------------
 # C#
 # ---------------------------------------------------------------------------

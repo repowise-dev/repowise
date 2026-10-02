@@ -103,6 +103,14 @@ GO_LOCK_METHODS: frozenset[str] = frozenset({"Lock", "RLock"})
 GO_CHUNK_CALLS: frozenset[str] = frozenset(
     {"Chunk", "chunk", "Batch", "batch", "Chunks", "chunks"}
 )
+# What a bare ``break`` can exit; only ``for_statement`` means the enclosing
+# loop stops, the other three leave it iterating (#2938).
+_LOOP_OR_SWITCH_TYPES: frozenset[str] = frozenset(
+    {"for_statement", "expression_switch_statement", "type_switch_statement", "select_statement"}
+)
+_FUNCTION_BOUNDARY_TYPES: frozenset[str] = frozenset(
+    {"function_declaration", "method_declaration", "func_literal"}
+)
 
 
 class GoPerfDialect(BasePerfDialect):
@@ -252,6 +260,8 @@ class GoPerfDialect(BasePerfDialect):
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
+            if self._defer_exits_before_repeating(node):
+                return None
             return "defer_in_loop"
         # ``go func(){…}()`` spawned per element of a ``for … range`` loop fans
         # out one goroutine per item with no concurrency bound (the spawn-
@@ -390,6 +400,90 @@ class GoPerfDialect(BasePerfDialect):
             return int(size.text.decode("utf-8", "replace")) > 0
         except ValueError:
             return False
+
+    def _defer_exits_before_repeating(self, defer_node: Node) -> bool:
+        """True when the statement right after *defer_node*, in the same
+        block, guarantees the loop cannot run a second time: a ``return``, or
+        a ``break`` that exits the nearest enclosing ``for`` rather than
+        merely a ``switch``/``select``/type switch sitting between the defer
+        and the loop. A deferred handle that only ever gets scheduled once is
+        not the accumulation ``defer_in_loop`` exists to catch (#2938).
+
+        Purely syntactic: only the literal next-statement shape is read,
+        never flow analysis proving a loop runs once some other way — a
+        defer followed by anything else (including ``continue``) still fires.
+        """
+        parent = defer_node.parent
+        if parent is None:
+            return False
+        siblings = [c for c in parent.children if c.is_named]
+        try:
+            idx = siblings.index(defer_node)
+        except ValueError:
+            return False
+        if idx + 1 >= len(siblings):
+            return False
+        next_stmt = siblings[idx + 1]
+        if next_stmt.type == "return_statement":
+            return True
+        if next_stmt.type != "break_statement":
+            return False
+        label = self._break_label(next_stmt)
+        if label is None:
+            return self._bare_break_exits_loop(next_stmt)
+        return self._break_label_matches_enclosing_loop(defer_node, label)
+
+    @staticmethod
+    def _break_label(break_node: Node) -> str | None:
+        label = next((c for c in break_node.children if c.type == "label_name"), None)
+        if label is None or label.text is None:
+            return None
+        return label.text.decode("utf-8", "replace")
+
+    @staticmethod
+    def _bare_break_exits_loop(break_node: Node) -> bool:
+        """True if an unlabeled ``break`` here exits a ``for`` loop directly.
+
+        A bare ``break`` exits only the NEAREST enclosing ``for``, ``switch``,
+        type switch or ``select``. If that nearest construct is a switch or
+        select, the loop around it is untouched and keeps iterating.
+        """
+        cur = break_node.parent
+        for _ in range(64):
+            if cur is None:
+                return False
+            if cur.type in _LOOP_OR_SWITCH_TYPES:
+                return cur.type == "for_statement"
+            if cur.type in _FUNCTION_BOUNDARY_TYPES:
+                return False
+            cur = cur.parent
+        return False
+
+    @staticmethod
+    def _break_label_matches_enclosing_loop(defer_node: Node, label: str) -> bool:
+        """True if *label* is the nearest enclosing ``for`` loop's own label.
+
+        A labeled break ignores intervening switch/select entirely (unlike a
+        bare break), but it only terminates THIS loop when the label names
+        it; a break labeled for some further-out loop leaves this one
+        iterating, so only the nearest ``for``'s label is checked.
+        """
+        cur = defer_node.parent
+        for _ in range(64):
+            if cur is None or cur.type in _FUNCTION_BOUNDARY_TYPES:
+                return False
+            if cur.type == "for_statement":
+                owner = cur.parent
+                if owner is None or owner.type != "labeled_statement":
+                    return False
+                label_node = next((c for c in owner.children if c.type == "label_name"), None)
+                return (
+                    label_node is not None
+                    and label_node.text is not None
+                    and label_node.text.decode("utf-8", "replace") == label
+                )
+            cur = cur.parent
+        return False
 
     @staticmethod
     def _nearest_for_is_range(node: Node) -> bool:
