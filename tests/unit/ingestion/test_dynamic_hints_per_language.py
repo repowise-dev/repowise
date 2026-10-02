@@ -122,7 +122,7 @@ class TestPhpDirPaths:
                 component: (
                     '<?php\nclass Component { function render($view) {\n'
                     '  include __DIR__."/../resources/views/components/$view.php";\n'
-                    "  return __DIR__.'/../stubs/make-'.$view.'.php';\n} }\n"
+                    "  require __DIR__.'/../stubs/make-'.$view.'.php';\n} }\n"
                 ),
                 "src/Console/resources/views/components/alert.php": "<?php echo 1;\n",
                 "src/Console/resources/views/layout.php": "<?php echo 1;\n",
@@ -135,17 +135,24 @@ class TestPhpDirPaths:
             "src/Console/stubs/make-model.php",
         }
 
-    def test_no_edge_for_own_folder_tool_scope_or_literal_require(self, tmp_path: Path) -> None:
+    def test_no_folder_edge_without_a_production_loader(self, tmp_path: Path) -> None:
         targets = _php_dir_targets(
             tmp_path,
             {
                 "composer.json": "{}",
-                # A tool config at the package root lists the folders it scans.
+                # A tool config lists the folders it scans.
                 "rector.php": "<?php\nreturn [__DIR__.'/src', __DIR__.'/tests'];\n",
+                # Naming a folder is not loading it.
+                "config/ide.php": "<?php\nreturn ['paths' => [dirname(__DIR__).'/src']];\n",
+                # A test bootstrap loading a folder is no use of it.
+                "tests/bootstrap.php": "<?php\n$finder->in(__DIR__.'/../src');\n",
+                # A comment is not code.
+                "src/Loader.php": "<?php\n// $this->loadViewsFrom(__DIR__.'/Dead', 'x');\n",
                 # An ancestor folder says nothing about which sibling is used.
-                "src/Support/Finder.php": "<?php\n$all = __DIR__.'/..';\n",
+                "src/Support/Finder.php": "<?php\n$all = glob(__DIR__.'/..');\n",
                 # The import graph already follows a literal require.
                 "src/boot.php": "<?php\nrequire __DIR__.'/Support/Finder.php';\n",
+                "src/Dead/Dead0.php": "<?php\n",
                 "tests/FinderTest.php": "<?php\n",
             },
         )

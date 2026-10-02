@@ -7,6 +7,8 @@ import posixpath
 import re
 from pathlib import Path
 
+from ...code_origin import code_origin
+from ..languages.php_same_namespace import blank_php_comments
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"vendor", "node_modules", ".git", "storage", "bootstrap"}
@@ -39,6 +41,14 @@ _DIR_PATH_RE = re.compile(
 _CLOSED_RE = re.compile(r"""(['"])(?!\s*\.)""")
 # The import graph already follows a `require`/`include` of a literal file.
 _INCLUDE_TAIL_RE = re.compile(r"\b(?:require|include)(?:_once)?\s*\(?\s*$")
+# A statement that loads the files of a folder it names: a view, migration or
+# translation namespace, a publish map, a Finder, glob or directory scan, an
+# include of a variable name.
+_FOLDER_LOADER_RE = re.compile(
+    r"\b(?:load(?:Views|Migrations|Translations|JsonTranslations)From"
+    r"|(?:add|replace|prepend)Namespace|publishes|glob|scandir|opendir|in)\s*\("
+    r"|\b(?:include|require)(?:_once)?\b"
+)
 
 
 class PhpDynamicHints(DynamicHintExtractor):
@@ -48,34 +58,14 @@ class PhpDynamicHints(DynamicHintExtractor):
 
     def extract(self, repo_root: Path) -> list[DynamicEdge]:
         edges: list[DynamicEdge] = []
+        sources = self._read_sources(repo_root)
 
         type_to_file: dict[str, str] = {}
-        php_files: list[tuple[Path, str]] = []
-        sources: list[tuple[str, str]] = []
-        repo_root_resolved = repo_root.resolve()
-        for src in self._rglob(repo_root, "*.php"):
-            try:
-                rel_path = src.resolve().relative_to(repo_root_resolved)
-            except ValueError:
-                continue
-            if any(part in _SKIP_DIRS for part in rel_path.parts):
-                continue
-            try:
-                text = src.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            rel = rel_path.as_posix()
-            php_files.append((src, text))
-            sources.append((rel, text))
+        for rel, text in sources:
             for match in _CLASS_DECL_RE.finditer(text):
                 type_to_file.setdefault(match.group(1), rel)
 
-        for src, text in php_files:
-            try:
-                rel = src.resolve().relative_to(repo_root.resolve()).as_posix()
-            except ValueError:
-                continue
-
+        for rel, text in sources:
             for match in _CALL_USER_FUNC_RE.finditer(text):
                 name = match.group(1) or match.group(2)
                 target = type_to_file.get(name)
@@ -113,12 +103,28 @@ class PhpDynamicHints(DynamicHintExtractor):
                     hint_source=f"{self.name}:new_var",
                 ))
 
-        edges.extend(self._dir_path_edges(sources, repo_root))
+        edges.extend(self._dir_path_edges(sources))
         return edges
 
-    def _dir_path_edges(
-        self, sources: list[tuple[str, str]], repo_root: Path
-    ) -> list[DynamicEdge]:
+    def _read_sources(self, repo_root: Path) -> list[tuple[str, str]]:
+        """``(repo-relative path, text)`` of every first-party PHP file."""
+        sources: list[tuple[str, str]] = []
+        repo_root_resolved = repo_root.resolve()
+        for src in self._rglob(repo_root, "*.php"):
+            try:
+                rel_path = src.resolve().relative_to(repo_root_resolved)
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIRS for part in rel_path.parts):
+                continue
+            try:
+                text = src.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            sources.append((rel_path.as_posix(), text))
+        return sources
+
+    def _dir_path_edges(self, sources: list[tuple[str, str]]) -> list[DynamicEdge]:
         paths = sorted(rel for rel, _ in sources)
         return [
             DynamicEdge(
@@ -128,38 +134,39 @@ class PhpDynamicHints(DynamicHintExtractor):
                 hint_source=f"{self.name}:dir_path",
             )
             for rel, text in sources
-            for target in sorted(_dir_path_targets(rel, text, paths, repo_root))
+            for target in sorted(_dir_path_targets(rel, blank_php_comments(text), paths))
         ]
 
 
-
-def _dir_path_targets(rel: str, text: str, paths: list[str], repo_root: Path) -> set[str]:
+def _dir_path_targets(rel: str, text: str, paths: list[str]) -> set[str]:
     """The PHP files a ``__DIR__``-relative path in *text* names.
 
-    A file path names that file. A directory path names every file under it:
-    a view namespace, a config directory a ``Finder`` reads, a folder joined
-    with a variable name (``'/stubs/'.$name``, ``"/components/$view.php"``,
-    which keeps only the files of that folder starting with the literal
-    part). *paths* is the sorted list of the repo's PHP files.
+    A file path names that file. A folder names its files only when the
+    statement hands it to a loader (:data:`_FOLDER_LOADER_RE`): every file
+    under it (a view namespace, a config directory a ``Finder`` reads), or,
+    joined with a variable (``"/components/$view.php"``), the files of that
+    folder starting with the literal part. *text* has its comments blanked;
+    *paths* is the sorted list of the repo's PHP files.
     """
-    here = posixpath.dirname(rel)
-    out: set[str] = set()
-    for m in _DIR_PATH_RE.finditer(text):
-        target = _dir_path(here, m)
-        if target is None:
-            continue
-        inside = _under(paths, target)
-        if inside:
-            if _loads_folder(here, target, repo_root):
-                out.update(inside)
-        elif _CLOSED_RE.match(text, m.end("path")) is None:  # joined with a variable
-            out.update(_prefixed(paths, target))
-        elif _contains(paths, target) and not _INCLUDE_TAIL_RE.search(
-            text[max(0, m.start() - 20) : m.start()]
-        ):
-            out.add(target)
+    out = {p for m in _DIR_PATH_RE.finditer(text) for p in _named_files(rel, text, m, paths)}
     out.discard(rel)
     return out
+
+
+def _named_files(rel: str, text: str, m: re.Match[str], paths: list[str]) -> list[str]:
+    """The files one ``__DIR__`` path match in *text* names."""
+    target = _dir_path(posixpath.dirname(rel), m)
+    if target is None:
+        return []
+    statement = text[text.rfind(";", 0, m.start()) + 1 : m.start()]
+    inside = _under(paths, target)
+    if inside or _CLOSED_RE.match(text, m.end("path")) is None:
+        if not _loads_folder(rel, target, statement):
+            return []
+        return inside or _prefixed(paths, target)
+    if _contains(paths, target) and not _INCLUDE_TAIL_RE.search(statement):
+        return [target]
+    return []
 
 
 def _dir_path(here: str, m: re.Match[str]) -> str | None:
@@ -171,17 +178,19 @@ def _dir_path(here: str, m: re.Match[str]) -> str | None:
     return None if target in (".", "..") or target.startswith("../") else target
 
 
-def _loads_folder(here: str, folder: str, repo_root: Path) -> bool:
-    """Whether naming *folder* from a file in *here* says its files are loaded.
+def _loads_folder(rel: str, folder: str, statement: str) -> bool:
+    """Whether naming *folder* in *statement* of file *rel* loads its files.
 
-    Not for a folder holding the file itself (``__DIR__.'/..'`` says nothing
-    about which sibling is used), nor for a top folder named from a package
-    root file (``rector.php`` listing ``src`` and ``tests``), which is a tool's
-    scan scope rather than a load.
+    Only production code handing the folder to a loader counts. A test or a
+    tool naming a folder (``tests/bootstrap.php``, a lint config listing its
+    scan scope) loads nothing, and a folder holding *rel* itself
+    (``__DIR__.'/..'``) says nothing about which sibling is used.
     """
-    if (here + "/").startswith(folder + "/"):
-        return False
-    return not (posixpath.dirname(folder) == here and _is_package_root(repo_root, here))
+    return (
+        _FOLDER_LOADER_RE.search(statement) is not None
+        and not (posixpath.dirname(rel) + "/").startswith(folder + "/")
+        and code_origin(rel) == "production"
+    )
 
 
 def _prefixed(paths: list[str], prefix: str) -> list[str]:
@@ -204,7 +213,3 @@ def _under(paths: list[str], folder: str) -> list[str]:
     start = bisect.bisect_left(paths, folder + "/")
     end = bisect.bisect_left(paths, folder + "0")  # "0" sorts right after "/"
     return paths[start:end]
-
-
-def _is_package_root(repo_root: Path, folder: str) -> bool:
-    return not folder or (repo_root / folder / "composer.json").is_file()

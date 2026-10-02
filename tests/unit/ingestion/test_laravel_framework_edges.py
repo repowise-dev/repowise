@@ -578,3 +578,21 @@ class TestLaravelViews:
         assert graph.has_edge(invitation, "resources/views/partials/footer.blade.php")
         assert graph.has_edge(invitation, "resources/views/components/alert.blade.php")
         assert not any(graph.predecessors("resources/views/emails/unused.blade.php"))
+
+    def test_a_quoted_word_outside_a_view_call_links_no_view(self, tmp_path: Path) -> None:
+        graph = _laravel_app(
+            tmp_path,
+            {
+                "app/Models/Order.php": _class(
+                    "App\\Models\\Order",
+                    "protected $fillable = ['welcome'];\n"
+                    "/** Previously rendered view('dashboard'). */\n"
+                    "public function show() { return response()->json(['orders' => 1]); }",
+                ),
+                "resources/views/welcome.blade.php": "<p></p>\n",
+                "resources/views/dashboard.blade.php": "<p></p>\n",
+                "resources/views/orders.blade.php": '<div class="welcome"></div>\n',
+            },
+        )
+        for view in ("welcome", "dashboard", "orders"):
+            assert not any(graph.predecessors(f"resources/views/{view}.blade.php")), view

@@ -40,6 +40,7 @@ from ..framework_routes import (
 )
 from ..languages.php_same_namespace import (
     PHP_CLASS_NAME,
+    blank_php_comments,
     file_namespace,
     php_use_aliases,
     qualify_php_name,
@@ -121,12 +122,22 @@ _COMMAND_CALL_HINTS = ("command", "Artisan::", "call")
 # Whole-file registries: every class they name is loaded by the framework.
 _REGISTRY_FILES = ("bootstrap/providers.php", "config/app.php")
 
-# A view by name: `view('emails.welcome')`, `@include('partials.nav')`,
-# `$rootView = 'app'`, a `<x-alert>` component tag. Views live under each
-# app's `resources/views`; a name spells the path with dots or slashes.
+# A view by name, where the code hands that name to the view layer:
+# `view('emails.welcome')`, `->markdown(...)`, `@include('partials.nav')`,
+# `Route::view('/', 'welcome')`, `$rootView = 'app'`, or a `<x-alert>`
+# component tag. Views live under each app's `resources/views`; a name spells
+# the path with dots or slashes. A quoted word elsewhere is not a use.
 _VIEWS_DIR = "resources/views"
 _VIEW_SUFFIXES = (".blade.php", ".php")
-_VIEW_NAME_RE = re.compile(r"""(['"])(?P<name>[\w-]+(?:[./][\w-]+)*)\1""")
+_VIEW_NAME = r"""(?P<q>['"])(?P<name>[\w-]+(?:[./][\w-]+)*)(?P=q)"""
+_VIEW_NAME_RES = (
+    re.compile(
+        r"(?:\bview|\bView::(?:make|first)|->\s*(?:view|markdown|text|html)"
+        r"|@(?:include(?:If|First)?|extends|component|each))\s*\(\s*\[?\s*" + _VIEW_NAME
+    ),
+    re.compile(r"""\bRoute::view\s*\(\s*['"][^'"]*['"]\s*,\s*""" + _VIEW_NAME),
+    re.compile(r"\$(?:rootView|view|layout)\s*=\s*" + _VIEW_NAME),
+)
 _COMPONENT_TAG_RE = re.compile(r"<x-(?P<name>[\w-]+(?:\.[\w-]+)*)")
 
 # Where a legacy string handler (`'Admin\DashboardController@index'`) lives
@@ -148,10 +159,11 @@ def _span(text: str, m: re.Match[str], group: str) -> str:
 class _PhpFile:
     """One PHP file's text and the names its ``use`` clauses and namespace bind."""
 
-    __slots__ = ("aliases", "namespace", "path", "text")
+    __slots__ = ("aliases", "is_test", "namespace", "path", "text")
 
     def __init__(self, path: str, parsed: Any, source_map: dict[str, bytes]) -> None:
         self.path = path
+        self.is_test = bool(parsed.file_info.is_test)
         self.text = source_text(path, parsed, source_map)
         self.namespace = file_namespace(self.text) if self.text else None
         self.aliases = php_use_aliases(parsed)
@@ -260,11 +272,18 @@ def _views_by_name(roots: list[str], path_set: set[str]) -> dict[str, str]:
 
 
 def _view_references(link: _Linker, f: _PhpFile, views: dict[str, str]) -> None:
-    """Link *f* to each view a string in it names, and each component it renders."""
-    for m in _VIEW_NAME_RE.finditer(f.text):
-        link.edge(f.path, views.get(m.group("name").replace("/", ".")))
-    if "<x-" in f.text:
-        for m in _COMPONENT_TAG_RE.finditer(f.text):
+    """Link *f* to each view its code renders by name, and each component tag.
+
+    A test renders views to check them, which is no use of one.
+    """
+    if f.is_test:
+        return
+    code = blank_php_comments(f.text)
+    for pattern in _VIEW_NAME_RES:
+        for m in pattern.finditer(code):
+            link.edge(f.path, views.get(m.group("name").replace("/", ".")))
+    if "<x-" in code:
+        for m in _COMPONENT_TAG_RE.finditer(code):
             link.edge(f.path, views.get("components." + m.group("name")))
 
 
