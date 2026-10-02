@@ -168,14 +168,18 @@ class _Projects:
     def _closure(self, project: Any) -> frozenset[Any]:
         cached = self._seen_by.get(project)
         if cached is None:
-            seen, stack = {project}, [project]
-            while stack:
-                for ref in self._index.referenced_projects(stack.pop()):
-                    if ref not in seen:
-                        seen.add(ref)
-                        stack.append(ref)
-            cached = self._seen_by[project] = frozenset(seen)
+            cached = self._seen_by[project] = _reachable(project, self._index.referenced_projects)
         return cached
+
+
+def _reachable(start: Any, step: Any) -> frozenset[Any]:
+    """*start* and everything *step* leads to from it, transitively."""
+    seen, stack = {start}, [start]
+    while stack:
+        fresh = set(step(stack.pop())) - seen
+        seen |= fresh
+        stack.extend(fresh)
+    return frozenset(seen)
 
 
 def _registrars(
@@ -189,9 +193,27 @@ def _registrars(
     out: dict[str, list[tuple[str, Any]]] = {}
     for discovery in _DISCOVERIES:
         sites = [site for call in discovery.calls for site in by_call.get(call, ())]
-        for base in discovery.bases:
+        for base in discovery.bases if sites else ():
             out.setdefault(base, []).extend(sites)
     return out
+
+
+def _wired_types(
+    cs_files: list[tuple[str, Any]],
+    projects: _Projects,
+    registrars: dict[str, list[tuple[str, Any]]],
+) -> dict[tuple[str, str], list[str]]:
+    """``(registering file, type file)`` -> the discovered types the edge names."""
+    wired: dict[tuple[str, str], list[str]] = {}
+    for path, parsed in cs_files:
+        owner = projects.of(path)
+        for relation in getattr(parsed, "heritage", ()):
+            sites = registrars.get(relation.parent_name.rsplit(".", 1)[-1], ())
+            source = next((f for f, p in sites if projects.can_register(p, owner)), path)
+            names = wired.setdefault((source, path), [])
+            if relation.child_name not in names:
+                names.append(relation.child_name)
+    return wired
 
 
 def _add_discovery_edges(
@@ -206,16 +228,8 @@ def _add_discovery_edges(
     registrars = _registrars(cs_files, projects)
     if not registrars:
         return 0
-    wired: dict[tuple[str, str], list[str]] = {}
-    for path, parsed in cs_files:
-        owner = projects.of(path)
-        for relation in getattr(parsed, "heritage", ()):
-            sites = registrars.get(relation.parent_name.rsplit(".", 1)[-1], ())
-            source = next((f for f, p in sites if projects.can_register(p, owner)), None)
-            if source is not None and source != path:
-                names = wired.setdefault((source, path), [])
-                if relation.child_name not in names:
-                    names.append(relation.child_name)
+    wired = _wired_types(cs_files, projects, registrars)
+    # A type with no registrar in scope maps to its own file, which adds nothing.
     return sum(_add_edge_if_new(graph, src, dst, names) for (src, dst), names in wired.items())
 
 
