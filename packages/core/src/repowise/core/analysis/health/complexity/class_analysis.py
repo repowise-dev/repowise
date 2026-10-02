@@ -263,21 +263,13 @@ def _is_callee(node: Node, lmap: LanguageNodeMap) -> bool:
     return function is not None and function.id == node.id
 
 
-def _collect_self_members(
-    method_node: Node, lmap: LanguageNodeMap
-) -> tuple[set[str], set[str]]:
-    """Instance-member names *method_node* references, and the subset it
-    reads or writes rather than only calls.
+def _self_member_nodes(method_node: Node, lmap: LanguageNodeMap) -> Iterator[tuple[Node, str]]:
+    """Every ``self.member`` access in *method_node* with its member name.
 
     Walks the method body (descending through nested functions/lambdas,
     which close over the same instance) but stops at nested class
-    definitions. Both field reads and method calls reduce to a member
-    name here: both are evidence two methods touch the same thing.
+    definitions.
     """
-    members: set[str] = set()
-    read: set[str] = set()
-    if not lmap.self_identifiers or not lmap.member_access_kinds:
-        return members, read
     stack: list[Node] = list(method_node.children)
     while stack:
         node = stack.pop()
@@ -286,11 +278,24 @@ def _collect_self_members(
         if node.type in lmap.member_access_kinds:
             name = _self_member_name(node, lmap)
             if name:
-                members.add(name)
-                if not _is_callee(node, lmap):
-                    read.add(name)
-        for child in node.children:
-            stack.append(child)
+                yield node, name
+        stack.extend(node.children)
+
+
+def _collect_self_members(
+    method_node: Node, lmap: LanguageNodeMap
+) -> tuple[set[str], set[str]]:
+    """Instance-member names *method_node* references, and the subset it
+    reads or writes rather than only calls.
+
+    Both field reads and method calls reduce to a member name here: both
+    are evidence two methods touch the same thing.
+    """
+    if not lmap.self_identifiers or not lmap.member_access_kinds:
+        return set(), set()
+    accesses = list(_self_member_nodes(method_node, lmap))
+    members = {name for _, name in accesses}
+    read = {name for node, name in accesses if not _is_callee(node, lmap)}
     return members, read
 
 
