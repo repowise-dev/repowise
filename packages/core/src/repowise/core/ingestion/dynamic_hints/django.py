@@ -2,37 +2,92 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from ..models import DynamicKind
 from .base import DynamicEdge, DynamicHintExtractor
+
+#: Reads a module's syntax tree and returns the class names Django uses there.
+UsedNames = Callable[[ast.Module], set[str]]
+
+
+def _last_segment(node: ast.expr) -> str:
+    """``AppConfig`` for ``AppConfig``, ``apps.AppConfig`` and ``admin.register(...)``."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Subscript):  # ``ModelAdmin[Profile]``
+        node = node.value
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def _app_config_classes(tree: ast.Module) -> set[str]:
+    """The ``AppConfig`` subclasses, which the app registry instantiates."""
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(_last_segment(base) == "AppConfig" for base in node.bases)
+    }
+
+
+def _registered_admin_classes(tree: ast.Module) -> set[str]:
+    """Admin classes registered by ``@admin.register`` or ``site.register``,
+    and the classes nested in them (``Media``), which the admin reads."""
+    passed = {
+        arg.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _last_segment(node.func) == "register"
+        for arg in node.args[1:]
+        if isinstance(arg, ast.Name)
+    }
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if node.name in passed or any(_last_segment(d) == "register" for d in node.decorator_list):
+            names.add(node.name)
+            names.update(n.name for n in node.body if isinstance(n, ast.ClassDef))
+    return names
+
 
 #: Modules Django loads from every installed app by convention, as paths
 #: inside the app package (``*`` is one module name). No source file imports
 #: them: the app registry imports ``apps`` and ``models``, the admin
 #: autodiscovers ``admin``, the template engine loads every ``templatetags``
 #: library and ``manage.py`` finds each ``management/commands`` module whose
-#: name does not start with ``_``. ``dynamic_uses`` where Django also consumes
-#: the module's classes (the ``AppConfig`` subclass, the registered
-#: ``ModelAdmin`` classes and their inner ``Media``), ``dynamic_imports`` where
-#: it only loads the module. ``signals``, ``urls`` and ``views`` are not here:
-#: Django never loads those by name, an app imports them itself.
-_APP_CONVENTION_MODULES: tuple[tuple[str, DynamicKind], ...] = (
-    ("apps.py", "dynamic_uses"),
-    ("admin.py", "dynamic_uses"),
-    ("models.py", "dynamic_imports"),
-    ("templatetags/*.py", "dynamic_imports"),
-    ("management/commands/[!_]*.py", "dynamic_imports"),
+#: name does not start with ``_``. Where Django also uses classes of the
+#: module, the second item names them, so only those count as used and a dead
+#: helper beside them is still reported. ``signals``, ``urls`` and ``views``
+#: are not here: Django never loads those by name, an app imports them itself.
+_APP_CONVENTION_MODULES: tuple[tuple[str, UsedNames | None], ...] = (
+    ("apps.py", _app_config_classes),
+    ("admin.py", _registered_admin_classes),
+    ("models.py", None),
+    ("templatetags/*.py", None),
+    ("management/commands/[!_]*.py", None),
 )
 
 
-def _convention_kind(rel_in_app: PurePosixPath) -> DynamicKind | None:
-    """How Django loads the app module at *rel_in_app*, or ``None`` if it does not."""
-    for pattern, kind in _APP_CONVENTION_MODULES:
+def _convention_match(rel_in_app: PurePosixPath) -> tuple[bool, UsedNames | None]:
+    """Whether Django loads the app module at *rel_in_app*, and what names its used classes."""
+    for pattern, used_names in _APP_CONVENTION_MODULES:
         # ``match`` anchors on the right only; equal depth anchors both ends.
         if len(rel_in_app.parts) == pattern.count("/") + 1 and rel_in_app.match(pattern):
-            return kind
-    return None
+            return True, used_names
+    return False, None
+
+
+def _used_names(path: Path, used_names: UsedNames | None) -> tuple[str, ...]:
+    """The names *used_names* finds in the module at *path*, sorted; none if unreadable."""
+    if used_names is None:
+        return ()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
+    except (OSError, SyntaxError, ValueError):
+        return ()
+    return tuple(sorted(used_names(tree)))
 
 
 def _app_to_path(app: str, repo_root: Path) -> str | None:
@@ -72,15 +127,27 @@ def _installed_app_init(entry: str, repo_root: Path) -> str | None:
     init = _app_to_path(entry, repo_root)
     if init is not None or "." not in entry:
         return init
-    module = _module_to_path(entry.rsplit(".", 1)[0], repo_root)
-    if module is None or PurePosixPath(module).name == "__init__.py":
+    module_name = entry.rsplit(".", 1)[0]
+    module = _module_to_path(module_name, repo_root)
+    if module is None:
+        return None
+    module_path = PurePosixPath(module)
+    if module_path.name != "__init__.py":
+        app_dir = module_path.parent
+    elif module_name.rsplit(".", 1)[-1] == "apps":
+        # An ``apps`` package inside the app (``polls/apps/__init__.py``).
+        app_dir = module_path.parent.parent
+    else:
+        # The config sits in the app's own ``__init__`` (``polls.PollsConfig``).
         return module
-    package_init = (PurePosixPath(module).parent / "__init__.py").as_posix()
+    package_init = (app_dir / "__init__.py").as_posix()
     return package_init if (repo_root / package_init).exists() else None
 
 
 def _extract_string_list(node: ast.expr) -> list[str]:
-    """Extract string literals from an ast.List or ast.Tuple node."""
+    """String literals of a list or tuple, or of a sum of them (``BASE + [...]``)."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _extract_string_list(node.left) + _extract_string_list(node.right)
     results: list[str] = []
     if not isinstance(node, (ast.List, ast.Tuple)):
         return results
@@ -110,7 +177,7 @@ class DjangoDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
         # Convention modules per app ``__init__``, shared by every settings
         # file that installs the app (``base.py``, ``dev.py``, ``prod.py``).
-        app_modules: dict[str, list[tuple[str, DynamicKind]]] = {}
+        app_modules: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
 
         # Collect all settings files
         settings_files: list[Path] = list(self._rglob(repo_root, "settings.py"))
@@ -137,9 +204,11 @@ class DjangoDynamicHints(DynamicHintExtractor):
                 continue
 
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Assign):
+                # ``INSTALLED_APPS += [...]`` extends the setting in place.
+                if not isinstance(node, (ast.Assign, ast.AugAssign)):
                     continue
-                for target in node.targets:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
                     if not (isinstance(target, ast.Name)):
                         continue
                     name = target.id
@@ -184,32 +253,46 @@ class DjangoDynamicHints(DynamicHintExtractor):
         rel_settings: str,
         app: str,
         repo_root: Path,
-        app_modules: dict[str, list[tuple[str, DynamicKind]]],
+        app_modules: dict[str, list[tuple[str, tuple[str, ...]]]],
     ) -> list[DynamicEdge]:
-        """Edges from a settings file to an installed app and its convention modules."""
+        """Edges from a settings file to an installed app and its convention modules.
+
+        A module whose classes Django uses gets a ``dynamic_uses`` edge naming
+        them; any other gets ``dynamic_imports``, which marks the module
+        loaded and none of its symbols used.
+        """
         init = _installed_app_init(app, repo_root)
         if init is None:
             return []
         if init not in app_modules:
             app_modules[init] = self._convention_modules(repo_root, init)
-        targets = [(init, "dynamic_imports"), *app_modules[init]]
         return [
-            DynamicEdge(source=rel_settings, target=target, edge_type=kind, hint_source=self.name)
-            for target, kind in targets
+            DynamicEdge(
+                source=rel_settings,
+                target=target,
+                edge_type="dynamic_uses" if names else "dynamic_imports",
+                hint_source=self.name,
+                imported_names=names,
+            )
+            for target, names in [(init, ()), *app_modules[init]]
         ]
 
-    def _convention_modules(self, repo_root: Path, app_init: str) -> list[tuple[str, DynamicKind]]:
-        """The modules under an app that Django loads by convention, with their edge kind."""
+    def _convention_modules(
+        self, repo_root: Path, app_init: str
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        """The modules under an app that Django loads by convention, with the names it uses."""
         app_dir = repo_root / PurePosixPath(app_init).parent
-        found: list[tuple[str, DynamicKind]] = []
+        found: list[tuple[str, tuple[str, ...]]] = []
         # Through ``_rglob`` so a file the index excludes gets no edge.
         for path in self._rglob(app_dir, "*.py"):
             # A package ``__init__`` is reached through its package already.
             if path.name == "__init__.py":
                 continue
-            kind = _convention_kind(PurePosixPath(path.relative_to(app_dir).as_posix()))
-            if kind is not None:
-                found.append((path.relative_to(repo_root).as_posix(), kind))
+            rel_in_app = PurePosixPath(path.relative_to(app_dir).as_posix())
+            loaded, used_names = _convention_match(rel_in_app)
+            if loaded:
+                rel = path.relative_to(repo_root).as_posix()
+                found.append((rel, _used_names(path, used_names)))
         return found
 
     def _scan_urls(self, repo_root: Path) -> list[DynamicEdge]:
