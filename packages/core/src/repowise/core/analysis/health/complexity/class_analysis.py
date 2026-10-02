@@ -92,6 +92,14 @@ def _text(node: Node) -> str:
     return node.text.decode("utf-8", errors="replace") if node.text is not None else ""
 
 
+def _is_own_method(node: Node, lmap: LanguageNodeMap, language: str, source: str) -> bool:
+    """A method of this class: not a nested type the grammar misread as a
+    function (its members are not ours), not a Python ``@overload`` stub."""
+    if not is_function_node(node, lmap):
+        return False
+    return language != "python" or not is_python_overload(node, source)
+
+
 def _collect_class_body(
     class_node: Node, lmap: LanguageNodeMap, language: str, source: str
 ) -> _ClassBody:
@@ -109,11 +117,8 @@ def _collect_class_body(
         if node.type in lmap.class_kinds:
             body.nested.append(node)
         elif node.type in lmap.function_kinds:
-            if not is_function_node(node, lmap):
-                continue  # a nested type the grammar misread: its members are not ours
-            if language == "python" and is_python_overload(node, source):
-                continue
-            body.methods.append(node)
+            if _is_own_method(node, lmap, language, source):
+                body.methods.append(node)
         elif node.type in lmap.field_decl_kinds:
             body.field_decls.append(node)
         elif node.type not in lmap.nested_type_kinds:

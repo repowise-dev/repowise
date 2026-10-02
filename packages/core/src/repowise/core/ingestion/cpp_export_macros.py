@@ -34,6 +34,19 @@ def _keyword_token(node: Node) -> str | None:
     return None
 
 
+def _macro_named_type_keyword(node: Node) -> str | None:
+    """``class MACRO X {``: a bodiless specifier named after the macro, then the real name."""
+    type_node = node.child_by_field_name("type")
+    declarator = node.child_by_field_name("declarator")
+    if type_node is None or type_node.type not in _CPP_TYPE_SPECIFIER_NODES:
+        return None
+    if declarator is None or declarator.type != "identifier":
+        return None
+    if type_node.child_by_field_name("body") is not None:
+        return None
+    return type_node.type.removesuffix("_specifier")
+
+
 def misread_scope_keyword(node: Node) -> str | None:
     """The keyword of a namespace or type that tree-sitter read as a function.
 
@@ -44,16 +57,9 @@ def misread_scope_keyword(node: Node) -> str | None:
     """
     if node.type != "function_definition":
         return None
-    type_node = node.child_by_field_name("type")
-    declarator = node.child_by_field_name("declarator")
-    if (
-        type_node is not None
-        and type_node.type in _CPP_TYPE_SPECIFIER_NODES
-        and type_node.child_by_field_name("body") is None
-        and declarator is not None
-        and declarator.type == "identifier"
-    ):
-        return type_node.type.removesuffix("_specifier")
+    macro_named = _macro_named_type_keyword(node)
+    if macro_named is not None:
+        return macro_named
     body = node.child_by_field_name("body")
     for child in node.children:
         if body is not None and child.id == body.id:
@@ -74,14 +80,14 @@ def _misread_namespace_ids(matches: list[dict]) -> frozenset[int]:
     """
     found: set[int] = set()
     seen: set[int] = set()
-    for capture_dict in matches:
-        for def_node in capture_dict.get("symbol.def", []):
-            ancestor = def_node.parent
-            while ancestor is not None and ancestor.id not in seen:
-                seen.add(ancestor.id)
-                if misread_scope_keyword(ancestor) == "namespace":
-                    found.add(ancestor.id)
-                ancestor = ancestor.parent
+    def_nodes = (node for capture_dict in matches for node in capture_dict.get("symbol.def", []))
+    for def_node in def_nodes:
+        ancestor = def_node.parent
+        while ancestor is not None and ancestor.id not in seen:
+            seen.add(ancestor.id)
+            if misread_scope_keyword(ancestor) == "namespace":
+                found.add(ancestor.id)
+            ancestor = ancestor.parent
     return frozenset(found)
 
 
