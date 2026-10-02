@@ -23,8 +23,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from .complexity.languages import has_health_dialect
 from .models import HealthFileMetricData, HealthFindingData, Severity
-from .rows import field, split_tests
+from .rows import field, scored_rows, split_tests
 
 if TYPE_CHECKING:
     # Annotation-only, and deliberately not imported at runtime: the biomarker
@@ -39,6 +40,16 @@ if TYPE_CHECKING:
 # recording. Values unchanged; this only stops them being written out per site.
 SCORE_FLOOR: float = 1.0
 SCORE_MAX: float = 10.0
+# The per-file columns that carry a score or a share of one. All ``None`` on a
+# file health never walked (:func:`file_score_fields`).
+SCORE_FIELDS: tuple[str, ...] = (
+    "score",
+    "defect_score",
+    "maintainability_score",
+    "performance_score",
+    "structure_deduction",
+    "history_deduction",
+)
 
 # Per-category max deduction.
 CATEGORY_CAPS: dict[str, float] = {
@@ -790,6 +801,33 @@ def deduction_split(findings: Iterable[Any]) -> tuple[float, float]:
     return round(structure, 3), round(history, 3)
 
 
+def _rounded(value: float | None) -> float | None:
+    return round(value, 2) if value is not None else None
+
+
+def file_score_fields(
+    language: str | None, scores: dict[str, float | None], findings: Iterable[Any]
+) -> dict[str, float | None]:
+    """The score columns one file stores, from its scored findings.
+
+    A file whose language has no health dialect gets ``None`` in every one:
+    nothing walked it, so a number would be a default dressed as a measurement
+    (a mechanical 10.0). Its findings still stand, since the history markers
+    read git rather than the parse.
+    """
+    if not has_health_dialect(language):
+        return dict.fromkeys(SCORE_FIELDS)
+    structure, history = deduction_split(findings)
+    return {
+        "score": _rounded(scores["defect"]),
+        "defect_score": _rounded(scores["defect"]),
+        "maintainability_score": _rounded(scores["maintainability"]),
+        "performance_score": _rounded(scores["performance"]),
+        "structure_deduction": structure,
+        "history_deduction": history,
+    }
+
+
 def unclamped_score(structure: float | None, history: float | None) -> float | None:
     """The score a file would carry without the floor, or ``None`` if unrecorded.
 
@@ -852,10 +890,12 @@ def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | N
 def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
     """NLOC-weighted mean of ``score``, weighting each file by ``max(nloc, 1)``.
 
+    Rows with no score (a language health has no dialect for) are left out.
     Returns 10.0 for an empty input. Callers that can distinguish "nothing to
     average" from "averaged to a perfect score" should check emptiness first —
     :func:`hotspot_health` does exactly that.
     """
+    rows = scored_rows(rows)
     if not rows:
         return 10.0
     total_w = sum(_weight(r) for r in rows)
@@ -882,14 +922,14 @@ def hotspot_health(
     *hotspot_paths* is the set git flagged ``is_hotspot``: top-quartile churn
     **and** the absolute activity floors from issue #361.
 
-    ``None`` means the repo has no hotspot files at all, which is a real answer
+    ``None`` means the repo has no scored hotspot files at all, which is a real answer
     and not a failure — a repo with no recent churn has nothing to be a hotspot.
     It is kept distinct from a low score on purpose: averaging an empty set
     yields 10.0, and reporting that would tell a user their hotspots are perfect
     when they have none. :func:`compute_kpis` still floors it to 10.0 for the
     persisted KPI, and says why there.
     """
-    rows = [m for m in metrics if field(m, "file_path") in hotspot_paths]
+    rows = [m for m in scored_rows(metrics) if field(m, "file_path") in hotspot_paths]
     if not rows:
         return None
     return round(nloc_weighted_score(rows), 2)
@@ -918,11 +958,19 @@ def compute_kpis(
       one is holding the score down. ``None`` until files carry the split.
     - ``production_average``: ``average_health`` over non-test files, weighted
       identically, so a narrowed view and a narrowed trend agree.
+    - ``unanalysed_file_count``: files stored with no score because health has
+      no dialect for their language. Every KPI above leaves them out; when no
+      file is scored at all, the two headline averages are ``None``.
     """
+    unanalysed = len(metrics)
+    metrics = scored_rows(metrics)
+    unanalysed -= len(metrics)
     if not metrics:
+        floor = None if unanalysed else 10.0
         return {
-            "hotspot_health": 10.0,
-            "average_health": 10.0,
+            "hotspot_health": floor,
+            "average_health": floor,
+            "unanalysed_file_count": unanalysed,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "worst_test_path": None,
@@ -977,4 +1025,5 @@ def compute_kpis(
             round(nloc_weighted_score(production), 2) if production else None
         ),
         "production_file_count": len(production),
+        "unanalysed_file_count": unanalysed,
     }

@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .rows import field, split_tests
+from .rows import field, scored_rows, split_tests
 from .scoring import SCORE_MAX
 
 __all__ = [
@@ -81,9 +81,10 @@ def worst_metric(rows: Iterable[Any], deductions: Mapping[str, float]) -> Any | 
     production rows without sorting the tail. Sharing the key is what keeps a
     repo's headline "worst performer" from naming a different file than the
     worst-files list under it. Test files are ranked separately, so a test only
-    answers when there is no production row at all.
+    answers when there is no production row at all. A row with no score is
+    never the worst: nothing measured it.
     """
-    production, tests = split_tests(rows)
+    production, tests = split_tests(scored_rows(rows))
     return min(
         production or tests, key=lambda row: worst_first_key(row, deductions), default=None
     )

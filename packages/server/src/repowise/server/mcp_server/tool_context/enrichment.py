@@ -28,6 +28,7 @@ from repowise.core.analysis.doc_drift.serialize import (
     documents_with_drift,
 )
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
@@ -723,7 +724,9 @@ async def _resolve_health(
     )
 
     health: dict[str, Any] = {
-        "score": round(metric.score, 2),
+        "score": round(metric.score, 2) if metric.score is not None else None,
+        # Said in words, so a missing score is not read as a missing index.
+        **({"analysis_status": NO_DIALECT_STATUS} if metric.score is None else {}),
         "max_ccn": metric.max_ccn,
         "max_nesting": metric.max_nesting,
         "nloc": metric.nloc,

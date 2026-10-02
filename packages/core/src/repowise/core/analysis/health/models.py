@@ -161,9 +161,12 @@ class HealthFileMetricData:
     """Per-file aggregate. Persisted as a ``HealthFileMetric`` row."""
 
     file_path: str
-    score: float
-    max_ccn: int
-    max_nesting: int
+    # ``score``, ``max_ccn`` and ``max_nesting`` are ``None`` for a file whose
+    # language health has no dialect for: nothing walked it, so there is no
+    # measurement to store (``has_health_dialect``).
+    score: float | None
+    max_ccn: int | None
+    max_nesting: int | None
     nloc: int
     has_test_file: bool
     module: str | None = None

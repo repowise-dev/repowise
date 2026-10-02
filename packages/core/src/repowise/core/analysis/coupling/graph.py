@@ -224,7 +224,11 @@ def coupling_graph(
         CouplingNode(
             file_path=path,
             module=(metric_by_path[path].module if path in metric_by_path else None),
-            score=(round(metric_by_path[path].score, 2) if path in metric_by_path else None),
+            score=(
+                round(metric_by_path[path].score, 2)
+                if path in metric_by_path and metric_by_path[path].score is not None
+                else None
+            ),
             nloc=(metric_by_path[path].nloc or 0 if path in metric_by_path else 0),
         )
         for path in sorted(referenced)

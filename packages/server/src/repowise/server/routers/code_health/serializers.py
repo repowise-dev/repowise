@@ -78,7 +78,8 @@ def _metric_to_dict(
     # Built in the historical key order so the full row stays byte-identical.
     out: dict = {
         "file_path": m.file_path,
-        "score": round(m.score, 2),
+        # ``None`` for a language health has no dialect for: nothing measured it.
+        "score": _round_opt(m.score),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
     }

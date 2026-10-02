@@ -2126,9 +2126,12 @@ class HealthFileMetric(Base):
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
-    max_ccn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_nesting: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL for a file whose language health has no dialect for: nothing walked
+    # it, so a number would claim a measurement that never happened. A store
+    # created while these were NOT NULL is rebuilt by ``init_db``.
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nloc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duplication_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     has_test_file: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

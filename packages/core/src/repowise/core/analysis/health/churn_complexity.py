@@ -95,7 +95,8 @@ def churn_complexity_points(
     for m in metrics:
         g = git_meta_by_path.get(m.file_path)
         commit_count = (g.commit_count_90d or 0) if g else 0
-        if commit_count <= 0:
+        # No complexity axis for a file health never walked.
+        if commit_count <= 0 or m.score is None:
             continue
         max_ccn = m.max_ccn or 0
         points.append(

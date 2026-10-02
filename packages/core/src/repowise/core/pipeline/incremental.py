@@ -1197,12 +1197,17 @@ def _numbers_moved(refreshed: Any, stored: Any) -> bool:
     the split ships backfills it without touching any finding.
     """
     return (
-        round(refreshed.score, 2) != round(float(stored.score), 2)
-        or stored.structure_deduction is None
-        or stored.history_deduction is None
-        or round(refreshed.structure_deduction, 3) != round(float(stored.structure_deduction), 3)
-        or round(refreshed.history_deduction, 3) != round(float(stored.history_deduction), 3)
+        _differs(refreshed.score, stored.score, 2)
+        or _differs(refreshed.structure_deduction, stored.structure_deduction, 3)
+        or _differs(refreshed.history_deduction, stored.history_deduction, 3)
     )
+
+
+def _differs(new: float | None, old: float | None, places: int) -> bool:
+    """``None`` is a value here: a file that is no longer scored has moved."""
+    if new is None or old is None:
+        return (new is None) != (old is None)
+    return round(new, places) != round(float(old), places)
 
 
 def _history_findings_moved(refreshed: Any, stored_findings: list[Any]) -> bool:
@@ -1234,11 +1239,14 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
     complexity and coverage columns, which need a parse — keep their stored
     values instead of being reset to a default.
     """
+    # A file health never walked carries no complexity figures either, which
+    # also clears the ones a store written before that rule kept.
+    walked = refreshed.score is not None
     return {
         "file_path": refreshed.file_path,
         "score": refreshed.score,
-        "max_ccn": stored.max_ccn,
-        "max_nesting": stored.max_nesting,
+        "max_ccn": stored.max_ccn if walked else None,
+        "max_nesting": stored.max_nesting if walked else None,
         "nloc": stored.nloc,
         "duplication_pct": stored.duplication_pct,
         "has_test_file": stored.has_test_file,

@@ -47,6 +47,7 @@ from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
+from .complexity.languages import has_health_dialect
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
@@ -81,7 +82,7 @@ from .scope import scores_language
 from .scoring import (
     attach_impacts,
     compute_kpis,
-    deduction_split,
+    file_score_fields,
     remap_severities,
     score_file,
 )
@@ -1638,16 +1639,14 @@ class HealthAnalyzer:
         _mark_deepest_block(findings, fc_list)
 
         # The overall surfaced score stays == the defect dimension (no blend
-        # yet); the per-dimension scores ride alongside it, additively.
-        defect_score = scores["defect"]
-        maint_score = scores["maintainability"]
-        perf_score = scores["performance"]
-        structure_deduction, history_deduction = deduction_split(findings)
+        # yet); the per-dimension scores ride alongside it, additively. A
+        # language with no dialect stores none of them, and no complexity
+        # figures either: nothing walked the file.
+        analysed = has_health_dialect(pf.file_info.language)
         metric = HealthFileMetricData(
             file_path=file_path,
-            score=round(defect_score, 2),
-            max_ccn=max_ccn,
-            max_nesting=max_nesting,
+            max_ccn=max_ccn if analysed else None,
+            max_nesting=max_nesting if analysed else None,
             nloc=nloc,
             # The stored field answers "does something test this file" - that is
             # how the MCP payload documents it and how every UI renders it
@@ -1662,11 +1661,7 @@ class HealthAnalyzer:
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,
-            defect_score=round(defect_score, 2),
-            maintainability_score=(round(maint_score, 2) if maint_score is not None else None),
-            performance_score=(round(perf_score, 2) if perf_score is not None else None),
-            structure_deduction=structure_deduction,
-            history_deduction=history_deduction,
+            **file_score_fields(pf.file_info.language, scores, findings),
             is_test=bool(pf.file_info.is_test),
             code_origin=self._origins.get(file_path) or self._origin(pf),
         )

@@ -157,7 +157,13 @@ async def file_score_breakdown(
     # the findings the page had just said were excluded.
     metrics, findings, _unscored = project(counts, metrics, findings)
     metric = metrics[0] if metrics else None
-    breakdown = _score_breakdown_from_findings(findings)
+    # No breakdown of a score the file does not have (no health dialect for
+    # its language): one rebuilt from its findings would read 10.0.
+    breakdown = (
+        None
+        if metric is not None and metric.score is None
+        else _score_breakdown_from_findings(findings)
+    )
     finding_dicts = await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings]
     )

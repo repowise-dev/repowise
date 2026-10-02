@@ -461,7 +461,7 @@ async def _run_upgrade(
     # biomarkers land — otherwise the upgrade leaves the health tables frozen
     # at the fast index's ESSENTIAL state. Mirrors what `init` / `update` do.
     try:
-        from repowise.core.analysis.health.trends import snapshot_file_maps
+        from repowise.core.analysis.health.trends import snapshot_fields
         from repowise.core.persistence.crud import (
             save_health_findings,
             save_health_metrics,
@@ -489,23 +489,11 @@ async def _run_upgrade(
                     await save_health_findings(session, repo_id, health_report.findings)
                 kpis = health_report.kpis or {}
                 with contextlib.suppress(Exception):  # snapshot is best-effort
-                    scores_map, deductions_map = snapshot_file_maps(
-                        health_report.metrics or [], health_report.findings or []
+                    fields = snapshot_fields(
+                        kpis, health_report.metrics or [], health_report.findings or []
                     )
-                    await save_health_snapshot(
-                        session,
-                        repo_id,
-                        hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-                        average_health=float(kpis.get("average_health", 10.0)),
-                        worst_performer_path=kpis.get("worst_performer_path"),
-                        worst_performer_score=kpis.get("worst_performer_score"),
-                        per_file_scores=scores_map,
-                        per_file_deductions=deductions_map,
-                        structure_average=kpis.get("structure_average"),
-                        history_average=kpis.get("history_average"),
-                        production_average=kpis.get("production_average"),
-                        maintainability_average=kpis.get("maintainability_average"),
-                    )
+                    if fields is not None:
+                        await save_health_snapshot(session, repo_id, **fields)
             console.print(
                 f"Code health recomputed at FULL tier: "
                 f"[cyan]{len(health_report.findings)}[/cyan] findings."

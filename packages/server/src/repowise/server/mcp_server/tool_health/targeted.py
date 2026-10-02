@@ -59,6 +59,7 @@ def build_targeted(
         excluded_paths=pop.excluded_paths,
         unscored_paths=pop.unscored_paths,
         repo_root=repo_root,
+        unanalysed_paths=pop.unanalysed_paths,
     )
     if unresolved:
         result["unresolved"] = unresolved

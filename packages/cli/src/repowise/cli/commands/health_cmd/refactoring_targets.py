@@ -227,6 +227,11 @@ def _build_targets(
     targets: list[dict] = []
     for path, fs in by_file.items():
         m = metric_by_path.get(path)
+        # A file stored with no score (a language health has no dialect for)
+        # is not ranked; a stand-in 10.0 would invent one. The API queue skips
+        # the same files.
+        if m is not None and m.score is None:
+            continue
         nloc = m.nloc if m is not None else 0
         score = m.score if m is not None else 10.0
         primary = primary_finding(fs)

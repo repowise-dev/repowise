@@ -88,6 +88,7 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
     assert await get_health_findings(session, repo.id, file_path="tools/gen.py") == []
     assert summary == {
         "file_count": 1,
+        "unanalysed_file_count": 0,
         "average_health": 8.5,
         "worst_performer_path": "src/app.py",
         "worst_performer_score": 8.5,

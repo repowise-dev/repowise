@@ -1177,3 +1177,22 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
 def get_language_map(language: str) -> LanguageNodeMap | None:
     """Return the node-type map for *language* or None when unsupported."""
     return LANGUAGE_MAPS.get(language)
+
+
+# The status every surface reports for a file, or a repository, health could
+# not score because no dialect covers the language.
+NO_DIALECT_STATUS = "language_not_supported"
+
+# SQL has no node map: health walks it through sqlglot (``sql_complexity``).
+_WALKED_WITHOUT_A_MAP = frozenset({"sql"})
+
+
+def has_health_dialect(language: str | None) -> bool:
+    """Whether health measures code shape for *language* at all.
+
+    A file in a language without one is never walked, so a score for it would
+    be a mechanical 10.0 that means "nothing looked", not "this code is fine".
+    Every surface that stores, averages or prints a file score asks this one
+    question rather than keeping its own language list.
+    """
+    return bool(language) and (language in LANGUAGE_MAPS or language in _WALKED_WITHOUT_A_MAP)

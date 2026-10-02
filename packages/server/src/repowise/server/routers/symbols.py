@@ -409,7 +409,11 @@ async def symbol_detail(
     git_meta = await crud.get_git_metadata(session, repo_id, sym.file_path)
     file_context = {
         "file_path": sym.file_path,
-        "health_score": round(file_metrics[0].score, 2) if file_metrics else None,
+        "health_score": (
+            round(file_metrics[0].score, 2)
+            if file_metrics and file_metrics[0].score is not None
+            else None
+        ),
         "is_hotspot": bool(git_meta.is_hotspot) if git_meta else None,
         "primary_owner": git_meta.primary_owner_name if git_meta else None,
         "language": sym.language,

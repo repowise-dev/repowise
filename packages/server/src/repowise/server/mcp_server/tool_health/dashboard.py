@@ -37,6 +37,7 @@ def build_dashboard(
         hotspot_paths=data.hotspot_paths,
         performance_findings=data.perf_findings_count,
         coverage=data.perf_coverage,
+        unanalysed=len(pop.unanalysed_paths),
     )
     result: dict[str, Any] = {
         # The one lead; every block below ranks and describes.
@@ -45,6 +46,9 @@ def build_dashboard(
         "scope": pop.reported_scope,
         "counts": pop.reported_counts,
         "unscored_files": pop.unscored_files,
+        # Files in a language health has no dialect for: no score, so in no
+        # figure here. Only said when there are some.
+        **({"unanalysed_files": len(pop.unanalysed_paths)} if pop.unanalysed_paths else {}),
         "kpis": kpis,
         "distribution": health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
