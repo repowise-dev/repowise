@@ -149,17 +149,14 @@ def macro_body_mod_names(token_tree: Node) -> list[str]:
     and a declaration inside such a body belongs to that inline module, so
     its tokens are not read.
     """
-    names: list[str] = []
     kids = token_tree.children
+    types = [kid.type for kid in kids]
+    names = [
+        node_text(kids[i + 1], "")
+        for i in range(len(kids) - 2)
+        if types[i : i + 3] == ["mod", "identifier", ";"]
+    ]
     for i, kid in enumerate(kids):
-        if kid.type == "token_tree":
-            if not (i >= 2 and kids[i - 2].type == "mod"):
-                names.extend(macro_body_mod_names(kid))
-        elif (
-            kid.type == "mod"
-            and i + 2 < len(kids)
-            and kids[i + 1].type == "identifier"
-            and kids[i + 2].type == ";"
-        ):
-            names.append(node_text(kids[i + 1], ""))
+        if kid.type == "token_tree" and types[max(i - 2, 0) : i] != ["mod", "identifier"]:
+            names.extend(macro_body_mod_names(kid))
     return names
