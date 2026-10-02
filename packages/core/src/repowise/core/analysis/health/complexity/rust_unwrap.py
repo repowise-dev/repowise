@@ -165,14 +165,9 @@ def _is_binder(ident: Node) -> bool:
 
 def _binders(scope: Node, name: str, before: int | None = None) -> list[Node]:
     """Every binding of *name* in *scope*, those starting before byte *before* if given."""
-    return [
-        n
-        for n in _descendants(scope)
-        if n.type == "identifier"
-        and _text(n) == name
-        and _is_binder(n)
-        and (before is None or n.start_byte < before)
-    ]
+    end = scope.end_byte if before is None else before
+    named = (n for n in _descendants(scope) if n.type == "identifier" and _text(n) == name)
+    return [n for n in named if n.start_byte < end and _is_binder(n)]
 
 
 def _rebinds(region: Node, base: str, call: Node) -> bool:
