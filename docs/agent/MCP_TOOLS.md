@@ -1244,7 +1244,7 @@ Centrality is read off the marker rather than a column:
 function the perf ranker called hot (top-quintile call-graph in-degree), so
 their presence is already the proof. It is not proof that a request reaches
 the function, and neither marker claims that. `hot_path_sync_io` is never
-emitted in test or tooling code. Deliberately not
+emitted in tests, tooling, examples, or generated or vendored code. Deliberately not
 `severity` — that column grades `hot_path_sync_io` below `io_in_loop` and takes
 only two values across a whole repo's perf findings.
 - **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose

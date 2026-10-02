@@ -8,8 +8,9 @@ one of those calls, a latency risk a loop-only detector never sees.
 "Hot" is top-quintile direct-caller count in the execution graph
 (``perf.ranking.PerfRanker``). That says the function is widely called, not
 that a request reaches it: no request-handler entry set exists to prove that,
-so the reason text claims only what the gate establishes. Test and tooling code
-never emits (``perf.gated``). A ``performance`` dimension signal; this
+so the reason text claims only what the gate establishes. Code that serves no
+request (tests, tooling, examples, generated or vendored code) never emits
+(``perf.gated``). A ``performance`` dimension signal; this
 detector lifts the (already-gated) hits into findings.
 """
 
@@ -48,9 +49,8 @@ class HotPathSyncIoDetector:
                     line_end=hit.line,
                     details={"boundary_kind": hit.detail},
                     reason=(
-                        f"{phrasing} in a hot/central function (top fifth of "
-                        "this repo by direct callers); every call through it "
-                        "waits for the I/O"
+                        f"{phrasing} in one of the most-called functions in "
+                        "this repo; every call through it waits for the I/O"
                     ),
                 )
             )

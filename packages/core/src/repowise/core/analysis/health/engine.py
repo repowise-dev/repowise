@@ -1347,7 +1347,7 @@ class HealthAnalyzer:
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
             ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker).items():
+            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:
                 extra = by_file.get(_pf.file_info.path)

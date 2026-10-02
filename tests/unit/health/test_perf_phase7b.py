@@ -344,10 +344,14 @@ def _central_graph(path: str) -> nx.MultiDiGraph:
         # The surviving arm still ships both gated markers.
         ("svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
         ("pkg/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
-        # Tests and tooling serve no request: the blocking call is the idiom there.
+        ("pkg/server/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        # A CLI is product code (production origin): it still fires.
+        ("pkg/cli/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        # Code that serves no request: the blocking call is the idiom there.
         ("tests/test_svc.py", ["nested_loop_quadratic"]),
         ("scripts/svc.py", ["nested_loop_quadratic"]),
-        ("pkg/cli/svc.py", ["nested_loop_quadratic"]),
+        ("examples/svc.py", ["nested_loop_quadratic"]),
+        ("apps/examples/demo-app/svc.py", ["nested_loop_quadratic"]),
     ],
 )
 def test_centrality_gate_end_to_end(path, expected):
@@ -356,11 +360,19 @@ def test_centrality_gate_end_to_end(path, expected):
     assert sorted(h.kind for h in out.get(path, [])) == expected
 
 
+def test_centrality_gate_reads_the_stored_origin():
+    # The content-aware origin the health pass decided wins over the path.
+    path = "pkg/svc.py"
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker, {path: "generated"})
+    assert [h.kind for h in out[path]] == ["nested_loop_quadratic"]
+
+
 def test_hot_path_sync_io_reason_claims_centrality_not_a_request_path():
     hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem")
     (finding,) = HotPathSyncIoDetector().detect(_ctx([hit]))
     assert "request" not in finding.reason
-    assert "hot/central" in finding.reason
+    assert "most-called functions" in finding.reason
 
 
 def test_centrality_gate_fires_for_a_central_function():

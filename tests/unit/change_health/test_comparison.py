@@ -268,7 +268,7 @@ def test_what_the_change_wrote_outranks_what_it_only_touched():
 
 
 def test_a_performance_finding_on_test_code_is_not_reported(make_repo):
-    """The perf model reasons about request-reachable paths; a test is not one."""
+    """Performance findings are about code that serves requests; a test does not."""
     repo = make_repo()
     repo.commit("seed", {"tests/test_app.py": python_io_in_loop(in_loop=False)})
     repo.commit("loop", {"tests/test_app.py": python_io_in_loop(in_loop=True)})
