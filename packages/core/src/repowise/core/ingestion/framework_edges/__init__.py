@@ -24,6 +24,7 @@ from . import (
     aws_lambda,
     django,
     dotnet_discovery,
+    dotnet_roots,
     express,
     fastapi,
     flask,
@@ -62,6 +63,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *flask.HANDLERS,
     *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
     *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
+    *dotnet_roots.HANDLERS,
     *rails.HANDLERS,
     *laravel.HANDLERS,
     *spring.HANDLERS,
