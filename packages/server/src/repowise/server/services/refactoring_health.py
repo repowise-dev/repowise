@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.serving import (
     RefactoringQuery,
     directive_from_summary,
@@ -369,6 +370,8 @@ class RefactoringHealthService:
                     .where(
                         RefactoringOpportunity.repository_id == self._repository_id,
                         RefactoringOpportunity.status == "open",
+                        RefactoringOpportunity.refactoring_model_version
+                        == REFACTORING_MODEL_VERSION,
                         RefactoringOpportunity.file_path == file_path,
                     )
                     .limit(5)

@@ -12,7 +12,9 @@ file has exactly one: ``generated`` beats ``vendored`` beats ``test`` beats
 
 The generated-file banner rule is the one ingestion already applies before it
 indexes a file (:func:`is_generated_header`, moved here from the traverser so
-both read one rule). Ingestion also drops ``vendor/``, ``node_modules/`` and
+both read one rule); classification adds a "this class is generated" sentence
+further down the head, which is too weak to drop a file from the graph but
+enough to keep it out of a fix list. Ingestion also drops ``vendor/``, ``node_modules/`` and
 ``*.min.js`` before analysis ever sees them; they are classified here anyway so
 a caller holding a bare path gets the same answer.
 """
@@ -20,7 +22,7 @@ a caller holding a bare path gets the same answer.
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -32,6 +34,7 @@ __all__ = [
     "CodeOrigin",
     "code_origin",
     "is_generated_header",
+    "is_vendored_or_generated_path",
 ]
 
 CodeOrigin = Literal["production", "test", "vendored", "docs_example", "generated", "tooling"]
@@ -67,7 +70,35 @@ _THIS_FILE_GENERATED_RE = re.compile(
 _COMMENT_PREFIXES: tuple[str, ...] = ("<!--", "//", "/*", "--", "#", "*", ";")
 _DOCSTRING_OPENER_RE = re.compile(r"""^[rRuUbB]?(?:\"\"\"|''')""")
 
-_GENERATED_DIR_TOKENS = frozenset({"__generated__"})
+# Output directories of code generators: Relay/GraphQL's ``__generated__`` and
+# the Gradle/Maven ``generated-src`` / ``generated-sources`` count anywhere.
+# A bare ``generated/`` counts only as a build output (``src/main/generated``,
+# ``build/generated``, ``target/generated``): ``app/generated/`` can be
+# hand-written code about something generated.
+_GENERATED_DIR_TOKENS = frozenset({"__generated__", "generated-src", "generated-sources"})
+_GENERATED_BUILD_DIR = "generated"
+_BUILD_OUTPUT_PARENTS = frozenset({"main", "build", "target"})
+# Beyond the first two lines, only an explicit sentence in a comment counts:
+# Java generators put "This class is generated." in the class Javadoc, after
+# the license and the imports. The looser markers ("DO NOT EDIT") stay
+# first-lines-only, since a hand-written file can ask readers not to edit a
+# table further down. The sentence is read from source files only, and only
+# up to the first line of code that is not an import, so a template or a
+# generator script that prints the banner into its output is not taken for
+# the output.
+#
+# The sentence must also say it is machine output: generated automatically,
+# by or from something, or not to be edited ("Edit X instead"). "This file is
+# generated when you run make docs" describes a hand-written file.
+_GENERATED_SENTENCE_RE = re.compile(
+    r"\bTHIS (?:CLASS|FILE) (?:IS|WAS) (?:"
+    r"(?:AUTO-?|AUTOMATICALLY )GENERATED\b"
+    r"|GENERATED (?:BY|FROM)\b"
+    r"|GENERATED\b.*(?:\bINSTEAD\b|\bDO NOT (?:HAND[- ])?(?:EDIT|MODIFY)|\bNOT BE (?:EDITED|MODIFIED))"
+    r")"
+)
+_GENERATED_SENTENCE_LINES = 40
+_PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
 
 def _comment_text(line: str, in_docstring: bool) -> str | None:
@@ -112,10 +143,67 @@ def is_generated_header(header: str) -> bool:
     return False
 
 
-@lru_cache(maxsize=1)
+def _declares_generated(name: str, header: str) -> bool:
+    """Whether a comment in the file's head says the file or class is generated.
+
+    Code analysis only: ingestion's skip rule stays :func:`is_generated_header`,
+    because skipping drops a file from the graph and its callers lose edges.
+    """
+    if is_generated_header(header):
+        return True
+    return name.lower().endswith(_code_suffixes()) and _leading_generated_sentence(header)
+
+
+def _leading_generated_sentence(header: str) -> bool:
+    """The generated sentence in a comment before the first line of real code."""
+    lines = [line.strip() for line in header.splitlines()[:_GENERATED_SENTENCE_LINES]]
+    for i, line in enumerate(lines):
+        text = _comment_text(line, False) if line else ""
+        if text is None:
+            if not line.startswith(_PREAMBLE_PREFIXES):
+                return False
+        elif _GENERATED_SENTENCE_RE.search(text.upper()) and not _above_import(lines, i):
+            return True
+    return False
+
+
+def _above_import(lines: list[str], i: int) -> bool:
+    """A comment right above an import is about that import ("this file is
+    generated at build time" over the import of a build artifact)."""
+    return i + 1 < len(lines) and lines[i + 1].startswith(_PREAMBLE_PREFIXES)
+
+
+# .NET reference assemblies (``src/libraries/<Lib>/ref/<Lib>.cs``) declare the
+# public API with ``throw null`` bodies; the implementation under ``src/``
+# carries the code. Counted as generated because they are consumed the same
+# way: tooling regenerates them and nothing in them is a place to fix code.
+# The path alone is not enough (a ``ref/`` folder can hold anything), so a
+# ``{ throw null; }`` member body or the API-review banner must show in the head.
+_REFERENCE_STUB_RE = re.compile(
+    r"\{\s*throw null;\s*\}|^// Changes to this file must follow the https://aka\.ms/api-review",
+    re.MULTILINE,
+)
+
+
+def _is_reference_stub(name: str, dirs: list[str], header: str) -> bool:
+    return (
+        name.lower().endswith(".cs")
+        and "ref" in dirs
+        and _REFERENCE_STUB_RE.search(header) is not None
+    )
+
+
+# Deferred registry reads: the ingestion package imports the traverser, which
+# imports this module for the banner rule above.
+@cache
+def _code_suffixes() -> tuple[str, ...]:
+    from .ingestion.languages.registry import REGISTRY
+
+    return tuple(sorted(REGISTRY.all_code_extensions()))
+
+
+@cache
 def _generated_suffixes() -> tuple[str, ...]:
-    # Deferred: the ingestion package imports the traverser, which imports
-    # this module for the banner rule above.
     from .ingestion.languages.registry import REGISTRY
 
     return tuple(sorted(REGISTRY.generated_suffixes()))
@@ -129,10 +217,11 @@ def _is_generated_name(name: str) -> bool:
 # Vendored
 # --------------------------------------------------------------------------
 
+# No plural ``vendors``: that is as often first-party code about vendors
+# (``llms/src/providers/vendors/openai.ts``) as a copied library.
 _VENDORED_DIR_TOKENS = frozenset(
     {
         "vendor",
-        "vendors",
         "third_party",
         "thirdparty",
         "third-party",
@@ -141,15 +230,34 @@ _VENDORED_DIR_TOKENS = frozenset(
         "site-packages",
     }
 )
-# Matched only as the first segment: ``pkg/external/`` is as often a package
-# that talks to external services as it is a copy of someone else's code.
+# Matched as the first segment, or as a native tree's library shelf
+# (``src/native/external/<lib>/``). Anywhere else ``external/`` is as often a
+# package that talks to external services (``inference/external/``) or a
+# monorepo's own libraries as it is a copy of someone else's code.
 _VENDORED_ROOT_TOKENS = frozenset({"external", "externals"})
+_NATIVE_TREE = "native"
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
+
+
+def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
+    if any(d in _VENDORED_DIR_TOKENS for d in dirs):
+        return True
+    if dirs and dirs[0] in _VENDORED_ROOT_TOKENS:
+        return True
+    # ``native/external/<lib>/...``: the library directory must be there too.
+    if any(
+        d == _NATIVE_TREE and dirs[i + 1] in _VENDORED_ROOT_TOKENS for i, d in enumerate(dirs[:-2])
+    ):
+        return True
+    return lowered_name.endswith(_MINIFIED_SUFFIXES)
+
 
 # A copied library is recognisable by its header only in the directories a
 # site serves assets from. Anywhere else a license header is far more often
 # the repository's own.
-_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static"})
+# ``min/`` is a minified distribution tree (Monaco ships as ``min/vs/...``); the
+# header rule below keeps a first-party ``src/min/`` out.
+_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
     r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
@@ -185,7 +293,10 @@ def _third_party_header(header: str, project: str | None) -> bool:
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
     """
     comments = "\n".join(_comment_lines(header))
-    if not comments or not _LICENSE_RE.search(comments) or not _BANNER_RE.search(comments):
+    # The comment prefix is stripped from *comments*, so a preserved ``/*!``
+    # opener is read from the raw head.
+    banner = _BANNER_RE.search(comments) or header.lstrip().startswith("/*!")
+    if not comments or not _LICENSE_RE.search(comments) or not banner:
         return False
     return not (project and _squash(project) in _squash(comments))
 
@@ -233,6 +344,12 @@ _TOOLING_DIR_TOKENS = frozenset(
         "migrations",
     }
 )
+# Build logic kept as its own Gradle build at the repository root. Root only:
+# deeper, a ``build-tools`` package is as likely the product of a repository
+# that ships build tooling.
+_TOOLING_ROOT_DIRS = frozenset(
+    {"buildsrc", "build-logic", "build-conventions", "build-tools", "build-tools-internal"}
+)
 _TOOLING_ROOT_NAMES = frozenset(
     {"setup.py", "noxfile.py", "fabfile.py", "Rakefile", "Gruntfile.js"}
 )
@@ -252,6 +369,49 @@ def _header_text(text: str | bytes | None) -> str:
     return text[:4096]
 
 
+def _split(path: str) -> tuple[str, str, list[str]] | None:
+    normalized = path.replace("\\", "/")
+    parts = PurePosixPath(normalized).parts
+    if not parts:
+        return None
+    return normalized, parts[-1], [p.lower() for p in parts[:-1]]
+
+
+def _is_generated_path(name: str, dirs: list[str]) -> bool:
+    return (
+        _is_generated_name(name)
+        or any(d in _GENERATED_DIR_TOKENS for d in dirs)
+        or any(
+            d == _GENERATED_BUILD_DIR and i and dirs[i - 1] in _BUILD_OUTPUT_PARENTS
+            for i, d in enumerate(dirs)
+        )
+    )
+
+
+@lru_cache(maxsize=65536)
+def is_vendored_or_generated_path(path: str) -> bool:
+    """Whether the path alone marks code nobody here maintains by hand.
+
+    For callers with no file content, such as the dead-code passes: a copied
+    library or a generator's output is never this repository's dead code.
+    """
+    split = _split(path)
+    if split is None:
+        return False
+    _, name, dirs = split
+    return _is_generated_path(name, dirs) or _is_vendored_path(name.lower(), dirs)
+
+
+def _is_tooling(normalized: str, name: str, dirs: list[str]) -> bool:
+    return (
+        any(d in _TOOLING_DIR_TOKENS for d in dirs)
+        or bool(dirs and dirs[0] in _TOOLING_ROOT_DIRS)
+        or "/alembic/versions/" in f"/{normalized.lower()}"
+        or (not dirs and name in _TOOLING_ROOT_NAMES)
+        or bool(_TOOLING_NAME_RE.match(name.lower()))
+    )
+
+
 def code_origin(
     path: str,
     text: str | bytes | None = None,
@@ -261,9 +421,10 @@ def code_origin(
 ) -> CodeOrigin:
     """The one origin of the file at repo-relative *path*.
 
-    *text* is the file's content, or just its head; only the first 20 lines
-    are read. Without it the content rules (generated banner, third-party
-    license header) cannot fire and the answer rests on the path.
+    *text* is the file's content, or just its head; only its first 4 KB are
+    read. Without it the content rules (generated banner, reference-assembly
+    stub, third-party license header) cannot fire and the answer rests on the
+    path.
 
     *is_test* is the flag ingestion stored, when the caller has it. ``None``
     derives it from the path with the shared test classifier.
@@ -271,31 +432,20 @@ def code_origin(
     *project* is the repository's name, so its own release banner is not
     taken for someone else's.
     """
-    normalized = path.replace("\\", "/")
-    parts = PurePosixPath(normalized).parts
-    if not parts:
+    split = _split(path)
+    if split is None:
         return "production"
-    name = parts[-1]
-    dirs = [p.lower() for p in parts[:-1]]
+    normalized, name, dirs = split
     header = _header_text(text)
 
-    if (
-        _is_generated_name(name)
-        or any(d in _GENERATED_DIR_TOKENS for d in dirs)
-        or (header and is_generated_header(header))
+    if _is_generated_path(name, dirs) or (
+        header and (_declares_generated(name, header) or _is_reference_stub(name, dirs, header))
     ):
         return "generated"
-
-    lowered_name = name.lower()
-    if (
-        any(d in _VENDORED_DIR_TOKENS for d in dirs)
-        or (dirs and dirs[0] in _VENDORED_ROOT_TOKENS)
-        or lowered_name.endswith(_MINIFIED_SUFFIXES)
-        or (
-            header
-            and any(d in _ASSET_DIR_TOKENS for d in dirs)
-            and _third_party_header(header, project)
-        )
+    if _is_vendored_path(name.lower(), dirs) or (
+        header
+        and any(d in _ASSET_DIR_TOKENS for d in dirs)
+        and _third_party_header(header, project)
     ):
         return "vendored"
 
@@ -305,12 +455,7 @@ def code_origin(
     if _is_docs_example(dirs):
         return "docs_example"
 
-    if (
-        any(d in _TOOLING_DIR_TOKENS for d in dirs)
-        or "/alembic/versions/" in f"/{normalized.lower()}"
-        or (not dirs and name in _TOOLING_ROOT_NAMES)
-        or _TOOLING_NAME_RE.match(lowered_name)
-    ):
+    if _is_tooling(normalized, name, dirs):
         return "tooling"
 
     return "production"

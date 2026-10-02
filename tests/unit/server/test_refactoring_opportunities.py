@@ -187,6 +187,104 @@ async def test_lifecycle_rolls_up_from_the_member_plans(client, app):
     assert refreshed["status"] == "acknowledged"
 
 
+async def _seed_older_model(app, repo_id: str, statuses: list[str]) -> list[str]:
+    """Copies of the current rows as an older model left them, one per status."""
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+    from repowise.core.persistence.models import RefactoringOpportunity, _new_uuid
+
+    old = REFACTORING_MODEL_VERSION - 1
+    skip = {"id", "opportunity_id", "refactoring_model_version", "status"}
+    async with app.state.session_factory() as session:
+        current = (
+            await session.execute(
+                select(RefactoringOpportunity).where(
+                    RefactoringOpportunity.repository_id == repo_id
+                )
+            )
+        ).scalars().all()
+        ids = []
+        for row, status in zip(current, statuses, strict=False):
+            values = {
+                c.name: getattr(row, c.name)
+                for c in RefactoringOpportunity.__table__.columns
+                if c.name not in skip
+            }
+            opportunity_id = f"refop{old}_{row.opportunity_id.split('_', 1)[1]}"
+            session.add(
+                RefactoringOpportunity(
+                    id=_new_uuid(),
+                    opportunity_id=opportunity_id,
+                    refactoring_model_version=old,
+                    status=status,
+                    **values,
+                )
+            )
+            ids.append(opportunity_id)
+        await session.commit()
+    return ids
+
+
+async def _states(app, repo_id: str) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    async with app.state.session_factory() as session:
+        rows = await session.execute(
+            select(RefactoringOpportunity.opportunity_id, RefactoringOpportunity.status).where(
+                RefactoringOpportunity.repository_id == repo_id
+            )
+        )
+        return dict(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_a_model_bump_retires_the_older_models_open_opportunities(client, app):
+    """An older model's open rows resolve on the next run and are never served.
+
+    Its plans were already resolved by the bump, so an open opportunity folded
+    from them names work nobody can act on, and it doubled every count.
+    """
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+
+    repo_id = await _seed(client, app, files=3)
+    open_old, dismissed_old, picked_up_old = await _seed_older_model(
+        app, repo_id, ["open", "false_positive", "acknowledged"]
+    )
+    clear_fix_first_cache()
+
+    # Served reads skip the older model even before a run retires it.
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities?scope=all")).json()
+    assert listed["total"] == 3
+    async with app.state.session_factory() as session:
+        rows, total = await crud.list_refactoring_opportunities(session, repo_id)
+        facets = await crud.refactoring_facet_counts(session, repo_id)
+        queue = await load_fix_first(session, repo_id, limit=0)
+    assert total == 3
+    assert not {row.opportunity_id for row in rows} & {open_old, picked_up_old}
+    assert all(sum(counts.values()) == 3 for counts in facets.values())
+    assert not set(queue.refactoring_reasons) & {open_old, picked_up_old}
+
+    async with app.state.session_factory() as session:
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+    states = await _states(app, repo_id)
+    assert states[open_old] == "resolved"
+    assert states[picked_up_old] == "resolved"
+    # A person's dismissal is a different claim from "this got done".
+    assert states[dismissed_old] == "false_positive"
+    current = {k: v for k, v in states.items() if k not in {open_old, dismissed_old, picked_up_old}}
+    assert list(current.values()) == ["open"] * 3
+
+    # A later run with no model change resolves nothing more.
+    async with app.state.session_factory() as session:
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+    assert await _states(app, repo_id) == states
+
+
 # ---------------------------------------------------------------------------
 # Scope: Fix first's eligible set by default, the inventory on request
 # ---------------------------------------------------------------------------

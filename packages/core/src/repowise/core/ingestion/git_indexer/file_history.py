@@ -586,7 +586,7 @@ def _add_commit_messages(meta: dict[str, Any], commits: list[_CommitRec]) -> Non
     sig_commits: list[dict[str, Any]] = []
     for c in commits:
         msg = c.subject[:200]
-        if is_significant_commit(msg, c.author_name):
+        if is_significant_commit(msg, c.author_name, c.author_email):
             sig_commits.append(_significant_entry(c, msg))
             if len(sig_commits) >= _MAX_SIGNIFICANT_COMMITS:
                 break
