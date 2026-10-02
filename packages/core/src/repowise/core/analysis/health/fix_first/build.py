@@ -157,6 +157,14 @@ LOW_VALUE_KINDS: dict[str, str] = {
     # whole top three; revisit when more of it is labelled.
     "primitive_obsession": "dev 0/0, all 0/2",
 }
+#: The same, for one detail ``kind`` of a marker whose other kinds stay. A Rust
+#: unwrap or panic is a crash path, not the hidden failure the error-handling
+#: item describes, and the raters found it not worth doing first. Both kinds
+#: were rated together on ripgrep, fd, serde and mini-redis.
+LOW_VALUE_DETAIL_KINDS: dict[tuple[str, str], str] = {
+    ("error_handling", "unsafe_unwrap"): "rust all 1/19",
+    ("error_handling", "panic_macro"): "rust all 1/19",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1180,7 +1188,10 @@ def _refactor_exclusion(
 
 
 def _finding_exclusion(finding: Any, files: _Files) -> str | None:
-    if field(finding, "biomarker_type") in LOW_VALUE_KINDS:
+    marker = field(finding, "biomarker_type")
+    if marker in LOW_VALUE_KINDS or (
+        (marker, detail_map(finding).get("kind")) in LOW_VALUE_DETAIL_KINDS
+    ):
         return "low_value_kind"
     reason = files.unit_exclusion(
         field(finding, "file_path"),
@@ -1467,6 +1478,7 @@ __all__ = [
     "GROWS_ONLY_MARKERS",
     "HEAD",
     "HEAD_PER_KIND",
+    "LOW_VALUE_DETAIL_KINDS",
     "LOW_VALUE_KINDS",
     "MIN_WORTH",
     "SIZE_MARKERS",
