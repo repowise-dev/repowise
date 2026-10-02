@@ -32,24 +32,30 @@ def _app_config_classes(tree: ast.Module) -> set[str]:
     }
 
 
-def _registered_admin_classes(tree: ast.Module) -> set[str]:
-    """Admin classes registered by ``@admin.register`` or ``site.register``,
-    and the classes nested in them (``Media``), which the admin reads."""
-    passed = {
+def _names_passed_to_register(tree: ast.Module) -> set[str]:
+    """Names given as an admin class to ``site.register(Model, Admin)``."""
+    return {
         arg.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _last_segment(node.func) == "register"
         for arg in node.args[1:]
         if isinstance(arg, ast.Name)
     }
-    names: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if node.name in passed or any(_last_segment(d) == "register" for d in node.decorator_list):
-            names.add(node.name)
-            names.update(n.name for n in node.body if isinstance(n, ast.ClassDef))
-    return names
+
+
+def _registered_admin_classes(tree: ast.Module) -> set[str]:
+    """Admin classes registered by ``@admin.register`` or ``site.register``,
+    and the classes nested in them (``Media``), which the admin reads."""
+    passed = _names_passed_to_register(tree)
+    registered = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and (node.name in passed or any(_last_segment(d) == "register" for d in node.decorator_list))
+    ]
+    return {node.name for node in registered} | {
+        inner.name for node in registered for inner in node.body if isinstance(inner, ast.ClassDef)
+    }
 
 
 #: Modules Django loads from every installed app by convention, as paths
