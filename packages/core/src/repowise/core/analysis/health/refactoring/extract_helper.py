@@ -30,8 +30,10 @@ Precision-first, the gate demands a block genuinely worth a helper:
   helper is the wrong fix for them;
 - the recovered impact is the block's share of the file's ``dry_violation``
   finding when it overlaps the block, else ``0``: the finding grades the
-  whole file's duplication, so one block is credited the duplicated lines it
-  removes here, not the whole finding (:func:`clone_share`).
+  file's cross-file duplication, so one block is credited the lines of it it
+  removes here, not the whole finding (:func:`clone_share`). A block inside
+  one file recovers ``0``: that finding does not grade it, so it stays
+  evidence of the duplication rather than a step that claims a score.
 
 Confidence rides the co-change signal: a clone whose sites are actively
 co-modified is real, maintained duplication (``high``); a dormant clone is
@@ -44,6 +46,7 @@ import re
 from typing import Any
 
 from ....test_paths import is_test_related_path
+from ..duplication.detector import clone_ranges, union_line_count
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -476,10 +479,10 @@ class ExtractHelperDetector(RefactoringDetector):
         if region_lines and _is_declaration_only(region_lines):
             return None
 
-        impact = self._impact_for_block(anchor_region, impact_lookup) * clone_share(
-            occurrences, ctx.file_path, self._duplication_pct(ctx), ctx.nloc
-        )
         is_intra = len(occ_files) == 1
+        impact = 0.0 if is_intra else self._cross_file_impact(
+            ctx, occurrences, anchor_region, impact_lookup
+        )
 
         suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
@@ -612,15 +615,19 @@ class ExtractHelperDetector(RefactoringDetector):
                 out.append((int(start), int(end), impact))
         return out
 
-    @staticmethod
-    def _duplication_pct(ctx: RefactoringContext) -> float | None:
-        """The file's duplicated share, as its ``dry_violation`` finding records it."""
-        for f in ctx.findings:
-            if getattr(f, "biomarker_type", "") == _SOURCE_BIOMARKER:
-                pct = (getattr(f, "details", None) or {}).get("duplication_pct")
-                if isinstance(pct, (int, float)):
-                    return float(pct)
-        return None
+    def _cross_file_impact(
+        self,
+        ctx: RefactoringContext,
+        occurrences: list[tuple[str, int, int]],
+        anchor_region: tuple[int, int],
+        impact_lookup: list[tuple[int, int, float]],
+    ) -> float:
+        cross_lines = union_line_count(
+            clone_ranges(ctx.file_path, ctx.clones, cross_file_only=True)
+        )
+        return self._impact_for_block(anchor_region, impact_lookup) * clone_share(
+            occurrences, ctx.file_path, cross_lines
+        )
 
     @staticmethod
     def _impact_for_block(
@@ -637,18 +644,17 @@ class ExtractHelperDetector(RefactoringDetector):
 
 
 def clone_share(
-    occurrences: list[tuple[str, int, int]], file_path: str, dup_pct: float | None, nloc: int
+    occurrences: list[tuple[str, int, int]], file_path: str, duplicated_lines: int
 ) -> float:
-    """Share of *file_path*'s duplicated lines that extracting this block removes.
+    """Share of *file_path*'s cross-file duplicated lines this block removes.
 
     1.0 when the file's duplication is unknown, keeping the finding's own
     impact as the other detectors do when they cannot re-measure it.
     """
-    duplicated = (dup_pct or 0.0) * nloc / 100.0
-    if duplicated <= 0:
+    if duplicated_lines <= 0:
         return 1.0
     here = sum(end - start + 1 for path, start, end in occurrences if path == file_path)
-    return min(1.0, here / duplicated)
+    return min(1.0, here / duplicated_lines)
 
 
 def _merge_ranges_per_file(

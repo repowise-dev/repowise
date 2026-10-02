@@ -23,7 +23,7 @@ is lost with them; that is the price of not reporting the rest.
 
 from __future__ import annotations
 
-from ..duplication.detector import ClonePair, _union_line_count
+from ..duplication.detector import ClonePair, clone_ranges, union_line_count
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -40,7 +40,7 @@ class DryViolationDetector:
         cross = [p for p in ctx.clones if not p.is_intra_file]
         if not cross:
             return []
-        dup_pct = _cross_file_pct(ctx.file_path, ctx.clones, cross, ctx.duplication_pct or 0.0)
+        dup_pct = _cross_file_pct(ctx.file_path, ctx.clones, ctx.duplication_pct or 0.0)
         if dup_pct < _MIN_DUP_PCT:
             return []
 
@@ -74,7 +74,9 @@ class DryViolationDetector:
                 else worst.b_start_line,
                 line_end=worst.a_end_line if worst.file_a == ctx.file_path else worst.b_end_line,
                 details={
-                    "duplication_pct": dup_pct,
+                    # Cross-file only; the file metric's ``duplication_pct``
+                    # counts clones inside the file too, so the keys differ.
+                    "cross_file_duplication_pct": dup_pct,
                     "clone_pair_count": len(cross),
                     "worst_clone_lines": worst_lines,
                     "worst_clone_partner": partner,
@@ -93,15 +95,7 @@ class DryViolationDetector:
         ]
 
 
-def _side(path: str, pair: ClonePair) -> tuple[int, int]:
-    if pair.file_a == path:
-        return pair.a_start_line, pair.a_end_line
-    return pair.b_start_line, pair.b_end_line
-
-
-def _cross_file_pct(
-    path: str, clones: list[ClonePair], cross: list[ClonePair], file_pct: float
-) -> float:
+def _cross_file_pct(path: str, clones: list[ClonePair], file_pct: float) -> float:
     """The share of the file duplicated in other files, scaled from *file_pct*.
 
     *file_pct* (every clone, intra-file ones included) is what the detector
@@ -110,13 +104,8 @@ def _cross_file_pct(
     cross-file clones cover. Exact unless *file_pct* was capped at 100, and
     then it can only come out lower.
     """
-    every: list[tuple[int, int]] = [_side(path, p) for p in cross]
-    covered_cross = _union_line_count(every)
-    for p in clones:
-        if p.is_intra_file:
-            every += [(p.a_start_line, p.a_end_line), (p.b_start_line, p.b_end_line)]
-    covered = _union_line_count(every)
+    covered = union_line_count(clone_ranges(path, clones))
+    covered_cross = union_line_count(clone_ranges(path, clones, cross_file_only=True))
     return round(file_pct * covered_cross / covered, 2) if covered else 0.0
-
 
 BIOMARKER = DryViolationDetector()
