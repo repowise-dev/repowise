@@ -49,7 +49,7 @@ need a back-compat re-export shim, surfaced as ``shim_required``.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
@@ -244,11 +244,21 @@ def _label_identifier(label: str) -> str:
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in seg).strip("_")
 
 
+# Every C++ function in a project with a precompiled header calls into it, so
+# it wins the vote and names nothing; ``pch.cpp`` is also the file that builds it.
+_PRECOMPILED_HEADER_STEMS = frozenset({"pch", "stdafx", "precomp", "precompiled"})
+
+
 def _module_label(
     foreign_of: dict[str, set[str]], members: list[str], self_segments: set[str]
 ) -> str:
     """The group's most-called foreign module label as a file name, or ``""``."""
-    labels = Counter(lab for m in members for lab in foreign_of.get(m, set()))
+    labels = Counter(
+        lab
+        for m in members
+        for lab in foreign_of.get(m, set())
+        if _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
+    )
     if not labels:
         return ""
     best = min(labels, key=lambda lab: (-labels[lab], lab))
@@ -617,7 +627,7 @@ class SplitFileDetector(RefactoringDetector):
     ) -> RefactoringSuggestion:
         groups = self._shape_groups(ctx, fg, partition.groups)
         residual = (
-            {"symbols": sorted(self._sym_name(fg.defined, m) for m in partition.residual)}
+            {"symbols": self._sym_names(fg.defined, partition.residual)}
             if partition.residual
             else None
         )
@@ -761,7 +771,7 @@ class SplitFileDetector(RefactoringDetector):
             groups.append(
                 {
                     "name": label or None,
-                    "symbols": sorted(self._sym_name(fg.defined, m) for m in members),
+                    "symbols": self._sym_names(fg.defined, members),
                     "suggested_file": suggested,
                 }
             )
@@ -792,6 +802,11 @@ class SplitFileDetector(RefactoringDetector):
     @staticmethod
     def _sym_name(defined: dict[str, dict], sid: str) -> str:
         return defined.get(sid, {}).get("name") or sid.rsplit("::", 1)[-1]
+
+    @classmethod
+    def _sym_names(cls, defined: dict[str, dict], sids: Iterable[str]) -> list[str]:
+        """Sorted bare names, each once: overloads are separate ids with one name."""
+        return sorted({cls._sym_name(defined, sid) for sid in sids})
 
     def _blast_radius(
         self, ctx: RefactoringContext, defined: dict[str, dict], *, shim_required: bool
