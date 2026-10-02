@@ -90,10 +90,28 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     discrete = [
         item for item in candidates if row_field(item, "biomarker_type") not in continuous
     ]
-    return max(
+    # A total order: equal impacts are common (two biomarkers on one file can
+    # quantise to the same deduction), and a bare ``max`` let input order pick
+    # the lead, so two indexes of one tree disagreed. Severity breaks the tie
+    # first; the rest only makes it stable.
+    return min(
         discrete or candidates,
-        key=lambda item: float(row_field(item, "health_impact") or 0.0),
+        key=lambda item: (
+            -float(row_field(item, "health_impact") or 0.0),
+            _severity_rank(row_field(item, "severity")),
+            str(row_field(item, "biomarker_type") or ""),
+            row_field(item, "line_start") or 0,
+            str(row_field(item, "function_name") or ""),
+        ),
     )
+
+
+def _severity_rank(severity: Any) -> int:
+    """Position in ``SEVERITY_ORDER`` (critical first); unknown sorts last."""
+    from .aggregation import SEVERITY_ORDER
+
+    value = str(severity or "")
+    return SEVERITY_ORDER.index(value) if value in SEVERITY_ORDER else len(SEVERITY_ORDER)
 
 
 def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:

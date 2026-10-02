@@ -287,7 +287,18 @@ async def finalize_refactoring_opportunities(
     findings = list(
         (
             await session.execute(
-                select(HealthFinding).where(HealthFinding.repository_id == repository_id)
+                # Ordered by the natural key: without it the rows came back in
+                # whichever index the planner chose, and the per-file finding
+                # id lists stored with each opportunity followed that order.
+                select(HealthFinding)
+                .where(HealthFinding.repository_id == repository_id)
+                .order_by(
+                    HealthFinding.file_path,
+                    HealthFinding.biomarker_type,
+                    HealthFinding.line_start,
+                    HealthFinding.function_name,
+                    HealthFinding.public_id,
+                )
             )
         )
         .scalars()

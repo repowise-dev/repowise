@@ -570,6 +570,44 @@ async def test_a_step_names_the_findings_its_cause_produced(client, app):
 
 
 @pytest.mark.asyncio
+async def test_lead_finding_ids_follow_the_findings_not_their_insert_order(client, app):
+    """Stored finding id lists must not depend on which index the planner reads."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFinding, RefactoringOpportunity
+
+    repo_id = await _repo(client)
+    path = "pkg/mod.py"
+    async with app.state.session_factory() as session:
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(path, function_name=name) for name in ("zeta", "alpha", "mid")],
+        )
+        await crud.save_refactoring_suggestions(session, repo_id, [_plan(path, "alpha")])
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+        by_function = {
+            row.function_name: row.public_id
+            for row in (
+                await session.execute(
+                    select(HealthFinding).where(HealthFinding.repository_id == repo_id)
+                )
+            ).scalars()
+        }
+        details = json.loads(
+            (
+                await session.execute(
+                    select(RefactoringOpportunity.details_json).where(
+                        RefactoringOpportunity.repository_id == repo_id
+                    )
+                )
+            ).scalar_one()
+        )
+    assert details["lead_finding_ids"] == [by_function[n] for n in ("alpha", "mid", "zeta")]
+
+
+@pytest.mark.asyncio
 async def test_the_detail_hands_back_structured_next_calls(client, app):
     repo_id = await _seed(client, app, files=2)
     body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
