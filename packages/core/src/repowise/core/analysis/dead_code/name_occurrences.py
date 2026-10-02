@@ -49,6 +49,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from .constants import is_runner_file
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
 
@@ -430,8 +431,8 @@ def _token_spellings(token: str) -> list[str]:
         start = slash + 1
 
 
-def _first_file_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, str]:
-    """For each of *targets* another file names by path, the first such file."""
+def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, list[str]]:
+    """For each of *targets* other files name by path, those files in path order."""
     wanted: dict[str, set[str]] = {}
     for target in targets:
         for key in _path_keys(target):
@@ -440,13 +441,20 @@ def _first_file_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[
     # every path-shaped token in a repository names none of the candidates.
     tails = {key.rpartition("/")[2] for key in wanted}
 
-    named_in: dict[str, str] = {}
+    named_in: dict[str, list[str]] = {}
     for path, blob in sorted(source_map.items()):
-        for match in _PATH_TOKEN_RE.finditer(blob):
-            for target in _targets_named_by(match.group().decode("ascii"), wanted, tails):
-                if target != path:
-                    named_in.setdefault(target, path)
+        for target in _targets_in(blob, wanted, tails) - {path}:
+            named_in.setdefault(target, []).append(path)
     return named_in
+
+
+def _targets_in(blob: bytes, wanted: dict[str, set[str]], tails: set[str]) -> set[str]:
+    """The targets any path-shaped token of *blob* names."""
+    return {
+        target
+        for match in _PATH_TOKEN_RE.finditer(blob)
+        for target in _targets_named_by(match.group().decode("ascii"), wanted, tails)
+    }
 
 
 def _targets_named_by(token: str, wanted: dict[str, set[str]], tails: set[str]) -> set[str]:
@@ -460,36 +468,40 @@ def _targets_named_by(token: str, wanted: dict[str, set[str]], tails: set[str]) 
 def clamp_path_mentions(
     findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
 ) -> list[DeadCodeFindingData]:
-    """Cap unreachable files that another file names by path.
+    """Cap unreachable files another file names by path; drop those a runner names.
 
     "Nothing imports this" is not "nothing uses this". A build script reads a
     template by path, a JSON manifest lists example files, a doc links a
     script, ``package.json`` names a bin: each loads the file without an import
     edge, and such a file reported as deletion-ready breaks whatever reads it.
-    A mention is not proof of use either, so the finding is capped to the
-    review tier rather than dropped.
+    A mention in a doc is not proof of use, so that finding is capped to the
+    review tier. A CI workflow, build file, manifest or shell script runs or
+    ships what it names (``python scripts/emit_sample_dsl.py`` in a workflow),
+    so a file one of those names is dropped.
 
     One scan over the indexed source. That already holds JSON, YAML, Markdown,
     shell and ``package.json``: each has a language spec, so ingestion reads
-    it. A file's mention of itself is not a use. Mutates in place and returns
-    the same list; never raises a confidence and never removes a finding.
+    it. A file's mention of itself is not a use. Returns a new list; never
+    raises a confidence.
     """
-    if not source_map:
-        return findings
-    candidates = [
-        f
-        for f in findings
-        if f.kind is DeadCodeKind.UNREACHABLE_FILE and f.confidence > RISK_CAP_CONFIDENCE
-    ]
-    if not candidates:
+    unreachable = [f for f in findings if f.kind is DeadCodeKind.UNREACHABLE_FILE]
+    if not source_map or not unreachable:
         return findings
 
-    named_in = _first_file_naming({f.file_path for f in candidates}, source_map)
-    for finding in candidates:
-        where = named_in.get(finding.file_path)
-        if where is None:
-            continue
-        finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
-        finding.safe_to_delete = False
-        finding.evidence.append(f"Named by path in {where}, which may load it without an import")
-    return findings
+    named_in = _files_naming({f.file_path for f in unreachable}, source_map)
+    run = {
+        id(f) for f in unreachable if any(map(is_runner_file, named_in.get(f.file_path, ())))
+    }
+    for finding in unreachable:
+        if id(finding) not in run:
+            _cap_named_by_path(finding, named_in.get(finding.file_path))
+    return [f for f in findings if id(f) not in run]
+
+
+def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -> None:
+    """Cap *finding* to the review tier when a file names it by path."""
+    if not namers or finding.confidence <= RISK_CAP_CONFIDENCE:
+        return
+    finding.confidence = RISK_CAP_CONFIDENCE
+    finding.safe_to_delete = False
+    finding.evidence.append(f"Named by path in {namers[0]}, which may load it without an import")

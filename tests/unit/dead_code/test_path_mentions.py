@@ -2,8 +2,9 @@
 
 A build script that reads a file by path, or a JSON manifest that lists it,
 uses the file without an import edge. The pass caps such a finding to the
-review tier; it never matches on a bare stem, and a file nobody names keeps
-its confidence.
+review tier, and drops it when a CI workflow, build file, manifest or shell
+script names it; it never matches on a bare stem, and a file nobody names
+keeps its confidence.
 """
 
 from __future__ import annotations
@@ -35,8 +36,13 @@ def _file(path: str, confidence: float = 1.0) -> DeadCodeFindingData:
 
 def _clamp(path: str, source: dict[str, str]) -> DeadCodeFindingData:
     finding = _file(path)
-    clamp_path_mentions([finding], {p: s.encode() for p, s in source.items()})
+    kept = clamp_path_mentions([finding], {p: s.encode() for p, s in source.items()})
+    assert kept == [finding], "the finding was dropped"
     return finding
+
+
+def _dropped(path: str, source: dict[str, str]) -> bool:
+    return clamp_path_mentions([_file(path)], {p: s.encode() for p, s in source.items()}) == []
 
 
 def test_a_json_manifest_listing_example_files_caps_them():
@@ -49,10 +55,14 @@ def test_a_json_manifest_listing_example_files_caps_them():
         assert "examples.json" in finding.evidence[-1]
 
 
-def test_a_build_script_reading_a_python_file_by_path_caps_it():
+def test_a_build_script_running_a_python_file_by_path_drops_it():
     script = "#!/bin/sh\npython tools/codegen/emit.py > out.txt\n"
-    finding = _clamp("tools/codegen/emit.py", {"scripts/build.sh": script})
-    assert finding.confidence == RISK_CAP_CONFIDENCE
+    assert _dropped("tools/codegen/emit.py", {"scripts/build.sh": script})
+
+
+def test_a_ci_workflow_running_a_script_drops_it():
+    workflow = "steps:\n  - run: python scripts/emit_sample_dsl.py --check\n"
+    assert _dropped("scripts/emit_sample_dsl.py", {".github/workflows/ci.yml": workflow})
 
 
 def test_dir_and_basename_with_extension_is_enough():
@@ -62,8 +72,7 @@ def test_dir_and_basename_with_extension_is_enough():
 
 def test_a_build_output_path_names_its_source():
     pkg = '{"main": "src/cli/index.js"}'
-    finding = _clamp("src/cli/index.ts", {"package.json": pkg})
-    assert finding.confidence == RISK_CAP_CONFIDENCE
+    assert _dropped("src/cli/index.ts", {"package.json": pkg})
 
 
 def test_a_bare_stem_never_matches():

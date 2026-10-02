@@ -971,6 +971,47 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 # is a deliberate act.
 _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
+# Languages whose files are run, never imported: a directory holding only these
+# (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package
+# anything could import.
+_RUN_NOT_IMPORTED_LANGUAGES: frozenset[str] = frozenset({"dockerfile", "makefile", "shell"})
+
+# Files that run, build or ship what they name by path: CI workflows, build
+# and task files, package manifests and shell scripts. A file named there is
+# executed or packaged, which is a use, not a mention.
+_RUNNER_FILE_NAMES: frozenset[str] = frozenset(
+    {
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "Justfile",
+        "justfile",
+        "Dockerfile",
+        "Jenkinsfile",
+        "Procfile",
+        "noxfile.py",
+        "tox.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "package.json",
+        ".gitlab-ci.yml",
+        ".pre-commit-config.yaml",
+    }
+)
+_RUNNER_DIRS: tuple[str, ...] = (".github/workflows/", ".circleci/", ".buildkite/")
+_RUNNER_SUFFIXES: tuple[str, ...] = (".sh", ".bash", ".ps1", ".bat", ".cmd", ".dockerfile")
+
+
+def is_runner_file(path: str) -> bool:
+    """Whether *path* is a file that runs or ships the files it names."""
+    name = path.rpartition("/")[2]
+    return (
+        name in _RUNNER_FILE_NAMES
+        or name.startswith("Dockerfile")
+        or name.endswith(_RUNNER_SUFFIXES)
+        or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
+    )
+
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
 # matched against the raw decorator text rather than its base name.
 _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (

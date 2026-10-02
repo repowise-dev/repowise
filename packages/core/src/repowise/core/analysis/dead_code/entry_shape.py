@@ -13,7 +13,9 @@ never imported in the first place:
 * a file exporting everything such a set exports, plus more (a tool that
   also exports its input type), belongs to the same set.
 
-Each caps the finding to the review tier; none drops it. The cap also stops
+Each caps the finding to the review tier, except a program: a file whose
+first line is a shebang or that runs under a ``__main__`` guard is an entry
+point, so :func:`drop_program_entries` removes it. The cap also stops
 "no commits in 90 days" lifting such a file to the high tier, since an
 untouched loaded file is not an unused one. Shape is not proof of use, so the
 file stays listed as a candidate for a person to check.
@@ -78,22 +80,64 @@ def _is_main_guard(test: ast.expr) -> bool:
     )
 
 
-def _script_reason(path: str, blob: bytes) -> str | None:
-    """Why *blob* reads as something run rather than imported, or None."""
-    if blob.startswith(b"#!"):
-        return "Starts with a shebang, so it is run directly rather than imported"
+def _parse_python(path: str, blob: bytes) -> ast.Module | None:
+    """*blob* parsed, when it is Python source that parses; else None."""
     if REGISTRY.from_extension(PurePosixPath(path).suffix) != "python" or path.endswith(".pyi"):
         return None
     try:
-        return _python_script_reason(ast.parse(blob))
+        return ast.parse(blob)
     except (SyntaxError, ValueError, RecursionError):
         return None
 
 
-def _python_script_reason(tree: ast.Module) -> str | None:
+def _program_reason(path: str, blob: bytes) -> str | None:
+    """Why *blob* says it is a program: a shebang or a Python main guard."""
+    if blob.startswith(b"#!"):
+        return "Starts with a shebang, so it is run directly rather than imported"
+    tree = _parse_python(path, blob) if b"__main__" in blob else None
+    if tree is not None and any(
+        isinstance(stmt, ast.If) and _is_main_guard(stmt.test) for stmt in tree.body
+    ):
+        return 'Has an `if __name__ == "__main__"` block, so it is run as a script'
+    return None
+
+
+def is_program(path: str, blob: bytes) -> bool:
+    """Whether *blob* says it is a program: a shebang, or a Python main guard.
+
+    Either is the author stating the file is started by a command. Statements
+    at module level are weaker (an imported module can run code on load), so
+    they only cap a finding, through :func:`_script_reason`.
+    """
+    return _program_reason(path, blob) is not None
+
+
+def drop_program_entries(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """Drop unreachable files that are programs: nothing imports an entry point.
+
+    "No importer" is the wrong claim for a file whose first line is a shebang
+    or that runs under ``if __name__ == "__main__"``. Returns a new list.
+    """
+    return [
+        f
+        for f in findings
+        if f.kind is not DeadCodeKind.UNREACHABLE_FILE
+        or not is_program(f.file_path, source_map.get(f.file_path, b""))
+    ]
+
+
+def _script_reason(path: str, blob: bytes) -> str | None:
+    """Why *blob* reads as something run rather than imported, or None."""
+    if reason := _program_reason(path, blob):
+        return reason
+    tree = _parse_python(path, blob)
+    return _module_statement_reason(tree) if tree is not None else None
+
+
+def _module_statement_reason(tree: ast.Module) -> str | None:
     for stmt in tree.body:
-        if isinstance(stmt, ast.If) and _is_main_guard(stmt.test):
-            return 'Has an `if __name__ == "__main__"` block, so it is run as a script'
         # A bare constant is a docstring or ``...``; anything else executes on load.
         if isinstance(stmt, _LOOPS_AND_BLOCKS) or (
             isinstance(stmt, ast.Expr) and not isinstance(stmt.value, ast.Constant)

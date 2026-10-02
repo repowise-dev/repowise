@@ -35,6 +35,7 @@ from .constants import (
     _NEVER_PACKAGE_DIRS,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
+    _RUN_NOT_IMPORTED_LANGUAGES,
     _is_fixture_path,
     never_flag_match,
 )
@@ -44,7 +45,7 @@ from .dynamic_markers import (
     find_dynamic_import_files,
     read_source_text,
 )
-from .entry_shape import clamp_entry_shaped
+from .entry_shape import clamp_entry_shaped, drop_program_entries
 from .file_reachability import (
     PackageFileMap,
     ReachabilityRescues,
@@ -904,6 +905,7 @@ class DeadCodeAnalyzer:
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
+        findings = drop_program_entries(findings, self._source_map)
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
         )
@@ -1838,12 +1840,12 @@ class DeadCodeAnalyzer:
         # and any other dotfile directory at the repo root.
         if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
             return False
-        # A real package contains at least one source-code file. If
-        # every file under the candidate dir is config/data (YAML,
-        # JSON, MD, TOML), it is not a package — it is metadata.
+        # A real package contains at least one source file something could
+        # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
+        # folder of Dockerfiles and shell scripts is run, never imported.
         return any(
             self.graph.nodes.get(f, {}).get("language", "unknown")
-            not in _DEAD_CODE_EXEMPT_LANGUAGES
+            not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
             for f in files
         )
 
