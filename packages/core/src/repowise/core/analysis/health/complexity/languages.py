@@ -232,6 +232,15 @@ class LanguageNodeMap:
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
     with_kinds: frozenset[str] = frozenset()
+    #   * ``yield_kinds`` -- a generator's ``yield``. Not a CFG jump (the
+    #     function resumes after it), but it hands a value to the caller, so a
+    #     helper lifted around it would yield into nothing: the slicer refuses
+    #     a span holding one.
+    #   * ``exit_macro_names`` -- macros whose expansion returns from the
+    #     function (Rust ``anyhow::bail!``), matched by the macro's last name
+    #     segment. The slicer treats them as jumps for the same reason.
+    yield_kinds: frozenset[str] = frozenset()
+    exit_macro_names: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -340,6 +349,7 @@ _PY = LanguageNodeMap(
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
     with_kinds=frozenset({"with_statement"}),
+    yield_kinds=frozenset({"yield"}),
     decorator_kinds=frozenset({"decorator"}),
     decorated_definition_kinds=frozenset({"decorated_definition"}),
 )
@@ -397,6 +407,7 @@ _TS = LanguageNodeMap(
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    yield_kinds=frozenset({"yield_expression"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -563,6 +574,7 @@ _RUST = LanguageNodeMap(
     # early exit the CFG treats as a terminator and the Extract Method slicer
     # treats as a jump, so no span containing one is ever offered.
     raise_kinds=frozenset({"try_expression"}),
+    exit_macro_names=frozenset({"bail", "ensure", "try"}),
     break_kinds=frozenset({"break_expression"}),
     continue_kinds=frozenset({"continue_expression"}),
     # Rust parses every statement-position control-flow expression inside an

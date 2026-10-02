@@ -1816,3 +1816,67 @@ def test_a_closure_local_shadowing_an_outer_name_is_not_a_capture():
         """
     fn = _first("typescript", src)
     assert "t2" not in {u.name for u in fn.def_use.captured}
+
+
+# == Spans a helper cannot carry =================================================
+
+
+def test_python_span_holding_a_yield_is_not_offered():
+    src = """
+        def rows(items, limit):
+            seen = 0
+            for item in items:
+                if item > limit:
+                    seen += 1
+                    yield item
+                else:
+                    seen -= 1
+            print(seen)
+            print(limit)
+            return seen
+        """
+    lmap = get_language_map("python")
+    fn = _first("python", src)
+    assert all(not (e.start_line <= 7 <= e.end_line) for e in find_extractions(fn, lmap))
+
+
+def test_ts_span_holding_a_yield_is_not_offered():
+    src = """
+        function* chunks(items: string[], limit: number) {
+            let seen = 0
+            for (const item of items) {
+                if (item.length > limit) {
+                    seen += 1
+                    yield item
+                } else {
+                    seen -= 1
+                }
+            }
+            log(seen)
+            log(limit)
+            return seen
+        }
+        """
+    lmap = get_language_map("typescript")
+    fn = _first("typescript", src)
+    assert all(not (e.start_line <= 7 <= e.end_line) for e in find_extractions(fn, lmap))
+
+
+def test_rust_span_holding_an_exit_macro_is_not_offered():
+    src = """
+        fn paths(low: &mut Low, state: &State) -> anyhow::Result<Vec<String>> {
+            let mut paths = Vec::new();
+            for arg in low.positional.drain(..) {
+                if state.stdin_consumed && arg == "-" {
+                    anyhow::bail!("cannot read stdin twice");
+                }
+                paths.push(arg);
+            }
+            log::debug!("{}", paths.len());
+            log::debug!("{}", state.stdin_consumed);
+            Ok(paths)
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert all(not (e.start_line <= 6 <= e.end_line) for e in find_extractions(fn, lmap))

@@ -118,7 +118,13 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         | lmap.catch_kinds
         | lmap.boolean_operator_kinds
     )
-    jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    jump_kinds = (
+        lmap.return_kinds
+        | lmap.raise_kinds
+        | lmap.break_kinds
+        | lmap.continue_kinds
+        | lmap.yield_kinds
+    )
     scope_kinds = lmap.function_kinds | lmap.lambda_kinds
     # Expression-oriented grammars (nonempty ``statement_wrapper_kinds``): a
     # block's last child that is not a statement is its tail expression -- the
@@ -150,7 +156,9 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             nested_prefix = [0]
             code_prefix = [0]
             for st in stmts:
-                d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
+                d, jmp = _span_metrics(
+                    [st], decision_kinds, jump_kinds, scope_kinds, lmap.exit_macro_names
+                )
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
                 nested_prefix.append(
@@ -704,14 +712,27 @@ def _all_blocks(
     return blocks
 
 
+def _is_jump(node: Node, jump_kinds: frozenset[str], exit_macros: frozenset[str]) -> bool:
+    """True for a jump node, or a macro named in *exit_macros* (matched by its
+    last name segment: ``bail`` in ``anyhow::bail!``)."""
+    if node.type in jump_kinds:
+        return True
+    macro = node.child_by_field_name("macro") if exit_macros else None
+    if macro is None:
+        return False
+    name = macro.child_by_field_name("name") or macro
+    return bool(name.text) and name.text.decode("utf-8", "replace") in exit_macros
+
+
 def _span_metrics(
     span: list[Node],
     decision_kinds: frozenset[str],
     jump_kinds: frozenset[str],
     scope_kinds: frozenset[str],
+    exit_macros: frozenset[str] = frozenset(),
 ) -> tuple[int, bool]:
     """Decision-point count and jump presence within *span* (nested scopes are
-    not descended into)."""
+    not descended into). A macro named in *exit_macros* counts as a jump."""
     decisions = 0
     has_jump = False
     for root in span:
@@ -719,8 +740,7 @@ def _span_metrics(
         while stack:
             node = stack.pop()
             t = node.type
-            if t in jump_kinds:
-                has_jump = True
+            has_jump = has_jump or _is_jump(node, jump_kinds, exit_macros)
             if t in decision_kinds:
                 decisions += 1
             for child in node.children:
