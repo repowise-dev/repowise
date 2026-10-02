@@ -21,6 +21,12 @@ __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 # gigabytes before returning even though the selected result is small.
 _SUMMARY_PATH_BATCH_SIZE = 100
 
+# LanceDB caches each table version's manifest (default cap 1 GiB). Generation
+# upserts in embedder-sized chunks, one version each, and every manifest lists
+# all fragments so far, so the cache grew quadratically: about 0.55 GiB over
+# 22k pages, held until exit. Reads only need the latest version.
+_METADATA_CACHE_BYTES = 64 * 1024 * 1024
+
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
 # path keeps working.
@@ -101,7 +107,15 @@ class LanceDBVectorStore(VectorStore):
                 "LanceDB is not installed. Install it with: pip install repowise-core[search]"
             ) from exc
 
-        self._db = await lancedb.connect_async(self._db_path)
+        # ``Session`` arrived after the oldest supported LanceDB; without it
+        # the connection keeps the library default.
+        session_cls = getattr(lancedb, "Session", None)
+        kwargs = (
+            {"session": session_cls(metadata_cache_size_bytes=_METADATA_CACHE_BYTES)}
+            if session_cls is not None
+            else {}
+        )
+        self._db = await lancedb.connect_async(self._db_path, **kwargs)
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)

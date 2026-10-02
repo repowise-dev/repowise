@@ -356,6 +356,32 @@ async def test_lancedb_embed_batch(tmp_path, mock_embedder):
         await store.close()
 
 
+@pytest.mark.asyncio
+async def test_lancedb_connects_with_bounded_metadata_cache(tmp_path, mock_embedder, monkeypatch):
+    # Every upsert adds a table version whose manifest the session caches, so
+    # the library's 1 GiB default grew with the page count until exit.
+    lancedb = pytest.importorskip("lancedb")
+    if not hasattr(lancedb, "Session"):
+        pytest.skip("LanceDB without Session keeps its default cache")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    seen: dict = {}
+    original = lancedb.connect_async
+
+    async def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(lancedb, "connect_async", _spy)
+    store = LanceDBVectorStore(str(tmp_path / "lance"), mock_embedder)
+    try:
+        await store.embed_batch([("p1", "Python async generators", {"target_path": "a.py"})])
+        assert isinstance(seen.get("session"), lancedb.Session)
+        assert await store.list_page_ids() == {"p1"}
+    finally:
+        await store.close()
+
+
 class _FixedDimEmbedder:
     """Deterministic embedder with a configurable output dimension."""
 
