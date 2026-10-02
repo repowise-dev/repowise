@@ -70,12 +70,14 @@ _THIS_FILE_GENERATED_RE = re.compile(
 _COMMENT_PREFIXES: tuple[str, ...] = ("<!--", "//", "/*", "--", "#", "*", ";")
 _DOCSTRING_OPENER_RE = re.compile(r"""^[rRuUbB]?(?:\"\"\"|''')""")
 
-# Output directories of code generators: Relay/GraphQL's ``__generated__``, and
-# Gradle/Maven source sets (``src/main/generated``, ``generated-src``,
-# ``target/generated-sources``) that annotation processors and templates fill.
-_GENERATED_DIR_TOKENS = frozenset(
-    {"__generated__", "generated", "generated-src", "generated-sources"}
-)
+# Output directories of code generators: Relay/GraphQL's ``__generated__`` and
+# the Gradle/Maven ``generated-src`` / ``generated-sources`` count anywhere.
+# A bare ``generated/`` counts only as a build output (``src/main/generated``,
+# ``build/generated``, ``target/generated``): ``app/generated/`` can be
+# hand-written code about something generated.
+_GENERATED_DIR_TOKENS = frozenset({"__generated__", "generated-src", "generated-sources"})
+_GENERATED_BUILD_DIR = "generated"
+_BUILD_OUTPUT_PARENTS = frozenset({"main", "build", "target"})
 # Beyond the first two lines, only an explicit sentence in a comment counts:
 # Java generators put "This class is generated." in the class Javadoc, after
 # the license and the imports. The looser markers ("DO NOT EDIT") stay
@@ -84,8 +86,16 @@ _GENERATED_DIR_TOKENS = frozenset(
 # up to the first line of code that is not an import, so a template or a
 # generator script that prints the banner into its output is not taken for
 # the output.
+#
+# The sentence must also say it is machine output: generated automatically,
+# by or from something, or not to be edited ("Edit X instead"). "This file is
+# generated when you run make docs" describes a hand-written file.
 _GENERATED_SENTENCE_RE = re.compile(
-    r"\bTHIS (?:CLASS|FILE) (?:IS|WAS) (?:AUTO-?|AUTOMATICALLY )?GENERATED\b"
+    r"\bTHIS (?:CLASS|FILE) (?:IS|WAS) (?:"
+    r"(?:AUTO-?|AUTOMATICALLY )GENERATED\b"
+    r"|GENERATED (?:BY|FROM)\b"
+    r"|GENERATED\b.*(?:\bINSTEAD\b|\bDO NOT (?:HAND[- ])?(?:EDIT|MODIFY)|\bNOT BE (?:EDITED|MODIFIED))"
+    r")"
 )
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
@@ -141,7 +151,7 @@ def _declares_generated(name: str, header: str) -> bool:
     """
     if is_generated_header(header):
         return True
-    return name.lower().endswith(_suffixes("code")) and _leading_generated_sentence(header)
+    return name.lower().endswith(_code_suffixes()) and _leading_generated_sentence(header)
 
 
 def _leading_generated_sentence(header: str) -> bool:
@@ -167,38 +177,40 @@ def _above_import(lines: list[str], i: int) -> bool:
 # public API with ``throw null`` bodies; the implementation under ``src/``
 # carries the code. Counted as generated because they are consumed the same
 # way: tooling regenerates them and nothing in them is a place to fix code.
-# The path alone is not enough (a ``ref/`` folder can hold anything), so the
-# stub body or the API-review banner must show in the head.
-_REFERENCE_STUB_MARKERS = ("throw null", "aka.ms/api-review")
+# The path alone is not enough (a ``ref/`` folder can hold anything), so a
+# ``{ throw null; }`` member body or the API-review banner must show in the head.
+_REFERENCE_STUB_RE = re.compile(
+    r"\{\s*throw null;\s*\}|^// Changes to this file must follow the https://aka\.ms/api-review",
+    re.MULTILINE,
+)
 
 
 def _is_reference_stub(name: str, dirs: list[str], header: str) -> bool:
     return (
         name.lower().endswith(".cs")
         and "ref" in dirs
-        and any(marker in header for marker in _REFERENCE_STUB_MARKERS)
+        and _REFERENCE_STUB_RE.search(header) is not None
     )
 
 
+# Deferred registry reads: the ingestion package imports the traverser, which
+# imports this module for the banner rule above.
 @cache
-def _suffixes(kind: str) -> tuple[str, ...]:
-    """Filename suffixes the language registry declares: ``generated`` output,
-    any ``code`` file, or ``native`` (C and C++) sources."""
-    # Deferred: the ingestion package imports the traverser, which imports
-    # this module for the banner rule above.
+def _code_suffixes() -> tuple[str, ...]:
     from .ingestion.languages.registry import REGISTRY
 
-    if kind == "generated":
-        found = REGISTRY.generated_suffixes()
-    elif kind == "code":
-        found = REGISTRY.all_code_extensions()
-    else:
-        found = REGISTRY.extensions_for(("c", "cpp"))
-    return tuple(sorted(found))
+    return tuple(sorted(REGISTRY.all_code_extensions()))
+
+
+@cache
+def _generated_suffixes() -> tuple[str, ...]:
+    from .ingestion.languages.registry import REGISTRY
+
+    return tuple(sorted(REGISTRY.generated_suffixes()))
 
 
 def _is_generated_name(name: str) -> bool:
-    return ".generated." in name or name.endswith(_suffixes("generated"))
+    return ".generated." in name or name.endswith(_generated_suffixes())
 
 
 # --------------------------------------------------------------------------
@@ -218,16 +230,13 @@ _VENDORED_DIR_TOKENS = frozenset(
         "site-packages",
     }
 )
-# Matched as the first segment, or at any depth for a C or C++ file: in
-# ``pkg/external/`` or a Java ``inference/external/`` package the name means
-# code that talks to external services, while native trees keep their copied
-# libraries there (``src/native/external/zlib``).
+# Matched as the first segment, or as a native tree's library shelf
+# (``src/native/external/<lib>/``). Anywhere else ``external/`` is as often a
+# package that talks to external services (``inference/external/``) or a
+# monorepo's own libraries as it is a copy of someone else's code.
 _VENDORED_ROOT_TOKENS = frozenset({"external", "externals"})
+_NATIVE_TREE = "native"
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
-# A ``min/`` directory of web assets is a minified distribution, the directory
-# form of ``*.min.js`` (Monaco ships as ``min/vs/...``).
-_MINIFIED_DIR = "min"
-_WEB_ASSET_SUFFIXES = (".js", ".mjs", ".cjs", ".css")
 
 
 def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
@@ -235,9 +244,10 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
         return True
     if dirs and dirs[0] in _VENDORED_ROOT_TOKENS:
         return True
-    if lowered_name.endswith(_suffixes("native")) and any(d in _VENDORED_ROOT_TOKENS for d in dirs):
-        return True
-    if _MINIFIED_DIR in dirs and lowered_name.endswith(_WEB_ASSET_SUFFIXES):
+    # ``native/external/<lib>/...``: the library directory must be there too.
+    if any(
+        d == _NATIVE_TREE and dirs[i + 1] in _VENDORED_ROOT_TOKENS for i, d in enumerate(dirs[:-2])
+    ):
         return True
     return lowered_name.endswith(_MINIFIED_SUFFIXES)
 
@@ -245,7 +255,9 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
 # A copied library is recognisable by its header only in the directories a
 # site serves assets from. Anywhere else a license header is far more often
 # the repository's own.
-_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static"})
+# ``min/`` is a minified distribution tree (Monaco ships as ``min/vs/...``); the
+# header rule below keeps a first-party ``src/min/`` out.
+_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
     r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
@@ -281,7 +293,10 @@ def _third_party_header(header: str, project: str | None) -> bool:
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
     """
     comments = "\n".join(_comment_lines(header))
-    if not comments or not _LICENSE_RE.search(comments) or not _BANNER_RE.search(comments):
+    # The comment prefix is stripped from *comments*, so a preserved ``/*!``
+    # opener is read from the raw head.
+    banner = _BANNER_RE.search(comments) or header.lstrip().startswith("/*!")
+    if not comments or not _LICENSE_RE.search(comments) or not banner:
         return False
     return not (project and _squash(project) in _squash(comments))
 
@@ -363,7 +378,14 @@ def _split(path: str) -> tuple[str, str, list[str]] | None:
 
 
 def _is_generated_path(name: str, dirs: list[str]) -> bool:
-    return _is_generated_name(name) or any(d in _GENERATED_DIR_TOKENS for d in dirs)
+    return (
+        _is_generated_name(name)
+        or any(d in _GENERATED_DIR_TOKENS for d in dirs)
+        or any(
+            d == _GENERATED_BUILD_DIR and i and dirs[i - 1] in _BUILD_OUTPUT_PARENTS
+            for i, d in enumerate(dirs)
+        )
+    )
 
 
 @lru_cache(maxsize=65536)

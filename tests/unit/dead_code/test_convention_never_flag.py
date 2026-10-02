@@ -85,7 +85,6 @@ def test_near_misses_stay_flaggable(path):
     [
         # Copied libraries and generator output are not this repository's to delete.
         "src/native/external/zlib/trees.c",
-        "src/Monaco/monacoSRC/min/vs/base/common/worker/simpleWorker.nls.de.js",
         "x-pack/plugin/esql/src/main/generated/org/x/FooEvaluator.java",
     ],
 )
