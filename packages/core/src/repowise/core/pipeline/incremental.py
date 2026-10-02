@@ -827,6 +827,7 @@ def run_partial_analysis(
                     *getattr(_traversal_stats, "unknown_language_files", []),
                 )
             ],
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
         # Repo-wide, and persisted repo-wide. The detectors were always
         # repo-wide — the update path just discarded everything outside the

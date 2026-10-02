@@ -82,6 +82,7 @@ async def _run_dead_code_analysis(
             source_map=source_map,
             repo_root=repo_path,
             unindexed_source_files=unindexed_source_files,
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
 
         def _step(_stage: str) -> None:

@@ -39,6 +39,7 @@ from .constants import (
     never_flag_match,
 )
 from .contract_methods import is_contract_method
+from .csharp_reachability import build_csharp_named_files
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
@@ -769,8 +770,13 @@ class DeadCodeAnalyzer:
         source_map: dict[str, bytes] | None = None,
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
+        dotnet_index: Any | None = None,
     ) -> None:
         self.graph = graph
+        # The C# resolver's project index (``GraphBuilder.dotnet_index``):
+        # scopes the C# name rescue to the projects that can see a file.
+        self._dotnet_index = dotnet_index
+        self._csharp_named_files: frozenset[str] | None = None
         self.git_meta_map = git_meta_map or {}
         # Source files ingestion could not read (currently: dropped on size).
         # An unread importer is invisible to the graph, so "no importers" stops
@@ -848,10 +854,18 @@ class DeadCodeAnalyzer:
         """Assemble the rescue state the shared predicate reads."""
         if self._package_files is None:
             self._package_files = build_package_file_map(self.graph)
+        if self._csharp_named_files is None:
+            self._csharp_named_files = build_csharp_named_files(
+                self.graph,
+                self._source_map,
+                dotnet_index=self._dotnet_index,
+                repo_root=self._repo_root,
+            )
         return ReachabilityRescues(
             bundler_alias_targets=frozenset(self._bundler_alias_targets),
             whitelist=frozenset(whitelist),
             package_files=self._package_files,
+            csharp_named_files=self._csharp_named_files,
         )
 
     def analyze(

@@ -58,6 +58,11 @@ class MSBuildProject:
     project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
     project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    #: Explicit ``<Compile Include>`` items, ``/``-separated and unevaluated. A
+    #: file linked in from outside the project directory (``..\Shared\X.cs``,
+    #: ``$(CommonPath)X.cs``) belongs to this project too, which the directory
+    #: walk cannot see.
+    compile_includes: list[str] = field(default_factory=list)
     package_id: str | None = None  # <PackageId>, the id this project publishes under
     #: Tri-state on purpose: None = the project says nothing, which is not the
     #: same as an explicit <IsPackable>false</IsPackable>.
@@ -92,6 +97,12 @@ def _tristate(value: str | None) -> bool | None:
     if text in ("true", "enable", "1"):
         return True
     return False if text in ("false", "disable", "0") else None
+
+
+def _compile_items(include: str | None) -> list[str]:
+    """The ``;``-separated items of a ``<Compile Include>``, wildcards dropped."""
+    items = (item.strip().replace("\\", "/") for item in (include or "").split(";"))
+    return [item for item in items if item and "*" not in item]
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -131,6 +142,8 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
                 rel = include.replace("\\", "/")
                 target = (project.project_dir / rel).resolve()
                 project.project_references.append(target)
+        elif tag == "Compile":
+            project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag == "PackageReference":
             pkg = elem.get("Include")
             if pkg:
