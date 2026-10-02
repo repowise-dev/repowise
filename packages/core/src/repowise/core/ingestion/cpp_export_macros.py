@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 
@@ -60,16 +61,17 @@ def misread_scope_keyword(node: Node) -> str | None:
     macro_named = _macro_named_type_keyword(node)
     if macro_named is not None:
         return macro_named
+    keywords = (_keyword_token(token) for token in _head_tokens(node))
+    return next((keyword for keyword in keywords if keyword is not None), None)
+
+
+def _head_tokens(node: Node) -> Iterator[Node]:
+    """The definition's children before its body, looking one level into ERROR nodes."""
     body = node.child_by_field_name("body")
     for child in node.children:
         if body is not None and child.id == body.id:
-            break
-        tokens = child.children if child.type == "ERROR" else (child,)
-        for token in tokens:
-            keyword = _keyword_token(token)
-            if keyword is not None:
-                return keyword
-    return None
+            return
+        yield from (child.children if child.type == "ERROR" else (child,))
 
 
 def _misread_namespace_ids(matches: list[dict]) -> frozenset[int]:
