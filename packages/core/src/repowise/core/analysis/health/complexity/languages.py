@@ -30,12 +30,12 @@ JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala, Ruby) plus their aliases
 and Dart; class-level maps cover all of those except Go (no class-grouping
 node). Adding a language, at either tier, is purely additive here.
 
-Two cross-language heuristic limits worth noting (both degrade to "no signal",
-never a false positive): (1) instance members accessed without an explicit
-receiver (idiomatic Kotlin/C++/C#/Java bare ``field`` rather than
-``this.field``) are not counted toward LCOM4 cohesion, so ``low_cohesion``
-stays silent on receiver-less code; (2) flat ``switch``/``when``/``match``
-arms count once for the dispatch, not per arm.
+Two cross-language heuristic notes: (1) Java, C#, C++ and Kotlin reach their
+own members without a receiver (bare ``field`` rather than ``this.field``), so
+those maps name their field declarations and binding forms and LCOM4 counts a
+bare name that resolves to a declared field or sibling method; languages
+without that mapping count explicit receivers only; (2) flat
+``switch``/``when``/``match`` arms count once for the dispatch, not per arm.
 """
 
 from __future__ import annotations
@@ -94,6 +94,23 @@ class LanguageNodeMap:
     # access (both field reads and method calls — both count as a member
     # reference for cohesion).
     member_access_kinds: frozenset[str] = frozenset()
+    # Implicit receivers (Java / C# / C++ / Kotlin read a field as bare
+    # ``index`` and call a sibling as bare ``id()``). All four default to
+    # empty, which keeps a language on explicit ``this.x`` evidence only:
+    #
+    #   * ``field_decl_kinds`` -- class-body node types that declare instance
+    #     state (fields, C# properties). A bare identifier naming one of these,
+    #     or a sibling method, counts as a member reference.
+    #   * ``binding_kinds`` -- node types that bind a parameter or local inside
+    #     a method; a name bound anywhere in the method shadows the member.
+    #   * ``identifier_kinds`` -- the grammar's name token types.
+    #   * ``nested_type_kinds`` -- type declarations that are not cohesion
+    #     units themselves (a Java ``enum`` or ``record`` nested in a class)
+    #     but own their members, so the outer class must not collect them.
+    field_decl_kinds: frozenset[str] = frozenset()
+    binding_kinds: frozenset[str] = frozenset()
+    identifier_kinds: frozenset[str] = frozenset()
+    nested_type_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Assertion detection (test-quality smells). Both fields default to
@@ -379,6 +396,29 @@ _JAVA = LanguageNodeMap(
     # ``field_access`` covers ``this.field``; ``method_invocation`` covers
     # ``this.foo()`` (its ``name`` field is the called method).
     member_access_kinds=frozenset({"field_access", "method_invocation"}),
+    field_decl_kinds=frozenset({"field_declaration"}),
+    binding_kinds=frozenset(
+        {
+            "variable_declarator",
+            "formal_parameter",
+            "spread_parameter",
+            "catch_formal_parameter",
+            "enhanced_for_statement",
+            "lambda_expression",
+            "inferred_parameters",
+            "resource",
+            "instanceof_expression",
+        }
+    ),
+    identifier_kinds=frozenset({"identifier"}),
+    nested_type_kinds=frozenset(
+        {
+            "enum_declaration",
+            "record_declaration",
+            "interface_declaration",
+            "annotation_type_declaration",
+        }
+    ),
     # ``assert x`` (JUnit ``assert`` keyword) + ``assertEquals(...)`` calls.
     assert_kinds=frozenset({"assert_statement"}),
     assert_call_kinds=frozenset({"method_invocation"}),
@@ -468,13 +508,16 @@ _KOTLIN = LanguageNodeMap(
     # Methods group under a ``class_body``; ``object_declaration`` (singletons
     # / companion objects) groups them the same way. Member access is
     # ``receiver.member`` via ``navigation_expression``; the instance receiver
-    # is a ``this_expression`` whose text is ``this``. NOTE: idiomatic Kotlin
-    # accesses members WITHOUT an explicit ``this.`` receiver — those bare
-    # references are not counted (the documented implicit-receiver limit), so
-    # ``low_cohesion`` stays at the "no signal" value rather than mis-firing.
+    # is a ``this_expression`` whose text is ``this``. Idiomatic Kotlin omits
+    # ``this.``; bare names resolve through the declared properties (a
+    # primary-constructor ``val``/``var`` included) and sibling functions.
     class_kinds=frozenset({"class_declaration", "object_declaration"}),
     self_identifiers=frozenset({"this"}),
     member_access_kinds=frozenset({"navigation_expression"}),
+    field_decl_kinds=frozenset({"property_declaration", "class_parameter"}),
+    binding_kinds=frozenset({"variable_declaration", "parameter", "catch_block"}),
+    identifier_kinds=frozenset({"identifier", "simple_identifier"}),
+    nested_type_kinds=frozenset({"companion_object"}),
     # Kotlin has no bare ``assert`` keyword; ``assertEquals(...)`` /
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
@@ -544,11 +587,24 @@ _CPP = LanguageNodeMap(
     # ``class_specifier`` / ``struct_specifier`` group methods in a
     # ``field_declaration_list``. ``field_expression`` covers both
     # ``this->member`` and ``obj.member``; the instance receiver is the
-    # ``this`` node. Same implicit-receiver limit as Kotlin — bare member
-    # access (no ``this->``) is not counted.
+    # ``this`` node. Bare ``m_x`` resolves through the class body's
+    # ``field_declaration``s; one whose declarator is a function is a method
+    # declared here and defined out of line, never a field.
     class_kinds=frozenset({"class_specifier", "struct_specifier"}),
     self_identifiers=frozenset({"this"}),
     member_access_kinds=frozenset({"field_expression"}),
+    field_decl_kinds=frozenset({"field_declaration"}),
+    binding_kinds=frozenset(
+        {
+            "parameter_declaration",
+            "optional_parameter_declaration",
+            "init_declarator",
+            "declaration",
+            "for_range_loop",
+            "structured_binding_declarator",
+        }
+    ),
+    identifier_kinds=frozenset({"identifier", "field_identifier"}),
     # GoogleTest / Catch2 / Boost.Test macros: ``EXPECT_EQ`` / ``ASSERT_EQ`` /
     # ``ASSERT_TRUE`` are ordinary calls (``expect``/``assert`` prefix matched
     # case-insensitively).
@@ -617,9 +673,29 @@ _CSHARP = LanguageNodeMap(
     # ``class``/``struct``/``record`` declarations group methods in a
     # ``declaration_list``. ``member_access_expression`` covers
     # ``this.member`` (and ``obj.member``); ``this`` is the receiver token.
+    # Properties are state as much as fields are. A ``partial`` class is
+    # never scored: its other parts live in files this pass does not see.
     class_kinds=frozenset({"class_declaration", "struct_declaration", "record_declaration"}),
     self_identifiers=frozenset({"this"}),
     member_access_kinds=frozenset({"member_access_expression"}),
+    field_decl_kinds=frozenset(
+        {"field_declaration", "property_declaration", "event_field_declaration"}
+    ),
+    binding_kinds=frozenset(
+        {
+            "variable_declarator",
+            "parameter",
+            "foreach_statement",
+            "catch_declaration",
+            "declaration_expression",
+            "declaration_pattern",
+            "single_variable_designation",
+            "implicit_parameter",
+            "lambda_expression",
+        }
+    ),
+    identifier_kinds=frozenset({"identifier"}),
+    nested_type_kinds=frozenset({"interface_declaration", "enum_declaration"}),
     # xUnit / NUnit / MSTest: ``Assert.Equal(...)`` / ``Assert.True(...)`` are
     # invocations whose callee chain begins with ``Assert``.
     assert_call_kinds=frozenset({"invocation_expression"}),
