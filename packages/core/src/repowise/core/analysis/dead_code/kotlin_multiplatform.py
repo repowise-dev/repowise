@@ -56,6 +56,7 @@ _NOISE_RE = re.compile(r'/\*.*?\*/|//[^\n]*|"""(?:.|\n)*?"""|"(?:\\.|[^"\\\n])*"
 @dataclass(frozen=True)
 class _PlatformDecl:
     path: str
+    package: str
     line: int
     modifier: str
     top_level: bool
@@ -84,7 +85,8 @@ def _platform_index(source_map: dict[str, bytes]) -> dict[tuple[str, str], list[
         package = _package(text)
         for match in _PLATFORM_DECL_RE.finditer(text):
             line = text.count("\n", 0, match.start("modifier")) + 1
-            decl = _PlatformDecl(path, line, match.group("modifier"), not match.group("indent"))
+            top_level = not match.group("indent")
+            decl = _PlatformDecl(path, package, line, match.group("modifier"), top_level)
             index.setdefault((package, match.group("name")), []).append(decl)
     return index
 
@@ -106,18 +108,15 @@ def _paired_actual_files(index: dict[tuple[str, str], list[_PlatformDecl]]) -> s
 
 def _role(
     finding: DeadCodeFindingData,
-    source_map: dict[str, bytes],
     index: dict[tuple[str, str], list[_PlatformDecl]],
+    packages: dict[str, str],
     paired_files: set[str],
 ) -> str | None:
     """``"actual"`` (paired, not reported), ``"expect"`` (re-judged) or None."""
     if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
         return "actual" if finding.file_path in paired_files else None
-    blob = source_map.get(finding.file_path)
-    if blob is None or not finding.symbol_name or not _is_kotlin(finding.file_path):
-        return None
-    package = _package(_blank_noise(blob.decode("utf-8", "replace")))
-    decls = index.get((package, finding.symbol_name), [])
+    package = packages.get(finding.file_path)
+    decls = index.get((package, finding.symbol_name), []) if package is not None else []
     own = next((d for d in decls if d.path == finding.file_path), None)
     if own is None or (own.modifier == "actual" and not _pairs_with_expect(decls)):
         return None
@@ -135,15 +134,12 @@ def settle_platform_declarations(
     if not any(_is_kotlin(f.file_path) for f in findings):
         return findings
     index = _platform_index(source_map)
-    declaring = {d.path for decls in index.values() for d in decls}
+    packages = {d.path: d.package for decls in index.values() for d in decls}
     paired_files = _paired_actual_files(index)
-    roles = {
-        id(f): _role(f, source_map, index, paired_files) if f.file_path in declaring else None
-        for f in findings
-    }
+    roles = {id(f): _role(f, index, packages, paired_files) for f in findings}
     expects = [f for f in findings if roles[id(f)] == "expect"]
     if expects:
-        _judge_expects(expects, source_map, index)
+        _judge_expects(expects, source_map, index, packages)
     return [f for f in findings if roles[id(f)] != "actual"]
 
 
@@ -180,6 +176,7 @@ def _judge_expects(
     expects: list[DeadCodeFindingData],
     source_map: dict[str, bytes],
     index: dict[tuple[str, str], list[_PlatformDecl]],
+    packages: dict[str, str],
 ) -> None:
     # A name the identifier scan cannot see is left to the shared name search,
     # which says it could not be searched for.
@@ -188,8 +185,7 @@ def _judge_expects(
     occurrences = occurrence_files(source_map, {tokens[id(f)] for f in searchable})
     for finding in searchable:
         name = finding.symbol_name
-        blob = source_map[finding.file_path]
-        key = (_package(_blank_noise(blob.decode("utf-8", "replace"))), name)
+        key = (packages[finding.file_path], name)
         decls = index.get(key, [])
         declarations = {(d.path, d.line) for d in decls}
         used_at = _first_use(source_map, occurrences.get(tokens[id(finding)], set()), key, declarations)
