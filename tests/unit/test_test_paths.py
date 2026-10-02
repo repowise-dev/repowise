@@ -126,6 +126,12 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("apps/client-e2e/src/app.cy.ts", None, "test"),
     ("apps/client-e2e/src/support/commands.ts", None, "support"),
     ("mylib/unit.tests/run.py", None, "test"),
+    # `test suite(s)` names a suite of tests: a Gradle module of shared test
+    # classes, serde's no_std build check
+    ("server/server-test-suites/jvm/src/io/x/suites/EngineStressSuite.kt", None, "test"),
+    ("server/server-test-suites/common/src/io/x/suites/Utils.kt", None, "test"),
+    ("test_suite/no_std/src/main.rs", None, "test"),
+    ("conformance/test-suite/run.py", None, "test"),
     # ...so a word that merely contains a test token, or a compound that is
     # *about* testing, is not a test tree
     ("src/latest-release/api.py", None, ""),
@@ -133,6 +139,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("docs/test-api/class-test.md", None, ""),
     ("docs/test-tools/index.md", None, ""),
     ("src/generators/e2e-project/index.ts", None, ""),
+    ("apps/office-suite/src/main.ts", None, ""),
+    ("packages/test-suite-runner/index.js", None, ""),
+    ("server/server-test-host/src/io/x/TestEngine.kt", None, ""),
     # singular `test` heads a compound naming one thing - a generator, an
     # executor, a package, an example project - in either spelling
     ("src/generators/component-test/index.ts", None, ""),

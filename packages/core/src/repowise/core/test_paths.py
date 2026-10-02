@@ -68,6 +68,13 @@ _TEST_DIR_TOKENS: frozenset[str] = frozenset(
 # far more often than it names a suite.
 _TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
 
+# Two-word heads that name a suite of tests outright: a Gradle module of shared
+# test classes (``ktor-server-test-suites/``) or serde's ``test_suite/``.
+# ``suite`` alone is not one (``office-suite/``).
+_TEST_DIR_HEAD_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("test", "suite"), ("test", "suites")}
+)
+
 # The same head written in PascalCase or camelCase, one word with no separator:
 # ``UnitTests/``, ``UITests/``, ``FuzzTests/``, ``AdvancedPaste.UnitTests/``.
 # Plural only, for the reason above (``HitTest/`` is a UI feature), and matched
@@ -292,6 +299,8 @@ def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corrobora
     words = _words(seg)
     head = words[-1] if words else ""
     if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
+        return True
+    if tuple(words[-2:]) in _TEST_DIR_HEAD_PAIRS:
         return True
     if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
         return True
