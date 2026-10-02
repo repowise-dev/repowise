@@ -62,18 +62,22 @@ def _platform_modifier(blob: bytes, start_line: int) -> str | None:
     return modifier.group(1) if modifier else None
 
 
+def _actual_header_names(blob: bytes) -> set[str]:
+    """Every identifier on the file's ``actual`` declaration header lines."""
+    if b"actual" not in blob:
+        return set()
+    text = blob.decode("utf-8", "replace")
+    headers = "\n".join(m.group() for m in _ACTUAL_HEADER_RE.finditer(text))
+    return {t.decode("ascii") for t in IDENTIFIER_RE.findall(headers.encode("ascii", "ignore"))}
+
+
 def _actual_files_by_name(source_map: dict[str, bytes], names: set[str]) -> dict[str, set[str]]:
     """For each of *names*, the Kotlin files with an ``actual`` header naming it."""
     found: dict[str, set[str]] = {}
     for path, blob in source_map.items():
-        if not _is_kotlin(path) or b"actual" not in blob:
-            continue
-        text = blob.decode("utf-8", "replace")
-        for header in _ACTUAL_HEADER_RE.finditer(text):
-            for token in IDENTIFIER_RE.findall(header.group().encode("ascii", "ignore")):
-                name = token.decode("ascii")
-                if name in names:
-                    found.setdefault(name, set()).add(path)
+        if _is_kotlin(path):
+            for name in _actual_header_names(blob) & names:
+                found.setdefault(name, set()).add(path)
     return found
 
 
@@ -81,6 +85,18 @@ def _declares_top_level_actual(blob: bytes) -> bool:
     """Whether the file declares an unindented (top-level) ``actual``."""
     text = blob.decode("utf-8", "replace")
     return any(not m.group().startswith((" ", "\t")) for m in _ACTUAL_HEADER_RE.finditer(text))
+
+
+def _platform_role(finding: DeadCodeFindingData, source_map: dict[str, bytes]) -> str | None:
+    """``"actual"`` (not reported), ``"expect"`` (re-judged) or None (untouched)."""
+    blob = source_map.get(finding.file_path)
+    if blob is None or not _is_kotlin(finding.file_path):
+        return None
+    if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
+        return "actual" if _declares_top_level_actual(blob) else None
+    if not finding.symbol_name or not finding.start_line:
+        return None
+    return _platform_modifier(blob, finding.start_line)
 
 
 def settle_platform_declarations(
@@ -91,30 +107,11 @@ def settle_platform_declarations(
     Mutates the ``expect`` findings in place and returns the kept list. A file
     with no source is left as it was.
     """
-    kept: list[DeadCodeFindingData] = []
-    expects: list[DeadCodeFindingData] = []
-    for finding in findings:
-        blob = source_map.get(finding.file_path)
-        if blob is None or not _is_kotlin(finding.file_path):
-            kept.append(finding)
-            continue
-        if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
-            if not _declares_top_level_actual(blob):
-                kept.append(finding)
-            continue
-        modifier = (
-            _platform_modifier(blob, finding.start_line)
-            if finding.symbol_name and finding.start_line
-            else None
-        )
-        if modifier == "actual":
-            continue
-        if modifier == "expect":
-            expects.append(finding)
-        kept.append(finding)
+    roles = {id(f): _platform_role(f, source_map) for f in findings}
+    expects = [f for f in findings if roles[id(f)] == "expect"]
     if expects:
         _judge_expects(expects, source_map)
-    return kept
+    return [f for f in findings if roles[id(f)] != "actual"]
 
 
 def _judge_expects(expects: list[DeadCodeFindingData], source_map: dict[str, bytes]) -> None:
