@@ -192,22 +192,30 @@ class BaseDefUseDialect:
             for child in node.named_children:
                 self.collect_captured_reads(child, out)
             return
+        writes, reads = self._closure_def_use(node)
+        bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
+        out.extend(occ for occ in reads if occ.name not in bound)
+
+    def _closure_def_use(self, node: Node) -> tuple[list[Occurrence], list[Occurrence]]:
+        """Writes and reads inside nested scope *node*, deeper closures included.
+
+        The body goes through the dialect's own walk, which tells a declaration
+        from a read; a scope with no ``body`` field falls back to plain reads.
+        """
         writes: list[Occurrence] = []
         reads: list[Occurrence] = []
         body = node.child_by_field_name("body")
         process = getattr(self, "_process", None)
         if body is not None and process is not None:
-            # The dialect's own walk tells a declaration from a read.
             process(body, writes, reads)
             self.collect_captured_reads(body, reads)
-        else:
-            name = node.child_by_field_name("name")
-            for child in node.named_children:
-                if name is None or child.id != name.id:
-                    self.collect_reads(child, reads)
-                    self.collect_captured_reads(child, reads)
-        bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
-        out.extend(occ for occ in reads if occ.name not in bound)
+            return writes, reads
+        name = node.child_by_field_name("name")
+        for child in node.named_children:
+            if name is None or child.id != name.id:
+                self.collect_reads(child, reads)
+                self.collect_captured_reads(child, reads)
+        return writes, reads
 
     def _closure_bound_names(self, node: Node) -> set[str]:
         """Names a nested scope binds as its own parameters.
