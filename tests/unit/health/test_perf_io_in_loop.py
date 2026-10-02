@@ -413,6 +413,16 @@ def test_detectors_only_consume_their_own_kind():
     assert len(BlockingSyncInAsyncDetector().detect(ctx)) == 1
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("src/render.ts", 1), ("src/__tests__/render.spec.ts", 0), ("tests/test_render.py", 0)],
+)
+def test_string_concat_not_reported_in_test_files(path, expected):
+    ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
+    ctx.file_path = path
+    assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
 def test_no_perf_hits_yields_no_findings():
     assert IoInLoopDetector().detect(_ctx([])) == []
 

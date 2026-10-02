@@ -489,6 +489,62 @@ def test_python_string_concat_reset_per_iteration_not_flagged():
     assert ("string_concat_in_loop", "") in _hits("python", accum)
 
 
+def _ts_concat_lines(src: str) -> list[int]:
+    fc = walk_file("t.ts", "typescript", src.encode())
+    return [h.line for h in fc.perf_hits if h.kind == "string_concat_in_loop"]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # Declared fresh each pass: bounded per iteration.
+        "function f(fs){ for (const f of fs){ let js = read(f);\n js += '\\n//map'; write(f, js) } }",
+        # Reset by a plain assignment inside the loop.
+        "function f(rs){ let v; for (const r of rs){ v = r.style; v += ';'; use(v) } }",
+        # Appended once, right before leaving the loop or the function.
+        "function f(s){ let m=''; for (const c of s){ if (c.stop) { m += ' [cut]'; break } } return m }",
+        "function f(xs){ let m=''; for (const x of xs){ if (x.bad) { m += 'bad'; return m } } }",
+        "function f(xs){ let m='e:'; for (const x of xs){ if (x.bad) { m += 'bad'; throw new Error(m) } } }",
+        # The break leaves the inner loop and the outer loop re-binds the name.
+        "function f(ys){ for (const y of ys){ let s=''; while (more()){ s += 'a'; break } use(s) } }",
+    ],
+)
+def test_ts_string_concat_bounded_per_iteration_not_flagged(src):
+    assert _ts_concat_lines(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
+        # ``s = s + ...`` keeps the old value, so it is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ s = s + 'a'; s += 'b' } return s }",
+        # A break that only leaves a switch, or only the inner of two loops.
+        "function f(xs){ let s=''; for (const x of xs){ switch (x.k) { case 1: s += 'a'; break } } return s }",
+        "function f(ys){ let s=''; for (const y of ys){ for (const x of y){ s += 'a'; break } } return s }",
+        # Declared in the outer loop, grown across the inner one.
+        "function f(ys){ for (const y of ys){ let s=''; for (const x of y){ s += 'a' } use(s) } }",
+        # A path to ``continue`` before the exit keeps the loop going.
+        "function f(xs){ let s=''; for (const x of xs){ s += 'a'; if (x) continue; break } return s }",
+        # A subscript target is never re-bound by a declaration.
+        "function f(xs, buf){ for (const x of xs){ buf[0] += ` ${x}` } }",
+    ],
+)
+def test_ts_string_concat_across_iterations_still_flagged(src):
+    assert len(_ts_concat_lines(src)) == 1
+
+
+def test_ts_string_concat_loop_local_and_accumulator_in_one_loop():
+    src = (
+        "function f(xs){ let out='';\n"
+        " for (const x of xs){ let v = x.name;\n"
+        " v += ';';\n"
+        " out += `${v}`; }\n"
+        " return out }"
+    )
+    assert _ts_concat_lines(src) == [4]
+
+
 def test_ts_nested_io_requires_collection_outer_loop():
     """A ``while`` cursor wrapping an inner ``for ... of`` is io_in_loop, not nested.
 

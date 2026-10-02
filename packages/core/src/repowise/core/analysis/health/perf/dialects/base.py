@@ -349,6 +349,8 @@ class BasePerfDialect:
     branch_kinds: frozenset[str] = frozenset()
     exit_kinds: frozenset[str] = frozenset()
     scope_kinds: frozenset[str] = frozenset()
+    # Statements a ``break`` leaves without leaving the loop around them.
+    switch_kinds: frozenset[str] = frozenset()
     # Methods that grow a sequence in call order (``append`` / ``push``).
     sequence_appends: frozenset[str] = frozenset()
 
@@ -506,6 +508,61 @@ class BasePerfDialect:
                 return True
             stack.extend(n.children)
         return False
+
+    def accumulates_across_iterations(
+        self, node: Node, name: bytes, loop_kinds: frozenset[str]
+    ) -> bool:
+        """True when the ``+=`` at *node* can grow *name* across iterations of
+        an enclosing loop in its own function.
+
+        The loops are walked from the innermost out. One whose body re-binds
+        *name* (:meth:`binds_name`) bounds the growth to a single pass, so
+        neither it nor any loop outside it is accumulating. An append directly
+        followed by ``return`` / ``throw`` runs once per call, and one followed
+        by a ``break`` once per run of the innermost loop: the interrupted-message
+        and fallback shapes (``msg += "[interrupted]"; break``). With no loop
+        found inside the function the walker's own loop verdict stands.
+        """
+        exit_kind = self._exit_after(node, loop_kinds)
+        if exit_kind is not None and exit_kind != "break_statement":
+            return False
+        skip_innermost = exit_kind is not None
+        seen = False
+        cur = node.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            if cur.type in loop_kinds:
+                seen = True
+                body = self.loop_body(cur) or cur
+                if any(self.binds_name(n, name) for n in self._walk(body, self.scope_kinds)):
+                    return False
+                if not skip_innermost:
+                    return True
+                skip_innermost = False
+            cur = cur.parent
+        return not seen
+
+    def _exit_after(self, node: Node, loop_kinds: frozenset[str]) -> str | None:
+        """The exit statement later in the block of the statement holding *node*.
+
+        ``None`` when there is none, when a statement in between can
+        ``continue`` the loop instead, or when the exit is a ``break`` that
+        only leaves a ``switch``.
+        """
+        stmt = node.parent if node.parent is not None and node.parent.type == "expression_statement" else node
+        sib = stmt.next_named_sibling
+        while sib is not None and sib.type not in self.exit_kinds:
+            if any(n.type == "continue_statement" for n in self._walk(sib, self.scope_kinds)):
+                return None
+            sib = sib.next_named_sibling
+        if sib is None or sib.type == "continue_statement":
+            return None
+        if sib.type == "break_statement":
+            cur = stmt.parent
+            while cur is not None and cur.type not in loop_kinds:
+                if cur.type in self.switch_kinds:
+                    return None
+                cur = cur.parent
+        return sib.type
 
     def _rhs_is_stringish(self, node: Node) -> bool:
         """True if an augmented-assignment's RHS is provably string-typed.
