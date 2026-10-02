@@ -100,6 +100,11 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
+# A function that IS a lock acquisition (``lock()``, ``lockInterruptibly()``,
+# ``acquire()``): the retry / CAS / tryLock loop inside it is the implementation
+# of taking the lock, so "take the lock outside the loop" has nothing to hoist.
+_LOCK_ACQUIRE_FUNCS = frozenset({"lock", "lockinterruptibly", "trylock", "acquire"})
+
 # A whole condition that is one null test, and the name it tests: ``x == null``,
 # ``this.x.get() == null``, ``o.x is null`` (the last segment, ``.get()`` stripped).
 _NULL_GUARD = re.compile(
@@ -832,6 +837,8 @@ def _collect_perf_hits(
     kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
     for h in _name_lambda_hits(hits, lambda_spans):
+        if h.kind == "lock_in_loop" and (h.function or "").lower() in _LOCK_ACQUIRE_FUNCS:
+            continue
         key = (h.kind, h.line, h.function)
         at = kept.get(key)
         if at is None:

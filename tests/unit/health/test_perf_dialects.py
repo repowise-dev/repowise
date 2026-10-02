@@ -57,6 +57,16 @@ def test_java_fixture_counts():
 
 _JAVA_CASES = [
     (
+        "class A{void lock(){for(;;){ if(l.tryLock(1,T)) return; l.lock(); }}}",
+        [],
+        "the retry loop inside lock() is the acquisition itself",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks){for(String k:ks){ l.lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock taken per item in an ordinary method still fires",
+    ),
+    (
         "class A{void m(java.util.List<String> ids){"
         "for(String id:ids){ this.repo.findById(id); }}}",
         [("io_in_loop", "db")],
@@ -1375,6 +1385,12 @@ _KOTLIN_CASES = [
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
         [("lock_in_loop", "")],
         "a lock taken every iteration is a contention site",
+    ),
+    (
+        "class A {\n    fun lock() {\n        while (true) {\n"
+        "            if (mutex.tryLock()) return\n            mutex.lock()\n        }\n    }\n}\n",
+        [],
+        "the retry loop inside lock() is the acquisition, not a lock taken per item",
     ),
 ]
 
