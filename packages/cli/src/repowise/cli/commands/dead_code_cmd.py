@@ -193,6 +193,7 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
                 *traverser.stats.unknown_language_files,
             )
         ],
+        dotnet_index=getattr(graph_builder, "dotnet_index", None),
     )
     return analyzer.analyze(config)
 
