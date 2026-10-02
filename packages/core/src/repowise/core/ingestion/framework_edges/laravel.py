@@ -121,6 +121,14 @@ _COMMAND_CALL_HINTS = ("command", "Artisan::", "call")
 # Whole-file registries: every class they name is loaded by the framework.
 _REGISTRY_FILES = ("bootstrap/providers.php", "config/app.php")
 
+# A view by name: `view('emails.welcome')`, `@include('partials.nav')`,
+# `$rootView = 'app'`, a `<x-alert>` component tag. Views live under each
+# app's `resources/views`; a name spells the path with dots or slashes.
+_VIEWS_DIR = "resources/views"
+_VIEW_SUFFIXES = (".blade.php", ".php")
+_VIEW_NAME_RE = re.compile(r"""(['"])(?P<name>[\w-]+(?:[./][\w-]+)*)\1""")
+_COMPONENT_TAG_RE = re.compile(r"<x-(?P<name>[\w-]+(?:\.[\w-]+)*)")
+
 # Where a legacy string handler (`'Admin\DashboardController@index'`) lives
 # when no group names a namespace: the framework's default controller namespace.
 _DEFAULT_CONTROLLER_NAMESPACE = "App\\Http\\Controllers\\"
@@ -237,6 +245,29 @@ def _discovered_listeners(link: _Linker, f: _PhpFile) -> None:
                 link.anchor(f.path)  # a framework or package event
 
 
+def _views_by_name(roots: list[str], path_set: set[str]) -> dict[str, str]:
+    """``view name -> file`` for every view under an app's ``resources/views``."""
+    out: dict[str, str] = {}
+    for root in roots:
+        prefix = posixpath.join(root, _VIEWS_DIR) + "/"
+        for path in path_set:
+            if not path.startswith(prefix):
+                continue
+            stem = next((path[: -len(x)] for x in _VIEW_SUFFIXES if path.endswith(x)), None)
+            if stem:
+                out.setdefault(stem[len(prefix) :].replace("/", "."), path)
+    return out
+
+
+def _view_references(link: _Linker, f: _PhpFile, views: dict[str, str]) -> None:
+    """Link *f* to each view a string in it names, and each component it renders."""
+    for m in _VIEW_NAME_RE.finditer(f.text):
+        link.edge(f.path, views.get(m.group("name").replace("/", ".")))
+    if "<x-" in f.text:
+        for m in _COMPONENT_TAG_RE.finditer(f.text):
+            link.edge(f.path, views.get("components." + m.group("name")))
+
+
 def _discovered_policies(link: _Linker, roots: list[str], path_set: set[str]) -> None:
     """``Models/Admin/Post.php`` to ``Policies/Admin/PostPolicy.php``.
 
@@ -281,6 +312,7 @@ def _add_laravel_edges(
     aliases = _aliases(link, files)
     commands = _commands(files)
 
+    views = _views_by_name(roots, path_set)
     listener_dirs = tuple(posixpath.join(root, "app/Listeners/") for root in roots)
     registry_files = {posixpath.join(root, name) for root in roots for name in _REGISTRY_FILES}
 
@@ -299,6 +331,8 @@ def _add_laravel_edges(
                 link.edge(f.path, commands.get(m.group("name")))
         if listener_dirs and f.path.startswith(listener_dirs):
             _discovered_listeners(link, f)
+        if views:
+            _view_references(link, f, views)
 
     _discovered_policies(link, roots, path_set)
     return entry + link.count

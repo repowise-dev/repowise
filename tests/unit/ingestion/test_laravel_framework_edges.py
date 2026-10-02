@@ -547,3 +547,34 @@ class TestLaravelRegistrationShapes:
         assert graph.has_edge(
             "routes/web.php", "app/Http/Controllers/Admin/DashboardController.php"
         )
+
+
+class TestLaravelViews:
+    def test_views_named_by_string_or_component_tag(self, tmp_path: Path) -> None:
+        graph = _laravel_app(
+            tmp_path,
+            {
+                "app/Mail/UserInvited.php": _class(
+                    "App\\Mail\\UserInvited",
+                    "public function build() { return $this->markdown('emails.user.invitation'); }",
+                ),
+                "app/Http/Middleware/HandleInertiaRequests.php": _class(
+                    "App\\Http\\Middleware\\HandleInertiaRequests", "protected $rootView = 'app';"
+                ),
+                "resources/views/emails/user/invitation.blade.php": (
+                    "@include('partials/footer')\n<x-alert type=\"info\" />\n"
+                ),
+                "resources/views/app.blade.php": "<html></html>\n",
+                "resources/views/partials/footer.blade.php": "<footer></footer>\n",
+                "resources/views/components/alert.blade.php": "<div></div>\n",
+                "resources/views/emails/unused.blade.php": "<p></p>\n",
+            },
+        )
+        invitation = "resources/views/emails/user/invitation.blade.php"
+        assert graph.has_edge("app/Mail/UserInvited.php", invitation)
+        assert graph.has_edge(
+            "app/Http/Middleware/HandleInertiaRequests.php", "resources/views/app.blade.php"
+        )
+        assert graph.has_edge(invitation, "resources/views/partials/footer.blade.php")
+        assert graph.has_edge(invitation, "resources/views/components/alert.blade.php")
+        assert not any(graph.predecessors("resources/views/emails/unused.blade.php"))

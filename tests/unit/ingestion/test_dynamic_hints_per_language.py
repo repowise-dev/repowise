@@ -78,6 +78,80 @@ class TestPhpHints:
         assert "Foo.php" in targets
 
 
+def _php_dir_targets(root: Path, files: dict[str, str]) -> dict[str, set[str]]:
+    """``source -> targets`` of the ``__DIR__`` path edges over *files*."""
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    out: dict[str, set[str]] = {}
+    for e in PhpDynamicHints().extract(root):
+        if e.hint_source == "php:dir_path":
+            assert e.edge_type == "dynamic_imports"
+            out.setdefault(e.source, set()).add(e.target)
+    return out
+
+
+class TestPhpDirPaths:
+    def test_dir_paths_name_files_and_folders(self, tmp_path: Path) -> None:
+        provider = "src/Mail/MailServiceProvider.php"
+        targets = _php_dir_targets(
+            tmp_path,
+            {
+                provider: (
+                    "<?php\nclass MailServiceProvider {\n"
+                    "  function boot() { $this->loadViewsFrom(__DIR__.'/resources/views', 'mail'); }\n"
+                    "  function cfg() { return dirname(__DIR__, 2) . '/config/mail.php'; }\n}\n"
+                ),
+                "src/Mail/resources/views/html/button.blade.php": "<a>{{ $slot }}</a>\n",
+                "src/Mail/resources/views/text/button.blade.php": "{{ $slot }}\n",
+                "config/mail.php": "<?php\nreturn [];\n",
+                "config/queue.php": "<?php\nreturn [];\n",
+            },
+        )
+        assert targets[provider] == {
+            "src/Mail/resources/views/html/button.blade.php",
+            "src/Mail/resources/views/text/button.blade.php",
+            "config/mail.php",
+        }
+
+    def test_an_interpolated_name_keeps_its_folder_and_prefix(self, tmp_path: Path) -> None:
+        component = "src/Console/View/Component.php"
+        targets = _php_dir_targets(
+            tmp_path,
+            {
+                component: (
+                    '<?php\nclass Component { function render($view) {\n'
+                    '  include __DIR__."/../resources/views/components/$view.php";\n'
+                    "  return __DIR__.'/../stubs/make-'.$view.'.php';\n} }\n"
+                ),
+                "src/Console/resources/views/components/alert.php": "<?php echo 1;\n",
+                "src/Console/resources/views/layout.php": "<?php echo 1;\n",
+                "src/Console/stubs/make-model.php": "<?php\n",
+                "src/Console/stubs/other.php": "<?php\n",
+            },
+        )
+        assert targets[component] == {
+            "src/Console/resources/views/components/alert.php",
+            "src/Console/stubs/make-model.php",
+        }
+
+    def test_no_edge_for_own_folder_tool_scope_or_literal_require(self, tmp_path: Path) -> None:
+        targets = _php_dir_targets(
+            tmp_path,
+            {
+                "composer.json": "{}",
+                # A tool config at the package root lists the folders it scans.
+                "rector.php": "<?php\nreturn [__DIR__.'/src', __DIR__.'/tests'];\n",
+                # An ancestor folder says nothing about which sibling is used.
+                "src/Support/Finder.php": "<?php\n$all = __DIR__.'/..';\n",
+                # The import graph already follows a literal require.
+                "src/boot.php": "<?php\nrequire __DIR__.'/Support/Finder.php';\n",
+                "tests/FinderTest.php": "<?php\n",
+            },
+        )
+        assert targets == {}
+
+
 class TestScalaHints:
     def test_class_forname(self, tmp_path: Path) -> None:
         (tmp_path / "Foo.scala").write_text("package x\nclass Foo\n")
