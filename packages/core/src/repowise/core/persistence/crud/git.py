@@ -251,15 +251,7 @@ async def upsert_git_metadata_bulk(
         item_key_fn=lambda meta: meta.get("file_path", ""),
         row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
-        insert_fn=lambda meta: GitMetadata(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in meta.items()
-                if k not in ("id", "repository_id") and hasattr(GitMetadata, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitMetadata, repository_id),
         batch_size=_BATCH_SIZE,
     )
 

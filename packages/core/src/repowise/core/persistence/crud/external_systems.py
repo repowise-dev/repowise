@@ -197,26 +197,26 @@ def _symbol_id(sym: Any) -> str:
     return getattr(sym, "id", None) or f"{sym.file_path}::{sym.name}"
 
 
-def _new_wiki_symbol(repository_id: str, sym: Any) -> WikiSymbol:
-    """Build a WikiSymbol row from an ingestion Symbol (shared insert recipe)."""
-    return WikiSymbol(
-        id=_new_uuid(),
-        repository_id=repository_id,
-        file_path=getattr(sym, "file_path", ""),
-        symbol_id=_symbol_id(sym),
-        name=sym.name,
-        qualified_name=getattr(sym, "qualified_name", sym.name),
-        kind=sym.kind,
-        signature=getattr(sym, "signature", ""),
-        start_line=getattr(sym, "start_line", 0),
-        end_line=getattr(sym, "end_line", 0),
-        docstring=getattr(sym, "docstring", None),
-        visibility=getattr(sym, "visibility", "public"),
-        is_async=getattr(sym, "is_async", False),
-        complexity_estimate=getattr(sym, "complexity_estimate", 0),
-        language=getattr(sym, "language", ""),
-        parent_name=getattr(sym, "parent_name", None),
-    )
+def _wiki_symbol_values(repository_id: str, sym: Any) -> dict:
+    """Column values for a WikiSymbol row from an ingestion Symbol (shared insert recipe)."""
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        "file_path": getattr(sym, "file_path", ""),
+        "symbol_id": _symbol_id(sym),
+        "name": sym.name,
+        "qualified_name": getattr(sym, "qualified_name", sym.name),
+        "kind": sym.kind,
+        "signature": getattr(sym, "signature", ""),
+        "start_line": getattr(sym, "start_line", 0),
+        "end_line": getattr(sym, "end_line", 0),
+        "docstring": getattr(sym, "docstring", None),
+        "visibility": getattr(sym, "visibility", "public"),
+        "is_async": getattr(sym, "is_async", False),
+        "complexity_estimate": getattr(sym, "complexity_estimate", 0),
+        "language": getattr(sym, "language", ""),
+        "parent_name": getattr(sym, "parent_name", None),
+    }
 
 
 def _update_wiki_symbol(existing: WikiSymbol, sym: Any) -> None:
@@ -254,7 +254,7 @@ async def batch_upsert_symbols(
         item_key_fn=_symbol_id,
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_wiki_symbol,
-        insert_fn=lambda sym: _new_wiki_symbol(repository_id, sym),
+        insert_fn=lambda sym: _wiki_symbol_values(repository_id, sym),
     )
 
 
@@ -315,7 +315,7 @@ async def reconcile_symbols_for_files(
         if existing is not None:
             _update_wiki_symbol(existing, sym)
         else:
-            obj = _new_wiki_symbol(repository_id, sym)
+            obj = WikiSymbol(**_wiki_symbol_values(repository_id, sym))
             session.add(obj)
             by_id[sid] = obj
 
