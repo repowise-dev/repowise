@@ -211,6 +211,16 @@ def _render_stored_refactoring_targets(
     return True
 
 
+def _rankable(findings: list, metrics: list) -> list:
+    """Findings on files that carry a score.
+
+    A file stored with no score (a language health has no dialect for) is not
+    ranked: a stand-in 10.0 would invent one. The API queue skips it too.
+    """
+    unscored = {m.file_path for m in metrics if m.score is None}
+    return [f for f in findings if f.file_path not in unscored]
+
+
 def _build_targets(
     metrics: list, findings: list, suggestions: list, *, limit: int
 ) -> list[dict]:
@@ -220,18 +230,13 @@ def _build_targets(
         sugg_by_file.setdefault(_suggestion_path(s), []).append(s)
 
     by_file: dict[str, list] = {}
-    for f in findings:
+    for f in _rankable(findings, metrics):
         by_file.setdefault(f.file_path, []).append(f)
 
     metric_by_path = {m.file_path: m for m in metrics}
     targets: list[dict] = []
     for path, fs in by_file.items():
         m = metric_by_path.get(path)
-        # A file stored with no score (a language health has no dialect for)
-        # is not ranked; a stand-in 10.0 would invent one. The API queue skips
-        # the same files.
-        if m is not None and m.score is None:
-            continue
         nloc = m.nloc if m is not None else 0
         score = m.score if m is not None else 10.0
         primary = primary_finding(fs)

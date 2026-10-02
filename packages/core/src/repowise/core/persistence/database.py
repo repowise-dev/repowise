@@ -466,16 +466,15 @@ def _relax_not_null(connection: object, table: object) -> None:
     quoted = dialect.identifier_preparer.quote(name)
     ddl = ddl.replace(f"CREATE TABLE {quoted} ", f'CREATE TABLE "{staging}" ', 1)
     shared = ", ".join(f'"{c.name}"' for c in columns)
-    for statement in (
-        f'DROP TABLE IF EXISTS "{staging}"',
-        ddl,
-        f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"',
-        f'DROP TABLE "{name}"',
-        f'ALTER TABLE "{staging}" RENAME TO "{name}"',
-    ):
-        connection.execute(text(statement))  # type: ignore[attr-defined]
+    run = connection.execute  # type: ignore[attr-defined]
+    run(text(f'DROP TABLE IF EXISTS "{staging}"'))
+    run(text(ddl))
+    run(text(f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"'))
+    run(text(f'DROP TABLE "{name}"'))
+    run(text(f'ALTER TABLE "{staging}" RENAME TO "{name}"'))
+    # Indexes went with the old table. Not a per-row loop: one per declared index.
     for index in table.indexes:  # type: ignore[attr-defined]
-        connection.execute(CreateIndex(index))  # type: ignore[attr-defined]
+        run(CreateIndex(index))
     log.info("schema_table_rebuilt_for_nullable", table=name)
 
 
