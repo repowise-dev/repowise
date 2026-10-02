@@ -126,12 +126,17 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("apps/client-e2e/src/app.cy.ts", None, "test"),
     ("apps/client-e2e/src/support/commands.ts", None, "support"),
     ("mylib/unit.tests/run.py", None, "test"),
-    # `test suite(s)` names a suite of tests: a Gradle module of shared test
-    # classes, serde's no_std build check
+    # `test suite(s)` names a suite of tests when it is a build module with its
+    # own `src` root: a Gradle module of shared test classes, serde's no_std check
     ("server/server-test-suites/jvm/src/io/x/suites/EngineStressSuite.kt", None, "test"),
     ("server/server-test-suites/common/src/io/x/suites/Utils.kt", None, "test"),
+    ("server/x-test-suites/src/main/kotlin/io/x/ContentSuite.kt", None, "test"),
     ("test_suite/no_std/src/main.rs", None, "test"),
-    ("conformance/test-suite/run.py", None, "test"),
+    # ...and not as a product feature folder or a docs page set
+    ("src/api/test-suites/route.ts", None, ""),
+    ("apps/web/src/features/test-suite/List.tsx", None, ""),
+    ("docs/test-suites/overview.md", None, ""),
+    ("conformance/test-suite/run.py", None, ""),
     # ...so a word that merely contains a test token, or a compound that is
     # *about* testing, is not a test tree
     ("src/latest-release/api.py", None, ""),
