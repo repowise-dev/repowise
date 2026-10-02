@@ -667,7 +667,7 @@ that is worth doing. Everything else is left out and counted in
 | `below_min_worth` | A refactoring that recovers under 0.5 health on its file, or has no steps; a string built in a loop that is bounded or not in production code. |
 | `history_only` | A file whose only findings come from git history (churn, ownership, co-change). History is context on an item, never the item. |
 | `deprecated` | A function marked deprecated. |
-| `inherent_dispatch` | A function where one dispatch on one value holds 60% or more of its decision points, unless a duplicate also sits in it. On the dev labels that share held 9 complexity rows, 8 of them rejected. |
+| `inherent_dispatch` | A function where one dispatch on one value holds 60% or more of its decision points, unless a duplicate also sits in it (then it is listed as `later`). On the dev labels that share held 9 complexity rows, 8 of them rejected. |
 | `small_function` | A complexity unit under 30 code lines and under CCN 15. On the 67 labelled dev rows that cut drops 13 rejected and 4 accepted. |
 | `no_concrete_step` | No first edit with a file and a line or a named group: a cycle with no import line to cut, a move with no destination, a split with no named groups, a class finding with no member groups. |
 | `low_value_kind` | A kind raters found not worth doing: Extract Class (0 of 14), Move Method (0 of 34), low cohesion (0 of 46), long method (0 of 10), and long parameter lists (0 of 2, thinly measured). |
@@ -681,6 +681,17 @@ loop that grows with the data shares the top band. Then tier: `now` (worth doing
 and the plan is safe to start), `next` (worth doing, the fix needs judgment),
 `later`. No kind takes more than 3 of the first 5 places while another has an item
 worth doing.
+
+**Lower priority.** A `later` item is real and stays listed, after every `now` and
+`next` item, with the reason it can wait as its tier reason. Code shape decides
+(`analysis/health/worth.py`, one rule for every default list); the hot-file bonus
+orders items but never lifts one out of `later`. A function-size problem is
+`later` when the function is under CCN 40, 200 lines and nesting 6 (nesting counts
+only in a function of 100 lines or more), when one dispatch on one value holds 60%
+of its decisions, when its nesting is one else-if or ternary chain, or when it is
+long with CCN under 20 and nesting under 5. From CCN 80, 400 lines or nesting 8 a
+function is worth doing whatever its branching. A complex condition and a single
+exception handler are `later` too: each is a local fix.
 
 **Verify.** Each item carries up to 5 tests from its stored validation profile,
 each with how it reaches the changed code (call graph, import graph, a matching

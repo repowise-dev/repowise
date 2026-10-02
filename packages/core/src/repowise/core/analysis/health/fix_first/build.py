@@ -61,6 +61,15 @@ from repowise.core.analysis.health.perf.opportunity_rank import (
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
+from repowise.core.analysis.health.worth import (
+    LOW_PRIORITY_LABEL,
+    SIZE_MARKERS,
+    WORTH_MAGNITUDE,
+    dispatch_shaped,
+    low_priority,
+    magnitude,
+    measure,
+)
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.code_origin import path_origin
 
@@ -99,21 +108,15 @@ Rows = Iterable[Any]
 MIN_WORTH = 0.5
 #: Credited health gain cut points for value 1, 2 and 3.
 GAIN_CUTS = (0.5, 1.5, 3.0)
-#: Problem-size cut points for value 1 to 4. Health credit is calibrated per
-#: finding and saturates, so a function far past every bar would rank with a
-#: tidy one without these. Each cut is a multiple of the detector's own bar.
-#: CCN 20 is twice the complex_method bar; 40, 80 and 150 double on from it.
-SIZE_CCN = (20, 40, 80, 150)
-#: 100 lines is past the large_method bar; 800 is a module living in one body.
-SIZE_NLOC = (100, 200, 400, 800)
-#: Nesting 5 is one past the nested_complexity bar; 8 is unreadable.
-SIZE_NESTING = (5, 6, 8, 99)
+#: Problem size, value 1 to 4, reads ``worth.SIZE_*``: health credit is
+#: calibrated per finding and saturates, so a function far past every bar
+#: would rank with a tidy one without them.
 #: A critical finding or a brain method is at least this size.
 SIZE_SEVERE = 2
 #: Measured size (CCN, lines or nesting alone, before the severity floor and
 #: the hot-file bonus) from which an item leads as "break up", naming the whole
 #: problem: CCN 40, 200 lines or nesting 6.
-SIZE_BREAK_UP = 2
+SIZE_BREAK_UP = WORTH_MAGNITUDE
 #: The highest value any unit reaches.
 VALUE_MAX = 4
 #: A file in the top fifth of production files by churn or dependents is hot.
@@ -123,15 +126,10 @@ MAX_TESTS = 5
 MAX_STEPS = 5
 MAX_CONTEXT = 3
 #: In the first HEAD places no kind takes more than HEAD_PER_KIND, unless the
-#: other kinds have nothing at value 2 or above.
+#: other kinds have nothing above the later tier.
 HEAD = 5
 HEAD_PER_KIND = 3
 DEFAULT_LIMIT = 10
-#: Findings that measure one function's size; a unit led by one of them, or by
-#: an Extract Method step, is a function-level complexity unit.
-SIZE_MARKERS = frozenset(
-    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
-)
 #: A function-level complexity unit needs this many code lines or this CCN.
 #: Picked on the dev labels (67 complexity rows): 30 / 15 drops 13 rejected
 #: small functions and 4 accepted ones; no cut that keeps every accepted row
@@ -260,18 +258,9 @@ def _gain_value(gain: float, hot: bool) -> int:
     return min(3, sum(gain >= cut for cut in GAIN_CUTS) + int(hot))
 
 
-def _magnitude(shape: Mapping[str, int]) -> int:
-    """How far the measured CCN, size or nesting sits past its bar, 0 to 4."""
-    return max(
-        sum(shape.get("ccn", 0) >= c for c in SIZE_CCN),
-        sum(shape.get("nloc", 0) >= c for c in SIZE_NLOC),
-        sum(shape.get("max_nesting", 0) >= c for c in SIZE_NESTING),
-    )
-
-
 def _size_value(shape: Mapping[str, int], hot: bool) -> int:
     """How big the problem is, 0 to 4; a hot file counts one more."""
-    base = max(_magnitude(shape), SIZE_SEVERE if shape.get("severe") else 0)
+    base = max(magnitude(shape), SIZE_SEVERE if shape.get("severe") else 0)
     return min(VALUE_MAX, base + int(hot and base > 0))
 
 
@@ -371,7 +360,7 @@ class _Files:
                 ),
                 (),
             )
-        return _measure(found)
+        return measure(found)
 
     def cloned(self, path: str, shape: Mapping[str, int]) -> bool:
         """Whether a stored duplicate overlaps the function ``shape`` spans."""
@@ -439,7 +428,7 @@ class _Files:
             return "deprecated"
         if not complexity:
             return None
-        if shape.get("dispatch_pct", 0) >= DISPATCH_SHARE * 100 and not self.cloned(path, shape):
+        if dispatch_shaped(shape) and not self.cloned(path, shape):
             return "inherent_dispatch"
         if _small(shape):
             return "small_function"
@@ -490,7 +479,13 @@ class _Files:
         return out
 
 
-def _tier(value: int, confidence: str, ready: bool) -> tuple[str, str]:
+def _tier(value: int, confidence: str, ready: bool, low: str | None) -> tuple[str, str]:
+    """The tier and its reason, from a value that leaves the hot-file bonus
+    out: history orders items within a tier but never lifts one. A problem
+    the shape rule calls lower priority (``worth.low_priority``) is ``later``
+    whatever its value."""
+    if low is not None:
+        return "later", LOW_PRIORITY_LABEL[low]
     if value >= 2 and LEVEL_RANK.get(confidence, 0) >= 1 and ready:
         return "now", "worth doing, and the plan is safe to start"
     if value >= 2:
@@ -511,10 +506,12 @@ def _finish(
     rank_inputs: Callable[[], list[FixRankFact]],
     fields: Callable[[], dict[str, Any]],
     may_lead: bool = True,
+    low: str | None = None,
+    cold_value: int | None = None,
 ) -> _Unit:
     confidence = confidence if confidence in LEVEL_RANK else "low"
     effort = effort if effort in FIX_EFFORTS else "M"
-    tier, why_tier = _tier(value, confidence, ready)
+    tier, why_tier = _tier(value if cold_value is None else cold_value, confidence, ready, low)
     item_id = fix_id(kind, source_id)
 
     def write(rank: int) -> FixItem:
@@ -708,13 +705,14 @@ def _refactor_unit(
     shape = files.shape(path, lead.get("target_symbol"))
     size = _size_value(shape, hot)
     cloned = lead_type == "extract_method" and files.cloned(path, shape)
+    low = low_priority(marker, shape, function_size=lead_type == "extract_method")
 
     def fields() -> dict[str, Any]:
         lead_plan = plans.get(lead.get("plan_id"))
         start, end = _span(lead_plan)
         body = _plan_body(lead_plan)
         if (
-            _magnitude(shape) >= SIZE_BREAK_UP
+            magnitude(shape) >= SIZE_BREAK_UP
             and lead_type == "extract_method"
             and start
             and end
@@ -815,7 +813,8 @@ def _refactor_unit(
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
-        value=_lifted(max(_gain_value(gain, hot), size), cloned),
+        value=_value(gain, shape, cloned, hot=hot),
+        cold_value=_value(gain, shape, cloned, hot=False),
         ready=mechanical or confidence == "high",
         score=_num(field(row, "rank_score")),
         confidence=confidence if confidence in LEVEL_RANK else "medium",
@@ -828,12 +827,15 @@ def _refactor_unit(
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
+        low=low,
     )
 
 
-def _lifted(value: int, cloned: bool) -> int:
-    """A complexity unit with a duplicate in the same function is one step
-    more worth doing: raters accepted that shape almost every time."""
+def _value(gain: float, shape: Mapping[str, int], cloned: bool, *, hot: bool) -> int:
+    """The larger of the gain and the problem size, one step more when a
+    duplicate sits in the same function: raters accepted that shape almost
+    every time."""
+    value = max(_gain_value(gain, hot), _size_value(shape, hot))
     return min(VALUE_MAX, value + 1) if cloned else value
 
 
@@ -1104,7 +1106,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
         where = function or text.basename(path)
         summary = text.first_sentence(suggestion_for(marker))
         line = field(lead, "line_start")
-        if _magnitude(shape) >= SIZE_BREAK_UP and function and marker in SIZE_MARKERS:
+        if magnitude(shape) >= SIZE_BREAK_UP and function and marker in SIZE_MARKERS:
             title = f"Break up {where} ({text.size_brief(shape)})"
         else:
             title = text.FINDING_TITLE.get(marker, "Address the finding in {where}").format(
@@ -1150,7 +1152,8 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
-        value=_lifted(max(_gain_value(impact, hot), size), cloned),
+        value=_value(impact, shape, cloned, hot=hot),
+        cold_value=_value(impact, shape, cloned, hot=False),
         ready=False,
         score=impact,
         confidence="medium",
@@ -1163,6 +1166,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
+        low=low_priority(marker, shape),
     )
 
 
@@ -1239,6 +1243,7 @@ def _order(units: list[_Unit]) -> list[_Unit]:
     ranked = sorted(
         units,
         key=lambda u: (
+            u.tier == "later",
             -u.value,
             TIER_RANK[u.tier],
             -LEVEL_RANK.get(u.confidence, 0),
@@ -1256,7 +1261,7 @@ def _order(units: list[_Unit]) -> list[_Unit]:
                 (
                     u
                     for u in ranked
-                    if u.value >= 2
+                    if u.tier != "later"
                     and u.kind != pick.kind
                     and taken[u.kind] < HEAD_PER_KIND
                 ),
@@ -1280,41 +1285,6 @@ def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
         if name:
             out[(field(f, "file_path"), name)].append(f)
     return dict(out)
-
-
-def _measure(findings: Iterable[Any]) -> dict[str, int]:
-    """A function's largest measured CCN, size and nesting across its findings.
-
-    ``severe`` is set when any of them is critical or a brain method,
-    ``deprecated`` when any sits in a function marked deprecated,
-    ``dispatch_pct`` is the largest stored dispatch share in percent,
-    ``start`` / ``end`` span the function as its size findings place it, and
-    ``deep_start`` / ``deep_end`` are its deepest nested block's lines.
-    """
-    shape: dict[str, int] = {}
-    for f in findings:
-        if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
-            shape["severe"] = 1
-        details = detail_map(f)
-        if details.get("deprecated"):
-            shape["deprecated"] = 1
-        deepest = details.get("deepest_block")
-        if isinstance(deepest, dict) and deepest.get("start") and "deep_start" not in shape:
-            shape["deep_start"] = int(deepest["start"])
-            shape["deep_end"] = int(deepest.get("end") or deepest["start"])
-        share = details.get("dispatch_share")
-        if isinstance(share, (int, float)):
-            shape["dispatch_pct"] = max(shape.get("dispatch_pct", 0), round(share * 100))
-        if field(f, "biomarker_type") in SIZE_MARKERS:
-            start, end = field(f, "line_start"), field(f, "line_end")
-            if start and end:
-                shape["start"] = min(shape.get("start", start), start)
-                shape["end"] = max(shape.get("end", end), end)
-        for k in ("ccn", "nloc", "max_nesting", "lcom4", "method_count"):
-            v = details.get(k)
-            if isinstance(v, (int, float)) and v > shape.get(k, 0):
-                shape[k] = int(v)
-    return shape
 
 
 def _basis(metrics: Rows) -> dict[str, str | None]:
