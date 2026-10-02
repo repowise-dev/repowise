@@ -88,6 +88,7 @@ _OWN_HEADER = (
         # external/ in a non-native tree is a package about external services.
         ("x-pack/inference/src/main/java/org/x/external/http/Sender.java", "production"),
         ("src/pkg/external/client.py", "production"),
+        ("sdk/llms/src/providers/vendors/openai.ts", "production"),
         ("src/Monaco/monacoSRC/min/vs/loader.js", "vendored"),
         ("src/Monaco/monacoSRC/min/vs/editor/editor.main.css", "vendored"),
         ("src/min/compute.py", "production"),  # only web assets under min/
@@ -261,3 +262,15 @@ def test_generator_inputs_are_not_their_output() -> None:
         '*/"""\n'
     )
     assert code_origin("src/codegen/genEvents.py", script) == "production"
+
+
+def test_generated_sentence_about_an_import_is_not_a_banner() -> None:
+    text = (
+        "/**\n * @license\n * Copyright Google LLC\n */\n\n"
+        "import {signal} from '@angular/core';\n"
+        "// This file is generated at build-time, error is expected here.\n"
+        "import MANIFEST from '../assets/api/manifest.json';\n"
+        "\n"
+        "export class ApiManager {}\n"
+    )
+    assert code_origin("adev/src/app/api-manager.service.ts", text) == "production"
