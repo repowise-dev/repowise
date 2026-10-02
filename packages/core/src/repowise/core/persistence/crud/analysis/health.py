@@ -30,7 +30,7 @@ from ....analysis.health.ranking import (
     sort_metrics_worst_first,
     worst_metric,
 )
-from ....analysis.health.rows import detail_map, scored_rows, split_tests
+from ....analysis.health.rows import detail_map, split_tests, split_unscored
 from ....analysis.health.scope import scores_language
 from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
 from ....test_paths import is_test_related_path
@@ -677,9 +677,7 @@ async def get_health_summary(
         metrics = await get_health_metrics(session, repository_id)
     # A file in a language health has no dialect for is stored unscored. It is
     # counted apart and left out of every figure below.
-    unanalysed = len(metrics)
-    metrics = scored_rows(metrics)
-    unanalysed -= len(metrics)
+    metrics, unanalysed = split_unscored(metrics)
     if not metrics:
         return {
             "file_count": 0,

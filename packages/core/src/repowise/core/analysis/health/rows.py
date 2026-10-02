@@ -82,4 +82,11 @@ def scored_rows(rows: Iterable[Any]) -> list[Any]:
     return [row for row in rows if field(row, "score", None) is not None]
 
 
-__all__ = ["detail_map", "field", "json_field", "scored_rows", "split_tests"]
+def split_unscored(rows: Iterable[Any]) -> tuple[list[Any], int]:
+    """``(scored rows, how many were left out)``, for a figure that says both."""
+    rows = list(rows)
+    scored = scored_rows(rows)
+    return scored, len(rows) - len(scored)
+
+
+__all__ = ["detail_map", "field", "json_field", "scored_rows", "split_tests", "split_unscored"]

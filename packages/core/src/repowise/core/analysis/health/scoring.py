@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from .complexity.languages import has_health_dialect
 from .models import HealthFileMetricData, HealthFindingData, Severity
-from .rows import field, scored_rows, split_tests
+from .rows import field, scored_rows, split_tests, split_unscored
 
 if TYPE_CHECKING:
     # Annotation-only, and deliberately not imported at runtime: the biomarker
@@ -935,6 +935,37 @@ def hotspot_health(
     return round(nloc_weighted_score(rows), 2)
 
 
+def _empty_kpis(unanalysed: int) -> dict[str, object]:
+    """KPIs with no scored file. An empty repository keeps its historical 10.0
+    floors (the snapshot columns need a number); a repository whose files are
+    all unscored has no average to report, so its headline is ``None``."""
+    floor = None if unanalysed else SCORE_MAX
+    return {
+        "hotspot_health": floor,
+        "average_health": floor,
+        "unanalysed_file_count": unanalysed,
+        "worst_performer_path": None,
+        "worst_performer_score": None,
+        "worst_test_path": None,
+        "worst_test_score": None,
+        "file_count": 0,
+        **dict.fromkeys(
+            (
+                "maintainability_average",
+                "maintainability_hotspot",
+                "performance_average",
+                "performance_hotspot",
+                "structure_average",
+                "structure_hotspot",
+                "history_average",
+                "history_hotspot",
+                "production_average",
+            )
+        ),
+        "production_file_count": 0,
+    }
+
+
 def compute_kpis(
     metrics: list[HealthFileMetricData],
     hotspot_paths: set[str],
@@ -962,33 +993,12 @@ def compute_kpis(
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
     """
-    unanalysed = len(metrics)
-    metrics = scored_rows(metrics)
-    unanalysed -= len(metrics)
+    metrics, unanalysed = split_unscored(metrics)
     if not metrics:
-        floor = None if unanalysed else 10.0
-        return {
-            "hotspot_health": floor,
-            "average_health": floor,
-            "unanalysed_file_count": unanalysed,
-            "worst_performer_path": None,
-            "worst_performer_score": None,
-            "worst_test_path": None,
-            "worst_test_score": None,
-            "file_count": 0,
-            "maintainability_average": None,
-            "maintainability_hotspot": None,
-            "performance_average": None,
-            "performance_hotspot": None,
-            "structure_average": None,
-            "structure_hotspot": None,
-            "history_average": None,
-            "history_hotspot": None,
-            "production_average": None,
-            "production_file_count": 0,
-        }
+        return _empty_kpis(unanalysed)
 
     hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
+
     production, tests = split_tests(metrics)
     # Production first; a test file names the worst only in a tests-only repo.
     worst = min(production or metrics, key=_row_score)
