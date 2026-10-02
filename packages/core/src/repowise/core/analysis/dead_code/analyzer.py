@@ -1028,12 +1028,16 @@ class DeadCodeAnalyzer:
         its own file uses is capped below the floor instead (see
         :func:`demote_used_in_own_file`). Returns a new list.
         """
-        wanted: dict[str, set[str]] = {}
-        for f in findings:
-            if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX):
-                wanted.setdefault(f.file_path, set()).add(f.symbol_name or "")
-        if not wanted:
+        exports = [
+            f
+            for f in findings
+            if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
+        ]
+        if not exports:
             return findings
+        wanted: dict[str, set[str]] = {}
+        for f in exports:
+            wanted.setdefault(f.file_path, set()).add(f.symbol_name or "")
         named = build_csharp_named_types(
             self.graph,
             self._source_map,
@@ -1041,16 +1045,9 @@ class DeadCodeAnalyzer:
             dotnet_index=self._dotnet_index,
             repo_root=self._repo_root,
         )
-        kept = [
-            f
-            for f in findings
-            if f.kind is not DeadCodeKind.UNUSED_EXPORT or (f.file_path, f.symbol_name) not in named
-        ]
-        demote_used_in_own_file(
-            [f for f in kept if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path in wanted],
-            self._source_map,
-        )
-        return kept
+        dropped = {id(f) for f in exports if (f.file_path, f.symbol_name) in named}
+        demote_used_in_own_file([f for f in exports if id(f) not in dropped], self._source_map)
+        return [f for f in findings if id(f) not in dropped]
 
     def _published_api_languages(
         self, findings: list[DeadCodeFindingData], type_names: dict[str, frozenset[str]]
