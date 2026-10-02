@@ -1113,8 +1113,8 @@ async def test_withheld_plans_reach_no_list_queue_or_lead(client, app):
     assert [item["file_path"] for item in queue["items"]] == ["svc/core.py"]
     targets = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
     assert [plan["file_path"] for plan in targets["plans"]] == ["svc/core.py"]
-    get_health = await _mcp(app)
-    assert (await get_health())["refactoring_directive"]["fix_first"] == "svc/core.py"
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert rollup["directive"]["fix_first"] == "svc/core.py"
 
 
 @pytest.mark.asyncio
@@ -1133,12 +1133,13 @@ async def test_a_test_file_is_never_the_lead_or_ahead_of_production(client, app)
     for view in ("diversified", "canonical"):
         items = (
             await client.get(
-                f"/api/repos/{repo_id}/refactoring/opportunities", params={"view": view}
+                f"/api/repos/{repo_id}/refactoring/opportunities",
+                params={"view": view, "scope": "all"},
             )
         ).json()["items"]
         assert [item["file_path"] for item in items][-1] == "tests/test_core.py"
-    get_health = await _mcp(app)
-    assert (await get_health())["refactoring_directive"]["fix_first"] == "svc/a.py"
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert rollup["directive"]["fix_first"] == "svc/a.py"
 
 
 @pytest.mark.asyncio
@@ -1150,8 +1151,8 @@ async def test_the_directive_names_no_test_file_when_only_tests_have_work(client
         )
         await crud.finalize_refactoring_opportunities(session, repo_id)
         await session.commit()
-    get_health = await _mcp(app)
-    directive = (await get_health())["refactoring_directive"]
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    directive = rollup["directive"]
     assert directive["status"] == "clear"
     assert directive["reason"] == "only_test_file_opportunities"
     assert directive["opportunities_total"] == 1
