@@ -247,11 +247,19 @@ class BaseProvider(ABC):
     # a longer wait on calls that were going to fail regardless.
     interactive_timeout_s: float = 60.0
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> BaseProvider:
+        # Every provider is known to ``close_provider_clients``, so one that
+        # gains a client later is closed without having to remember to register.
+        provider = super().__new__(cls)
+        _LIVE_PROVIDERS.add(provider)
+        return provider
+
     async def aclose(self) -> None:  # noqa: B027 - an optional hook, not an abstract one
         """Release what this provider holds on the running event loop.
 
-        A no-op for a provider with nothing loop-bound. One that owns an SDK
-        client closes it and stays usable (see ``SdkClientOwner``).
+        A no-op for a provider with nothing loop-bound. One that owns a client
+        closes or drops it and stays usable: the next call builds a new one
+        (see ``SdkClientOwner``).
         """
 
     @abstractmethod
@@ -337,9 +345,8 @@ class BaseProvider(ABC):
         )
 
 
-# Providers holding an SDK client whose pooled connections belong to one event
-# loop. Weak, so a dropped provider is not kept alive to be closed.
-_CLIENT_OWNERS: weakref.WeakSet[SdkClientOwner] = weakref.WeakSet()
+# Every live provider. Weak, so a dropped provider is not kept alive to be closed.
+_LIVE_PROVIDERS: weakref.WeakSet[BaseProvider] = weakref.WeakSet()
 
 
 class SdkClientOwner:
@@ -362,7 +369,6 @@ class SdkClientOwner:
     def _open_client(self, factory: Callable[[], Any]) -> None:
         self._client_factory = factory
         self._client = self._owned_client = factory()
-        _CLIENT_OWNERS.add(self)
 
     async def aclose(self) -> None:
         owned = self._owned_client
@@ -375,14 +381,14 @@ class SdkClientOwner:
 
 
 async def close_provider_clients() -> None:
-    """Close every live provider's SDK client on the running event loop.
+    """Have every live provider release what it holds on the running event loop.
 
     Called as an ``asyncio.run`` ends. A cleanup step must not turn a finished
     command into a failed one, so a client that will not close is skipped.
     """
-    for owner in list(_CLIENT_OWNERS):
+    for provider in list(_LIVE_PROVIDERS):
         with contextlib.suppress(Exception):
-            await owner.aclose()
+            await provider.aclose()
 
 
 class ProviderError(Exception):

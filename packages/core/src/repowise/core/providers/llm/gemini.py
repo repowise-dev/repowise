@@ -404,6 +404,22 @@ class GeminiProvider(BaseProvider):
         await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
 
+    async def aclose(self) -> None:
+        """Drop the cached ``genai.Client`` so the next event loop builds its own.
+
+        Calls go through the SDK's sync client on a worker thread, but the
+        client object also carries an async one, and ``run_async`` gives each
+        step a new loop (issue #2946). A client somebody put in place of the
+        SDK's (a test double) is left where it is.
+        """
+        client = self._client
+        if client is None or not type(client).__module__.startswith("google."):
+            return
+        self._client = None
+        close = getattr(client, "close", None)
+        if callable(close):
+            await asyncio.to_thread(close)
+
     def _ensure_client(
         self, genai: Any, genai_types: Any, api_key: str | None, base_url: str | None
     ) -> Any:

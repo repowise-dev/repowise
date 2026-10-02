@@ -232,8 +232,74 @@ def test_a_dropped_provider_is_not_kept_alive_to_be_closed() -> None:
     from repowise.core.providers.llm import base
 
     provider = AnthropicProvider(api_key="k")
-    assert provider in base._CLIENT_OWNERS
-    before = len(base._CLIENT_OWNERS)
+    assert provider in base._LIVE_PROVIDERS
+    before = len(base._LIVE_PROVIDERS)
     del provider
     gc.collect()
-    assert len(base._CLIENT_OWNERS) == before - 1
+    assert len(base._LIVE_PROVIDERS) == before - 1
+
+
+def test_every_provider_is_known_to_the_close_by_default() -> None:
+    from repowise.core.providers.llm import base
+
+    plain = MockProvider()
+    assert plain in base._LIVE_PROVIDERS
+
+
+def test_gemini_drops_its_cached_client_and_builds_another() -> None:
+    pytest.importorskip("google.genai", reason="google-genai SDK not installed")
+    from google import genai
+    from google.genai import types as genai_types
+
+    from repowise.core.providers.llm.gemini import GeminiProvider
+
+    provider = GeminiProvider(api_key="k")
+    first = provider._ensure_client(genai, genai_types, "k", None)
+    assert provider._client is first
+
+    asyncio.run(provider.aclose())
+
+    assert provider._client is None
+    assert provider._ensure_client(genai, genai_types, "k", None) is not first
+
+
+def test_gemini_leaves_a_client_put_in_its_place() -> None:
+    from repowise.core.providers.llm.gemini import GeminiProvider
+
+    provider = GeminiProvider(api_key="k")
+    double = MagicMock()
+    provider._client = double
+    asyncio.run(provider.aclose())
+    assert provider._client is double
+    double.close.assert_not_called()
+
+
+@pytest.mark.usefixtures("sdk_owned_http_client")
+@pytest.mark.parametrize("name", sorted(_PROVIDERS))
+def test_two_run_async_steps_with_one_provider_print_nothing(
+    name: str, endpoint: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The CLI's own path: the same provider through ``run_async`` twice, then dropped."""
+    from repowise.cli.helpers import run_async
+
+    provider: BaseProvider | None = _PROVIDERS[name](endpoint)
+
+    async def step() -> str:
+        assert provider is not None
+        return (await provider.generate("s", "u", max_tokens=16)).content
+
+    async def later() -> None:
+        nonlocal provider
+        provider = None
+        gc.collect()
+        await asyncio.sleep(0.2)
+        gc.collect()
+
+    with caplog.at_level("ERROR", logger="asyncio"):
+        assert run_async(step()) == "ok"
+        assert run_async(step()) == "ok"
+        run_async(later())
+        gc.collect()
+
+    assert "Event loop is closed" not in caplog.text
+    assert "Task exception was never retrieved" not in caplog.text
