@@ -3160,7 +3160,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "lancedb", specifier = ">=0.12,<1" },
     { name = "litellm", specifier = ">=1.84.0,<2" },
-    { name = "mcp", specifier = ">=1.0,<2" },
+    { name = "mcp", specifier = ">=1.10.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
     { name = "networkx", specifier = ">=3.3,<4" },
     { name = "openai", specifier = ">=1.50,<3" },
