@@ -381,7 +381,42 @@ def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     return True
 
 
-def _default_shape(payload: dict[str, Any], question: str) -> None:
+def _prune_fallback_targets(
+    payload: dict[str, Any], raw_fallbacks: list[Any] | None
+) -> None:
+    """Retain fallback targets not already represented in emitted evidence rows."""
+    fallbacks = (
+        raw_fallbacks
+        if raw_fallbacks is not None
+        else payload.get("fallback_targets") or []
+    )
+    if not fallbacks:
+        payload.pop("fallback_targets", None)
+        return
+
+    emitted = {
+        path
+        for key in (
+            "citations",
+            "symbol_bodies",
+            "code_rationale",
+            "quotes",
+            "best_guesses",
+            "retrieval",
+        )
+        for row in payload.get(key) or []
+        if (path := _nav_path(row))
+    }
+    targets = [row for row in fallbacks if _nav_path(row) not in emitted]
+    if targets:
+        payload["fallback_targets"] = targets
+    else:
+        payload.pop("fallback_targets", None)
+
+
+def _default_shape(
+    payload: dict[str, Any], question: str, *, raw_fallbacks: list[Any] | None = None
+) -> None:
     confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
@@ -424,8 +459,8 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
     else:
         _keep(payload, "retrieval", 3)
     payload.pop("candidates", None)
-    if payload.get("best_guesses") or payload.get("retrieval") or payload.get("symbol_bodies"):
-        payload.pop("fallback_targets", None)
+    _prune_fallback_targets(payload, raw_fallbacks)
+
     if not str(payload.get("answer") or "").strip():
         payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
     payload.setdefault(
@@ -486,7 +521,7 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
             {"path": _path(row), "lines": row.get("lines"), "comment": comment}
         ]
     # Every cited path is a guess or a rationale row, so citations would repeat them.
-    for key in ("citations", "note", "next_action_hint"):
+    for key in ("citations", "note", "next_action_hint", "fallback_targets"):
         payload.pop(key, None)
     if isinstance(payload.get("_meta"), dict):
         payload["_meta"].pop("hint", None)
@@ -655,6 +690,7 @@ def _project(
 ) -> tuple[dict[str, Any], bool, bool]:
     """The projection, whether it slimmed ``best_guesses``, and whether it is the ranked list."""
     payload = copy.deepcopy(raw)
+    raw_fallbacks = _unique(list(payload.get("fallback_targets") or []), lambda row: row)
     totals = {
         key: len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         for key in _COLLECTIONS
@@ -664,7 +700,7 @@ def _project(
     facts = payload.pop("_candidate_file_facts", None)
     slimmed = False
     if not expanded:
-        _default_shape(payload, question)
+        _default_shape(payload, question, raw_fallbacks=raw_fallbacks)
         if _shape_confidence(payload) == "low":
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
     bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
