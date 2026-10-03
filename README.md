@@ -825,6 +825,13 @@ on our own codebase in the open:
 [live snapshot](https://www.repowise.dev/s/5a6b93fa9a69) ·
 [explore public repos](https://www.repowise.dev/explore).
 
+Already indexed locally? `repowise publish` puts the same repo on repowise.dev in one
+command: it asks repowise.dev to index the repo's GitHub remote, so nothing is uploaded
+from your machine and only what you have pushed is published. A hosted index usually
+takes about 10 minutes. Public repos publish on a free account (up to 2 repos, no card);
+private repos and more repos need Pro, free for 10 days with a card.
+[What hosted adds →](https://repowise.dev/hosted?src=oss_readme)
+
 ---
 
 ## Privacy
@@ -872,6 +879,7 @@ repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
 repowise workspace add    # multi-repo workspace management
 repowise doctor           # check setup, API keys, index drift
+repowise publish          # put this repo on repowise.dev (indexed from GitHub; public repos free)
 repowise uninstall        # remove what repowise wrote, and say what it left
 ```
 

@@ -98,6 +98,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("wiki-styles", "restyle_cmd:wiki_styles_command"),
     ("whats-new", "whats_new_cmd:whats_new_command"),
     ("telemetry", "telemetry_cmd:telemetry_command"),
+    ("publish", "publish_cmd:publish_command"),
     ("login", "login_cmd:login_command"),
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),

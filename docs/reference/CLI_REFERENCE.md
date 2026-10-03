@@ -2192,6 +2192,32 @@ Show the Repowise account this machine is signed in to.
 repowise whoami
 ```
 
+### `repowise publish [PATH]`
+
+Put this repo on repowise.dev. The command reads the GitHub `origin` remote and
+asks repowise.dev to index it there: nothing is uploaded from your machine, so
+only what you have pushed is published. Signed out, it runs the `repowise login`
+browser sign-in first. A hosted index usually takes about 10 minutes.
+
+On success it prints the indexing page (and opens it), the repo page for when it
+is ready, and the MCP address to add in Claude.ai or ChatGPT. When repowise.dev
+refuses, it says why and links the next step: a private repo on a free account
+goes to the repo's page, which starts the Pro trial (10 days free, card
+required) and the GitHub App install; a paid account without the GitHub App
+gets the install link; the free plan's 2-repo limit links the trial checkout.
+A repo without a GitHub remote is not published.
+
+| Flag | Description |
+|------|-------------|
+| `--ref` | Branch or tag on GitHub to publish (default: the branch you are on if it is pushed, else the default branch) |
+| `--no-open` | Don't open the indexing page in the browser |
+
+```bash
+repowise publish                 # publish the repo in this directory
+repowise publish --ref release   # publish another pushed branch
+repowise publish --no-open
+```
+
 ---
 
 ### `repowise delete [REPO_ID]`
