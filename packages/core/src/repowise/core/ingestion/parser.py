@@ -1419,7 +1419,10 @@ class ASTParser:
         local_refs: frozenset[str] = frozenset()
         if lang == "python":
             top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
-            local_refs = extract_python_local_refs(src, top_level_names)
+            nested_classes = {
+                (s.parent_name, s.name) for s in symbols if s.kind == "class" and s.parent_name
+            }
+            local_refs = extract_python_local_refs(src, top_level_names, nested_classes)
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(

@@ -37,6 +37,7 @@ from .constants import (
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
+    _FRAMEWORK_INNER_CLASS_NAMES,
     _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
@@ -1477,6 +1478,10 @@ class DeadCodeAnalyzer:
         if self._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
+        parent = sym.get("parent_name")
+        if parent and sym_name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+            return True
+
         # TS/JS: type names referenced in type positions of the same file.
         local_type_uses = node_data.get("local_type_uses")
         if local_type_uses and sym_name in local_type_uses:
@@ -1484,8 +1489,12 @@ class DeadCodeAnalyzer:
 
         # Python: same-module references in non-call positions (callables passed
         # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
+        # A nested class is recorded by its ``Outer.Inner`` name.
         local_refs = node_data.get("local_refs")
-        return bool(local_refs and sym_name in local_refs)
+        return bool(
+            local_refs
+            and (sym_name in local_refs or (parent and f"{parent}.{sym_name}" in local_refs))
+        )
 
     def _export_use_evidence(
         self, file_ctx: _ExportFile, sym_id: str, sym: dict

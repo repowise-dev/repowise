@@ -1024,6 +1024,14 @@ _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
     ("SuppressWarnings", "unused"),
 )
 
+# Inner class names a framework reads off the class that declares them, so no
+# code ever names them. Python: the ``class Meta`` options block that Django
+# models and forms, DRF serializers, marshmallow and factory_boy read through
+# their metaclass. Keyed by language; matched only on a nested class.
+_FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
+    "python": frozenset({"Meta"}),
+}
+
 
 # Default dynamic patterns (plugins, handlers, etc.)
 _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (
