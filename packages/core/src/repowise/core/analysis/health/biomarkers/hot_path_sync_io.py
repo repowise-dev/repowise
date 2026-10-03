@@ -40,6 +40,11 @@ class HotPathSyncIoDetector:
             if hit.kind != _KIND:
                 continue
             phrasing = _BOUNDARY_PHRASING.get(hit.detail, "a blocking I/O call")
+            details: dict[str, object] = {"boundary_kind": hit.detail}
+            callers = ""
+            if hit.callers:
+                details["callers"] = hit.callers
+                callers = f" ({hit.callers} direct callers)"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -47,10 +52,10 @@ class HotPathSyncIoDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={"boundary_kind": hit.detail},
+                    details=details,
                     reason=(
                         f"{phrasing} in one of the most-called functions in "
-                        "this repo; every call through it waits for the I/O"
+                        f"this repo{callers}; every call through it waits for the I/O"
                     ),
                 )
             )

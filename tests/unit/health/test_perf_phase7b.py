@@ -369,10 +369,19 @@ def test_centrality_gate_reads_the_stored_origin():
 
 
 def test_hot_path_sync_io_reason_claims_centrality_not_a_request_path():
-    hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem")
+    hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem", callers=4)
     (finding,) = HotPathSyncIoDetector().detect(_ctx([hit]))
     assert "request" not in finding.reason
-    assert "most-called functions" in finding.reason
+    assert "most-called functions in this repo (4 direct callers)" in finding.reason
+    assert finding.details == {"boundary_kind": "filesystem", "callers": 4}
+
+
+def test_hot_path_sync_io_hit_carries_its_caller_count():
+    path = "pkg/svc.py"
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker)
+    (hot,) = [h for h in out[path] if h.kind == "hot_path_sync_io"]
+    assert hot.callers == 4
 
 
 def test_centrality_gate_fires_for_a_central_function():

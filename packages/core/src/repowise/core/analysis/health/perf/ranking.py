@@ -72,14 +72,16 @@ class PerfRanker:
 
     # -- the gate -------------------------------------------------------------
 
+    def callers(self, path: str, func_start: int) -> int:
+        """Distinct direct callers of the function at ``(path, func_start)``; 0 if unknown."""
+        if self._index is None:
+            return 0
+        sid = self._index.resolve_function(path, func_start)
+        return 0 if sid is None else self._index.in_degree.get(sid, 0)
+
     def is_central(self, path: str, func_start: int) -> bool:
         """True if the function at ``(path, func_start)`` is top-quintile-called."""
-        if self._index is None:
-            return False
-        sid = self._index.resolve_function(path, func_start)
-        if sid is None:
-            return False
-        return self._index.in_degree.get(sid, 0) >= self._hot_in_degree
+        return self.callers(path, func_start) >= self._hot_in_degree
 
     def is_hot(self, path: str, func_start: int) -> bool:
         """Central enough to carry a marker that claims a hot, widely-called function.

@@ -514,8 +514,11 @@ churn, lock contention, serial awaits that could fan out, membership tests
 against lists, and language-specific shapes.
 
 Two markers use call-graph centrality as a *precision gate* rather than a sort
-key, firing only in hot functions (top-quintile in-degree, or in a churny
-hotspot file), which keeps a noisy shape reviewable.
+key, firing only in a repo's most-called functions (at least the 80th-percentile
+number of distinct direct callers, and never fewer than two), which keeps a
+noisy shape reviewable. That shows how widely a function is called, not that a
+request reaches it. The blocking-call marker is also skipped in tests, tooling,
+examples, and generated or vendored code.
 
 **Standard linters do not find this class of problem.** On a 12,600-file
 benchmark, clippy, ruff, ESLint and golangci-lint together found **0** of the

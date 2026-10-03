@@ -307,6 +307,9 @@ class PerfHit:
     # 1-indexed header line of the innermost data-dependent loop the hit runs
     # in (for a cross-function hit, the loop around the call site); 0 when none.
     loop_line: int = 0
+    # Distinct direct callers of the enclosing function, set only on the
+    # centrality-gated ``hot_path_sync_io`` hit; 0 everywhere else.
+    callers: int = 0
 
     def loop_facts(self) -> dict[str, Any]:
         """Loop facts for ``details``; absent when unset so old findings are unchanged."""

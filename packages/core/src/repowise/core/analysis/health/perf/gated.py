@@ -131,6 +131,7 @@ def collect_centrality_gated(
                         function=fact.function,
                         detail=fact.blocking_sink_kind,
                         func_start=fact.func_start,
+                        callers=ranker.callers(path, fact.func_start),
                     )
                 )
         if file_hits:
