@@ -7,7 +7,14 @@ path prefix bound real signal to the same card.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
 
 #: Fields no unresolved card may carry. The four ``*_total``/direction counts
 #: are ``include=["graph"]`` keys popped from every card otherwise, so tests
@@ -72,6 +79,26 @@ async def test_missing_path_reports_the_reason_that_names_the_fix(setup_mcp, tmp
 
     assert result["targets"]["src/auth/on_disk_only.py"]["unresolved_reason"] == "not_indexed"
     assert result["targets"]["src/auth/typo.py"]["unresolved_reason"] == "no_such_path"
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_path_redirects_to_its_new_name(setup_mcp, tmp_path):
+    """A stale doc's old path should not be a dead end when git knows where it went (#2633)."""
+    from repowise.server.mcp_server import get_risk
+
+    _git(tmp_path, "init", "-b", "main")
+    (tmp_path / "old_name.py").write_text("def f():\n    return 1\n" * 5, encoding="utf-8")
+    _git(tmp_path, "add", "old_name.py")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "add old_name")
+    _git(tmp_path, "mv", "old_name.py", "new_name.py")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rename")
+
+    result = await get_risk(["old_name.py"])
+    card = result["targets"]["old_name.py"]
+
+    assert card["unresolved_reason"] == "no_such_path"
+    assert card["moved_to"] == ["new_name.py"]
+    assert card["removed_by_commit"]
 
 
 @pytest.mark.asyncio

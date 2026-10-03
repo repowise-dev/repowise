@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
 from repowise.core.co_change import confidence_ratio, parse_partners
+from repowise.core.git_refs import find_path_removal
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
@@ -472,7 +474,9 @@ def _load_commit_categories(meta: Any) -> dict:
     return categories
 
 
-def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
+async def _unresolved_reason(
+    target: str, lookup_path: str, repo_root: str | None
+) -> dict[str, Any]:
     """Why *target* names nothing this tool can score, in the caller's terms.
 
     ``not_indexed`` and ``no_such_path`` are spelled as
@@ -480,18 +484,32 @@ def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> 
     borrowed: ``get_health``'s ``no_such_module`` means "no module of that
     name", and it resolves a directory to ``not_indexed`` — both would
     prescribe a fix that cannot help here.
+
+    ``no_such_path`` also carries ``moved_to``/``removed_by_commit`` when git
+    can explain the miss as a rename or a same-named-directory split (#2633),
+    found off the thread so the blocking git call does not stall the loop.
     """
     if target.startswith("module:"):
-        return "unsupported_target_kind"
+        return {"unresolved_reason": "unsupported_target_kind"}
     try:
         on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
         if on_disk.is_dir():
-            return "directory"
+            return {"unresolved_reason": "directory"}
         if on_disk.exists():
-            return "not_indexed"
+            return {"unresolved_reason": "not_indexed"}
     except (OSError, ValueError):
         pass
-    return "no_such_path"
+    removal = None
+    if repo_root:
+        with contextlib.suppress(OSError, ValueError):
+            removal = await asyncio.to_thread(find_path_removal, repo_root, lookup_path)
+    if removal is None:
+        return {"unresolved_reason": "no_such_path"}
+    return {
+        "unresolved_reason": "no_such_path",
+        "removed_by_commit": removal.commit,
+        "moved_to": removal.moved_to,
+    }
 
 
 async def _assess_one_target(
@@ -639,7 +657,7 @@ async def _assess_one_target(
         return {
             "target": target,
             "resolved": False,
-            "unresolved_reason": _unresolved_reason(target, lookup_path, repository.local_path),
+            **await _unresolved_reason(target, lookup_path, repository.local_path),
             "risk_summary": (
                 f"{target} — not resolved to an indexed file; no risk signal was computed"
             ),
