@@ -220,6 +220,9 @@ def test_active_landscape_fires_above_threshold() -> None:
             "commit_count_90d": 10,
             "is_hotspot": i < 3,
             "primary_owner_name": "alice",
+            "contributor_count": 3,
+            "last_commit_at": "2026-09-12T12:00:00Z",
+            "top_authors_json": json.dumps([{"name": "alice", "last_commit_ts": 1_789_214_400}]),
             "age_days": 30,
         }
         for i, f in enumerate(files[:15])
@@ -229,6 +232,10 @@ def test_active_landscape_fires_above_threshold() -> None:
     assert ctx is not None
     assert ctx.total_commits_90d == 150
     assert ctx.files_touched_90d == 15
+    assert ctx.activity_window_start == "2026-06-14"
+    assert ctx.activity_window_end == "2026-09-12"
+    assert ctx.active_contributor_count_90d == 1
+    assert ctx.hot_files[0].historical_contributor_count == 3
     assert len(ctx.hot_files) <= 12
     # Top hot file should be one of the hotspots.
     assert ctx.hot_files[0].is_hotspot
@@ -503,9 +510,7 @@ def test_getting_started_does_not_render_manifest_content_as_prompt_instructions
         _signals(
             files=[_file("src/a.ts", language="typescript")],
             source_map={
-                "package.json": json.dumps(
-                    {"scripts": {hostile_key: hostile_command}}
-                ).encode()
+                "package.json": json.dumps({"scripts": {hostile_key: hostile_command}}).encode()
             },
         )
     )
@@ -1170,7 +1175,7 @@ def _jinja_env() -> jinja2.Environment:
                         f"src/f{i}.py": {
                             "commit_count_90d": 10,
                             "is_hotspot": i < 3,
-                            "primary_owner_name": "alice",
+                            "contributor_count": 3,
                             "age_days": 30,
                         }
                         for i in range(15)
