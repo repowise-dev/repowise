@@ -220,15 +220,24 @@ def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None
     cohesion component that holds fields, or calls an inherited or abstract
     member, with the rest of its class. The ``calls`` graph sees none of
     these; the class analysis does (``ClassComplexity``)."""
-    own = [
-        cls
-        for cls in classes
-        if getattr(cls, "name", None) == parent
-        and (line is None or cls.start_line <= line <= cls.end_line)
-    ]
-    if own and getattr(own[0], "contract_impl", False):
+    own = next(
+        (
+            cls
+            for cls in classes
+            if getattr(cls, "name", None) == parent
+            and (line is None or cls.start_line <= line <= cls.end_line)
+        ),
+        None,
+    )
+    return own is not None and _binds_method(own, name)
+
+
+def _binds_method(cls: Any, name: str) -> bool:
+    """Whether *cls* holds method *name* in place: a contract impl, or a
+    cohesion component with fields or outside calls that contains it."""
+    if getattr(cls, "contract_impl", False):
         return True
-    groups = [g for cls in own[:1] for g in getattr(cls, "components", None) or ()]
+    groups = getattr(cls, "components", None) or ()
     return any(name in g.methods and (g.fields or g.calls) for g in groups)
 
 
