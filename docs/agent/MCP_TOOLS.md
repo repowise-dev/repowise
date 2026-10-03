@@ -147,9 +147,9 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 | `include` | list[string] | none | `["evidence"]` returns the full evidence projection with a larger budget |
 
-**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
+**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `candidate_files` (ranked file paths the citations do not already name: up to 5 at `high`, 10 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
-A `high` answer can be cited directly. On `low`, read the rows the reply names before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
+A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
 
 ```
 get_answer(question="How does the authentication flow work?")

@@ -7,6 +7,11 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
+from repowise.server.mcp_server.tool_answer.config import (
+    _CANDIDATE_FILES_HIGH,
+    _CANDIDATE_FILES_MAX,
+)
+
 _COLLECTIONS = (
     "citations",
     "retrieval",
@@ -272,10 +277,30 @@ def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
     payload[key] = rows[:limit]
 
 
-def _default_shape(payload: dict[str, Any], question: str) -> None:
+def _shape_confidence(payload: dict[str, Any]) -> Any:
     # A degraded payload keeps the fullest shape whatever it graded: trimming is
     # keyed on prose replacing evidence, and there the evidence IS the product.
-    confidence = "low" if payload.get("degraded") else payload.get("confidence", "low")
+    return "low" if payload.get("degraded") else payload.get("confidence", "low")
+
+
+def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
+    """Serve the ranked paths the final citations do not already name."""
+    rows = payload.pop("candidate_files", None)
+    if not isinstance(rows, list):
+        return
+    cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
+    paths = [
+        path for path in dict.fromkeys(row for row in rows if isinstance(row, str))
+        if path not in cited
+    ]
+    high = not expanded and _shape_confidence(payload) == "high"
+    paths = paths[: _CANDIDATE_FILES_HIGH if high else _CANDIDATE_FILES_MAX]
+    if paths:
+        payload["candidate_files"] = paths
+
+
+def _default_shape(payload: dict[str, Any], question: str) -> None:
+    confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
         for key in ("retrieval", "best_guesses", "candidates", "fallback_targets"):
@@ -333,6 +358,10 @@ def _record_reductions(
 ) -> None:
     reduced = False
     for key in _COLLECTIONS:
+        # By default ``candidate_files`` carries these paths, so counting the
+        # hidden rows would only advertise what the reply already serves.
+        if key == "candidates" and not expanded:
+            continue
         total = totals.get(key, 0)
         emitted = len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         if total <= emitted:
@@ -373,6 +402,7 @@ def project_answer_payload(
     expanded = "evidence" in set(include or [])
     if not expanded:
         _default_shape(payload, question)
+    _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):

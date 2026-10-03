@@ -117,7 +117,8 @@ Every suggested follow-up (`get_health`'s `fix_first[].next_call`, the refactori
 | `retrieval_quality` | `high`, `partial` or `weak`: rates the evidence under the prose |
 | `symbol_bodies` | Live bodies of the symbols the answer names. Read these before calling `get_symbol` |
 | `retrieval` | Evidence rows (summary, snippet, key symbols). Shrinks as confidence rises |
-| `candidates` | Ranked shortlist of files retrieval resolved, `{path, lines?}`, up to 5. Navigation, not evidence. Only with `include=["evidence"]` |
+| `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 5 at `high`, 10 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file |
+| `candidates` | The top 5 of those files as `{path, lines?, defines?}` rows. Only with `include=["evidence"]` |
 | `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason |
 | `episodes` | A dated fact recorded about this checkout that bears on the question; `still_true` says how current it is |
 | `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` unless `retrieval_quality` is `weak`, never `high` |

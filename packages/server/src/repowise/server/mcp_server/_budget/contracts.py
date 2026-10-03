@@ -175,6 +175,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "candidates",
             "fallback_targets[]",
             "fallback_targets",
+            # Last: a bare path is the fewest bytes per file worth opening.
+            "candidate_files[]",
+            "candidate_files",
         ),
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint", "degraded"),

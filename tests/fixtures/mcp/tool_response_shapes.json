@@ -20,9 +20,9 @@
       "timing_ms": null
     },
     "answer": null,
-    "candidates_emitted": null,
-    "candidates_reduced_reason": null,
-    "candidates_total": null,
+    "candidate_files": [
+      null
+    ],
     "citations": [
       null
     ],

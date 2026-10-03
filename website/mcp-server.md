@@ -188,6 +188,7 @@ One-call RAG over the wiki layer. Runs retrieval, gates on confidence, and synth
 - `citations` (list of strings) — file paths backing the answer
 - `confidence` (string) — `"high"`, `"medium"`, or `"low"`. High-confidence answers can be cited directly without verification reads; lower confidence indicates the agent should fall back to `search_codebase` or `Read`.
 - `fallback_targets` (list of strings) — top retrieval hits the agent should `Read` if it does not trust the synthesized answer
+- `candidate_files` (list of strings): ranked file paths retrieval resolved that the citations do not already name: up to 5 on a high-confidence answer, 10 otherwise
 - `retrieval` (list) — raw top-N hits with snippets
 
 **When to use:** First call on any code question. Collapses the typical "search → read → reason" loop into a single round-trip.

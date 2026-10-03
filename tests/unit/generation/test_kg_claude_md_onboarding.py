@@ -119,7 +119,7 @@ class TestClaudeMdKGSection:
         assert "never re-read them" in rendered
         # `confidence` rates the prose; a low grade points at the evidence the
         # reply already named rather than at a second round-trip.
-        assert "`fallback_targets` or `best_guesses`" in rendered
+        assert "`candidate_files` the reply names" in rendered
         # An empty call-graph list is never served without the basis beside it.
         assert "`*_basis`" in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.

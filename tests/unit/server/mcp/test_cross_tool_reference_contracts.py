@@ -109,6 +109,7 @@ class Cell:
 _PATH_FIELDS = {
     "affected_files",
     "candidate",
+    "candidate_files",
     "candidates",
     "citations",
     "entry_points",

@@ -61,6 +61,7 @@ def _cached_payload_paths(payload: dict) -> list:
     return [
         *(payload.get("citations") or []),
         *(payload.get("fallback_targets") or []),
+        *(payload.get("candidate_files") or []),
         # "path" is the serialized key; "target_path" survives in rows cached
         # before the clean retrieval view existed.
         *(h.get("path") or h.get("target_path") for h in (payload.get("retrieval") or [])),

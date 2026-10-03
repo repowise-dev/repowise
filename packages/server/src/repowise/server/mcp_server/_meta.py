@@ -712,5 +712,8 @@ def answer_hint(
             "rates the ranked hits; start from the first one."
         )
     if confidence == "low":
-        return "Low confidence — Read the listed fallback_targets to verify before answering."
+        return (
+            "Low confidence. Read the top evidence row or candidate_files to "
+            "verify before answering."
+        )
     return None
