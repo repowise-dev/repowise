@@ -4,7 +4,7 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner-v2.png" alt="repowise: evidence-backed codebase intelligence" width="100%" /></a>
 
-<h1 align="center">Know the code. Know what breaks. Change it with confidence.</h1>
+<h1 align="center">Understand your codebase without paying your agent to rediscover it.</h1>
 
 <p align="center">Repowise indexes your code, call graph, git history, tests, docs and design<br />
 decisions once, on your machine. Then you and your coding agent ask it things:<br />
