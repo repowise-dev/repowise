@@ -9,6 +9,8 @@ a dashboard of each turn (what an edit reaches, where Claude's context came
 from, what Repowise answered), and a map of the repository
 with Claude's reads and edits marked on it.
 
+<img src="../../.github/assets/lens.gif" alt="Lens in Claude Code on Django: the map lights query.py in amber and its 12 importers in plum, then the 248 importers of django/conf/__init__.py, and Flow lists what to check before accepting" width="100%" />
+
 Lens ships inside the plugin as a Claude Code mod. There is nothing separate to
 install. It is quiet at rest: each surface draws only when it has something to
 say, and the map pane opens only when you ask for it.

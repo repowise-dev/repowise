@@ -558,6 +558,8 @@ hover, and refactoring plans as CodeLens. One install also registers the MCP ser
 so the same index serves you and your agent. Install from the Marketplace or Open VSX
 and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
 
+<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
+
 **In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
 knows while Claude works: the file it is on and how many files depend on it, a change
 review after a turn that edits files (code health, tests to run, other branches on the
