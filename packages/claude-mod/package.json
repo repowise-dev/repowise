@@ -9,7 +9,8 @@
     "test": "vitest run --coverage",
     "build:mod": "node build.mjs",
     "test:mod": "node scripts/mod-test.mjs",
-    "bench:map": "node scripts/bench-map.mjs"
+    "bench:map": "node scripts/bench-map.mjs",
+    "test:e2e": "node --no-warnings=ExperimentalWarning scripts/e2e.mjs"
   },
   "devDependencies": {
     "@repowise-dev/api-client": "*",
