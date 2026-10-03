@@ -357,7 +357,12 @@ def _run_repo_checks(
         creds = credentials.load()
         if creds is None:
             checks.append(
-                _check("Hosted account", True, "Not signed in (optional: repowise login)")
+                _check(
+                    "Hosted account",
+                    True,
+                    "Not signed in (optional: repowise login). "
+                    "Publish this repo free: repowise publish",
+                )
             )
         elif creds.get("stale"):
             checks.append(

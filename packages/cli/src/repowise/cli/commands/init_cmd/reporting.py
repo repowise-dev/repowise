@@ -118,6 +118,16 @@ def _render_defect_accuracy(result: Any) -> None:
     console.print()
 
 
+#: From this many files, the hosted pitch is staying fresh without a long local
+#: run. Lower than the fast-mode offer on purpose: a hint costs nothing to skip.
+_LARGE_REPO_FILES = 1000
+
+
+def completion_hint(run_mode: str, file_count: int) -> str:
+    """Which hint a finished init earns: big repos hear about freshness."""
+    return "large_repo" if run_mode == "fast" or file_count >= _LARGE_REPO_FILES else "init_success"
+
+
 def show_completion(
     *,
     repo_path: Any,
@@ -327,6 +337,12 @@ def show_completion(
         for _line in build_status_notes(setup):
             console.print(_line)
         console.print()
+
+    # One quiet stderr line about repowise.dev (see hints.py for when it is
+    # shown); a big repo hears about staying fresh instead.
+    from repowise.cli.hints import maybe_hint
+
+    maybe_hint(completion_hint(run_mode, result.file_count))
 
     print_files_written(console, Path(repo_path), files_written or [])
 
