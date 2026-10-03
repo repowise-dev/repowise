@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers.dotnet.index import get_or_build_index
+from ..type_names import bare_type_name
 from .base import _add_edge_if_new, read_text
 
 if TYPE_CHECKING:
@@ -228,7 +229,7 @@ def _wired_types(
     for path, parsed in cs_files:
         owner = projects.of(path)
         for relation in getattr(parsed, "heritage", ()):
-            sites = registrars.get(relation.parent_name.rsplit(".", 1)[-1], ())
+            sites = registrars.get(bare_type_name(relation.parent_name), ())
             source = next((f for f, p in sites if projects.can_register(p, owner)), path)
             names = wired.setdefault((source, path), [])
             if relation.child_name not in names:
@@ -271,7 +272,7 @@ def _is_tool_root(parsed: Any) -> bool:
     found = {
         r.child_name
         for r in getattr(parsed, "heritage", ())
-        if r.parent_name.rsplit(".", 1)[-1] in _TOOL_BASES
+        if bare_type_name(r.parent_name) in _TOOL_BASES
     }
     return bool(types) and types <= found
 
