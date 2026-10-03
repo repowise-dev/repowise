@@ -403,10 +403,9 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           )}
         </DocsHeader>
 
-        {/* Pages still rendered from structure get the docs tip; a written
-            wiki gets the sharing one. */}
+        {/* Only while pages are still rendered from structure. */}
         <HostedNudgeSlot
-          candidates={[hasStubs && "docs", "share"]}
+          candidates={[hasStubs && "docs"]}
           repoId={repoId}
           className="mx-3 mt-2 sm:mx-6"
         />

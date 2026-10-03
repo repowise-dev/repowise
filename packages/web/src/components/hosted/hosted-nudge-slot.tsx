@@ -30,7 +30,7 @@ export function HostedNudgeSlot({ candidates, repoId, className }: Props) {
     <HostedNudge
       id={id}
       text={nudge.text}
-      href={hostedLink(nudge.surface, nudge.moment, identity?.anon_id ?? null)}
+      href={hostedLink(nudge.surface, nudge.moment)}
       className={className}
       action={
         repoId ? (

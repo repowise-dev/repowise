@@ -9,12 +9,10 @@ import type { HostedIdentity } from "@/lib/api/platform";
 
 const HOSTED_URL = "https://repowise.dev/hosted";
 
-/** `https://repowise.dev/hosted?src=local_web_<surface>[&aid=…]#<moment>`.
- *  `aid` rides along only when the server returned one, which it does only
- *  while telemetry is on. */
-export function hostedLink(surface: string, moment: string, anonId: string | null): string {
+/** `https://repowise.dev/hosted?src=local_web_<surface>#<moment>`. Only
+ *  `src`: a link someone opens never carries an install id. */
+export function hostedLink(surface: string, moment: string): string {
   const params = new URLSearchParams({ src: `local_web_${surface}` });
-  if (anonId) params.set("aid", anonId);
   return `${HOSTED_URL}?${params.toString()}#${moment}`;
 }
 
@@ -34,16 +32,6 @@ export const NUDGES = {
     surface: "mcp",
     moment: "mcp",
   },
-  share: {
-    text: "Share this page with your team: a public link, no install needed.",
-    surface: "share",
-    moment: "link",
-  },
-  security: {
-    text: "Scan your whole git history for leaked keys on repowise.dev.",
-    surface: "security",
-    moment: "security",
-  },
   stale: {
     text: "Keep this up to date automatically on every push.",
     surface: "stale",
@@ -52,11 +40,6 @@ export const NUDGES = {
   docs: {
     text: "Want AI-written docs without an API key? repowise.dev includes the model.",
     surface: "docs",
-    moment: "keys",
-  },
-  chat: {
-    text: "No LLM key set. Sign in to repowise.dev for 10 free answers a month.",
-    surface: "chat",
     moment: "keys",
   },
 } satisfies Record<string, Nudge>;

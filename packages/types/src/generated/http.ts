@@ -2043,7 +2043,6 @@ export interface HotspotResponse {
 }
 
 export interface IdentityResponse {
-  anon_id: string | null;
   signed_in: boolean;
   hints_enabled: boolean;
 }

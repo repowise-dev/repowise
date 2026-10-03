@@ -1,19 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { publishRepo, type PublishResult } from "@/lib/api/platform";
+import { config } from "@/lib/config";
 import { useHostedIdentity } from "@/lib/hooks/use-hosted-identity";
 
-/** Runs `repowise publish` for one repo through the local server. The CLI
- *  owns the decision and every message; this only holds the request state. */
+/** Runs `repowise publish` for one repo through the local server, after the
+ *  person confirms. The CLI owns the decision and every message; this only
+ *  holds the request state and the confirmation. */
 function usePublish(repoId: string) {
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<PublishResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function run() {
+    setConfirming(false);
     setBusy(true);
     setError(null);
     try {
@@ -26,7 +32,18 @@ function usePublish(repoId: string) {
     }
   }
 
-  return { busy, result, error, run };
+  const confirmDialog = (
+    <ConfirmDialog
+      open={confirming}
+      onOpenChange={setConfirming}
+      title="Publish to repowise.dev?"
+      description="repowise.dev will index this repo from its GitHub remote. Only what's pushed to GitHub is used; nothing on this machine is uploaded."
+      confirmLabel="Publish"
+      onConfirm={run}
+    />
+  );
+
+  return { busy, result, error, ask: () => setConfirming(true), confirmDialog };
 }
 
 function PublishOutcome({ result, error }: { result: PublishResult | null; error: string | null }) {
@@ -73,7 +90,7 @@ const SIGN_IN_FIRST = (
 /** The "Publish to repowise.dev" button with its result, for a repo page. */
 export function PublishPanel({ repoId }: { repoId: string }) {
   const { identity } = useHostedIdentity();
-  const { busy, result, error, run } = usePublish(repoId);
+  const { busy, result, error, ask, confirmDialog } = usePublish(repoId);
   // A server without the endpoint answers nothing; no button beats a broken one.
   if (!identity) return null;
 
@@ -81,7 +98,7 @@ export function PublishPanel({ repoId }: { repoId: string }) {
     <div className="flex flex-col gap-3">
       {identity.signed_in ? (
         <div>
-          <Button size="sm" onClick={run} disabled={busy}>
+          <Button size="sm" onClick={ask} disabled={busy}>
             {busy ? "Publishing…" : "Publish to repowise.dev"}
           </Button>
         </div>
@@ -94,24 +111,42 @@ export function PublishPanel({ repoId }: { repoId: string }) {
         Only what&apos;s pushed to GitHub is published. On a free account, public repos are
         free (up to 2); private repos and more repos need Pro, free for 10 days, card required.
       </p>
+      {confirmDialog}
     </div>
   );
 }
 
-/** A tip's free next step on a repo page: the same one-click publish. */
+/** The panel as a repo overview section. Unlike repo settings, the overview
+ *  is not where someone goes to publish, so it follows the tips switches. */
+export function PublishOverviewSection({ repoId }: { repoId: string }) {
+  const { identity } = useHostedIdentity();
+  // Off until read after mount, so SSR and the first client render agree.
+  const [tipsShown, setTipsShown] = useState(false);
+  useEffect(() => setTipsShown(!config.getHostedTipsHidden()), []);
+  if (!identity?.hints_enabled || !tipsShown) return null;
+
+  return (
+    <OverviewSection title="Publish on repowise.dev">
+      <PublishPanel repoId={repoId} />
+    </OverviewSection>
+  );
+}
+
+/** A tip's free next step on a repo page: the same publish, confirmed first. */
 export function PublishItFree({ repoId }: { repoId: string }) {
-  const { busy, result, error, run } = usePublish(repoId);
+  const { busy, result, error, ask, confirmDialog } = usePublish(repoId);
   return (
     <span className="flex flex-col gap-1">
       <button
         type="button"
-        onClick={run}
+        onClick={ask}
         disabled={busy}
         className="self-start font-medium text-[var(--color-accent-primary)] hover:underline disabled:opacity-60"
       >
         {busy ? "Publishing…" : "Publish it free"}
       </button>
       <PublishOutcome result={result} error={error} />
+      {confirmDialog}
     </span>
   );
 }

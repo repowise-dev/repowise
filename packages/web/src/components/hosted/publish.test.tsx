@@ -18,8 +18,14 @@ import { PublishPanel } from "./publish";
 
 const BUTTON = "Publish to repowise.dev";
 
+/** The panel's button, then the confirmation's. */
+async function publish() {
+  fireEvent.click(screen.getByRole("button", { name: BUTTON }));
+  fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+}
+
 beforeEach(() => {
-  mocks.identity.mockReturnValue({ anon_id: null, signed_in: true, hints_enabled: true });
+  mocks.identity.mockReturnValue({ signed_in: true, hints_enabled: true });
 });
 
 afterEach(() => {
@@ -29,7 +35,7 @@ afterEach(() => {
 
 describe("PublishPanel", () => {
   it("asks a signed-out user to sign in from a terminal instead of offering the button", () => {
-    mocks.identity.mockReturnValue({ anon_id: null, signed_in: false, hints_enabled: true });
+    mocks.identity.mockReturnValue({ signed_in: false, hints_enabled: true });
     render(<PublishPanel repoId="r1" />);
     expect(screen.queryByRole("button", { name: BUTTON })).toBeNull();
     expect(screen.getByText(/Sign in first: run/).textContent).toContain(
@@ -43,7 +49,7 @@ describe("PublishPanel", () => {
     mocks.publishRepo.mockReturnValue(new Promise((r) => (resolve = r)));
     render(<PublishPanel repoId="r1" />);
 
-    fireEvent.click(screen.getByRole("button", { name: BUTTON }));
+    await publish();
     const busy = screen.getByRole("button", { name: "Publishing…" }) as HTMLButtonElement;
     expect(busy.disabled).toBe(true);
     expect(mocks.publishRepo).toHaveBeenCalledWith("r1");
@@ -75,7 +81,7 @@ describe("PublishPanel", () => {
       repo: "o/n",
     });
     render(<PublishPanel repoId="r1" />);
-    fireEvent.click(screen.getByRole("button", { name: BUTTON }));
+    await publish();
 
     expect(await screen.findByText("Install the GitHub app first:")).toBeTruthy();
     expect(
@@ -83,6 +89,14 @@ describe("PublishPanel", () => {
         name: "https://github.com/apps/repowise-app/installations/new",
       }),
     ).toBeTruthy();
+  });
+
+  it("asks first, says nothing local is uploaded, and does nothing on cancel", async () => {
+    render(<PublishPanel repoId="r1" />);
+    fireEvent.click(screen.getByRole("button", { name: BUTTON }));
+    expect(await screen.findByText(/nothing on this machine is uploaded/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.publishRepo).not.toHaveBeenCalled();
   });
 
   it("states the free limits as a free account's, since the plan is unknown here", () => {

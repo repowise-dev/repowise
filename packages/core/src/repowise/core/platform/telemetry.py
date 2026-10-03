@@ -102,13 +102,6 @@ def get_anonymous_id() -> str | None:
     return anon if isinstance(anon, str) and anon else None
 
 
-def is_enabled() -> bool:
-    """Whether anonymous telemetry is on: no env hard-off and no stored opt-out."""
-    if _env_truthy("DO_NOT_TRACK") or _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
-        return False
-    return _load_state().get("telemetry_enabled") is not False
-
-
 def _is_ci() -> bool:
     from repowise.core.ci.base import CI_ENV_VARS
 

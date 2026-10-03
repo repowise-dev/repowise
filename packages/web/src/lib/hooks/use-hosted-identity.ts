@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { getHostedIdentity } from "@/lib/api/platform";
 
 /**
- * Sign-in state, tips switch and anonymous id, fetched once per session and
+ * Sign-in state and tips switch, fetched once per session and
  * shared by every tip and publish button. `null` while loading or when the
  * server predates the endpoint, which callers treat as "show nothing".
  */

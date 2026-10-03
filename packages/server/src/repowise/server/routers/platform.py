@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.platform import account, telemetry
+from repowise.core.platform import account
 from repowise.server.deps import resolve_session_factory, verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,6 @@ _CANT_RUN = "Couldn't run repowise publish here. Run it in a terminal: repowise 
 
 
 class IdentityResponse(BaseModel):
-    #: Only while telemetry is on, so the site's links carry it only by consent.
-    anon_id: str | None
     signed_in: bool
     hints_enabled: bool
 
@@ -51,9 +49,8 @@ class PublishRequest(BaseModel):
 
 @router.get("/identity", response_model=IdentityResponse)
 async def get_identity() -> IdentityResponse:
-    """Anonymous id, sign-in state and the tips switch, read from ``~/.repowise``."""
+    """Sign-in state and the tips switch, read from ``~/.repowise``."""
     return IdentityResponse(
-        anon_id=telemetry.get_anonymous_id() if telemetry.is_enabled() else None,
         signed_in=account.is_signed_in(),
         hints_enabled=account.hints_enabled(),
     )

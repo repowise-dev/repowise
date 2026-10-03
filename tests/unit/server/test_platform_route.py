@@ -46,7 +46,6 @@ async def _identity(client: AsyncClient) -> dict:
 @pytest.mark.anyio
 async def test_identity_with_nothing_stored(platform_client: AsyncClient, home: Path) -> None:
     assert await _identity(platform_client) == {
-        "anon_id": None,
         "signed_in": False,
         "hints_enabled": True,
     }
@@ -55,29 +54,12 @@ async def test_identity_with_nothing_stored(platform_client: AsyncClient, home: 
 
 
 @pytest.mark.anyio
-async def test_identity_carries_anon_id_while_telemetry_is_on(
+async def test_identity_never_carries_the_install_id(
     platform_client: AsyncClient, home: Path
 ) -> None:
+    # The UI's links carry their source only, so the id has no reason to leave.
     _write(home, "platform.json", {"anon_id": "abc123"})
-    assert (await _identity(platform_client))["anon_id"] == "abc123"
-
-
-@pytest.mark.anyio
-async def test_identity_drops_anon_id_on_stored_opt_out(
-    platform_client: AsyncClient, home: Path
-) -> None:
-    _write(home, "platform.json", {"anon_id": "abc123", "telemetry_enabled": False})
-    assert (await _identity(platform_client))["anon_id"] is None
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("var", ["DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
-async def test_identity_drops_anon_id_on_env_opt_out(
-    platform_client: AsyncClient, home: Path, monkeypatch: pytest.MonkeyPatch, var: str
-) -> None:
-    _write(home, "platform.json", {"anon_id": "abc123"})
-    monkeypatch.setenv(var, "1")
-    assert (await _identity(platform_client))["anon_id"] is None
+    assert "anon_id" not in await _identity(platform_client)
 
 
 @pytest.mark.anyio
