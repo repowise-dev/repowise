@@ -20,12 +20,17 @@ export const REPOSITORY_GRAPH_DOCK_INSET = "12.5rem";
 
 /** Architecture `?view=` values that render a table, not the Sigma canvas.
  *  `deps` is the legacy spelling of `packages`. Absent or unrecognised means
- *  the Map tab, which is the default landing view. */
+ *  the Map tab, which is the default landing view.
+ *
+ *  `tree` renders no canvas either: it is the same file graph as an outline.
+ *  Nothing is anchored in the bottom-right corner there, so lifting the pill
+ *  would open the same 200px of dead space this set exists to close. */
 const ARCHITECTURE_VIEWS_WITHOUT_CANVAS = new Set([
   "coupling",
   "packages",
   "symbols",
   "deps",
+  "tree",
 ]);
 
 /**

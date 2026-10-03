@@ -16,7 +16,7 @@ import type { CommunitySummaryItem } from "@repowise-dev/types/graph";
  * the scope, and it follows the `MapLensSwitcher` precedent on Code Health:
  * labelled, in the section header, not floating over the diagram.
  */
-export type GraphScope = "communities" | "files";
+export type GraphScope = "communities" | "files" | "tree";
 
 const SCOPES: { id: GraphScope; label: string; hint: string }[] = [
   {
@@ -30,6 +30,14 @@ const SCOPES: { id: GraphScope; label: string; hint: string }[] = [
     // caption under the tabs says exactly how big that slice is.
     label: "Files",
     hint: "Individual files and how they depend on each other",
+  },
+  {
+    id: "tree",
+    // The same file graph, read as an outline rather than as a canvas. It is
+    // the same axis as the two above — how the file graph is presented — so it
+    // lives in the same control, not in a tab of its own.
+    label: "Tree",
+    hint: "The same files as an outline, with what each one imports",
   },
 ];
 
