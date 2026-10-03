@@ -60,6 +60,14 @@ free and self-hosted · AGPL-3.0 or commercial
 
 ---
 
+Repowise is an ambitious project. We want every engineer, and every agent working
+beside them, to understand a codebase the way the person who has maintained it for
+five years does: what calls what, what tends to break, what nobody uses anymore, and
+why it was built this way. Cutting tokens was never the goal. It happens anyway,
+because an agent that can ask the index stops searching, opening and re-reading
+files to find out. Measured against the other context tools on the same agent
+tasks, it is also the largest saving.
+
 <a id="quickstart"></a>
 
 ## Set it up in one line
@@ -617,7 +625,8 @@ rows we lose beside the rows we win.
   memory on one laptop. Building just the call graph uses 75 MB at the median, the
   lowest of five tools on 35 of 35 repositories.
 
-**[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)**
+**[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)** ·
+**[The research it is built on →](docs/LINEAGE.md)**
 
 <details>
 <summary><strong>How it compares on capability</strong></summary>
@@ -741,7 +750,8 @@ Graph, git, health, change risk, tests, dead code and PR review make **zero LLM 
 Raw source is parsed in memory and never persisted. Prose is optional and runs on your
 own provider contract or fully offline through Ollama, chosen per repository. The
 threat model and data flows are in the
-[security review pack](docs/business/SECURITY_COMPLIANCE.md).
+[security review pack](docs/business/SECURITY_COMPLIANCE.md). The published research each layer is built on, and how we
+checked it, is in [LINEAGE.md](docs/LINEAGE.md).
 
 ### How accurate, and how big
 

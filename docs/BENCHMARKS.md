@@ -5,7 +5,8 @@ history, code health, test links, decisions and documentation, and serves that
 index to developers and their coding agents. Every number below was measured on
 public repositories at pinned commits, against answer keys and samples we
 publish in **[repowise-bench](https://github.com/repowise-dev/repowise-bench)**.
-Where another tool beats us, the row is on this page too.
+Where another tool beats us, the row is on this page too. The research each method comes from is listed in
+[LINEAGE.md](LINEAGE.md).
 
 ## At a glance
 

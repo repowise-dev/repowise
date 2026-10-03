@@ -94,6 +94,7 @@ For a map of every layer and how they feed each other, read
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
 | [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
+| [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
 | [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |
 
 ### Fix a problem
