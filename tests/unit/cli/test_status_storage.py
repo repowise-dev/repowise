@@ -20,3 +20,5 @@ def test_index_storage_bytes_sums_repowise_files(tmp_path: Path) -> None:
 
 def test_index_storage_bytes_missing_dir() -> None:
     assert status_cmd._index_storage_bytes(Path("/no/such/repowise/dir")) == 0
+
+
