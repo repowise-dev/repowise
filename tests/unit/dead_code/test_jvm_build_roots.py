@@ -31,6 +31,21 @@ _FILES = {
         "@Fork(1)\n@State(Scope.Thread)\npublic class SortBench {\n"
         "    @Benchmark\n    public void sort() {}\n}\n"
     ),
+    # A production plugin module (``qa/`` trees are test code) whose build
+    # names one class; its sibling no build script quotes stays a control,
+    # as does a class whose only annotation is not a JMH root.
+    "plugins/analysis/build.gradle": (
+        "esplugin {\n  classname = 'org.sample.analysis.AnalysisPlugin'\n}\n"
+    ),
+    "plugins/analysis/src/main/java/org/sample/analysis/AnalysisPlugin.java": (
+        "package org.sample.analysis;\n\npublic class AnalysisPlugin {\n}\n"
+    ),
+    "plugins/analysis/src/main/java/org/sample/analysis/Unlisted.java": (
+        "package org.sample.analysis;\n\npublic class Unlisted {\n}\n"
+    ),
+    "benchmarks/src/main/java/org/sample/bench/ForkOnly.java": (
+        "package org.sample.bench;\n\n@Fork(1)\npublic class ForkOnly {\n}\n"
+    ),
     "server/src/main/java/org/sample/core/FilterType.java": (
         "package org.sample.core;\n\npublic enum FilterType { A, B }\n"
     ),
@@ -123,6 +138,13 @@ def test_class_nothing_names_is_still_reported(tmp_path: Path):
     assert "Orphan" in _named(_report(tmp_path), DeadCodeKind.UNUSED_EXPORT)
 
 
+def test_unquoted_class_and_non_jmh_annotation_are_still_reported(tmp_path: Path):
+    exports = _named(_report(tmp_path), DeadCodeKind.UNUSED_EXPORT)
+    assert "AnalysisPlugin" not in exports
+    assert "Unlisted" in exports
+    assert "ForkOnly" in exports
+
+
 def test_name_meaning_another_type_elsewhere_is_not_a_use(tmp_path: Path):
     # A same-named nested record in another package and a generated message
     # class imported from another package both mean other types.
@@ -159,3 +181,54 @@ def test_kotlin_expect_declaration_is_the_same_type():
         actual: b"package org.sample.mp\n\ninternal actual class Bridge actual constructor(x: Int)\n",
     }
     assert JvmNameScope(source_map).can_refer("Bridge", actual, set(source_map), common)
+
+
+_DECLARING = "a/src/org/sample/a/Foo.java"
+_OTHER = "b/src/org/sample/b/Foo.java"
+
+
+def _scope_refers(writer_text: bytes) -> bool:
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    writer = "c/src/org/sample/c/User.java"
+    source_map = {
+        _DECLARING: b"package org.sample.a;\n\npublic class Foo {}\n",
+        _OTHER: b"package org.sample.b;\n\npublic class Foo {}\n",
+        writer: writer_text,
+    }
+    return JvmNameScope(source_map).can_refer("Foo", _DECLARING, set(source_map), writer)
+
+
+def test_fqn_or_package_import_lets_a_name_refer_to_the_class():
+    assert _scope_refers(b"package org.sample.c;\n\nimport org.sample.a.Foo;\n\nclass User { Foo f; }\n")
+    assert _scope_refers(b"package org.sample.c;\n\nimport org.sample.a.*;\n\nclass User { Foo f; }\n")
+    assert not _scope_refers(b"package org.sample.c;\n\nimport org.sample.b.*;\n\nclass User { Foo f; }\n")
+
+
+def test_kotlin_typealias_shadows_the_name():
+    assert not _scope_refers(
+        b"package org.sample.c\n\nimport org.sample.a.*\n\ntypealias Foo = String\nval f: Foo = \"\"\n"
+    )
+
+
+def test_each_writer_is_read_once(monkeypatch):
+    from repowise.core.analysis.dead_code import jvm_name_scope
+
+    calls = 0
+    declares = jvm_name_scope._declares
+
+    def counting(text: str, name: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return declares(text, name)
+
+    monkeypatch.setattr(jvm_name_scope, "_declares", counting)
+    source_map = {_OTHER: b"package org.sample.b;\n\npublic class Foo {}\n"}
+    source_map.update(
+        {f"x/X{i}.java": f"package org.sample.x{i};\n\nclass X{i} {{ Foo f; }}\n".encode() for i in range(300)}
+    )
+    source_map[_DECLARING] = b"package org.sample.a;\n\npublic class Foo {}\n"
+    scope = jvm_name_scope.JvmNameScope(source_map)
+    writers = set(source_map)
+    assert not any(scope.can_refer("Foo", _DECLARING, writers, w) for w in writers - {_DECLARING})
+    assert calls <= len(writers)

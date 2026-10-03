@@ -273,14 +273,20 @@ def _used_in(paths: list[str]) -> _Verdict:
 def _uses_elsewhere(
     finding: DeadCodeFindingData, files: set[str], scope: JvmNameScope | None
 ) -> list[str]:
-    """The files other than *finding*'s own whose mention of its name is a use."""
+    """The files other than *finding*'s own whose mention of its name is a use.
+
+    With *scope*, only the first such file is returned, code files first: one
+    is all :func:`_used_in` needs, and a common name has hundreds of writers.
+    """
     declaring = finding.file_path
-    return sorted(
-        f
-        for f in files - {declaring}
-        if not _is_own_type_sibling(f, declaring)
-        and (scope is None or scope.can_refer(finding.symbol_name, declaring, files, f))
+    others = sorted(f for f in files - {declaring} if not _is_own_type_sibling(f, declaring))
+    if scope is None:
+        return others
+    others.sort(key=lambda path: _language(path) in _NON_CODE_LANGUAGES)
+    first = next(
+        (f for f in others if scope.can_refer(finding.symbol_name, declaring, files, f)), None
     )
+    return [first] if first is not None else []
 
 
 def _verdicts(

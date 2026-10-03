@@ -30,15 +30,28 @@ from ...ingestion.resolvers.jvm_workspace import _PACKAGE_RE
 
 #: Keywords that declare a type. ``message`` is a protobuf declaration, whose
 #: generated class shares the message's name.
-_TYPE_KEYWORDS = r"(?:class|interface|enum|record|object|trait|message)"
+_TYPE_KEYWORDS = r"(?:class|interface|enum|record|object|trait|typealias|message)"
+
+#: A Kotlin ``expect`` or ``actual`` declaration is the same multiplatform type
+#: in another source set, not another type.
+_MULTIPLATFORM_RE = re.compile(r"\b(?:expect|actual)\b")
 
 
 class JvmNameScope:
-    """Answers :meth:`can_refer` over one source map, caching per-file facts."""
+    """Answers :meth:`can_refer` over one source map.
+
+    Every per-file fact (text, package, imports, whether it means another type
+    of a name) and the per-name "declared anywhere else" answer are computed
+    once, so judging every writer of a name stays linear in the writers.
+    """
 
     def __init__(self, source_map: dict[str, bytes]) -> None:
         self._source_map = source_map
         self._texts: dict[str, str] = {}
+        self._packages: dict[str, str] = {}
+        self._imports: dict[str, list[str]] = {}
+        self._others: dict[tuple[str, str, str], bool] = {}
+        self._declared_elsewhere: dict[tuple[str, str], bool] = {}
 
     def can_refer(self, name: str, declaring: str, writers: set[str], writer: str) -> bool:
         """Whether *name* written in *writer* can mean the class *declaring* declares.
@@ -52,23 +65,39 @@ class JvmNameScope:
             return False
         if self._package(writer) == package or _names_fqn(self._text(writer), fqn, package):
             return True
-        return not any(
-            self._means_other(path, name, fqn) for path in writers if path != declaring
-        )
+        key = (name, declaring)
+        elsewhere = self._declared_elsewhere.get(key)
+        if elsewhere is None:
+            elsewhere = any(
+                self._means_other(path, name, fqn) for path in writers if path != declaring
+            )
+            self._declared_elsewhere[key] = elsewhere
+        return not elsewhere
 
     def _means_other(self, path: str, name: str, fqn: str) -> bool:
         """Whether *path* declares its own *name* or imports one other than *fqn*."""
-        text = self._text(path)
-        if _declaration_re(name).search(text):
-            return True
-        return any(
-            imported.rsplit(".", 1)[-1] == name and imported != fqn
-            for imported in _IMPORT_LINE_RE.findall(text)
-        )
+        key = (path, name, fqn)
+        answer = self._others.get(key)
+        if answer is None:
+            answer = _declares(self._text(path), name) or any(
+                imported.rsplit(".", 1)[-1] == name and imported != fqn
+                for imported in self._imported(path)
+            )
+            self._others[key] = answer
+        return answer
 
     def _package(self, path: str) -> str:
-        match = _PACKAGE_RE.search(self._text(path))
-        return match.group(1) if match else ""
+        package = self._packages.get(path)
+        if package is None:
+            match = _PACKAGE_RE.search(self._text(path))
+            package = self._packages[path] = match.group(1) if match else ""
+        return package
+
+    def _imported(self, path: str) -> list[str]:
+        imported = self._imports.get(path)
+        if imported is None:
+            imported = self._imports[path] = _IMPORT_LINE_RE.findall(self._text(path))
+        return imported
 
     def _text(self, path: str) -> str:
         text = self._texts.get(path)
@@ -86,11 +115,16 @@ def _names_fqn(text: str, fqn: str, package: str) -> bool:
     return re.search(pattern, text, re.MULTILINE) is not None
 
 
+def _declares(text: str, name: str) -> bool:
+    """Whether *text* declares a type *name* that is not a multiplatform half."""
+    for match in _declaration_re(name).finditer(text):
+        start = text.rfind("\n", 0, match.start()) + 1
+        end = text.find("\n", match.end())
+        if not _MULTIPLATFORM_RE.search(text, start, end if end >= 0 else len(text)):
+            return True
+    return False
+
+
 @lru_cache(maxsize=1024)
 def _declaration_re(name: str) -> re.Pattern[str]:
-    # A Kotlin ``expect`` or ``actual`` declaration is the same multiplatform
-    # type in another source set, not another type.
-    return re.compile(
-        rf"^(?![^\n]*\b(?:expect|actual)\b)[^\n]*?\b{_TYPE_KEYWORDS}\s+{re.escape(name)}\b",
-        re.MULTILINE,
-    )
+    return re.compile(rf"\b{_TYPE_KEYWORDS}\s+{re.escape(name)}\b")
