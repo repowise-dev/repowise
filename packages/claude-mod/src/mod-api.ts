@@ -30,6 +30,15 @@ export interface RenderEvent {
   props: { hasSurvey?: boolean; bodyColumns?: number };
 }
 
+/** A `Pane` render: the pane's id is `requestId`. */
+export interface PaneRenderEvent {
+  surface?: string;
+  requestId: string;
+  props: { bodyColumns: number; placement: "dock" | "inline"; scroll: { bodyRows: number } };
+}
+
+export type UiOpenResult = { isPlaced: true } | { isPlaced: false; reason: string };
+
 export interface ModApi {
   session: { cwd(): Promise<string> };
   fs: {
@@ -55,7 +64,16 @@ export interface ModApi {
     /** `transcript`: a dim row of its own; `debug`: the debug log alone. */
     log(text: string, options: { to: "debug" | "transcript" }): void;
     resolve(e: { props: object }): Record<string, (props: Record<string, unknown>) => unknown>;
+    open(pane: { id: string; title?: string; rows?: number }): Promise<UiOpenResult>;
+    close(pane: { id: string }): Promise<void>;
+    blit(args: { requestId: string; key: string; cells: string; columns: number; rows: number }): Promise<{ deny?: string }>;
   };
+  command: { register(command: { name: string; description: string; immediate?: true }): Promise<unknown> };
+  settings: { read(): Promise<Readonly<Record<string, unknown>>> };
+}
+
+export interface SessionStartEvent {
+  cwd?: string;
 }
 
 export interface TurnCompleteEvent {
@@ -72,6 +90,8 @@ export interface ToolCallEvent {
   tool_use_id: string;
   agentId?: string;
   file_path?: unknown;
+  /** The tool's other arguments. */
+  [arg: string]: unknown;
 }
 
 export interface ToolCheckEvent {
@@ -108,7 +128,7 @@ export type Hook<E> = ($: ModApi, e: E, next: (e: E) => Promise<unknown>) => Pro
 export type PluginOptions = Readonly<Record<string, string | number | boolean | readonly string[]>>;
 
 export interface On {
-  (event: "session.start", hook: Hook<unknown>): unknown;
+  (event: "session.start", hook: Hook<SessionStartEvent>): unknown;
   (event: "turn.complete", hook: Hook<TurnCompleteEvent>): unknown;
   (event: "turn.start", hook: Hook<unknown>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;
@@ -119,4 +139,6 @@ export interface On {
   (event: "ui.render", matcher: { component: "ToolUse" }, hook: Hook<ToolUseEvent>): unknown;
   /** `next(e)` resolves to the settings hooks' folded result, `{ additionalContext: string[] }`. */
   (event: "classic.PostToolUse", hook: Hook<PostToolUseEvent>): unknown;
+  (event: "ui.render", matcher: { component: "Pane" }, hook: Hook<PaneRenderEvent>): unknown;
+  (event: "command.run", matcher: { command: string }, hook: Hook<unknown>): unknown;
 }

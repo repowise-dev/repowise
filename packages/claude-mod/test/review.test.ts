@@ -19,11 +19,12 @@ function drawn(node: Node | null): string[] {
   if (node === null) return [];
   if (node.type === "Text") return node.children;
   if (node.type === "Button") return [`${node.props.hotkey}: ${node.props.label}`];
+  if (node.type === "Raster") return [];
   return node.children.flatMap(drawn);
 }
 
 function colors(node: Node | null): string[] {
-  if (node === null || node.type === "Button") return [];
+  if (node === null || node.type === "Button" || node.type === "Raster") return [];
   if (node.type === "Text") return node.props.color === undefined ? [] : [node.props.color];
   return node.children.flatMap(colors);
 }

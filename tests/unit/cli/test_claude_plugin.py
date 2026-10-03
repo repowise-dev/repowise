@@ -46,17 +46,32 @@ def test_claude_plugin_lens_module() -> None:
     assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("field", ["lens_margin", "lens_squeeze", "lens_review"])
-def test_claude_plugin_lens_toggles(field: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "default", "read_as"),
+    [
+        # On by default: the bundle treats only `false` as off.
+        ("lens_margin", True, "!== false"),
+        ("lens_squeeze", True, "!== false"),
+        ("lens_review", True, "!== false"),
+        # Off by default: the map opens unasked only for someone who turned this on.
+        ("lens_pane_autoopen", False, "=== true"),
+    ],
+)
+def test_claude_plugin_lens_toggles(field: str, default: bool, read_as: str) -> None:
     config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
 
-    # The bundle reads each toggle by this name and treats only `false` as off.
     assert set(config[field]) == {"type", "title", "description", "default"}
     assert config[field]["type"] == "boolean"
-    assert config[field]["default"] is True
+    assert config[field]["default"] is default
     assert "—" not in config[field]["description"]
     bundle = (PLUGIN_ROOT / "hooks" / "lens" / "lens.js").read_text(encoding="utf-8")
-    assert f'options["{field}"] !== false' in bundle
+    assert f'options["{field}"] {read_as}' in bundle
+
+
+def test_claude_plugin_lens_toggles_are_all_tested() -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+
+    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_pane_autoopen"}
 
 
 def test_claude_plugin_mcp_uses_repowise() -> None:

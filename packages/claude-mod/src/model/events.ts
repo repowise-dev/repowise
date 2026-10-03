@@ -3,7 +3,9 @@
  */
 
 import type { Savings } from "@repowise-dev/api-client/costs";
+import { normalizeRepoPath } from "@repowise-dev/types/repos";
 import type { MarginNote, SavingsDelta, SessionAction } from "./session";
+import type { TrailAction } from "./trail";
 
 /** A finished turn counts only for the main loop; a subagent's carries `agentId`. */
 export function fromTurnComplete(e: { agentId?: string | undefined }): SessionAction | null {
@@ -13,20 +15,14 @@ export function fromTurnComplete(e: { agentId?: string | undefined }): SessionAc
 /** The tools whose file Lens follows. */
 export const FILE_TOOLS: ReadonlySet<string> = new Set(["Read", "Edit", "Write"]);
 
-const slashes = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
-
 /**
  * The repo-relative path a file tool works on, or null when it is not a file
  * tool or the file is outside the repo. Windows paths compare without case.
  */
 export function fileTarget(e: { tool: string; file_path?: unknown }, repoRoot: string | null): string | null {
   if (!FILE_TOOLS.has(e.tool) || repoRoot === null || typeof e.file_path !== "string") return null;
-  const root = slashes(repoRoot);
-  const file = slashes(e.file_path);
-  const windows = /^[A-Za-z]:\//.test(root) || root.startsWith("//");
-  const fold = (p: string) => (windows ? p.toLowerCase() : p);
-  if (!fold(file).startsWith(`${fold(root)}/`)) return null;
-  return file.slice(root.length + 1);
+  const windows = /^[A-Za-z]:[\\/]|^[\\/]{2}/.test(repoRoot);
+  return relativeTo(e.file_path, repoRoot, windows);
 }
 
 /** The tools whose augment notices become margin notes. */
@@ -87,4 +83,83 @@ export function savingsSince(now: SavingsDelta, base: SavingsDelta): SavingsDelt
   const usd = now.usd - base.usd;
   if (tokens < 0 || inferredTokens < 0 || usd < 0) return null;
   return { tokens, inferredTokens: Math.min(inferredTokens, tokens), usd };
+}
+
+// Where Claude looked, for the map.
+
+/** The tools whose calls say where Claude looked. */
+export const OBSERVED_TOOLS: ReadonlySet<string> = new Set(["Read", "Edit", "Write", "Grep", "Glob"]);
+
+/** Lens's own MCP calls fire tool events too; they are not Claude's attention. */
+const OWN_CALL_PREFIX = "toolu_plugin_";
+
+export interface PathContext {
+  /** The session's working directory, which relative tool paths resolve against. */
+  cwd: string;
+  isWindows: boolean;
+}
+
+/** `raw` resolved against the cwd, with forward slashes on Windows; case kept. */
+export function absolutePath(raw: string, ctx: PathContext): string {
+  const absolute = ctx.isWindows ? /^[A-Za-z]:[\\/]|^\\\\/.test(raw) : raw.startsWith("/");
+  // Ceiling: `..` segments are kept as written; the tools Lens reads report resolved paths.
+  const joined = absolute ? raw : `${ctx.cwd.replace(/[\\/]+$/, "")}/${raw.replace(/^\.[\\/]/, "")}`;
+  return ctx.isWindows ? joined.replace(/\\/g, "/") : joined;
+}
+
+/** Absolute and normalized: forward slashes and, on Windows, lowercase. */
+export function absoluteKey(raw: string, ctx: PathContext): string {
+  return normalizeRepoPath(absolutePath(raw, ctx), ctx.isWindows);
+}
+
+/** `absolute` relative to `root` with its own case kept, or null outside it. */
+export function relativeTo(absolute: string, root: string, isWindows: boolean): string | null {
+  const rootKey = normalizeRepoPath(root, isWindows);
+  const slashed = isWindows ? absolute.replace(/\\/g, "/") : absolute;
+  if (!normalizeRepoPath(slashed, isWindows).startsWith(`${rootKey}/`)) return null;
+  return slashed.slice(rootKey.length + 1);
+}
+
+/** What `next(e)` resolves to for a tool call, as recorded (test/fixtures/tool-calls.json). */
+interface ToolOutcome {
+  isError?: boolean;
+  result?: { mode?: string; filenames?: unknown } | string;
+}
+
+function filenamesOf(out: ToolOutcome): string[] {
+  const names = typeof out.result === "object" ? out.result.filenames : undefined;
+  return Array.isArray(names) ? names.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** A Grep that printed lines (`content`) names no files: it says nothing about where the hits are. */
+function isContentGrep(tool: string, out: ToolOutcome): boolean {
+  return tool === "Grep" && typeof out.result === "object" && out.result.mode === "content";
+}
+
+function searchAction(out: ToolOutcome, ctx: PathContext): TrailAction {
+  return { type: "search", paths: filenamesOf(out).map((f) => absoluteKey(f, ctx)) };
+}
+
+function fileAction(e: { tool: string; [arg: string]: unknown }, ctx: PathContext): TrailAction | null {
+  const raw = e["file_path"];
+  if (typeof raw !== "string") return null;
+  const path = absoluteKey(raw, ctx);
+  return e.tool === "Read" ? { type: "read", path } : { type: "edit", path };
+}
+
+/**
+ * What Claude's tool call says about where it looked, from the call and what
+ * `next(e)` returned: a read, a search's hits, or an edit. Subagent calls
+ * count (they are Claude's attention too); MCP and other tools do not, and
+ * neither do Lens's own calls, a call that failed, or a content-mode Grep.
+ */
+export function fromToolCall(
+  e: { tool: string; tool_use_id?: string | undefined; [arg: string]: unknown },
+  outcome: unknown,
+  ctx: PathContext,
+): TrailAction | null {
+  if (!OBSERVED_TOOLS.has(e.tool) || e.tool_use_id?.startsWith(OWN_CALL_PREFIX)) return null;
+  const out = (outcome ?? {}) as ToolOutcome;
+  if (out.isError === true || isContentGrep(e.tool, out)) return null;
+  return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
 }

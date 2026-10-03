@@ -10,9 +10,10 @@ async function load(options: Record<string, boolean> = {}): Promise<Hooks> {
   vi.resetModules();
   const { register } = await import("../src/register");
   const hooks: Hooks = {};
-  // Render hooks are keyed by component: `ui.render:AbovePrompt`.
+  // Hooks with a matcher are keyed by it: `ui.render:AbovePrompt`, `command.run:lens`.
   const on = ((event: string, a: unknown, b?: unknown) => {
-    const key = b === undefined ? event : `${event}:${(a as { component: string }).component}`;
+    const matcher = a as { component?: string; command?: string };
+    const key = b === undefined ? event : `${event}:${matcher.component ?? matcher.command}`;
     hooks[key] = (b ?? a) as Hook<any>;
   }) as On;
   register(on, options);
@@ -98,6 +99,9 @@ function uiFor(calls: Calls): ModApi["ui"] {
       Text: (props) => ({ el: "Text", props }),
       Button: (props) => ({ el: "Button", props }),
     }),
+    open: async () => ({ isPlaced: true }),
+    close: async () => {},
+    blit: async () => ({}),
   };
 }
 
@@ -122,7 +126,7 @@ function fakeDollar(o: DollarOptions = {}) {
       return "/work/app";
     },
   };
-  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), prompt: promptFor(calls), ui: uiFor(calls) };
+  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), prompt: promptFor(calls), ui: uiFor(calls), command: { register: async () => ({}) }, settings: { read: async () => ({}) } };
   const hold = () => {
     gate.hold = true;
     gate.wait = new Promise<void>((resolve) => (release = resolve));
@@ -143,12 +147,14 @@ describe("register", () => {
   it("registers its hooks and nothing else", () => {
     expect(Object.keys(hooks).sort()).toEqual([
       "classic.PostToolUse",
+      "command.run:lens",
       "session.start",
       "tool.call",
       "tool.check",
       "turn.complete",
       "turn.start",
       "ui.render:AbovePrompt",
+      "ui.render:Pane",
       "ui.render:Spinner",
       "ui.render:ToolResult",
       "ui.render:ToolUse",

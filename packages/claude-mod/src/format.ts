@@ -1,6 +1,8 @@
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+
 /** `1 file`, `1,204 files`. */
 export function countOf(n: number, singular: string, plural: string): string {
-  return `${n.toLocaleString("en-US")} ${n === 1 ? singular : plural}`;
+  return `${formatNumber(n)} ${n === 1 ? singular : plural}`;
 }
 
 /**

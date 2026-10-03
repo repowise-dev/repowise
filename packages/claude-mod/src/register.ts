@@ -5,18 +5,21 @@
  */
 
 import { getSavings } from "@repowise-dev/api-client/costs";
-import { discover, readFreshness } from "./data/discovery";
+import { discover, isWindowsPath, readFreshness, type Discovery } from "./data/discovery";
 import { callTool, fetchFileContext, isOwnLensCall, resetMcp, warmMcp } from "./data/mcp";
 import { withTimeout } from "./data/transport";
 import { fit } from "./format";
 import type { Host } from "./host";
+import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
   CheckNext,
   ModApi,
   On,
+  PaneRenderEvent,
   PluginOptions,
   PostToolUseEvent,
   RenderEvent,
+  SessionStartEvent,
   SpinnerEvent,
   ToolCallEvent,
   ToolCheckEvent,
@@ -24,13 +27,24 @@ import type {
   ToolUseEvent,
   TurnCompleteEvent,
 } from "./mod-api";
-import { EDIT_TOOLS, fileTarget, fromTurnComplete, notesFromAugment, savingsSince, savingsTotals } from "./model/events";
-import { initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
+import {
+  EDIT_TOOLS,
+  OBSERVED_TOOLS,
+  absolutePath,
+  fileTarget,
+  fromToolCall,
+  fromTurnComplete,
+  notesFromAugment,
+  savingsSince,
+  savingsTotals,
+} from "./model/events";
+import { hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
 import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/review";
-import { REVIEW_TIMEOUT_S } from "./views/copy";
+import { HINTS, MAP_COPY, REVIEW_TIMEOUT_S } from "./views/copy";
+import { MAP_KEY } from "./views/mapPane";
 import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
 import { spinnerSuffix } from "./views/spinner";
 import { bashText, parseSqueeze, type Squeeze } from "./model/squeeze";
@@ -42,6 +56,9 @@ const SAVINGS_TIMEOUT_MS = 30_000;
 const SAVINGS_COOLDOWN_MS = 60_000;
 /** The server's key in the plugin's .mcp.json. */
 const MCP_SERVER_KEY = "repowise";
+const PANE_ID = "lens";
+/** Rows an inline pane asks for: the tallest inline map (20) plus a legend wrapped once. */
+const PANE_ROWS = 28;
 
 let state: SessionState = initialSession;
 /** Bumped per session, so a refresh started in an earlier one never lands in this one. */
@@ -79,21 +96,27 @@ interface StartedReview {
   outcome: Promise<SessionAction>;
 }
 let started: StartedReview | null = null;
+/** The `lens_pane_autoopen` toggle, fixed for one activation. */
+let autoOpenOn = false;
+/** The last discovery, for the map pane's notice and its repo. */
+let discovery: Discovery | null = null;
+/** The session's cwd, from its start event, so observing a tool call waits on nothing. */
+let cwd: string | null = null;
+let map = new LensMap(false);
+
 /** Cut so an error stays one line under the answer. */
 const ERROR_CELLS = 160;
 
 /** What a background refresh needs from a hook's `$`, as closures (the engine forbids keeping `$` itself). */
-interface Bound {
+interface Bound extends MapIO {
   host: Host;
-  redraw(): void;
-  /** Debug log only (`--debug-file`), never the user's screen. */
-  debug(message: string): void;
 }
 
 // Built from the calling hook's own `$`. REST through `$.http` from a later
 // continuation of these closures works; an MCP call works only when it starts
 // while a Lens hook is live (one started later is refused), so MCP calls are
-// started synchronously from inside a hook (see data/mcp.ts).
+// started synchronously from inside a hook (see data/mcp.ts). A late
+// `$.ui.blit` is not refused either (checked headless from a timer).
 function bind($: ModApi): Bound {
   const host: Host = {
     session: { cwd: () => $.session.cwd() },
@@ -124,7 +147,16 @@ function bind($: ModApi): Bound {
     host,
     redraw: () => $.ui.invalidate("ui.render"),
     debug: (message) => $.ui.log(`lens: ${message}`, { to: "debug" }),
+    blit: (cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }),
+    // No focus: the map has no controls, and the prompt keeps the keyboard.
+    openPane: () => $.ui.open({ id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }),
+    closePane: () => $.ui.close({ id: PANE_ID }),
   };
+}
+
+function mapRepo(d: Discovery): MapRepo | null {
+  if (d.mode !== "full" || d.repo === undefined || d.repoRoot === null) return null;
+  return { id: d.repo.id, root: d.repoRoot, updatedAt: d.repo.updatedAt, caseInsensitive: isWindowsPath(d.repoRoot) };
 }
 
 function dispatch(b: Bound, action: SessionAction): void {
@@ -141,10 +173,12 @@ async function refreshOnce(b: Bound, gen: number): Promise<void> {
   const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
   if (gen !== generation) return;
   if (indexed) warmMcp(h);
+  discovery = found;
   const action: SessionAction = { type: "discovered", mode: found.mode, freshness, repoRoot: found.repoRoot };
   if (found.liteReason !== undefined) action.liteReason = found.liteReason;
   dispatch(b, action);
-  if (found.repoId !== undefined) refreshSavings(b, found.repoId, gen);
+  if (found.repo !== undefined) refreshSavings(b, found.repo.id, gen);
+  map.setRepo(b, mapRepo(found));
 }
 
 /**
@@ -194,10 +228,17 @@ function refresh(b: Bound): void {
     });
 }
 
-async function onSessionStart($: ModApi, e: unknown, next: (e: unknown) => Promise<unknown>): Promise<unknown> {
+async function onSessionStart(
+  $: ModApi,
+  e: SessionStartEvent,
+  next: (e: SessionStartEvent) => Promise<unknown>,
+): Promise<unknown> {
   const b = bind($);
   try {
     generation++;
+    cwd = typeof e.cwd === "string" ? e.cwd : null;
+    map.dispose();
+    map = new LensMap(autoOpenOn);
     state = initialSession;
     reviewGeneration++;
     editsThisTurn = 0;
@@ -209,6 +250,8 @@ async function onSessionStart($: ModApi, e: unknown, next: (e: unknown) => Promi
     resetMcp();
     warmMcp(b.host);
     refresh(b);
+    await $.command.register({ name: "lens", description: MAP_COPY.command, immediate: true });
+    map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
   } catch (err) {
     // Lens stays quiet; the session is unaffected.
     b.debug(`session.start failed: ${String(err)}`);
@@ -232,6 +275,7 @@ function noteTurnEnd(b: Bound, e: TurnCompleteEvent): void {
   try {
     const action = fromTurnComplete(e);
     if (action === null) return;
+    map.turnEnded();
     dispatch(b, action);
     refresh(b);
   } catch (err) {
@@ -356,7 +400,9 @@ function pressDetails($: ModApi): void {
 async function onBand($: ModApi, e: RenderEvent, next: (e: RenderEvent) => Promise<unknown>): Promise<unknown> {
   const theirs = await next(e);
   try {
-    const tree = bandView(state, { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true });
+    const line = map.bandLine();
+    const viewport = { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true };
+    const tree = bandView(state, viewport, line === null ? [] : [line]);
     if (tree === null) return theirs;
     const elements = $.ui.resolve(e);
     const ours = materialize(tree, elements, {
@@ -404,7 +450,30 @@ async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) 
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
   editLanded(b, e, result);
+  observeTrail($, b, e, result);
   return result;
+}
+
+/** Where Claude looked, for the map: recorded from what next(e) returned, waiting on nothing. */
+function observeTrail($: ModApi, b: Bound, e: ToolCallEvent, result: unknown): void {
+  if (!OBSERVED_TOOLS.has(e.tool)) return;
+  try {
+    const here = cwd;
+    // Loaded after the session started: learn the cwd for the next call, skip this one.
+    if (here === null) {
+      void $.session.cwd().then(
+        (c) => (cwd = c),
+        (err: unknown) => b.debug(`cwd failed: ${String(err)}`),
+      );
+      return;
+    }
+    const ctx = { cwd: here, isWindows: isWindowsPath(here) };
+    const action = fromToolCall(e, result, ctx);
+    const raw = e.file_path;
+    if (action !== null) map.observe(b, action, typeof raw === "string" ? absolutePath(raw, ctx) : null);
+  } catch (err) {
+    b.debug(`tool.call observe failed: ${String(err)}`);
+  }
 }
 
 /** A file tool starting in the repo: the spinner's file, and its context fetched. */
@@ -519,13 +588,43 @@ async function onToolUse($: ModApi, e: ToolUseEvent, next: (e: ToolUseEvent) => 
   }
 }
 
+async function onLensCommand($: ModApi): Promise<unknown> {
+  const b = bind($);
+  try {
+    if (discovery === null || mapRepo(discovery) === null) refresh(b);
+    await map.request(b);
+  } catch (err) {
+    b.debug(`/lens failed: ${String(err)}`);
+  }
+  // Nothing in the transcript: the pane is the answer.
+  return {};
+}
+
+async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) => Promise<unknown>): Promise<unknown> {
+  if (e.requestId !== PANE_ID) return next(e);
+  const b = bind($);
+  try {
+    const d = discovery;
+    const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+    const { bodyColumns, placement, scroll } = e.props;
+    const tree = map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows });
+    return materialize(tree, $.ui.resolve(e));
+  } catch (err) {
+    b.debug(`map render failed: ${String(err)}`);
+    return next(e);
+  }
+}
+
 // `options` are the plugin's userConfig toggles; a change reloads the module.
 export function register(on: On, options: PluginOptions = {}): void {
   reviewOn = options["lens_review"] !== false;
+  autoOpenOn = options["lens_pane_autoopen"] === true;
   on("session.start", onSessionStart);
   if (reviewOn) on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
+  on("ui.render", { component: "Pane" }, onPane);
+  on("command.run", { command: "lens" }, onLensCommand);
   on("tool.call", onToolCall);
   on("tool.check", onToolCheck);
   on("ui.render", { component: "Spinner" }, onSpinner);

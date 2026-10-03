@@ -3,9 +3,11 @@
  * copied; Lens never runs them.
  */
 
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { countOf } from "../format";
 import type { FileContext, HintKind, IndexFreshness, MarginNote, SavingsDelta } from "../model/session";
 import type { Squeeze } from "../model/squeeze";
+import type { Callers } from "../model/trail";
 
 export const HINTS: Record<HintKind, string> = {
   "no-server": "Lens map needs the local server: repowise serve --no-ui",
@@ -178,4 +180,66 @@ export function directiveLines(d: { status: string; headline: string; reasons?: 
 export function runTestsPrompt(t: { tests: string[]; truncated: boolean; total: number; measured: boolean }): string {
   const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
   return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
+}
+
+// The living map.
+
+export const MAP_COPY = {
+  command: "Open the Lens map: code health, where Claude reads, what an edit reaches",
+  title: "Lens",
+  looking: "Lens map: looking for the local server",
+  loading: "Lens map: loading the health map",
+  failed: "Lens map could not load the health map; it tries again on /lens",
+  desktop: "Lens map: terminal only for now",
+  noScore: "Not scored",
+  read: "Claude read",
+  edited: "edited",
+  importer: "imports the edited file",
+  match: "search match",
+  waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens",
+} as const;
+
+/** /lens could not place the pane; the engine's reason names the width it needs. */
+export function notPlacedLine(reason: string): string {
+  return `Lens map needs a wider terminal: ${reason}`;
+}
+
+export interface ScopeFacts {
+  drawn: number;
+  repositoryTotal: number;
+  /** "2h ago", or null when the server did not say. */
+  indexed: string | null;
+  /** Files the server left out at its cap, and the cap. */
+  beyondCap: number;
+  cap: number;
+}
+
+/** The scope, as parts the legend joins with ` · ` and wraps onto two rows when narrow. */
+export function scopeParts(s: ScopeFacts): string[] {
+  const parts =
+    s.drawn === s.repositoryTotal
+      ? [`${countOf(s.drawn, "file", "files")}, all drawn`]
+      : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, "rest empty or too small"];
+  if (s.indexed !== null) parts.push(`indexed ${s.indexed}`);
+  if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
+  return parts;
+}
+
+/** Reads so far (`200+` once capped), what was not drawn, and what the last search matched. */
+export function readsLine(reads: { count: number; capped: boolean; notDrawn: number }, matched: number | null): string | null {
+  const parts: string[] = [];
+  if (reads.count > 0) {
+    parts.push(reads.capped ? `${formatNumber(reads.count)}+ files read` : countOf(reads.count, "file read", "files read"));
+  }
+  if (reads.notDrawn > 0) parts.push(`${formatNumber(reads.notDrawn)} not drawn`);
+  if (matched !== null) parts.push(`last search matched ${countOf(matched, "file", "files")}`);
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+
+/** The importers of the edited file: inferred from the import graph, not observed calls. */
+export function callersLine(name: string, callers: Callers | null, notDrawn: number): string {
+  if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
+  if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
+  const found = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)`;
+  return notDrawn === 0 ? found : `${found} · ${formatNumber(notDrawn)} not drawn`;
 }

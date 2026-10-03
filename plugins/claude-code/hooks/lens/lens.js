@@ -125,6 +125,24 @@ async function apiGet(path, params, fetchOptions) {
   return handleResponse(res);
 }
 __name(apiGet, "apiGet");
+async function apiPost(path, body, fetchOptions, params) {
+  const url = new URL(`${BASE_URL}${path}`, typeof window !== "undefined" ? window.location.href : "http://localhost");
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== void 0 && v !== null) {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  const res = await doFetch(url.toString(), {
+    method: "POST",
+    headers: requestHeaders(),
+    ...body !== void 0 ? { body: JSON.stringify(body) } : {},
+    ...fetchOptions
+  });
+  return handleResponse(res);
+}
+__name(apiPost, "apiPost");
 
 // ../api-client/src/costs.ts
 async function getSavings(repoId, opts = {}) {
@@ -208,8 +226,8 @@ function parentDir(p) {
   return trimmed.slice(0, cut);
 }
 __name(parentDir, "parentDir");
-async function findIndexedRoot(host, cwd) {
-  let dir = cwd;
+async function findIndexedRoot(host, cwd2) {
+  let dir = cwd2;
   for (let i = 0; dir !== null && i < MAX_WALK; i++) {
     if (await host.fs.exists(join(dir, ".repowise/state.json"))) return dir;
     dir = parentDir(dir);
@@ -240,13 +258,13 @@ function isLoopbackUrl(url) {
   }
 }
 __name(isLoopbackUrl, "isLoopbackUrl");
-async function isPidAlive(host, pid, cwd) {
+async function isPidAlive(host, pid, cwd2) {
   try {
-    if (isWindowsPath(cwd)) {
-      const out2 = await host.process.run(["tasklist", "/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], cwd);
+    if (isWindowsPath(cwd2)) {
+      const out2 = await host.process.run(["tasklist", "/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], cwd2);
       return out2.exitCode === 0 && out2.stdout.includes(`"${pid}"`);
     }
-    const out = await host.process.run(["ps", "-p", String(pid), "-o", "pid="], cwd);
+    const out = await host.process.run(["ps", "-p", String(pid), "-o", "pid="], cwd2);
     return out.exitCode === 0 && out.stdout.trim() === String(pid);
   } catch {
     return null;
@@ -265,7 +283,7 @@ async function probeServer(host, lock, repoRoot) {
     const win = isWindowsPath(repoRoot);
     const target = normalizeRepoPath(repoRoot, win);
     const match = repos.find((r) => r.local_path && normalizeRepoPath(r.local_path, win) === target);
-    return match ? { kind: "ok", repoId: match.id } : { kind: "unlisted" };
+    return match ? { kind: "ok", repoId: match.id, updatedAt: match.updated_at ?? null } : { kind: "unlisted" };
   } catch (err) {
     if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) return { kind: "auth" };
     return { kind: "down" };
@@ -280,8 +298,8 @@ async function mcpReachable(host) {
   }
 }
 __name(mcpReachable, "mcpReachable");
-async function unindexedMode(host, cwd) {
-  const inWorkTree = (await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() === "true";
+async function unindexedMode(host, cwd2) {
+  const inWorkTree = (await git(host, cwd2, ["rev-parse", "--is-inside-work-tree"]))?.trim() === "true";
   if (!inWorkTree) return "no-repo";
   return await mcpReachable(host) ? "no-index" : "no-cli";
 }
@@ -294,19 +312,19 @@ async function serverState(host, repoRoot) {
 }
 __name(serverState, "serverState");
 async function discover(host) {
-  const cwd = await host.session.cwd();
-  const repoRoot = await findIndexedRoot(host, cwd);
-  if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
+  const cwd2 = await host.session.cwd();
+  const repoRoot = await findIndexedRoot(host, cwd2);
+  if (repoRoot === null) return { mode: await unindexedMode(host, cwd2), repoRoot };
   const server = await serverState(host, repoRoot);
-  if (server.kind === "ok") return { mode: "full", repoRoot, repoId: server.repoId };
+  if (server.kind === "ok") return { mode: "full", repoRoot, repo: { id: server.repoId, updatedAt: server.updatedAt } };
   if (!await mcpReachable(host)) return { mode: "no-cli", repoRoot };
   const liteReason = server.kind === "down" ? "no-server" : server.kind;
   return { mode: "lite", liteReason, repoRoot };
 }
 __name(discover, "discover");
-async function git(host, cwd, args) {
+async function git(host, cwd2, args) {
   try {
-    const out = await withTimeout(host.process.run(["git", ...args], cwd), GIT_TIMEOUT_MS, "git");
+    const out = await withTimeout(host.process.run(["git", ...args], cwd2), GIT_TIMEOUT_MS, "git");
     return out.exitCode === 0 ? out.stdout : null;
   } catch {
     return null;
@@ -400,9 +418,51 @@ async function fetchFileContext(host, path) {
 }
 __name(fetchFileContext, "fetchFileContext");
 
+// ../ui/src/lib/format.ts
+function parseDate(date) {
+  if (date instanceof Date) return date;
+  if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
+    return /* @__PURE__ */ new Date(`${date.trim()}Z`);
+  }
+  return new Date(date);
+}
+__name(parseDate, "parseDate");
+var NUMBER_FORMAT = new Intl.NumberFormat("en-US");
+function formatNumber(n) {
+  return NUMBER_FORMAT.format(n);
+}
+__name(formatNumber, "formatNumber");
+function formatRelativeTime(date) {
+  const d = parseDate(date);
+  const now = Date.now();
+  const diff = now - d.getTime();
+  const seconds = Math.floor(diff / 1e3);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const weeks = Math.floor(days / 7);
+  const months = Math.floor(days / 30);
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+  if (weeks < 5) return `${weeks}w ago`;
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+__name(formatRelativeTime, "formatRelativeTime");
+function formatRelativeTimeOrNull(iso, fallback = "—") {
+  if (!iso) return fallback;
+  const d = parseDate(iso);
+  if (Number.isNaN(d.getTime()) || d.getTime() > Date.now()) return fallback;
+  return formatRelativeTime(d);
+}
+__name(formatRelativeTimeOrNull, "formatRelativeTimeOrNull");
+
 // src/format.ts
 function countOf(n, singular, plural) {
-  return `${n.toLocaleString("en-US")} ${n === 1 ? singular : plural}`;
+  return `${formatNumber(n)} ${n === 1 ? singular : plural}`;
 }
 __name(countOf, "countOf");
 function fit(text2, columns) {
@@ -412,21 +472,36 @@ function fit(text2, columns) {
 }
 __name(fit, "fit");
 
+// ../api-client/src/blast-radius.ts
+async function analyzeBlastRadius(repoId, body) {
+  return apiPost(
+    `/api/repos/${repoId}/blast-radius`,
+    body
+  );
+}
+__name(analyzeBlastRadius, "analyzeBlastRadius");
+
+// ../api-client/src/code-health.ts
+async function getHealthMap(repoId, opts = {}) {
+  return apiGet(`/api/repos/${repoId}/health/map`, {
+    cap: opts.cap,
+    active: opts.active?.length ? opts.active.join(",") : void 0,
+    scope: opts.scope,
+    counts: opts.counts
+  });
+}
+__name(getHealthMap, "getHealthMap");
+
 // src/model/events.ts
 function fromTurnComplete(e) {
   return e.agentId === void 0 ? { type: "turnCompleted" } : null;
 }
 __name(fromTurnComplete, "fromTurnComplete");
 var FILE_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write"]);
-var slashes = /* @__PURE__ */ __name((p) => p.replace(/\\/g, "/").replace(/\/+$/, ""), "slashes");
 function fileTarget(e, repoRoot) {
   if (!FILE_TOOLS.has(e.tool) || repoRoot === null || typeof e.file_path !== "string") return null;
-  const root = slashes(repoRoot);
-  const file = slashes(e.file_path);
-  const windows = /^[A-Za-z]:\//.test(root) || root.startsWith("//");
-  const fold = /* @__PURE__ */ __name((p) => windows ? p.toLowerCase() : p, "fold");
-  if (!fold(file).startsWith(`${fold(root)}/`)) return null;
-  return file.slice(root.length + 1);
+  const windows = /^[A-Za-z]:[\\/]|^[\\/]{2}/.test(repoRoot);
+  return relativeTo(e.file_path, repoRoot, windows);
 }
 __name(fileTarget, "fileTarget");
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write"]);
@@ -471,6 +546,1465 @@ function savingsSince(now, base) {
   return { tokens, inferredTokens: Math.min(inferredTokens, tokens), usd };
 }
 __name(savingsSince, "savingsSince");
+var OBSERVED_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write", "Grep", "Glob"]);
+var OWN_CALL_PREFIX = "toolu_plugin_";
+function absolutePath(raw, ctx) {
+  const absolute = ctx.isWindows ? /^[A-Za-z]:[\\/]|^\\\\/.test(raw) : raw.startsWith("/");
+  const joined = absolute ? raw : `${ctx.cwd.replace(/[\\/]+$/, "")}/${raw.replace(/^\.[\\/]/, "")}`;
+  return ctx.isWindows ? joined.replace(/\\/g, "/") : joined;
+}
+__name(absolutePath, "absolutePath");
+function absoluteKey(raw, ctx) {
+  return normalizeRepoPath(absolutePath(raw, ctx), ctx.isWindows);
+}
+__name(absoluteKey, "absoluteKey");
+function relativeTo(absolute, root, isWindows) {
+  const rootKey = normalizeRepoPath(root, isWindows);
+  const slashed = isWindows ? absolute.replace(/\\/g, "/") : absolute;
+  if (!normalizeRepoPath(slashed, isWindows).startsWith(`${rootKey}/`)) return null;
+  return slashed.slice(rootKey.length + 1);
+}
+__name(relativeTo, "relativeTo");
+function filenamesOf(out) {
+  const names = typeof out.result === "object" ? out.result.filenames : void 0;
+  return Array.isArray(names) ? names.filter((v) => typeof v === "string") : [];
+}
+__name(filenamesOf, "filenamesOf");
+function isContentGrep(tool, out) {
+  return tool === "Grep" && typeof out.result === "object" && out.result.mode === "content";
+}
+__name(isContentGrep, "isContentGrep");
+function searchAction(out, ctx) {
+  return { type: "search", paths: filenamesOf(out).map((f) => absoluteKey(f, ctx)) };
+}
+__name(searchAction, "searchAction");
+function fileAction(e, ctx) {
+  const raw = e["file_path"];
+  if (typeof raw !== "string") return null;
+  const path = absoluteKey(raw, ctx);
+  return e.tool === "Read" ? { type: "read", path } : { type: "edit", path };
+}
+__name(fileAction, "fileAction");
+function fromToolCall(e, outcome, ctx) {
+  if (!OBSERVED_TOOLS.has(e.tool) || e.tool_use_id?.startsWith(OWN_CALL_PREFIX)) return null;
+  const out = outcome ?? {};
+  if (out.isError === true || isContentGrep(e.tool, out)) return null;
+  return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
+}
+__name(fromToolCall, "fromToolCall");
+
+// src/model/trail.ts
+var MAX_READS = 200;
+var initialTrail = {
+  reads: [],
+  readsCapped: false,
+  hits: [],
+  searches: 0,
+  edit: null,
+  edits: 0,
+  callers: null
+};
+function withRead(state2, path) {
+  if (state2.reads.includes(path)) return state2;
+  const reads = [...state2.reads, path];
+  if (reads.length <= MAX_READS) return { ...state2, reads };
+  return { ...state2, reads: reads.slice(reads.length - MAX_READS), readsCapped: true };
+}
+__name(withRead, "withRead");
+function reduceTrail(state2, action) {
+  switch (action.type) {
+    case "read":
+      return withRead(state2, action.path);
+    case "search":
+      return { ...state2, hits: action.paths, searches: state2.searches + 1 };
+    case "edit":
+      return {
+        ...withRead(state2, action.path),
+        edit: action.path,
+        edits: state2.edits + 1,
+        callers: { status: "loading" }
+      };
+    case "callers":
+      return action.edits === state2.edits ? { ...state2, callers: action.callers } : state2;
+  }
+}
+__name(reduceTrail, "reduceTrail");
+
+// src/views/copy.ts
+var HINTS = {
+  "no-server": "Lens map needs the local server: repowise serve --no-ui",
+  auth: "local server needs an API key; Lens does not read keys",
+  unlisted: "Lens map needs a local server for this repo: repowise serve --no-ui",
+  "no-index": "index this repo for Lens: repowise init --no-prose --yes",
+  "no-cli": "Lens needs the Repowise CLI: pip install repowise"
+};
+function freshnessLine(f) {
+  const changed = f.changedFiles === null ? "" : ` (${countOf(f.changedFiles, "file", "files")} changed)`;
+  return `index behind HEAD${changed} · repowise update`;
+}
+__name(freshnessLine, "freshnessLine");
+function spinnerLine(file, ctx) {
+  const parts = [file.slice(file.lastIndexOf("/") + 1)];
+  if (ctx.callerFiles) parts.push(countOf(ctx.callerFiles, "caller file", "caller files"));
+  if (ctx.contributors) parts.push(countOf(ctx.contributors, "contributor", "contributors"));
+  return parts.join(" · ");
+}
+__name(spinnerLine, "spinnerLine");
+function squeezeLine(s) {
+  const parts = [`${countOf(s.originalLines, "line", "lines")} → ${s.keptLines.toLocaleString("en-US")}`];
+  if (s.omittedTokens > 0) parts.push(`~${countOf(s.omittedTokens, "token", "tokens")} omitted`);
+  const failures = [s.failed > 0 ? `${s.failed.toLocaleString("en-US")} failed` : "", s.errors > 0 ? countOf(s.errors, "error", "errors") : ""];
+  if (s.failed + s.errors > 0) parts.push(failures.filter((f) => f !== "").join(", "));
+  const more = s.refs.length > 1 ? ` (+${s.refs.length - 1} more)` : "";
+  parts.push(`repowise expand ${s.refs[0]}${more}`);
+  return parts.join(" · ");
+}
+__name(squeezeLine, "squeezeLine");
+function marginLine(note) {
+  if (note.kind === "decision") {
+    return note.reviewed ? `a standing decision covers this file: ${note.title}` : `a decision found in this file, not yet reviewed: ${note.title}`;
+  }
+  const where = note.symbol === null ? "" : `, mostly in ${note.symbol}`;
+  return `fixed ${countOf(note.count, "time", "times")} in 6 months, most recently ${note.age}${where}`;
+}
+__name(marginLine, "marginLine");
+function savingsLine(d, columns) {
+  const inferred = d.inferredTokens > 0 ? ` (${d.inferredTokens.toLocaleString("en-US")} inferred)` : "";
+  const usd = d.usd >= 5e-3 ? ` · $${d.usd.toFixed(2)}` : "";
+  const head = `${countOf(d.tokens, "token", "tokens")}${inferred}${usd} saved`;
+  const full = `${head} since this session started · all agents on this repo`;
+  return full.length <= columns ? full : `${head} this session · all agents`;
+}
+__name(savingsLine, "savingsLine");
+var REVIEWING = "Reviewing the change...";
+var REVIEW_TIMEOUT_S = 20;
+var REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
+var RUN_TESTS = "Run tests";
+var DETAILS = "Details";
+var OVERLAP_MARK = "◦";
+function reviewFailed(message) {
+  return `Change review could not run: ${message}`;
+}
+__name(reviewFailed, "reviewFailed");
+function reviewScope(ref, workingTree, changed) {
+  const where = workingTree ? ref : `${ref} (no uncommitted changes)`;
+  return changed === null ? where : `${where}, ${countOf(changed, "changed file", "changed files")}`;
+}
+__name(reviewScope, "reviewScope");
+function noNewFindings(analyzed) {
+  return `no new findings in ${analyzed === 1 ? "the 1 changed file" : `all ${analyzed.toLocaleString("en-US")} changed files`}`;
+}
+__name(noNewFindings, "noNewFindings");
+function healthImproved(resolved) {
+  return `improved, ${countOf(resolved, "finding", "findings")} resolved, none new`;
+}
+__name(healthImproved, "healthImproved");
+var HEALTH_NOT_REPORTED = "not reported";
+var NO_NEW_FINDINGS = "no new findings";
+var PARTLY_COMPARED = "partly compared, no new findings";
+function notCompared(why) {
+  return why === "" ? "not compared" : `not compared: ${why}`;
+}
+__name(notCompared, "notCompared");
+function improvedShort(resolved) {
+  return `improved, ${resolved.toLocaleString("en-US")} resolved`;
+}
+__name(improvedShort, "improvedShort");
+function newFindings(total, required2) {
+  return `${countOf(total, "new finding", "new findings")}, ${required2 ? "review required" : "low severity"}`;
+}
+__name(newFindings, "newFindings");
+function resolvedToo(resolved) {
+  return `${countOf(resolved, "finding", "findings")} resolved`;
+}
+__name(resolvedToo, "resolvedToo");
+function findingLine(f) {
+  const at = f.lines === void 0 ? f.path : `${f.path}:${f.lines[0]}`;
+  return `${f.severity} ${f.biomarker}: ${f.reason} (${at})`;
+}
+__name(findingLine, "findingLine");
+function moreFindings(more) {
+  return `and ${more.toLocaleString("en-US")} more (Details)`;
+}
+__name(moreFindings, "moreFindings");
+function partialScope(analyzed, changed, reasons) {
+  const why = Object.entries(reasons).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
+  const skipped = changed - analyzed;
+  return `Scope: compared ${analyzed.toLocaleString("en-US")} of ${countOf(changed, "changed file", "changed files")}; ${skipped.toLocaleString("en-US")} not analysed${why ? ` (${why})` : ""}, so this is not a clean bill`;
+}
+__name(partialScope, "partialScope");
+function diffShape(percentile) {
+  const where = percentile === null || percentile === void 0 ? "not ranked (no recent commits to compare)" : `bigger than ${Math.round(percentile)}% of this repo's recent commits`;
+  return `Diff shape: ${where}; size, not danger`;
+}
+__name(diffShape, "diffShape");
+function testsBasis(measured) {
+  return measured ? "measured by stored coverage" : "inferred from the dependency graph, not measured";
+}
+__name(testsBasis, "testsBasis");
+function testsLine(t) {
+  const count2 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
+  return `Tests to run: ${count2}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
+}
+__name(testsLine, "testsLine");
+function overlapLine(branches, files, more) {
+  const who = countOf(branches.length, "other branch", "other branches") + (more ? " or more" : "");
+  const what = files.length === 1 ? files[0] : countOf(files.length, "changed file", "changed files");
+  const verb = branches.length === 1 && !more ? "edits" : "edit";
+  return `${OVERLAP_MARK} ${who} also ${verb} ${what} (${branches.join(", ")})`;
+}
+__name(overlapLine, "overlapLine");
+function overlapShort(branches) {
+  return `${OVERLAP_MARK} ${countOf(branches, "other branch edits", "other branches edit")} these files`;
+}
+__name(overlapShort, "overlapShort");
+function directiveLines(d) {
+  const out = [`Change review: ${d.status.replace(/_/g, " ")}`, d.headline];
+  if (d.reasons?.length) out.push("Reasons:", ...d.reasons.map((r) => `  ${r}`));
+  if (d.next_actions?.length) out.push("Next actions:", ...d.next_actions.map((a) => `  ${a}`));
+  return out;
+}
+__name(directiveLines, "directiveLines");
+function runTestsPrompt(t) {
+  const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
+  return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
+}
+__name(runTestsPrompt, "runTestsPrompt");
+var MAP_COPY = {
+  command: "Open the Lens map: code health, where Claude reads, what an edit reaches",
+  title: "Lens",
+  looking: "Lens map: looking for the local server",
+  loading: "Lens map: loading the health map",
+  failed: "Lens map could not load the health map; it tries again on /lens",
+  desktop: "Lens map: terminal only for now",
+  noScore: "Not scored",
+  read: "Claude read",
+  edited: "edited",
+  importer: "imports the edited file",
+  match: "search match",
+  waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens"
+};
+function notPlacedLine(reason) {
+  return `Lens map needs a wider terminal: ${reason}`;
+}
+__name(notPlacedLine, "notPlacedLine");
+function scopeParts(s) {
+  const parts = s.drawn === s.repositoryTotal ? [`${countOf(s.drawn, "file", "files")}, all drawn`] : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, "rest empty or too small"];
+  if (s.indexed !== null) parts.push(`indexed ${s.indexed}`);
+  if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
+  return parts;
+}
+__name(scopeParts, "scopeParts");
+function readsLine(reads, matched) {
+  const parts = [];
+  if (reads.count > 0) {
+    parts.push(reads.capped ? `${formatNumber(reads.count)}+ files read` : countOf(reads.count, "file read", "files read"));
+  }
+  if (reads.notDrawn > 0) parts.push(`${formatNumber(reads.notDrawn)} not drawn`);
+  if (matched !== null) parts.push(`last search matched ${countOf(matched, "file", "files")}`);
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+__name(readsLine, "readsLine");
+function callersLine(name, callers, notDrawn) {
+  if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
+  if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
+  const found = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)`;
+  return notDrawn === 0 ? found : `${found} · ${formatNumber(notDrawn)} not drawn`;
+}
+__name(callersLine, "callersLine");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/count.js
+function count(node) {
+  var sum = 0, children = node.children, i = children && children.length;
+  if (!i) sum = 1;
+  else while (--i >= 0) sum += children[i].value;
+  node.value = sum;
+}
+__name(count, "count");
+function count_default() {
+  return this.eachAfter(count);
+}
+__name(count_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/each.js
+function each_default(callback, that) {
+  let index = -1;
+  for (const node of this) {
+    callback.call(that, node, ++index, this);
+  }
+  return this;
+}
+__name(each_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/eachBefore.js
+function eachBefore_default(callback, that) {
+  var node = this, nodes = [node], children, i, index = -1;
+  while (node = nodes.pop()) {
+    callback.call(that, node, ++index, this);
+    if (children = node.children) {
+      for (i = children.length - 1; i >= 0; --i) {
+        nodes.push(children[i]);
+      }
+    }
+  }
+  return this;
+}
+__name(eachBefore_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/eachAfter.js
+function eachAfter_default(callback, that) {
+  var node = this, nodes = [node], next = [], children, i, n, index = -1;
+  while (node = nodes.pop()) {
+    next.push(node);
+    if (children = node.children) {
+      for (i = 0, n = children.length; i < n; ++i) {
+        nodes.push(children[i]);
+      }
+    }
+  }
+  while (node = next.pop()) {
+    callback.call(that, node, ++index, this);
+  }
+  return this;
+}
+__name(eachAfter_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/find.js
+function find_default(callback, that) {
+  let index = -1;
+  for (const node of this) {
+    if (callback.call(that, node, ++index, this)) {
+      return node;
+    }
+  }
+}
+__name(find_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/sum.js
+function sum_default(value) {
+  return this.eachAfter(function(node) {
+    var sum = +value(node.data) || 0, children = node.children, i = children && children.length;
+    while (--i >= 0) sum += children[i].value;
+    node.value = sum;
+  });
+}
+__name(sum_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/sort.js
+function sort_default(compare) {
+  return this.eachBefore(function(node) {
+    if (node.children) {
+      node.children.sort(compare);
+    }
+  });
+}
+__name(sort_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/path.js
+function path_default(end) {
+  var start = this, ancestor = leastCommonAncestor(start, end), nodes = [start];
+  while (start !== ancestor) {
+    start = start.parent;
+    nodes.push(start);
+  }
+  var k = nodes.length;
+  while (end !== ancestor) {
+    nodes.splice(k, 0, end);
+    end = end.parent;
+  }
+  return nodes;
+}
+__name(path_default, "default");
+function leastCommonAncestor(a, b) {
+  if (a === b) return a;
+  var aNodes = a.ancestors(), bNodes = b.ancestors(), c = null;
+  a = aNodes.pop();
+  b = bNodes.pop();
+  while (a === b) {
+    c = a;
+    a = aNodes.pop();
+    b = bNodes.pop();
+  }
+  return c;
+}
+__name(leastCommonAncestor, "leastCommonAncestor");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/ancestors.js
+function ancestors_default() {
+  var node = this, nodes = [node];
+  while (node = node.parent) {
+    nodes.push(node);
+  }
+  return nodes;
+}
+__name(ancestors_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/descendants.js
+function descendants_default() {
+  return Array.from(this);
+}
+__name(descendants_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/leaves.js
+function leaves_default() {
+  var leaves = [];
+  this.eachBefore(function(node) {
+    if (!node.children) {
+      leaves.push(node);
+    }
+  });
+  return leaves;
+}
+__name(leaves_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/links.js
+function links_default() {
+  var root = this, links = [];
+  root.each(function(node) {
+    if (node !== root) {
+      links.push({ source: node.parent, target: node });
+    }
+  });
+  return links;
+}
+__name(links_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/iterator.js
+function* iterator_default() {
+  var node = this, current, next = [node], children, i, n;
+  do {
+    current = next.reverse(), next = [];
+    while (node = current.pop()) {
+      yield node;
+      if (children = node.children) {
+        for (i = 0, n = children.length; i < n; ++i) {
+          next.push(children[i]);
+        }
+      }
+    }
+  } while (next.length);
+}
+__name(iterator_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/index.js
+function hierarchy(data, children) {
+  if (data instanceof Map) {
+    data = [void 0, data];
+    if (children === void 0) children = mapChildren;
+  } else if (children === void 0) {
+    children = objectChildren;
+  }
+  var root = new Node(data), node, nodes = [root], child, childs, i, n;
+  while (node = nodes.pop()) {
+    if ((childs = children(node.data)) && (n = (childs = Array.from(childs)).length)) {
+      node.children = childs;
+      for (i = n - 1; i >= 0; --i) {
+        nodes.push(child = childs[i] = new Node(childs[i]));
+        child.parent = node;
+        child.depth = node.depth + 1;
+      }
+    }
+  }
+  return root.eachBefore(computeHeight);
+}
+__name(hierarchy, "hierarchy");
+function node_copy() {
+  return hierarchy(this).eachBefore(copyData);
+}
+__name(node_copy, "node_copy");
+function objectChildren(d) {
+  return d.children;
+}
+__name(objectChildren, "objectChildren");
+function mapChildren(d) {
+  return Array.isArray(d) ? d[1] : null;
+}
+__name(mapChildren, "mapChildren");
+function copyData(node) {
+  if (node.data.value !== void 0) node.value = node.data.value;
+  node.data = node.data.data;
+}
+__name(copyData, "copyData");
+function computeHeight(node) {
+  var height = 0;
+  do
+    node.height = height;
+  while ((node = node.parent) && node.height < ++height);
+}
+__name(computeHeight, "computeHeight");
+function Node(data) {
+  this.data = data;
+  this.depth = this.height = 0;
+  this.parent = null;
+}
+__name(Node, "Node");
+Node.prototype = hierarchy.prototype = {
+  constructor: Node,
+  count: count_default,
+  each: each_default,
+  eachAfter: eachAfter_default,
+  eachBefore: eachBefore_default,
+  find: find_default,
+  sum: sum_default,
+  sort: sort_default,
+  path: path_default,
+  ancestors: ancestors_default,
+  descendants: descendants_default,
+  leaves: leaves_default,
+  links: links_default,
+  copy: node_copy,
+  [Symbol.iterator]: iterator_default
+};
+
+// ../../node_modules/d3-hierarchy/src/accessors.js
+function required(f) {
+  if (typeof f !== "function") throw new Error();
+  return f;
+}
+__name(required, "required");
+
+// ../../node_modules/d3-hierarchy/src/constant.js
+function constantZero() {
+  return 0;
+}
+__name(constantZero, "constantZero");
+function constant_default(x) {
+  return function() {
+    return x;
+  };
+}
+__name(constant_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/round.js
+function round_default(node) {
+  node.x0 = Math.round(node.x0);
+  node.y0 = Math.round(node.y0);
+  node.x1 = Math.round(node.x1);
+  node.y1 = Math.round(node.y1);
+}
+__name(round_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/dice.js
+function dice_default(parent, x0, y0, x1, y1) {
+  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (x1 - x0) / parent.value;
+  while (++i < n) {
+    node = nodes[i], node.y0 = y0, node.y1 = y1;
+    node.x0 = x0, node.x1 = x0 += node.value * k;
+  }
+}
+__name(dice_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/slice.js
+function slice_default(parent, x0, y0, x1, y1) {
+  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (y1 - y0) / parent.value;
+  while (++i < n) {
+    node = nodes[i], node.x0 = x0, node.x1 = x1;
+    node.y0 = y0, node.y1 = y0 += node.value * k;
+  }
+}
+__name(slice_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/squarify.js
+var phi = (1 + Math.sqrt(5)) / 2;
+function squarifyRatio(ratio, parent, x0, y0, x1, y1) {
+  var rows = [], nodes = parent.children, row, nodeValue, i0 = 0, i1 = 0, n = nodes.length, dx, dy, value = parent.value, sumValue, minValue, maxValue, newRatio, minRatio, alpha, beta;
+  while (i0 < n) {
+    dx = x1 - x0, dy = y1 - y0;
+    do
+      sumValue = nodes[i1++].value;
+    while (!sumValue && i1 < n);
+    minValue = maxValue = sumValue;
+    alpha = Math.max(dy / dx, dx / dy) / (value * ratio);
+    beta = sumValue * sumValue * alpha;
+    minRatio = Math.max(maxValue / beta, beta / minValue);
+    for (; i1 < n; ++i1) {
+      sumValue += nodeValue = nodes[i1].value;
+      if (nodeValue < minValue) minValue = nodeValue;
+      if (nodeValue > maxValue) maxValue = nodeValue;
+      beta = sumValue * sumValue * alpha;
+      newRatio = Math.max(maxValue / beta, beta / minValue);
+      if (newRatio > minRatio) {
+        sumValue -= nodeValue;
+        break;
+      }
+      minRatio = newRatio;
+    }
+    rows.push(row = { value: sumValue, dice: dx < dy, children: nodes.slice(i0, i1) });
+    if (row.dice) dice_default(row, x0, y0, x1, value ? y0 += dy * sumValue / value : y1);
+    else slice_default(row, x0, y0, value ? x0 += dx * sumValue / value : x1, y1);
+    value -= sumValue, i0 = i1;
+  }
+  return rows;
+}
+__name(squarifyRatio, "squarifyRatio");
+var squarify_default = (/* @__PURE__ */ __name((function custom(ratio) {
+  function squarify(parent, x0, y0, x1, y1) {
+    squarifyRatio(ratio, parent, x0, y0, x1, y1);
+  }
+  __name(squarify, "squarify");
+  squarify.ratio = function(x) {
+    return custom((x = +x) > 1 ? x : 1);
+  };
+  return squarify;
+}), "custom"))(phi);
+
+// ../../node_modules/d3-hierarchy/src/treemap/index.js
+function treemap_default() {
+  var tile = squarify_default, round = false, dx = 1, dy = 1, paddingStack = [0], paddingInner = constantZero, paddingTop = constantZero, paddingRight = constantZero, paddingBottom = constantZero, paddingLeft = constantZero;
+  function treemap(root) {
+    root.x0 = root.y0 = 0;
+    root.x1 = dx;
+    root.y1 = dy;
+    root.eachBefore(positionNode);
+    paddingStack = [0];
+    if (round) root.eachBefore(round_default);
+    return root;
+  }
+  __name(treemap, "treemap");
+  function positionNode(node) {
+    var p = paddingStack[node.depth], x0 = node.x0 + p, y0 = node.y0 + p, x1 = node.x1 - p, y1 = node.y1 - p;
+    if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
+    if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
+    node.x0 = x0;
+    node.y0 = y0;
+    node.x1 = x1;
+    node.y1 = y1;
+    if (node.children) {
+      p = paddingStack[node.depth + 1] = paddingInner(node) / 2;
+      x0 += paddingLeft(node) - p;
+      y0 += paddingTop(node) - p;
+      x1 -= paddingRight(node) - p;
+      y1 -= paddingBottom(node) - p;
+      if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
+      if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
+      tile(node, x0, y0, x1, y1);
+    }
+  }
+  __name(positionNode, "positionNode");
+  treemap.round = function(x) {
+    return arguments.length ? (round = !!x, treemap) : round;
+  };
+  treemap.size = function(x) {
+    return arguments.length ? (dx = +x[0], dy = +x[1], treemap) : [dx, dy];
+  };
+  treemap.tile = function(x) {
+    return arguments.length ? (tile = required(x), treemap) : tile;
+  };
+  treemap.padding = function(x) {
+    return arguments.length ? treemap.paddingInner(x).paddingOuter(x) : treemap.paddingInner();
+  };
+  treemap.paddingInner = function(x) {
+    return arguments.length ? (paddingInner = typeof x === "function" ? x : constant_default(+x), treemap) : paddingInner;
+  };
+  treemap.paddingOuter = function(x) {
+    return arguments.length ? treemap.paddingTop(x).paddingRight(x).paddingBottom(x).paddingLeft(x) : treemap.paddingTop();
+  };
+  treemap.paddingTop = function(x) {
+    return arguments.length ? (paddingTop = typeof x === "function" ? x : constant_default(+x), treemap) : paddingTop;
+  };
+  treemap.paddingRight = function(x) {
+    return arguments.length ? (paddingRight = typeof x === "function" ? x : constant_default(+x), treemap) : paddingRight;
+  };
+  treemap.paddingBottom = function(x) {
+    return arguments.length ? (paddingBottom = typeof x === "function" ? x : constant_default(+x), treemap) : paddingBottom;
+  };
+  treemap.paddingLeft = function(x) {
+    return arguments.length ? (paddingLeft = typeof x === "function" ? x : constant_default(+x), treemap) : paddingLeft;
+  };
+  return treemap;
+}
+__name(treemap_default, "default");
+
+// ../types/src/health.ts
+var EXCELLENT_MIN = 8.5;
+var GOOD_MIN = 7;
+var FAIR_MIN = 5.5;
+var NEEDS_WORK_MIN = 4;
+var HEALTH_BAND_ORDER = [
+  "at_risk",
+  "needs_work",
+  "fair",
+  "good",
+  "excellent"
+];
+var HEALTH_BAND_LABEL = {
+  excellent: "Excellent",
+  good: "Good",
+  fair: "Fair",
+  needs_work: "Needs work",
+  at_risk: "At risk"
+};
+function bandForScore(score) {
+  if (score >= EXCELLENT_MIN) return "excellent";
+  if (score >= GOOD_MIN) return "good";
+  if (score >= FAIR_MIN) return "fair";
+  if (score >= NEEDS_WORK_MIN) return "needs_work";
+  return "at_risk";
+}
+__name(bandForScore, "bandForScore");
+
+// ../ui/src/brand.ts
+var BRAND = {
+  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
+  accent: "#f59520",
+  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
+  accentTextLight: "#a16215",
+  /** Brand plum — logo strokes on light surfaces, secondary accent. */
+  plum: "#473659",
+  /** Plum near-black — primary ink on warm paper. */
+  ink: "#241b2c",
+  /** Warm paper — the light-mode page background. */
+  paper: "#fbf6f1",
+  /** Cream — the logo stroke color on dark surfaces. */
+  cream: "#fce9dd"
+};
+var DARK = {
+  bgRoot: "#0e0e0f",
+  bgSurface: "#141416",
+  bgElevated: "#191a1c",
+  bgInset: "#0a0a0b",
+  textPrimary: "#f2f2f3",
+  textSecondary: "#b4b4b9",
+  textTertiary: "#7c7c82",
+  accentPrimary: "#f59520",
+  accentFill: "#f59520",
+  accentSecondary: "#a98fc4",
+  success: "#34d399",
+  warning: "#f2a03d",
+  error: "#e06a5a"
+};
+var DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a"
+};
+var DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk
+};
+
+// src/views/map.ts
+var UPPER_HALF = 9600;
+var hex = /* @__PURE__ */ __name((s) => parseInt(s.slice(1), 16), "hex");
+var ACCENT = hex(BRAND.accent);
+var GROUND = hex(DARK.bgRoot);
+var LABEL_FG = hex(DARK.textSecondary);
+var NEUTRAL = hex(DARK_CANVAS.nodeNeutral);
+var BLACK = 0;
+var SPLIT_SHARE = 0.25;
+var MAX_SPLITS = 8;
+var GUTTER_MIN = 6;
+var EDGE_MIN = 3;
+function colorForScore(score) {
+  return score === null ? NEUTRAL : hex(DARK_CANVAS_BAND[bandForScore(score)]);
+}
+__name(colorForScore, "colorForScore");
+function mix(a, b, amount) {
+  const ch = /* @__PURE__ */ __name((shift) => {
+    const x = a >> shift & 255;
+    const y = b >> shift & 255;
+    return Math.round(x + (y - x) * amount) << shift;
+  }, "ch");
+  return (ch(16) | ch(8) | ch(0)) >>> 0;
+}
+__name(mix, "mix");
+var byName = /* @__PURE__ */ __name((a, b) => a < b ? -1 : a > b ? 1 : 0, "byName");
+function dirsOf(path) {
+  return path.split("/").slice(0, -1);
+}
+__name(dirsOf, "dirsOf");
+function keyOf(path, split2) {
+  const dirs = dirsOf(path);
+  let depth = Math.min(1, dirs.length);
+  while (depth < dirs.length && split2.has(dirs.slice(0, depth).join("/"))) depth++;
+  return dirs.slice(0, depth).join("/");
+}
+__name(keyOf, "keyOf");
+function nextSplit(files, split2, limit) {
+  const weight = /* @__PURE__ */ new Map();
+  for (const f of files) {
+    const key = keyOf(f.file_path, split2);
+    weight.set(key, (weight.get(key) ?? 0) + f.nloc);
+  }
+  const heavy = [...weight].filter(([key, w]) => key !== "" && w > limit).sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
+  for (const [key] of heavy) {
+    const deeper = /* @__PURE__ */ new Set([...split2, key]);
+    const parts = new Set(files.filter((f) => keyOf(f.file_path, split2) === key).map((f) => keyOf(f.file_path, deeper)));
+    if (parts.size > 1) return key;
+  }
+  return null;
+}
+__name(nextSplit, "nextSplit");
+function groupKeys(files) {
+  const split2 = /* @__PURE__ */ new Set();
+  const limit = files.reduce((sum, f) => sum + f.nloc, 0) * SPLIT_SHARE;
+  for (let i = 0; i < MAX_SPLITS; i++) {
+    const key = nextSplit(files, split2, limit);
+    if (key === null) break;
+    split2.add(key);
+  }
+  return files.map((f) => keyOf(f.file_path, split2));
+}
+__name(groupKeys, "groupKeys");
+function treemapOf(files, width, height) {
+  const keys = groupKeys(files);
+  const groups = /* @__PURE__ */ new Map();
+  files.forEach((file, i) => {
+    const key = keys[i] ?? "";
+    groups.set(key, [...groups.get(key) ?? [], { name: file.file_path, file }]);
+  });
+  const data = { name: "", children: [...groups].map(([name, children]) => ({ name, children })) };
+  const root = hierarchy(data).sum((d) => d.file?.nloc ?? 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || byName(a.data.name, b.data.name));
+  return treemap_default().tile(squarify_default).size([width, height])(root);
+}
+__name(treemapOf, "treemapOf");
+var rectOf = /* @__PURE__ */ __name((n) => ({ x: n.x0, y: n.y0, w: n.x1 - n.x0, h: n.y1 - n.y0 }), "rectOf");
+function pixelSpan(from, to) {
+  return [Math.ceil(from - 0.5), Math.ceil(to - 0.5)];
+}
+__name(pixelSpan, "pixelSpan");
+function groupInterior(rect, width, height) {
+  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
+  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
+  const gutter = x1 - x0 >= GUTTER_MIN && y1 - y0 >= GUTTER_MIN;
+  return { x0, y0, x1: gutter && x1 < width ? x1 - 1 : x1, y1: gutter && y1 < height ? y1 - 1 : y1 };
+}
+__name(groupInterior, "groupInterior");
+function placeFile(leaf, group, inner) {
+  const file = leaf.data.file;
+  const rect = rectOf(leaf);
+  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
+  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
+  return {
+    path: file.file_path,
+    score: file.score,
+    nloc: file.nloc,
+    group,
+    rect,
+    px0: Math.max(x0, inner.x0),
+    py0: Math.max(y0, inner.y0),
+    px1: Math.min(x1, inner.x1),
+    py1: Math.min(y1, inner.y1)
+  };
+}
+__name(placeFile, "placeFile");
+function paintFile(base, width, f) {
+  const fill = colorForScore(f.score);
+  const edge = mix(fill, BLACK, 0.3);
+  const edgeX = f.px1 - f.px0 >= EDGE_MIN ? f.px1 - 1 : -1;
+  const edgeY = f.py1 - f.py0 >= EDGE_MIN ? f.py1 - 1 : -1;
+  for (let y = f.py0; y < f.py1; y++) {
+    base.fill(y === edgeY ? edge : fill, y * width + f.px0, y * width + f.px1);
+    if (edgeX >= 0) base[y * width + edgeX] = edge;
+  }
+}
+__name(paintFile, "paintFile");
+function labelText(key, width) {
+  const parts = key.split("/");
+  const rungs = [key, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
+  const text2 = rungs.find((r) => r.length > 0 && r.length <= width);
+  return text2 !== void 0 && /^[\x20-\x7e]+$/.test(text2) ? text2 : null;
+}
+__name(labelText, "labelText");
+function labelFor(g, columns, rows) {
+  const col = Math.ceil(g.rect.x);
+  const row = Math.ceil(g.rect.y / 2);
+  const width = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
+  const height = Math.floor((g.rect.y + g.rect.h) / 2) - row;
+  if (g.key === "" || height < 2 || row >= rows) return null;
+  const text2 = labelText(g.key, width);
+  return text2 === null ? null : { row, col, text: text2 };
+}
+__name(labelFor, "labelFor");
+function labelsFor(groups, columns, rows) {
+  return [...groups].sort((a, b) => b.nloc - a.nloc).map((g) => labelFor(g, columns, rows)).filter((l) => l !== null);
+}
+__name(labelsFor, "labelsFor");
+function layoutMap(feed, columns, rows, caseInsensitive) {
+  const width = columns;
+  const height = rows * 2;
+  const root = treemapOf(
+    feed.filter((f) => f.nloc > 0),
+    width,
+    height
+  );
+  const groups = [];
+  const files = [];
+  for (const node of root.children ?? []) {
+    const group = groups.push({ key: node.data.name, rect: rectOf(node), nloc: node.value ?? 0 }) - 1;
+    const inner = groupInterior(rectOf(node), width, height);
+    for (const leaf of node.children ?? []) files.push(placeFile(leaf, group, inner));
+  }
+  const base = new Uint32Array(width * height).fill(GROUND);
+  const drawn = [];
+  const index = /* @__PURE__ */ new Map();
+  files.forEach((f, i) => {
+    if (f.px1 <= f.px0 || f.py1 <= f.py0) return;
+    drawn.push(i);
+    index.set(caseInsensitive ? f.path.toLowerCase() : f.path, i);
+    paintFile(base, width, f);
+  });
+  return { columns, rows, width, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base };
+}
+__name(layoutMap, "layoutMap");
+function labelCovered(label, marked, width) {
+  if (marked === void 0) return false;
+  for (let c = label.col; c < label.col + label.text.length; c++) {
+    if (marked[2 * label.row * width + c] || marked[(2 * label.row + 1) * width + c]) return true;
+  }
+  return false;
+}
+__name(labelCovered, "labelCovered");
+function encodeCells(layout, pixels, marked) {
+  const { columns, rows, width } = layout;
+  const words = new Uint32Array(columns * rows * 3);
+  for (let i = 0; i < columns * rows; i++) {
+    const r = Math.floor(i / columns);
+    const c = i % columns;
+    words[i * 3] = UPPER_HALF;
+    words[i * 3 + 1] = pixels[2 * r * width + c] ?? GROUND;
+    words[i * 3 + 2] = pixels[(2 * r + 1) * width + c] ?? GROUND;
+  }
+  for (const label of layout.labels) {
+    if (labelCovered(label, marked, width)) continue;
+    for (let k = 0; k < label.text.length && label.col + k < columns; k++) {
+      const o = (label.row * columns + label.col + k) * 3;
+      words.set([label.text.charCodeAt(k), LABEL_FG, GROUND], o);
+    }
+  }
+  return new Uint8Array(words.buffer).toBase64();
+}
+__name(encodeCells, "encodeCells");
+
+// src/views/elements.ts
+function text(value, props = {}) {
+  return { type: "Text", props, children: [value] };
+}
+__name(text, "text");
+function box(props, children) {
+  return { type: "Box", props, children };
+}
+__name(box, "box");
+function button(key, hotkey, label) {
+  return { type: "Button", props: { key, label, hotkey, plain: true } };
+}
+__name(button, "button");
+function raster(props) {
+  return { type: "Raster", props };
+}
+__name(raster, "raster");
+function materialize(node, table, presses = {}) {
+  const build = table[node.type];
+  if (!build) throw new Error(`element ${node.type} is not on this surface`);
+  if (node.type === "Button") {
+    const onPress = presses[node.props.key];
+    if (!onPress) throw new Error(`button ${node.props.key} has no action`);
+    return build({ ...node.props, onPress });
+  }
+  if (node.type === "Raster") return build({ ...node.props });
+  const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
+  return build({ ...node.props, children });
+}
+__name(materialize, "materialize");
+
+// src/views/overlay.ts
+var EDIT_TINT = mix(ACCENT, 16777215, 0.45);
+var READ_DIM = 0.4;
+var PATH_AMOUNT = 0.85;
+var MATCH_FLASH = 0.85;
+var MATCH_REST = 0.25;
+var RING_AMOUNT = 0.5;
+var SMALL = 3;
+function lookup(layout, rel) {
+  return layout.index.get(layout.caseInsensitive ? rel.toLowerCase() : rel);
+}
+__name(lookup, "lookup");
+function locate(layout, abs, root) {
+  const rel = relativeTo(abs, root, layout.caseInsensitive);
+  return rel === null ? void 0 : lookup(layout, rel);
+}
+__name(locate, "locate");
+function split(items, find) {
+  const found = [];
+  for (const item of items) {
+    const i = find(item);
+    if (i !== void 0) found.push(i);
+  }
+  return { found, missing: items.length - found.length };
+}
+__name(split, "split");
+function resolveOverlay(layout, trail, repoRoot) {
+  const reads = split(trail.reads, (p) => locate(layout, p, repoRoot));
+  const hits = split(trail.hits, (p) => locate(layout, p, repoRoot)).found;
+  const callers = split(trail.callers?.status === "ready" ? trail.callers.paths : [], (p) => lookup(layout, p));
+  const edited = trail.edit === null ? null : locate(layout, trail.edit, repoRoot) ?? null;
+  const edit = trail.edit === null ? null : { name: trail.edit.slice(trail.edit.lastIndexOf("/") + 1), callers: trail.callers, notDrawn: callers.missing };
+  return {
+    overlay: { reads: reads.found, hits, edited, callers: callers.found },
+    reads: { count: trail.reads.length, capped: trail.readsCapped, notDrawn: reads.missing },
+    matched: trail.searches === 0 ? null : trail.hits.length,
+    edit
+  };
+}
+__name(resolveOverlay, "resolveOverlay");
+function center(f) {
+  return [Math.floor((f.px0 + f.px1 - 1) / 2), Math.floor((f.py0 + f.py1 - 1) / 2)];
+}
+__name(center, "center");
+function distance(a, b) {
+  const [ax, ay] = center(a);
+  const [bx, by] = center(b);
+  return Math.hypot(ax - bx, ay - by);
+}
+__name(distance, "distance");
+function rippleRadius(layout, overlay) {
+  const origin = overlay.edited === null ? void 0 : layout.files[overlay.edited];
+  if (!origin || overlay.callers.length === 0) return 0;
+  return Math.max(...overlay.callers.map((i) => distance(origin, layout.files[i]))) + 3;
+}
+__name(rippleRadius, "rippleRadius");
+function inside(layout, x, y) {
+  return x >= 0 && y >= 0 && x < layout.width && y < layout.height;
+}
+__name(inside, "inside");
+function set(p, x, y, color) {
+  if (!inside(p.layout, x, y)) return;
+  const width = p.layout.width;
+  p.px[y * width + x] = color;
+  p.marked[y * width + x] = 1;
+}
+__name(set, "set");
+function fillFile(p, f, color) {
+  const w = p.layout.width;
+  for (let y = f.py0; y < f.py1; y++) for (let x = f.px0; x < f.px1; x++) set(p, x, y, color(p.px[y * w + x] ?? GROUND));
+}
+__name(fillFile, "fillFile");
+function outlineFile(p, f, color) {
+  for (let x = f.px0; x < f.px1; x++) {
+    set(p, x, f.py0, color);
+    set(p, x, f.py1 - 1, color);
+  }
+  for (let y = f.py0; y < f.py1; y++) {
+    set(p, f.px0, y, color);
+    set(p, f.px1 - 1, y, color);
+  }
+}
+__name(outlineFile, "outlineFile");
+var isSmall = /* @__PURE__ */ __name((f) => f.px1 - f.px0 < SMALL || f.py1 - f.py0 < SMALL, "isSmall");
+function paintPath(p, overlay) {
+  const files = p.layout.files;
+  for (let k = 1; k < overlay.reads.length; k++) {
+    const [ax, ay] = center(files[overlay.reads[k - 1]]);
+    const [bx, by] = center(files[overlay.reads[k]]);
+    const steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay));
+    for (let s = 1; s < steps; s += 3) {
+      const x = Math.round(ax + (bx - ax) * s / steps);
+      const y = Math.round(ay + (by - ay) * s / steps);
+      set(p, x, y, mix(p.px[y * p.layout.width + x] ?? GROUND, ACCENT, PATH_AMOUNT));
+    }
+  }
+}
+__name(paintPath, "paintPath");
+function paintHits(p, overlay, amount) {
+  for (const i of overlay.hits) fillFile(p, p.layout.files[i], (c) => mix(c, ACCENT, amount));
+}
+__name(paintHits, "paintHits");
+function paintReads(p, overlay) {
+  for (const i of overlay.reads) {
+    const f = p.layout.files[i];
+    fillFile(p, f, (c) => mix(c, 0, READ_DIM));
+    outlineFile(p, f, ACCENT);
+  }
+}
+__name(paintReads, "paintReads");
+function paintEdited(p, f) {
+  fillFile(p, f, () => EDIT_TINT);
+  if (!isSmall(f)) outlineFile(p, f, ACCENT);
+}
+__name(paintEdited, "paintEdited");
+function paintRing(p, origin, reach) {
+  const [ox, oy] = center(origin);
+  const { width, height } = p.layout;
+  for (let y = Math.max(0, Math.floor(oy - reach)); y <= Math.min(height - 1, oy + reach); y++) {
+    for (let x = Math.max(0, Math.floor(ox - reach)); x <= Math.min(width - 1, ox + reach); x++) {
+      const d = Math.hypot(x - ox, y - oy);
+      if (d <= reach && d > reach - 2) set(p, x, y, mix(p.px[y * width + x] ?? GROUND, ACCENT, RING_AMOUNT));
+    }
+  }
+}
+__name(paintRing, "paintRing");
+function paintCallers(p, overlay, origin, reach) {
+  for (const i of overlay.callers) {
+    const f = p.layout.files[i];
+    if (origin !== void 0 && distance(origin, f) > reach) continue;
+    const [x, y] = center(f);
+    set(p, x, y, ACCENT);
+    set(p, x, y ^ 1, GROUND);
+  }
+}
+__name(paintCallers, "paintCallers");
+function matchAmount(anim) {
+  return anim?.kind === "flash" ? MATCH_REST + (MATCH_FLASH - MATCH_REST) * (1 - anim.t) : MATCH_REST;
+}
+__name(matchAmount, "matchAmount");
+function rippleReach(layout, overlay, anim) {
+  return anim?.kind === "ripple" && anim.t < 1 ? rippleRadius(layout, overlay) * anim.t : Infinity;
+}
+__name(rippleReach, "rippleReach");
+function framePixels(layout, overlay, anim) {
+  const p = { layout, px: layout.base.slice(), marked: new Uint8Array(layout.width * layout.height) };
+  const origin = overlay.edited === null ? void 0 : layout.files[overlay.edited];
+  const reach = rippleReach(layout, overlay, anim);
+  paintPath(p, overlay);
+  paintHits(p, overlay, matchAmount(anim));
+  paintReads(p, overlay);
+  if (origin !== void 0) paintEdited(p, origin);
+  if (origin !== void 0 && reach < Infinity) paintRing(p, origin, reach);
+  paintCallers(p, overlay, origin, reach);
+  return { pixels: p.px, marked: p.marked };
+}
+__name(framePixels, "framePixels");
+function frameCells(layout, overlay, anim) {
+  const { pixels, marked } = framePixels(layout, overlay, anim);
+  return encodeCells(layout, pixels, marked);
+}
+__name(frameCells, "frameCells");
+var FRAME_MS = 40;
+var FLASH_MS = 600;
+var RIPPLE_MS = 1200;
+
+// src/views/mapPane.ts
+var MAP_KEY = "lens-map";
+var MAX_COLUMNS = 512;
+var MAX_ROWS = 256;
+var MIN_ROWS = 4;
+var GAP = 2;
+var SEP = " · ";
+var FACT_ROWS = 4;
+var INLINE_ROWS_PER_COLUMN = 1 / 6;
+var INLINE_MAX_ROWS = 20;
+var hexOf = /* @__PURE__ */ __name((n) => `#${n.toString(16).padStart(6, "0")}`, "hexOf");
+var BAND_SWATCHES = [
+  ...HEALTH_BAND_ORDER.map((band) => ({ glyph: "■", color: DARK_CANVAS_BAND[band], label: HEALTH_BAND_LABEL[band] })),
+  { glyph: "■", color: DARK_CANVAS.nodeNeutral, label: MAP_COPY.noScore }
+];
+var READ = { glyph: "□", color: BRAND.accent, label: MAP_COPY.read };
+var EDITED = { glyph: "◆", color: hexOf(EDIT_TINT), label: MAP_COPY.edited };
+var IMPORTER = { glyph: "·", color: BRAND.accent, label: MAP_COPY.importer };
+var MATCH = { glyph: "▪", color: BRAND.accent, label: MAP_COPY.match };
+function packRows(items, width, columns, gap) {
+  const rows = [];
+  let used = Infinity;
+  for (const item of items) {
+    const w = width(item);
+    const last = rows[rows.length - 1];
+    if (last === void 0 || used + gap + w > columns) {
+      rows.push([item]);
+      used = w;
+    } else {
+      last.push(item);
+      used += gap + w;
+    }
+  }
+  return rows;
+}
+__name(packRows, "packRows");
+var swatchWidth = /* @__PURE__ */ __name((s) => s.label.length + 2, "swatchWidth");
+function legendRows(columns) {
+  const swatchRows2 = /* @__PURE__ */ __name((items) => packRows(items, swatchWidth, columns, GAP).length, "swatchRows");
+  return swatchRows2(BAND_SWATCHES) + swatchRows2([READ, EDITED, IMPORTER, MATCH]) + FACT_ROWS;
+}
+__name(legendRows, "legendRows");
+function mapSize(pane) {
+  const columns = Math.max(1, Math.min(MAX_COLUMNS, pane.bodyColumns));
+  const wanted = pane.placement === "dock" ? pane.bodyRows - legendRows(columns) : Math.min(INLINE_MAX_ROWS, Math.round(columns * INLINE_ROWS_PER_COLUMN));
+  return { columns, rows: Math.max(MIN_ROWS, Math.min(MAX_ROWS, wanted)) };
+}
+__name(mapSize, "mapSize");
+function swatchRows(items, columns) {
+  return packRows(items, swatchWidth, columns, GAP).map(
+    (row) => box(
+      { flexDirection: "row", columnGap: GAP },
+      row.map((s) => box({ flexDirection: "row" }, [text(s.glyph, { color: s.color }), text(` ${s.label}`, { dimColor: true })]))
+    )
+  );
+}
+__name(swatchRows, "swatchRows");
+function marksOf(resolved) {
+  const marks = [READ, EDITED];
+  if (resolved.overlay.callers.length > 0) marks.push(IMPORTER);
+  if (resolved.overlay.hits.length > 0) marks.push(MATCH);
+  return marks;
+}
+__name(marksOf, "marksOf");
+function scopeRows(parts, columns) {
+  return packRows(parts, (p) => p.length, columns, SEP.length).slice(0, 2).map((row) => row.join(SEP));
+}
+__name(scopeRows, "scopeRows");
+function factRows(resolved, scope, columns) {
+  const facts = [];
+  const reads = readsLine(resolved.reads, resolved.matched);
+  if (reads !== null) facts.push(reads);
+  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn));
+  return [...facts, ...scopeRows(scopeParts(scope), columns)];
+}
+__name(factRows, "factRows");
+function legendView(resolved, scope, columns) {
+  return [
+    ...swatchRows(BAND_SWATCHES, columns),
+    ...swatchRows(marksOf(resolved), columns),
+    ...factRows(resolved, scope, columns).map((f) => text(fit(f, columns), { dimColor: true, wrap: "truncate-end" }))
+  ];
+}
+__name(legendView, "legendView");
+function mapPaneView(layout, cells, resolved, scope) {
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [
+    raster({ key: MAP_KEY, columns: layout.columns, rows: layout.rows, cells }),
+    ...legendView(resolved, scope, layout.columns)
+  ]);
+}
+__name(mapPaneView, "mapPaneView");
+function noticeView(line, columns) {
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [text(fit(line, columns), { dimColor: true, wrap: "truncate-end" })]);
+}
+__name(noticeView, "noticeView");
+
+// src/map-controller.ts
+var MAP_CAP = 4e3;
+var MAP_TIMEOUT_MS = 15e3;
+var CALLERS_TIMEOUT_MS = 2e4;
+var CALLERS_DEPTH = 1;
+var Animator = class {
+  static {
+    __name(this, "Animator");
+  }
+  anim = null;
+  timer;
+  blitting = false;
+  stopped = false;
+  progress(now) {
+    const a = this.anim;
+    return a === null ? void 0 : { kind: a.kind, t: Math.min(1, (now - a.start) / a.duration) };
+  }
+  play(io, kind, screen) {
+    this.stop();
+    if (this.stopped) return;
+    this.anim = { kind, start: Date.now(), duration: kind === "flash" ? FLASH_MS : RIPPLE_MS };
+    io.redraw();
+    this.timer = setInterval(() => this.tick(io, screen), FRAME_MS);
+  }
+  stop() {
+    clearInterval(this.timer);
+    this.timer = void 0;
+    this.anim = null;
+  }
+  /** For good: a disposed map plays nothing more. */
+  end() {
+    this.stopped = true;
+    this.stop();
+  }
+  tick(io, screen) {
+    const step = this.progress(Date.now());
+    const frame = step === void 0 ? null : screen(step);
+    if (step === void 0 || frame === null) return this.stop();
+    if (this.blitting) return;
+    if (step.t >= 1) this.stop();
+    this.blitting = true;
+    io.blit(frame.cells, frame.columns, frame.rows).then((r) => r.deny === void 0 || this.refused(io, r.deny)).catch((err) => this.refused(io, String(err))).finally(() => {
+      this.blitting = false;
+    });
+  }
+  /** Resized, closed or refused under the animation: stop and let a redraw show the resting frame. */
+  refused(io, why) {
+    io.debug(`blit refused: ${why}`);
+    this.stop();
+    if (!this.stopped) io.redraw();
+  }
+};
+var LensMap = class {
+  static {
+    __name(this, "LensMap");
+  }
+  trail = initialTrail;
+  disposed = false;
+  /** One band row the map asks for (the pane could not open), until the turn ends. */
+  band = null;
+  repo = null;
+  feed = { status: "idle" };
+  requested = false;
+  autoOpenTried = false;
+  /** The latest edit's absolute path with its case, for the importers request. */
+  editPath = null;
+  /** The edit whose importers were asked for, so each is asked once. */
+  callersAsked = 0;
+  drawn = null;
+  layoutCache = null;
+  animator = new Animator();
+  reducedMotion = false;
+  autoOpenOnRead;
+  constructor(autoOpenOnRead) {
+    this.autoOpenOnRead = autoOpenOnRead;
+  }
+  /** The band row the map wants shown, if any. */
+  bandLine() {
+    return this.band;
+  }
+  /** The person's `prefersReducedMotion` setting: resting frames only. */
+  setReducedMotion(on) {
+    this.reducedMotion = on;
+  }
+  dispose() {
+    this.disposed = true;
+    this.animator.end();
+  }
+  setRepo(io, repo) {
+    this.repo = repo;
+    this.fetchWanted(io);
+  }
+  /** One observed tool call; `editPath` is the edited file's absolute path, case kept. */
+  observe(io, action, editPath) {
+    if (action.type === "edit") this.editPath = editPath;
+    this.apply(io, action);
+    if (action.type === "edit") this.fetchWanted(io);
+    if (action.type === "read") void this.autoOpen(io);
+  }
+  /** /lens: open the pane (asked, so placed at any width) and start what it shows. */
+  async request(io) {
+    this.requested = true;
+    this.band = null;
+    if (this.feed.status === "failed") this.feed = { status: "idle" };
+    const opened = await io.openPane();
+    if (!opened.isPlaced) this.band = notPlacedLine(opened.reason);
+    this.fetchWanted(io);
+    io.redraw();
+  }
+  /** A main-loop turn ended: the band row has been seen. */
+  turnEnded() {
+    this.band = null;
+  }
+  /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
+  paneTree(io, pane) {
+    const columns = pane.bodyColumns;
+    this.drawn = null;
+    if (pane.surface !== void 0 && pane.surface !== "terminal") return noticeView(MAP_COPY.desktop, columns);
+    const repo = this.repo;
+    if (repo === null) return noticeView(pane.notice, columns);
+    this.requested = true;
+    this.fetchWanted(io);
+    const feed = this.feed;
+    if (feed.status !== "ready") return noticeView(feed.status === "failed" ? MAP_COPY.failed : MAP_COPY.loading, columns);
+    const layout = this.layoutFor(feed.data, mapSize(pane), repo.caseInsensitive);
+    this.drawn = { layout, root: repo.root };
+    const resolved = resolveOverlay(layout, this.trail, repo.root);
+    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
+    return mapPaneView(layout, cells, resolved, {
+      drawn: layout.drawn.length,
+      repositoryTotal: feed.data.repository_total,
+      indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
+      beyondCap: feed.data.omitted.files,
+      cap: feed.data.cap
+    });
+  }
+  layoutFor(data, size, caseInsensitive) {
+    const cached = this.cachedLayout(data, size);
+    if (cached !== null) return cached;
+    const layout = layoutMap(data.files, size.columns, size.rows, caseInsensitive);
+    this.layoutCache = { data, columns: size.columns, rows: size.rows, layout };
+    return layout;
+  }
+  cachedLayout(data, size) {
+    const c = this.layoutCache;
+    const same = c !== null && c.data === data && c.columns === size.columns && c.rows === size.rows;
+    return same ? c.layout : null;
+  }
+  apply(io, action) {
+    const next = reduceTrail(this.trail, action);
+    if (next === this.trail) return;
+    this.trail = next;
+    if (action.type === "search") this.animate(io, "flash");
+    else if (action.type === "callers" && action.callers.status === "ready") this.animate(io, "ripple");
+    else io.redraw();
+  }
+  /** The feed and the latest edit's importers, once the map is wanted and the repo known. */
+  fetchWanted(io) {
+    if (!this.requested || this.repo === null) return;
+    this.loadFeed(io, this.repo);
+    this.loadCallers(io, this.repo);
+  }
+  loadFeed(io, repo) {
+    if (this.feed.status !== "idle") return;
+    this.feed = { status: "loading" };
+    withTimeout(getHealthMap(repo.id, { cap: MAP_CAP }), MAP_TIMEOUT_MS, "health map").then((data) => {
+      this.feed = { status: "ready", data };
+    }).catch((err) => {
+      this.feed = { status: "failed" };
+      io.debug(`health map failed: ${String(err)}`);
+    }).finally(() => {
+      if (!this.disposed) io.redraw();
+    });
+  }
+  loadCallers(io, repo) {
+    const edits = this.trail.edits;
+    if (this.editPath === null || this.callersAsked === edits) return;
+    this.callersAsked = edits;
+    const rel = relativeTo(this.editPath, repo.root, repo.caseInsensitive);
+    if (rel === null) return this.apply(io, { type: "callers", edits, callers: { status: "failed" } });
+    const request = { changed_files: [rel], max_depth: CALLERS_DEPTH };
+    withTimeout(analyzeBlastRadius(repo.id, request), CALLERS_TIMEOUT_MS, "importers").then((r) => {
+      const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel);
+      if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
+    }).catch((err) => {
+      io.debug(`importers failed: ${String(err)}`);
+      if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "failed" } });
+    });
+  }
+  /** The first read opens the map when the toggle is on and the pane would be placed; never forced. */
+  async autoOpen(io) {
+    if (!this.mayAutoOpen()) return;
+    this.autoOpenTried = true;
+    const opened = await io.openPane();
+    if (this.disposed || this.requested) return;
+    if (opened.isPlaced) {
+      this.requested = true;
+      this.fetchWanted(io);
+      return;
+    }
+    await io.closePane();
+    this.band = MAP_COPY.waiting;
+    io.redraw();
+  }
+  /** Once, with the toggle on, before the person asked, and only for a repo with a map. */
+  mayAutoOpen() {
+    return this.autoOpenOnRead && !this.autoOpenTried && !this.requested && this.repo !== null;
+  }
+  /** Whether an animation would show anything: a map on screen, motion allowed, a ripple with somewhere to go. */
+  canAnimate(kind) {
+    const on = this.drawn;
+    if (this.reducedMotion || on === null) return false;
+    return kind === "flash" || rippleRadius(on.layout, resolveOverlay(on.layout, this.trail, on.root).overlay) > 0;
+  }
+  /** A flash or a ripple when it would show; otherwise (reduced motion, nothing on screen) the resting frame. */
+  animate(io, kind) {
+    this.animator.stop();
+    if (!this.canAnimate(kind)) return io.redraw();
+    this.animator.play(io, kind, (step) => this.frame(step));
+  }
+  /** The current trail on the drawn map at one step, or null once the map is off screen. */
+  frame(step) {
+    const on = this.drawn;
+    if (on === null) return null;
+    const cells = frameCells(on.layout, resolveOverlay(on.layout, this.trail, on.root).overlay, step);
+    return { cells, columns: on.layout.columns, rows: on.layout.rows };
+  }
+};
 
 // src/model/review.ts
 var initialReview = { edited: false, outcome: { phase: "none" } };
@@ -574,207 +2108,6 @@ function reduce(state2, action) {
   }
 }
 __name(reduce, "reduce");
-
-// src/views/copy.ts
-var HINTS = {
-  "no-server": "Lens map needs the local server: repowise serve --no-ui",
-  auth: "local server needs an API key; Lens does not read keys",
-  unlisted: "Lens map needs a local server for this repo: repowise serve --no-ui",
-  "no-index": "index this repo for Lens: repowise init --no-prose --yes",
-  "no-cli": "Lens needs the Repowise CLI: pip install repowise"
-};
-function freshnessLine(f) {
-  const changed = f.changedFiles === null ? "" : ` (${countOf(f.changedFiles, "file", "files")} changed)`;
-  return `index behind HEAD${changed} · repowise update`;
-}
-__name(freshnessLine, "freshnessLine");
-function spinnerLine(file, ctx) {
-  const parts = [file.slice(file.lastIndexOf("/") + 1)];
-  if (ctx.callerFiles) parts.push(countOf(ctx.callerFiles, "caller file", "caller files"));
-  if (ctx.contributors) parts.push(countOf(ctx.contributors, "contributor", "contributors"));
-  return parts.join(" · ");
-}
-__name(spinnerLine, "spinnerLine");
-function squeezeLine(s) {
-  const parts = [`${countOf(s.originalLines, "line", "lines")} → ${s.keptLines.toLocaleString("en-US")}`];
-  if (s.omittedTokens > 0) parts.push(`~${countOf(s.omittedTokens, "token", "tokens")} omitted`);
-  const failures = [s.failed > 0 ? `${s.failed.toLocaleString("en-US")} failed` : "", s.errors > 0 ? countOf(s.errors, "error", "errors") : ""];
-  if (s.failed + s.errors > 0) parts.push(failures.filter((f) => f !== "").join(", "));
-  const more = s.refs.length > 1 ? ` (+${s.refs.length - 1} more)` : "";
-  parts.push(`repowise expand ${s.refs[0]}${more}`);
-  return parts.join(" · ");
-}
-__name(squeezeLine, "squeezeLine");
-function marginLine(note) {
-  if (note.kind === "decision") {
-    return note.reviewed ? `a standing decision covers this file: ${note.title}` : `a decision found in this file, not yet reviewed: ${note.title}`;
-  }
-  const where = note.symbol === null ? "" : `, mostly in ${note.symbol}`;
-  return `fixed ${countOf(note.count, "time", "times")} in 6 months, most recently ${note.age}${where}`;
-}
-__name(marginLine, "marginLine");
-function savingsLine(d, columns) {
-  const inferred = d.inferredTokens > 0 ? ` (${d.inferredTokens.toLocaleString("en-US")} inferred)` : "";
-  const usd = d.usd >= 5e-3 ? ` · $${d.usd.toFixed(2)}` : "";
-  const head = `${countOf(d.tokens, "token", "tokens")}${inferred}${usd} saved`;
-  const full = `${head} since this session started · all agents on this repo`;
-  return full.length <= columns ? full : `${head} this session · all agents`;
-}
-__name(savingsLine, "savingsLine");
-var REVIEWING = "Reviewing the change...";
-var REVIEW_TIMEOUT_S = 20;
-var REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
-var RUN_TESTS = "Run tests";
-var DETAILS = "Details";
-var OVERLAP_MARK = "◦";
-function reviewFailed(message) {
-  return `Change review could not run: ${message}`;
-}
-__name(reviewFailed, "reviewFailed");
-function reviewScope(ref, workingTree, changed) {
-  const where = workingTree ? ref : `${ref} (no uncommitted changes)`;
-  return changed === null ? where : `${where}, ${countOf(changed, "changed file", "changed files")}`;
-}
-__name(reviewScope, "reviewScope");
-function noNewFindings(analyzed) {
-  return `no new findings in ${analyzed === 1 ? "the 1 changed file" : `all ${analyzed.toLocaleString("en-US")} changed files`}`;
-}
-__name(noNewFindings, "noNewFindings");
-function healthImproved(resolved) {
-  return `improved, ${countOf(resolved, "finding", "findings")} resolved, none new`;
-}
-__name(healthImproved, "healthImproved");
-var HEALTH_NOT_REPORTED = "not reported";
-var NO_NEW_FINDINGS = "no new findings";
-var PARTLY_COMPARED = "partly compared, no new findings";
-function notCompared(why) {
-  return why === "" ? "not compared" : `not compared: ${why}`;
-}
-__name(notCompared, "notCompared");
-function improvedShort(resolved) {
-  return `improved, ${resolved.toLocaleString("en-US")} resolved`;
-}
-__name(improvedShort, "improvedShort");
-function newFindings(total, required) {
-  return `${countOf(total, "new finding", "new findings")}, ${required ? "review required" : "low severity"}`;
-}
-__name(newFindings, "newFindings");
-function resolvedToo(resolved) {
-  return `${countOf(resolved, "finding", "findings")} resolved`;
-}
-__name(resolvedToo, "resolvedToo");
-function findingLine(f) {
-  const at = f.lines === void 0 ? f.path : `${f.path}:${f.lines[0]}`;
-  return `${f.severity} ${f.biomarker}: ${f.reason} (${at})`;
-}
-__name(findingLine, "findingLine");
-function moreFindings(more) {
-  return `and ${more.toLocaleString("en-US")} more (Details)`;
-}
-__name(moreFindings, "moreFindings");
-function partialScope(analyzed, changed, reasons) {
-  const why = Object.entries(reasons).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
-  const skipped = changed - analyzed;
-  return `Scope: compared ${analyzed.toLocaleString("en-US")} of ${countOf(changed, "changed file", "changed files")}; ${skipped.toLocaleString("en-US")} not analysed${why ? ` (${why})` : ""}, so this is not a clean bill`;
-}
-__name(partialScope, "partialScope");
-function diffShape(percentile) {
-  const where = percentile === null || percentile === void 0 ? "not ranked (no recent commits to compare)" : `bigger than ${Math.round(percentile)}% of this repo's recent commits`;
-  return `Diff shape: ${where}; size, not danger`;
-}
-__name(diffShape, "diffShape");
-function testsBasis(measured) {
-  return measured ? "measured by stored coverage" : "inferred from the dependency graph, not measured";
-}
-__name(testsBasis, "testsBasis");
-function testsLine(t) {
-  const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
-  const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
-  return `Tests to run: ${count}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
-}
-__name(testsLine, "testsLine");
-function overlapLine(branches, files, more) {
-  const who = countOf(branches.length, "other branch", "other branches") + (more ? " or more" : "");
-  const what = files.length === 1 ? files[0] : countOf(files.length, "changed file", "changed files");
-  const verb = branches.length === 1 && !more ? "edits" : "edit";
-  return `${OVERLAP_MARK} ${who} also ${verb} ${what} (${branches.join(", ")})`;
-}
-__name(overlapLine, "overlapLine");
-function overlapShort(branches) {
-  return `${OVERLAP_MARK} ${countOf(branches, "other branch edits", "other branches edit")} these files`;
-}
-__name(overlapShort, "overlapShort");
-function directiveLines(d) {
-  const out = [`Change review: ${d.status.replace(/_/g, " ")}`, d.headline];
-  if (d.reasons?.length) out.push("Reasons:", ...d.reasons.map((r) => `  ${r}`));
-  if (d.next_actions?.length) out.push("Next actions:", ...d.next_actions.map((a) => `  ${a}`));
-  return out;
-}
-__name(directiveLines, "directiveLines");
-function runTestsPrompt(t) {
-  const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
-  return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
-}
-__name(runTestsPrompt, "runTestsPrompt");
-
-// src/views/elements.ts
-function text(value, props = {}) {
-  return { type: "Text", props, children: [value] };
-}
-__name(text, "text");
-function box(props, children) {
-  return { type: "Box", props, children };
-}
-__name(box, "box");
-function button(key, hotkey, label) {
-  return { type: "Button", props: { key, label, hotkey, plain: true } };
-}
-__name(button, "button");
-function materialize(node, table, presses = {}) {
-  const build = table[node.type];
-  if (!build) throw new Error(`element ${node.type} is not on this surface`);
-  if (node.type === "Button") {
-    const onPress = presses[node.props.key];
-    if (!onPress) throw new Error(`button ${node.props.key} has no action`);
-    return build({ ...node.props, onPress });
-  }
-  const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
-  return build({ ...node.props, children });
-}
-__name(materialize, "materialize");
-
-// ../ui/src/brand.ts
-var DARK = {
-  bgRoot: "#0e0e0f",
-  bgSurface: "#141416",
-  bgElevated: "#191a1c",
-  bgInset: "#0a0a0b",
-  textPrimary: "#f2f2f3",
-  textSecondary: "#b4b4b9",
-  textTertiary: "#7c7c82",
-  accentPrimary: "#f59520",
-  accentFill: "#f59520",
-  accentSecondary: "#a98fc4",
-  success: "#34d399",
-  warning: "#f2a03d",
-  error: "#e06a5a"
-};
-var DARK_CANVAS = {
-  nodeAtRisk: "#b0544b",
-  nodeNeedsWork: "#bd7c42",
-  nodeFair: "#a89453",
-  nodeGood: "#42906f",
-  nodeExcellent: "#5cb389",
-  nodeNeutral: "#333336",
-  caution: "#d9b04a"
-};
-var DARK_CANVAS_BAND = {
-  excellent: DARK_CANVAS.nodeExcellent,
-  good: DARK_CANVAS.nodeGood,
-  fair: DARK_CANVAS.nodeFair,
-  needs_work: DARK_CANVAS.nodeNeedsWork,
-  at_risk: DARK_CANVAS.nodeAtRisk
-};
 
 // src/views/review.ts
 var PRESS = { tests: "lens-review-tests", details: "lens-review-details" };
@@ -892,9 +2225,9 @@ function buttons(risk) {
   return out;
 }
 __name(buttons, "buttons");
-var GAP = 2;
+var GAP2 = 2;
 function buttonCells(pressable) {
-  return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP, 0);
+  return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP2, 0);
 }
 __name(buttonCells, "buttonCells");
 function quietInBand(risk) {
@@ -915,7 +2248,7 @@ function resultRow(risk, columns) {
   if (!scored(risk) || quietInBand(risk)) return null;
   const pressable = buttons(risk);
   const room = Math.max(0, columns - buttonCells(pressable));
-  return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
+  return box({ key: "lens-review", flexDirection: "row", columnGap: GAP2 }, [
     box({ flexDirection: "row" }, summaryParts(risk, room)),
     ...pressable
   ]);
@@ -955,10 +2288,11 @@ function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
   return rows.slice(0, MAX_BAND_ROWS);
 }
 __name(bandRows, "bandRows");
-function bandView(state2, viewport) {
+function bandView(state2, viewport, extra = []) {
   if (viewport.hasSurvey) return null;
   const review = reviewBandRow(state2.review.outcome, viewport.columns);
-  const rows = bandRows(state2, viewport.columns).slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
+  const own = [...bandRows(state2, viewport.columns), ...extra];
+  const rows = own.slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
   if (rows.length === 0 && review === null) return null;
   const nodes = rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
   return box({ key: "lens-band", flexDirection: "column" }, review === null ? nodes : [...nodes, review]);
@@ -1076,6 +2410,8 @@ var PROCESS_TIMEOUT_MS = 5e3;
 var SAVINGS_TIMEOUT_MS = 3e4;
 var SAVINGS_COOLDOWN_MS = 6e4;
 var MCP_SERVER_KEY = "repowise";
+var PANE_ID = "lens";
+var PANE_ROWS = 28;
 var state = initialSession;
 var generation = 0;
 var running = false;
@@ -1091,6 +2427,10 @@ var reviewOn = true;
 var reviewGeneration = 0;
 var editsThisTurn = 0;
 var started = null;
+var autoOpenOn = false;
+var discovery = null;
+var cwd = null;
+var map = new LensMap(false);
 var ERROR_CELLS = 160;
 function bind($) {
   const host = {
@@ -1100,7 +2440,7 @@ function bind($) {
       exists: /* @__PURE__ */ __name((path) => $.fs.exists(path), "exists")
     },
     process: {
-      run: /* @__PURE__ */ __name((argv, cwd) => $.process.run(argv, { cwd, timeoutMs: PROCESS_TIMEOUT_MS }), "run")
+      run: /* @__PURE__ */ __name((argv, cwd2) => $.process.run(argv, { cwd: cwd2, timeoutMs: PROCESS_TIMEOUT_MS }), "run")
     },
     http: /* @__PURE__ */ __name((url, init) => {
       const request = {};
@@ -1121,10 +2461,19 @@ function bind($) {
   return {
     host,
     redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
-    debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug")
+    debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug"),
+    blit: /* @__PURE__ */ __name((cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }), "blit"),
+    // No focus: the map has no controls, and the prompt keeps the keyboard.
+    openPane: /* @__PURE__ */ __name(() => $.ui.open({ id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }), "openPane"),
+    closePane: /* @__PURE__ */ __name(() => $.ui.close({ id: PANE_ID }), "closePane")
   };
 }
 __name(bind, "bind");
+function mapRepo(d) {
+  if (d.mode !== "full" || d.repo === void 0 || d.repoRoot === null) return null;
+  return { id: d.repo.id, root: d.repoRoot, updatedAt: d.repo.updatedAt, caseInsensitive: isWindowsPath(d.repoRoot) };
+}
+__name(mapRepo, "mapRepo");
 function dispatch(b, action) {
   const next = reduce(state, action);
   if (next === state) return;
@@ -1139,10 +2488,12 @@ async function refreshOnce(b, gen) {
   const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
   if (gen !== generation) return;
   if (indexed) warmMcp(h);
+  discovery = found;
   const action = { type: "discovered", mode: found.mode, freshness, repoRoot: found.repoRoot };
   if (found.liteReason !== void 0) action.liteReason = found.liteReason;
   dispatch(b, action);
-  if (found.repoId !== void 0) refreshSavings(b, found.repoId, gen);
+  if (found.repo !== void 0) refreshSavings(b, found.repo.id, gen);
+  map.setRepo(b, mapRepo(found));
 }
 __name(refreshOnce, "refreshOnce");
 function refreshSavings(b, repoId, gen) {
@@ -1181,6 +2532,9 @@ async function onSessionStart($, e, next) {
   const b = bind($);
   try {
     generation++;
+    cwd = typeof e.cwd === "string" ? e.cwd : null;
+    map.dispose();
+    map = new LensMap(autoOpenOn);
     state = initialSession;
     reviewGeneration++;
     editsThisTurn = 0;
@@ -1192,6 +2546,8 @@ async function onSessionStart($, e, next) {
     resetMcp();
     warmMcp(b.host);
     refresh(b);
+    await $.command.register({ name: "lens", description: MAP_COPY.command, immediate: true });
+    map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
   } catch (err) {
     b.debug(`session.start failed: ${String(err)}`);
   }
@@ -1209,6 +2565,7 @@ function noteTurnEnd(b, e) {
   try {
     const action = fromTurnComplete(e);
     if (action === null) return;
+    map.turnEnded();
     dispatch(b, action);
     refresh(b);
   } catch (err) {
@@ -1307,7 +2664,9 @@ __name(pressDetails, "pressDetails");
 async function onBand($, e, next) {
   const theirs = await next(e);
   try {
-    const tree = bandView(state, { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true });
+    const line = map.bandLine();
+    const viewport = { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true };
+    const tree = bandView(state, viewport, line === null ? [] : [line]);
     if (tree === null) return theirs;
     const elements = $.ui.resolve(e);
     const ours = materialize(tree, elements, {
@@ -1346,9 +2705,30 @@ async function onToolCall($, e, next) {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
   editLanded(b, e, result);
+  observeTrail($, b, e, result);
   return result;
 }
 __name(onToolCall, "onToolCall");
+function observeTrail($, b, e, result) {
+  if (!OBSERVED_TOOLS.has(e.tool)) return;
+  try {
+    const here = cwd;
+    if (here === null) {
+      void $.session.cwd().then(
+        (c) => cwd = c,
+        (err) => b.debug(`cwd failed: ${String(err)}`)
+      );
+      return;
+    }
+    const ctx = { cwd: here, isWindows: isWindowsPath(here) };
+    const action = fromToolCall(e, result, ctx);
+    const raw = e.file_path;
+    if (action !== null) map.observe(b, action, typeof raw === "string" ? absolutePath(raw, ctx) : null);
+  } catch (err) {
+    b.debug(`tool.call observe failed: ${String(err)}`);
+  }
+}
+__name(observeTrail, "observeTrail");
 function fileToolStarted(b, e) {
   try {
     const file = fileTarget(e, state.repoRoot);
@@ -1445,12 +2825,41 @@ async function onToolUse($, e, next) {
   }
 }
 __name(onToolUse, "onToolUse");
+async function onLensCommand($) {
+  const b = bind($);
+  try {
+    if (discovery === null || mapRepo(discovery) === null) refresh(b);
+    await map.request(b);
+  } catch (err) {
+    b.debug(`/lens failed: ${String(err)}`);
+  }
+  return {};
+}
+__name(onLensCommand, "onLensCommand");
+async function onPane($, e, next) {
+  if (e.requestId !== PANE_ID) return next(e);
+  const b = bind($);
+  try {
+    const d = discovery;
+    const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+    const { bodyColumns, placement, scroll } = e.props;
+    const tree = map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows });
+    return materialize(tree, $.ui.resolve(e));
+  } catch (err) {
+    b.debug(`map render failed: ${String(err)}`);
+    return next(e);
+  }
+}
+__name(onPane, "onPane");
 function register(on, options = {}) {
   reviewOn = options["lens_review"] !== false;
+  autoOpenOn = options["lens_pane_autoopen"] === true;
   on("session.start", onSessionStart);
   if (reviewOn) on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
+  on("ui.render", { component: "Pane" }, onPane);
+  on("command.run", { command: "lens" }, onLensCommand);
   on("tool.call", onToolCall);
   on("tool.check", onToolCheck);
   on("ui.render", { component: "Spinner" }, onSpinner);

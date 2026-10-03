@@ -24,12 +24,13 @@ export function bandRows(state: SessionState, columns = Number.POSITIVE_INFINITY
   return rows.slice(0, MAX_BAND_ROWS);
 }
 
-/** null means draw nothing: pass the site on. */
-export function bandView(state: SessionState, viewport: BandViewport): Node | null {
+/** null means draw nothing: pass the site on. `extra` rows come after the session's own. */
+export function bandView(state: SessionState, viewport: BandViewport, extra: readonly string[] = []): Node | null {
   if (viewport.hasSurvey) return null;
   const review = reviewBandRow(state.review.outcome, viewport.columns);
   // The review row holds the buttons, so it keeps its place within the cap.
-  const rows = bandRows(state, viewport.columns).slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
+  const own = [...bandRows(state, viewport.columns), ...extra];
+  const rows = own.slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
   if (rows.length === 0 && review === null) return null;
   const nodes = rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
   return box({ key: "lens-band", flexDirection: "column" }, review === null ? nodes : [...nodes, review]);

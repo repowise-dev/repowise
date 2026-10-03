@@ -17,8 +17,8 @@ export interface Discovery {
   mode: Mode;
   liteReason?: LiteReason;
   repoRoot: string | null;
-  /** The local server's id for this repo, in full mode. */
-  repoId?: string;
+  /** In full mode: the local server's id for this repo, and when it last indexed it. */
+  repo?: { id: string; updatedAt: string | null };
 }
 
 const HEALTH_TIMEOUT_MS = 800;
@@ -107,7 +107,7 @@ export async function isPidAlive(host: Host, pid: number, cwd: string): Promise<
   }
 }
 
-type ServerProbe = { kind: "ok"; repoId: string } | { kind: "down" } | { kind: "auth" } | { kind: "unlisted" };
+type ServerProbe = { kind: "ok"; repoId: string; updatedAt: string | null } | { kind: "down" } | { kind: "auth" } | { kind: "unlisted" };
 
 /**
  * Health-probes the server the lock names, then finds this repo in its list.
@@ -127,7 +127,7 @@ export async function probeServer(host: Host, lock: ServeLock, repoRoot: string)
     const win = isWindowsPath(repoRoot);
     const target = normalizeRepoPath(repoRoot, win);
     const match = repos.find((r) => r.local_path && normalizeRepoPath(r.local_path, win) === target);
-    return match ? { kind: "ok", repoId: match.id } : { kind: "unlisted" };
+    return match ? { kind: "ok", repoId: match.id, updatedAt: match.updated_at ?? null } : { kind: "unlisted" };
   } catch (err) {
     if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) return { kind: "auth" };
     return { kind: "down" };
@@ -167,7 +167,7 @@ export async function discover(host: Host): Promise<Discovery> {
   const repoRoot = await findIndexedRoot(host, cwd);
   if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
   const server = await serverState(host, repoRoot);
-  if (server.kind === "ok") return { mode: "full", repoRoot, repoId: server.repoId };
+  if (server.kind === "ok") return { mode: "full", repoRoot, repo: { id: server.repoId, updatedAt: server.updatedAt } };
   if (!(await mcpReachable(host))) return { mode: "no-cli", repoRoot };
   const liteReason: LiteReason = server.kind === "down" ? "no-server" : server.kind;
   return { mode: "lite", liteReason, repoRoot };

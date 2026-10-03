@@ -28,6 +28,12 @@
       "title": "Lens change review",
       "description": "After a turn that edits files, review the working tree with get_change_risk and show the result beneath Claude's answer.",
       "default": true
+    },
+    "lens_pane_autoopen": {
+      "type": "boolean",
+      "title": "Open the Lens map on the first read",
+      "description": "Opens the Lens map pane when Claude first reads a file, if the terminal is wide enough to place it without asking. /lens opens it at any time.",
+      "default": false
     }
   },
   "keywords": [

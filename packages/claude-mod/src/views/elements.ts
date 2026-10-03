@@ -7,7 +7,7 @@
 export interface TextProps {
   dimColor?: boolean;
   wrap?: "truncate-end";
-  /** A theme key (`success`, `warning`, `error`): the terminal's own colors for health. */
+  /** A theme key (`success`, `warning`, `error`: the terminal's own colors for health) or a hex color. */
   color?: string;
 }
 
@@ -26,10 +26,19 @@ export interface ButtonProps {
   plain: true;
 }
 
+/** A terminal cell grid; `cells` packs `columns * rows` cells (views/map.ts). */
+export interface RasterProps {
+  key: string;
+  columns: number;
+  rows: number;
+  cells: string;
+}
+
 export type Node =
   | { type: "Text"; props: TextProps; children: string[] }
   | { type: "Box"; props: BoxProps; children: Node[] }
-  | { type: "Button"; props: ButtonProps };
+  | { type: "Button"; props: ButtonProps }
+  | { type: "Raster"; props: RasterProps };
 
 export function text(value: string, props: TextProps = {}): Node {
   return { type: "Text", props, children: [value] };
@@ -41,6 +50,10 @@ export function box(props: BoxProps, children: Node[]): Node {
 
 export function button(key: string, hotkey: string, label: string): Node {
   return { type: "Button", props: { key, label, hotkey, plain: true } };
+}
+
+export function raster(props: RasterProps): Node {
+  return { type: "Raster", props };
 }
 
 export type ElementTable = Record<string, (props: Record<string, unknown>) => unknown>;
@@ -56,6 +69,8 @@ export function materialize(node: Node, table: ElementTable, presses: PressTable
     if (!onPress) throw new Error(`button ${node.props.key} has no action`);
     return build({ ...node.props, onPress });
   }
+  // A leaf: the element refuses a `children` prop.
+  if (node.type === "Raster") return build({ ...node.props });
   const children =
     node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
   return build({ ...node.props, children });

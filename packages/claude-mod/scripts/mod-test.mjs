@@ -3,7 +3,7 @@
 // never ship with the plugin. Needs the `claude` CLI (>= 2.1.287) on PATH.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,15 @@ try {
   for (const name of readdirSync(join(pkg, "mod-test"))) {
     if (name.endsWith(".test.ts")) cpSync(join(pkg, "mod-test", name), join(copy, "tests", name));
   }
+  // The test `$` has no fs: the recorded Django payloads reach the map tests as a module.
+  const recorded = (name) => readFileSync(join(pkg, "test", "fixtures", name), "utf8");
+  writeFileSync(
+    join(copy, "tests", "django-feed.ts"),
+    `export const HEALTH_MAP = ${recorded("django-health-map.json")} as any
+` +
+      `export const BLAST_RADIUS = ${recorded("django-blast-radius-query-depth1.json")} as any
+`,
+  );
   const run = spawnSync("claude", ["plugin", "test", copy], { stdio: "inherit", shell: process.platform === "win32" });
   process.exitCode = run.status ?? 1;
 } finally {

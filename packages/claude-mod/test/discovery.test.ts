@@ -126,7 +126,11 @@ describe("probeServer", () => {
   const lock = JSON.parse(fixture("locks/valid.json"));
 
   it("matches this repo by local_path among several, not the first row", async () => {
-    expect(await probeServer(host({ http: server() }), lock, ROOT)).toEqual({ kind: "ok", repoId: "repo-requests" });
+    expect(await probeServer(host({ http: server() }), lock, ROOT)).toEqual({
+      kind: "ok",
+      repoId: "repo-requests",
+      updatedAt: "2026-10-03T05:21:18.324285",
+    });
   });
 
   it("reports a server that does not list this repo", async () => {
@@ -157,7 +161,11 @@ describe("probeServer", () => {
 describe("discover", () => {
   it("full: live lock, healthy server, repo listed", async () => {
     const h = host({ files: { [STATE]: "{}", [LOCK]: fixture("locks/valid.json") }, http: server() });
-    expect(await discover(h)).toEqual({ mode: "full", repoRoot: ROOT, repoId: "repo-requests" });
+    expect(await discover(h)).toEqual({
+      mode: "full",
+      repoRoot: ROOT,
+      repo: { id: "repo-requests", updatedAt: "2026-10-03T05:21:18.324285" },
+    });
     expect(h.calls.connect).toBe(0);
   });
 
