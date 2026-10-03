@@ -145,7 +145,10 @@ def _resolve(repo_root: Path, *, allow_scan: bool) -> PricingSnapshot | None:
 
 
 def _cache_path(repo_root: Path) -> Path:
-    return repo_root / ".repowise" / "omissions" / _CACHE_NAME
+    """Through the store resolver: global store mode moves this cache too."""
+    from repowise.core.store_location import resolve_store_dir
+
+    return resolve_store_dir(repo_root) / "omissions" / _CACHE_NAME
 
 
 def snapshot_for_model(model: str | None, pricing_source: str) -> PricingSnapshot | None:

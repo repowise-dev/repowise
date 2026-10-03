@@ -18,6 +18,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from repowise.core.store_location import resolve_store_dir
+
 _log = logging.getLogger("repowise.workspace.registry")
 
 
@@ -42,7 +44,7 @@ class RepoContext:
 
 def repo_db_path(repo_path: Path) -> Path:
     """Where a repo's index database lives."""
-    return repo_path / ".repowise" / "wiki.db"
+    return resolve_store_dir(repo_path) / "wiki.db"
 
 
 async def open_repo_db(repo_path: Path) -> tuple[Any, async_sessionmaker[AsyncSession]]:
@@ -276,7 +278,7 @@ class RepoRegistry:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                lance_dir = repo_path / ".repowise" / "lancedb"
+                lance_dir = resolve_store_dir(repo_path) / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()

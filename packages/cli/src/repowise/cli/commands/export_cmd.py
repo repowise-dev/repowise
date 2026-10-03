@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
 )
+from repowise.core.store_location import resolve_store_dir
 
 # Rows per page of the export walk. Large enough that a big wiki costs few
 # round trips, small enough that one batch is never the whole database in
@@ -104,7 +105,7 @@ def export_command(
             raise SystemExit(code)
         return
 
-    out = repo_path / ".repowise" / "export" if output_dir is None else Path(output_dir).resolve()
+    out = resolve_store_dir(repo_path) / "export" if output_dir is None else Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
     # Load pages (and optionally decisions/dead-code/git) from DB

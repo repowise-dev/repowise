@@ -29,6 +29,7 @@ from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, full_option
 from repowise.cli.output import notice_console as _notices
+from repowise.core.store_location import resolve_store_dir
 
 # Rank-fusion damping for the workspace fan-out. The tool federates internally
 # through a workspace registry the CLI does not build (see ``tool_bridge``), so
@@ -248,7 +249,7 @@ def search_command(
         assert target.repo_path is not None
         repo_paths = [target.repo_path]
 
-    repo_paths = [p for p in repo_paths if (p / ".repowise").is_dir()]
+    repo_paths = [p for p in repo_paths if resolve_store_dir(p).is_dir()]
     if not repo_paths:
         notices.print("[yellow]No indexed repos to search. Run 'repowise init' first.[/yellow]")
         # Every early return owes stdout a document: a json caller cannot tell

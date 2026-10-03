@@ -45,6 +45,8 @@ import re
 import sqlite3
 from typing import TYPE_CHECKING
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._shared import MAX_OUTPUT_CHARS
 from .replacement import Offer
 
@@ -102,7 +104,7 @@ def skeleton_replacement(
     runs we have already decided the Read is a candidate, so it may pay for
     the index query and the render (~1ms — pure line slicing, no parser).
     """
-    symbols = _indexed_symbols(repo_path / ".repowise" / "wiki.db", rel)
+    symbols = _indexed_symbols(resolve_store_dir(repo_path) / "wiki.db", rel)
     if not symbols:
         return None
     try:

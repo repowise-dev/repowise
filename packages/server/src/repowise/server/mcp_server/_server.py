@@ -26,6 +26,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.store_location import resolve_store_dir
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
@@ -419,9 +420,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
             if repo_path:
-                from pathlib import Path
-
-                lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+                lance_dir = resolve_store_dir(repo_path) / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     # Step 2 — pre-connect so first search() is instant.

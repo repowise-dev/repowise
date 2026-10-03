@@ -46,6 +46,7 @@ from repowise.core.precedent.store import (
     EpisodeStore,
 )
 from repowise.core.sessions.events import event_files, is_prose_user_text, relative_files
+from repowise.core.store_location import resolve_store_dir
 
 _log = logging.getLogger(__name__)
 
@@ -348,7 +349,7 @@ def record_transcript_episodes(repo_path: Path | str, recorder: TranscriptEpisod
     """
     try:
         root = Path(repo_path).resolve()
-        if not (root / ".repowise").is_dir():
+        if not resolve_store_dir(root).is_dir():
             return 0
         subjects = recorder.present_subjects
         pending = recorder.pending()

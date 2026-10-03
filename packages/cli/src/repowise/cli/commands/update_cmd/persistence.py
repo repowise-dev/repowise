@@ -28,6 +28,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 from .incremental import _build_repo_graph
 
@@ -246,6 +247,9 @@ def heal_commit_offsets(repo_path: Any) -> None:
     from repowise.core.persistence.database import has_db_store
 
     root = Path(repo_path)
+    # has_db_store() answers for both the repo-local file and a configured
+    # database, and resolves the path through the store resolver, so it is the
+    # one guard that covers global store mode too.
     if not has_db_store(root):
         return
 
@@ -1490,7 +1494,7 @@ async def _rescore_health_from_db(
                 parsed_files=parsed_files,
                 community_label_map=file_community_labels(graph_builder),
                 coverage_map=coverage.coverage_map,
-                duplication_cache_dir=Path(repo_path) / ".repowise",
+                duplication_cache_dir=resolve_store_dir(repo_path),
                 repo_root=repo_path,
                 stored_blame_findings=stored_blame_findings,
             )

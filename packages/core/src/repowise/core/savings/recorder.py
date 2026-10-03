@@ -36,16 +36,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-#: Spelled out rather than imported from ``distill.store``, which owns these
-#: constants but costs a structlog import to read them -- the same reason the
-#: hook path spells the path out. Kept honest by
+#: The sidecar path is resolved through ``store_location`` rather than spelled
+#: out here, so global store mode moves it with everything else. Kept honest by
 #: ``test_the_sidecar_path_matches_the_store_that_owns_it``.
-_SIDECAR_PARTS = (".repowise", "omissions", "omissions.db")
 
 
 def sidecar_path(repo_root: str | Path) -> Path:
-    """Where a repository's savings sidecar lives."""
-    return Path(repo_root).joinpath(*_SIDECAR_PARTS)
+    """Where a repository's savings sidecar lives.
+
+    Through the store resolver, not by joining the parts here: global store
+    mode (issue #1551) moves every artifact under ``~/.repowise/repos``, so a
+    caller that spells ``.repowise`` itself writes into the checkout the mode
+    exists to leave untouched.
+    """
+    from repowise.core.store_location import resolve_store_dir
+
+    return resolve_store_dir(Path(repo_root)) / "omissions" / "omissions.db"
 
 
 def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:

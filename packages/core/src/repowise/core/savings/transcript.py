@@ -54,6 +54,7 @@ from repowise.core.sessions import (
 )
 from repowise.core.sessions.adapters.base import HarnessAdapter, RawPrefilter
 from repowise.core.sessions.cursor import CursorStore, iter_new_events
+from repowise.core.store_location import resolve_store_dir
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,18 @@ _HARNESS_OUTPUT_CAP_TOKENS: dict[str, int | None] = {
 #: whichever ran second, silently: that cursor advances as bytes are read.
 _CURSOR_FILENAME = "transcript-cursors.json"
 
-_SIDECAR_DIR = (".repowise", "omissions")
 _SIDECAR_DB = "omissions.db"
+
+
+def _sidecar_dir(repo_root: Path) -> Path:
+    """Where this repository's savings sidecar lives.
+
+    Through the store resolver, not by appending ``.repowise``: global store
+    mode (issue #1551) moves every artifact under ``~/.repowise/repos``, and a
+    module that joins the parts itself would write a sidecar into the checkout
+    the mode exists to leave untouched.
+    """
+    return resolve_store_dir(repo_root) / "omissions"
 
 
 @dataclass(slots=True)
@@ -193,7 +204,7 @@ def sync_transcript_savings(
     if not names:
         return result
 
-    cursors = CursorStore(repo_root.joinpath(*_SIDECAR_DIR, _CURSOR_FILENAME))
+    cursors = CursorStore(_sidecar_dir(repo_root) / _CURSOR_FILENAME)
     candidates: dict[str, _Candidate] = {}
     per_harness_budget = budget / len(names)
     for name in names:
@@ -229,7 +240,7 @@ def sync_transcript_savings(
 
 
 def _open_store(repo_root: Path) -> OmissionStore:
-    return OmissionStore(repo_root.joinpath(*_SIDECAR_DIR, _SIDECAR_DB))
+    return OmissionStore(_sidecar_dir(repo_root) / _SIDECAR_DB)
 
 
 def _sweep(
@@ -576,7 +587,7 @@ def _origin(source: str | None) -> tuple[str, str]:
 
 
 def _read_only_lookup(repo_root: Path, refs: Sequence[str]) -> tuple[set[str], dict[str, str]]:
-    database = repo_root.joinpath(*_SIDECAR_DIR, _SIDECAR_DB)
+    database = _sidecar_dir(repo_root) / _SIDECAR_DB
     if not database.is_file():
         return set(), {}
     from repowise.core.savings.repository import SavingsRepository

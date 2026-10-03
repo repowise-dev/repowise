@@ -18,6 +18,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.store_location import resolve_store_dir
 
 from ._types import DoctorCheck, _check, _status_markup
 from .advisories import _advise_claude_md_stamp
@@ -1167,7 +1168,7 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         from repowise.core.distill.config import omission_store_settings
 
         _ttl_days, max_mb = omission_store_settings(distill_cfg)
-        db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+        db_path = resolve_store_dir(repo_path) / "omissions" / "omissions.db"
         if not db_path.is_file():
             checks.append(_check("Omission store", True, "not created yet"))
         else:
