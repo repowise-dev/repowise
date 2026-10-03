@@ -7,6 +7,8 @@ so a future edit to one writer that forgets the new fields is caught.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.core.analysis.health.models import (
@@ -84,6 +86,50 @@ async def test_upsert_health_metrics_persists_dimension_scores(async_session):
     assert row.defect_score == 4.0
     assert row.maintainability_score == 2.5
     assert row.performance_score is None
+
+
+@pytest.mark.asyncio
+async def test_both_metric_writers_persist_code_origin(async_session):
+    """``code_origin`` is read off the row, so both writers must store it."""
+    repo = await insert_repo(async_session)
+    await save_health_metrics(
+        async_session,
+        repo.id,
+        [_metric("docs_src/app.py", code_origin="docs_example"), _metric("legacy.py")],
+    )
+    await async_session.commit()
+    rows = {r.file_path: r for r in await get_health_metrics(async_session, repo.id)}
+    assert rows["docs_src/app.py"].code_origin == "docs_example"
+    assert rows["legacy.py"].code_origin is None
+
+    await upsert_health_metrics(
+        async_session, repo.id, [_metric("legacy.py", code_origin="vendored")]
+    )
+    await async_session.commit()
+    rows = {r.file_path: r for r in await get_health_metrics(async_session, repo.id)}
+    assert rows["legacy.py"].code_origin == "vendored"
+
+
+@pytest.mark.asyncio
+async def test_finding_details_round_trip_dispatch_share_and_deprecated(async_session):
+    repo = await insert_repo(async_session)
+    finding = HealthFindingData(
+        biomarker_type="complex_method",
+        severity=Severity.HIGH,
+        file_path="a.py",
+        function_name="visit",
+        line_start=1,
+        line_end=40,
+        details={"ccn": 20, "dispatch_share": 0.85, "deprecated": True},
+        health_impact=1.0,
+    )
+    await save_health_findings(async_session, repo.id, [finding])
+    await async_session.commit()
+
+    row = (await get_health_findings(async_session, repo.id))[0]
+    details = json.loads(row.details_json)
+    assert details["dispatch_share"] == 0.85
+    assert details["deprecated"] is True
 
 
 @pytest.mark.asyncio

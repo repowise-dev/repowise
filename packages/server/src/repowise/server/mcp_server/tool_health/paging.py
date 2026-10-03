@@ -20,6 +20,7 @@ _PAGED_COLLECTIONS = frozenset(
         "findings",
         "trends",
         "worst_files",
+        "test_worst_files",
         "high_leverage_files",
         "top_findings",
         "test_findings",
@@ -164,6 +165,9 @@ def _stamp_nested_collections(value: Any) -> None:
     if not isinstance(value, dict):
         return
     for key, child in list(value.items()):
+        # A next call's keyword arguments: a count stamped there becomes an argument.
+        if key == "arguments":
+            continue
         if isinstance(child, list):
             total_key = f"{key}_total"
             emitted_key = f"{key}_emitted"

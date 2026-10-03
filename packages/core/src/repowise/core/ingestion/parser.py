@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 
@@ -64,6 +65,7 @@ from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
     refine_csharp_visibility,
+    refine_java_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -87,6 +89,7 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
     _elixir_call_is_definitional,
@@ -112,10 +115,13 @@ from .parser_helpers import (
     _qualified_pascal_parent,
     _run_query,
     _rust_shadowed_by_type_param,
+    _ts_nested_object_method_owner,
 )
 from .python_local_refs import extract_python_local_refs
+from .python_overload import is_python_overload as _is_python_overload
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
+from .symbol_identity import disambiguate_colliding_ids, symbol_discriminator
 
 log = structlog.get_logger(__name__)
 
@@ -180,6 +186,7 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
                 function.child_by_field_name("expression")
                 or function.child_by_field_name("object")
                 or function.child_by_field_name("argument")
+                or function.child_by_field_name("operand")
             )
 
     if target is None:
@@ -414,6 +421,27 @@ def grammar_tag_for(language: str, path: str) -> str:
 _node_text = node_text
 
 
+# The receiver captures that are themselves a member access, by language (the
+# queries widen only these two), and what a plain dotted path of names looks
+# like once whitespace is gone.
+_PATH_RECEIVERS = frozenset({("typescript", "member_expression"), ("python", "attribute")})
+_DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
+
+
+def _receiver_text(language: str, node: Node, src: str) -> str | None:
+    """The receiver's text, or None to drop the site.
+
+    A dotted receiver (``this.a.b.m()``) is kept only as a plain path of
+    names: a call, subscript or optional hop inside it types nothing, and
+    dropping the site keeps it off the bare-call tiers.
+    """
+    text = _node_text(node, src).strip()
+    if (language, node.type) not in _PATH_RECEIVERS:
+        return text
+    path = "".join(text.split())
+    return path if _DOTTED_PATH.fullmatch(path) else None
+
+
 def _normalize_php_receiver(text: str) -> str:
     """Spell PHP's receiver the way the resolver's strategies expect.
 
@@ -493,12 +521,35 @@ def _match_identity(
     return def_node, name_nodes, name, export_type, start_line
 
 
+_TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})
+
+
+def _keep_ts_overloads_beside_a_body(symbols: list[Symbol], node_types: list[str]) -> list[Symbol]:
+    """Drop a bodiless TS signature whose id has no implementation in the file.
+
+    That is an ambient declaration (``declare function``, a ``.d.ts``), not an
+    overload, and it never was a symbol.
+    """
+    bodied = {s.id for s, t in zip(symbols, node_types, strict=True) if t not in _TS_OVERLOAD_SIGNATURES}
+    return [
+        s
+        for s, t in zip(symbols, node_types, strict=True)
+        if t not in _TS_OVERLOAD_SIGNATURES or s.id in bodied
+    ]
+
+
 def _is_declaration(
-    def_node: Node, config: LanguageConfig, language: str, export_type: _CppExportType | None
+    def_node: Node,
+    config: LanguageConfig,
+    language: str,
+    export_type: _CppExportType | None,
+    src: str,
 ) -> bool:
     node_type = def_node.type
     if node_type in config.declaration_node_types:
         return True
+    if language == "python":
+        return _is_python_overload(def_node, src)
     if export_type is not None:
         return export_type.is_forward_declaration
     return _is_bodiless_cpp_type(language, node_type, def_node)
@@ -538,6 +589,34 @@ def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
         ):
             return None
     return frozenset(props_set)
+
+
+def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+    """Fold the receiver-less copy of a member call into the copy with a receiver.
+
+    A grammar's bare-call pattern that leaves the object unconstrained (Java's
+    ``method_invocation``, Ruby's ``call``) matches ``obj.m()`` too. Resolved on
+    its own, that copy binds ``m`` by bare name beside whatever ``obj``'s type
+    answers, so it survives only as the member call's ``bare_name_fallback``.
+    Keyed on the call node, not the line, so a bare ``m(obj.m())`` keeps its own
+    site.
+    """
+    member_sites = {site for site, call in calls if not _is_bare(call)}
+    bare_sites = {site for site, call in calls if site in member_sites and _is_bare(call)}
+    folded: list[CallSite] = []
+    for site, call in calls:
+        if _is_bare(call):
+            if site not in member_sites:
+                folded.append(call)
+        elif call.receiver_name and site in bare_sites:
+            folded.append(replace(call, bare_name_fallback=True))
+        else:
+            folded.append(call)
+    return folded
+
+
+def _is_bare(call: CallSite) -> bool:
+    return not (call.receiver_name or call.receiver_call)
 
 
 def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
@@ -759,13 +838,19 @@ def _refine_visibility(
     """``(visibility, is_exported_symbol)`` after the language's AST-context rules."""
     # C/C++ visibility is dictated by AST context (access
     # specifiers / storage class / export attributes), not by
-    # modifier text. Refine after the generic fn ran.
-    if language in ("cpp", "c"):
+    # modifier text. Refine after the generic fn ran. Objective-C's
+    # grammar is a superset of C's, so the same shapes apply to
+    # plain C code inside a ``.m`` file.
+    if language in ("cpp", "c", "objectivec"):
         return refine_cpp_visibility(def_node, visibility, src)
     # C#: an unmodified declaration's default depends on what encloses
     # it, which the modifier-text fn cannot see.
     if language == "csharp":
         return refine_csharp_visibility(def_node, visibility), False
+    # Java: no access keyword means package-private, except inside an
+    # interface or annotation body, which the modifier-text fn cannot see.
+    if language == "java":
+        return refine_java_visibility(def_node), False
     # TS/JS: a top-level declaration is only public when exported —
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:
@@ -897,6 +982,8 @@ def _statement_imports(
         return _php_imports(stmt_node, raw, src)
     if language == "dart":
         return [_dart_import(stmt_node, module_node, module_text, raw, src)]
+    if language == "rust" and stmt_node.type == "use_declaration":
+        return _rust_use_imports(stmt_node, module_text, raw, src)
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
         # wildcard, which keeps the target's exports live.
@@ -1056,6 +1143,70 @@ def _generic_import(
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
     )
+
+
+def _rust_use_imports(stmt_node: Node, module_text: str, raw: str, src: str) -> list[Import]:
+    """Rust: one Import per leaf of the use tree, each with its own path.
+
+    ``use crate::{a::B, c::D}`` names two modules, and the joined string
+    resolves to neither. ``super`` hops that only climb out of inline
+    ``mod`` blocks stay inside this file, so they are dropped here and the
+    resolver sees the path the file itself would write.
+    """
+    from .extractors.bindings.rust import expand_rust_use_tree, rust_use_argument
+    from .models import NamedBinding
+
+    arg_node = rust_use_argument(stmt_node)
+    leaves = expand_rust_use_tree(arg_node, src) if arg_node is not None else []
+    inline_depth = _rust_inline_mod_depth(stmt_node)
+    is_reexport = _is_reexport_import(stmt_node, raw, "rust")
+    if len(leaves) <= 1 and "{" not in module_text and not inline_depth:
+        return [_generic_import(stmt_node, module_text, raw, "rust", src)]
+    imports = []
+    for path, local, exported in leaves:
+        path = _strip_inline_super(path, inline_depth)
+        imports.append(
+            Import(
+                raw_statement=raw,
+                module_path=path,
+                imported_names=[local],
+                is_relative=path.startswith(("self::", "super::", "crate::")),
+                resolved_file=None,
+                bindings=[NamedBinding(local_name=local, exported_name=exported, source_file=None)],
+                is_reexport=is_reexport,
+            )
+        )
+    return imports
+
+
+def _rust_inline_mod_depth(node: Node) -> int:
+    """How many inline ``mod name { ... }`` blocks enclose *node* in its file."""
+    depth = 0
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "mod_item":
+            depth += 1
+        parent = parent.parent
+    return depth
+
+
+def _strip_inline_super(path: str, inline_depth: int) -> str:
+    """Drop the ``super`` hops of *path* that stay inside the file.
+
+    In ``mod tests { use super::*; }`` the ``super`` is this file's own
+    module, so the path is ``self::*``, not the parent module's glob.
+    """
+    if not inline_depth:
+        return path
+    segments = path.split("::")
+    hops = 0
+    while hops < len(segments) and segments[hops] == "super":
+        hops += 1
+    if not hops:
+        return path
+    if hops <= inline_depth:
+        return "::".join(["self", *segments[hops:]])
+    return "::".join(segments[inline_depth:])
 
 
 def _rust_mod_path_attribute(stmt_node: Node, src: str) -> str | None:
@@ -1233,8 +1384,14 @@ class ASTParser:
         # without a registered extractor.
         synthetic = extract_synthetic_symbols(root, src, file_info)
         if synthetic:
-            existing_ids = {s.id for s in symbols}
-            symbols.extend(s for s in synthetic if s.id not in existing_ids)
+            # Keyed with the discriminator too, so a record's synthetic
+            # canonical constructor survives beside an explicit overload of
+            # another arity. A language without one dedupes on the id alone.
+            existing = {(s.id, symbol_discriminator(s)) for s in symbols}
+            symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
+        # Before calls and references are extracted, so both attribute to the
+        # final ids.
+        disambiguate_colliding_ids(symbols, lang)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
         # An SFC instantiates a component by writing its tag in the markup
@@ -1313,9 +1470,9 @@ class ASTParser:
         language = file_info.language
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
-        # Parallel to ``symbols`` (same indices) -- only populated/consumed
-        # for Pascal and Objective-C, to dedupe interface-declaration vs.
-        # implementation method pairs after the loop. See
+        # Parallel to ``symbols`` (same indices) -- consumed for Pascal and
+        # Objective-C, to dedupe interface-declaration vs. implementation
+        # method pairs after the loop, and for TS overload signatures. See
         # _dedupe_pascal_interface_symbols / _dedupe_objc_interface_symbols.
         node_types: list[str] = []
         # Also parallel to ``symbols``, Objective-C only: which of @interface /
@@ -1348,6 +1505,9 @@ class ASTParser:
         if language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
+        if language in _TS_JS_LANGUAGES:
+            symbols = _keep_ts_overloads_beside_a_body(symbols, node_types)
+
         # A .m file routinely declares its private methods in a class
         # extension and defines them below in the @implementation, which
         # builds each symbol id twice in one file.
@@ -1378,7 +1538,21 @@ class ASTParser:
         def_node, name_nodes, name, export_type, start_line = identity
 
         node_type = def_node.type
-        kind = self._symbol_kind(def_node, config, language, src, cpp_exports.parent_ids)
+        # A TS/JS object-literal method inside an anonymous callback is kept,
+        # qualified by the binding that owns its object.
+        object_owner = (
+            _ts_nested_object_method_owner(def_node, src, config.symbol_node_types)
+            if language in _TS_JS_LANGUAGES
+            else None
+        )
+        kind = self._symbol_kind(
+            def_node,
+            config,
+            language,
+            src,
+            cpp_exports.parent_ids,
+            keep_nested=object_owner is not None,
+        )
         if kind is None:
             return None
 
@@ -1401,7 +1575,7 @@ class ASTParser:
             src,
         )
 
-        parent_name = self._resolve_parent_name(
+        parent_name = object_owner or self._resolve_parent_name(
             def_node,
             config,
             capture_dict.get("symbol.receiver", []),
@@ -1451,7 +1625,10 @@ class ASTParser:
             language=language,
             parent_name=parent_name,
             is_exported_symbol=is_exported_symbol,
-            is_declaration=_is_declaration(def_node, config, language, export_type),
+            is_declaration=_is_declaration(def_node, config, language, export_type, src),
+            type_parameter_count=(
+                _csharp_type_parameter_count(def_node) if language == "csharp" else None
+            ),
         )
         return symbol, def_node
 
@@ -1462,6 +1639,8 @@ class ASTParser:
         language: str,
         src: str,
         export_type_parent_ids: frozenset[int],
+        *,
+        keep_nested: bool = False,
     ) -> str | None:
         """The symbol kind for *def_node*, or None when it is not a symbol here."""
         node_type = def_node.type
@@ -1471,9 +1650,12 @@ class ASTParser:
 
         # Only module-level and class-body members are symbols; the query is
         # recursive, so defs nested in a callable are dropped. Module-anchored
-        # node types only match at module level and skip the check.
-        if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-            def_node, config.symbol_node_types, export_type_parent_ids
+        # node types only match at module level and skip the check, as does a
+        # def the caller has placed already (``keep_nested``).
+        if (
+            not keep_nested
+            and node_type not in _MODULE_ANCHORED_NODE_TYPES
+            and _has_callable_ancestor(def_node, config.symbol_node_types, export_type_parent_ids)
         ):
             return None
 
@@ -1652,7 +1834,8 @@ class ASTParser:
             key=lambda t: (t[0], -t[1]),
         )
 
-        calls: list[CallSite] = []
+        # Each call as ``(site, call)``; see ``_fold_receiverless_twins``.
+        calls: list[tuple[tuple[int, int, str], CallSite]] = []
 
         for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
@@ -1691,7 +1874,11 @@ class ASTParser:
                 continue
 
             line = site_node.start_point[0] + 1
-            receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            receiver_name = None
+            if receiver_nodes:
+                receiver_name = _receiver_text(file_info.language, receiver_nodes[0], src)
+                if receiver_name is None:
+                    continue
             if receiver_name and file_info.language == "php":
                 receiver_name = _normalize_php_receiver(receiver_name)
             # F#: a dotted static path (``Path.Combine(a, b)``) collapses into
@@ -1715,23 +1902,26 @@ class ASTParser:
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
             calls.append(
-                CallSite(
-                    target_name=target_name,
-                    receiver_name=receiver_name,
-                    caller_symbol_id=caller_id,
-                    line=line,
-                    argument_count=arg_count,
-                    receiver_call=receiver_call,
-                    scope_name=scope_name,
-                    edge_type=(
-                        "references"
-                        if site_node.type in config.reference_call_node_types
-                        else "calls"
+                (
+                    (site_node.start_byte, site_node.end_byte, target_name),
+                    CallSite(
+                        target_name=target_name,
+                        receiver_name=receiver_name,
+                        caller_symbol_id=caller_id,
+                        line=line,
+                        argument_count=arg_count,
+                        receiver_call=receiver_call,
+                        scope_name=scope_name,
+                        edge_type=(
+                            "references"
+                            if site_node.type in config.reference_call_node_types
+                            else "calls"
+                        ),
+                        supplied_props=_jsx_supplied_props(site_node, src),
                     ),
-                    supplied_props=_jsx_supplied_props(site_node, src),
                 )
             )
-        return _dedupe_calls(calls)
+        return _dedupe_calls(_fold_receiverless_twins(calls))
 
     def _extract_references(
         self,

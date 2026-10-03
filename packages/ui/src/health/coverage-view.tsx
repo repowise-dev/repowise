@@ -36,7 +36,7 @@ import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-tab
 import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
@@ -52,6 +52,7 @@ import {
 } from "./ai-prompt-builder";
 import { scoreBadgeClass } from "./tokens";
 import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
@@ -118,6 +119,7 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
           if (!open) setPromptRow(null);
         }}
         filePath={promptRow?.file_path ?? null}
+        chatContext={fileChatContext(promptRow?.file_path)}
         title="AI test prompt"
         description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
         getPrompt={
@@ -382,7 +384,12 @@ function CoverageBody({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <CoverageLede summary={summary} files={files} moduleCount={moduleCount} />
+      <CoverageLede
+        summary={summary}
+        files={files}
+        moduleCount={moduleCount}
+        history={data.history}
+      />
 
       <OverviewSection
         title="Health against coverage"
@@ -633,6 +640,7 @@ function NoCoverageState() {
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {COVERAGE_REPORT_FORMATS_LABEL}
       </p>
+      <CiHint command="repowise coverage check" checks="the lines each change touched" />
     </div>
   );
 }

@@ -32,6 +32,7 @@ extracted class and are dropped from the split so the plan reads honestly.
 
 from __future__ import annotations
 
+from ..complexity.class_analysis import cohesion_applies
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -68,6 +69,8 @@ class ExtractClassDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         out: list[RefactoringSuggestion] = []
+        if not cohesion_applies(ctx.file_path, ctx.language):
+            return out
         impact_by_class = self._impact_by_class(ctx)
 
         for cls in ctx.classes:
@@ -90,7 +93,14 @@ class ExtractClassDetector(RefactoringDetector):
                 continue
 
             wmc = sum(getattr(m, "ccn", 0) for m in getattr(cls, "methods", []))
-            impact_delta, source = impact_by_class.get(cls.name, (0.0, ""))
+            share = _moved_share(cls, substantive)
+            impact_delta, source = max(
+                (
+                    (impact * (share if marker == "god_class" else 1.0), marker)
+                    for impact, marker in impact_by_class.get(cls.name, ())
+                ),
+                default=(0.0, ""),
+            )
 
             groups = [
                 {"name": None, "methods": list(g.methods), "fields": list(g.fields)}
@@ -125,12 +135,12 @@ class ExtractClassDetector(RefactoringDetector):
         return out
 
     @staticmethod
-    def _impact_by_class(ctx: RefactoringContext) -> dict[str, tuple[float, str]]:
-        """Map class name -> (recovered impact, source biomarker) from the
+    def _impact_by_class(ctx: RefactoringContext) -> dict[str, list[tuple[float, str]]]:
+        """Map class name -> [(finding impact, source biomarker)] from the
         file's cohesion findings. The biomarkers report ``function_name`` =
-        the class name; keep the largest impact when both fire on one class.
+        the class name.
         """
-        by_class: dict[str, tuple[float, str]] = {}
+        by_class: dict[str, list[tuple[float, str]]] = {}
         for f in ctx.findings:
             if getattr(f, "biomarker_type", "") not in _SOURCE_BIOMARKERS:
                 continue
@@ -141,9 +151,7 @@ class ExtractClassDetector(RefactoringDetector):
             if not name:
                 continue
             impact = float(getattr(f, "health_impact", 0.0) or 0.0)
-            prev = by_class.get(name)
-            if prev is None or impact > prev[0]:
-                by_class[name] = (impact, getattr(f, "biomarker_type", ""))
+            by_class.setdefault(name, []).append((impact, getattr(f, "biomarker_type", "")))
         return by_class
 
     @staticmethod
@@ -155,3 +163,24 @@ class ExtractClassDetector(RefactoringDetector):
         if lcom4 >= 3 or method_count >= 15:
             return "high"
         return "medium"
+
+
+def _moved_share(cls: object, groups: list) -> float:
+    """Share of the class the split moves out, for a ``god_class`` finding.
+
+    ``low_cohesion`` is answered whole: the split is the full LCOM4 partition.
+    ``god_class`` is about size, and the largest group stays behind as the
+    class, so only what leaves it is credited: the larger of the moved NLOC
+    and moved CCN shares, as Extract Method credits a span.
+    """
+    methods = list(getattr(cls, "methods", []) or [])
+
+    def size(names: set[str]) -> tuple[int, int]:
+        picked = [m for m in methods if getattr(m, "name", None) in names]
+        return sum(m.nloc for m in picked), sum(m.ccn for m in picked)
+
+    total_nloc, total_ccn = size({getattr(m, "name", None) for m in methods})
+    if total_nloc <= 0 or total_ccn <= 0:
+        return 1.0
+    kept_nloc, kept_ccn = max(size(set(getattr(g, "methods", []))) for g in groups)
+    return max(1 - kept_nloc / total_nloc, 1 - kept_ccn / total_ccn)

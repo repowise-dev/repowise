@@ -55,6 +55,7 @@ async def run_generation(
     preserved_page_ids: set[str] | None = None,
     test_run: bool = False,
     selection_out: dict[str, Any] | None = None,
+    persisted_page_ids: set[str] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -71,6 +72,9 @@ async def run_generation(
     ``preserved_page_ids`` is an out-parameter filled by a ``resume`` run with
     the ids it skipped because a prior run already wrote them. Persistence
     needs it to keep those pages out of the stale sweep.
+
+    ``persisted_page_ids`` (ids with a stored page row) narrows what a
+    ``resume`` run treats as already done; see ``PageGenerator.generate_all``.
 
     ``test_run`` limits generation to the top 10 files by PageRank, so a quick
     validation run can exercise the whole generation path without paying for a
@@ -213,6 +217,7 @@ async def run_generation(
         preserved_page_ids=preserved_page_ids,
         timings=getattr(progress, "table", None),
         on_warning=on_warning,
+        persisted_page_ids=persisted_page_ids,
     )
     selection = getattr(generator, "selection", None)
     if selection_out is not None and selection is not None:

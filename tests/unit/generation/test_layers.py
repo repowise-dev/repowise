@@ -7,6 +7,7 @@ from repowise.core.generation.layers import (
     DOCS_TOOLING_LAYER,
     compute_layer_order,
     infer_layer,
+    is_adjacent_layer,
     layer_key,
     layer_order_basis,
 )
@@ -26,6 +27,17 @@ def test_infer_layer_matches_directory_hints():
     assert infer_layer("config/settings.py") == "Config"
     assert infer_layer("tests/test_user.py") == "Test"
     assert infer_layer("src/types/dtos.ts") == "Types"
+
+
+def test_ui_layer_requires_ui_language():
+    # A UI-named directory only means UI for files that render one.
+    assert infer_layer("web/ui/Button.tsx") == "UI"
+    assert infer_layer("app/views/home.html") == "UI"
+    assert infer_layer("src/components/Card.vue") == "UI"
+    # A CLI's ui/ helpers keep scanning outward and land on the CLI.
+    assert infer_layer("src/tool/cli/ui/render.py") == "CLI"
+    assert infer_layer("src/tool/ui/progress.py") == DEFAULT_LAYER
+    assert infer_layer("myapp/views/users.py") == DEFAULT_LAYER
 
 
 def test_infer_layer_recognizes_cli_command_surface():
@@ -202,8 +214,12 @@ def test_infer_layer_dotnet_test_project_dirs():
     # Sibling Foo.Tests/ projects are test roots for everything inside.
     assert infer_layer("Billing.Tests/InvoiceFixture.cs") == "Test"
     assert infer_layer("src/Billing.Tests/data/sample.json") == "Test"
-    # Case matters: a lowercase "billing.tests" dir is not the convention.
-    assert infer_layer("billing.tests/notes.md") != "Test"
+    # Case matters for the .NET convention: a lowercase "billing.specs" dir is
+    # an ambiguous spec folder, not a test project. (A lowercase
+    # "billing.tests" still is a test tree, because "tests" heads the name.)
+    assert infer_layer("Billing.Specs/notes.md") == "Test"
+    assert infer_layer("billing.specs/notes.md") != "Test"
+    assert infer_layer("billing.tests/notes.md") == "Test"
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +363,13 @@ def test_compute_layer_order_pins_tests_when_given_layer_ids():
 def test_layer_key_normalises_both_spellings():
     assert layer_key("UI") == layer_key("layer:ui") == "ui"
     assert layer_key("Docs & Tooling") == layer_key("layer:docs-tooling") == "docs-tooling"
+
+
+def test_is_adjacent_layer_names_tests_by_name_or_id():
+    assert is_adjacent_layer("Test")
+    assert is_adjacent_layer("layer:test")
+    assert not is_adjacent_layer("layer:service")
+    assert not is_adjacent_layer(DOCS_TOOLING_LAYER)
 
 
 def test_compute_layer_order_single_layer():

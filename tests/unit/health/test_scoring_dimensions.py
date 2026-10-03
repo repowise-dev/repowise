@@ -17,6 +17,10 @@ still pins the whole algorithm.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from repowise.core.analysis.health.biomarkers.base import BiomarkerResult
 from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import (
@@ -311,6 +315,21 @@ def test_perf_bonus_markers_advisory_weight():
     assert s1["performance"] == round(10.0 - 0.21, 2)
     s2, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])  # 0.7 * 0.7
     assert s2["performance"] == round(10.0 - 0.49, 2)
+
+
+@pytest.mark.parametrize(
+    ("orm", "weight"),
+    [("django", 0.7), ("sqlalchemy", 0.4), (None, 0.4)],
+)
+def test_lazy_load_weight_is_read_per_finding_from_its_orm(orm, weight):
+    """Django cleared its held-out bar; SQLAlchemy and an unrecorded ORM did not."""
+    finding = replace(
+        _r("lazy_load_in_loop", Severity.LOW), details={} if orm is None else {"orm": orm}
+    )
+    scores, deductions = score_file([finding])
+    assert scores["performance"] == round(10.0 - 0.3 * weight, 2)
+    assert scores["defect"] == 10.0
+    assert deductions == [0.0]
 
 
 def test_perf_home_dimension():

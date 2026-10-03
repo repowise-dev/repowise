@@ -9,6 +9,7 @@ emitted.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
@@ -44,9 +46,8 @@ _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 # Top-level directories whose contents document or illustrate the repository
 # rather than being it. Matched as a whole first path segment only. See
 # ``_is_support_file`` for why the anchoring is the point.
-_SUPPORT_ROOT_DIRS = frozenset(
-    {"docs", "doc", "documentation", "docs_src", "examples", "example", "samples", "sample"}
-)
+_DOC_ROOT_DIRS = frozenset({"docs", "doc", "documentation"})
+_SUPPORT_ROOT_DIRS = _DOC_ROOT_DIRS | {"docs_src", "examples", "example", "samples", "sample"}
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +106,8 @@ class ModuleGroup:
     #: silently broke all three: a rollup out-claimed its own leaves for every
     #: file in the subtree.
     context_paths: tuple[str, ...] = ()
+    #: Package roots of a roll-up of thin sibling packages; empty otherwise.
+    packages: tuple[str, ...] = ()
 
 
 @dataclass
@@ -277,13 +280,11 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(
-        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
-    )
+    return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
 
 
-def _passes_importance_floor(path: str) -> bool:
-    """Whether *path* is worth a file page at all.
+def _passes_importance_floor(parsed: Any) -> bool:
+    """Whether *parsed* is worth a file page at all.
 
     Two exclusions, both measured rather than assumed: test files and pure
     ``__init__.py`` re-export files. Pages for either only dilute retrieval
@@ -295,11 +296,14 @@ def _passes_importance_floor(path: str) -> bool:
     more because every file that clears this floor gets a page, so the floor is
     now simply what file-page selection means. The rule is unchanged; only the
     set it applies to grew from the remainder to the whole.
+
+    Tests are read off ``FileInfo.is_test``, the flag ingestion stamps once, so
+    ``e2e-tests/`` and ``foo.spec.ts`` are caught exactly as everywhere else.
     """
-    norm = path.replace("\\", "/")
-    if norm.startswith("tests/") or "/tests/" in norm:
+    fi = parsed.file_info
+    if fi.is_test:
         return False
-    return norm.rsplit("/", 1)[-1] != "__init__.py"
+    return fi.path.replace("\\", "/").rsplit("/", 1)[-1] != "__init__.py"
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +324,9 @@ def _build_file_candidates(
     for p in inputs.parsed_files:
         if not _is_code_file(p):
             continue
-        path = p.file_info.path
-        if not _passes_importance_floor(path):
+        if not _passes_importance_floor(p):
             continue
+        path = p.file_info.path
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(
             p,
@@ -362,6 +366,7 @@ def _build_symbol_candidates(
 ) -> list[tuple[float, tuple[str, str]]]:
     """Return ``[(score, (file_path, symbol_name)), ...]`` descending."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
+    test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
@@ -397,11 +402,11 @@ def _build_symbol_candidates(
     pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
     if pct <= 0:
         return []
-    if pct >= 1.0:
-        return deduped
     # At least one, so a repo with few public symbols still gets a spotlight.
-    keep = max(1, int(len(deduped) * pct))
-    return deduped[:keep]
+    keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
+    # Sized on the whole pool so production never loses a slot it had; tests only
+    # hand theirs to the next production symbol.
+    return [c for c in deduped if c[1][0] not in test_paths][:keep]
 
 
 def _layer_map_from_kg(
@@ -429,7 +434,24 @@ def _layer_map_from_kg(
     return layer_of_file, labels
 
 
-def _is_support_file(path: str) -> bool:
+def _doc_app_roots(parsed_files: list[Any]) -> frozenset[str]:
+    """Top-level doc directories that hold their own package manifest.
+
+    A ``docs/package.json`` makes ``docs/`` a separately built app (a docs
+    site), which is part of the subject. Read from the parsed file list, so a
+    manifest the traverser drops (``go.mod``, ``Gemfile``) is not seen here;
+    a docs app is in practice an npm or Python package.
+    """
+    names = package_manifest_names()
+    roots: set[str] = set()
+    for p in parsed_files:
+        head, sep, rest = p.file_info.path.partition("/")
+        if sep and rest in names and head.lower() in _DOC_ROOT_DIRS:
+            roots.add(head.lower())
+    return frozenset(roots)
+
+
+def _is_support_file(path: str, doc_app_roots: frozenset[str]) -> bool:
     """Whether *path* is documentation or example source rather than the subject.
 
     Anchored at the repository root and matched on whole path segments, which
@@ -444,10 +466,11 @@ def _is_support_file(path: str) -> bool:
     concept query on vocabulary without answering how the system works, and a
     wiki that documents its subject's documentation has said nothing about the
     subject. They keep their deterministic file pages, so nothing becomes
-    unreachable.
+    unreachable. A doc directory in *doc_app_roots* is an app, not prose, and
+    stays in (see :func:`_doc_app_roots`).
     """
     head = path.split("/", 1)[0].lower()
-    return head in _SUPPORT_ROOT_DIRS
+    return head in _SUPPORT_ROOT_DIRS and head not in doc_app_roots
 
 
 def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
@@ -476,7 +499,8 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         for p in inputs.parsed_files
         if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
     ]
-    files = [p for p in production if not _is_support_file(p)]
+    doc_apps = _doc_app_roots(inputs.parsed_files)
+    files = [p for p in production if not _is_support_file(p, doc_apps)]
     if not files:
         # A repository whose production code is entirely under one of those
         # roots. Documenting the docs is a bad wiki; having no wiki at all is
@@ -494,7 +518,12 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         return ConceptCandidates()
 
     layer_of_file, layer_labels = _layer_map_from_kg(inputs)
-    groups = group_files(files, layer_of_file=layer_of_file)
+    # Read off the parsed file list, not the disk, so the estimate, the run and
+    # the update cascade all see the same walls and mint the same page ids.
+    # Ceiling: a manifest the traverser does not emit (go.mod, pom.xml) is no
+    # wall; threading the disk scan through every SelectionInputs lifts it.
+    package_roots = package_roots_from_paths({p.file_info.path for p in inputs.parsed_files})
+    groups = group_files(files, layer_of_file=layer_of_file, package_roots=package_roots)
 
     lang_of = {p.file_info.path: p.file_info.language for p in inputs.parsed_files}
     # Names are decided over the whole set, not per group: two packages that
@@ -510,14 +539,15 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
     # Which directories head a subsystem. Computed before the groups are built
     # so a directory that is both a chapter and a leaf becomes one page rather
     # than colliding with itself on ``module_page:{dir}``.
-    chapters = _chapter_members(groups, files)
+    chapters = _chapter_members(groups, files, package_roots)
 
     scored: list[tuple[float, ModuleGroup]] = []
     for group, title in zip(groups, titles, strict=True):
         langs = Counter(lang_of.get(m, "") for m in group.members)
         langs.pop("", None)
         score = sum(inputs.pagerank.get(m, 0.0) for m in group.members)
-        subsystem = chapters.get(group.target_path)
+        # A package roll-up keeps its own name and material, never a chapter's.
+        subsystem = None if group.packages else chapters.get(group.target_path)
         scored.append(
             (
                 score,
@@ -543,6 +573,7 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                     ),
                     is_rollup=subsystem is not None,
                     context_paths=tuple(subsystem or ()),
+                    packages=group.packages,
                 ),
             )
         )
@@ -578,7 +609,9 @@ def _chapter_scope(parent: str, *, owns: bool) -> str:
     return f"{lead}; the detail lives on those child pages, not here."
 
 
-def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, list[str]]:
+def _chapter_members(
+    groups: list[ConceptGroup], files: list[str], package_roots: Iterable[str] = ()
+) -> dict[str, list[str]]:
     """Directories that head a subsystem → every production file beneath them.
 
     The partition splits a large subsystem into path-local leaves, so a
@@ -607,6 +640,12 @@ def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, 
     loose files and heads its children; see ``ModuleGroup.context_paths`` for how
     ownership stays disjoint while the prose still covers the subsystem.
 
+    A package root whose files span two or more groups is always a chapter,
+    whatever its depth or size: a package is what a consumer installs, so it
+    gets one page covering all of it (and its Public API) even when that is
+    most of the repository. A package in one group already has that page, and
+    a roll-up of thin packages is their shared page.
+
     All paths here are POSIX-normalised upstream (the grouper lowercases
     separators), so the ``/`` splits below are safe.
     """
@@ -625,6 +664,11 @@ def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, 
         if not members or (total and len(members) > _ROLLUP_MAX_MEMBER_FRACTION * total):
             continue
         out[parent] = members
+    for root in sorted(package_roots):
+        members = sorted(f for f in files if f.startswith(root + "/"))
+        spanned = sum(1 for g in groups if any(m.startswith(root + "/") for m in g.members))
+        if spanned > 1:
+            out[root] = members
     return out
 
 

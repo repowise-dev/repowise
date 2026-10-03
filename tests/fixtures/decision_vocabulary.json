@@ -28,6 +28,7 @@
     "active",
     "needs_review",
     "uncheckable",
+    "stale",
     "superseded",
     "dismissed"
   ],

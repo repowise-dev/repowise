@@ -33,6 +33,11 @@ SAME_PACKAGE_HINT = "same_package"
 #: (C#, VB.NET, PHP), where the language needs no import to name it.
 SAME_NAMESPACE_HINT = "same_namespace"
 
+#: Hint stamped on a PHP edge whose only evidence is a class name inside a
+#: comment or docblock (``@param \App\Foo $x``). A docblock type keeps its
+#: target reachable, but no code depends on it, so it cannot close a cycle.
+DOC_COMMENT_HINT = "doc_comment"
+
 #: Languages whose import statement names a *compilation unit* that is exactly a
 #: directory, so a fan-out landing in the importer's own directory landed on its
 #: siblings — and a unit cannot depend on itself.
@@ -71,6 +76,8 @@ COHESION_HINTS: frozenset[str] = frozenset(
         "same_module",  # Swift SPM target siblings
         "partial_class",  # C# fragments of one partial type
         "header_source_pair",  # C/C++ foo.h <-> foo.c
+        DOC_COMMENT_HINT,  # PHP name seen only in a comment: not co-membership,
+        # but the same split applies (reachability yes, cycle no)
     }
 )
 

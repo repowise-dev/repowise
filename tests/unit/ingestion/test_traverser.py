@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -571,6 +572,84 @@ class TestNestedGitignore:
         assert not any("comp.snap" in p for p in paths)
 
 
+class TestTrackedFilesNeverGitignored:
+    """Git never ignores a tracked file, so a ``.gitignore`` rule here can't either.
+
+    The shape that dropped a real doc: a root ``logs`` rule, and a nested
+    ``.gitignore`` re-including one file with ``!`` that git then tracks.
+    """
+
+    @staticmethod
+    def _git_add(root: Path, *paths: str) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-f", *paths], cwd=root, check=True)
+
+    def _repo(self, root: Path) -> None:
+        (root / ".gitignore").write_text("logs\n")
+        docs = root / "docs"
+        (docs / "logs").mkdir(parents=True)
+        (docs / ".gitignore").write_text("!logs/\n!logs/overview.py\n")
+        (docs / "logs" / "overview.py").write_text("x = 1\n")
+        (docs / "logs" / "scratch.py").write_text("y = 2\n")
+        (root / "app.py").write_text("pass\n")
+
+    def test_tracked_file_under_ignored_dir_indexed(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        tv = FileTraverser(tmp_path)
+        paths = {f.path for f in tv.traverse()}
+        assert "docs/logs/overview.py" in paths
+        assert not tv.dir_chain_skipped(Path("docs/logs"))
+
+    def test_untracked_ignored_still_skipped(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "run.py").write_text("pass\n")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/scratch.py" not in paths
+        assert "logs/run.py" not in paths
+        assert "app.py" in paths
+
+    def test_nested_gitignore_yields_to_tracked_file(self, tmp_path: Path) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / ".gitignore").write_text("gen_*.py\n")
+        (tmp_path / "pkg" / "gen_kept.py").write_text("pass\n")
+        (tmp_path / "pkg" / "gen_scratch.py").write_text("pass\n")
+        self._git_add(tmp_path, "pkg/gen_kept.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "pkg/gen_kept.py" in paths
+        assert "pkg/gen_scratch.py" not in paths
+
+    def test_untracked_beside_tracked_keep_file_in_nested_ignored_dir_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        web = tmp_path / "web"
+        (web / "gen" / "assets").mkdir(parents=True)
+        (web / ".gitignore").write_text("gen/\n")
+        (web / "gen" / "keep.py").write_text("pass\n")
+        (web / "gen" / "bundle.py").write_text("pass\n")
+        (web / "gen" / "assets" / "chunk.py").write_text("pass\n")
+        self._git_add(tmp_path, "web/gen/keep.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == {"web/gen/keep.py"}
+
+    def test_repowise_ignore_and_excludes_still_drop_tracked_files(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "lib.py").write_text("pass\n")
+        (tmp_path / ".repowiseIgnore").write_text("docs/\n")
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py", "vendor/lib.py")
+        tv = FileTraverser(tmp_path, extra_exclude_patterns=["vendor/"])
+        assert {f.path for f in tv.traverse()} == {"app.py"}
+
+    def test_non_git_checkout_keeps_gitignore_rules(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/overview.py" not in paths
+        assert "app.py" in paths
+
+
 # ---------------------------------------------------------------------------
 # Monorepo detection
 # ---------------------------------------------------------------------------
@@ -918,6 +997,17 @@ class TestEntryPointFlag:
         flagged = self._flagged(tmp_path)
         assert flagged == set(files), flagged
 
+    def test_test_file_is_a_root_not_an_entry_point(self, tmp_path: Path) -> None:
+        for rel in ("tests/app.py", "src/main.py"):
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("print('x')")
+        info = {f.path: f for f in FileTraverser(tmp_path).traverse()}
+        assert info["tests/app.py"].is_reachability_root
+        assert not info["tests/app.py"].is_entry_point
+        assert info["src/main.py"].is_reachability_root
+        assert info["src/main.py"].is_entry_point
+
     def test_historical_stem_parity_and_non_entries(self, tmp_path: Path) -> None:
         files = {
             "run.py": "print('x')",  # covered by the run stem (dropped pattern)
@@ -1095,6 +1185,17 @@ class TestUnknownLanguageFileRecording:
         assert [s.path for s in traverser.stats.unknown_language_files] == ["guide.rst"]
         assert traverser.stats.unknown_language_files[0].reason == "unknown_language"
 
+    def test_records_files_that_name_native_symbols(self, tmp_path: Path) -> None:
+        # A .def EXPORTS list and assembly name C/C++ symbols no parsed file does.
+        (tmp_path / "CustomAction.def").write_text("EXPORTS\n    SetInstallLocationCA\n")
+        (tmp_path / "barrier.S").write_text("PATCH_LABEL JIT_WriteBarrier_Patch_Label\n")
+        (tmp_path / "helpers.asm").write_text("extern JIT_Helper:proc\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        recorded = sorted(s.path for s in traverser.stats.unknown_language_files)
+        assert recorded == ["CustomAction.def", "barrier.S", "helpers.asm"]
+
     def test_ignores_formats_that_name_no_code(self, tmp_path: Path) -> None:
         # The tail is dominated by these, and a name-matching clamp fed prose
         # suppresses findings on coincidence rather than on evidence.
@@ -1174,6 +1275,64 @@ class TestIsGenerated:
         p = tmp_path / "api_pb2.py"
         p.write_text("x = 1\n")
         assert _is_generated(p) is True
+
+    def test_generated_marker_in_string_literal_kept(self, tmp_path: Path) -> None:
+        # The constant a code generator stamps on its output is not a banner.
+        p = tmp_path / "constants.ts"
+        p.write_text("export const BANNER = 'Auto-generated by the CLI. Do not modify.';\n")
+        assert _is_generated(p) is False
+
+    def test_docstring_mentions_autogenerated_kept(self, tmp_path: Path) -> None:
+        p = tmp_path / "__init__.py"
+        p.write_text('"""\nThis module is a light wrapper around the auto-generated client.\n"""\n')
+        assert _is_generated(p) is False
+
+    def test_go_code_generated_header_dropped(self, tmp_path: Path) -> None:
+        p = tmp_path / "api.pb.gw.go"
+        p.write_text(
+            "// Code generated by protoc-gen-grpc-gateway. DO NOT EDIT.\n"
+            "// source: api.proto\n\npackage api\n"
+        )
+        assert _is_generated(p) is True
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "# Generated by the protocol buffer compiler.  DO NOT EDIT!\n",
+            "/** @generated */\n",
+            "// <auto-generated/>\n",
+            '"""Auto-generated by schema_gen.py."""\n',
+            '"""\nAuto-generated by schema_gen.py.\n"""\n',
+            "# NOTE: this file is auto-generated by gen.py, edit the template\n",
+            "#!/usr/bin/env node\n// AUTO-GENERATED by setup\n",
+        ],
+    )
+    def test_real_banners_still_dropped(self, tmp_path: Path, header: str) -> None:
+        p = tmp_path / "gen.py"
+        p.write_text(header + "x = 1\n")
+        assert _is_generated(p) is True
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "# Helpers for code generated by the compiler plugin.\n",
+            '"""Utilities for reading GENERATED CODE maps."""\n',
+            'MSG = "Code generated by X. DO NOT EDIT."\n',
+        ],
+    )
+    def test_marker_not_leading_the_comment_kept(self, tmp_path: Path, header: str) -> None:
+        p = tmp_path / "mod.py"
+        p.write_text(header + "x = 1\n")
+        assert _is_generated(p) is False
+
+    def test_dropped_generated_paths_recorded(self, tmp_path: Path) -> None:
+        (tmp_path / "gen.go").write_text("// Code generated by tool. DO NOT EDIT.\npackage x\n")
+        (tmp_path / "main.go").write_text("package x\n")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert paths == ["main.go"]
+        assert traverser.stats.skipped_generated == 1
+        assert traverser.stats.generated_files == ["gen.go"]
 
 
 class TestConcurrentLazyInit:
@@ -1353,3 +1512,45 @@ class TestPackageScanPruning:
         tv = FileTraverser(tmp_path)
         language, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
         assert language == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# API contract flag
+# ---------------------------------------------------------------------------
+
+_YAML_SPEC = "openapi: 3.0.0\ninfo:\n  title: t\npaths: {}\n"
+_JSON_SPEC = '{"swagger": "2.0", "paths": {}}\n'
+_PROTO = "syntax = 'proto3';\n"
+
+
+class TestApiContractFlag:
+    @pytest.mark.parametrize(
+        ("path", "content", "expected"),
+        [
+            ("api/openapi.yaml", _YAML_SPEC, True),
+            ("public/openapi-webhooks.json", _JSON_SPEC, True),
+            ("gen/echo.swagger.json", '{\n  "swagger": "2.0",\n  "info": {}\n}\n', True),
+            ("api.json", _JSON_SPEC, True),
+            ("proto/service.proto", _PROTO, True),
+            ("schema/schema.graphql", "type Query { a: Int }\n", True),
+            # Named after the format, but a generator config rather than a spec.
+            ("proto/openapi_merge.buf.gen.yaml", "plugins:\n  - local: protoc-gen-openapiv2\n", False),
+            ("swagger-config.yaml", "url: /openapi.json\n", False),
+            # Code named after a spec reads or builds one; it is not the spec.
+            ("lib/openapi.ts", "export {}\n", False),
+            ("scripts/fetch-openapi.mjs", "export {}\n", False),
+            ("pkg/utils/openapi.py", "x = 1\n", False),
+            # Whole words: a config variant is not a spec.
+            ("tsconfig.api.json", _JSON_SPEC, False),
+            # A test that exercises a spec is not the spec.
+            ("tests/test_openapi.py", "x = 1\n", False),
+            ("tests/api/openapi.yaml", _YAML_SPEC, False),
+            ("src/test/protobuf/bag.proto", _PROTO, False),
+        ],
+    )
+    def test_flag(self, tmp_path: Path, path: str, content: str, expected: bool) -> None:
+        f = tmp_path / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        by_path = {fi.path: fi for fi in FileTraverser(tmp_path).traverse()}
+        assert by_path[path].is_api_contract is expected

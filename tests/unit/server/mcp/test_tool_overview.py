@@ -210,6 +210,30 @@ def test_layer_order_is_attached_under_architecture_even_without_the_tour():
     assert result == {"architecture": {"layers": [], "layer_order": ["api", "core"]}}
 
 
+def test_layer_order_yields_to_kg_layers_and_never_lists_tests():
+    page = SimpleNamespace(metadata_json=json.dumps({"layer_order": ["api", "core", "Test"]}))
+    with_layers: dict = {"architecture": {"layers": [{"name": "API", "file_count": 3}]}}
+    ov._build_guided_tour(page, with_layers, {}, False)
+    assert "layer_order" not in with_layers["architecture"]
+
+    without: dict = {}
+    ov._build_guided_tour(page, without, {}, False)
+    assert without == {"architecture": {"layer_order": ["api", "core"]}}
+
+    # A model-given test layer name is caught through its paired id.
+    named = SimpleNamespace(
+        metadata_json=json.dumps(
+            {
+                "layer_order": ["Web Entry", "Automated Checks"],
+                "layer_order_ids": ["layer:api", "layer:test"],
+            }
+        )
+    )
+    by_id: dict = {}
+    ov._build_guided_tour(named, by_id, {}, False)
+    assert by_id == {"architecture": {"layer_order": ["Web Entry"]}}
+
+
 # ---------------------------------------------------------------------------
 # Workspace footer
 # ---------------------------------------------------------------------------

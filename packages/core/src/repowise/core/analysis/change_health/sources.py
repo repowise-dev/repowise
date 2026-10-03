@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..change_risk.features import split_revspec
 from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
+from ..git_cli import split_revspec
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -150,8 +150,10 @@ def _status_word(code: str) -> str:
 class GitRevisionSource:
     """Local adapter over a Git checkout."""
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(self, repo_path: str, *, hunks: bool = True) -> None:
         self.repo_path = repo_path
+        # False for callers that read only which paths changed, not the lines.
+        self.hunks = hunks
 
     # -- resolution ---------------------------------------------------------
 
@@ -226,7 +228,11 @@ class GitRevisionSource:
 
     def _changes(self, diff_args: list[str]) -> list[FileChange]:
         name_status = _git([*diff_args, "--name-status", "-z"], self.repo_path)
-        diffs = parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+        diffs = (
+            parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+            if self.hunks
+            else {}
+        )
         changes: list[FileChange] = []
         for code, base_path, head_path in _iter_name_status(name_status):
             status = _status_word(code)
@@ -333,8 +339,9 @@ def filter_changes(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[FileChange]:
-    """Drop the changes a caller's extension and exclusion filters exclude.
+    """Drop the changes a caller's extension, inclusion and exclusion filters exclude.
 
     One implementation, because a change the health comparison counted and one
     the change manifest counted have to be the same change; two copies of this
@@ -347,14 +354,23 @@ def filter_changes(
         if exclude_patterns
         else None
     )
+    keep = (
+        pathspec.PathSpec.from_lines("gitwildmatch", include_paths)
+        if include_paths
+        else None
+    )
     exts = {e if e.startswith(".") else f".{e}" for e in extensions}
-    return [change for change in changes if _counts(change, spec, exts)]
+    return [change for change in changes if _counts(change, spec, exts, keep)]
 
 
-def _counts(change: FileChange, spec: object | None, exts: set[str]) -> bool:
+def _counts(
+    change: FileChange, spec: object | None, exts: set[str], keep: object | None = None
+) -> bool:
     """Whether *change* survives the caller's filters. One path, one decision."""
     path = change.head_path or change.base_path or ""
     if not path:
+        return False
+    if keep is not None and not keep.match_file(change.head_path):  # type: ignore[attr-defined]
         return False
     if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
         return False

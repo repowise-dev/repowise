@@ -34,7 +34,7 @@ export function FileOverviewTab({
   LinkComponent = "a",
 }: FileOverviewTabProps) {
   const A = LinkComponent;
-  const deadLines = data.dead_code.reduce((s, f) => s + f.lines, 0);
+  const deadLines = data.dead_code.reduce((s, f) => s + (f.lines ?? 0), 0);
   // Keyed on the row's own symbol_id, not a rebuilt `${path}::${name}`: some
   // extractors mint ids from the qualified name, and those would never match.
   const rawFixCounts = data.git?.fix_symbol_counts ?? {};

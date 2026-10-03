@@ -14,6 +14,7 @@ claim that the tree is clean, and only a populated store can support it.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
@@ -60,6 +61,11 @@ class DocDriftFindingResponse(BaseModel):
     #: Likely replacement for a missing target, and the basis that found it.
     suggestion: str | None = None
     suggestion_basis: str | None = None
+    #: When first found, carried across updates; ``None`` when present at the
+    #: first check or when the store keeps no history (an artifact).
+    first_seen_at: datetime | None = None
+    #: First found by the latest update that stored a finding.
+    is_new: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -111,6 +117,9 @@ class DocDriftSummaryResponse(BaseModel):
     by_kind: dict[str, int]
     #: What the counts do and do not cover. No surface may show them without it.
     findings_basis: str
+    #: Of ``findings_total``, how many are new since the last update (0 on a
+    #: first check); ``None`` from a store that keeps no history.
+    new_since_last_update: int | None = None
 
 
 class DocDriftResponse(BaseModel):

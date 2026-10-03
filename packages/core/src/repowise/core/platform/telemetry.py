@@ -47,16 +47,6 @@ GROUP_LEAF_TYPES_ATTR = "repowise_group_leaf_types"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-#: Common CI signals (kept in sync with the CLI's environment module).
-_CI_ENV_VARS = (
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "BUILDKITE",
-    "JENKINS_URL",
-    "TEAMCITY_VERSION",
-    "TF_BUILD",
-)
 
 #: Groups the events emitted by this process (e.g. one MCP server session).
 _SESSION_ID = uuid.uuid4().hex
@@ -113,7 +103,9 @@ def get_anonymous_id() -> str | None:
 
 
 def _is_ci() -> bool:
-    return any(os.environ.get(var) for var in _CI_ENV_VARS)
+    from repowise.core.ci.base import CI_ENV_VARS
+
+    return any(os.environ.get(var) for var in CI_ENV_VARS)
 
 
 def _version() -> str:

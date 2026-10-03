@@ -44,7 +44,6 @@ class TestParityGoldens:
                 "cli",
                 "__main__",
                 "bootstrap",
-                "entry",
             }
         ) == _ENTRY_FILENAME_STEMS
 
@@ -57,7 +56,8 @@ class TestParityGoldens:
         assert set(REGISTRY.test_stem_suffixes()) == {"_test", "_spec", "_unittest"}
 
     def test_test_infixes_match_historical_set(self) -> None:
-        assert set(REGISTRY.test_infixes()) == {".test.", ".spec."}
+        # `.test-d.` is the TypeScript type-test infix (`*.test-d.ts`).
+        assert set(REGISTRY.test_infixes()) == {".test.", ".spec.", ".test-d."}
 
     def test_test_fixture_stems_match_historical_set(self) -> None:
         assert frozenset(
@@ -125,6 +125,8 @@ class TestParityGoldens:
             "src/test/java",
             "src/test/kotlin",
             "src/test/scala",
+            "src/testfixtures/java",
+            "src/testfixtures/kotlin",
         )
 
     def test_test_dir_suffixes_union(self) -> None:
@@ -336,7 +338,8 @@ class TestDriftManifests:
         # hard-coded frozenset (run.py/server.py extras were redundant with the
         # run/server stems). The traverser now flags on this *unioned* with
         # conventional_entry_stems(); that union is pinned in
-        # tests/unit/generation/test_entry_points.py.
+        # tests/unit/generation/test_entry_points.py. ``entry`` moved here from
+        # the ranking stems, so the union (the traverser's flag) is unchanged.
         assert REGISTRY.entry_flag_stems() == frozenset(
-            {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
+            {"main", "index", "app", "run", "server", "start", "entry", "wsgi", "asgi"}
         )

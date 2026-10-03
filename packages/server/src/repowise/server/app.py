@@ -37,6 +37,7 @@ from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
+    actions,
     blast_radius,
     c4,
     chat,
@@ -273,7 +274,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Shutdown: dispose engine, stop scheduler, close vector store.
     """
     db_url = _resolve_server_db_url()
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, short_lived=False)
     await init_db(engine)
     session_factory = create_session_factory(engine)
     await _reset_stale_jobs(session_factory)
@@ -386,6 +387,7 @@ _ROUTERS = (
     files,
     external_systems,
     feedback,
+    actions,
 )
 
 

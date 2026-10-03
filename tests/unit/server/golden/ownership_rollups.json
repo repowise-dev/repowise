@@ -10,21 +10,21 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 12,
-        "commit_count_90d": 25,
-        "last_commit_at": "2026-07-01T00:00:00Z",
+        "commit_count_90d": 2,
+        "last_commit_at": "2026-08-01T12:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
         "key": "bob@example.com",
-        "name": "Bob",
+        "name": "Bob Stone",
         "email": "bob@example.com",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
         "dead_code_files_owned": 0,
         "dead_code_lines_owned": 0,
-        "commit_count_90d": 18,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 1,
+        "last_commit_at": "2026-07-01T00:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -36,8 +36,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 30,
-        "commit_count_90d": 5,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 0,
+        "last_commit_at": "2020-03-03T00:00:00Z",
         "bus_factor_risk_files": 1
       }
     ],
@@ -56,21 +56,21 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 12,
-        "commit_count_90d": 25,
-        "last_commit_at": "2026-07-01T00:00:00Z",
+        "commit_count_90d": 2,
+        "last_commit_at": "2026-08-01T12:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
         "key": "bob@example.com",
-        "name": "Bob",
+        "name": "Bob Stone",
         "email": "bob@example.com",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
         "dead_code_files_owned": 0,
         "dead_code_lines_owned": 0,
-        "commit_count_90d": 18,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 1,
+        "last_commit_at": "2026-07-01T00:00:00Z",
         "bus_factor_risk_files": 1
       },
       {
@@ -82,8 +82,8 @@
         "silo_modules": 0,
         "dead_code_files_owned": 1,
         "dead_code_lines_owned": 30,
-        "commit_count_90d": 5,
-        "last_commit_at": "2026-08-01T12:00:00Z",
+        "commit_count_90d": 0,
+        "last_commit_at": "2020-03-03T00:00:00Z",
         "bus_factor_risk_files": 1
       }
     ],
@@ -101,8 +101,8 @@
       "silo_modules": 0,
       "dead_code_files_owned": 1,
       "dead_code_lines_owned": 12,
-      "commit_count_90d": 25,
-      "last_commit_at": "2026-07-01T00:00:00Z",
+      "commit_count_90d": 2,
+      "last_commit_at": "2026-08-01T12:00:00Z",
       "first_commit_at": "2025-01-02T03:04:05Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 218,
@@ -153,7 +153,7 @@
       "files_touched_total": 3,
       "co_authors": [
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "bob@example.com",
           "shared_files": 3,
           "co_change_strength": 1.0
@@ -182,15 +182,15 @@
     },
     "bob@example.com": {
       "key": "bob@example.com",
-      "name": "Bob",
+      "name": "Bob Stone",
       "email": "bob@example.com",
       "files_owned": 2,
       "hotspots_owned": 1,
       "silo_modules": 0,
       "dead_code_files_owned": 0,
       "dead_code_lines_owned": 0,
-      "commit_count_90d": 18,
-      "last_commit_at": "2026-08-01T12:00:00Z",
+      "commit_count_90d": 1,
+      "last_commit_at": "2026-07-01T00:00:00Z",
       "first_commit_at": "2025-01-02T03:04:05Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 132,
@@ -274,8 +274,8 @@
       "silo_modules": 0,
       "dead_code_files_owned": 1,
       "dead_code_lines_owned": 30,
-      "commit_count_90d": 5,
-      "last_commit_at": "2026-08-01T12:00:00Z",
+      "commit_count_90d": 0,
+      "last_commit_at": "2020-03-03T00:00:00Z",
       "first_commit_at": "2019-03-03T00:00:00Z",
       "bus_factor_risk_files": 1,
       "lines_added_90d_est": 30,
@@ -317,7 +317,7 @@
           "co_change_strength": 0.5
         },
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "bob@example.com",
           "shared_files": 1,
           "co_change_strength": 0.5
@@ -343,7 +343,7 @@
         "avg_churn_percentile": 54.99999999999999,
         "median_bus_factor": 1.0,
         "min_bus_factor": 1,
-        "primary_owner": "Bob",
+        "primary_owner": "Bob Stone",
         "primary_owner_pct": 0.3333333333333333,
         "is_silo": false,
         "decision_count": 2,
@@ -400,7 +400,7 @@
       "avg_churn_percentile": 54.99999999999999,
       "median_bus_factor": 1.0,
       "min_bus_factor": 1,
-      "primary_owner": "Bob",
+      "primary_owner": "Bob Stone",
       "primary_owner_pct": 0.3333333333333333,
       "is_silo": false,
       "decision_count": 2,
@@ -408,7 +408,7 @@
       "health_score": 56.75,
       "owners": [
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "4242+bob@users.noreply.github.com",
           "file_count": 1,
           "pct": 0.3333333333333333
@@ -468,7 +468,7 @@
           "pct": 0.5
         },
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "bob@example.com",
           "file_count": 1,
           "pct": 0.5
@@ -515,7 +515,7 @@
       "avg_churn_percentile": 60.0,
       "median_bus_factor": 1.0,
       "min_bus_factor": 1,
-      "primary_owner": "Bob",
+      "primary_owner": "Bob Stone",
       "primary_owner_pct": 0.9,
       "is_silo": true,
       "decision_count": 0,
@@ -523,7 +523,7 @@
       "health_score": 36.0,
       "owners": [
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "4242+bob@users.noreply.github.com",
           "file_count": 1,
           "pct": 0.9
@@ -551,7 +551,7 @@
       "avg_churn_percentile": 54.99999999999999,
       "median_bus_factor": 1.0,
       "min_bus_factor": 1,
-      "primary_owner": "Bob",
+      "primary_owner": "Bob Stone",
       "primary_owner_pct": 0.3333333333333333,
       "is_silo": false,
       "decision_count": 2,
@@ -559,7 +559,7 @@
       "health_score": 56.75,
       "owners": [
         {
-          "name": "Bob",
+          "name": "Bob Stone",
           "email": "4242+bob@users.noreply.github.com",
           "file_count": 1,
           "pct": 0.3333333333333333
@@ -603,7 +603,7 @@
     ],
     "suggestions": [
       {
-        "name": "Bob",
+        "name": "Bob Stone",
         "email": "4242+bob@users.noreply.github.com",
         "score": 1.99,
         "recent_commits": 8,
@@ -637,7 +637,7 @@
         ]
       },
       {
-        "name": "Bob",
+        "name": "Bob Stone",
         "email": "bob@example.com",
         "score": 0.7133,
         "recent_commits": 5,

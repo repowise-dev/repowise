@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
-import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
+import {
+  biomarkerInfo,
+  biomarkerLabel,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isWatchOnlyBiomarker,
+} from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { EFFORT_TINT, type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
@@ -11,6 +17,7 @@ import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -25,6 +32,8 @@ export interface HealthWorkItemFinding {
   reason: string;
   status?: string;
   details?: BiomarkerDetailsRecord | null;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -32,6 +41,8 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  /** A test file; labelled on the card. */
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: Severity;
   primary_reason: string;
@@ -80,6 +91,13 @@ export interface HealthWorkItemCardProps {
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
   highlighted?: boolean;
+  /** Bulk triage: whether this row is in the selection. */
+  selected?: boolean;
+  /**
+   * Toggle this row in the bulk selection. The row stands for the finding it
+   * names (`primary_finding_id`), so a row without one offers no checkbox.
+   */
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
 
 const effortLabel: Record<EffortBucket, string> = {
@@ -100,6 +118,8 @@ export function HealthWorkItemCard({
   onLoadFindings,
   expandable = true,
   highlighted = false,
+  selected = false,
+  onToggleSelect,
 }: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
@@ -113,6 +133,9 @@ export function HealthWorkItemCard({
   // label no longer depend on shipping the findings themselves.
   const findings = target.all_findings ?? loaded;
   const hasFindings = target.finding_count > 0;
+  // Led by a history marker: context for a reviewer, not something an edit
+  // clears, so the card neither rates it as a defect nor offers a fix prompt.
+  const watch = isWatchOnlyBiomarker(target.primary_biomarker);
 
   const toggle = async () => {
     const next = !expanded;
@@ -145,7 +168,22 @@ export function HealthWorkItemCard({
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <SeverityMark severity={target.primary_severity} />
+          {onToggleSelect && target.primary_finding_id ? (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggleSelect(target)}
+              aria-label={`Select the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path}`}
+              className="h-3.5 w-3.5 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
+            />
+          ) : null}
+          {watch ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              {HISTORY_LABEL}
+            </span>
+          ) : (
+            <SeverityMark severity={target.primary_severity} />
+          )}
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
             {biomarkerInfo(target.primary_biomarker).description ? (
@@ -158,6 +196,11 @@ export function HealthWorkItemCard({
           {target.module ? (
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] rounded px-1.5 py-0.5 border border-[var(--color-border-default)]">
               {target.module}
+            </span>
+          ) : null}
+          {target.is_test ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              test
             </span>
           ) : null}
           <span
@@ -176,7 +219,11 @@ export function HealthWorkItemCard({
               target: target.file_path,
               targetKind: "path",
             }}
-            question={`Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`}
+            question={
+              watch
+                ? `What does the ${biomarkerLabel(target.primary_biomarker)} signal say about ${target.file_path}, and what should a reviewer watch for when it changes?`
+                : `Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`
+            }
             label={`Ask about the finding in ${target.file_path}`}
             className="-my-1 h-6 w-6"
           />
@@ -203,8 +250,12 @@ export function HealthWorkItemCard({
           ) : null}
         </button>
         <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">{target.primary_reason}</p>
+        {/* The action comes from core, per marker; the card never writes one. */}
         {target.primary_suggestion ? (
-          <p className="text-xs text-[var(--color-text-tertiary)] italic line-clamp-3">
+          <p className="text-xs text-[var(--color-text-primary)] line-clamp-3">
+            <span className="mr-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Action
+            </span>
             {target.primary_suggestion}
           </p>
         ) : null}
@@ -221,7 +272,10 @@ export function HealthWorkItemCard({
           </span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
-        {onGeneratePrompt ? (
+        {watch ? (
+          <p className="text-xs text-[var(--color-text-tertiary)]">{HISTORY_EXPLAINER}</p>
+        ) : null}
+        {onGeneratePrompt && !watch ? (
           <div className="pt-2">
             <button
               type="button"
@@ -263,6 +317,7 @@ export function HealthWorkItemCard({
                     <span className="text-xs font-medium text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}

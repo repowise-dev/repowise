@@ -3,6 +3,9 @@ You are documenting **{{ ctx.title }}**, an OVERVIEW of the `{{ ctx.directories[
 {% else %}
 You are documenting **{{ ctx.title }}** (language: {{ ctx.language }}), a group of files that belong together, not a single directory. Write about what the group does as a whole.
 {% endif %}
+{% if ctx.packages %}
+This page covers {{ ctx.packages | length }} sibling packages: {% for p in ctx.packages %}`{{ p.path }}`{% if not loop.last %}, {% endif %}{% endfor %}. Each is a separate package with its own manifest. Say what they share and how they differ; never describe the group as one of them or name the page after one. A table listing every package is appended after you write the page, so do not reproduce it.
+{% endif %}
 
 {% if ctx.scope %}
 SCOPE (use this to open by situating the page against its siblings — say what it covers and what it deliberately leaves to other pages; do NOT quote this line verbatim):
@@ -26,6 +29,20 @@ Name each in backticks by its path so it resolves to a wiki link; explain in one
 {% for cp in ctx.child_pages %}
 - **{{ cp.title }}** — `{{ cp.path }}`
 {% endfor %}
+{% endif %}
+
+{% if ctx.public_api %}
+### Public API (computed from the package manifests and re-exports; what a consumer imports)
+Name the central ones in backticks exactly as written and say what each is for; do not invent members beyond these.
+{% for e in ctx.public_api if e.signature %}
+- `{{ e.name }}` ({{ e.kind }}, `{{ e.file }}`): `` {{ e.signature }} ``{% if e.doc %}: {{ e.doc }}{% endif %}
+{% endfor %}
+{% for file, rows in ctx.public_api | rejectattr("signature") | groupby("file") %}
+- `{{ file }}`: {% for e in rows %}`{{ e.name }}`{% if e.alias_of %} (another name for `{{ e.alias_of }}`){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endfor %}
+{% if ctx.public_api_omitted %}
+- and {{ ctx.public_api_omitted }} more public names not listed
+{% endif %}
 {% endif %}
 
 {% if ctx.entry_points %}
@@ -109,17 +126,18 @@ These modules change together with this one in history and nothing in the depend
 {% endfor %}
 {% endif %}
 
-{% if ctx.dead_code_findings %}
-### Potentially unused code
-{% for finding in ctx.dead_code_findings[:10] %}
-- `{{ finding.symbol_name or '?' }}` — {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
-{% endfor %}
-{% endif %}
-
 {% if module_git_summary is defined and module_git_summary %}
 ### Recent activity
 Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in 90 days).
 {% endif %}
+
+{% if ctx.declared_files %}
+### What other files declare (signatures only, no code shown)
+{% for line in ctx.declared_files %}
+- {{ line }}
+{% endfor %}
+{% endif %}
+{{ ctx.code_excerpts }}
 
 ## How to write this page
 
@@ -133,6 +151,8 @@ Write the page now from the material above. Requirements:
 - Put any enumerable list (key files, dependencies, decisions) in a markdown table where it reads better than prose.
 - Name the subsystem's key files and the neighbouring modules it consumes or serves in backticks exactly as written above so they resolve to wiki links. Mention a neighbour only where it explains this subsystem's role — no links for density, no reciprocal mentions for symmetry.
 - Weave the true health and history signals (hotspots, bus factor, change coupling, fix history) into the narrative where they explain the subsystem's character. Skip any that are absent; never invent one.
+- State behaviour only when an excerpt shows it; otherwise say what the file declares.
+- A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).
 - Third person throughout. No concluding or summary section.
 - End with the mandatory `## Questions this page answers` section: 3 to 6 real questions this page answers, phrased as a developer or agent would ask them.
 

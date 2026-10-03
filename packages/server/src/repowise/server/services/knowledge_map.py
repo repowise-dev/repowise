@@ -13,6 +13,7 @@ from repowise.core.analysis.knowledge_map import (
     onboarding_targets,
     rank_silos,
 )
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.models import GitMetadata, GraphNode, Page
 
 
@@ -35,7 +36,7 @@ async def compute_knowledge_silos(session: AsyncSession, repo_id: str) -> list[d
             GitMetadata.commit_count_90d,
             GitMetadata.is_hotspot,
         ).where(
-            GitMetadata.repository_id == repo_id,
+            code_file_rows(repo_id),
             GitMetadata.primary_owner_commit_pct > SILO_OWNER_PCT,
         )
     )
@@ -116,7 +117,7 @@ async def compute_knowledge_map(session: AsyncSession, repo_id: str) -> dict[str
             GitMetadata.primary_owner_email,
             GitMetadata.primary_owner_name,
             GitMetadata.primary_owner_commit_pct,
-        ).where(GitMetadata.repository_id == repo_id)
+        ).where(code_file_rows(repo_id))
     )
     all_git = git_res.all()
 

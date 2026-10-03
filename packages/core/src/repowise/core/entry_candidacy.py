@@ -21,8 +21,10 @@ data table — so every rule is unit-testable directly.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 from pathlib import PurePosixPath
+from typing import Any
 
 # Generic module stems that *dispatch or re-export* rather than start a program.
 # ``index`` (a JS/TS barrel or a per-language resolver shell) and ``mod`` (a Rust
@@ -110,3 +112,13 @@ def not_an_execution_start(path: str, language: str) -> bool:
     them too.
     """
     return language in non_code_entry_languages() or is_glue_leaf(path)
+
+
+def is_reachability_root(node_data: Mapping[str, Any]) -> bool:
+    """Whether a file node is reached from outside the graph (dead-code exempt).
+
+    Every entry point is a root; the root flag adds files a runner loads without
+    them being entries. Reading both also covers stamps that set only the entry
+    flag and rows stored before the root flag existed.
+    """
+    return bool(node_data.get("is_reachability_root") or node_data.get("is_entry_point"))

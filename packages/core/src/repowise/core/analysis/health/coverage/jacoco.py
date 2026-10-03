@@ -91,6 +91,7 @@ def parse_jacoco(text: str) -> CoverageReport:
             coverable,
             branches_found=sum(t for t, _ in branches.values()),
             branches_hit=sum(h for _, h in branches.values()),
+            branch_lines={nr: (hit, total) for nr, (total, hit) in branches.items()},
         )
         for path, (covered, coverable, branches) in merged.items()
         # No executable lines (e.g. an interface) means unmeasured, not 0%.

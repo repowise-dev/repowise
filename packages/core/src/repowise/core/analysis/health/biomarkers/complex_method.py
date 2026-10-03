@@ -40,6 +40,7 @@ class ComplexMethodDetector:
                         "ccn": fn.ccn,
                         "cognitive": fn.cognitive,
                         "nloc": fn.nloc,
+                        "dispatch_share": fn.dispatch_share,
                     },
                     reason=f"{fn.name} has cyclomatic complexity {fn.ccn}",
                 )

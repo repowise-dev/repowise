@@ -85,7 +85,7 @@ async def _acall_tool(
         )
         return _budgeted(tool_name, await factory())
     except Exception as exc:
-        return _shape_exception(tool_name, exc)
+        return _shape_exception(tool_name, exc, long_running=False)
     finally:
         close = getattr(store, "close", None)
         if close is not None:

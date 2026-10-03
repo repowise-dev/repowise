@@ -10,10 +10,11 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
 > | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
 > | `ast_utils.py` | Name/text helpers, callee-name reading, function-node collection, parameter counting |
-> | `nloc.py` | Non-blank / non-comment line counting |
+> | `file_scan.py` | The one descent the whole-file passes share (NLOC index, error handling, class nodes, Rust test spans, perf import names) |
+> | `nloc.py` | Non-blank / non-comment line counting (`CodeLineIndex`) |
 > | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
 > | `assertions.py` | Assertion-block detection (test-quality smells) |
-> | `error_handling.py` | Error-handling anti-pattern detection (`_collect_error_handling`) |
+> | `error_handling.py` | Error-handling anti-pattern detection (`_eh_visit`) |
 > | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
 > | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
 > | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
@@ -45,7 +46,11 @@ that opt in — see "Class-level metrics" below.
 ## Performance characteristics
 
 One parser instance per process (lazy-loaded via the ingestion registry).
-Single pass per file — no AST re-traversal. The walker re-parses the file
+One descent per file feeds every whole-file pass (`file_scan.py`); the
+per-function passes walk only their function's body, and the perf pass keeps
+its own descent for the loop / async / lock context it carries down the tree.
+Function and class NLOC are prefix-sum lookups, not subtree walks. The walker
+re-parses the file
 because `ParsedFile` does not carry the tree-sitter `Node` across the
 ingestion boundary; cost is acceptable (≲ 1 ms for typical files).
 

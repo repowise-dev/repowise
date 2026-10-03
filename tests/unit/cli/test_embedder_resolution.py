@@ -217,6 +217,7 @@ async def test_reindex_persists_its_resolved_embedder(
         # Non-nullable on the real model, so a stand-in that omits it is a
         # stand-in for a page that cannot exist.
         summary = "what a.py does"
+        metadata_json = "{}"
 
     class _Result:
         def __init__(self, rows: list) -> None:
@@ -858,3 +859,87 @@ def test_template_run_embedder_downgrades_only_an_unasked_hosted_backend(
 ) -> None:
     """``init`` predicts this answer to build the run's store before the pipeline."""
     assert providers.template_run_embedder(resolved, requested) == expected
+
+
+# --- the recorded width: the steady state never imports lancedb -------------
+
+
+def _lance_dir(repo_path: Path) -> Path:
+    return repo_path / ".repowise" / "lancedb"
+
+
+def _record(repo_path: Path) -> Path:
+    return _lance_dir(repo_path) / "wiki_pages.vector_dim"
+
+
+def _forbid_lancedb(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_a, **_k):
+        raise AssertionError("LanceDB was opened on the steady-state path")
+
+    monkeypatch.setattr(lancedb, "connect", _boom)
+
+
+async def test_an_unchanged_real_embedder_never_opens_lancedb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real-pinned repo's routine update reads the recorded width, not the table."""
+    from repowise.cli.upgrade import _vector_dims
+
+    await _seed_store(tmp_path, _WideEmbedder())
+    _write_config(tmp_path, embedder="openai")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+    )
+    _forbid_lancedb(monkeypatch)
+
+    assert providers.existing_vector_dim(_lance_dir(tmp_path)) == 1536
+    assert _vector_dims(tmp_path) == (None, None)
+
+
+async def test_switching_to_a_real_embedder_still_proposes_the_re_embed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keyless vectors under a real pin are still caught, from the record alone,
+    and the rebuild that resolves them moves the record with the table."""
+    from repowise.cli.upgrade import _vector_dims
+
+    await _seed_store(tmp_path, MockEmbedder())
+    _write_config(tmp_path, embedder="openai")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
+    )
+    with monkeypatch.context() as m:
+        _forbid_lancedb(m)
+        assert _vector_dims(tmp_path) == (8, 1536)
+
+    await _seed_store(tmp_path, _WideEmbedder())
+    assert _record(tmp_path).read_text(encoding="ascii") == "1536"
+    assert _vector_dims(tmp_path) == (None, None)
+
+
+async def test_a_store_without_a_record_is_probed_once_and_recorded(tmp_path: Path) -> None:
+    """Stores written before the record existed still answer, then stop paying."""
+    await _seed_store(tmp_path, _WideEmbedder())
+    _record(tmp_path).unlink()
+
+    assert providers.existing_vector_dim(_lance_dir(tmp_path)) == 1536
+    assert _record(tmp_path).read_text(encoding="ascii") == "1536"
+
+
+async def test_a_stale_record_heals_on_the_next_write(tmp_path: Path) -> None:
+    await _seed_store(tmp_path, _WideEmbedder())
+    _record(tmp_path).write_text("8", encoding="ascii")
+
+    await _seed_store(tmp_path, _WideEmbedder())
+    assert _record(tmp_path).read_text(encoding="ascii") == "1536"
+
+
+async def test_a_record_without_its_table_is_ignored(tmp_path: Path) -> None:
+    import shutil
+
+    await _seed_store(tmp_path, _WideEmbedder())
+    shutil.rmtree(_lance_dir(tmp_path) / "wiki_pages.lance")
+
+    assert providers.existing_vector_dim(_lance_dir(tmp_path)) is None

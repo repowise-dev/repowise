@@ -10,8 +10,8 @@ like the same defect and is not:
 
 * a language without an implicit receiver, where a bare call is a module-level
   function and the caller's class is the wrong answer;
-* a call site that is really ``obj.foo()``, arriving a second time without a
-  receiver because the grammar's bare-call pattern matched it too;
+* a call site that is really ``obj.foo()``, which the grammar's bare-call
+  pattern also matches (the parser keeps only the copy with the receiver);
 * a flat hit that is a top-level function or a constructor rather than a rival
   class's method.
 
@@ -90,7 +90,7 @@ class B {
 """
 
 # `b.helper()` matches both the receiver-bearing pattern and the bare-call
-# pattern, so the same line arrives twice — once with a receiver, once without.
+# pattern; only the copy with the receiver may reach the resolver.
 JAVA_MEMBER_SHAPED = """
 class A {
     int helper() { return 1; }
@@ -190,4 +190,96 @@ class TestClassAwareTier:
         edges = _edges(parsed, tmp_path)
         assert not [t for t in _targets_of(edges, "::make") if t.endswith("::Holder::Entry")], (
             f"a constructor hit must not be redirected; edges: {edges}"
+        )
+
+
+# jsoup's shape: `Tag` puts `set` in the file's flat index, so a bare-name
+# reading of `data.set(str)` has a wrong answer to give.
+JAVA_TOKEN_DATA = "package p;\n\nclass TokenData {\n    void set(String s) { }\n}\n"
+JAVA_TOKEN = """package p;
+
+class Character {
+    private final TokenData data = new TokenData();
+
+    void data(String str) {
+        data.set(str);
+    }
+}
+
+class Tag {
+    Tag set(int n) { return this; }
+}
+"""
+
+# `o` is typed by nothing the resolver can read, so the call keeps the bare-name
+# answer the grammar's bare pattern always gave it.
+JAVA_UNTYPED_RECEIVER = """
+class A {
+    <T> int count(T o) { return o.size(); }
+}
+
+class Box {
+    int size() { return 0; }
+}
+"""
+
+JAVA_SAME_LINE = """
+class A {
+    int helper(int x) { return x; }
+    int run(B b) { return helper(b.helper(1)); }
+}
+
+class B {
+    int helper(int x) { return x; }
+}
+"""
+
+RUBY_POOL = """
+class Pool
+  def drain(conn)
+    close(conn)
+  end
+
+  def close(x)
+  end
+end
+"""
+
+
+class TestReceiverlessTwin:
+    """``obj.m()`` reaches the resolver once, with its receiver."""
+
+    def test_a_typed_member_call_gets_no_bare_name_edge(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "p/TokenData.java": ("java", JAVA_TOKEN_DATA),
+                "p/Token.java": ("java", JAVA_TOKEN),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert _targets_of(edges, "::Character::data") == ["p/TokenData.java::TokenData::set"], (
+            f"data.set(str) must reach TokenData only; edges: {edges}"
+        )
+
+    def test_an_untyped_receiver_falls_back_to_the_bare_name(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, {"src/A.java": ("java", JAVA_UNTYPED_RECEIVER)})
+        edges = _edges(parsed, tmp_path)
+        assert ("src/A.java::A::count", "src/A.java::Box::size", 0.95, "same_file") in edges, (
+            f"o.size() must keep its bare-name edge; edges: {edges}"
+        )
+
+    def test_a_bare_call_on_its_twins_line_still_resolves(self, tmp_path: Path) -> None:
+        """``helper(b.helper(1))``: the outer call is a genuine implicit receiver."""
+        parsed = _parse_all(tmp_path, {"src/A.java": ("java", JAVA_SAME_LINE)})
+        edges = _edges(parsed, tmp_path)
+        assert "src/A.java::A::helper" in _targets_of(edges, "::A::run"), (
+            f"the outer helper() must reach A::helper; edges: {edges}"
+        )
+
+    def test_a_ruby_bare_call_still_resolves(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, {"lib/pool.rb": ("ruby", RUBY_POOL)})
+        edges = _edges(parsed, tmp_path)
+        assert _targets_of(edges, "::drain") == ["lib/pool.rb::Pool::close"], (
+            f"close(conn) must reach Pool::close; edges: {edges}"
         )

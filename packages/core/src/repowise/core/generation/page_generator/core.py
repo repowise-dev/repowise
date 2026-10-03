@@ -246,6 +246,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -266,6 +267,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         caller hands the set to persistence, which must not sweep those ids as
         stale. Harmless to pass on a non-resume run (nothing is skipped for that
         reason, so nothing is added); None when the caller has no use for it.
+
+        ``persisted_page_ids`` is the set of ids that already have a stored
+        page row. On ``resume`` a page counts as done only when it is in both
+        this set and the vector store; None trusts the vector store alone.
 
         ``timings`` is the run's shared ``PhaseTimings`` table. Generation
         records its per-level and checkpoint spans into it so they report
@@ -306,6 +311,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             preserved_page_ids=preserved_page_ids,
             timings=timings,
             on_warning=on_warning,
+            persisted_page_ids=persisted_page_ids,
         )
 
     # ------------------------------------------------------------------
@@ -336,6 +342,12 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # file template does not emit; keep this type's original extraction.
         page.summary = _extract_summary(page.content)
         _attach_file_provenance(page, ctx)
+        # Embedded for search, not rendered (see file_page.j2).
+        if ctx.file_vocabulary:
+            # Local: persistence pulls SQLAlchemy into every parse worker.
+            from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY
+
+            page.metadata[FILE_VOCABULARY_KEY] = ctx.file_vocabulary
         return page
 
     # ------------------------------------------------------------------

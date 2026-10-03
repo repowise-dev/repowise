@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.god_class import GodClassDetector
 from repowise.core.analysis.health.biomarkers.low_cohesion import LowCohesionDetector
-from repowise.core.analysis.health.complexity import ClassComplexity, FunctionComplexity
+from repowise.core.analysis.health.complexity import ClassComplexity, FunctionComplexity, walk_file
 
 
 def _fn(name: str, *, nloc: int = 5, ccn: int = 1) -> FunctionComplexity:
@@ -78,6 +80,38 @@ def test_low_cohesion_skips_tiny_class():
 
 def test_low_cohesion_no_classes_is_silent():
     assert LowCohesionDetector().detect(_ctx([])) == []
+
+
+def test_low_cohesion_skips_overloaded_formatter_class():
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip("tree-sitter language pack missing for python")
+    if _get_language("python") is None:
+        pytest.skip("tree-sitter language pack missing for python")
+
+    source = (
+        b"from typing import overload\n\n"
+        b"class Formatter:\n"
+        b"    def __init__(self):\n"
+        b"        self.value = 0\n"
+        b"        self.other = 1\n\n"
+        b"    @overload\n"
+        b"    def format(self, x: int) -> str: ...\n"
+        b"    @overload\n"
+        b"    def format(self, x: str) -> str: ...\n"
+        b"    @overload\n"
+        b"    def format(self, x: float) -> str: ...\n"
+        b"    def format(self, x):\n"
+        b"        return str(self.value) + str(x)\n\n"
+        b"    def reset(self):\n"
+        b"        self.other = 0\n"
+    )
+    fc = walk_file("formatter.py", "python", source)
+    assert fc.classes
+    fmt = next(c for c in fc.classes if c.name == "Formatter")
+    assert fmt.method_count == 3 and fmt.lcom4 == 1
+    assert LowCohesionDetector().detect(_ctx([fmt])) == []
 
 
 # ---- god_class -----------------------------------------------------------

@@ -43,7 +43,7 @@ get_dead_code(kind="unused_export", group_by="owner")
 | Kind | What it means | How it is computed | Base confidence |
 |------|---------------|--------------------|-----------------|
 | `unreachable_file` | No file in the repo imports this one. | File-node in-degree of 0 on the dependency graph, after entry points and the never-flag allowlist are removed. | Scored from git age (below) |
-| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `method_implements` / `reads` / `extends` / `implements` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
+| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `extends` / `implements` / `method_implements` / `dispatches_to` / `framework_binds` / `reads` / `references` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when an importer of the containing file names one of its symbols (so the file is alive and its importers list what they take, but not this symbol); `0.60`, never safe to delete, when no importer names a symbol of the file (no importer at all, a C `#include`, a C# `using`), for every C, C++ and Objective-C symbol (the preprocessor reaches symbols through macros and typedef aliases no edge records), and for a C# class holding extension methods (called as `x.Method()` without naming the class); `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
 | `unused_internal` | A private or underscore-prefixed symbol nothing calls. | No `calls` edge, and no cross-file importer pulls the name (which would mean a dispatch-table lookup). Off by default. | `0.65` |
 | `zombie_package` | A whole top-level package no other package imports. | No inter-package import edges into it. Never marked safe to delete. | `0.50` |
 
@@ -84,6 +84,25 @@ Rust helper is never flagged here. And the `lines` count on file and package fin
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
+A .NET reference assembly (`ref/*.cs`) is the compile-time API of a library.
+Its files are never reported, and neither is a C# file or type it lists: that
+is public API, used outside the repository.
+
+### A C or C++ name written anywhere else is a use
+
+C, C++ and Objective-C symbols are used in ways that carry no edge: a callback
+passed to `SetTimer`, a function reached through a `#define` alias, a P/Invoke
+export named in a C# `[LibraryImport]`, an icall registered in a table header,
+a `.def` EXPORTS line, an assembly label. So an `unused_export` or
+`unused_internal` in these languages is dropped when any of the names its
+declaration introduces is written outside a declaration of it, in any code
+file or in a `.def`, `.asm` or `.s` file. A typedef contributes its tag and
+every alias (`typedef struct _X {...} X, *PX;`), and an enum its enumerators.
+Declarations do not count (the header prototype of a `.cpp` function), and
+neither do comments, prose strings and documentation. A COM method declared
+with `IFACEMETHODIMP` or `STDMETHODIMP` fills an interface slot and is never
+reported.
+
 ### How unreachable-file confidence is scored
 
 An orphaned file that nobody has touched in a year is a much stronger signal than
@@ -98,10 +117,17 @@ one added last week. Confidence starts from git activity:
 | No commits in 90 days, but the file is under 30 days old | `0.55` (may be work in progress) |
 | Still being committed to | `0.40` |
 
-Then it only ever goes down. Two caps apply:
+Then it only ever goes down. These caps apply:
 
 - **Dynamic imports nearby.** If any file in the same directory uses a runtime
   loader, confidence is capped at `0.40`.
+- **Imported by namespace.** A C# `using` names a namespace, never a file, and
+  a same-namespace `new T()` needs no `using` at all, so a C# file is capped at
+  `0.40` whatever its age.
+- **Its type is named elsewhere.** When another file writes the name of a type
+  the file declares, confidence is capped at `0.40` and the evidence names
+  that file: Java, C# and Swift use a type from its own package or module
+  without an import.
 - **Runtime-load risk factors.** If the path looks like config, environment,
   bootstrap, database, script, or runtime-asset code, confidence is capped at
   `0.40` and the finding carries an evidence line explaining why. These are
@@ -165,6 +191,8 @@ these, so they are never flagged rather than flagged and down-weighted.
 |-------|---------|
 | Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go`, `build.rs` |
 | Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
+| Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
+| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build or task file (`Makefile`, `Justfile`, `Dockerfile`, `noxfile.py`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
 | Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
 | Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
 | Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
@@ -198,7 +226,9 @@ the pass.
 
 Zombie-package detection additionally ignores directories that are not packages
 at all: `.github`, `.vscode`, `.devcontainer`, `docs`, `scripts`, `assets`,
-`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings.
+`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings, and any
+directory whose code is only Dockerfiles, Makefiles and shell scripts, which
+are run rather than imported.
 
 ## Dynamic-import awareness
 
@@ -245,9 +275,11 @@ These are the cases where a finding is most likely wrong:
   config file, a handler looked up in a registry dict, a Java class loaded by
   `Class.forName`. The dynamic-pattern name list and the `.register` decorator
   suffix catch the common shapes; nothing catches all of them.
-- **Dynamic imports in unmodelled languages.** The marker table covers Python and
-  JS/TS. Go, Ruby, PHP, Kotlin, Swift, and Scala runtime loading is not detected
-  yet, so an orphan in those languages carries no dynamic-import cap.
+- **Dynamic imports in unmodelled languages.** The marker table covers Python,
+  JS/TS, Java, Kotlin, Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++.
+  Languages without dynamic import markers or framework hints do not detect
+  runtime loading, so an orphan in those unmodelled languages carries no
+  dynamic-import cap.
 - **Entry points the graph did not mark.** A binary target, a CLI script, or a
   serverless handler that neither the allowlist nor the entry-point pass
   recognized reads as unreachable every time. If you see a whole directory light

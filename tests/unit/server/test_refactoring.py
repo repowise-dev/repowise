@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import event
 
@@ -13,6 +14,10 @@ from repowise.core.persistence import (
     batch_upsert_graph_nodes,
     crud,
 )
+
+# The seed covers every plan type, extract_helper included; the registry's
+# hiding of its biomarker is tested in test_refactoring_opportunities.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
 
 
 async def create_test_repo(client: AsyncClient) -> dict:
@@ -694,7 +699,7 @@ async def test_plan_status_round_trips_and_hides_the_row(client: AsyncClient, ap
     assert body["status"] == "acknowledged"
     assert body["status_reason"] == "user"
     assert body["status_changed_at"] is not None
-    assert body["public_id"].startswith("refac2_")
+    assert body["public_id"].startswith("refac4_")
 
     resp = await client.patch(
         f"/api/repos/{repo_id}/refactoring/{target['id']}/status",

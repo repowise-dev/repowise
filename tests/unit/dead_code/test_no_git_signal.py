@@ -66,4 +66,5 @@ def test_a_row_with_no_recent_commits_keeps_its_rung() -> None:
         }
     )
     assert finding.confidence == pytest.approx(1.0)
-    assert finding.safe_to_delete
+    # A whole file is review-only whatever its rung (REVIEW_ONLY_KINDS).
+    assert not finding.safe_to_delete

@@ -22,9 +22,12 @@ import {
   contextLabel,
   CONFIDENCE_LABEL,
   opportunityEvidenceLine,
+  opportunityCause,
+  opportunitySubject,
   opportunityTitle,
   planPresentation,
   whyRankedLabel,
+  whyRankedPhrase,
 } from "./presentation";
 
 /**
@@ -167,7 +170,10 @@ const OpportunityRow = memo(function OpportunityRow({
 
       <div className="min-w-0 flex-1">
         <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
-          {title}
+          {opportunityCause(opportunity)} in{" "}
+          <code className="font-mono text-[0.85em] [overflow-wrap:anywhere]">
+            {opportunitySubject(opportunity)}
+          </code>
         </p>
         <p className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">
           {opportunityEvidenceLine(opportunity)}
@@ -179,8 +185,11 @@ const OpportunityRow = memo(function OpportunityRow({
           {CONFIDENCE_LABEL[opportunity.confidence]} evidence confidence
         </p>
         {why.length > 0 ? (
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            Ranked on {why.map(whyRankedLabel).join(", ")}
+          <p
+            className="mt-1 text-xs text-[var(--color-text-tertiary)]"
+            title={`Ranked on ${why.map(whyRankedLabel).join(", ")}`}
+          >
+            Why here: {why.map(whyRankedPhrase).join(", ")}
           </p>
         ) : null}
         <div className="mt-2 sm:hidden">

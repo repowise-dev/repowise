@@ -44,6 +44,13 @@ log = structlog.get_logger(__name__)
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
+# Page cache per connection, in KiB (negative = size, not pages). The 2 MiB
+# default makes every insert into a large index miss: writing 1.8M graph edges
+# (random-uuid primary key plus the unique edge key) took 77s at the default
+# and 44s at 64 MiB in raw sqlite3. The cache fills only as pages are touched,
+# so a small store pays nothing for the ceiling.
+_SQLITE_CACHE_KIB = 65536
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
     """Return the pragma list to apply to a SQLite connection.
@@ -57,6 +64,7 @@ def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
         ("foreign_keys", "ON"),
+        ("cache_size", str(-_SQLITE_CACHE_KIB)),
     )
 
 
@@ -273,6 +281,7 @@ def create_engine(
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
     busy_timeout_ms: int | None = None,
+    short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -285,6 +294,25 @@ def create_engine(
                          small value for best-effort secondary writers that must
                          never stall the primary writer (issue #326). Ignored
                          for non-SQLite backends.
+        short_lived:     Whether this engine is created, used, and disposed
+                         within a single call (the pattern almost every caller
+                         follows: one CLI command, one workspace update, one
+                         background task). Defaults to True, which uses
+                         NullPool for PostgreSQL — one connection per checkout,
+                         closed on dispose, so a short-lived engine can never
+                         hold more than a single Postgres server slot, and an
+                         engine that outlives its creating event loop can never
+                         hand back a dead pooled connection to a later one
+                         (issue #2062's failure class). Pass False only for an
+                         engine stored for a process's lifetime and reused
+                         across many requests — currently just the FastAPI app
+                         and the MCP server — where SQLAlchemy's pooled
+                         AsyncAdaptedQueuePool is the correct choice and
+                         NullPool would open a fresh connection per request.
+                         Ignored for SQLite, which already always uses
+                         NullPool (or StaticPool for :memory:) regardless of
+                         this flag — SQLite has no equivalent long-lived-pool
+                         need since ``aiosqlite`` connections are cheap.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -301,8 +329,21 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL. SQLAlchemy pools these connections with
+        # AsyncAdaptedQueuePool by default — asyncpg does NOT provide its own
+        # pool here (that only happens if something calls asyncpg.create_pool,
+        # which nothing in this codebase does). Every create_engine() call in
+        # this codebase except the long-lived server/MCP engines is
+        # short-lived (create, use, dispose within one async function), so
+        # there's no reuse to gain from pooling and every pooled-but-idle
+        # connection is a Postgres server slot held for no benefit — or,
+        # worse, one that survives past a closed event loop and gets handed
+        # to a later, unrelated caller (#2062's failure class). NullPool caps
+        # a short-lived engine's footprint at exactly one connection instead
+        # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if short_lived:
+            kwargs["poolclass"] = NullPool
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
@@ -399,6 +440,26 @@ def _add_column_ddl(column: object, dialect: object) -> str:
     return " ".join(parts)
 
 
+def _split_blame_line_shares(connection: object) -> int:
+    from repowise.core.persistence.crud.git import split_blame_line_shares
+
+    return split_blame_line_shares(connection)  # type: ignore[arg-type]
+
+
+#: One-time data fixes that must run when the reconciler adds a column, for
+#: rows the new column changes the meaning of. Alembic runs the same step in
+#: the column's migration for managed Postgres. Keyed ``table.column``.
+_DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
+    "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+}
+
+
+def _run_data_step(step: Callable[[object], object], connection: object) -> None:
+    """Run a data step for its effect. Its return value (a row count, often 0)
+    is not a statement, so it must never reach ``connection.execute``."""
+    step(connection)
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -459,9 +520,11 @@ def _reconcile_schema(connection: object) -> None:
         # ``build`` renders the statement as well as running it, because
         # compiling a column's type can fail on its own and that failure has
         # to strand no more than compiling it successfully and failing to
-        # execute it would.
+        # execute it would. A data step runs itself and returns None.
         try:
-            connection.execute(build())  # type: ignore[attr-defined]
+            statement = build()
+            if statement is not None:
+                connection.execute(statement)  # type: ignore[attr-defined]
         except Exception as exc:  # re-raised below, once the walk is done
             if not continue_past_failure:
                 raise
@@ -489,12 +552,16 @@ def _reconcile_schema(connection: object) -> None:
         for column in table.columns:
             if column.name in db_cols:
                 continue
+            what = f"{table.name}.{column.name}"
             _run(
-                f"{table.name}.{column.name}",
+                what,
                 lambda table=table, column=column: text(
                     f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
                 ),
             )
+            data_step = _DATA_STEPS_ON_ADD.get(what)
+            if data_step is not None and not any(name == what for name, _ in failures):
+                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
 
         # --- Indexes ---------------------------------------------------
         # Only model-declared indexes (i.e. ``Index(...)`` on the table

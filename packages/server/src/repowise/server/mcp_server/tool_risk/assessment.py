@@ -23,6 +23,7 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
 )
+from repowise.server.repo_paths import normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
@@ -35,46 +36,6 @@ _TOP_FIX_SYMBOLS = 3
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
-
-
-def normalize_target_path(target: str, repo_root: str | None = None) -> str:
-    """Normalize a caller-supplied file path to the POSIX-relative form stored
-    in ``git_metadata.file_path``.
-
-    ``get_risk`` matches ``file_path`` by exact string equality, but callers
-    reach it through git tools, shell completion, or editors that hand over a
-    backslash form (Windows), a leading ``./``, an absolute path, or a trailing
-    separator. Any of those makes the row lookup miss, and ``_assess_one_target``
-    then reports the indistinguishable ``no git metadata available`` card
-    (hotspot_score=0, primary_owner=None, empty co_change_partners) even though
-    the row exists — issue #1279. Normalizing the caller's side closes that gap.
-    """
-    normalized = target.replace("\\", "/")
-    # Make a repo-absolute path (``/abs/repo/src/x.py``) relative to the repo
-    # root when we know it. Uses a prefix check on the normalized forms, so a
-    # path that is already repo-relative is left untouched.
-    if repo_root:
-        root_path = Path(repo_root).resolve()
-        try:
-            # Resolve against the repo root, not the process cwd: the MCP
-            # server's cwd is not the repo, so a relative path that happens
-            # to exist there could resolve somewhere unrelated.
-            candidate = Path(normalized)
-            resolved = (candidate if candidate.is_absolute() else root_path / candidate).resolve()
-            normalized = resolved.relative_to(root_path).as_posix()
-        except (OSError, ValueError):
-            # Resolution can fail for malformed paths; relative_to() also
-            # rejects absolute paths outside the selected repository.
-            pass
-    # Strip a leading cwd-relative prefix and any leading slash left over.
-    # A prefix strip, not lstrip: lstrip takes a character set, so it would
-    # eat every leading dot (``.github/...`` -> ``github/...``).
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = normalized.lstrip("/")
-    # Collapse duplicate slashes and any trailing separator.
-    parts = [p for p in normalized.split("/") if p]
-    return "/".join(parts)
 
 
 def _derive_change_pattern(categories: dict[str, int]) -> str:
@@ -339,7 +300,8 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             text(
                 "SELECT kind, severity, snippet FROM security_findings "
                 "WHERE repository_id = :repo_id AND file_path = :fp "
-                "ORDER BY severity DESC, kind"
+                # Ranked, not alphabetical: text order puts ``high`` last.
+                "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, kind"
             ),
             {"repo_id": repo_id, "fp": target},
         )
@@ -554,7 +516,10 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dependency_population = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
+    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    dependency_population = _dependency_population(
+        lookup_path, reverse_deps, node_meta, exclude_spec
+    )
     dependents = dependency_population[:_RELATIONSHIP_LIMIT]
     # If both distances exist, protect one transitive row from a large direct
     # fan-in. Otherwise the totals would say transitive reach exists while the
@@ -653,8 +618,6 @@ async def _assess_one_target(
     # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
     # once and key every file-path lookup on it, but keep the response keyed by
     # what the caller asked for.
-    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
-
     # Git metadata
     res = await session.execute(
         select(GitMetadata).where(
@@ -712,6 +675,7 @@ async def _assess_one_target(
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
+    line_pct = getattr(meta, "primary_owner_line_pct", None)
 
     # --- Risk velocity (trend) ---
     trend = _compute_trend(meta)
@@ -752,6 +716,7 @@ async def _assess_one_target(
     }
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["owner_line_pct"] = line_pct
     result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
     result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
     result_data["bus_factor"] = bus_factor
@@ -797,8 +762,20 @@ async def _assess_one_target(
         f"{target} — {_fix_clause(defect_profile)}"
         f"hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
-        f"{co_changes_total} co-change partners, owned {pct:.0%} by {owner}"
+        f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
         f"{bus_note}{capped_note}"
     )
 
     return result_data
+
+
+def _owner_clause(owner: str, commit_pct: float, line_pct: float | None) -> str:
+    """Name the owner with the share each figure actually measures.
+
+    With blame, the owner is the top author of current lines, which need not
+    be the top committer, so both shares are stated and neither is called the
+    other.
+    """
+    if line_pct is None:
+        return f"primary owner {owner} ({commit_pct:.0%} of commits)"
+    return f"{owner} wrote {line_pct:.0%} of current lines ({commit_pct:.0%} of commits)"

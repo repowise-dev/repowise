@@ -46,6 +46,7 @@ def _ctx(
     file_path: str,
     functions: list[FunctionComplexity],
     clones: list[ClonePair] | None = None,
+    clone_sources: dict[str, list[str]] | None = None,
 ) -> FileContext:
     return FileContext(
         file_path=file_path,
@@ -55,6 +56,7 @@ def _ctx(
         module=None,
         all_functions=tuple(functions),
         clones=clones or [],
+        clone_sources=clone_sources or {},
     )
 
 
@@ -107,15 +109,106 @@ def _clone(path: str, a: tuple[int, int], partner: str, b: tuple[int, int]) -> C
     )
 
 
+def _lines(block: list[str], at: int, total: int = 40) -> list[str]:
+    """*total* filler lines with *block* placed from line *at* (1-indexed)."""
+    out = [f"x{i} = setup({i})" for i in range(1, total + 1)]
+    out[at - 1 : at - 1 + len(block)] = block
+    return out
+
+
+_BLOCK = [
+    "assert result.exit_code == 0",
+    "assert result.output == 'ok'",
+    "assert result.stderr == ''",
+    "assert len(result.files) == 2",
+    "assert result.files[0].name == 'a.txt'",
+]
+
+
 def test_duplicated_assertion_block_fires_when_clone_overlaps_block():
-    fn = _fn("test_x", assertion_blocks=[(10, 20, 6)])
-    clone = _clone("tests/test_x.py", (12, 19), "tests/test_y.py", (5, 12))
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    clone = _clone("tests/test_x.py", (10, 16), "tests/test_y.py", (5, 11))
+    sources = {
+        "tests/test_x.py": _lines(_BLOCK, 12),
+        # Same statements, different indentation and spacing.
+        "tests/test_y.py": _lines(
+            ["    assert result.exit_code ==  0", "\tassert result.output == 'ok'", *_BLOCK[2:]], 7
+        ),
+    }
     out = DuplicatedAssertionBlockDetector().detect(
-        _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone])
+        _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
     )
     assert len(out) == 1
     assert out[0].severity == Severity.MEDIUM
     assert out[0].details["partner_file"] == "tests/test_y.py"
+
+
+def test_duplicated_assertion_block_needs_the_same_text_not_just_shape():
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    clone = _clone("tests/test_x.py", (10, 16), "tests/test_y.py", (5, 11))
+    sources = {
+        "tests/test_x.py": _lines(_BLOCK, 12),
+        # Token-for-token the same shape, different values.
+        "tests/test_y.py": _lines(
+            ["assert result.exit_code == 2", "assert result.output == 'usage'", *_BLOCK[2:]], 7
+        ),
+    }
+    out = DuplicatedAssertionBlockDetector().detect(
+        _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
+    )
+    assert out == []
+
+
+def test_duplicated_assertion_block_silent_without_partner_source():
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    clone = _clone("tests/test_x.py", (10, 16), "tests/test_y.py", (5, 11))
+    sources = {"tests/test_x.py": _lines(_BLOCK, 12)}
+    out = DuplicatedAssertionBlockDetector().detect(
+        _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
+    )
+    assert out == []
+
+
+def test_duplicated_assertion_block_ignores_an_intra_file_clone_overlapping_itself():
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    clone = _clone("tests/test_x.py", (10, 16), "tests/test_x.py", (11, 17))
+    sources = {"tests/test_x.py": _lines(_BLOCK, 12)}
+    out = DuplicatedAssertionBlockDetector().detect(
+        _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
+    )
+    assert out == []
+
+
+def test_duplicated_assertion_block_needs_five_real_checks():
+    clone = _clone("tests/test_x.py", (10, 16), "tests/test_y.py", (5, 11))
+    d = DuplicatedAssertionBlockDetector()
+    short = _BLOCK[:4]
+    sources = {"tests/test_x.py": _lines(short, 12), "tests/test_y.py": _lines(short, 7)}
+    fn = _fn("test_x", assertion_blocks=[(12, 15, 4)])
+    ctx = _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
+    assert d.detect(ctx) == []
+    # Five assertions, but a bare null / flag check does not count as one.
+    flagged = ["assert result is not None", *short]
+    sources = {"tests/test_x.py": _lines(flagged, 12), "tests/test_y.py": _lines(flagged, 7)}
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    ctx = _ctx(file_path="tests/test_x.py", functions=[fn], clones=[clone], clone_sources=sources)
+    assert d.detect(ctx) == []
+
+
+def test_duplicated_assertion_block_reports_a_copy_inside_one_file():
+    fn = _fn("test_x", assertion_blocks=[(12, 16, 5)])
+    clone = _clone("tests/test_x.py", (11, 17), "tests/test_x.py", (29, 35))
+    lines = _lines(_BLOCK, 12)
+    lines[29:34] = _BLOCK
+    out = DuplicatedAssertionBlockDetector().detect(
+        _ctx(
+            file_path="tests/test_x.py",
+            functions=[fn],
+            clones=[clone],
+            clone_sources={"tests/test_x.py": lines},
+        )
+    )
+    assert [r.details["partner_file"] for r in out] == ["tests/test_x.py"]
 
 
 def test_duplicated_assertion_block_ignores_clone_outside_block():

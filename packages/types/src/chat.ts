@@ -488,27 +488,46 @@ export interface DecisionsArtifact extends ArtifactEnvelopeIdentity {
   data: DecisionsArtifactData;
 }
 
-/** `get_dead_code` — confidence-tiered dead-code findings. */
-export interface DeadCodeArtifactData {
-  total_findings: number;
-  deletable_lines: number;
-  high_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-    lines: number;
-    safe_to_delete: boolean;
-  }>;
-  medium_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-  }>;
+/** One finding inside a `get_dead_code` tier. */
+export interface DeadCodeArtifactFinding {
+  file_path: string;
+  symbol_name?: string | null;
+  kind: string;
+  confidence: number;
+  reason: string;
+  lines: number | null;
+  safe_to_delete: boolean;
 }
+
+/** One confidence tier of a `get_dead_code` result. */
+export interface DeadCodeArtifactTier {
+  count: number;
+  findings: DeadCodeArtifactFinding[];
+  truncated: boolean;
+}
+
+/**
+ * `get_dead_code`: confidence-tiered dead-code findings. Totals sit in
+ * `summary`; a `tier` argument drops the tiers it did not ask for.
+ */
+export interface DeadCodeArtifactTiers {
+  mode?: undefined;
+  summary: {
+    total_findings: number;
+    deletable_lines: number;
+  };
+  tiers: Partial<Record<"high" | "medium" | "low", DeadCodeArtifactTier>>;
+}
+
+/** `get_dead_code(finding_id=...)`: one finding, or none when the id is unknown. */
+export interface DeadCodeArtifactLookup {
+  mode: "finding";
+  finding_id: string;
+  finding: DeadCodeArtifactFinding | null;
+  resolved: boolean;
+}
+
+export type DeadCodeArtifactData = DeadCodeArtifactTiers | DeadCodeArtifactLookup;
 export interface DeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code";
   data: DeadCodeArtifactData;

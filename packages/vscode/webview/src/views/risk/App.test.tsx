@@ -69,6 +69,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
   covered_line_count: 2,
   coverable_line_count: 3,
   threshold: null,
+  min_coverable_lines: null,
   gate: "not_set",
   file_counts: {
     measured: 1,
@@ -89,6 +90,27 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
         [3, 3],
         [7, 9],
       ],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
+      risk: {
+        fix_pressure: 2,
+        dependents: 5,
+        hotspot: true,
+        bug_magnet: false,
+        basis: "git_and_index",
+        risky: true,
+        reasons: ["hotspot"],
+      },
+      hints: [
+        {
+          range: [3, 3],
+          symbol: "boot",
+          tests: ["src/core.test.ts"],
+          basis: "per_test",
+          total: 1,
+        },
+      ],
     },
     {
       file_path: "src/new.ts",
@@ -98,8 +120,23 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
       covered_line_count: 0,
       patch_coverage_pct: null,
       uncovered_ranges: [],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
+      risk: null,
+      hints: null,
     },
   ],
+  risky: {
+    file_count: 1,
+    covered_line_count: 2,
+    coverable_line_count: 3,
+    patch_coverage_pct: 66.66,
+    threshold: null,
+    gate: "not_set",
+  },
+  project: null,
+  branches: null,
   scope: {
     label: "coverage.xml",
     source_formats: ["cobertura"],
@@ -109,7 +146,24 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     measured_commit: "abcdef1234567890",
     mapping_partial: false,
     freshness: "stale",
+    ignored_file_count: 0,
+    config_errors: [],
+    branch_data: "none",
   },
+  path_gates: [
+    {
+      name: "web-app",
+      paths: ["/src/"],
+      threshold: 80,
+      informational: false,
+      measured_file_count: 1,
+      unmeasured_file_count: 0,
+      covered_line_count: 2,
+      coverable_line_count: 3,
+      patch_coverage_pct: 66.66,
+      gate: "fail",
+    },
+  ],
 };
 
 const REPO: RepoInit = {
@@ -452,7 +506,9 @@ describe("risk App", () => {
     expect(screen.queryByText(/test recommendation/)).toBeNull();
   });
 
-  it("reports patch coverage of the range with a denominator and its gaps", async () => {
+  // The summary's own wording, ordering and risk labels are pinned by its
+  // component test in packages/ui; this only checks the view wires it up.
+  it("shows the range's patch coverage and opens a listed file", async () => {
     const riskRange = vi
       .fn()
       .mockResolvedValue({ ...REPORT, patchCoverage: PATCH_COVERAGE });
@@ -466,15 +522,10 @@ describe("risk App", () => {
       />,
     );
 
-    // Floored, never rounded up: 66.66 reads 66.6.
-    expect(await screen.findByText("66.6%")).toBeTruthy();
-    expect(
-      screen.getByText("2 of 3 changed executable lines covered"),
-    ).toBeTruthy();
-    expect(screen.getByText("abcdef1")).toBeTruthy();
-    expect(screen.getByText(/not at this change's head/)).toBeTruthy();
-    expect(screen.getByText("lines 3, 7-9")).toBeTruthy();
-    expect(screen.getByText("not in report")).toBeTruthy();
+    // Each throws when absent: the figure, the path-scoped gates, the hint naming the test to extend.
+    await screen.findByText("66.6%");
+    screen.getByRole("list", { name: "Path-scoped gates" });
+    screen.getByText("src/core.test.ts");
 
     fireEvent.click(screen.getByTitle("Open src/core.ts"));
     expect(openFile).toHaveBeenCalledWith("src/core.ts");

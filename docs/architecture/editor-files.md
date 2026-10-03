@@ -480,6 +480,7 @@ Example: adding `cursor.md` support.
 
 ### Step 1 — Create the subclass
 
+<!-- repowise-drift-ignore -->
 **`packages/core/src/repowise/core/generation/editor_files/cursor_md.py`**
 
 ```python

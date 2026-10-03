@@ -94,6 +94,9 @@ from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate
 from repowise.server.mcp_server._answer_pipeline import (
     retrieval_legs as _retrieval_legs,
 )
+from repowise.server.mcp_server._entry_trace import (
+    expand_via_entry_trace as _expand_via_entry_trace,
+)
 from repowise.server.mcp_server._flow_path import expand_via_flow_path as _expand_via_flow_path
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -271,20 +274,31 @@ async def _run_retrieval_pipeline(
     # cannot. This and the stages below run before the cap so an injected file
     # can take a top-5 slot.
     flow_paths: list[list[str]] = []
+    # A sequence question ("what happens when ...") is answered by the call
+    # order of the entry it names; when that resolves, it is the flow served.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits, flow_paths = await _expand_via_flow_path(
-                session, repo_id, hits, question, question_ids
+            hits, flow_paths = await _expand_via_entry_trace(
+                session, repo_id, hits, question, exclude_spec
             )
+    traced = bool(flow_paths)
+    if not traced:
+        with contextlib.suppress(Exception):
+            async with get_session(ctx.session_factory) as session:
+                hits, flow_paths = await _expand_via_flow_path(
+                    session, repo_id, hits, question, question_ids
+                )
     # Neighborhood re-rank: for flow questions whose target file is never named,
     # re-rank the 1-2 hop neighborhood of the top hits. No-op on other shapes.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
             hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
     # Parent-concept surfacing: a subsystem-shaped question leads with the
-    # rollup page for the subsystem. No-op on other shapes.
-    with contextlib.suppress(Exception):
-        hits = await _expand_via_parent_page(hits, question, ctx)
+    # rollup page for the subsystem. No-op on other shapes, and skipped once a
+    # call trace answers the question: its entry file must keep the lead.
+    if not traced:
+        with contextlib.suppress(Exception):
+            hits = await _expand_via_parent_page(hits, question, ctx)
     # Demote noise (decisions on non-why, test pages on non-test questions)
     # below real pages. Non-dropping; after anchoring, which never injects noise.
     hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))

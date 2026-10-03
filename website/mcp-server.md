@@ -440,19 +440,21 @@ Full parameter tables and return shapes live in the repo guide:
 
 ## Supplementary tools
 
-### `list_repos()` (default)
+### `list_repos()` (default in a workspace)
 
-Lists the repos this server is serving. In workspace mode returns every
-configured alias; in single-repo mode a single `"default"` alias.
+Lists every configured alias in a workspace. It is not advertised in
+single-repo mode, where the server is bound to the only repository.
 
-### Workspace-only (default in a workspace)
+### Workspace-only (opt-in)
 
-When the server starts inside a workspace, two more tools appear automatically:
+These need a workspace and are off by default there too. Enable them the same
+way as the opt-in tools below:
 
 | Tool | Purpose |
 |------|---------|
 | `get_architecture()` | Whole-system coupling, cyclic core, 1–10 architecture score |
 | `get_blast_radius(targets, …)` | Cross-repo downstream impact of changing a service |
+| `get_conformance(…)` | Architecture-rule violations and dependency cycles |
 
 ### Opt-in tools (off by default)
 
@@ -465,7 +467,7 @@ or `repowise mcp --tools "+name"`:
 | `get_dependency_path(source, target)` | Shortest graph path between two files/modules |
 | `get_execution_flows(…)` | Top entry points and call traces |
 | `generate_refactoring_code(…)` | Code for a ranked refactoring plan from `get_health` |
-| `get_conformance(…)` | Architecture-rule violations (useful in workspace mode) |
+| `set_finding_status(…)` | Record a triage status on a refactoring plan |
 
 ---
 

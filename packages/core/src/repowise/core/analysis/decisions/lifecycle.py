@@ -29,6 +29,7 @@ __all__ = [
     "DECISION_KINDS",
     "DECISION_STATUS_ORDER",
     "GRANTING_ACTIONS",
+    "HISTORY_CURRENCIES",
     "NEEDS_REVIEW_STALENESS",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
@@ -77,6 +78,7 @@ DECISION_CURRENCIES: tuple[str, ...] = (
     "active",  # accepted and still describes the code
     "needs_review",  # accepted, but the code it names has moved
     "uncheckable",  # accepted, but names nothing the repository can be asked about
+    "stale",  # accepted, but nothing it names exists at HEAD any more
     "superseded",  # replaced by a later decision, via an explicit lineage edge
     "dismissed",  # authority withdrawn; kept for history
 )
@@ -115,8 +117,8 @@ def bundles_decisions(text: str) -> bool:
     return any(marker in low for marker in SPLIT_MARKERS)
 
 
-#: The currencies a person or artifact can *set*. ``needs_review`` and
-#: ``uncheckable`` are also derived from the code by :func:`effective_currency`,
+#: The currencies a person or artifact can *set*. ``needs_review``,
+#: ``uncheckable`` and ``stale`` are also derived from the code by :func:`effective_currency`,
 #: which is why the stored set is smaller than the vocabulary.
 STORED_CURRENCIES: tuple[str, ...] = (
     "active",
@@ -148,9 +150,9 @@ def status_rank(status: str) -> int:
 
 #: The review lanes, which partition a repository: every record is in exactly
 #: one, and the five sum to the total. ``candidates`` is the absence of an
-#: acceptance; the other four are the currencies, with ``superseded`` and
-#: ``dismissed`` folded into ``history`` because a reader working a queue does
-#: not need those apart. ``governing`` is deliberately not here: it is the
+#: acceptance; the other four are the currencies, with ``superseded``,
+#: ``dismissed`` and ``stale`` folded into ``history`` because a reader working
+#: a queue does not need those apart. ``governing`` is deliberately not here: it is the
 #: roll-up of ``active`` and ``needs_review``, so it overlaps two lanes and
 #: belongs in a filter rather than in a tab row.
 REVIEW_LANES: tuple[str, ...] = (
@@ -160,6 +162,9 @@ REVIEW_LANES: tuple[str, ...] = (
     "uncheckable",
     "history",
 )
+
+#: The currencies the ``history`` lane holds: none of them binds new work.
+HISTORY_CURRENCIES: frozenset[str] = frozenset({"superseded", "dismissed", "stale"})
 
 #: What an acceptance row records having happened.
 ACCEPTANCE_ACTIONS: tuple[str, ...] = (
@@ -269,6 +274,7 @@ def effective_currency(
     has_scope: bool,
     staleness: float,
     repo_wide: bool = False,
+    artifacts_gone: bool = False,
 ) -> str:
     """The currency to show for a decision stored at *stored*.
 
@@ -281,6 +287,10 @@ def effective_currency(
     no file, which makes ``uncheckable`` a complaint about it being what it is,
     and it has no files that can move, which makes ``needs_review`` a reading of
     a staleness score measured over nothing.
+
+    *artifacts_gone* says every file and path the record names is absent at
+    HEAD, renames followed: it describes code that no longer exists, so it is
+    ``stale`` history. Never ``superseded``, which needs a successor.
     """
     if stored != "active":
         return stored if stored in DECISION_CURRENCIES else "active"
@@ -288,6 +298,8 @@ def effective_currency(
         return "active"
     if not has_scope:
         return "uncheckable"
+    if artifacts_gone:
+        return "stale"
     if staleness >= NEEDS_REVIEW_STALENESS:
         return "needs_review"
     return "active"
@@ -452,6 +464,7 @@ _CURRENCY_TO_LEGACY: dict[str, str] = {
     "active": "active",
     "needs_review": "active",
     "uncheckable": "active",
+    "stale": "active",
     "superseded": "superseded",
     "dismissed": "deprecated",
 }

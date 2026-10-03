@@ -31,6 +31,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..complexity.nloc import _code_line_numbers
+
 if TYPE_CHECKING:
     from tree_sitter import Node
 
@@ -40,7 +42,9 @@ if TYPE_CHECKING:
 
 # Gates (precision-first; tuned to suppress trivial or unwieldy extractions).
 _MIN_STMTS = 2  # at least two statements
-_MIN_SLICE_NLOC = 6  # the extracted helper is substantial
+# The extracted helper is substantial: code lines, the walker's NLOC rule, so a
+# span padded with comments does not clear it.
+_MIN_SLICE_NLOC = 5
 _MIN_CCN_REMOVED = 1  # extraction must remove a real decision point
 _MAX_PARAMS = 5  # too many ins => the span is not cohesive
 _MAX_RETURNS = 1  # a single clean return (v1); multi-output is future work
@@ -54,9 +58,10 @@ class Extraction:
 
     ``start_line`` / ``end_line`` bound the span (1-indexed, inclusive).
     ``params`` are the inferred IN variables, ``returns`` the inferred OUT
-    variable(s). ``slice_nloc`` is the span's statement line count and
-    ``ccn_removed`` the decision points it carries (the complexity the residual
-    method sheds).
+    variable(s). ``slice_nloc`` is the span's code lines, counted with the
+    walker's NLOC rule (blank, comment-only and docstring lines excluded, as in
+    the function's own ``nloc``), and ``ccn_removed`` the decision points it
+    carries (the complexity the residual method sheds).
     """
 
     start_line: int
@@ -94,6 +99,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     body_container = _unwrap_container(body, lmap.block_kinds)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    declared_first = _declared_before_read(analysis.def_use)
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decision_kinds = (
         lmap.branch_kinds
@@ -114,6 +120,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         else None
     )
 
+    lines = _function_lines(fn_node)
     out: list[Extraction] = []
     evaluated = 0
     for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
@@ -132,12 +139,16 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             # same reason: the check is a subtree walk, and asking it per
             # candidate span would put the O(n^2 * subtree) cost straight back.
             nested_prefix = [0]
+            code_prefix = [0]
             for st in stmts:
                 d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
                 nested_prefix.append(
                     nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
+                )
+                code_prefix.append(
+                    code_prefix[-1] + len(_code_line_numbers(st, lines, drop_docstrings=True))
                 )
         for i in range(n):
             for j in range(i, n):
@@ -160,13 +171,13 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 has_jump = jump_prefix[j + 1] > jump_prefix[i]
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
-                span = stmts[i : j + 1]
-                slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
+                slice_nloc = code_prefix[j + 1] - code_prefix[i]
                 if slice_nloc < _MIN_SLICE_NLOC:
                     continue
+                span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e)
+                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -190,6 +201,16 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                     )
                 )
     return _sorted(out)
+
+
+def _function_lines(fn_node: Node) -> list[str]:
+    """Source rows indexed by absolute row, rebuilt from the function's own text.
+
+    Lets the walker's NLOC rule (``_code_line_numbers``) run here without the
+    file's bytes; rows above the function are never read, so they stay empty.
+    """
+    text = (fn_node.text or b"").decode("utf-8", errors="replace")
+    return [""] * fn_node.start_point[0] + text.splitlines()
 
 
 def _sorted(candidates: list[Extraction]) -> list[Extraction]:
@@ -219,17 +240,45 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     return def_lines, use_lines
 
 
+def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines where a declaration of it comes before its first
+    read on the same line.
+
+    Lines alone cannot order a write and a read that share one. A C-style
+    ``for (int i = 0; i < n; i++)`` declares ``i`` and then reads it, while
+    ``total = total + a[i]`` reads ``total`` and then writes it. Only a
+    declaration is ordered here, by where its declarator ends: a read past that
+    point sees the new name, and a read inside the declaration's own
+    initializer (Go's ``x := x + 1`` in an inner scope) still sees the outer
+    one. A plain assignment keeps the line rule.
+    """
+    first_read: dict[tuple[str, int], int] = {}
+    for bdu in def_use.blocks.values():
+        for u in bdu.uses:
+            key = (u.name, u.line)
+            first_read[key] = min(u.column, first_read.get(key, u.column))
+    declared: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        # No read on the line sorts before any declarator, so it never matches.
+        if d.declared_at is not None and d.declared_at <= first_read.get((d.var, d.line), -1):
+            declared[d.var].add(d.line)
+    return {var: frozenset(lines) for var, lines in declared.items()}
+
+
 def _infer_in_out(
     def_lines: dict[str, list[int]],
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
+    declared_first: dict[str, frozenset[int]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
     IN: a variable read in the span whose first in-span read is not preceded by
     an in-span write, and which has a definition before the span (a parameter or
-    an earlier assignment). OUT: a variable written in the span and read after
+    an earlier assignment). A write on the same line as that read precedes it
+    only where *declared_first* (:func:`_declared_before_read`) says the line
+    declares the name first. OUT: a variable written in the span and read after
     it, with no redefinition between the span and that first later read.
     """
     params: list[str] = []
@@ -242,7 +291,8 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            if not any(ln < first_use for ln in in_defs):
+            declared = first_use in (declared_first or {}).get(var, ())
+            if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 
         if in_defs:

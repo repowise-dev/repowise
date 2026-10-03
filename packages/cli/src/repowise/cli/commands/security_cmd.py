@@ -6,7 +6,7 @@ Subcommands:
       the same pattern registry the indexer uses, and persist any secrets or
       risky patterns into the shared ``security_findings`` table — tagged with
       the commit that introduced them. Re-runs are idempotent.
-  check [REVSPEC] [--fail-on high|med|low] [--baseline FILE] [--format ...]
+  check [REVSPEC | --staged] [--fail-on high|med|low] [--baseline FILE] [--format ...]
       Gate a change on the findings it adds: its changed lines at the head,
       plus secrets committed and removed inside it. Git only, no index and no
       database; exit codes are the shared CI ones (:mod:`repowise.cli.ci`).
@@ -14,6 +14,7 @@ Subcommands:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,9 +42,9 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json, format_option, notice_console
 
 if TYPE_CHECKING:
-    from repowise.core.analysis.security_gate import ChangeScan, GateResult
+    from repowise.core.analysis.security_gate import ChangeScan, CustomPattern, GateResult
 
-_CHECK_FORMATS = (*CI_FORMATS, "sarif")
+_CHECK_FORMATS = (*CI_FORMATS, "sarif", "gitlab")
 
 
 @click.group("security")
@@ -242,11 +243,18 @@ def security_scan(
     default=None,
     help="A path inside the repository (defaults to cwd).",
 )
+@click.option(
+    "--staged",
+    is_flag=True,
+    default=False,
+    help="Check the staged changes (what the next commit records), read from the index; "
+    "for a pre-commit hook. Takes no REVSPEC.",
+)
 @format_option(
     choices=_CHECK_FORMATS,
     help="Output format. ``github`` writes annotations to stdout and the "
     "markdown summary to $GITHUB_STEP_SUMMARY when set; ``sarif`` is for "
-    "code-scanning upload.",
+    "code-scanning upload; ``gitlab`` is a GitLab Code Quality report.",
 )
 def security_check(
     revspec: str | None,
@@ -254,6 +262,7 @@ def security_check(
     baseline_path: Path | None,
     write_baseline_path: Path | None,
     repo: str | None,
+    staged: bool,
     fmt: str,
 ) -> None:
     """Gate a change on the security findings it adds (no index needed, built for CI).
@@ -265,25 +274,73 @@ def security_check(
 
     REVSPEC is the change: ``origin/main...HEAD`` (the pull-request view),
     ``base..head``, or one commit. Without it, the base comes from the CI's
-    pull-request variables, else the remote's default branch.
+    pull-request variables, else the remote's default branch. ``--staged``
+    checks what the next commit would record instead.
+
+    A ``repowise-security-ignore`` comment on a finding's line silences it
+    (``repowise-security-ignore: kind, kind`` silences only those kinds); it is
+    still counted and listed. ``security.patterns`` in .repowise/config.yaml
+    adds secret shapes of your own.
 
     Examples:
 
         repowise security check origin/main...HEAD
+        repowise security check --staged
         repowise security check --format github --baseline .security-baseline.json
         repowise security check --format sarif > security.sarif
+        repowise security check --format gitlab > gl-code-quality-security.json
     """
-    from repowise.core.analysis.security_gate import evaluate
-
+    if staged and revspec:
+        raise click.UsageError("--staged checks the staged changes; drop REVSPEC.")
     if fmt != "table":
         silence_logs_for_machine_output()
     try:
-        root = repo_root(repo)
-        accepted = _baseline_entries(baseline_path) if baseline_path is not None else None
-        changed, label = change_lines(str(root), revspec)
-        scan = _scan_change(root, changed, label)
-        if write_baseline_path is not None:
-            _record_baseline(write_baseline_path, scan, fmt, also_keep=accepted or [])
+        _check(
+            _CheckOptions(revspec, fail_on, baseline_path, write_baseline_path, repo, staged, fmt)
+        )
+    except (click.exceptions.Exit, click.ClickException, click.Abort):
+        raise
+    except Exception as exc:
+        # A crash must never read as a failed gate: a pre-commit hook blocks on 1 only.
+        cannot_evaluate(fmt, "internal_error", f"security check failed unexpectedly: {exc!r}")
+
+
+@dataclass(frozen=True)
+class _CheckOptions:
+    """The ``security check`` flags, as the command received them."""
+
+    revspec: str | None
+    fail_on: str
+    baseline_path: Path | None
+    write_baseline_path: Path | None
+    repo: str | None
+    staged: bool
+    fmt: str
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """A finished check, ready to render: *accepted* is the whole baseline."""
+
+    scan: ChangeScan
+    gate: GateResult
+    label: str
+    accepted: frozenset[str]
+    patterns: tuple[CustomPattern, ...]
+
+
+def _check(opts: _CheckOptions) -> None:
+    from repowise.core.analysis.security_gate import evaluate
+
+    fmt = opts.fmt
+    try:
+        root = repo_root(opts.repo)
+        patterns = _custom_patterns(root)
+        accepted = _baseline_entries(opts.baseline_path) if opts.baseline_path else None
+        changed, label = change_lines(str(root), opts.revspec, staged=opts.staged)
+        scan = _scan_change(root, changed, label, patterns=patterns, staged=opts.staged)
+        if opts.write_baseline_path is not None:
+            _record_baseline(opts.write_baseline_path, scan, fmt, also_keep=accepted or [])
             return
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
@@ -291,13 +348,37 @@ def security_check(
     baseline = None
     if accepted is not None:
         baseline = frozenset(e["fingerprint"] for e in accepted)
-    gate = evaluate(scan.findings, fail_on=fail_on, baseline=baseline)
-    _emit_check(fmt, scan, gate, label, accepted=baseline or frozenset())
+    gate = evaluate(
+        scan.findings, fail_on=opts.fail_on, baseline=baseline, suppressed=scan.suppressed
+    )
+    _EMITTERS.get(fmt, _print_check)(_Verdict(scan, gate, label, baseline or frozenset(), patterns))
     if not gate.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
 
-def _scan_change(root: Path, changed: dict[str, set[int]], label: str) -> ChangeScan:
+def _custom_patterns(root: Path) -> tuple[CustomPattern, ...]:
+    """``security.patterns`` from the repo config; any invalid entry stops the check."""
+    from repowise.core.analysis.security_gate import custom_patterns
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
+
+    try:
+        config = load_repo_config(root)
+    except (RepoConfigError, OSError) as exc:
+        raise CannotEvaluateError("config_invalid", str(exc)) from exc
+    patterns, errors = custom_patterns(config)
+    if errors:
+        raise CannotEvaluateError("config_invalid", " ".join(errors))
+    return patterns
+
+
+def _scan_change(
+    root: Path,
+    changed: dict[str, set[int]],
+    label: str,
+    *,
+    patterns: tuple[CustomPattern, ...],
+    staged: bool,
+) -> ChangeScan:
     """Scan the change, turning a git failure into a cannot-evaluate."""
     import subprocess
 
@@ -308,7 +389,7 @@ def _scan_change(root: Path, changed: dict[str, set[int]], label: str) -> Change
     )
 
     try:
-        return scan_change(str(root), changed, label)
+        return scan_change(str(root), changed, label, patterns=patterns, staged=staged)
     except ShallowHistoryError as exc:
         raise CannotEvaluateError("history_shallow", str(exc)) from exc
     except MissingObjectError as exc:
@@ -354,83 +435,132 @@ def _record_baseline(path: Path, scan: ChangeScan, fmt: str, *, also_keep: list[
     )
 
 
-def _emit_check(
-    fmt: str, scan: ChangeScan, gate: GateResult, label: str, *, accepted: frozenset[str]
-) -> None:
-    """Write the verdict in *fmt*; *accepted* is the whole baseline, below the threshold too."""
-    from repowise.core.analysis import security_gate
+def _emit_json(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import DETECTION_BASIS
 
-    if fmt == "json":
-        emit_json(
-            {
-                "revspec": label,
-                "files_scanned": scan.files_scanned,
-                "commits_scanned": scan.commits_scanned,
-                "findings_basis": security_gate.DETECTION_BASIS,
-                "findings": scan.findings,
-                "gate": gate.to_dict(),
-            }
-        )
-    elif fmt == "sarif":
-        from repowise.cli import __version__
+    emit_json(
+        {
+            "revspec": v.label,
+            "files_scanned": v.scan.files_scanned,
+            "commits_scanned": v.scan.commits_scanned,
+            "long_lines_skipped": v.scan.long_lines_skipped,
+            "findings_basis": DETECTION_BASIS,
+            "findings": v.scan.findings,
+            "gate": v.gate.to_dict(),
+        }
+    )
 
-        emit_json(
-            security_gate.render_sarif(
-                scan.findings,
-                tool_version=__version__,
-                fail_on=gate.fail_on,
-                accepted=accepted,
-            )
+
+def _emit_sarif(v: _Verdict) -> None:
+    from repowise.cli import __version__
+    from repowise.core.analysis.security_gate import SarifExtras, render_sarif
+
+    extras = SarifExtras(v.gate.suppressed, v.patterns, v.scan.long_lines_skipped)
+    emit_json(
+        render_sarif(
+            v.scan.findings,
+            tool_version=__version__,
+            fail_on=v.gate.fail_on,
+            accepted=v.accepted,
+            extras=extras,
         )
-    elif fmt in ("markdown", "github"):
-        markdown = security_gate.render_markdown(
-            gate,
-            label=label,
-            files_scanned=scan.files_scanned,
-            commits_scanned=scan.commits_scanned,
+    )
+
+
+def _emit_gitlab(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import render_gitlab
+
+    emit_json(render_gitlab(v.scan.findings, fail_on=v.gate.fail_on, accepted=v.accepted))
+    # Code Quality has no suppression field or run properties: counts go to the job log.
+    if v.gate.suppressed:
+        ci_notices("gitlab").print(
+            f"{len(v.gate.suppressed)} finding(s) suppressed inline "
+            "(repowise-security-ignore), left out of the report."
         )
-        if fmt == "markdown":
-            click.echo(markdown, nl=False)
-        else:
-            for line in security_gate.github_annotations(scan.findings, gate):
-                click.echo(line)
-            append_step_summary(markdown)
-    else:
-        _print_check(scan, gate, label)
+    if v.scan.long_lines_skipped:
+        ci_notices("gitlab").print(_long_lines_note(v.scan.long_lines_skipped))
+
+
+def _markdown(v: _Verdict) -> str:
+    from repowise.core.analysis.security_gate import render_markdown
+
+    return render_markdown(
+        v.gate,
+        label=v.label,
+        files_scanned=v.scan.files_scanned,
+        commits_scanned=v.scan.commits_scanned,
+        long_lines_skipped=v.scan.long_lines_skipped,
+    )
+
+
+def _emit_markdown(v: _Verdict) -> None:
+    click.echo(_markdown(v), nl=False)
+
+
+def _emit_github(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import github_annotations
+
+    for line in github_annotations(v.scan.findings, v.gate):
+        click.echo(line)
+    append_step_summary(_markdown(v))
 
 
 _SEVERITY_COLOUR = {"high": "red", "med": "yellow", "low": "dim"}
 
 
-def _print_check(scan: ChangeScan, gate: GateResult, label: str) -> None:
-    from rich.table import Table
-
+def _print_check(v: _Verdict) -> None:
     from repowise.core.analysis.security_gate import DETECTION_BASIS
 
     console.print(
-        f"[bold]{escape(label)}[/bold]: {scan.files_scanned} changed file(s) and "
-        f"{scan.commits_scanned} commit(s) scanned"
+        f"[bold]{escape(v.label)}[/bold]: {v.scan.files_scanned} changed file(s) and "
+        f"{v.scan.commits_scanned} commit(s) scanned"
     )
-    accepted = {f["fingerprint"] for f in gate.baselined}
-    rows = [f for f in scan.findings if f["fingerprint"] not in accepted]
-    if rows:
-        table = Table(show_edge=False, pad_edge=False)
-        table.add_column("Severity")
-        table.add_column("Kind")
-        table.add_column("Where")
-        table.add_column("Matched (secrets masked)")
-        for f in rows:
-            where = f"{f['file_path']}:{f['line_number']}"
-            if f["commit"]:
-                where += f" @ {f['commit'][:7]}"
-            colour = _SEVERITY_COLOUR[f["severity"]]
-            table.add_row(
-                f"[{colour}]{f['severity']}[/]",
-                escape(f["kind"]),
-                escape(where),
-                escape(f["snippet"]),
-            )
-        console.print(table)
+    _print_findings(v)
+    _print_suppressed(v.gate)
+    if v.scan.long_lines_skipped:
+        console.print(f"[yellow]{_long_lines_note(v.scan.long_lines_skipped)}[/yellow]")
+    _print_gate(v.gate)
+    console.print(f"[dim]{escape(DETECTION_BASIS)}[/dim]")
+
+
+def _print_findings(v: _Verdict) -> None:
+    """The findings the baseline did not accept, as a table."""
+    from rich.table import Table
+
+    from repowise.core.analysis.security_gate import location
+
+    accepted = {f["fingerprint"] for f in v.gate.baselined}
+    rows = [f for f in v.scan.findings if f["fingerprint"] not in accepted]
+    if not rows:
+        return
+    table = Table(show_edge=False, pad_edge=False)
+    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+        table.add_column(column)
+    for f in rows:
+        colour = _SEVERITY_COLOUR[f["severity"]]
+        table.add_row(
+            f"[{colour}]{f['severity']}[/]",
+            escape(f["kind"]),
+            escape(location(f)),
+            escape(f["snippet"]),
+        )
+    console.print(table)
+
+
+def _print_suppressed(gate: GateResult) -> None:
+    from repowise.core.analysis.security_gate import location
+
+    if not gate.suppressed:
+        return
+    console.print(
+        f"[dim]{len(gate.suppressed)} finding(s) suppressed inline "
+        "(repowise-security-ignore):[/dim]"
+    )
+    for f in gate.suppressed:
+        console.print(f"[dim]  {escape(location(f))} {escape(f['kind'])} ({f['severity']})[/dim]")
+
+
+def _print_gate(gate: GateResult) -> None:
     if gate.passed:
         console.print(f"[green]Gate passed[/green] [dim](fails on {gate.fail_on} or above)[/dim]")
     else:
@@ -441,7 +571,25 @@ def _print_check(scan: ChangeScan, gate: GateResult, label: str) -> None:
         )
     if any(f["commit"] for f in gate.failing):
         console.print(
-            "[yellow]A row marked @ commit is a secret committed inside this change; "
+            "[yellow]A row naming a commit is a secret committed inside this change; "
             "deleting it does not remove it from the history. Rotate it.[/yellow]"
         )
-    console.print(f"[dim]{escape(DETECTION_BASIS)}[/dim]")
+
+
+#: Writers per ``--format``; ``table`` (the default) is :func:`_print_check`.
+_EMITTERS = {
+    "json": _emit_json,
+    "sarif": _emit_sarif,
+    "gitlab": _emit_gitlab,
+    "markdown": _emit_markdown,
+    "github": _emit_github,
+}
+
+
+def _long_lines_note(n: int) -> str:
+    from repowise.core.analysis.security_gate import MAX_CUSTOM_LINE_LENGTH
+
+    return (
+        f"{n} line(s) over {MAX_CUSTOM_LINE_LENGTH} characters not matched "
+        "against custom patterns."
+    )

@@ -27,6 +27,7 @@ from ._constants import (
     _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
     _truncate_body,
+    is_fix_commit,
 )
 from .enrich import detect_original_path, is_significant_commit
 from .function_blame import (
@@ -89,6 +90,9 @@ def new_meta(file_path: str) -> dict[str, Any]:
     """Return the default metadata dict for *file_path* (all fields zeroed)."""
     return {
         "file_path": file_path,
+        # A non-code file: history tier only (counts, span, authors). No blame,
+        # no churn signals, and kept out of the repo-relative rankings.
+        "history_only": False,
         "commit_count_total": 0,
         "commit_count_90d": 0,
         "commit_count_30d": 0,
@@ -97,7 +101,11 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "last_commit_at": None,
         "primary_owner_name": None,
         "primary_owner_email": None,
+        # The primary owner's share of the file's commits, and (FULL tier) of
+        # its current lines by blame. The owner is the blame owner when blame
+        # ran, so the two can rank different people first.
         "primary_owner_commit_pct": None,
+        "primary_owner_line_pct": None,
         "top_authors_json": "[]",
         "significant_commits_json": "[]",
         "co_change_partners_json": "[]",
@@ -203,12 +211,22 @@ def _parse_per_file_log(
 
 
 def _per_file_log_args(file_path: str, commit_limit: int, follow_renames: bool) -> list[str]:
-    walk = [f"-{commit_limit}", "--numstat", f"--format={_LOG_FORMAT}", "--", file_path]
+    # No merges in any lane: "commits" means non-merge commits everywhere, so a
+    # file's count means the same thing whichever lane produced it.
+    walk = [
+        "--no-merges",
+        f"-{commit_limit}",
+        "-M",
+        "--numstat",
+        f"--format={_LOG_FORMAT}",
+        "--",
+        file_path,
+    ]
     if follow_renames:
         return ["--follow", *walk]
-    # The repo-wide lanes' contract: no merges, and the full diff for churn and
+    # The repo-wide lanes' contract also carries the full diff for churn and
     # changed paths, so a file moving between lanes keeps the same history.
-    return ["--no-merges", "--full-diff", *walk]
+    return ["--full-diff", *walk]
 
 
 def _known_paths(
@@ -237,12 +255,17 @@ def _add_own_churn(
         if len(numstat_parts) < 3:
             continue
         match_path = numstat_parts[2]
-        if "=>" in match_path:
+        renamed = "=>" in match_path
+        if renamed:
             _old, _new = _extract_rename_paths(match_path, known_paths)
             match_path = _new or match_path
         changed_paths.add(match_path)
         if match_path in known_paths:
             _add_row_churn(current, numstat_parts)
+            # Accumulate: a later row for the file must not clear the rename.
+            current.pure_move |= renamed and numstat_parts[:2] == ["0", "0"]
+    # Still a pure move only if no row for the file changed a line.
+    current.pure_move = current.pure_move and not (current.added or current.deleted)
     return changed_paths
 
 
@@ -295,6 +318,7 @@ def index_file(
     provenance_classifier: Any | None = None,
     note_agents: dict[str, str] | None = None,
     trace_index: Any | None = None,
+    history_only: bool = False,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -306,12 +330,17 @@ def index_file(
     repo's newest commit, so re-indexing the same commit yields the same
     windows and a historical checkout measures the 90 days before it. Falls
     back to ``now()``.
+
+    *history_only* (a non-code file) keeps the history tier: commit counts and
+    windows, first and last commit, and authorship. Blame, the decayed churn
+    score, agent provenance and commit-message mining stay code-only.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
     thirty_days_ago_ts = (now - timedelta(days=30)).timestamp()
 
     meta = new_meta(file_path)
+    meta["history_only"] = history_only
 
     orig_path: str | None = None
     if precomputed_commits is not None:
@@ -341,16 +370,18 @@ def index_file(
         _add_span(meta, commits, now)
         authors = _Authors.tally(commits, ninety_days_ago_ts)
         _add_windows(meta, commits, ninety_days_ago_ts, thirty_days_ago_ts)
+        _add_ownership(meta, authors)
+        meta["is_stable"] = _is_stable(meta)
+        if history_only:
+            return meta
         _add_agent_rollup(meta, commits)
         meta["temporal_hotspot_score"] = _temporal_hotspot_score(commits, now)
-        _add_ownership(meta, authors)
         if include_blame:
-            _add_blame_ownership(meta, repo, repo_path, now)
+            _add_blame_ownership(meta, repo, repo_path, now, authors)
         _add_commit_messages(meta, commits)
         # Only the per-file ``--follow`` walk reports an original path.
         if orig_path:
             meta["original_path"] = orig_path
-        meta["is_stable"] = _is_stable(meta)
     except Exception:
         logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 
@@ -414,6 +445,8 @@ class _Authors:
     def tally(cls, commits: list[_CommitRec], recent_since_ts: float) -> _Authors:
         authors = cls()
         for c in commits:
+            if c.pure_move:
+                continue  # moving a file is not authoring it
             name = c.author_name
             authors.counts[name] += 1
             if c.ts >= recent_since_ts:
@@ -509,8 +542,15 @@ def _bus_factor(author_counts: Counter[str], total_commits: int) -> int:
     return bus
 
 
-def _add_blame_ownership(meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime) -> None:
+def _add_blame_ownership(
+    meta: dict[str, Any], repo: Any, repo_path: Path, now: datetime, authors: _Authors
+) -> None:
     """Blame ownership plus the per-line ``BlameIndex`` (FULL tier), best effort.
+
+    The blame owner becomes the primary owner; ``primary_owner_line_pct`` is
+    their share of current lines and ``primary_owner_commit_pct`` their own
+    share of the file's commits (``None`` when they made none of the indexed
+    commits, e.g. every commit of theirs is older than the walked depth).
 
     One ``git blame --line-porcelain`` pass serves both the primary-owner
     signal and the index ``function_hotspot`` / ``code_age_volatility`` read.
@@ -531,7 +571,12 @@ def _add_blame_ownership(meta: dict[str, Any], repo: Any, repo_path: Path, now: 
         if blame_name:
             meta["primary_owner_name"] = blame_name
             meta["primary_owner_email"] = blame_email
-            meta["primary_owner_commit_pct"] = blame_pct
+            meta["primary_owner_line_pct"] = blame_pct
+            total_commits = sum(authors.counts.values())
+            own_commits = authors.counts.get(blame_name, 0)
+            meta["primary_owner_commit_pct"] = (
+                own_commits / total_commits if own_commits and total_commits else None
+            )
     except Exception:
         pass  # blame is best-effort
 
@@ -541,7 +586,7 @@ def _add_commit_messages(meta: dict[str, Any], commits: list[_CommitRec]) -> Non
     sig_commits: list[dict[str, Any]] = []
     for c in commits:
         msg = c.subject[:200]
-        if is_significant_commit(msg, c.author_name):
+        if is_significant_commit(msg, c.author_name, c.author_email):
             sig_commits.append(_significant_entry(c, msg))
             if len(sig_commits) >= _MAX_SIGNIFICANT_COMMITS:
                 break
@@ -574,6 +619,8 @@ def _significant_entry(c: _CommitRec, msg: str) -> dict[str, Any]:
 
 
 def _commit_category(msg: str) -> str | None:
+    if is_fix_commit(msg):
+        return "fix"
     for cat, pattern in _COMMIT_CATEGORIES.items():
         if pattern.search(msg):
             return cat

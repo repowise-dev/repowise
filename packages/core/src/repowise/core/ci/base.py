@@ -11,7 +11,17 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from .. import git_refs
+#: Variables whose presence marks an automated CI run. ``CI`` covers most hosts;
+#: the rest catch the ones that do not set it. Telemetry reads the same list.
+CI_ENV_VARS = (
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TEAMCITY_VERSION",
+    "TF_BUILD",
+)
 
 #: Variables naming the branch a change will merge into, in the order they are
 #: consulted; each is read from the ``origin`` remote. A branch, not a base
@@ -25,6 +35,13 @@ CI_BASE_VARS = (
 )
 
 
+def in_ci(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this runs in a CI job: a CI marker or a pull-request variable is set."""
+    env = os.environ if env is None else env
+    values = (env.get(var, "").strip().lower() for var in (*CI_ENV_VARS, *CI_BASE_VARS))
+    return any(v not in ("", "false", "0") for v in values)
+
+
 class BaseNotFoundError(ValueError):
     """No target branch could be determined; the caller should ask for a revspec."""
 
@@ -36,6 +53,8 @@ def default_revspec(repo_root: str, env: Mapping[str, str] | None = None) -> str
     branch, else ``origin/main`` / ``origin/master``. Raises
     :class:`BaseNotFoundError` when none resolves.
     """
+    from .. import git_refs
+
     env = os.environ if env is None else env
     for var in CI_BASE_VARS:
         if branch := env.get(var, "").strip():

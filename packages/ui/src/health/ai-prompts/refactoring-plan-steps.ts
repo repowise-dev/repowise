@@ -147,3 +147,12 @@ export function refactoringPlanSteps(plan: RefactoringPlan): string {
   const render = PLAN_STEPS.get(plan.refactoring_type);
   return render ? render(plan) : "Apply the refactoring described above.";
 }
+
+/** What a missing test should exercise: the changed symbol, or the file for a
+ *  plan that changes a whole file (a split, a cycle). Stored ids lose their path. */
+export function verifySubject(plan: RefactoringPlan): string {
+  if (plan.refactoring_type === "split_file" || plan.refactoring_type === "break_cycle") {
+    return plan.file_path;
+  }
+  return plan.target_symbol.split("::").pop() || plan.file_path;
+}

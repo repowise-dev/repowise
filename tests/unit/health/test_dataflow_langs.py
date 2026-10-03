@@ -1408,3 +1408,245 @@ def test_tsx_parses_without_error_recovery() -> None:
     as_ts = parse_source("src/C.ts", "typescript", source)
     assert as_ts is not None
     assert as_ts[0].has_error
+
+
+# == A name the span itself declares is not a parameter =========================
+
+# Two loops reuse the counter ``i`` and the span holds the second. Its header
+# declares ``i`` and reads it on one line, and the first loop's ``i`` is a
+# definition of the same name before the span, so the counter read as an input
+# of the helper although the call site has no such variable.
+_TWO_LOOPS = {
+    "java": """
+        class Demo {
+            int run(int[] a, int n) {
+                int sum = 0;
+                for (int i = 0; i < n; i++) {
+                    sum += a[i];
+                }
+                int total = 0;
+                for (int i = 0; i < n; i++) {
+                    if (a[i] > 0) {
+                        total += a[i];
+                    } else {
+                        total -= a[i];
+                    }
+                }
+                return sum + total;
+            }
+        }
+        """,
+    "typescript": """
+        function run(a: number[], n: number): number {
+            let sum = 0;
+            for (let i = 0; i < n; i++) {
+                sum += a[i];
+            }
+            let total = 0;
+            for (let i = 0; i < n; i++) {
+                if (a[i] > 0) {
+                    total += a[i];
+                } else {
+                    total -= a[i];
+                }
+            }
+            return sum + total;
+        }
+        """,
+    "cpp": """
+        int run(int* a, int n) {
+            int sum = 0;
+            for (int i = 0; i < n; i++) {
+                sum += a[i];
+            }
+            int total = 0;
+            for (int i = 0; i < n; i++) {
+                if (a[i] > 0) {
+                    total += a[i];
+                } else {
+                    total -= a[i];
+                }
+            }
+            return sum + total;
+        }
+        """,
+    "go": """
+        package main
+        func run(a []int, n int) int {
+            sum := 0
+            for i := 0; i < n; i++ {
+                sum += a[i]
+            }
+            total := 0
+            for i := 0; i < n; i++ {
+                if a[i] > 0 {
+                    total += a[i]
+                } else {
+                    total -= a[i]
+                }
+            }
+            return sum + total
+        }
+        """,
+}
+
+
+@pytest.mark.parametrize("language", sorted(_TWO_LOOPS))
+def test_a_counter_declared_by_the_spans_own_loop_header_is_not_a_parameter(language):
+    lmap = get_language_map(language)
+    extractions = find_extractions(_first(language, _TWO_LOOPS[language]), lmap)
+
+    assert extractions, f"expected the second loop as a {language} extraction"
+    assert [(x.params, x.returns) for x in extractions] == [(("a", "n"), ("total",))]
+
+
+# The case the fix must not disturb: ``total`` is written and read on one line
+# too, but there the read comes first, so the helper does need it handed in.
+_READ_THEN_WRITE = {
+    "java": """
+        class Demo {
+            int run(int[] a, int n, int total) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    sum += a[j];
+                }
+                total = total + a[0];
+                for (int k = 1; k < n; k++) {
+                    if (a[k] > 0) {
+                        total += a[k];
+                    } else {
+                        total -= a[k];
+                    }
+                }
+                return sum + total;
+            }
+        }
+        """,
+    "typescript": """
+        function run(a: number[], n: number, total: number): number {
+            let sum = 0;
+            for (let j = 0; j < n; j++) {
+                sum += a[j];
+            }
+            total = total + a[0];
+            for (let k = 1; k < n; k++) {
+                if (a[k] > 0) {
+                    total += a[k];
+                } else {
+                    total -= a[k];
+                }
+            }
+            return sum + total;
+        }
+        """,
+    "cpp": """
+        int run(int* a, int n, int total) {
+            int sum = 0;
+            for (int j = 0; j < n; j++) {
+                sum += a[j];
+            }
+            total = total + a[0];
+            for (int k = 1; k < n; k++) {
+                if (a[k] > 0) {
+                    total += a[k];
+                } else {
+                    total -= a[k];
+                }
+            }
+            return sum + total;
+        }
+        """,
+    "go": """
+        package main
+        func run(a []int, n int, total int) int {
+            sum := 0
+            for j := 0; j < n; j++ {
+                sum += a[j]
+            }
+            total = total + a[0]
+            for k := 1; k < n; k++ {
+                if a[k] > 0 {
+                    total += a[k]
+                } else {
+                    total -= a[k]
+                }
+            }
+            return sum + total
+        }
+        """,
+}
+
+
+@pytest.mark.parametrize("language", sorted(_READ_THEN_WRITE))
+def test_a_variable_read_before_its_same_line_write_stays_a_parameter(language):
+    lmap = get_language_map(language)
+    extractions = find_extractions(_first(language, _READ_THEN_WRITE[language]), lmap)
+
+    assert [(x.params, x.returns) for x in extractions] == [(("a", "n", "total"), ("total",))]
+
+
+def test_go_redeclaration_that_reads_the_outer_name_keeps_it_as_a_parameter():
+    """``x := x + v`` in an inner scope declares a new ``x`` from the outer one:
+    the read sits in the declaration's own initializer, before the new name
+    exists, so the outer ``x`` is still an input."""
+    fn = _first(
+        "go",
+        """
+        package main
+        func run(a []int, x int) int {
+            sum := 0
+            for j := 0; j < x; j++ {
+                sum += a[j]
+            }
+            total := 0
+            for _, v := range a {
+                x := x + v
+                if x > 0 {
+                    total += x
+                } else {
+                    total -= x
+                }
+            }
+            return sum + total
+        }
+        """,
+    )
+
+    extractions = find_extractions(fn, get_language_map("go"))
+
+    assert [(x.params, x.returns) for x in extractions] == [(("a", "x"), ("total",))]
+
+
+def test_a_local_declared_and_read_on_one_line_in_the_span_is_not_a_parameter():
+    """The same shape without a loop header: ``t`` is declared and then read on
+    one line inside the span, and an earlier block has its own ``t``."""
+    fn = _first(
+        "java",
+        """
+        class Demo {
+            int run(int[] a, int n) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    int t = a[j];
+                    sum += t;
+                }
+                int total = 0;
+                for (int k = 0; k < n; k++) {
+                    int t = a[k]; total += t;
+                    if (t > 0) {
+                        total += 1;
+                    } else {
+                        total -= 1;
+                    }
+                }
+                return sum + total;
+            }
+        }
+        """,
+    )
+
+    extractions = find_extractions(fn, get_language_map("java"))
+
+    assert extractions, "expected the second loop as an extraction"
+    assert all("t" not in x.params for x in extractions)
+    assert (("a", "n"), ("total",)) in [(x.params, x.returns) for x in extractions]

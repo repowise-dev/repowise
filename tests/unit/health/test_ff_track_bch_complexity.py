@@ -233,3 +233,26 @@ def test_docstring_heavy_function_nloc_excludes_docs():
     # And so the function stays well under the large_method threshold despite
     # spanning ~64 physical lines.
     assert nloc < _LARGE_METHOD_THRESHOLD
+
+
+# --- the explicit receiver is not a parameter a caller passes ---------------
+
+
+def test_python_self_and_cls_receivers_not_counted():
+    fns, _ = _parse(
+        "python",
+        "class C:\n"
+        "    def m(self, a, b):\n        pass\n"
+        "    @classmethod\n"
+        "    def k(cls, a):\n        pass\n",
+    )
+    fns = sorted(fns, key=lambda f: f.start_point)
+    assert [_count_parameters(f) for f in fns] == [2, 1]
+    # Only a leading ``self`` is the receiver.
+    fns, _ = _parse("python", "def f(a, self):\n    pass\n")
+    assert _count_parameters(fns[0]) == 2
+
+
+def test_rust_self_parameter_not_counted():
+    fns, _ = _parse("rust", "impl X { fn m(&mut self, a: i32, b: u8) {} }")
+    assert _count_parameters(fns[0]) == 2

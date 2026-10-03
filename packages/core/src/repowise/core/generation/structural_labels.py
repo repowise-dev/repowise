@@ -33,11 +33,7 @@ ENGLISH_LABELS: dict[str, str] = {
     # -- shared ------------------------------------------------------------
     "overview": "Overview",
     "source": "Source",
-    "footer": (
-        "*Built from the code itself: parsed symbols, the import graph, git history and\n"
-        "the knowledge graph. Every statement here is checked against the source rather\n"
-        "than written about it.*"
-    ),
+    "footer": "*Generated from parsed code, the import graph and git history.*",
     "and_more": "and {count} more.",
     "file": "File",
     "file_singular": "file",
@@ -85,7 +81,12 @@ ENGLISH_LABELS: dict[str, str] = {
     "history": "History",
     "history_commits": "{total} {commit_word} in its history, {recent} in the last 90 days.",
     "history_last_commit": "The last landed on {date}.",
+    # ``history_owner`` when only commit shares are known (no blame);
+    # ``history_owner_lines`` when blame chose the owner, naming both shares
+    # because the top blame author need not be the top committer.
     "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
+    "history_owner_lines": "**{owner}** wrote {line}% of its current lines ({commit}% of commits).",
+    "history_owner_lines_only": "**{owner}** wrote {line}% of its current lines.",
     "history_fixes": "{count} of those commits fixed a bug.",
     "history_hotspot": "It is one of the repository's change hotspots.",
     "history_stable": "It has been stable: nothing has changed it lately.",
@@ -99,7 +100,6 @@ ENGLISH_LABELS: dict[str, str] = {
     "changes_with_entry": "{count} shared {commit_word}",
     "last_together": "last together on {date}",
     "decisions_heading": "Decisions touching this file",
-    "in_the_code": "In the code",
     "question_exports": "What does `{path}` export?",
     "question_where_defined": "Where is `{symbol}` defined?",
     "question_what_imports": "What imports `{path}`?",
@@ -188,11 +188,7 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
     "de": {
         "overview": "Überblick",
         "source": "Quelltext",
-        "footer": (
-            "*Aus dem Code selbst erstellt: geparste Symbole, der Importgraph, die "
-            "Git-Historie\nund der Wissensgraph. Jede Aussage hier wird gegen den "
-            "Quelltext geprüft, statt\nnur darüber geschrieben zu werden.*"
-        ),
+        "footer": "*Erstellt aus geparstem Code, dem Importgraphen und der Git-Historie.*",
         "and_more": "und {count} weitere.",
         "file": "Datei",
         "file_singular": "Datei",
@@ -234,6 +230,10 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         ),
         "history_last_commit": "Der letzte stammt vom {date}.",
         "history_owner": "**{owner}** betreut sie hauptsächlich, mit {pct}% der Commits.",
+        "history_owner_lines": (
+            "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben ({commit}% der Commits)."
+        ),
+        "history_owner_lines_only": "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben.",
         "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
         "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
         "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",
@@ -247,7 +247,6 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "changes_with_entry": "{count} gemeinsame {commit_word}",
         "last_together": "zuletzt gemeinsam am {date}",
         "decisions_heading": "Entscheidungen zu dieser Datei",
-        "in_the_code": "Im Code",
         "question_exports": "Was exportiert `{path}`?",
         "question_where_defined": "Wo ist `{symbol}` definiert?",
         "question_what_imports": "Was importiert `{path}`?",

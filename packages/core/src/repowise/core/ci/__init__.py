@@ -1,4 +1,5 @@
-"""Shared CI plumbing: workflow commands, markdown pieces, the target branch.
+"""Shared CI plumbing: workflow commands, markdown pieces, the target branch,
+SARIF and GitLab Code Quality reports, baselines.
 
 Every CI-facing feature (patch coverage, doc drift, ...) renders its own
 content and uses these for the parts CI systems define, so escaping, caps and

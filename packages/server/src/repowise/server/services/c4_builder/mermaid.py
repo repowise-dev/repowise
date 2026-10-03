@@ -78,6 +78,8 @@ def to_mermaid_l1(view: C4L1) -> str:
     )
 
     lines.extend(_emit_externals(view.external_systems))
+    if not view.external_systems:
+        lines.append("    %% No external service dependencies detected")
 
     if view.relations:
         lines.append("")

@@ -200,11 +200,11 @@ export function legacyPage(): PerformanceOpportunityPage {
 }
 
 export function resolvedDetail(
-  overrides: Partial<Extract<PerformanceOpportunityDetail, { resolved: true }>> = {},
+  overrides: Partial<Extract<PerformanceOpportunityDetail, { found: true }>> = {},
 ): PerformanceOpportunityDetail {
   return {
     ...opportunity({ opportunity_id: "perf2_planready" }),
-    resolved: true,
+    found: true,
     lifecycle_status: "open",
     analyzed_commit: "848a8f180abc",
     model_state: {

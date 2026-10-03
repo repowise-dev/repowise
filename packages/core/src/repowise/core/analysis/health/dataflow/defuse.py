@@ -40,6 +40,8 @@ class Definition:
     block_id: int
     index: int
     line: int  # 1-indexed
+    #: Where on ``line`` a declared name starts to exist; see ``Occurrence``.
+    declared_at: int | None = None
 
 
 @dataclass
@@ -87,7 +89,13 @@ def compute_def_use(
     def _add_def(occ: Occurrence, block_id: int) -> None:
         nonlocal counter
         bdu = blocks.setdefault(block_id, BlockDefUse(block_id))
-        definition = Definition(var=occ.name, block_id=block_id, index=counter, line=occ.line)
+        definition = Definition(
+            var=occ.name,
+            block_id=block_id,
+            index=counter,
+            line=occ.line,
+            declared_at=occ.declared_at,
+        )
         counter += 1
         bdu.defs.append(definition)
         definitions.append(definition)

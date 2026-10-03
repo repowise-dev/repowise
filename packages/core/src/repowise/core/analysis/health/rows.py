@@ -8,12 +8,20 @@ these adapters so no consumer has to know which.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 
 def field(row: Any, name: str, default: Any = None) -> Any:
-    """Read one attribute from a dataclass, an ORM row, or a dict."""
-    if isinstance(row, dict):
+    """Read one attribute from a dataclass, an ORM row, or a mapping."""
+    # Exact-type fast paths first: the ``Mapping`` check is an ABC lookup,
+    # and a fold over a repository's rows calls this a hundred thousand times.
+    kind = type(row)
+    if kind is dict:
+        return row.get(name, default)
+    if isinstance(row, tuple):
+        return getattr(row, name, default)
+    if isinstance(row, Mapping):
         return row.get(name, default)
     return getattr(row, name, default)
 
@@ -50,4 +58,17 @@ def json_field(row: Any, name: str, default: Any) -> Any:
     return default if value is None else value
 
 
-__all__ = ["detail_map", "field", "json_field"]
+def split_tests(rows: Iterable[Any]) -> tuple[list[Any], list[Any]]:
+    """Partition per-file rows into ``(production, tests)`` by their ``is_test``.
+
+    Ranked "worst file" answers name production files and report tests apart;
+    a surface falls back to the tests only when there is no production row.
+    """
+    production: list[Any] = []
+    tests: list[Any] = []
+    for row in rows:
+        (tests if field(row, "is_test", False) else production).append(row)
+    return production, tests
+
+
+__all__ = ["detail_map", "field", "json_field", "split_tests"]

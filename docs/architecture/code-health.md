@@ -251,7 +251,7 @@ The returned report rides on `PipelineResult.health_report`. Then
 trend tracking (rolling 50-row window per repo), and a second
 `{path: total_deduction}` map covering only the files whose score is held at
 the floor. Both maps come from `trends.snapshot_file_maps`, which the other two
-snapshot writers (`repowise health` and `repowise upgrade`) also call — a repo
+snapshot writers (`repowise health` and `repowise update --full`) also call — a repo
 whose writers disagreed would get a history whose depth changed depending on
 which command last wrote it.
 
@@ -298,14 +298,14 @@ returning a list of `BiomarkerResult`s.
 
 ### The full roster
 
-`biomarkers/registry.py` registers **51 detectors**; counting the three
+`biomarkers/registry.py` registers **53 detectors**; counting the three
 governance findings written by the additive pass (`governance.py`) there
-are **54 marker ids**. They divide by what each is permitted to affect:
+are **56 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 25 | `defect` (8 of them also `maintainability`) |
-| Performance | 20 | `performance` only |
+| Defect-scoring | 25 | `defect` (11 of them also `maintainability`) |
+| Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing — the finding surfaces, the score is untouched |
 | Advisory | 3 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
@@ -656,8 +656,9 @@ Four tables, all in the repo's `.repowise/wiki.db`. Foreign-keyed to
 ### `health_findings`
 
 One row per marker hit. Lifecycle: `open → acknowledged | resolved |
-false_positive` (matches Dead Code). Bulk-deleted-and-rewritten on full
-init; selectively upserted on `repowise update`.
+false_positive` (matches Dead Code). Open rows are deleted and rewritten on
+full init and per changed file on `repowise update`; a triaged row is kept and
+refreshed when its `public_id` is detected again, and `resolved` reopens.
 
 | Column | Notes |
 |---|---|
@@ -707,7 +708,7 @@ flag the exact uncovered surface, not just the percent.
 
 ## 11. CLI surface
 
-`packages/cli/src/repowise/cli/commands/health_cmd.py`. Mirrors the
+`packages/cli/src/repowise/cli/commands/health_cmd/`. Mirrors the
 dead-code command's Click structure.
 
 ```bash
@@ -989,7 +990,7 @@ phases may revisit; the constraints kept v1 shippable.
 | Add a new MCP `include` flag | `tool_health/`: name it in `request.py`, read it in `loading.py`, render it in `blocks.py` beside the existing `"coverage"` / `"refactoring"` blocks |
 | Add a new REST route | `routers/code_health.py`: auth is wired at the router level |
 | Add a new dashboard view | new file under `packages/web/src/app/repos/[id]/health/`, primitives under `packages/ui/src/health/` |
-| Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd.py` |
+| Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd/` |
 | Wire the analyzer into a new entry point | call `HealthAnalyzer.analyze()` directly; persist via the upsert variants if your caller is incremental |
 
 ---

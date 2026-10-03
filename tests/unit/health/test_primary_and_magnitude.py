@@ -7,9 +7,13 @@ from types import SimpleNamespace
 from repowise.server.routers.code_health import _leads_by_file, _primary_and_magnitude
 
 
-def _f(path, biomarker, impact, reason=""):
+def _f(path, biomarker, impact, reason="", severity="medium"):
     return SimpleNamespace(
-        file_path=path, biomarker_type=biomarker, health_impact=impact, reason=reason
+        file_path=path,
+        biomarker_type=biomarker,
+        health_impact=impact,
+        reason=reason,
+        severity=severity,
     )
 
 
@@ -22,7 +26,7 @@ FINDINGS = [
     _f("b.py", "coverage_gradient", 0.9, "40% uncovered"),
     # Advisory only: no lead, real zero magnitude.
     _f("c.py", "assertion_free_test", 0.0, "no asserts"),
-    # Null impact counts as zero; ties keep the first.
+    # Null impact counts as zero; a tie is decided by name, not input order.
     _f("d.py", "god_object", None, "big"),
     _f("d.py", "long_method", 0.1, "90 lines"),
     _f("d.py", "complex_method", 0.1, "ccn 11"),
@@ -41,8 +45,8 @@ GOLDEN = {
     },
     "c.py": {"primary_biomarker": None, "primary_reason": None, "total_deduction": 0.0},
     "d.py": {
-        "primary_biomarker": "long_method",
-        "primary_reason": "90 lines",
+        "primary_biomarker": "complex_method",
+        "primary_reason": "ccn 11",
         "total_deduction": 0.2,
     },
 }
@@ -76,3 +80,30 @@ def test_plain_dicts_fold_like_rows() -> None:
     from repowise.core.analysis.health.aggregation import primary_and_magnitude_by_file
 
     assert primary_and_magnitude_by_file([vars(f) for f in FINDINGS]) == GOLDEN
+
+
+def test_primary_finding_prefers_code_shape_over_history() -> None:
+    """A history marker names context, not an edit; a code-shape finding leads
+    even when the history one deducts more, and history leads only alone."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    shaped = _f("e.py", "complex_method", 0.4, "ccn 14")
+    history = _f("e.py", "change_entropy", 2.5, "changed with 25 files")
+    assert primary_finding([history, shaped]) is shaped
+    assert primary_finding([history]) is history
+
+
+def test_primary_finding_tie_does_not_depend_on_input_order() -> None:
+    """Equal impacts must not let row order pick the lead: two indexes of one
+    tree read the rows in different orders and disagreed on it."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    cohesion = _f("f.java", "low_cohesion", 0.871, "lcom 0.9")
+    complex_ = _f("f.java", "complex_method", 0.871, "ccn 30")
+    assert primary_finding([cohesion, complex_]) is complex_
+    assert primary_finding([complex_, cohesion]) is complex_
+
+    # Severity breaks the tie before the name does.
+    severe = _f("f.java", "low_cohesion", 0.871, "lcom 0.9", severity="high")
+    assert primary_finding([complex_, severe]) is severe
+    assert primary_finding([severe, complex_]) is severe

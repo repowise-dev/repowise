@@ -277,7 +277,8 @@ def test_batch_none_for_while_loop():
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
         b"        r = repos.pop() if repos else None\n"
     )
-    assert facts is None
+    # A cursor loop binds no element, so nothing per-key reaches the call.
+    assert facts is not None and facts.batch is None and facts.key_unused
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +381,7 @@ def test_magnitude_grows_through_a_result_attribute():
 
 def test_a_retry_loop_inside_a_loop_over_rows_is_not_bounded():
     facts = _loop(
+        b"from sqlalchemy import select\n"
         b"async def f(session):\n"
         b"    rows = (await session.execute(q)).scalars().all()\n"
         b"    for row in rows:\n"

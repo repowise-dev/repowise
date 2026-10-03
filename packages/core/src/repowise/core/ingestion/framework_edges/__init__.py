@@ -2,7 +2,7 @@
 
 Detects convention-based relationships (Django, FastAPI, Flask, ASP.NET, Rails,
 Laravel, Spring, Express/Nest, Angular, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
-``class_name`` globals, and pytest ``conftest.py``) and adds
+``class_name`` globals, pytest ``conftest.py`` and AWS Lambda handlers) and adds
 ``edge_type="framework"`` edges that no static import graph captures.
 
 Previously a single ``framework_edges.py`` module; split (PR 3.5) into one
@@ -21,6 +21,7 @@ from . import (
     android_manifest,
     angular,
     aspnet,
+    aws_lambda,
     django,
     express,
     fastapi,
@@ -81,6 +82,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *gtest.HANDLERS,
     *rust.HANDLERS,
     *typo3.HANDLERS,
+    *aws_lambda.HANDLERS,
 ]
 
 

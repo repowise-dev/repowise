@@ -226,14 +226,7 @@ async def _sync_authoritative_fts(
         await fts.ensure_index()
         if cleanup_ids:
             await fts.delete_many(sorted(cleanup_ids))
-        for page in generated_pages:
-            await fts.index(
-                page.page_id,
-                page.title,
-                page.content,
-                summary=page.summary,
-                target_path=page.target_path,
-            )
+        await fts.index_pages(generated_pages)
     except BaseException:
         record_cleanup_debt(repo_path, "fts", cleanup_ids)
         raise

@@ -504,7 +504,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
     from repowise.core.generation.selection import count_documentable_files
-    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+    from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
     scope_config = load_config(repo.path)
     configured_cap = resolve_max_file_pages(config=scope_config)
@@ -525,6 +525,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=state["git_tier"],
         git_commit_cap=ctx.resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={
             "configured_cap": configured_cap,
             **(

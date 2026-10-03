@@ -111,6 +111,11 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
             : null
         }
         filePath={detail ? detail.short_sha : null}
+        chatContext={
+          detail
+            ? { kind: "commit", label: detail.short_sha, target: detail.sha, targetKind: "commit" }
+            : undefined
+        }
         title="AI commit review"
         description="A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
       />

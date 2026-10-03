@@ -93,6 +93,17 @@ class PlatformClient:
         timeout: float | None = None,
     ) -> bool:
         """POST ``payload`` as JSON to ``path``. Returns success, never raises."""
+        return 200 <= self.post_status(path, payload, timeout=timeout) < 300
+
+    def post_status(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> int:
+        """POST ``payload`` as JSON and return the HTTP status, ``0`` when the
+        request never got an answer. Never raises."""
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
             import httpx
@@ -103,11 +114,10 @@ class PlatformClient:
                 headers=self._headers(),
                 timeout=timeout or self.timeout,
             )
-            resp.raise_for_status()
-            return True
+            return resp.status_code
         except Exception:
-            # Network, JSON, HTTP-status — all advisory. The CLI works offline.
-            return False
+            # Network, JSON — all advisory. The CLI works offline.
+            return 0
 
     def post_form(
         self,

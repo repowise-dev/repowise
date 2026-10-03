@@ -141,6 +141,21 @@ def test_go_cases(src, expected, note):
     assert _hits("go", src) == sorted(expected), note
 
 
+def test_go_string_concat_reset_per_iteration_not_flagged():
+    reassigned = (
+        'package p\nfunc f(rows []string){ for _, row := range rows { line = row; line += "," } }\n'
+    )
+    short_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { line := row; line += "," } }\n'
+    var_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { var line string; line += "," } }\n'
+    accumulator = (
+        'package p\nfunc f(rows []string){ out := ""; for _, row := range rows { out += "," } }\n'
+    )
+
+    for source in (reassigned, short_declared, var_declared):
+        assert not any(kind == "string_concat_in_loop" for kind, _ in _hits("go", source))
+    assert ("string_concat_in_loop", "") in _hits("go", accumulator)
+
+
 # ---------------------------------------------------------------------------
 # C#
 # ---------------------------------------------------------------------------
@@ -349,6 +364,57 @@ def test_csharp_task_result_chained_read_still_blocks():
         "class A{ async System.Threading.Tasks.Task M(){ "
         "var c = itemGetTask.Result.CatalogItem; }}",
     )
+
+
+def _csharp_async(body: str) -> list[tuple[str, str]]:
+    src = (
+        "class A{ async System.Threading.Tasks.Task M(bool c){ "
+        "var t = F(); var u = G(); " + body + " }}"
+    )
+    return [h for h in _hits("csharp", src) if h[0] == "blocking_sync_in_async"]
+
+
+_AWAITED_BEFORE_READ = [
+    ("await t; var r = t.Result;", "direct await"),
+    ("await t.ConfigureAwait(false); var r = t.Result;", "ConfigureAwait"),
+    ("await Task.WhenAll(t, u); var r = t.Result;", "WhenAll args"),
+    ("await Task.WhenAll(t, u); var r = t.Result.Items;", "chained read after WhenAll"),
+    (
+        "var l = new List<Task>(); l.Add(t); l.Add(u); await Task.WhenAll(l); var r = t.Result;",
+        "WhenAll over a list the task was added to",
+    ),
+    ("var a = new[] { t, u }; await Task.WhenAll(a); var r = t.Result;", "array initializer"),
+    ("await Task.WhenAll(new[] { t, u }); var r = u.Result;", "inline array"),
+    ("var d = await Task.WhenAny(t, u); var r = d.Result;", "task returned by WhenAny"),
+    ("await Task.WhenAll(t, u); t.GetAwaiter().GetResult();", "GetAwaiter().GetResult()"),
+    ("await t; if (c) { var r = t.Result; }", "read in a branch after a straight-line await"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _AWAITED_BEFORE_READ], ids=[c[1] for c in _AWAITED_BEFORE_READ]
+)
+def test_csharp_result_after_await_not_blocking(body):
+    """A task awaited earlier in the method is complete: ``.Result`` does not block."""
+    assert _csharp_async(body) == []
+
+
+_NOT_AWAITED_BEFORE_READ = [
+    ("var r = t.Result;", "no await at all"),
+    ("if (c) { await t; } var r = t.Result;", "await inside a branch that may not run"),
+    ("await u; var r = t.Result;", "a different task was awaited"),
+    ("await Task.WhenAll(u); var r = t.Result;", "WhenAll without the task"),
+    ("var r = t.Result; await t;", "await after the read"),
+    ("await Task.WhenAny(t, u); var r = t.Result;", "WhenAny argument may still run"),
+    ("System.Action f = async () => await t; var r = t.Result;", "await inside a lambda"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _NOT_AWAITED_BEFORE_READ], ids=[c[1] for c in _NOT_AWAITED_BEFORE_READ]
+)
+def test_csharp_result_without_prior_await_still_blocks(body):
+    assert _csharp_async(body) == [("blocking_sync_in_async", ".Result")]
 
 
 def test_go_sql_rows_scan_not_io_in_loop():

@@ -24,6 +24,7 @@ from repowise.core.store_location import resolve_store_dir
 from ...persistence.vector_store import embed_item
 from ...pipeline.phase_timing import timed
 from ..context_assembler import FilePageContext
+from ..mermaid_safety import sanitize_pages
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -113,6 +114,7 @@ class _GenerationRun:
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -130,6 +132,9 @@ class _GenerationRun:
         # wiki the resumed run was there to protect. None when the caller does
         # not care (every non-resume path).
         self.preserved_page_ids = preserved_page_ids
+        # Resume: the ids that already have a stored page row, or None when the
+        # caller cannot tell. See ``_seed_resume``.
+        self.persisted_page_ids = persisted_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -234,7 +239,8 @@ class _GenerationRun:
             if self.repo_path
             else str(getattr(self.repo_structure, "root_path", "."))
         )
-        # On resume, query the vector store directly — it is the ground truth.
+        # On resume, completed ids come from the vector store (narrowed to
+        # pages with a stored row when the caller knows them).
         if self.resume and self.vector_store is not None:
             # Note: caller drives this synchronously enough; resume seeding is
             # awaited in execute() to keep __init__ side-effect free.
@@ -268,6 +274,12 @@ class _GenerationRun:
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
+            # The vector and the page row are written separately, so a run
+            # killed between the two leaves a vector with no page. Counting it
+            # as done would skip it forever, so a page is done only when both
+            # landed.
+            if self.persisted_page_ids is not None:
+                self.completed_ids &= self.persisted_page_ids
             if self.completed_ids:
                 log.info(
                     "Resuming generation from vector store",
@@ -553,7 +565,7 @@ class _GenerationRun:
         the import graph) and reference only pages that will exist, so neither
         spawns new LLM work.
         """
-        from ..layers import compute_layer_order, infer_layer, layer_key
+        from ..layers import compute_layer_order, infer_layer, is_adjacent_layer, layer_key
         from ..tour import build_tour
 
         import_edges = self._file_import_edges()
@@ -610,7 +622,12 @@ class _GenerationRun:
             file_layers[path] = layer_id
             display_of.setdefault(layer_id, display)
         self.layer_order_ids = compute_layer_order(file_layers, import_edges)
-        self.layer_order = [display_of.get(lid, lid) for lid in self.layer_order_ids]
+        # Tests keep their place in the tree but are not a layer of the stack.
+        self.layer_order = [
+            display_of.get(lid, lid)
+            for lid in self.layer_order_ids
+            if not is_adjacent_layer(lid)
+        ]
 
     # ------------------------------------------------------------------
     # Level runner
@@ -638,6 +655,14 @@ class _GenerationRun:
                             result = await coro
 
                         if isinstance(result, GeneratedPage):
+                            # Sanitized before the streaming sink sees it, so the
+                            # first stored version is the final text. Left to the
+                            # post-generation pass alone, any page it changes was
+                            # written twice and archived a spurious version.
+                            try:
+                                sanitize_pages([result])
+                            except Exception as exc:
+                                log.debug("mermaid_safety.failed", error=str(exc))
                             # A page whose provider call raised comes back as its
                             # structural stub rather than being dropped (issue #1089),
                             # so the row exists and `repowise generate` can refill it.
@@ -880,8 +905,6 @@ class _GenerationRun:
             # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
             # labels in LLM output don't break the whole diagram in the renderer.
             try:
-                from ..mermaid_safety import sanitize_pages
-
                 fixed = sanitize_pages(all_pages)
                 if fixed:
                     log.info("mermaid_safety.applied", pages_changed=fixed)
@@ -1053,6 +1076,7 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
         target_path=page.target_path,
         summary=page.summary,
         content=page.content,
+        page_metadata=page.metadata,
     )
 
 

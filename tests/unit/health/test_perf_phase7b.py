@@ -63,6 +63,7 @@ def _facts(lang: str, src: str) -> dict[str | None, PerfFnFacts]:
 _NESTED_IO_CASES = [
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, groups):\n"
         "    for g in groups:\n"
         "        for r in g:\n"
@@ -72,6 +73,7 @@ _NESTED_IO_CASES = [
     ),
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, repos):\n    for r in repos:\n        session.execute(r)\n",
         [("io_in_loop", "db")],
         "a single loop is io_in_loop only (no nesting)",
@@ -128,6 +130,42 @@ _LOCK_IO_CASES = [
         " synchronized(em.getResultList()){ Use(); } } }",
         [],
         "a sink in the lock-OBJECT expression runs before the lock is held",
+    ),
+    (
+        "java",
+        "class A{ Object m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (cache == null) { cache = em.getResultList(); } } return cache; } }",
+        [],
+        "double-checked lazy init: the I/O runs once, the lock is the memo",
+    ),
+    (
+        "java",
+        "class A{ Object m(javax.persistence.EntityManager em){"
+        " if (ref.get() == null) { synchronized(ref){ ref.set(em.getResultList()); } }"
+        " return ref.get(); } }",
+        [],
+        "a null guard around the lock that the held body fills is lazy init",
+    ),
+    (
+        "csharp",
+        "class A{ object M(AppDbContext ctx){ lock(gate){ _cached ??= ctx.SaveChanges(); "
+        "return _cached; } } }",
+        [],
+        "a ??= memo as the whole held body is lazy init",
+    ),
+    (
+        "java",
+        "class A{ void m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (q == null) { q = new X(); } else { em.getResultList(); } } } }",
+        [("blocking_io_under_lock", "db")],
+        "a null check with an else branch is a state machine, not a memo",
+    ),
+    (
+        "java",
+        "class A{ void m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (q == null || stale) { q = em.getResultList(); } } } }",
+        [("blocking_io_under_lock", "db")],
+        "a guard that is not a pure null test can rerun, so the lock still counts",
     ),
 ]
 
@@ -412,6 +450,16 @@ def test_blocking_io_under_lock_renders_cross_function_path():
     assert finding.details["cross_function"] is True
     assert finding.details["path"] == list(hit.path)
     assert "holder -> writer" in finding.reason
+
+
+def test_blocking_io_under_lock_does_not_advise_moving_file_io_out():
+    hits = [
+        PerfHit("blocking_io_under_lock", 3, "save", "filesystem"),
+        PerfHit("blocking_io_under_lock", 4, "save", "db"),
+    ]
+    file_io, db = BlockingIoUnderLockDetector().detect(_ctx(hits))
+    assert "move the I/O" not in file_io.reason
+    assert "move the I/O" in db.reason
 
 
 def test_new_markers_score_performance_not_defect():

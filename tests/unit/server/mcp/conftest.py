@@ -567,12 +567,6 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
 async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     """Configure the MCP module's global state for testing."""
     import repowise.server.mcp_server as mcp_mod
-    from repowise.server.mcp_server import _basis, _scope
-
-    # Every test repo shares one id and one updated_at, so a grouping cached
-    # from an earlier test would be served to the next one's different seed.
-    _basis.reset_cache()
-    _scope.reset_cache()
 
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
@@ -645,7 +639,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "function_name": "authenticate",
                 "line_start": 10,
                 "line_end": 80,
-                "details": {"ccn": 15, "cognitive": 30, "nloc": 70},
+                "details": {"ccn": 15, "cognitive": 30, "nloc": 70, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 1.2,
                 "reason": "authenticate has cyclomatic complexity 15",
             },

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -20,6 +21,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
 )
+from repowise.server.mcp_server.tool_overview.actions import _build_next_actions
 from repowise.server.mcp_server.tool_overview.decisions import _build_key_decisions
 from repowise.server.mcp_server.tool_overview.graph import (
     _build_architecture,
@@ -56,8 +58,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
     Returns the synthesised overview summary, key modules, entry points,
-    architecture layers, code health, and repo-wide git health (hotspot count,
-    churn trend, bus-factor distribution).
+    architecture layers, code health, repo-wide git health, and
+    ``next_actions`` (top work for the week and quarter).
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
 
@@ -120,6 +122,7 @@ async def _repo_overview(
     all_git = await _load_git_rows(session, repository, exclude_spec)
     architecture = await _build_architecture(session, repository)
     code_health = await _build_code_health(session, repository)
+    next_actions, next_actions_reason = await _build_next_actions(session, repository)
     requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)
     sections, outline = await _load_outline(session, repository, want, collector)
     content_md, content_hint = _overview_content(overview_page, "content" in want)
@@ -128,6 +131,10 @@ async def _repo_overview(
         "title": _resolve_title(overview_page, repository),
         "content_md": content_md,
         "code_health": code_health,
+        # The stored actions the web app's "Do next" ranks, so the agent and
+        # the UI agree on what comes first.
+        **({"next_actions": next_actions} if next_actions else {}),
+        **({"next_actions_reason": next_actions_reason} if next_actions_reason else {}),
         # Names and paths only. get_context(path) carries the prose, and
         # section indexes into include=["outline"].
         "key_modules": [
@@ -187,9 +194,7 @@ _READING_ORDER_HINT = (
 async def _load_git_rows(session: Any, repository: Any, exclude_spec: Any) -> list[Any]:
     """Git metadata rows outside the exclude rules, the source of git health and ownership."""
     git_res = await session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == repository.id,
-        )
+        select(GitMetadata).where(code_file_rows(repository.id))
     )
     return filter_rows_by_attr(list(git_res.scalars().all()), "file_path", exclude_spec)
 

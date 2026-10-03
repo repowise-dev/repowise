@@ -38,7 +38,10 @@ export interface GitMetadata {
   last_commit_at: string | null;
   primary_owner_name: string | null;
   primary_owner_email: string | null;
+  /** The primary owner's own share of the file's commits, 0–1. */
   primary_owner_commit_pct: number | null;
+  /** The primary (blame) owner's share of current lines, 0–1. Null without blame. */
+  primary_owner_line_pct?: number | null;
   recent_owner_name: string | null;
   recent_owner_commit_pct: number | null;
   top_authors: FileAuthor[];

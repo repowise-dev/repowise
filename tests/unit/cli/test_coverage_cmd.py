@@ -212,3 +212,142 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
     assert result.exit_code == 0, result.output
     assert recorded["sha"] == live_head
     assert recorded["sha"] != _FakeRepoRow.head_commit
+
+
+def _fake_ingest(monkeypatch: pytest.MonkeyPatch, tmp_path, keys: set[str]) -> list:
+    """Run `coverage add` against *tmp_path* with *keys* indexed; returns the stored rows."""
+
+    class _Row:
+        id = "repo-1"
+        head_commit = None
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    stored: list = []
+
+    async def _save(session, repository_id, files, **kwargs):
+        stored.extend(files)
+
+    async def _repo(session, local_path):
+        return _Row()
+
+    async def _keys(session, repo_id):
+        return keys
+
+    async def _noop(_url):
+        return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
+    monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _keys)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _noop)
+    monkeypatch.setattr("repowise.core.persistence.crud.get_repository_by_path", _repo)
+    monkeypatch.setattr("repowise.core.persistence.crud.save_coverage_files", _save)
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
+    monkeypatch.setattr("repowise.core.persistence.create_session_factory", lambda e: object())
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _Session())
+    return stored
+
+
+def _lcov(path, source: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"SF:{source}\nDA:1,1\nend_of_record\n", encoding="utf-8")
+
+
+def test_coverage_add_expands_a_glob(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"a.py", "b.py"})
+    _lcov(tmp_path / "artifacts" / "one" / "lcov.info", "a.py")
+    _lcov(tmp_path / "artifacts" / "two" / "lcov.info", "b.py")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "artifacts/**/lcov.info"])
+
+    assert result.exit_code == 0, result.output
+    assert sorted(f.file_path for f in stored) == ["a.py", "b.py"]
+
+
+def test_coverage_add_applies_a_prefix_to_every_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"web/src/a.ts", "src/a.ts"})
+    _lcov(tmp_path / "web" / "coverage" / "lcov.info", "src/a.ts")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "web/*/lcov.info=web"])
+
+    assert result.exit_code == 0, result.output
+    assert [f.file_path for f in stored] == ["web/src/a.ts"]
+
+
+def test_coverage_add_rejects_an_argument_matching_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"a.py"})
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "nope/**/lcov.info"])
+
+    assert result.exit_code == 2
+    assert "no coverage report matches nope/**/lcov.info" in result.output
+
+
+def test_coverage_add_adds_the_repo_hook_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from repowise.cli.commands.augment_cmd import coverage_reingest
+    from repowise.cli.editor_integrations import claude_config
+
+    _fake_ingest(monkeypatch, tmp_path, {"a.py"})
+    _lcov(tmp_path / "lcov.info", "a.py")
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    (tmp_path / ".repowise" / "wiki.db").write_bytes(b"")
+    user = tmp_path / "user-settings.json"
+    entry = {"matcher": "Read", "hooks": [{"command": claude_config._AUGMENT_HOOK_COMMAND}]}
+    user.write_text(json.dumps({"hooks": {"PostToolUse": [entry]}}), encoding="utf-8")
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: user)
+    monkeypatch.setattr(coverage_reingest, "last_ingest_time", lambda _db: 1.0)
+    monkeypatch.delenv("REPOWISE_HOOK_COVERAGE_REINGEST", raising=False)
+    config = tmp_path / ".repowise" / "config.yaml"
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])  # off by default
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+
+    config.write_text("hooks:\n  coverage_reingest: true\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])
+
+    assert result.exit_code == 0, result.output
+    assert "this repository only" in result.output
+    assert (tmp_path / ".claude" / "settings.local.json").is_file()
+
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  coverage_reingest: false\n", encoding="utf-8"
+    )
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])
+    assert "Removed the coverage re-ingest hook" in result.output
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+
+
+def test_init_and_update_keep_the_repo_hook_in_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Both store coverage, so both sync the hook: update on every outcome, init after setup."""
+    import inspect
+
+    from repowise.cli.commands.augment_cmd import coverage_reingest
+    from repowise.cli.commands.init_cmd import command as init_command
+    from repowise.cli.commands.update_cmd import command as update_command
+
+    calls: list = []
+    monkeypatch.setattr(coverage_reingest, "sync_repo_hook", lambda repo, _c: calls.append(repo))
+    monkeypatch.setattr(
+        "repowise.cli.editor_setup.refresh_editor_project_files", lambda *a, **k: None
+    )
+    update_command._refresh_editor_stamp(tmp_path, None)
+    assert calls == [tmp_path]
+    assert "sync_repo_hook(repo_path, console)" in inspect.getsource(getattr(init_command.init_command, "callback", init_command.init_command))

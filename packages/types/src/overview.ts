@@ -250,7 +250,10 @@ export interface OverviewSummaryResponse {
   repo: OverviewRepoMeta;
   stats: OverviewStats;
   health: OverviewHealth;
+  /** Code languages only. */
   languages: OverviewLanguage[];
+  /** Config, markup and data formats, kept apart from `languages`. */
+  docs_config_languages?: OverviewLanguage[];
   attention: OverviewAttentionItem[];
   /** Optional: a server predating the merged attention list omits it, and the
    *  UI then falls back to counting the rows it was given. */

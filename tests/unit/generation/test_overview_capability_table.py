@@ -22,6 +22,7 @@ from structlog.testing import capture_logs
 
 from repowise.core.generation.concept_tree.vocabulary import HouseTerm
 from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.house_vocabulary import select_terms
 from repowise.core.generation.overview_tables import (
     CAPABILITY_TABLE_HEADING,
     build_capability_table,
@@ -32,16 +33,20 @@ from repowise.core.ingestion.models import PackageInfo, RepoStructure
 
 from .conftest import _make_file_info
 
+_DEFINED = object()
+
 
 def _term(
     term: str,
     *,
-    definition: str | None = None,
+    definition: str | None | object = _DEFINED,
     definition_source: str | None = None,
     source_paths: tuple[str, ...] = ("README.md",),
     doc_frequency: int = 1,
     code_frequency: int = 5,
 ) -> HouseTerm:
+    if definition is _DEFINED:
+        definition = f"{term} is a capability the documents describe."
     return HouseTerm(
         term=term,
         definition=definition,
@@ -177,7 +182,7 @@ def test_prose_that_is_not_a_statement_is_not_offered_as_a_definition(text):
     term in a README that is often a command line or a lead-in. An em dash is
     a better answer: the reader learns the capability exists and is not
     misinformed about what it does."""
-    picked = select_capabilities([_term("Dead code", definition=text)], MODULES)
+    picked = select_terms([_term("Dead code", definition=text)], MODULES)
     assert picked[0].definition is None
 
 
@@ -210,7 +215,7 @@ def test_a_real_sentence_survives(term, text):
 def test_a_rejected_definition_does_not_leave_its_source_behind():
     """Citing where prose the table declined to quote lives would point the
     reader at a line that is not on the page."""
-    picked = select_capabilities(
+    picked = select_terms(
         [
             _term(
                 "Dead code",
@@ -231,11 +236,18 @@ def test_a_rejected_definition_is_logged():
     assert any(e["event"] == "house_vocabulary.definition_rejected" for e in logs)
 
 
-def test_a_term_the_repository_never_defined_still_gets_a_row():
-    """Naming a capability and never writing a sentence about it is common,
-    and inventing the sentence is the one thing the miner refuses to do."""
-    table = build_capability_table(select_capabilities([_term("Dead code")], MODULES))
-    assert "| Dead code | — | `README.md` |" in table
+def test_capability_table_omits_undefined():
+    """A row reading "—" tells the reader nothing, so undefined terms stay off
+    the front page and defined ones take their slots; none defined, no table."""
+    terms = [_term("Blast radius", definition=None), _term("Dead code")]
+    picked = select_capabilities(terms, MODULES, limit=1)
+    assert [c.term for c in picked] == ["Dead code"]
+    table = build_capability_table(picked)
+    assert "—" not in table
+    assert "Blast radius" not in table
+    undefined = select_terms([_term("Dead code", definition=None)], MODULES)
+    assert build_capability_table(undefined) is None
+    assert select_capabilities([_term("Dead code", definition=None)], MODULES) == []
 
 
 def test_the_source_falls_back_to_the_document_that_named_the_term():
@@ -251,7 +263,7 @@ def test_a_pipe_in_mined_prose_does_not_break_the_table():
     column to its right."""
     table = build_capability_table(
         select_capabilities(
-            [_term("Dead code", definition="Run `repowise dead-code | less` to read it all.")],
+            [_term("Dead code", definition="Dead code is what a `grep|sort` pass over the tree never finds.")],
             MODULES,
         )
     )

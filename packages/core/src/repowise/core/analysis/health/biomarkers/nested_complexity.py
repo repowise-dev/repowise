@@ -39,6 +39,7 @@ class NestedComplexityDetector:
                         "max_nesting": fn.max_nesting,
                         "ccn": fn.ccn,
                         "cognitive": fn.cognitive,
+                        "dispatch_share": fn.dispatch_share,
                     },
                     reason=f"{fn.name} nests {fn.max_nesting} levels deep",
                 )

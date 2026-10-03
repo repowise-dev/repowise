@@ -9,9 +9,9 @@ pinned hash constants), so they cache safely by the key the detector builds
 from the two. The grammar is a second term only for a file whose extension
 picks a grammar its language tag does not, which today means ``.tsx``.
 
-Cached per file: the normalized token-kind sequence (all the verifier
-ever compares), the non-blank line count, and the rolling-hash windows
-as plain tuples (``WindowHash`` is rebuilt with the file's *current*
+Cached per file: the normalized token-kind sequence and the parallel raw
+identifier names (all the verifier ever compares), the non-blank line
+count, and the rolling-hash windows as plain tuples (``WindowHash`` is rebuilt with the file's *current*
 path, which makes hits rename-proof). The minified/token-cap/window-
 budget gates in the detector stay live — they re-evaluate against the
 cached lengths, so config changes apply to cached entries too.
@@ -32,12 +32,15 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
 log = structlog.get_logger(__name__)
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _CACHE_FILENAME = "duplication_cache.pkl"
+
+# (kinds, identifier names, nloc, window tuples)
+_Entry = tuple[list[str], list[str], int, list[tuple[int, int, int, int]]]
 
 
 class DuplicationTokenCache:
-    """Pickle-backed ``content_hash -> (kinds, nloc, windows)`` store."""
+    """Pickle-backed ``content_hash -> (kinds, names, nloc, windows)`` store."""
 
     def __init__(self, cache_dir: Path, window_tokens: int, analyzer_version: int) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
@@ -46,8 +49,8 @@ class DuplicationTokenCache:
         # nothing else in the payload would notice. The walk cache next door
         # has carried this stamp for the same reason since it existed.
         self._analyzer_version = analyzer_version
-        self._entries: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
-        self._fresh: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
+        self._entries: dict[str, _Entry] = {}
+        self._fresh: dict[str, _Entry] = {}
         self.hits = 0
         self.misses = 0
 
@@ -93,9 +96,7 @@ class DuplicationTokenCache:
 
     # -- access ------------------------------------------------------------
 
-    def get(
-        self, content_hash: str
-    ) -> tuple[list[str], int, list[tuple[int, int, int, int]]] | None:
+    def get(self, content_hash: str) -> _Entry | None:
         entry = self._entries.get(content_hash)
         if entry is None:
             self.misses += 1
@@ -105,9 +106,7 @@ class DuplicationTokenCache:
         self._fresh[content_hash] = entry
         return entry
 
-    def entry(
-        self, content_hash: str
-    ) -> tuple[list[str], int, list[tuple[int, int, int, int]]] | None:
+    def entry(self, content_hash: str) -> _Entry | None:
         """Read an entry without touching hit/miss stats or freshness.
 
         The incremental pair-splice path reads unchanged files' cached
@@ -133,6 +132,7 @@ class DuplicationTokenCache:
         self,
         content_hash: str,
         kinds: list[str],
+        names: list[str],
         nloc: int,
         windows: list[tuple[int, int, int, int]],
     ) -> None:
@@ -141,6 +141,6 @@ class DuplicationTokenCache:
         # Identity reuse also keeps the pickle compact and comparisons cheap.
         for index, kind in enumerate(kinds):
             kinds[index] = sys.intern(kind)
-        entry = (kinds, nloc, windows)
+        entry = (kinds, names, nloc, windows)
         self._entries[content_hash] = entry
         self._fresh[content_hash] = entry

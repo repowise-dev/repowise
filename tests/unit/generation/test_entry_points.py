@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from repowise.core.entry_candidacy import (
     GLUE_STEMS,
+    conventional_entry_stems,
     entry_point_depth,
     is_glue_leaf,
     not_an_execution_start,
@@ -131,3 +132,42 @@ def test_rank_key_orders_bucket_then_depth_then_centrality():
     conv = entry_point_rank_key("a/app.py", pagerank=0.0, conventional_stems=_CONV)
     glue = entry_point_rank_key("a/index.py", pagerank=1.0, conventional_stems=_CONV)
     assert conv < glue  # conventional name beats central glue regardless
+
+
+def test_manifest_tier_outranks_stem():
+    # A package.json ``bin`` target named ``run-it.ts`` five levels deep beats
+    # a shallow, highly central ``main.py`` and a shallow ``cli.ts`` guess.
+    declared = "packages/tool/src/commands/bin/run-it.ts"
+    candidates = [
+        ("main.py", 0.9, 0.9),
+        ("cli.ts", 0.5, 0.5),
+        (declared, 0.0, 0.0),
+    ]
+    ranked = rank_entry_points(candidates, _CONV, frozenset({declared}))
+    assert ranked[0] == declared
+    assert ranked[1:] == ["main.py", "cli.ts"]
+    # Within the tier the usual rules apply: a declared glue ``index`` sorts
+    # after a declared conventional name.
+    both = frozenset({"pkg/src/index.ts", "pkg/src/cli.ts"})
+    ranked = rank_entry_points(
+        [("pkg/src/index.ts", 0.9, 0.9), ("pkg/src/cli.ts", 0.0, 0.0), ("main.py", 0.0, 0.0)],
+        _CONV,
+        both,
+    )
+    assert ranked == ["pkg/src/cli.ts", "pkg/src/index.ts", "main.py"]
+
+
+def test_entry_stem_not_conventional():
+    # ``entry`` names a keyring's ``class Entry`` as often as a front door: it
+    # ranks neutral. ``run`` is a flag stem (dead-code exempt), never a
+    # ranking stem. Both keep the traverser flag.
+    from repowise.core.ingestion.traverser import _ENTRY_POINT_STEMS
+
+    assert "entry" not in conventional_entry_stems()
+    assert "run" not in conventional_entry_stems()
+    assert {"entry", "run"} <= _ENTRY_POINT_STEMS
+    stems = conventional_entry_stems()
+    ranked = rank_entry_points([("src/entry.ts", 0.9, 0.9), ("src/main.ts", 0.0, 0.0)], stems)
+    assert ranked == ["src/main.ts", "src/entry.ts"]
+    key = entry_point_rank_key("src/entry.ts", conventional_stems=stems)
+    assert key[1] == 1  # neutral name bucket

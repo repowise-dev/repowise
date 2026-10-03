@@ -185,9 +185,7 @@ derived.
 #### Step 1: Add a `LanguageSpec` module
 
 Language identity data lives in `languages/specs/`, **one module per language**.
-Create
-`packages/core/src/repowise/core/ingestion/languages/specs/mylang.py`
-exporting a single `SPEC`:
+Create a new module under `packages/core/src/repowise/core/ingestion/languages/specs/`, one module per language, exporting a single `SPEC`. For example, a new language can use a file named `mylang.py`:
 
 ```python
 """LanguageSpec for mylang."""
@@ -535,6 +533,9 @@ Two directions, deliberately separate:
   below the two same-class origins because the walk compares no signature and
   reads no visibility, so it can reach a method the language would not actually
   dispatch to. Gated on `_INHERITED_LANGUAGES`.
+  Python's `super().m()` walks the caller's C3 MRO instead and also emits
+  `self_inherited`; a base the repository does not declare ends the walk
+  unresolved, since it may declare `m` itself.
 - **Forward**: `dispatches_to`, a base method → an implementation that can
   answer for it. Named for what it asserts rather than for a heritage relation:
   the pass matches by method name and compares no signature, so it is a
@@ -562,7 +563,7 @@ remove. The distinctions that matter most when consuming the graph:
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
 
 Three derived sets are what consumers should read rather than re-deriving their
-own filter: `FILE_CODE_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
+own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
 `REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
 
 ### Flow termination

@@ -11,6 +11,11 @@ L2, between components at L3. This module does that aggregation:
     4. Drop self-loops — an edge from a container to itself is not useful
        to a viewer.
 
+Co-change edges are history, not a dependency, so they are left out unless a
+caller opts in to them as an overlay. Edges touching a configuration file
+(``tsconfig.json``, ``pyproject.toml``) are dropped: reading config is not a
+dependency between boxes.
+
 External-system edges are produced from file→``external:*`` edges where
 the target's ``external_system_id`` resolved to a row in the
 ``external_systems`` table.
@@ -25,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import ExternalSystemId, render
 from repowise.core.persistence import ExternalSystem, GraphEdge, GraphNode
+from repowise.core.support_paths import is_config_path
 
 from .labels import coupling_strength, relation_label
 from .models import Relation
@@ -54,6 +60,7 @@ async def aggregate_relations(
     *,
     file_to_external: dict[str, str] | None = None,
     edges: list[tuple[str, str, str]] | None = None,
+    include_co_changes: bool = False,
 ) -> list[Relation]:
     """Roll file→file edges up to box→box edges.
 
@@ -67,23 +74,23 @@ async def aggregate_relations(
         emitted (as box → external).
     edges:
         Pre-loaded rows from :func:`load_edges`. Omit to read them here.
+    include_co_changes:
+        Also roll up ``co_changes`` edges, as an overlay on the dependencies.
     """
     file_to_external = file_to_external or {}
     if edges is None:
         edges = await load_edges(session, repository_id)
 
-    # No edge-type filter here, and that is deliberate rather than an
-    # oversight. ``file_to_box`` is keyed on file paths only, so a containment
-    # edge cannot survive the two lookups below: ``defines`` is file → symbol
-    # and loses its target, ``has_method`` is symbol → symbol and loses its
-    # source. Measured across the 41 indexed corpus repos, excluding
-    # containment changes no relation, no count and no coupling band on any of
-    # them. Temporal edges do survive, and a "co-changes" arrow is a labeled
-    # relation this view means to draw (see ``_EDGE_VERB``), not leakage.
+    # No containment filter needed: ``file_to_box`` is keyed on file paths, so
+    # ``defines`` (file → symbol) and ``has_method`` (symbol → symbol) always
+    # lose an endpoint below. Co-change is filtered: it is history, not a
+    # dependency, and drawn only when the caller asks for the overlay.
     counts: dict[tuple[str, str], int] = defaultdict(int)
     types: dict[tuple[str, str], set[str]] = defaultdict(set)
 
     for src, tgt, etype in edges:
+        if etype == "co_changes" and not include_co_changes:
+            continue
         src_box = file_to_box.get(src)
         if src_box is None:
             continue
@@ -94,6 +101,8 @@ async def aggregate_relations(
         else:
             continue
         if src_box == tgt_box:
+            continue
+        if is_config_path(src) or is_config_path(tgt):
             continue
         key = (src_box, tgt_box)
         counts[key] += 1

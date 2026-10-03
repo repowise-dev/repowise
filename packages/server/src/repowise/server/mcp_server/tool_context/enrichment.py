@@ -27,11 +27,13 @@ from repowise.core.analysis.doc_drift.serialize import (
     collapse_reference_sites,
     documents_with_drift,
 )
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import id_segment_name
 from repowise.core.persistence.crud import (
     coverage_row_dict,
     doc_drift_references_stored,
@@ -55,7 +57,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
-from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_basis
+from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import (
@@ -64,6 +66,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     is_missing_table,
 )
+from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 #: Where a resolved target path waits between its card being built and the
@@ -194,7 +197,7 @@ async def _resolve_call_graph(
     node = await get_graph_node(session, repo_id, target)
     if node is None and "::" in target:
         # Fuzzy: try bare name
-        bare_name = target.split("::")[-1]
+        bare_name = id_segment_name(target.split("::")[-1])
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -218,7 +221,7 @@ async def _resolve_call_graph(
             if want_callees:
                 result_data["callees"] = []
                 result_data["callees_basis"] = await call_resolution_basis(
-                    session, repo_id, node.language, cache_key=basis_cache_key(repository)
+                    session, repo_id, node.language, cache_key=index_state_key(repository)
                 )
             return
         if want_callers:
@@ -400,7 +403,7 @@ async def _resolve_call_graph(
     for key in ("callers", "callees"):
         if key in result_data and not result_data[key]:
             result_data[f"{key}_basis"] = await call_resolution_basis(
-                session, repo_id, node.language, cache_key=basis_cache_key(repository)
+                session, repo_id, node.language, cache_key=index_state_key(repository)
             )
 
     if relations:
@@ -518,7 +521,7 @@ async def _resolve_file_level_callers(
     )
     if repository is not None and not result_data.get("callers"):
         result_data["callers_basis"] = await call_resolution_basis(
-            session, repo_id, node.language, cache_key=basis_cache_key(repository)
+            session, repo_id, node.language, cache_key=index_state_key(repository)
         )
 
 
@@ -695,6 +698,7 @@ async def _resolve_health(
             HealthFinding.repository_id == repo_id,
             HealthFinding.file_path == file_path,
             HealthFinding.status == "open",
+            HealthFinding.biomarker_type.not_in(excluded_types()),
         )
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)

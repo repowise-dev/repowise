@@ -20,7 +20,8 @@ best-effort step that already degrades gracefully.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -711,6 +712,7 @@ def run_partial_analysis(
         # execution closure so a changed caller can still see an unchanged sink
         # and an unchanged caller can react to a changed sink. The index is
         # built once; this is a multi-source walk, not one walk per finding.
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
@@ -731,6 +733,7 @@ def run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            community_label_map=file_community_labels(graph_builder),
             duplication_cache_dir=resolve_store_dir(repo_path),
             repo_root=repo_path,
             coverage_map=coverage_map,
@@ -825,6 +828,7 @@ def run_partial_analysis(
                     *getattr(_traversal_stats, "unknown_language_files", []),
                 )
             ],
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
         # Repo-wide, and persisted repo-wide. The detectors were always
         # repo-wide — the update path just discarded everything outside the
@@ -873,6 +877,23 @@ def run_partial_analysis(
     return partial_health_report, dead_code_report
 
 
+@dataclass(frozen=True)
+class DocDriftUpdate:
+    """What an update tells the drift pass about the change it is applying."""
+
+    base_ref: str | None = None
+    """The commit the update diffs from, to the working tree."""
+    changed_paths: tuple[str, ...] = ()
+    """Every path the update adds, edits, deletes or renames (both sides)."""
+    symbol_names: frozenset[str] | None = None
+    """The index's symbol names; ``None`` reads them from the graph."""
+
+    @classmethod
+    def from_file_diffs(cls, base_ref: str | None, file_diffs: Iterable[Any]) -> DocDriftUpdate:
+        paths = tuple(p for fd in file_diffs for p in (fd.path, fd.old_path) if p)
+        return cls(base_ref=base_ref, changed_paths=paths)
+
+
 def run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
@@ -880,6 +901,7 @@ def run_doc_drift_partial(
     repo_path: Any | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    update: DocDriftUpdate | None = None,
 ) -> Any | None:
     """Re-check the repository's own markdown on the incremental path.
 
@@ -887,6 +909,11 @@ def run_doc_drift_partial(
     :func:`run_partial_analysis`'s tuple, mirroring the full path where drift is
     its own phase. Returns ``None`` when the pass could not run, which the
     caller must treat as "write nothing".
+
+    The cheap kinds are re-derived for every document. Symbol references are
+    re-resolved only where *update* could have changed them (see
+    :class:`~repowise.core.analysis.doc_drift.symbols.SymbolRecheck`); the rest
+    carry forward in the store.
     """
     log = log or _noop_log
     if not source_map:
@@ -903,10 +930,12 @@ def run_doc_drift_partial(
             if not tracked_paths:
                 return None
 
+            root = Path(repo_path) if repo_path else None
             report = DocDriftAnalyzer(
                 source_map=source_map,
                 tracked_paths=tracked_paths,
-                repo_root=Path(repo_path) if repo_path else None,
+                repo_root=root,
+                symbols=_drift_symbol_options(graph_builder, root, update or DocDriftUpdate()),
             ).analyze()
             report.authoritative_paths = report.documents
             if report.total_findings:
@@ -915,6 +944,22 @@ def run_doc_drift_partial(
         except Exception as exc:
             log(f"[yellow]Doc drift analysis skipped: {exc}[/yellow]")
             return None
+
+
+def _drift_symbol_options(graph_builder: Any, root: Path | None, update: DocDriftUpdate) -> Any:
+    """The drift pass's symbol options for *update*; ``None`` without a working tree."""
+    from repowise.core.analysis.doc_drift.symbols import (
+        SymbolOptions,
+        graph_symbol_names,
+        symbol_recheck,
+    )
+
+    if root is None:
+        return None
+    names = update.symbol_names
+    if names is None:
+        names = graph_symbol_names(graph_builder.graph())
+    return SymbolOptions(names, symbol_recheck(root, update.base_ref, update.changed_paths))
 
 
 async def refresh_knowledge_graph(
@@ -1092,7 +1137,7 @@ async def refresh_unchanged_history(
         return 0
 
     findings_by_path: dict[str, list[Any]] = {}
-    for finding in await get_health_findings(session, repo_id):
+    for finding in await get_health_findings(session, repo_id, include_withheld=True):
         findings_by_path.setdefault(finding.file_path, []).append(finding)
 
     cfg = HealthConfig.load(repo_path)
@@ -1207,6 +1252,7 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
         "structure_deduction": refreshed.structure_deduction,
         "history_deduction": refreshed.history_deduction,
         "is_test": stored.is_test,
+        "code_origin": getattr(stored, "code_origin", None),
     }
 
 
@@ -1413,6 +1459,7 @@ async def persist_incremental_commits(
         session,
         repo_id,
         total_commit_count=totals.total_commit_count,
+        total_merge_commit_count=totals.total_merge_commit_count,
         first_commit_at=totals.first_commit_at,
         total_contributor_count=totals.total_contributor_count,
         first_commit_author=totals.first_commit_author,

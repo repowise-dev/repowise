@@ -98,7 +98,7 @@ def _git_ai_notes_log(repo: object, commit_limit: int | None) -> str:
 #: shape version it carries. Bump the version when ``_LOG_FORMAT`` or the
 #: record layout changes, so an older cache is re-walked rather than misread.
 _WINDOW_CACHE_NAME = "commit_window_cache.json"
-_WINDOW_CACHE_VERSION = 1
+_WINDOW_CACHE_VERSION = 2  # v2: records carry rename rows (explicit -M)
 
 
 def _record_ts(record: str) -> int:
@@ -170,8 +170,10 @@ def _log_records(repo: object, revisions: str) -> list[str]:
     """The non-empty raw ``--numstat`` log records git returns for *revisions*."""
     from .git_indexer import _LOG_FORMAT, _RECORD_SEP
 
+    # ``-M`` explicitly: the rename trail needs rename rows whatever the
+    # repository's ``diff.renames`` says.
     raw = repo.git.log(  # type: ignore[attr-defined]
-        revisions, "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
+        revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
     )
     return [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
 
@@ -282,6 +284,20 @@ def _resolved(
     return [(renames.resolve(target), added, deleted) for target, added, deleted in changes]
 
 
+def _pure_moves(
+    changes: list[tuple[str, int, int]],
+    moved: list[tuple[str, str]],
+    renames: RenameTrail | None,
+) -> set[str]:
+    """Paths (at HEAD) this commit only moved: a rename row with no lines changed."""
+    moved_to = {new_path for _old, new_path in moved}
+    return {
+        renames.resolve(target) if renames is not None else target
+        for target, added, deleted in changes
+        if target in moved_to and added == 0 and deleted == 0
+    }
+
+
 def _record_moves(renames: RenameTrail | None, moved: list[tuple[str, str]]) -> None:
     # Only after the commit's own paths are resolved (see RenameTrail).
     if renames is not None:
@@ -376,7 +392,11 @@ class _FileBuckets:
         self.records: dict[str, list[_CommitRec]] = {}
 
     def add(
-        self, header: dict, prov: AgentProvenance, changes: list[tuple[str, int, int]]
+        self,
+        header: dict,
+        prov: AgentProvenance,
+        changes: list[tuple[str, int, int]],
+        pure_moves: set[str],
     ) -> None:
         """File one commit under each of its changed paths that is tracked here."""
         from .git_indexer import _CommitRec
@@ -399,6 +419,7 @@ class _FileBuckets:
                         deleted=deleted,
                         agent=prov.agent,
                         agent_tier=prov.autonomy_tier,
+                        pure_move=target in pure_moves,
                     )
                 )
 
@@ -503,7 +524,12 @@ def load_commit_index(
         # agent-trace overlap check and the commit sink both need it.
         commit_changes, moved = _parse_numstat(numstat_lines)
         prov = labeler.label(header, commit_changes)
-        buckets.add(header, prov, _resolved(commit_changes, renames))
+        buckets.add(
+            header,
+            prov,
+            _resolved(commit_changes, renames),
+            _pure_moves(commit_changes, moved, renames),
+        )
         _record_moves(renames, moved)
 
     logger.debug(
@@ -579,6 +605,7 @@ def load_deep_commit_index(
         raw = repo.git.log(  # type: ignore[attr-defined]
             f"--skip={skip}",
             f"-{deep_limit}",
+            "-M",
             "--numstat",
             "--no-merges",
             f"--format={_LOG_FORMAT}",
@@ -597,13 +624,14 @@ def load_deep_commit_index(
     records = [record for record in raw.split(_RECORD_SEP) if record.strip()]
     for header, numstat_lines in _commits_after(records, None):
         commits_parsed += 1
-        changes, moved = _parse_numstat(numstat_lines)
-        changes = _resolved(changes, renames)
+        raw_changes, moved = _parse_numstat(numstat_lines)
+        changes = _resolved(raw_changes, renames)
+        pure_moves = _pure_moves(raw_changes, moved, renames)
         _record_moves(renames, moved)
         # Only commits touching a wanted file pay for provenance (the window
         # walk classifies every commit because the commit sink needs labels).
         if any(target in wanted_files for target, _, _ in changes):
-            buckets.add(header, labeler.label(header, changes), changes)
+            buckets.add(header, labeler.label(header, changes), changes, pure_moves)
 
     logger.debug(
         "deep_commit_index_built",

@@ -18,7 +18,17 @@ Clover layout (abbreviated):
 
 We trust the per-line elements over the ``<metrics>`` summary so coverage
 percentages match what gets highlighted in the dashboard. Branch coverage
-is derived from ``type="cond"`` lines (truecount + falsecount).
+is derived from ``type="cond"`` lines, whose two attributes mean one of two
+things depending on the writer:
+
+* evaluation counts (the original format): ``truecount`` / ``falsecount``
+  are how often the condition was true / false, so a line has two branches
+  and each is taken when its count is above zero;
+* branch counts: ``truecount`` is branches covered and ``falsecount``
+  branches not covered, so the line has ``truecount + falsecount``
+  branches. That writer marks its reports with a fixed
+  ``<project name="All files">`` and ``clover="3.2.0"`` on the root; both
+  must be present.
 """
 
 from __future__ import annotations
@@ -27,12 +37,22 @@ from pathlib import Path
 
 from .model import CoverageReport, FileCoverage, file_coverage, parse_xml
 
+#: The markers the branch-count writer always emits (see the module docstring).
+_BRANCH_COUNT_PROJECT = "All files"
+_BRANCH_COUNT_VERSION = "3.2.0"
+
 
 def parse_clover(text: str) -> CoverageReport:
     root = parse_xml(text)
     if root is None:
         return CoverageReport(source_format="clover", files=[])
 
+    project = root.find("project")
+    branch_counts = (
+        project is not None
+        and project.get("name") == _BRANCH_COUNT_PROJECT
+        and root.get("clover") == _BRANCH_COUNT_VERSION
+    )
     files: list[FileCoverage] = []
     for file_el in root.iter("file"):
         path = file_el.get("path") or file_el.get("name") or ""
@@ -43,6 +63,7 @@ def parse_clover(text: str) -> CoverageReport:
         coverable: set[int] = set()
         branches_found = 0
         branches_hit = 0
+        branch_lines: dict[int, tuple[int, int]] = {}
 
         for line in file_el.iter("line"):
             try:
@@ -64,8 +85,11 @@ def parse_clover(text: str) -> CoverageReport:
                     fc = int(line.get("falsecount", "0"))
                 except ValueError:
                     tc, fc = 0, 0
-                branches_found += 2
-                branches_hit += (1 if tc > 0 else 0) + (1 if fc > 0 else 0)
+                taken, total = (tc, tc + fc) if branch_counts else ((tc > 0) + (fc > 0), 2)
+                branches_found += total
+                branches_hit += taken
+                if total:
+                    branch_lines[line_no] = (taken, total)
 
         files.append(
             file_coverage(
@@ -74,6 +98,7 @@ def parse_clover(text: str) -> CoverageReport:
                 coverable,
                 branches_found=branches_found,
                 branches_hit=branches_hit,
+                branch_lines=branch_lines,
             )
         )
 

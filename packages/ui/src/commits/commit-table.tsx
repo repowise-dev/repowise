@@ -172,7 +172,7 @@ export function CommitTable({
     );
   }, [commits, search]);
 
-  if (commits.length === 0 && authorship === "all") {
+  if (commits.length === 0 && authorship === "all" && kind === "all") {
     return (
       <EmptyState
         title="No commits indexed"

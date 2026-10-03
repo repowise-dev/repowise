@@ -469,6 +469,14 @@ class ClaudeCodeTarget:
             if repo_path is None:
                 raise ValueError("project-scope uninstall needs a repo_path")
             result.record(*_remove_project_mcp_entry(project_mcp_config_path(repo_path)))
+            from repowise.cli.editor_integrations.claude_config import (
+                claude_code_local_settings_path,
+                set_repo_coverage_hook,
+            )
+
+            # The coverage re-ingest entries `coverage add` / init / update wrote.
+            if set_repo_coverage_hook(repo_path, False) is not None:
+                result.record(claude_code_local_settings_path(repo_path), FileAction.REMOVED)
             return result
 
         settings = settings_path()
@@ -518,7 +526,15 @@ class ClaudeCodeTarget:
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         if scope is Scope.PROJECT:
-            return [str(project_mcp_config_path(repo_path or Path.cwd()))]
+            from repowise.cli.editor_integrations.claude_config import (
+                claude_code_local_settings_path,
+            )
+
+            root = repo_path or Path.cwd()
+            return [
+                str(project_mcp_config_path(root)),
+                str(claude_code_local_settings_path(root)),
+            ]
         paths = [str(settings_path())]
         desktop = desktop_config_path()
         if desktop is not None:

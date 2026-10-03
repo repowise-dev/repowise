@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from .._shared import _BATCH_SIZE, _finding_file_path
 
@@ -370,6 +371,18 @@ async def get_refactoring_suggestion(
     return result.scalar_one_or_none()
 
 
+def shown_plan_predicate() -> Any:
+    """Plans whose source biomarker the finding registry does not withhold.
+
+    Plans are persisted whatever the registry says; every surface that lists
+    them filters here. A plan with no source biomarker (structural) is shown.
+    """
+    return or_(
+        RefactoringSuggestion.source_biomarker.is_(None),
+        RefactoringSuggestion.source_biomarker.not_in(excluded_types()),
+    )
+
+
 def _suggestion_filters(
     repository_id: str,
     *,
@@ -381,6 +394,7 @@ def _suggestion_filters(
     predicates: list[Any] = [
         RefactoringSuggestion.repository_id == repository_id,
         RefactoringSuggestion.status == status,
+        shown_plan_predicate(),
     ]
     if refactoring_type is not None:
         predicates.append(RefactoringSuggestion.refactoring_type == refactoring_type)
@@ -407,7 +421,8 @@ async def get_refactoring_suggestions(
 ) -> list[RefactoringSuggestion]:
     """Return refactoring suggestions, highest recovered impact first.
 
-    *limit* / *offset* page in SQL. Both default to ``None``, which returns the
+    Plans from a registry-withheld biomarker are left out
+    (:func:`shown_plan_predicate`). *limit* / *offset* page in SQL. Both default to ``None``, which returns the
     whole filtered set exactly as before, because the callers that still rank
     and page in memory have not been rewired yet (R4).
     """

@@ -158,6 +158,45 @@ class TestEnrichLayers:
         assert result.layers[5]["name"] == "heuristic-5"  # untouched by bad batch
 
     @pytest.mark.asyncio
+    async def test_names_stay_unique_across_batches(self):
+        # Batches are named independently; a name one batch already used must
+        # be offered as taken to the next and, if reused anyway, qualified.
+        layers = [
+            {"id": f"layer:l{i}", "name": f"heuristic-{i}", "description": "",
+             "nodeIds": [f"file:src/f{i}.py"]}
+            for i in range(6)
+        ]
+        nodes = [
+            {"id": f"file:src/f{i}.py", "type": "file", "filePath": f"src/f{i}.py", "summary": ""}
+            for i in range(6)
+        ]
+        responses = iter([
+            '{"layers": [{"id": "layer:l0", "name": "Shared Widgets", "description": "d"}]}',
+            '{"layers": [{"id": "layer:l5", "name": "shared widgets", "description": "d"}]}',
+            '{"tour": []}',
+        ])
+        prompts: list[str] = []
+
+        async def _side_effect(system, user, **kwargs):
+            prompts.append(user)
+            return SimpleNamespace(content=next(responses), input_tokens=1, output_tokens=1)
+
+        llm = AsyncMock()
+        llm.generate.side_effect = _side_effect
+
+        skeleton = _make_kg_skeleton(layers=layers, nodes=nodes)
+        result = await enrich_knowledge_graph(
+            skeleton, llm, _make_graph_builder(), _make_repo_structure(), []
+        )
+
+        assert "Names already given" not in prompts[0]
+        assert "Shared Widgets" in prompts[1]
+        assert result.layers[0]["name"] == "Shared Widgets"
+        assert result.layers[5]["name"] == "shared widgets (l5)"
+        names = [layer["name"].casefold() for layer in result.layers]
+        assert len(names) == len(set(names))
+
+    @pytest.mark.asyncio
     async def test_unknown_id_is_skipped(self):
         llm = _make_llm_client(
             '{"layers": [{"id": "layer:nonexistent", "name": "Ghost", "description": "x"}]}'

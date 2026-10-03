@@ -77,25 +77,29 @@ def resolve_rust_import(
             resolved = _follow_crate_root_reexport(crate_root, parts[1:], ctx)
         return resolved
 
-    # --- self:: — resolve from the current module's directory ---
-    if prefix == "self":
-        importer_dir = str(Path(importer_path).parent.as_posix())
-        return _probe_rust_path(importer_dir, parts[1:], frozen_path_set)
+    # --- self:: / super:: — resolve from the module tree, not the directory ---
+    if prefix in ("self", "super"):
+        hops = 0
+        while hops < len(parts) and parts[hops] == "super":
+            hops += 1
+        rest = parts[hops:] if hops else parts[1:]
+        resolved = _probe_module_relative(importer_path, hops, rest, frozen_path_set)
+        if resolved is not None or not rest:
+            return resolved
+        # Legacy base, one directory per hop above the importer's own: right
+        # for a crate root outside lib.rs/main.rs (``src/bin/x.rs``), whose
+        # children sit beside it rather than under ``x/``.
+        legacy = Path(importer_path).parent
+        for _ in range(hops):
+            legacy = legacy.parent
+        return _probe_rust_path(legacy.as_posix(), rest, frozen_path_set)
 
-    # --- super:: — resolve from the parent directory (supports chained super::super::) ---
-    if prefix == "super":
-        parent = Path(importer_path).parent
-        idx = 0
-        while idx < len(parts) and parts[idx] == "super":
-            parent = parent.parent
-            idx += 1
-        if not parts[idx:]:
-            return None
-        return _probe_rust_path(str(parent.as_posix()), parts[idx:], frozen_path_set)
-
-    # --- Single-segment bare identifier (e.g. from `mod foo;`) ---
-    # Probe the importer's directory first — `mod foo;` resolves relative
-    # to the declaring file, not the crate root.
+    # --- Bare path: `mod foo;` or a 2018 path through a child module ---
+    # A child module of the importer comes first: `mod foo;` and
+    # `use foo::Bar` both name the declaring module's own child.
+    resolved = _probe_rust_path(_rust_module_dir(importer_path), parts, frozen_path_set)
+    if resolved is not None:
+        return resolved
     if len(parts) == 1:
         importer_dir = str(Path(importer_path).parent.as_posix())
         resolved = _probe_rust_path(importer_dir, parts, frozen_path_set)
@@ -213,6 +217,56 @@ def _follow_crate_root_reexport(
         if resolved is not None and not resolved.startswith("external:"):
             return resolved
     return None
+
+
+_DIRECTORY_MODULE_FILES = ("mod.rs", "lib.rs", "main.rs")
+
+
+def _rust_module_dir(file_path: str) -> str:
+    """The directory holding the child modules of the module *file_path* defines.
+
+    ``mod.rs``, ``lib.rs`` and ``main.rs`` own their directory; any other
+    ``foo.rs`` owns ``foo/`` (the 2018 layout, ``foo.rs`` beside ``foo/bar.rs``).
+    """
+    path = Path(file_path)
+    if path.name in _DIRECTORY_MODULE_FILES:
+        return path.parent.as_posix()
+    return (path.parent / path.stem).as_posix()
+
+
+def _probe_module_relative(
+    importer_path: str, hops: int, rest: list[str], path_set: frozenset[str]
+) -> str | None:
+    """Resolve ``self::<rest>`` (no hops) or ``super::<rest>`` climbing *hops* modules.
+
+    A path that names an item of the ancestor module itself
+    (``super::Type``) lands on that module's own file.
+    """
+    base = Path(_rust_module_dir(importer_path))
+    for _ in range(hops):
+        base = base.parent
+    base_dir = base.as_posix()
+    if rest:
+        resolved = _probe_rust_path(base_dir, rest, path_set)
+        if resolved is not None:
+            return resolved
+    if not hops:
+        return None
+    for candidate in _module_files_of_dir(base_dir):
+        if candidate in path_set and candidate != importer_path:
+            return candidate
+    return None
+
+
+def _module_files_of_dir(module_dir: str) -> tuple[str, ...]:
+    """The files that can define the module whose children live in *module_dir*."""
+    roots = tuple(
+        f"{module_dir}/{name}" if module_dir not in (".", "") else name
+        for name in _DIRECTORY_MODULE_FILES
+    )
+    if module_dir in (".", ""):
+        return roots
+    return (f"{module_dir}.rs", *roots)
 
 
 @lru_cache(maxsize=4096)

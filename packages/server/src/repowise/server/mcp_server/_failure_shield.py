@@ -139,6 +139,50 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     }
 
 
+def is_stale_server_import(exc: BaseException) -> bool:
+    """True when a lazy import of repowise's own code failed.
+
+    A long-running server keeps the modules it loaded at start. When the
+    checkout moves under it, a module imported later comes from the new tree
+    and can ask for a name the old in-memory module lacks (``ImportError``),
+    or the old code can ask for a module the new tree removed
+    (``ModuleNotFoundError``). Both resolve on restart. A third-party import
+    failure is a missing dependency instead, so it keeps the generic shape.
+    """
+    name = getattr(exc, "name", None) or ""
+    return isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise."))
+
+
+def stale_server_notice(exc: BaseException) -> str:
+    """Plain explanation and next step for :func:`is_stale_server_import`."""
+    return (
+        "The MCP server is running older repowise code than this checkout "
+        f"({exc}). Restart the MCP server (or the editor session) and retry."
+    )
+
+
+def _shape_stale_server(exc: Exception) -> dict[str, Any]:
+    """Success-shaped response for a server whose loaded code predates the checkout."""
+    return {
+        "error": stale_server_notice(exc),
+        "remedy": (
+            "Restarting the MCP server is the user's step: ask them once. "
+            "The index itself is fine and needs no rebuild."
+        ),
+    }
+
+
+def _shape_broken_install(exc: Exception) -> dict[str, Any]:
+    """The same failure in a process that imported fresh: the install itself is broken."""
+    return {
+        "error": f"This repowise install is incomplete or mixed ({exc}).",
+        "remedy": (
+            "Reinstall repowise, or repair the environment it runs from, and "
+            "retry. That is the user's step: ask them once."
+        ),
+    }
+
+
 def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     """Success-shaped response for an unexpected internal failure."""
     return {
@@ -151,7 +195,8 @@ def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
+def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
+    """*long_running* is False for a process that imports fresh on every run (the CLI)."""
     if isinstance(exc, LookupError):
         if _NOT_INDEXED_MARKER in str(exc):
             return _shape_not_indexed()
@@ -162,6 +207,8 @@ def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
         return _shape_unknown_repo(exc)
     if _is_stale_index_error(exc):
         return _shape_stale_index(exc)
+    if is_stale_server_import(exc):
+        return _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
     return _shape_internal_error(tool, exc)
 
 

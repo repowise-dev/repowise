@@ -144,3 +144,82 @@ async def test_git_metadata_update_path(async_session):
     )
     assert len(rows) == 1
     assert rows[0].commit_count_30d == 7
+
+
+def _edge(source: str, confidence: float = 0.5) -> dict:
+    return {
+        "source_node_id": source,
+        "target_node_id": "t.py",
+        "edge_type": "imports",
+        "confidence": confidence,
+    }
+
+
+async def test_duplicate_key_across_a_flush_boundary_updates_one_row(async_session):
+    """A key repeated after its insert was flushed still lands one row, last wins."""
+    from repowise.core.persistence.crud._shared import _BATCH_SIZE
+
+    repo = await insert_repo(async_session)
+    edges = [_edge(f"s{i}.py") for i in range(_BATCH_SIZE + 10)]
+    edges.append(_edge("s0.py", confidence=0.9))
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    await async_session.commit()
+
+    rows = (await session_exec(async_session, repo.id)).scalars().all()
+    assert len(rows) == _BATCH_SIZE + 10
+    assert next(r for r in rows if r.source_node_id == "s0.py").confidence == 0.9
+
+
+async def test_inserted_rows_are_never_tracked_by_the_session(async_session):
+    """New rows go out as a bulk INSERT, not as session-held ORM objects.
+
+    Holding every inserted object pinned a whole table in memory at once; on a
+    1.8M-edge graph that was ~5 GiB on top of the run.
+    """
+    from repowise.core.persistence.crud._shared import _BATCH_SIZE
+
+    repo = await insert_repo(async_session)
+    total = _BATCH_SIZE * 3
+    await batch_upsert_graph_edges(async_session, repo.id, [_edge(f"s{i}.py") for i in range(total)])
+
+    assert not [o for o in async_session.identity_map.values() if isinstance(o, GraphEdge)]
+    assert len((await session_exec(async_session, repo.id)).scalars().all()) == total
+
+
+async def test_bulk_insert_writes_what_a_flush_would(async_session):
+    """Unset and None columns get their defaults; other Nones stay NULL."""
+    repo = await insert_repo(async_session)
+    await batch_upsert_graph_nodes(
+        async_session,
+        repo.id,
+        [{"node_id": "a.py", "language": None, "pagerank": None}, {"node_id": "b.py", "name": "B"}],
+    )
+    await async_session.commit()
+
+    rows = await _node_rows(async_session, repo.id)
+    a, b = rows["a.py"], rows["b.py"]
+    assert (a.node_type, a.language, a.pagerank, a.symbol_count) == ("file", "", 0.0, 0)
+    assert a.is_reachability_root is False and a.created_at is not None
+    assert a.name is None and b.name == "B"
+
+
+async def test_within_batch_duplicate_replays_the_update(async_session):
+    """A key repeated before its row is written merges like an update would."""
+    repo = await insert_repo(async_session)
+    await batch_upsert_graph_edges(
+        async_session, repo.id, [_edge("a.py", confidence=0.9), _edge("a.py", confidence=0.4)]
+    )
+    await async_session.commit()
+
+    rows = (await session_exec(async_session, repo.id)).scalars().all()
+    assert len(rows) == 1
+    # The edge update keeps the max confidence, as it did on the pending object.
+    assert rows[0].confidence == 0.9
+
+
+async def test_unknown_column_is_rejected(async_session):
+    import pytest
+
+    repo = await insert_repo(async_session)
+    with pytest.raises(TypeError):
+        await batch_upsert_graph_nodes(async_session, repo.id, [{"node_id": "a.py", "bogus": 1}])

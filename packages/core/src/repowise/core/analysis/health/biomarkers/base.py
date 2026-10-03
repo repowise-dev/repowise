@@ -71,6 +71,9 @@ class FileContext:
     # is the percent of NLOC covered by clones.
     clones: list[ClonePair] = field(default_factory=list)
     duplication_pct: float | None = None
+    # Source lines of this file and its clone partners, by repo path. Filled
+    # only for a test file with clones; a missing path means "not read".
+    clone_sources: dict[str, list[str]] = field(default_factory=dict)
     # Thin graph view exposing only ``has_edge``. ``None`` on test fixtures
     # that never construct a graph.
     graph_view: HasEdge | None = None

@@ -27,6 +27,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
@@ -159,7 +160,7 @@ def _commit_fields(
 ) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
-    top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
+    top_driver = risk.top_driver.label if risk and risk.top_driver else None
     return {
         "sha": r.sha,
         "short_sha": r.sha[:8],
@@ -628,7 +629,7 @@ async def get_ownership(
     one entry per tracked file.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = result.scalars().all()
 
     if granularity == "file":
@@ -647,15 +648,18 @@ async def get_ownership(
         for m in all_meta:
             modules.setdefault(top_level_module(m.file_path), []).append(m)
 
+        resolve = people_resolver(all_meta)
         entries = []
         for module_path, files in sorted(modules.items()):
-            owners: dict[str, int] = {}
-            for f in files:
-                if f.primary_owner_name:
-                    owners[f.primary_owner_name] = owners.get(f.primary_owner_name, 0) + 1
+            owners: Counter[str] = Counter(
+                resolve(f.primary_owner_name, f.primary_owner_email)
+                for f in files
+                if f.primary_owner_name
+            )
             if owners:
-                top_owner = max(owners, key=owners.get)  # type: ignore[arg-type]
-                owner_pct = owners[top_owner] / len(files)
+                top_key = max(owners, key=owners.__getitem__)
+                top_owner = resolve.display_name(top_key)
+                owner_pct = owners[top_key] / len(files)
             else:
                 top_owner = None
                 owner_pct = 0.0
@@ -831,7 +835,7 @@ async def get_git_summary(
     10) so an engineering leader can see the broader contributor surface.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = list(result.scalars().all())
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
@@ -841,13 +845,19 @@ async def get_git_summary(
         sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0 if all_meta else 0.0
     )
 
-    owners: dict[str, int] = {}
-    for m in all_meta:
-        if m.primary_owner_name:
-            owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
+    # One person is one owner, however many names and emails they commit under.
+    resolve = people_resolver(all_meta)
+    owners = Counter(
+        resolve(m.primary_owner_name, m.primary_owner_email)
+        for m in all_meta
+        if m.primary_owner_name
+    )
     total = len(all_meta) or 1
     top_owners = sorted(
-        [{"name": k, "file_count": v, "pct": v / total} for k, v in owners.items()],
+        [
+            {"name": resolve.display_name(k), "file_count": v, "pct": v / total}
+            for k, v in owners.items()
+        ],
         key=lambda x: x["file_count"],
         reverse=True,
     )[:top_owners_limit]

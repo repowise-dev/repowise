@@ -712,3 +712,37 @@ def test_cross_references_match_whole_tokens_not_substrings():
 
     assert [r["message"] for r in refs] == ["Invalidate auth cache on logout"]
     assert refs[0]["matched_terms"] == ["auth", "cache"]
+
+
+@pytest.mark.asyncio
+async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session, setup_mcp):
+    """A record naming only files gone at HEAD is history, not a binding rule."""
+    import json
+
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.server.mcp_server import get_why
+
+    path = "src/other/legacy.py"
+    records = [
+        DecisionRecord(
+            id=f"gone{flag}",
+            repository_id=setup_mcp,
+            title=f"Legacy rule {flag}",
+            rationale="why",
+            affected_files_json=json.dumps([path]),
+            source="pr",
+            artifacts_gone=flag,
+        )
+        for flag in (True, False)
+    ]
+    session.add_all(records)
+    await session.flush()
+    for record in records:
+        await accept_decision(session, record, accepter="test", evidence=["pr#1"])
+    await session.flush()
+
+    result = await get_why("why legacy", targets=[path])
+
+    governing = result["target_context"][path]["governing_decisions"]
+    assert [d["id"] for d in governing] == ["goneFalse"]

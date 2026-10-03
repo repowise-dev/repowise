@@ -45,6 +45,7 @@ import { formatNumber } from "../lib/format";
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { scoreBadgeClass } from "./tokens";
 import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 
 /** Below this, a file nothing reaches is worth leading with. */
 const AT_RISK_SCORE = 6;
@@ -260,6 +261,7 @@ function AddResolutionSection() {
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {COVERAGE_REPORT_FORMATS_LABEL}
         </p>
+        <CiHint command="repowise coverage check" checks="the lines each change touched" />
       </div>
     </OverviewSection>
   );

@@ -11,6 +11,7 @@ from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFI
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
+from repowise.server.mcp_server._code_rationale import repo_rationale
 from repowise.server.mcp_server._episodes import episode_evidence
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
@@ -21,6 +22,7 @@ from repowise.server.mcp_server._why_relevance import (
     redirect_for,
     redirect_when_served,
 )
+from repowise.server.mcp_server.tool_why.archaeology import question_commits
 from repowise.server.mcp_server.tool_why.basis import _has_archaeology
 from repowise.server.mcp_server.tool_why.caps import (
     _MAX_SEARCH_DECISIONS,
@@ -170,7 +172,11 @@ async def _why_no_match(
     return something, and serving them beside a redirect is padding.
 
     Named targets are the exception: their git archaeology and rationale
-    comments are evidence about the thing asked, as in path mode.
+    comments are evidence about the thing asked, as in path mode. With no
+    targets, the question itself is searched: strong-marker rationale comments
+    across the repository, else the commits carrying its terms. Both must clear
+    the same floor the records missed, and are served as evidence, never as a
+    decision.
     """
     result: dict[str, Any] = {
         "mode": "search",
@@ -189,6 +195,8 @@ async def _why_no_match(
         )
         if rationale:
             result["code_rationale"] = rationale
+    else:
+        result.update(await _question_lanes(ctx.path, query))
     await _hydrate_response_decision_evidence(ctx, result, all_decisions)
     await annotate_response_evidence_async(
         result, ctx.alias, all_decisions, repo_root=ctx.path
@@ -206,13 +214,32 @@ async def _why_no_match(
     served = _served_lanes(result)
     if served:
         result.pop("try_instead", None)
-        result.update(
-            redirect_when_served(served, f"get_why(targets={json.dumps(targets)})")
-        )
+        recall = f"get_why(targets={json.dumps(targets)})" if targets else None
+        result.update(redirect_when_served(served, recall))
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     if collector is not None:
         collector.attach(result)
     return result
+
+
+async def _question_lanes(repo_root: Any, query: str) -> dict[str, Any]:
+    """Rationale comments carrying *query*, else the commits that do, else nothing."""
+    rationale = await asyncio.to_thread(repo_rationale, repo_root, query)
+    if rationale:
+        return {"code_rationale": rationale}
+    commits = await asyncio.to_thread(question_commits, repo_root, query)
+    if not commits:
+        return {}
+    return {
+        "git_archaeology": {
+            "triggered": True,
+            "git_log": commits,
+            "summary": (
+                f"No recorded rationale for this question. {len(commits)} "
+                "commit(s) carry its terms: history, not a stated reason."
+            ),
+        }
+    }
 
 
 def _served_lanes(result: dict[str, Any]) -> list[str]:

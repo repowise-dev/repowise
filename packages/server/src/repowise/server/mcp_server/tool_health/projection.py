@@ -86,7 +86,8 @@ def _project(
     """
     if not req.only:
         return result
-    # Each kept list keeps its ``*_total`` siblings, so truncation stays visible.
+    # Each kept list keeps its ``*_total`` siblings, so truncation stays visible,
+    # and the scope its total is over, with what that scope left out.
     keep = (
         set(req.only_list)
         | _ALWAYS_KEPT
@@ -97,6 +98,8 @@ def _project(
                 f"{k}_total",
                 f"{k}_emitted",
                 f"{k}_reduced_reason",
+                f"{k}_scope",
+                f"{k}_hidden",
             )
         }
     )

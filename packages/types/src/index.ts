@@ -34,3 +34,5 @@ export * from "./health.js";
 export * from "./coupling.js";
 export * from "./stats.js";
 export * from "./refactoring.js";
+export * from "./fix-first.js";
+export * from "./agent-prompts.js";

@@ -97,15 +97,15 @@
   ],
   "detail_extra": [
     "analyzed_commit",
+    "found",
     "lifecycle_status",
-    "model_state",
-    "resolved"
+    "model_state"
   ],
   "unresolved_detail": [
     "detail",
+    "found",
     "model_state",
-    "opportunity_id",
-    "resolved"
+    "opportunity_id"
   ],
   "model_state": [
     "opportunity_id",

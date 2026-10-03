@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.registry import mcp_tool_registry
-from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
+from repowise.core.registry.tool_selection import LEAN_TOOLS
 
 DOC = Path(__file__).parents[4] / "docs" / "agent" / "MCP_TOOLS.md"
 

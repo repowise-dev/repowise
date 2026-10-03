@@ -63,11 +63,15 @@ def entry_point_rank_key(
     pagerank: float = 0.0,
     betweenness: float = 0.0,
     conventional_stems: frozenset[str] = frozenset(),
-) -> tuple[int, int, float, str]:
+    manifest_entries: frozenset[str] = frozenset(),
+) -> tuple[int, int, int, float, str]:
     """Sort key for an entry-point candidate (ascending tuple = better entry).
 
     Most significant component first:
 
+      0. **tier** — a file a package manifest names (``bin``, ``main``,
+         ``exports["."]``, a console script) is declared, not guessed, so it
+         outranks every filename guess.
       1. **name bucket** — a conventional entry name (``main``/``app``/``cli``/
          ``manage``/…) never loses to a generic glue stem (``index``/``mod``),
          and glue never outranks a real entry.
@@ -78,6 +82,7 @@ def entry_point_rank_key(
       4. **path** — deterministic final tiebreak.
     """
     return (
+        0 if path in manifest_entries else 1,
         _name_bucket(path, conventional_stems),
         entry_point_depth(path),
         -(pagerank + betweenness),
@@ -164,6 +169,7 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
 def rank_entry_points(
     candidates: list[tuple[str, float, float]],
     conventional_stems: frozenset[str],
+    manifest_entries: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Rank ``(path, pagerank, betweenness)`` candidates, best entry first."""
     return [
@@ -175,6 +181,7 @@ def rank_entry_points(
                 pagerank=c[1],
                 betweenness=c[2],
                 conventional_stems=conventional_stems,
+                manifest_entries=manifest_entries,
             ),
         )
     ]

@@ -604,3 +604,40 @@ async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_p
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.code_health.hotspot_trend == "declining"
+
+
+async def test_code_health_names_production_files_only(session, repo, tmp_path):
+    """The worst file and Fix first are a worklist: tests stay out."""
+    from repowise.core.persistence.crud import save_health_findings
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(
+        HealthFileMetric(
+            repository_id=repo.id, file_path="tests/test_a.py", score=1.0, nloc=10, is_test=True
+        )
+    )
+    await _add_metric(session, repo.id, "src/a.py", 4.0)
+    await save_health_findings(
+        session,
+        repo.id,
+        [
+            {
+                "file_path": path,
+                "biomarker_type": "brain_method",
+                "severity": "high",
+                "function_name": "f",
+                "line_start": 1,
+                "line_end": 130,
+                "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
+                "health_impact": 2.0,
+                "reason": "brain method",
+            }
+            for path in ("tests/test_a.py", "src/a.py")
+        ],
+    )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.worst_path == "src/a.py"
+    assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
+    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"

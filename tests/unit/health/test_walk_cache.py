@@ -155,11 +155,18 @@ def test_the_walk_itself_does_not_serve_a_ts_file_to_a_tsx_file(tmp_path: Path) 
     # revert to keying on the language tag fails here rather than passing.
     src = b'const C = () => <div>{label}</div>;\nit("t", () => { render(<C />); });\n'
     cache = HealthWalkCache(tmp_path, HEALTH_ANALYZER_VERSION)
-    analyzer = SimpleNamespace(read_source=lambda _p: src, _walk_cache=cache)
+    analyzer = SimpleNamespace(
+        read_source=lambda _p: src,
+        _walk_cache=cache,
+        _origins={},
+        _origin=lambda _pf, _source=None: "production",
+    )
 
     def parsed(name: str):
         return SimpleNamespace(
-            file_info=SimpleNamespace(abs_path=str(tmp_path / name), language="typescript")
+            file_info=SimpleNamespace(
+                path=name, abs_path=str(tmp_path / name), language="typescript"
+            )
         )
 
     vocab = AssertVocabulary()

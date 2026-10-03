@@ -31,7 +31,7 @@ def _render_plans(
     validation_profiles: dict[str, dict[str, Any]] = {}
     plan_payload = []
     for recommendation in pager.bound(
-        recommendations, "refactoring_plans", cap=min(req.limit, 6)
+        recommendations, "refactoring_plans", cap=req.plans_cap
     ):
         payload = _serialize_refactoring(recommendation, data.reference_repository)
         validation = payload.pop("validation", None)

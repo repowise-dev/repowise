@@ -19,8 +19,8 @@ Algorithm (all signals from ``ctx.graph``):
   1. direct intra-file call (A calls B) -> ``w = 3`` — they belong together;
   2. co-change affinity (A and B's line ranges are touched by overlapping
      commits) -> ``w = 2 x Jaccard(commits_a, commits_b)`` — "these always
-     change together, keep them together". Read from the file's blame index
-     at zero index cost; absent when no ``blame_index`` is threaded in.
+     change together, keep them together". Read from the per-function
+     commit sets in ``ctx.commit_spans``; absent when there are none.
   3. shared local helper (A and B both call a third local symbol) ->
      ``w = 2`` per shared helper — cohesion without a direct A<->B edge;
   4. shared external-import surface (A and B lean on the same *imported
@@ -49,7 +49,7 @@ need a back-compat re-export shim, surfaced as ``shim_required``.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
@@ -132,6 +132,16 @@ def _is_generated_path(path: str) -> bool:
 
 def _is_skippable_path(path: str, language: str | None = None) -> bool:
     return is_test_related_path(path, language) or _is_generated_path(path)
+
+
+def may_split(path: str, language: str | None, line_count: int, top_level_symbols: int) -> bool:
+    """A necessary condition for a plan, from what a parse knows: lets a caller
+    skip work only a candidate file needs."""
+    return (
+        not _is_skippable_path(path, language)
+        and line_count >= _MIN_FILE_NLOC
+        and top_level_symbols >= _MIN_SYMBOLS
+    )
 
 
 def _line_range(data: dict) -> tuple[int, int] | None:
@@ -234,11 +244,21 @@ def _label_identifier(label: str) -> str:
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in seg).strip("_")
 
 
+# Every C++ function in a project with a precompiled header calls into it, so
+# it wins the vote and names nothing; ``pch.cpp`` is also the file that builds it.
+_PRECOMPILED_HEADER_STEMS = frozenset({"pch", "stdafx", "precomp", "precompiled"})
+
+
 def _module_label(
     foreign_of: dict[str, set[str]], members: list[str], self_segments: set[str]
 ) -> str:
     """The group's most-called foreign module label as a file name, or ``""``."""
-    labels = Counter(lab for m in members for lab in foreign_of.get(m, set()))
+    labels = Counter(
+        lab
+        for m in members
+        for lab in foreign_of.get(m, set())
+        if _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
+    )
     if not labels:
         return ""
     best = min(labels, key=lambda lab: (-labels[lab], lab))
@@ -607,7 +627,7 @@ class SplitFileDetector(RefactoringDetector):
     ) -> RefactoringSuggestion:
         groups = self._shape_groups(ctx, fg, partition.groups)
         residual = (
-            {"symbols": sorted(self._sym_name(fg.defined, m) for m in partition.residual)}
+            {"symbols": self._sym_names(fg.defined, partition.residual)}
             if partition.residual
             else None
         )
@@ -689,23 +709,21 @@ class SplitFileDetector(RefactoringDetector):
         defined: dict[str, dict],
         cluster_nodes: list[str],
     ) -> dict[str, set[str]]:
-        """Project each node's ``(start_line, end_line)`` through the file's
-        blame index to its set of touching commits — the raw material for the
-        co-change edge. Empty (the documented "no signal" outcome) when no
-        ``blame_index`` was threaded in or the index has no coverage."""
-        idx = ctx.blame_index
-        if idx is None or not getattr(idx, "lines", None):
-            return {}
-        try:
-            from repowise.core.ingestion.git_indexer.function_blame import (
-                distinct_commits_in_range,
-            )
-        except Exception:
+        """Each node's commits: the union of the function commit sets whose
+        span overlaps the node's, so a class collects its methods. The raw
+        material for the co-change edge; empty (the "no signal" outcome) when
+        the context carries no commit spans."""
+        if not ctx.commit_spans:
             return {}
         out: dict[str, set[str]] = {}
         for nid in cluster_nodes:
             span = _line_range(defined.get(nid, {}))
-            commits = distinct_commits_in_range(idx, *span) if span else None
+            if span is None:
+                continue
+            commits: set[str] = set()
+            for start, end, shas in ctx.commit_spans:
+                if start <= span[1] and end >= span[0]:
+                    commits |= shas
             if commits:
                 out[nid] = commits
         return out
@@ -753,7 +771,7 @@ class SplitFileDetector(RefactoringDetector):
             groups.append(
                 {
                     "name": label or None,
-                    "symbols": sorted(self._sym_name(fg.defined, m) for m in members),
+                    "symbols": self._sym_names(fg.defined, members),
                     "suggested_file": suggested,
                 }
             )
@@ -784,6 +802,11 @@ class SplitFileDetector(RefactoringDetector):
     @staticmethod
     def _sym_name(defined: dict[str, dict], sid: str) -> str:
         return defined.get(sid, {}).get("name") or sid.rsplit("::", 1)[-1]
+
+    @classmethod
+    def _sym_names(cls, defined: dict[str, dict], sids: Iterable[str]) -> list[str]:
+        """Sorted bare names, each once: overloads are separate ids with one name."""
+        return sorted({cls._sym_name(defined, sid) for sid in sids})
 
     def _blast_radius(
         self, ctx: RefactoringContext, defined: dict[str, dict], *, shim_required: bool

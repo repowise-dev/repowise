@@ -4,8 +4,8 @@ Most languages can determine visibility from a symbol's name + modifier
 text alone (the ``visibility_fn`` shape). Some cannot, because the answer
 depends on surrounding AST context — C/C++ ``public:`` / ``private:``
 access specifier siblings, ``static`` storage class at file scope and
-``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
-differs by enclosing declaration; TS/JS export position; Rust's
+``__declspec(dllexport)`` attributes; the C# and Java no-modifier
+defaults, which differ by enclosing declaration; TS/JS export position; Rust's
 trait items, which may not write a modifier of their own. Each has a
 ``refine_*_visibility`` the parser calls after the generic
 ``visibility_fn``.
@@ -31,9 +31,10 @@ def py_visibility(name: str, _mods: list[str]) -> str:
     return "public"
 
 
-def ts_visibility(_name: str, mods: list[str]) -> str:
+def ts_visibility(name: str, mods: list[str]) -> str:
     mods_lower = [m.lower() for m in mods]
-    if "private" in mods_lower:
+    # ``#x`` is an ECMAScript private member: private without any modifier.
+    if "private" in mods_lower or name.startswith("#"):
         return "private"
     if "protected" in mods_lower:
         return "protected"
@@ -58,12 +59,20 @@ def rust_visibility(_name: str, mods: list[str]) -> str:
 
 
 def java_visibility(_name: str, mods: list[str]) -> str:
+    """Java visibility; no access keyword is package-private, recorded ``internal``.
+
+    That default is the top-level type one. Interface members and enum
+    constructors default differently, which ``refine_java_visibility``
+    corrects from the AST.
+    """
     combined = " ".join(mods).lower()
     if "private" in combined:
         return "private"
     if "protected" in combined:
         return "protected"
-    return "public"
+    if "public" in combined:
+        return "public"
+    return "internal"
 
 
 def public_by_default(_name: str, _mods: list[str]) -> str:
@@ -376,6 +385,41 @@ def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Java node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+_JAVA_ACCESS_KEYWORDS = ("private", "protected", "public")
+
+# Members of these bodies are implicitly public (JLS 9.4, 9.5, 9.6).
+_JAVA_PUBLIC_BODIES = frozenset({"interface_body", "annotation_type_body"})
+
+
+def refine_java_visibility(def_node: Node) -> str:
+    """Give a Java declaration the access it writes, else its scope's default.
+
+    Read from the AST because the query's modifier-less pattern matches first
+    and the parser keeps the first match, so ``private class X`` reaches
+    ``java_visibility`` with no modifier text at all. With no access keyword a
+    declaration is package-private, except that interface and annotation
+    members are public and an enum constructor is private.
+    """
+    modifiers = next((c for c in def_node.children if c.type == "modifiers"), None)
+    if modifiers is not None:
+        written = {c.type for c in modifiers.children}
+        for keyword in _JAVA_ACCESS_KEYWORDS:
+            if keyword in written:
+                return keyword
+    body = def_node.parent
+    if body is None:
+        return "internal"
+    if body.type in _JAVA_PUBLIC_BODIES:
+        return "public"
+    if def_node.type == "constructor_declaration" and body.type == "enum_body_declarations":
+        return "private"
+    return "internal"
+
+
+# ---------------------------------------------------------------------------
 # Rust node-aware visibility refinement
 # ---------------------------------------------------------------------------
 
@@ -565,6 +609,16 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     return False
 
 
+def _in_anonymous_namespace(def_node: Node) -> bool:
+    """Return True if an unnamed ``namespace { ... }`` encloses the def."""
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type == "namespace_definition" and ancestor.child_by_field_name("name") is None:
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
 def _has_file_scope_static(def_node: Node, src: str) -> bool:
     """Return True if a ``static`` storage-class specifier appears in the leading declarators."""
     for child in def_node.children[:4]:
@@ -590,7 +644,8 @@ def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> 
         ``private`` (the C++ class default) — ``struct`` defaults to
         ``public``.
       * Free function at namespace / file scope with ``static`` storage
-        class → ``private`` (translation-unit local; not importable).
+        class, or anything in an anonymous namespace → ``private``
+        (translation-unit local; not importable).
       * ``__declspec(dllexport)`` or ``__attribute__((visibility("default")))``
         → forces ``public`` and sets ``is_exported = True`` so a future
         "exported entry point" check can whitelist it.
@@ -609,8 +664,9 @@ def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> 
         # No access specifier — use the enclosing aggregate's default.
         return _enclosing_class_default_access(def_node), False
 
-    # 3. File-scope ``static`` is translation-unit local.
-    if _has_file_scope_static(def_node, src):
+    # 3. File-scope ``static`` and an anonymous namespace are both internal
+    # linkage: translation-unit local.
+    if _has_file_scope_static(def_node, src) or _in_anonymous_namespace(def_node):
         return "private", False
 
     return current_visibility, False

@@ -177,6 +177,10 @@ def _refresh_editor_stamp(
         # but a stale CLAUDE.md stamp is worth an honest mention.
         if degraded is not None:
             degraded.append(f"Editor file refresh: {exc}")
+    # This run may have stored coverage (or the flag changed): keep the hook in step.
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+    sync_repo_hook(repo_path, console)
 
 
 def _surface_release_news(*, written_by: str | None) -> None:
@@ -1495,7 +1499,12 @@ def run_update(
         timings=timings,
     )
     doc_drift_report = _run_doc_drift_partial(
-        graph_builder, source_map, repo_path=repo_path, timings=timings
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        timings=timings,
+        base_ref=base_ref,
+        file_diffs=file_diffs,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -1651,6 +1660,7 @@ def run_update(
                             target_path=page.target_path,
                             summary=page.summary,
                             content=page.content,
+                            page_metadata=page.metadata,
                         )
                     )
                     is not None

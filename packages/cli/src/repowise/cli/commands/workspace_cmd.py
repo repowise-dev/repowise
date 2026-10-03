@@ -804,14 +804,7 @@ def _generate_docs_for_added_repo(
             await upsert_pages_from_generated(session, pages, repo.id)
         fts = FullTextSearch(engine)
         await fts.ensure_index()
-        for p in pages:
-            await fts.index(
-                p.page_id,
-                p.title,
-                p.content,
-                summary=p.summary,
-                target_path=p.target_path,
-            )
+        await fts.index_pages(pages)
         await engine.dispose()
         return len(pages)
 

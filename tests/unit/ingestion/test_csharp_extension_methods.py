@@ -264,7 +264,8 @@ class TestRefusals:
         assert "Dup" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
     def test_an_overload_set_is_not_ambiguous(self, tmp_path: Path) -> None:
-        """Every overload in one class shares a symbol id, so the pair survives."""
+        """An overload set is indexed once, so the pair survives and the call
+        narrows to the member its arguments admit."""
         files = {
             "src/Order.cs": ORDER,
             "src/Ext.cs": (
@@ -278,4 +279,4 @@ class TestRefusals:
             ),
         }
         found = _resolve(tmp_path, files, "src/Consumer.cs")
-        assert found["Net"] == ("receiver_extension_global", 0.75)
+        assert found["Net#1"] == ("receiver_extension_global", 0.75)

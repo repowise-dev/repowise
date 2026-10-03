@@ -30,6 +30,8 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...entry_candidacy import is_reachability_root
+
 
 def _pkg_dir(node: str) -> str:
     """Repo-relative POSIX directory of a ``.go`` file ("" = repo root)."""
@@ -70,7 +72,7 @@ def is_go_file_reachable(
             continue
         if graph.in_degree(sibling) > 0:
             return True
-        if graph.nodes.get(sibling, {}).get("is_entry_point", False):
+        if is_reachability_root(graph.nodes.get(sibling, {})):
             return True
 
     return False

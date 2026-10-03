@@ -6,10 +6,12 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -35,6 +37,16 @@ from ._shared import (
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
 # ---------------------------------------------------------------------------
+
+
+def code_file_rows(repository_id: str) -> ColumnElement[bool]:
+    """``where`` clause for a repository's code-file git rows.
+
+    Repo-wide ownership, bus-factor and module rollups count only these: a
+    ``history_only`` row (a doc or config file) carries commit counts, not
+    ownership signal.
+    """
+    return and_(GitMetadata.repository_id == repository_id, GitMetadata.history_only.is_(False))
 
 
 async def upsert_git_metadata(
@@ -239,17 +251,53 @@ async def upsert_git_metadata_bulk(
         item_key_fn=lambda meta: meta.get("file_path", ""),
         row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
-        insert_fn=lambda meta: GitMetadata(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in meta.items()
-                if k not in ("id", "repository_id") and hasattr(GitMetadata, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitMetadata, repository_id),
         batch_size=_BATCH_SIZE,
     )
+
+
+def split_blame_line_shares(connection: Connection) -> int:
+    """Move blame line shares stored as commit shares into ``primary_owner_line_pct``.
+
+    Before that column existed, blame overwrote ``primary_owner_commit_pct``
+    with the blame owner's share of current lines, and a file without new
+    commits is never re-walked to fix it. Such a row is recognisable from its
+    own stored data: the value is not the owner's share of the file's commits
+    per ``top_authors_json`` / ``commit_count_total``. Those rows get the value
+    as their line share and the owner's commit share (None when they have no
+    counted commits); every other row, including all commit-only rows, is left
+    alone. Sync so both Alembic and the SQLite schema reconciler can run it,
+    once, when the column is added. Returns the number of rows moved.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT id, primary_owner_name, primary_owner_commit_pct, commit_count_total, "
+            "top_authors_json FROM git_metadata "
+            "WHERE primary_owner_commit_pct IS NOT NULL AND primary_owner_line_pct IS NULL"
+        )
+    ).all()
+    moves: list[dict] = []
+    for row_id, owner, stored_pct, total, authors_json in rows:
+        try:
+            authors = json.loads(authors_json or "[]")
+        except ValueError:
+            continue
+        if not authors or not total:
+            continue  # nothing to check the value against
+        own = next((a.get("commit_count", 0) for a in authors if a.get("name") == owner), 0)
+        commit_pct = own / total if own else None
+        if commit_pct is not None and abs(commit_pct - stored_pct) < 1e-9:
+            continue
+        moves.append({"id": row_id, "line_pct": stored_pct, "commit_pct": commit_pct})
+    if moves:
+        connection.execute(
+            text(
+                "UPDATE git_metadata SET primary_owner_line_pct = :line_pct, "
+                "primary_owner_commit_pct = :commit_pct WHERE id = :id"
+            ),
+            moves,
+        )
+    return len(moves)
 
 
 async def recompute_git_percentiles(
@@ -274,6 +322,9 @@ async def recompute_git_percentiles(
     whole table instead gives a file a different percentile here than the
     Python path gives it, and a gate at 0.80 turns that into findings that
     appear and disappear on an unchanged tree.
+
+    Every ranking is over code rows: ``history_only`` rows (non-code files)
+    carry counts and authors but no rank, and read 0 / not-a-hotspot.
 
     Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
     the repo-relative top-quartile gate AND the absolute activity floors —
@@ -302,33 +353,37 @@ WITH ranked AS (
       ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
     ) AS prank
   FROM git_metadata
-  WHERE repository_id = :repo_id
+  WHERE repository_id = :repo_id AND NOT history_only
 ),
 entropy_ranked AS (
   SELECT id,
     (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
-         WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
   FROM git_metadata
-  WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(change_entropy, 0.0) > 0.0
 ),
 scatter_ranked AS (
   SELECT id,
     (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
-         WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
   FROM git_metadata
-  WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(co_change_mass, 0.0) > 0.0
 ),
 defect_ranked AS (
   SELECT id,
     PERCENT_RANK() OVER (ORDER BY COALESCE(prior_defect_count, 0)) AS drank
   FROM git_metadata
-  WHERE repository_id = :repo_id
+  WHERE repository_id = :repo_id AND NOT history_only
 )
 UPDATE git_metadata
-SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
-    is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
+SET churn_percentile = COALESCE(
+      (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0),
+    is_hotspot = (COALESCE((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0)
+                  >= 0.75
                   AND git_metadata.commit_count_90d >= :min_commits_90d
                   AND (git_metadata.commit_count_90d >= :high_commits_90d
                        OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
@@ -845,6 +900,37 @@ async def get_git_function_mod_counts(session: AsyncSession, repository_id: str)
         )
     )
     return [int(mod_count) for (mod_count,) in result.all()]
+
+
+async def get_function_commit_shas(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, int, int, list[str]]]]:
+    """Each file's stored ``(name, start_line, end_line, shas)`` commit sets.
+
+    One query for the repository. Rows written before the column existed carry
+    no set and are left out.
+    """
+    result = await session.execute(
+        select(
+            GitFunctionBlame.file_path,
+            GitFunctionBlame.function_name,
+            GitFunctionBlame.start_line,
+            GitFunctionBlame.end_line,
+            GitFunctionBlame.commit_shas_json,
+        ).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.commit_shas_json.isnot(None),
+        )
+    )
+    out: dict[str, list[tuple[str, int, int, list[str]]]] = {}
+    for path, name, start, end, raw in result.all():
+        try:
+            shas = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(shas, list) and shas:
+            out.setdefault(path, []).append((name, start, end, [str(s) for s in shas]))
+    return out
 
 
 async def get_git_function_blame(

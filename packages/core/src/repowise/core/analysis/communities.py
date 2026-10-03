@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 import networkx as nx
 import structlog
@@ -678,6 +679,28 @@ def detect_file_communities(
     )
 
     return file_assignment, communities_info, algorithm
+
+
+def file_community_labels(graph_builder: Any) -> dict[str, str]:
+    """``{file path: community label}`` off *graph_builder*'s cached file communities.
+
+    The refactoring detectors key foreign modules by this label, so every path
+    that writes refactoring plans (init, update, re-score, ``repowise health``)
+    must pass the same map or the same file gets a different plan. Empty when
+    community detection fails.
+    """
+    try:
+        assignment = graph_builder.community_detection()
+        info = graph_builder.community_info()
+    except Exception as exc:
+        log.debug("file_community_labels_failed", error=str(exc))
+        return {}
+    labels: dict[str, str] = {}
+    for node_id, community_id in assignment.items():
+        label = getattr(info.get(community_id), "label", None)
+        if label:
+            labels[node_id] = label
+    return labels
 
 
 # ---------------------------------------------------------------------------

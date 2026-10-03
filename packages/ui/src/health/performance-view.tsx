@@ -155,7 +155,7 @@ export function PerformanceView({
     // Both branches of the detail carry an id, so the discriminant decides:
     // an id from a retired model resolves to a state, not to a cause, and
     // opening a drawer on it would render an empty panel.
-    if (linked?.resolved) setSelected(linked);
+    if (linked?.found) setSelected(linked);
   }, [linked]);
 
   if (!load) return <LegacyPerformanceFindings adapter={adapter} />;
@@ -199,6 +199,12 @@ export function PerformanceView({
       sub: `of ${summary.total.toLocaleString()} causes`,
     },
   ];
+  // A zero does not lead: when nothing is proven safe, the ribbon opens on
+  // what there is, and "Plan ready: 0" still reads, just not first.
+  if (!summary.actionability?.plan_ready) {
+    const first = stats.shift();
+    if (first) stats.push(first);
+  }
 
   return (
     <div className="space-y-8">
@@ -312,10 +318,10 @@ export function PerformanceView({
         />
       </section>
 
-      {pendingId && (linkError || linked?.resolved === false) ? (
+      {pendingId && (linkError || linked?.found === false) ? (
         <LinkedCauseUnavailable
           opportunityId={pendingId}
-          detail={linked && !linked.resolved ? linked.detail : null}
+          detail={linked && !linked.found ? linked.detail : null}
           onDismiss={() => onOpenOpportunityChange?.(null)}
         />
       ) : null}

@@ -103,6 +103,7 @@ async def health_coverage(
     )
     if summary.get("ingested_at") is not None:
         summary = {**summary, "ingested_at": summary["ingested_at"].isoformat()}
+    history = await _history_block(session, repo_id, badge=bool(file_path) or module_limit == 0)
 
     if file_path:
         # The one caller that wants the covered-line set, for one file.
@@ -158,6 +159,7 @@ async def health_coverage(
                 "modules": module_rows[:module_limit] if module_limit else [],
                 "modules_total": len(module_rows),
                 "inferred": inferred["inferred"],
+                **history,
             }
 
     return {
@@ -166,7 +168,19 @@ async def health_coverage(
         "files": files,
         "modules": module_rows[:module_limit] if module_limit else [],
         "modules_total": len(module_rows),
+        **history,
     }
+
+
+async def _history_block(session: AsyncSession, repo_id: str, *, badge: bool) -> dict[str, Any]:
+    """One point per ingested report, oldest first; measured basis only.
+
+    Left off the one-file and no-module reads (the tab badge), which never
+    draw it.
+    """
+    if badge:
+        return {}
+    return {"history": await crud.load_coverage_history(session, repo_id)}
 
 
 async def _inferred_coverage(
@@ -332,8 +346,10 @@ async def health_tests_reaching(
     }
 
 
-def _read_change(local_path: str, base: str, head: str) -> tuple[dict[str, set[int]], str, str]:
-    """``(changed lines, label, head sha)`` for ``base...head``; git only, run off the loop."""
+def _read_change(
+    local_path: str, base: str, head: str
+) -> tuple[dict[str, set[int]], str, str, str]:
+    """``(changed lines, label, head sha, merge-base sha)`` for ``base...head``; git only."""
     import subprocess
 
     from repowise.core import git_refs
@@ -347,7 +363,12 @@ def _read_change(local_path: str, base: str, head: str) -> tuple[dict[str, set[i
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git timed out reading the change") from exc
-    return changed, label, git_refs.resolve(local_path, head)
+    return (
+        changed,
+        label,
+        git_refs.resolve(local_path, head),
+        git_refs.change_base(local_path, label),
+    )
 
 
 @router.get(
@@ -363,12 +384,53 @@ async def health_coverage_patch(
     """Patch coverage of ``base...head`` from the coverage the index stores.
 
     The computation ``repowise coverage check`` gates on. ``null`` when no
-    coverage has been ingested, which is not the same as 0%.
+    coverage has been ingested, which is not the same as 0%. Honours
+    ``coverage.ignore`` and judges the path-scoped gates in ``coverage.gates``
+    (with ``coverage.min_coverable_lines``) on current coverage and valid
+    config; the whole-change threshold stays with the CLI gate. Each file row
+    carries its risk, from the index and the checkout's git history, and the
+    test to extend per uncovered range. ``project`` compares the ingest
+    measured at the merge-base with the current one, when both exist.
     """
-    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+    from sqlalchemy.exc import SQLAlchemyError
 
-    changed, label, head_sha = await asyncio.to_thread(_read_change, repo.local_path, base, head)
-    patch = await stored_patch_coverage(
-        session, repo.id, changed, label=label, head_commit=head_sha or None
+    from repowise.core.analysis.health.coverage import configured_coverage
+    from repowise.core.analysis.patch_coverage import (
+        assess_risks,
+        attach_hints,
+        attach_history_delta,
+        attach_risk,
+        read_git_fix_history,
+        read_index_facts,
+        read_test_hints,
+        stored_patch_coverage,
     )
-    return PatchCoverageResponse.model_validate(patch.to_dict()) if patch is not None else None
+
+    changed, label, head_sha, base_sha = await asyncio.to_thread(
+        _read_change, repo.local_path, base, head
+    )
+    patch = await stored_patch_coverage(
+        session,
+        repo.id,
+        changed,
+        label=label,
+        head_commit=head_sha or None,
+        config=configured_coverage(repo.local_path),
+    )
+    if patch is None:
+        return None
+    patch = await attach_history_delta(session, repo.id, patch, base_sha or None)
+    paths = [f.file_path for f in patch.files]
+    try:
+        index = await read_index_facts(session, repo.id, paths)
+    except SQLAlchemyError:
+        index = {}
+    # Advice: a failed read is logged inside and leaves hints null.
+    hints = await read_test_hints(
+        session, repo.id, patch, repo_path=repo.local_path, head_commit=head_sha or None
+    )
+    if hints is not None:
+        patch = attach_hints(patch, hints)
+    git = await asyncio.to_thread(read_git_fix_history, repo.local_path, f"{base}...{head}")
+    patch = attach_risk(patch, assess_risks(paths, git, index))
+    return PatchCoverageResponse.model_validate(patch.to_dict())

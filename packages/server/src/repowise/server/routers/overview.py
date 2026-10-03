@@ -32,6 +32,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     Page,
 )
+from repowise.core.stats_highlights import file_mix
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services.attention import build_attention
@@ -286,7 +287,7 @@ async def overview_summary(
     # /ownership?granularity=module aggregation the page used to fetch).
     owner_rows = await session.execute(
         select(GitMetadata.file_path, GitMetadata.primary_owner_name).where(
-            GitMetadata.repository_id == repo_id
+            crud.code_file_rows(repo_id)
         )
     )
     module_owner_files: dict[str, dict[str, int]] = {}
@@ -297,23 +298,24 @@ async def overview_summary(
         if owner:
             bucket = module_owner_files.setdefault(module, {})
             bucket[owner] = bucket.get(owner, 0) + 1
-    module_count = len(module_file_totals)
     silo_count = 0
     for module, owners in module_owner_files.items():
         top = max(owners.values(), default=0)
         if module_file_totals.get(module) and top / module_file_totals[module] > 0.8:
             silo_count += 1
 
-    # --- Language distribution (server-side; replaces the full graph export)
-    lang_rows = await session.execute(
-        select(GraphNode.language, func.count(GraphNode.id))
-        .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
-        .group_by(GraphNode.language)
+    # Languages and module count come from the one rule Stats uses, so the two
+    # pages cannot disagree on either number.
+    # One narrow row per file node, not a GROUP BY: module_count needs paths. Fine to
+    # ~100k files; past that, count languages in SQL and fetch only code paths.
+    node_rows = await session.execute(
+        select(GraphNode.node_id, GraphNode.language, GraphNode.external_system_id).where(
+            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
+        )
     )
-    languages = sorted(
-        ({"language": lang or "other", "file_count": n} for lang, n in lang_rows),
-        key=lambda r: -r["file_count"],
-    )
+    mix = file_mix(row._mapping for row in node_rows)
+    module_count = mix["module_count"]
+    languages = mix["languages"]
 
     # --- Health KPIs + deltas vs previous snapshot ------------------------
     # Loaded once and handed to both consumers below: the KPI rollup and the
@@ -574,6 +576,7 @@ async def overview_summary(
             ],
         },
         "languages": languages,
+        "docs_config_languages": mix["docs_config_languages"],
         "attention": attention,
         # Counts for everything the sources hold, beside the capped list. The
         # page shows five rows out of these, and "5 open" would be a lie that

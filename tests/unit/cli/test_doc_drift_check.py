@@ -179,6 +179,29 @@ def test_sarif_is_one_json_document(monkeypatch, tmp_path):
     ]["uri"] == "docs/a.md"
 
 
+def test_gitlab_is_one_issue_list_without_the_baseline(monkeypatch, tmp_path):
+    baseline = tmp_path / "baseline.json"
+    _invoke(monkeypatch, tmp_path, [_finding()], ["--write-baseline", str(baseline)])
+    findings = [_finding(), _finding(target="src/other.py", confidence=0.5)]
+    args = ["--baseline", str(baseline), "--format", "gitlab"]
+    result = _invoke(monkeypatch, tmp_path, findings, args, runner=_split_runner())
+    assert result.exit_code == 0
+    (issue,) = json.loads(result.stdout)
+    assert issue["severity"] == "minor"
+    assert issue["location"] == {"path": "docs/a.md", "lines": {"begin": 3}}
+
+
+def test_gitlab_prints_an_empty_list_when_it_cannot_evaluate(monkeypatch, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--baseline", str(bad), "--format", "gitlab"],
+        runner=_split_runner(),
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.stdout) == []
+
+
 def test_document_filter_narrows_the_gate(monkeypatch, tmp_path):
     findings = [_finding(), _finding(file_path=".github/b.md")]
     result = _invoke(
@@ -221,3 +244,156 @@ def test_end_to_end_on_a_real_working_tree(tmp_path):
     (finding,) = payload["findings"]
     assert finding["target"] == "src/tools/cli.py"
     assert finding["suggestion"] == "src/tools/cli/"
+
+
+def _scoped(monkeypatch, *changes):
+    from repowise.core.analysis.doc_drift import scope as scope_mod
+
+    scope = scope_mod.ChangeScope.from_changes(changes, label="main...HEAD")
+    monkeypatch.setattr(scope_mod, "scope_since", lambda root, revspec: scope)
+
+
+def test_since_gates_only_drift_the_change_is_answerable_for(monkeypatch, tmp_path):
+    from repowise.core.analysis.change_health.sources import FileChange
+
+    _scoped(monkeypatch, FileChange(head_path=None, base_path="src/gone.py", status="deleted"))
+    findings = [_finding(), _finding(file_path="docs/b.md", target="src/old.py")]
+    result = _invoke(
+        monkeypatch, tmp_path, findings, ["--since", "main...HEAD", "--format", "json"]
+    )
+    payload = json.loads(result.output)
+    assert result.exit_code == 1
+    assert [f["file_path"] for f in payload["findings"]] == ["docs/a.md"]
+    assert payload["findings"][0]["scope_reason"] == "removed"
+    assert payload["scope"] == {
+        "revspec": "main...HEAD",
+        "documents_changed": 0,
+        "paths_removed": 1,
+        "out_of_scope": 1,
+    }
+
+
+def test_since_passes_when_the_drift_predates_the_change(monkeypatch, tmp_path):
+    _scoped(monkeypatch)
+    result = _invoke(monkeypatch, tmp_path, [_finding()], ["--since", "main...HEAD"])
+    assert result.exit_code == 0
+    assert "Gate passed" in result.output
+
+
+def test_since_markdown_names_the_scope(monkeypatch, tmp_path):
+    _scoped(monkeypatch)
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--since", "main...HEAD", "--format", "markdown"]
+    )
+    assert "scoped to main...HEAD, 1 outside the change" in result.output
+
+
+def test_since_auto_without_a_base_exits_two(monkeypatch, tmp_path):
+    from repowise.core.ci import base
+
+    def _none(root, env=None):
+        raise base.BaseNotFoundError("no base")
+
+    monkeypatch.setattr(base, "default_revspec", _none)
+    result = _invoke(monkeypatch, tmp_path, [_finding()], ["--since", "auto", "--format", "json"])
+    assert result.exit_code == 2
+    assert json.loads(result.output)["error"] == "base_not_found"
+
+
+def test_since_on_a_bad_revision_exits_two(monkeypatch, tmp_path):
+    from repowise.core.analysis.doc_drift import scope as scope_mod
+
+    def _bad(root, revspec):
+        raise ValueError("unknown revision")
+
+    monkeypatch.setattr(scope_mod, "scope_since", _bad)
+    result = _invoke(
+        monkeypatch, tmp_path, [_finding()], ["--since", "nope...HEAD", "--format", "json"]
+    )
+    assert result.exit_code == 2
+    assert json.loads(result.output)["error"] == "diff_failed"
+
+
+def test_since_requires_check_and_refuses_write_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(doc_drift_cmd, "_repo_path", lambda *a, **k: tmp_path)
+    runner = CliRunner()
+    alone = runner.invoke(doc_drift_cmd.doc_drift_command, ["--since", "main...HEAD"])
+    assert alone.exit_code == 2
+    both = runner.invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--since", "main...HEAD", "--write-baseline", str(tmp_path / "b.json")],
+    )
+    assert both.exit_code == 2
+
+
+def _symbol_history(tmp_path):
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            check=True,
+            capture_output=True,
+        )
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def parse_config():\n    pass\n", encoding="utf-8")
+    (tmp_path / "docs" / "guide.md").write_text("Call `parse_config()`.\n", encoding="utf-8")
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    (tmp_path / "src" / "app.py").write_text(
+        "def parse_conf():\n    pass\n", encoding="utf-8"
+    )
+    git("commit", "-qam", "rename")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_check_runs_no_symbol_pass_unless_asked(monkeypatch, tmp_path):
+    _symbol_history(tmp_path)
+
+    async def _names(root):  # an index exists, but nobody asked for symbols
+        raise AssertionError("the index must not be read")
+
+    monkeypatch.setattr(doc_drift_cmd, "_index_symbol_names", _names)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["findings"] == []
+    assert payload["references_checked"] == 0
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_kind_symbol_without_an_index_cannot_evaluate(tmp_path):
+    _symbol_history(tmp_path)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--kind", "symbol", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.output)["error"] == "no_index"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_kind_symbol_with_an_index_reports_a_renamed_symbol(monkeypatch, tmp_path):
+    _symbol_history(tmp_path)
+
+    async def _names(root):
+        return frozenset({"parse_conf"})
+
+    monkeypatch.setattr(doc_drift_cmd, "_index_symbol_names", _names)
+    result = CliRunner().invoke(
+        doc_drift_cmd.doc_drift_command,
+        ["--check", "--kind", "symbol", "--no-workspace", "--format", "json", str(tmp_path)],
+    )
+    assert result.exit_code == 1, result.output
+    (finding,) = json.loads(result.output)["findings"]
+    assert finding["kind"] == "symbol"
+    assert finding["target"] == "parse_config"
+    assert finding["suggestion"] == "parse_conf()"
+    assert finding["suggestion_basis"] == "symbol_rename"
+    assert finding["suggested_line"] == "Call `parse_conf()`."
+    assert finding["suggestion_columns"] == [[7, 21]]
+    assert finding["defined_in"] == ["src/app.py"]

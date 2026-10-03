@@ -73,6 +73,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # tier of its own, so a typed receiver is looked for in the caller's
     # file, in what the file imports, and then in the global pair index.
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # TypeScript's typed fallback also walks a dotted receiver's fields.
+    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # Rust types a local or parameter only; a `self.field` receiver is not
+    # walked, since Rust has no `_CHAIN_SELF` row.
+    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }
@@ -239,7 +244,11 @@ class LanguageStrategiesMixin:
         for sibling in siblings:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
+            if (
+                sym_id is not None
+                and sym_id != caller_id
+                and self._reachable_by_name(file_path, sym_id)
+            ):
                 return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
         return None
 

@@ -612,3 +612,26 @@ def test_payload_offers_the_absolute_band_only_as_a_fallback(git_repo: Path) -> 
     assert unranked["fallback_band"] in {"low", "moderate", "high"}
     assert unranked["score_unit"] == "per-commit"
     assert "probability" not in ranked and "level" not in ranked
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        ChangeFeatures(la=la, ld=ld, nf=nf, nd=nd, ns=ns, entropy=ent, exp=exp)
+        for la in (0, 3, 40, 900)
+        for ld in (0, 25, 400)
+        for nf, nd, ns, ent in ((1, 1, 1, 0.0), (6, 3, 2, 2.1), (80, 20, 6, 5.5))
+        for exp in (None, 0, 12, 4000)
+    ],
+)
+def test_top_driver_is_the_argmax_of_the_shown_contributions(features) -> None:
+    """The list's "top driver" is the biggest score-raising row the breakdown shows."""
+    risk = score_change(features)
+    shown = [d for d in risk.top_drivers if d.value is not None]
+    raising = [d for d in shown if d.contribution > 0]
+    if not raising:
+        assert risk.top_driver is None
+        return
+    assert risk.top_driver is not None
+    assert risk.top_driver.contribution == max(d.contribution for d in shown)
+    assert risk.top_driver in shown

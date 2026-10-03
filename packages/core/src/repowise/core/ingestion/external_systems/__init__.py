@@ -14,11 +14,13 @@ never raise on malformed input.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
 from types import ModuleType
 
+from ..workspace_members import first_party_package_names
 from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
 from .base import ExternalSystemRecord, ManifestParser
 
@@ -93,7 +95,22 @@ def extract_external_systems(
     if maven_paths:
         with suppress(Exception):  # parser bugs must not break ingestion
             records.extend(maven.parse_many(maven_paths, repo_root))
-    return _deduplicate(records)
+    return _deduplicate(_drop_first_party(records, repo_root))
+
+
+def _dist_key(name: str) -> str:
+    """PEP 503 spelling, so ``repowise_core`` and ``repowise-core`` compare equal."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _drop_first_party(
+    records: list[ExternalSystemRecord], repo_root: Path
+) -> list[ExternalSystemRecord]:
+    """Drop deps on the repo's own packages: they are containers, not external systems."""
+    if not records:
+        return records
+    own = {_dist_key(n) for n in first_party_package_names(Path(repo_root))}
+    return [r for r in records if _dist_key(r.name) not in own]
 
 
 def _discover(repo_root: Path) -> list[Path]:

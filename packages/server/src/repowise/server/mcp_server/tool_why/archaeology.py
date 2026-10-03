@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from repowise.server.mcp_server._why_relevance import floor_ranked
+
 _GIT_LOG_FORMAT = "--format=%H\t%an\t%ai\t%s"
 
 
@@ -168,6 +170,29 @@ def _sync_git_log(repo_path: str, file_path: str, stem: str) -> list[dict]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     return results
+
+
+#: Commits a question is matched against: the recent history ``git log``
+#: walks first. Ceiling: older commits are not searched.
+_QUESTION_LOG_DEPTH = 2000
+_QUESTION_LOG_LIMIT = 5
+
+
+def question_commits(repo_path: str | Path | None, query: str) -> list[dict]:
+    """Recent commits whose subject clears the relevance floor for *query*.
+
+    The archaeology for a question that names no file: no decision record or
+    rationale comment answered it, so the history that carries its terms is
+    what is left. Rarity comes from every subject walked. Best-effort.
+    """
+    if not repo_path or not (Path(repo_path) / ".git").exists():
+        return []
+    try:
+        stdout = _git_log_stdout(str(repo_path), [_GIT_LOG_FORMAT, f"-{_QUESTION_LOG_DEPTH}", "--"])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    rows = _parse_git_log(stdout or "", "git_log_question")
+    return floor_ranked(query, rows, lambda r: r["message"], _QUESTION_LOG_LIMIT)
 
 
 def _git_log_stdout(repo_path: str, args: list[str]) -> str | None:

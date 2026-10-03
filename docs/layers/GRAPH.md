@@ -160,12 +160,13 @@ permanent rather than a stopgap.
 
 ### The one we did
 
-Nine languages, 30 call edges per language per tool, every row opened in its own
-file with its imports and enclosing scope, then the target declaration opened
-too. **229 of 270 correct for us, 154 of 270 for CodeGraph 1.5.0**, intervals
-disjoint. Four of the nine cells separate and five are ties, reported as ties.
+Nine languages, 30 call edges per language per tool (widened to 40 for Java
+across two repositories), every row opened in its own file with its imports and
+enclosing scope, then the target declaration opened too. **240 of 280 correct
+for us (85.7%), 164 of 280 for CodeGraph 1.5.0 (58.6%)**, intervals disjoint.
+Four of the nine cells separate and five are ties, reported as ties.
 
-Read our own number the other way round: **roughly fifteen percent of our call
+Read our own number the other way round: **roughly fourteen percent of our call
 edges are wrong**, concentrated in java, rust and cpp. That is the figure to plan
 against, and it is a floor rather than a best case, because every resolver change
 since the earliest rows were graded only removes wrong edges.
@@ -176,7 +177,7 @@ reading source and a type checker landing within about a point of each other is
 the strongest available evidence that the hand-graded half is accurate rather
 than self-serving, and it is the result here we care about most.
 
-[The nine cells, and all 540 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
+[The nine cells, and all 560 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
 
 ### The column we lose
 

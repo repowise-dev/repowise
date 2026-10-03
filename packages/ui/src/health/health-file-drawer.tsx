@@ -21,10 +21,11 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
 import { AiPromptButton } from "./ai-prompt-button";
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
 import { FindingOpportunityLink } from "./file-opportunity";
+import { RelatedWork, type RelatedWorkSlotProps } from "./related-work";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
@@ -48,6 +49,7 @@ import type {
 } from "@repowise-dev/types/health";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
 import { ImpactFigure } from "./impact-figure";
 
 export interface HealthDrawerFinding {
@@ -63,6 +65,8 @@ export interface HealthDrawerFinding {
   details?: BiomarkerDetailsRecord | null;
   /** Home pillar; falls back to the biomarker's glossary dimension. */
   dimension?: BiomarkerDimension | string;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
 }
 
 export interface HealthDrawerMetric {
@@ -87,7 +91,7 @@ export interface HealthDrawerMetric {
   total_deduction?: number | null;
 }
 
-export interface HealthFileDrawerProps {
+export interface HealthFileDrawerProps extends RelatedWorkSlotProps {
   open: boolean;
   onClose: () => void;
   loading?: boolean;
@@ -166,6 +170,9 @@ export function HealthFileDrawer({
   suggestions = {},
   opportunity,
   refactoringOpportunityHref,
+  related,
+  relatedWorkHref,
+  onNavigate,
   trend,
   signals,
   fileViewHref,
@@ -222,6 +229,7 @@ export function HealthFileDrawer({
           <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
             {CATEGORY_LABEL[info.category]}
           </span>
+          <VerificationTag verification={f.verification} />
           {(() => {
             // A history marker wears a neutral "Watch" chip instead of its
             // pillar's: it is scored, but nothing in this file will clear it.
@@ -562,6 +570,15 @@ export function HealthFileDrawer({
 
               <BugHistorySection signals={signals} />
 
+              {/* Findings are this drawer's own list, and the performance lens
+                  already leads with the file's causes. */}
+              <RelatedWork
+                related={related}
+                relatedWorkHref={relatedWorkHref}
+                onNavigate={onNavigate}
+                exclude={lens === "performance" ? ["findings", "performance"] : ["findings"]}
+              />
+
               {/* Collapsed by default. This is the audit trail for a number
                   the drawer already states at the top, beside a leading cause
                   that names the biggest contributor in words. A reader who
@@ -620,6 +637,7 @@ export function HealthFileDrawer({
           open={promptOpen}
           onOpenChange={setPromptOpen}
           filePath={metric?.file_path ?? null}
+          chatContext={fileChatContext(metric?.file_path)}
           title="AI prompt for this file"
           description="Every scored finding, category ceiling, open performance cause and change signal this drawer holds, written up so an agent can triage the file before it edits anything."
           getPrompt={

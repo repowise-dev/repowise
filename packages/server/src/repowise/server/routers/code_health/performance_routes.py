@@ -13,11 +13,9 @@ from typing import Any
 from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.perf.serving import parse_query
 from repowise.server.deps import get_db_session
-from repowise.server.services.performance_health import (
-    PerformanceHealthService,
-    parse_query,
-)
+from repowise.server.services.performance_health import PerformanceHealthService
 
 from ._router import router
 

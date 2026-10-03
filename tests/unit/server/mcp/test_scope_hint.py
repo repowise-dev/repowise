@@ -211,3 +211,20 @@ async def test_answer_projection_stamps_the_key_from_served_paths(
     empty = {"confidence": "high", "citations": [], "_meta": {"scope_hint": "stale sentence"}}
     await _refresh_freshness(empty, None)
     assert "scope_hint" not in empty["_meta"]
+
+
+@pytest.mark.asyncio
+async def test_the_test_layer_is_never_named(session: AsyncSession, repo_id: str):
+    await _seed(
+        session,
+        repo_id,
+        [
+            _layer(repo_id, "layer:test", "Automated Checks", ["tests/a.py", "tests/b.py"]),
+            _layer(repo_id, "layer:ui", "Web Screens", ["web/a.tsx"]),
+            _layer(repo_id, "layer:service", "Core Logic", ["src/core.py"]),
+        ],
+    )
+
+    hint = await unrelated_scope_hint(session, repo_id, ["src/core.py"], cache_key="k-test")
+
+    assert hint == "Unrelated to what was served: Web Screens (1 file)."

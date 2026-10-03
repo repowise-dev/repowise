@@ -32,6 +32,7 @@ your agent in under five minutes, with no API key.
 | [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index your repo, and connect your agent in under 5 minutes |
 | [start/USER_GUIDE.md](start/USER_GUIDE.md) | The everyday guide: how the pieces fit and the workflows they support |
 | [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local web dashboard, and what each one answers |
+| [start/CI.md](start/CI.md) | Gate pull requests on patch coverage, documentation drift and new security findings, with the GitHub Action and GitLab template |
 
 ## Connect your AI agent
 

@@ -140,7 +140,14 @@ function FileProse({
   const deduction = data.health.breakdown?.total_deduction;
   const owner = data.git?.primary_owner;
   const ownerPct = data.git?.primary_owner_commit_pct;
+  const ownerLinePct = data.git?.primary_owner_line_pct;
   const commits = data.git?.commit_count_total ?? 0;
+  // Two different shares of the same person: blame lines they hold today, and
+  // the commits they made. Each is labelled, since they often disagree.
+  const ownerShares = [
+    ownerLinePct != null ? `${Math.round(ownerLinePct * 100)}% of current lines` : null,
+    ownerPct != null ? `${Math.round(ownerPct * 100)}% of commits` : null,
+  ].filter(Boolean);
 
   return (
     <>
@@ -162,7 +169,7 @@ function FileProse({
           >
             {owner}
           </A>
-          {ownerPct != null && ` (${Math.round(ownerPct * 100)}% of commits)`}
+          {ownerShares.length > 0 && ` (${ownerShares.join(", ")})`}
           {commits > 0 && `, across ${formatNumber(commits)} commit${commits === 1 ? "" : "s"}`}.
         </p>
       )}

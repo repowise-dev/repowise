@@ -8,3 +8,6 @@
 # Without this, a Windows checkout rewrites it to CRLF and every local
 # regeneration reads as drift against what CI produces on Linux.
 packages/types/src/generated/*.ts text eol=lf
+
+# The UI copy of core-owned data, written by scripts/generate_biomarker_labels.py.
+packages/ui/src/health/generated/*.ts text eol=lf

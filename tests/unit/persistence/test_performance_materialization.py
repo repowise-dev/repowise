@@ -377,15 +377,15 @@ def test_a_non_leading_marker_never_leads_the_summary():
 
     from repowise.core.persistence.crud.analysis.performance import _summary_payload
 
-    def _opp(oid: str, marker: str):
+    def _opp(oid: str, marker: str, may_lead: bool):
         return SimpleNamespace(
             opportunity_id=oid, actionability_state="advisory", biomarker_type=marker,
             boundary_kind="db", execution_context="production", intervention_symbol=None,
             terminal_sink=None, evidence=[{"file_path": "a.py"}], observations_total=1,
             affected_call_sites_total=1, affected_files_total=1, why_ranked=[],
-            prerequisites=(), actionability_reason="",
+            prerequisites=(), actionability_reason="", may_lead=may_lead,
         )
 
-    ranked = [_opp("lazy", "lazy_load_in_loop"), _opp("io", "io_in_loop")]
+    ranked = [_opp("lazy", "lazy_load_in_loop", False), _opp("io", "io_in_loop", True)]
     assert _summary_payload(ranked, {})["lead"]["opportunity_id"] == "io"
     assert _summary_payload(ranked[:1], {})["lead"] is None

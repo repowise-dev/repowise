@@ -394,6 +394,21 @@ def _mcp_search_results(output: str) -> list[dict[str, str]]:
     return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
 
 
+def _looks_like_a_bare_path(candidate: str) -> bool:
+    """Whether a bare (no ``:line:``) line from ``rg --files``/``rg -l`` is a path.
+
+    A real path never has whitespace in it, which stray prose like "No files
+    were searched" does. A path with no separator can still be a real,
+    root-level filename (``setup.py``), so a ``.`` after the first character
+    admits it too without opening the door to bare words like "TODO".
+    """
+    if not candidate or any(char.isspace() for char in candidate):
+        return False
+    if "/" in candidate or "\\" in candidate:
+        return True
+    return "." in candidate[1:]
+
+
 def _rewrite_search_output(output: Any) -> dict | None:
     """``rg`` output as the MCP ``search_codebase`` result shape, or None.
 
@@ -404,7 +419,11 @@ def _rewrite_search_output(output: Any) -> dict | None:
 
     Only the leading path of an ``rg`` line becomes a file. ``rg`` prints
     ``path:line:text`` for a content match, and taking the whole line would
-    hand the decision miner a "file" that does not exist.
+    hand the decision miner a "file" that does not exist. A matched path is
+    kept unconditionally, even with no separator (a root-level match like
+    ``app.py:12:``): the ``:line:`` suffix already confirms it is a path, not
+    prose. Only a bare, unmatched line needs the separator-or-extension
+    filter, since that is the only case where prose could be mistaken for one.
     """
     if not isinstance(output, list):
         return None
@@ -421,9 +440,10 @@ def _rewrite_search_output(output: Any) -> dict | None:
         if not line or line.startswith(_EXEC_NOISE):
             continue
         match = _RG_MATCH_RE.match(line)
-        candidate = match.group("path") if match else line
-        if "/" in candidate or "\\" in candidate:
-            results.append({"file": candidate.replace("\\", "/")})
+        if match:
+            results.append({"file": match.group("path").replace("\\", "/")})
+        elif _looks_like_a_bare_path(line):
+            results.append({"file": line.replace("\\", "/")})
 
     return {"result": {"results": results}}
 
@@ -480,9 +500,12 @@ def _event_kind(entry_kind: str | None, payload_kind: str | None, payload: dict[
                 return "assistant"
             if role == "developer":
                 return "system"
-        if payload_kind == "custom_tool_call":
-            return "assistant"
-        if payload_kind == "custom_tool_call_output":
+        if payload_kind in (
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "function_call",
+            "function_call_output",
+        ):
             return "assistant"
         return payload_kind or "assistant"
     if entry_kind == "event_msg":

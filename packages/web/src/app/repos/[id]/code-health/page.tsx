@@ -440,6 +440,8 @@ export default function CodeHealthPage() {
       const sp = new URLSearchParams(searchParams.toString());
       if (next === "triage") sp.delete("tab");
       else sp.set("tab", next);
+      // The document filter belongs to the drift tab; it must not ride along.
+      if (next !== "doc-drift") sp.delete("document");
       const qs = sp.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
@@ -600,7 +602,12 @@ export default function CodeHealthPage() {
         {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
-        {activeTab === "doc-drift" && <DocDriftTab repoId={repoId} />}
+        {activeTab === "doc-drift" && (
+          <DocDriftTab
+            repoId={repoId}
+            initialDocument={searchParams.get("document") ?? undefined}
+          />
+        )}
         {activeTab === "security" && <SecurityTab repoId={repoId} />}
         {activeTab === "impact" && <ImpactTab repoId={repoId} />}
       </ViewTabs>

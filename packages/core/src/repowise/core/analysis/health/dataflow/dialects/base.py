@@ -40,7 +40,7 @@ precision-first contract the perf pillar depends on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -55,6 +55,13 @@ class Occurrence:
 
     name: str
     line: int  # 1-indexed
+    column: int = 0  # 0-indexed, where the reference starts
+    #: A declaration only: the column on ``line`` where its declarator ends,
+    #: which is where the new name starts to exist. A read on that line at or
+    #: past it reads the new variable; one before it (the declaration's own
+    #: initializer) reads an outer variable of the same name. None for any
+    #: other write, and for a declarator that ends on a later line.
+    declared_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -116,8 +123,22 @@ class BaseDefUseDialect:
 
     def _occ(self, node: Node) -> Occurrence:
         return Occurrence(
-            name=(node.text or b"").decode("utf-8", "replace"), line=node.start_point[0] + 1
+            name=(node.text or b"").decode("utf-8", "replace"),
+            line=node.start_point[0] + 1,
+            column=node.start_point[1],
         )
+
+    def _declare(self, defs: list[Occurrence], start: int, declarator: Node) -> None:
+        """Mark ``defs[start:]`` as names *declarator* declares.
+
+        Call it right after the declarator's targets are collected and before
+        its initializer is walked, so a write nested in the initializer is not
+        taken for a declaration.
+        """
+        end_row, end_col = declarator.end_point
+        for i in range(start, len(defs)):
+            if defs[i].line == end_row + 1:
+                defs[i] = replace(defs[i], declared_at=end_col)
 
     # -- read (use) collection ------------------------------------------------
 

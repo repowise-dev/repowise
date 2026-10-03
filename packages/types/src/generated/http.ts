@@ -9,10 +9,93 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
+export interface ActionCommand {
+  purpose: string;
+  mcp?: string | null;
+  cli?: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
+}
+
+export interface ActionContext {
+  production_files: number;
+  active_authors_90d: number;
+  fix_commits_90d: number;
+  busy_threshold: number;
+  coverage: "measured" | "stale" | "unknown";
+}
+
+export interface ActionDetail {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
+  marker?: string | null;
+  severity?: string | null;
+  reason?: string;
+  ref?: string | null;
+}
+
+export interface ActionHorizon {
+  actions: NextAction[];
+  /** Every visible action in this horizon, not only those listed. */
+  total: number;
+  /** Actions the person dismissed, snoozed or marked done. */
+  hidden: number;
+  by_tier: Record<string, number>;
+}
+
+export interface ActionRuleStatus {
+  rule: string;
+  status: "evaluated" | "not_applicable" | "unavailable";
+  reason: string;
+  emitted: number;
+}
+
+export interface ActionStateRequest {
+  /** None clears the person's answer. */
+  state: "dismissed" | "snoozed" | "done" | null;
+  fingerprint?: string;
+  snooze_days?: number;
+}
+
+export interface ActionStateResponse {
+  action_id: string;
+  state: "dismissed" | "snoozed" | "done" | null;
+  until?: string | null;
+}
+
+export interface ActionTarget {
+  kind: "file" | "symbol" | "folder" | "document" | "decision" | "repo";
+  path: string;
+  symbol?: string | null;
+}
+
+export interface ActionWhy {
+  label: string;
+  value: string;
+  basis: "measured" | "inferred" | "unknown";
+}
+
+export interface ActionsResponse {
+  status: "available";
+  /** Newest indexed commit time; windows count back from it. */
+  anchor: string | null;
+  week_start: string | null;
+  context: ActionContext;
+  horizons: Record<string, ActionHorizon>;
+  rules: ActionRuleStatus[];
+  unavailable: Record<string, string>;
+}
+
 /** The provider/model this scope resolves to; ``None`` when unset. */
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+}
+
+export interface AgentPromptResponse {
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  text: string;
 }
 
 /** One month of agent-vs-human commit volume. */
@@ -708,6 +791,14 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+/** One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them. */
+export interface CoverageHistoryPoint {
+  ingested_at: string;
+  ingested_commit_sha: string | null;
+  line_coverage_pct: number;
+  branch_coverage_pct: number | null;
+}
+
 /** How the report's own file entries mapped to the repository at ingest. */
 export interface CoverageReportPaths {
   total: number;
@@ -725,6 +816,7 @@ export interface CoverageResponse {
   modules_total: number;
   basis?: "measured" | "inferred" | "none" | null;
   inferred?: Record<string, unknown> | null;
+  history?: CoverageHistoryPoint[] | null;
 }
 
 /** The repository's stored coverage, aggregated. Zero counts and nulls when none is stored. */
@@ -764,7 +856,7 @@ export interface DeadCodeFindingResponse {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   start_line: number | null;
   end_line: number | null;
   safe_to_delete: boolean;
@@ -775,6 +867,7 @@ export interface DeadCodeFindingResponse {
   note: string | null;
   last_commit_at: string | null;
   commit_count_90d: number;
+  verification?: string | null;
 }
 
 export interface DeadCodeGraphNodeResponse {
@@ -1111,6 +1204,8 @@ export interface DocDriftFindingResponse {
   fingerprint: string;
   suggestion?: string | null;
   suggestion_basis?: string | null;
+  first_seen_at?: string | null;
+  is_new?: boolean;
 }
 
 /**
@@ -1159,6 +1254,7 @@ export interface DocDriftSummaryResponse {
   confidence: Record<string, number>;
   by_kind: Record<string, number>;
   findings_basis: string;
+  new_since_last_update?: number | null;
 }
 
 export interface EgoGraphResponse {
@@ -1424,6 +1520,50 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FixAction {
+  summary: string;
+  steps: FixStep[];
+  steps_total: number;
+  mechanical: boolean;
+}
+
+export interface FixConfidence {
+  level: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface FixContext {
+  label: string;
+  value: string;
+}
+
+export interface FixEffortEstimate {
+  bucket: "S" | "M" | "L" | "XL";
+  basis: string;
+}
+
+export interface FixFact {
+  label: string;
+  value: string;
+  basis?: "measured" | "inferred" | "unknown";
+}
+
+/** ``FixFirstQueue.as_dict()``: the stored fields plus the ``lead`` it derives. */
+export interface FixFirstQueueResponse {
+  items: FixItem[];
+  lead: FixItem | null;
+  totals: FixTotals;
+  by_improves: Record<string, number>;
+  model_version: number;
+  basis: Record<string, string | null>;
+}
+
+export interface FixGain {
+  kind: "health_points" | "performance";
+  value: number | null;
+  text: string;
+}
+
 /** One changed file's recency-weighted bug-fix record. */
 export interface FixHistoryFileResponse {
   path: string;
@@ -1445,6 +1585,80 @@ export interface FixHistoryResponse {
   density: number;
   percentile: number | null;
   files: FixHistoryFileResponse[];
+}
+
+export interface FixItem {
+  id: string;
+  rank: number;
+  tier: "now" | "next" | "later";
+  kind: "refactor" | "perf_fix" | "finding";
+  improves: "defect" | "maintainability" | "performance";
+  title: string;
+  target: FixTarget;
+  why: string;
+  facts: FixFact[];
+  action: FixAction;
+  gain: FixGain;
+  effort: FixEffortEstimate;
+  risk: FixRisk;
+  confidence: FixConfidence;
+  verify: FixVerify;
+  context: FixContext[];
+  source: FixSource;
+  next_call: ActionCommand;
+  why_ranked?: FixRankFact[];
+}
+
+export interface FixRankFact {
+  factor: string;
+  value: string;
+}
+
+export interface FixRisk {
+  level: "high" | "medium" | "low";
+  dependents: number | null;
+  files_touched: number;
+  text: string;
+}
+
+export interface FixSource {
+  opportunity_id?: string | null;
+  plan_ids?: string[];
+  finding_ids?: string[];
+}
+
+export interface FixStep {
+  order: number;
+  text: string;
+  file_path: string;
+  line?: number | null;
+  mechanical?: boolean;
+}
+
+export interface FixTarget {
+  file_path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+}
+
+export interface FixTest {
+  path: string;
+  reason: string;
+}
+
+export interface FixTotals {
+  candidates?: number;
+  eligible?: number;
+  shown?: number;
+  excluded?: Record<string, number>;
+}
+
+export interface FixVerify {
+  tests: FixTest[];
+  tests_total: number;
+  command: string | null;
+  basis: "measured" | "inferred" | "unknown";
 }
 
 /** Optional per-call overrides for the enrichment provider/model. */
@@ -1516,6 +1730,7 @@ export interface GitMetadataResponse {
   primary_owner_name: string | null;
   primary_owner_email: string | null;
   primary_owner_commit_pct: number | null;
+  primary_owner_line_pct?: number | null;
   recent_owner_name: string | null;
   recent_owner_commit_pct: number | null;
   top_authors: Record<string, unknown>[];
@@ -1659,6 +1874,7 @@ export interface HealthFindingResponse {
   details?: Record<string, unknown>;
   status: string;
   dimension?: string;
+  verification?: string | null;
 }
 
 /**
@@ -1680,6 +1896,7 @@ export interface HealthFindingWithSymbolResponse {
   details?: Record<string, unknown>;
   status: string;
   dimension?: string;
+  verification?: string | null;
   symbol_id?: string | null;
 }
 
@@ -1711,6 +1928,7 @@ export interface HealthTrendKpiRow {
   structure_average?: number | null;
   history_average?: number | null;
   maintainability_average?: number | null;
+  doc_drift_count?: number | null;
 }
 
 export interface HealthTrendResponse {
@@ -1740,6 +1958,7 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: string;
   primary_reason?: string | null;
@@ -1760,6 +1979,7 @@ export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
   finding_total?: number;
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }
@@ -1818,6 +2038,27 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+}
+
+/** One file on the impact / effort plane. */
+export interface ImpactEffortPoint {
+  file_path: string;
+  effort_lines: number;
+  effort_basis: string;
+  recoverable_health: number;
+  tier?: string | null;
+  fix_rank?: number | null;
+}
+
+/** Every file the work queue's filters keep, up to ``cap``. */
+export interface ImpactEffortResponse {
+  points?: ImpactEffortPoint[];
+  plotted?: number;
+  total?: number;
+  cap?: number;
+  effort_midline_lines?: number;
+  gain_midline_points?: number;
+  history_only_excluded?: number;
 }
 
 /**
@@ -1989,6 +2230,32 @@ export interface NeighboringCommunity {
   cross_edge_count: number;
 }
 
+export interface NextAction {
+  id: string;
+  rule: string;
+  tier: "act_now" | "plan" | "improve_signal";
+  horizons: ("week" | "quarter")[];
+  severity: "critical" | "high" | "medium" | "low";
+  /** Verb first; paths and symbols wrapped in backticks. */
+  title: string;
+  impact: string;
+  why: ActionWhy[];
+  target: ActionTarget;
+  surface: string;
+  effort: "S" | "M" | "L";
+  confidence: "high" | "medium";
+  done_when: string;
+  command?: string | null;
+  marker?: string | null;
+  evidence_ids: string[];
+  evidence_total: number;
+  includes: string[];
+  fingerprint: string;
+  details?: ActionDetail[];
+  details_total?: number;
+  commands?: ActionCommand[];
+}
+
 export interface NodeSearchResult {
   node_id: string;
   language: string;
@@ -2041,7 +2308,7 @@ export interface OwnerListEntry {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   bus_factor_risk_files: number;
 }
@@ -2062,7 +2329,7 @@ export interface OwnerProfileResponse {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
   bus_factor_risk_files: number;
@@ -2179,6 +2446,16 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/** Branches on changed lines, reported beside patch coverage, never blended into it. */
+export interface PatchCoverageBranches {
+  branch_taken: number;
+  branch_total: number;
+  branch_coverage_pct: number | null;
+  partial_line_count: number;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
 export interface PatchCoverageFile {
   file_path: string;
   status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
@@ -2187,6 +2464,11 @@ export interface PatchCoverageFile {
   covered_line_count: number;
   patch_coverage_pct: number | null;
   uncovered_ranges: number[][];
+  branch_taken: number;
+  branch_total: number;
+  partial_ranges: number[][];
+  risk: PatchCoverageFileRisk | null;
+  hints: PatchCoverageTestHint[] | null;
 }
 
 export interface PatchCoverageFileCounts {
@@ -2197,15 +2479,94 @@ export interface PatchCoverageFileCounts {
   out_of_scope: number;
 }
 
+export interface PatchCoverageFileRisk {
+  fix_pressure: number | null;
+  dependents: number | null;
+  hotspot: boolean | null;
+  bug_magnet: boolean | null;
+  basis: "git" | "index" | "git_and_index" | "unavailable";
+  risky: boolean;
+  reasons: string[];
+}
+
+/** A file whose coverage changed on lines the change did not touch. */
+export interface PatchCoverageOutsideChange {
+  file_path: string;
+  status: "changed" | "no_longer_measured";
+  newly_uncovered_ranges: number[][];
+  newly_uncovered_line_count: number;
+  newly_covered_line_count: number;
+  base_pct: number | null;
+  head_pct: number | null;
+  causes: PatchCoverageOutsideChangeCause[] | null;
+}
+
+/** A changed file that explains coverage lost outside the change. */
+export interface PatchCoverageOutsideChangeCause {
+  kind: "test_deleted" | "test_modified" | "dependent_changed";
+  path: string;
+  basis: "per_test" | "graph" | "name";
+}
+
+/** One path-scoped gate from ``coverage.gates``, judged on the change. */
+export interface PatchCoveragePathGate {
+  name: string;
+  paths: string[];
+  threshold: number | null;
+  informational: boolean;
+  measured_file_count: number;
+  unmeasured_file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
+/** Project coverage at the change's base against its head. */
+export interface PatchCoverageProject {
+  basis: "base_report" | "history";
+  base_commit: string | null;
+  head_commit: string | null;
+  base: PatchCoverageProjectTotals | null;
+  head: PatchCoverageProjectTotals | null;
+  delta_pct: number | null;
+  max_drop: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+  incomparable: string[];
+  outside_change: PatchCoverageOutsideChange[] | null;
+  outside_change_note: string | null;
+}
+
+export interface PatchCoverageProjectTotals {
+  covered_line_count: number;
+  coverable_line_count: number;
+  coverage_pct: number | null;
+}
+
 export interface PatchCoverageResponse {
   patch_coverage_pct: number | null;
   covered_line_count: number;
   coverable_line_count: number;
   threshold: number | null;
-  gate: "pass" | "fail" | "no_data" | "not_set";
+  min_coverable_lines: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
   file_counts: PatchCoverageFileCounts;
   files: PatchCoverageFile[];
   scope: PatchCoverageScope;
+  path_gates: PatchCoveragePathGate[];
+  risky: PatchCoverageRisky | null;
+  project: PatchCoverageProject | null;
+  branches: PatchCoverageBranches | null;
+}
+
+/** Patch coverage over the measured files history marks as risky. */
+export interface PatchCoverageRisky {
+  file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
 }
 
 export interface PatchCoverageScope {
@@ -2217,6 +2578,18 @@ export interface PatchCoverageScope {
   mapping_partial: boolean;
   measured_commit: string | null;
   freshness: "current" | "stale" | "unknown";
+  ignored_file_count: number;
+  config_errors: string[];
+  branch_data: "per_line" | "none" | "stored_before" | null;
+}
+
+/** Where to extend the tests for one uncovered range. */
+export interface PatchCoverageTestHint {
+  range: number[];
+  symbol: string | null;
+  tests: string[];
+  basis: "per_test" | "call_graph" | "import_graph" | "none";
+  total: number;
 }
 
 /**
@@ -2263,6 +2636,12 @@ export interface ProviderValidationResponse {
   error?: string | null;
 }
 
+/** What the ``fix_first`` scope leaves out of a page's filtered set. */
+export interface RefactoringHiddenCounts {
+  total?: number;
+  by_reason?: Record<string, number>;
+}
+
 /** One page of composed opportunities, with facets and the rollup. */
 export interface RefactoringOpportunitiesResponse {
   items?: Record<string, unknown>[];
@@ -2273,6 +2652,8 @@ export interface RefactoringOpportunitiesResponse {
   facets?: Record<string, Record<string, number>>;
   summary?: Record<string, unknown> | null;
   ignored_arguments?: Record<string, string> | null;
+  scope?: "fix_first" | "all";
+  hidden?: RefactoringHiddenCounts | null;
 }
 
 /**
@@ -2283,7 +2664,7 @@ export interface RefactoringOpportunitiesResponse {
  * part and anything else passes through rather than being dropped.
  */
 export interface RefactoringOpportunityDetailResponse {
-  resolved: boolean;
+  found: boolean;
   steps?: Record<string, unknown>[];
   steps_total?: number;
   steps_emitted?: number;
@@ -2398,6 +2779,42 @@ export interface RefactoringTargetsResponse {
 export interface RefactoringTypeCount {
   type: string;
   count: number;
+}
+
+export interface RelatedWorkFile {
+  file_path: string;
+  lenses?: Record<string, RelatedWorkLens>;
+}
+
+/** One row another lens holds for the file, compact enough to list. */
+export interface RelatedWorkItem {
+  lens: "findings" | "fix_first" | "refactoring" | "performance" | "dead_code";
+  id: string;
+  kind?: string | null;
+  title?: string | null;
+  symbol?: string | null;
+  severity?: string | null;
+  tier?: string | null;
+  rank?: number | null;
+  line?: number | null;
+  code_origin?: string | null;
+  deprecated?: boolean | null;
+}
+
+export interface RelatedWorkLens {
+  items?: RelatedWorkItem[];
+  total?: number;
+}
+
+/** The files to look up, repo-relative. Validated by the route. */
+export interface RelatedWorkRequest {
+  file_paths: string[];
+}
+
+/** ``RelatedWork.as_dict()``: files in request order. */
+export interface RelatedWorkResponse {
+  files?: RelatedWorkFile[];
+  per_lens_limit?: number;
 }
 
 export interface RepoCreate {
@@ -2923,6 +3340,11 @@ export interface WebhookResponse {
   status?: string;
 }
 
+export interface WorkspaceActionsResponse {
+  repos: WorkspaceRepoActions[];
+  cross_repo: WorkspaceCrossRepoAction[];
+}
+
 /** Architecture-complexity metrics over the system graph (Phase 6). */
 export interface WorkspaceArchitectureResponse {
   node_count?: number;
@@ -3100,6 +3522,14 @@ export interface WorkspaceContractsResponse {
   by_type?: Record<string, number>;
 }
 
+export interface WorkspaceCrossRepoAction {
+  kind: "breaking_contract";
+  title: string;
+  impact: string;
+  count: number;
+  repos: string[];
+}
+
 export interface WorkspaceCrossRepoSummary {
   co_change_count?: number;
   package_dep_count?: number;
@@ -3189,6 +3619,14 @@ export interface WorkspaceOrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+}
+
+export interface WorkspaceRepoActions {
+  alias: string;
+  repo_id: string | null;
+  status: "available" | "unavailable";
+  reason?: string;
+  horizons?: Record<string, ActionHorizon>;
 }
 
 export interface WorkspaceRepoDiagnostics {

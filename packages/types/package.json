@@ -27,6 +27,7 @@
     "./owners": "./src/owners.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
+    "./actions": "./src/actions.ts",
     "./repos": "./src/repos.ts",
     "./files": "./src/files.ts",
     "./external-systems": "./src/external-systems.ts",
@@ -34,6 +35,8 @@
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
     "./refactoring": "./src/refactoring.ts",
+    "./fix-first": "./src/fix-first.ts",
+    "./agent-prompts": "./src/agent-prompts.ts",
     "./generated/http": "./src/generated/http.ts"
   },
   "publishConfig": {

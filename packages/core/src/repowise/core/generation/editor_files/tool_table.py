@@ -86,7 +86,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?, include?)",
+        "get_risk(targets?, changed_files?, include?)",
         "File history and structural reach. PR mode leads with `directive`; its "
         "0-10 structural heuristic is uncalibrated, not a probability. Read typed "
         "test recommendations and coverage state first.",

@@ -11,13 +11,13 @@ three ask different questions:
 * ``validation`` checks *generated* prose against the single ``ParsedFile`` the
   page was written about, and its regex matches identifiers only --- it cannot
   express a path, having no ``/`` in its character class. It is a symbol
-  checker, and the symbol class is exactly what Phase 1 killed.
+  checker against one file; this detector's symbol class asks git history.
 * ``interlinking`` resolves refs to ``page_id``s and strips fences with one
   ``re.DOTALL`` pass over the whole document, which destroys line positions.
 * This detector files **line-level** findings against **user-authored** prose,
   checked against the **whole tree**. It needs line numbers (the persistence
   key includes one), markdown links, URL fragments and inline commands --- three
-  of its four classes are things neither of the others extracts at all.
+  of its five classes are things neither of the others extracts at all.
 
 Folding them together would mean one function with three incompatible regexes
 and a mode flag. The honest answer is a third extractor that shares the
@@ -297,30 +297,72 @@ def _from_links(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
         if frag and not target:
             # Same-document anchor, checkable against this file's own headings.
             yield DocReference(
-                DriftKind.ANCHOR, raw, f"{doc}#{frag}", doc, lineno, line.strip()
+                DriftKind.ANCHOR, raw, f"{doc}#{frag}", doc, lineno, line.strip(),
+                column=m.start(1),
             )
             continue
         if not target or not _path_shaped(target):
             continue
         if frag:
             yield DocReference(
-                DriftKind.ANCHOR, raw, f"{target}#{frag}", doc, lineno, line.strip()
+                DriftKind.ANCHOR, raw, f"{target}#{frag}", doc, lineno, line.strip(),
+                column=m.start(1),
             )
-        yield DocReference(DriftKind.LINK, raw, target, doc, lineno, line.strip())
+        yield DocReference(
+            DriftKind.LINK, raw, target, doc, lineno, line.strip(), column=m.start(1)
+        )
 
 
 def _from_inline_code(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
-    """Backtick-quoted paths: the PATH class.
+    """Backtick-quoted paths (the PATH class) and symbol candidates (SYMBOL).
 
-    Only paths. A backtick-quoted identifier is NOT emitted as a symbol
-    reference; see :class:`~.models.DriftKind` for why that class does not
-    exist.
+    A symbol candidate is only identifier-shaped here. Whether it ever named a
+    symbol is decided against git history in :mod:`.symbols`; see
+    :class:`~.models.DriftKind` for why shape alone is not evidence.
     """
     for m in _INLINE_CODE_RE.finditer(line):
-        raw = m.group(1).strip()
+        body = m.group(1)
+        raw = body.strip()
+        column = m.start(1) + len(body) - len(body.lstrip())
         norm = _normalize(raw)
         if _path_shaped(norm):
-            yield DocReference(DriftKind.PATH, raw, norm, doc, lineno, line.strip())
+            yield DocReference(
+                DriftKind.PATH, raw, norm, doc, lineno, line.strip(), column=column
+            )
+        elif symbol_name(raw):
+            # The qualified token is the target, so ``A.parse`` and ``B.parse``
+            # stay two findings; the lookup name is derived from it.
+            yield DocReference(
+                DriftKind.SYMBOL, raw, raw.removesuffix("()"), doc, lineno, line.strip(),
+                column=column,
+            )
+
+
+# ``name``, ``name()``, ``a.b.c`` or ``A::b``: dotted or ``::`` qualifiers, then
+# the final identifier, then an optional empty call.
+_SYMBOL_TOKEN_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*(?:\.|::))*([A-Za-z_][A-Za-z0-9_]*)(\(\))?"
+)
+_INNER_CAPITAL_RE = re.compile(r"[a-z][A-Z]")
+
+
+def symbol_name(token: str) -> str:
+    """The final identifier *token* names when it is shaped like a code symbol, else ``""``.
+
+    It needs a code signal (an underscore, an inner capital, a qualifier or a
+    trailing ``()``), four or more characters, and a lowercase letter, so
+    English words, ``true`` and ALL-CAPS constants never qualify.
+    """
+    m = _SYMBOL_TOKEN_RE.fullmatch(token)
+    if not m:
+        return ""
+    name = m.group(1)
+    if len(name) < 4 or name.upper() == name:
+        return ""
+    qualified = m.start(1) > 0
+    if "_" in name.strip("_") or _INNER_CAPITAL_RE.search(name) or qualified or m.group(2):
+        return name
+    return ""
 
 
 def _from_commands(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
@@ -335,7 +377,8 @@ def _from_commands(line: str, lineno: int, doc: str) -> Iterator[DocReference]:
         for m in _COMMAND_RE.finditer(span.group(1)):
             target = f"make:{m.group(2)}" if m.group(1) else f"npm:{m.group(4)}"
             yield DocReference(
-                DriftKind.COMMAND, m.group(0), target, doc, lineno, line.strip()
+                DriftKind.COMMAND, m.group(0), target, doc, lineno, line.strip(),
+                column=span.start(1) + m.start(0),
             )
 
 

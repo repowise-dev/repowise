@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import status_rank
+from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, status_rank
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.test_paths import is_test_related_path
 
 from ..models import DecisionRecord, GitMetadata
 
@@ -84,6 +85,8 @@ class _Lanes:
             # identically to a record whose code genuinely has not moved, so
             # they are counted separately rather than banked as fresh.
             "unscoped": 0,
+            # Accepted records whose named files are all gone at HEAD.
+            "historical": 0,
         }
     )
     stale: list[DecisionRecord] = field(default_factory=list)
@@ -113,8 +116,9 @@ class _Lanes:
                 self.counts["proposed"] += 1
                 self.proposed.append(d)
             return
-        if currency in ("superseded", "dismissed"):
-            self.counts[currency] += 1
+        if currency in HISTORY_CURRENCIES:
+            # ``stale`` counts apart: that key already means needs_review here.
+            self.counts["historical" if currency == "stale" else currency] += 1
             self.retired.append((currency, d))
             return
         self.counts["active"] += 1
@@ -146,9 +150,10 @@ class _Lanes:
 async def _ungoverned_hotspots(
     session: AsyncSession, repository_id: str, governed_files: set[str]
 ) -> list[str]:
-    """Hotspot files no accepted decision names, hottest first.
+    """Hotspot production files no accepted decision names, hottest first.
 
     Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
+    Test files are left out: churn in a test is not a design choice to record.
     """
     hotspot_result = await session.execute(
         select(
@@ -160,7 +165,11 @@ async def _ungoverned_hotspots(
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
-    hotspot_rows = {row[0]: (row[1], row[2]) for row in hotspot_result.all()}
+    hotspot_rows = {
+        row[0]: (row[1], row[2])
+        for row in hotspot_result.all()
+        if not is_test_related_path(row[0])
+    }
 
     def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:
         score, churn = hotspot_rows[file_path]

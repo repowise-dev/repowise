@@ -6,7 +6,7 @@ from datetime import datetime
 
 import networkx as nx
 
-from repowise.core.ingestion.cohesion import SAME_NAMESPACE_HINT
+from repowise.core.ingestion.cohesion import DOC_COMMENT_HINT, SAME_NAMESPACE_HINT
 from repowise.core.ingestion.languages.php_same_namespace import (
     QUALIFIED_NAME_HINT,
     resolve_php_same_namespace_refs,
@@ -160,3 +160,55 @@ def test_fully_qualified_reference_from_a_global_file() -> None:
     edge = graph.get_edge_data("config/auth.php", "app/Actions/Login.php")
     assert edge is not None and edge["hint_source"] == QUALIFIED_NAME_HINT
     assert graph.number_of_edges() == 1
+
+
+LOGIN = "<?php\nnamespace App\\Actions;\nclass Login {}\n"
+
+
+def test_a_name_only_in_comments_links_as_doc_comment() -> None:
+    graph = _resolve(
+        {
+            "app/Actions/Login.php": LOGIN,
+            "app/Http/Guard.php": (
+                "<?php\nnamespace App\\Http;\n"
+                "/** @param \\App\\Actions\\Login $login */\n"
+                "class Guard { public function f($login) {} } // or \\App\\Actions\\Login\n"
+                "# \\App\\Actions\\Login\n"
+            ),
+        }
+    )
+    edge = graph.get_edge_data("app/Http/Guard.php", "app/Actions/Login.php")
+    assert edge is not None and edge["hint_source"] == DOC_COMMENT_HINT
+
+
+def test_a_name_in_code_keeps_its_hint_even_when_a_comment_repeats_it() -> None:
+    graph = _resolve(
+        {
+            "app/Actions/Login.php": LOGIN,
+            "app/Http/Guard.php": (
+                "<?php\nnamespace App\\Http;\n"
+                "/** @return \\App\\Actions\\Login */\n"
+                "class Guard { public function f() { return new \\App\\Actions\\Login(); } }\n"
+            ),
+        }
+    )
+    edge = graph.get_edge_data("app/Http/Guard.php", "app/Actions/Login.php")
+    assert edge is not None and edge["hint_source"] == QUALIFIED_NAME_HINT
+
+
+def test_attributes_and_strings_are_code_not_comments() -> None:
+    graph = _resolve(
+        {
+            "app/Actions/Login.php": LOGIN,
+            "app/Http/Attr.php": (
+                "<?php\nnamespace App\\Http;\n#[\\App\\Actions\\Login]\nclass Attr {}\n"
+            ),
+            "app/Http/Url.php": (
+                "<?php\nnamespace App\\Http;\n"
+                "class Url { public $u = 'http://x'; public $c = \\App\\Actions\\Login::class; }\n"
+            ),
+        }
+    )
+    for src in ("app/Http/Attr.php", "app/Http/Url.php"):
+        edge = graph.get_edge_data(src, "app/Actions/Login.php")
+        assert edge is not None and edge["hint_source"] == QUALIFIED_NAME_HINT, src

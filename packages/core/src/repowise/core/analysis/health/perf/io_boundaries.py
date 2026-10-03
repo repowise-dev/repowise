@@ -97,21 +97,24 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     Over-binding is deliberate and harmless: an imported name only becomes a
     finding when it is later *called as an execution sink*, which a non-I/O
     symbol never is.
+
+    When a statement names several I/O modules (a Rust ``use { ... }`` block),
+    the first one in source order wins, and within one token its most specific
+    (longest) variant. The order is fixed so the result never depends on set
+    iteration, which varies with ``PYTHONHASHSEED``.
     """
     text = _decode(node)
-    candidates: set[str] = set()
-    # TS / JS module sources are quoted string literals.
-    for m in re.findall(r"""["']([^"']+)["']""", text):
-        candidates |= _candidate_variants(m)
-    # Python / Java / ... dotted modules / bare identifiers.
-    for tok in re.findall(r"[A-Za-z0-9_.:@/]+", text):
-        candidates |= _candidate_variants(tok)
+    # TS / JS module sources are quoted string literals, tried first; then
+    # Python / Java / ... dotted modules and bare identifiers.
+    tokens = re.findall(r"""["']([^"']+)["']""", text) + re.findall(r"[A-Za-z0-9_.:@/]+", text)
 
     kind: str | None = None
-    for cand in candidates:
-        resolved = classify_io_kind(cand)
-        if resolved:
-            kind = resolved
+    for tok in tokens:
+        for cand in sorted(_candidate_variants(tok), key=lambda c: (-len(c), c)):
+            kind = classify_io_kind(cand)
+            if kind:
+                break
+        if kind:
             break
     if kind is None:
         return None, []
@@ -127,75 +130,92 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
 
     A whole-tree scan of import nodes (import statements live at module scope
     but a defensive full walk also catches function-local imports). Names that
-    do not originate from a classified I/O library are simply absent.
+    do not originate from a classified I/O library are simply absent. The
+    complexity walker runs the same :func:`_io_visit` from its shared file
+    descent instead of calling this.
     """
     names: dict[str, str] = {}
-    # Names rebound by a plain local assignment (``requests = {...}``) that
-    # shadows the import. ``sink_kind`` has no call-site position, so full
-    # per-scope resolution would need a walker rewrite; instead we drop any
-    # import name that is also an assignment target *anywhere* in the file. That
-    # is coarser than true scoping (it also suppresses a genuine ``requests.get``
-    # in a file that rebinds ``requests`` elsewhere — a recall trade for
-    # precision), but closes the shadowed-receiver false flag with no new pass.
     rebound: set[str] = set()
     stack: list[_NodeLike] = [tree_root]
     while stack:
         node = stack.pop()
-        # ``import`` covers Python / TS / Java / Go import nodes; C# spells its
-        # import a ``using_directive`` (and Go an ``import_spec``), Rust a
-        # ``use_declaration`` — none of which contains the substring "import".
-        if node.type == "call" and language == "ruby":
-            # Ruby's import statement is a method call: ``require "net/http"``.
-            # Classify the quoted feature path; its segments bind lowercase
-            # (``net`` / ``httparty``), which the Ruby dialect normalises its
-            # constant receivers against. ``require_relative`` paths are local
-            # files and never classify — harmless to run through the table.
-            method = (
-                node.child_by_field_name("method") if hasattr(node, "child_by_field_name") else None
-            )
-            if method is not None and (method.text or b"") in (b"require", b"require_relative"):
-                kind, bound = _classify_import(node)
-                if kind is not None:
-                    for name in bound:
-                        names.setdefault(name, kind)
-        elif node.type == "declUses" and language == "pascal":
-            # Pascal's ``uses`` clause is one flat node listing every unit
-            # (``uses SysUtils, Classes, IdHTTP;``), unlike Go's grouped
-            # import which nests a per-line ``import_spec`` leaf. Classifying
-            # the whole node would pick whichever unit's kind resolves first
-            # out of an unordered set and bind ALL of them to it (so
-            # ``IdHTTP`` could inherit ``db`` from a ``FireDAC`` listed in the
-            # same clause) -- so each ``moduleName`` child is classified on
-            # its own instead.
-            for child in node.children:
-                if child.type != "moduleName":
-                    continue
-                kind, bound = _classify_import(child)
-                if kind is not None:
-                    for name in bound:
-                        names.setdefault(name, kind)
-        elif "import" in node.type or node.type in ("using_directive", "use_declaration"):
-            # Classify only the *leaf* import node. A Go grouped
-            # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
-            # wrapping per-line ``import_spec`` leaves; classifying the wrapper
-            # binds every name in the block to whichever line resolves first
-            # (so ``regexp`` would inherit ``db``). Skip a node that contains a
-            # nested import-spec — its children carry the scoped truth.
-            has_spec_child = any("import_spec" in c.type for c in node.children)
-            if not has_spec_child:
-                kind, bound = _classify_import(node)
-                if kind is not None:
-                    for name in bound:
-                        names.setdefault(name, kind)
-        elif node.type == "assignment":
-            # Python assignment target; ``x = ...`` shadows an imported ``x``.
-            target = (
-                node.child_by_field_name("left") if hasattr(node, "child_by_field_name") else None
-            )
-            if target is not None and target.type == "identifier" and target.text is not None:
-                rebound.add(target.text.decode("utf-8", "replace"))
+        _io_visit(node, node.type, language, names, rebound)
         for child in node.children:
             stack.append(child)
+    return _finish_io_names(names, rebound)
+
+
+def _io_visit(
+    node: _NodeLike, node_type: str, language: str, names: dict[str, str], rebound: set[str]
+) -> None:
+    """Bind the I/O names an import at *node* brings in, or note a rebinding.
+
+    *rebound* collects names rebound by a plain local assignment
+    (``requests = {...}``) that shadows the import. ``sink_kind`` has no
+    call-site position, so full per-scope resolution would need a walker
+    rewrite; instead :func:`_finish_io_names` drops any import name that is
+    also an assignment target *anywhere* in the file. That is coarser than true
+    scoping (it also suppresses a genuine ``requests.get`` in a file that
+    rebinds ``requests`` elsewhere, a recall trade for precision), but closes
+    the shadowed-receiver false flag with no new pass.
+    """
+    # ``import`` covers Python / TS / Java / Go import nodes; C# spells its
+    # import a ``using_directive`` (and Go an ``import_spec``), Rust a
+    # ``use_declaration`` — none of which contains the substring "import".
+    if node_type == "call" and language == "ruby":
+        # Ruby's import statement is a method call: ``require "net/http"``.
+        # Classify the quoted feature path; its segments bind lowercase
+        # (``net`` / ``httparty``), which the Ruby dialect normalises its
+        # constant receivers against. ``require_relative`` paths are local
+        # files and never classify — harmless to run through the table.
+        method = (
+            node.child_by_field_name("method") if hasattr(node, "child_by_field_name") else None
+        )
+        if method is not None and (method.text or b"") in (b"require", b"require_relative"):
+            kind, bound = _classify_import(node)
+            if kind is not None:
+                for name in bound:
+                    names.setdefault(name, kind)
+    elif node_type == "declUses" and language == "pascal":
+        # Pascal's ``uses`` clause is one flat node listing every unit
+        # (``uses SysUtils, Classes, IdHTTP;``), unlike Go's grouped
+        # import which nests a per-line ``import_spec`` leaf. Classifying
+        # the whole node would pick whichever unit's kind resolves first
+        # and bind ALL of them to it (so
+        # ``IdHTTP`` could inherit ``db`` from a ``FireDAC`` listed in the
+        # same clause) -- so each ``moduleName`` child is classified on
+        # its own instead.
+        for child in node.children:
+            if child.type != "moduleName":
+                continue
+            kind, bound = _classify_import(child)
+            if kind is not None:
+                for name in bound:
+                    names.setdefault(name, kind)
+    elif "import" in node_type or node_type in ("using_directive", "use_declaration"):
+        # Classify only the *leaf* import node. A Go grouped
+        # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
+        # wrapping per-line ``import_spec`` leaves; classifying the wrapper
+        # binds every name in the block to whichever line resolves first
+        # (so ``regexp`` would inherit ``db``). Skip a node that contains a
+        # nested import-spec — its children carry the scoped truth.
+        has_spec_child = any("import_spec" in c.type for c in node.children)
+        if not has_spec_child:
+            kind, bound = _classify_import(node)
+            if kind is not None:
+                for name in bound:
+                    names.setdefault(name, kind)
+    elif node_type == "assignment":
+        # Python assignment target; ``x = ...`` shadows an imported ``x``.
+        target = (
+            node.child_by_field_name("left") if hasattr(node, "child_by_field_name") else None
+        )
+        if target is not None and target.type == "identifier" and target.text is not None:
+            rebound.add(target.text.decode("utf-8", "replace"))
+
+
+def _finish_io_names(names: dict[str, str], rebound: set[str]) -> dict[str, str]:
+    """*names* without the ones a plain assignment rebinds (see :func:`_io_visit`)."""
     for name in rebound:
         names.pop(name, None)
     return names

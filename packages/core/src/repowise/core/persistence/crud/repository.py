@@ -147,6 +147,7 @@ async def update_repo_git_totals(
     repo_id: str,
     *,
     total_commit_count: int | None = None,
+    total_merge_commit_count: int | None = None,
     first_commit_at: datetime | None = None,
     total_contributor_count: int | None = None,
     first_commit_author: str | None = None,
@@ -165,6 +166,7 @@ async def update_repo_git_totals(
     """
     updates = {
         "total_commit_count": total_commit_count,
+        "total_merge_commit_count": total_merge_commit_count,
         "first_commit_at": first_commit_at,
         "total_contributor_count": total_contributor_count,
         "first_commit_author": first_commit_author,

@@ -8,17 +8,22 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
+  /** The repository's own documents naming this file, rendered below the page. */
+  referencesPanel?: ReactNode | undefined;
 }
 
-export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
+export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabProps) {
   if (!wikiPage) {
     return (
-      <EmptyState
-        titleAs="h2"
-        icon={<BookOpen className="h-8 w-8" />}
-        title="No documentation page for this file"
-        description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
-      />
+      <div className="space-y-6">
+        <EmptyState
+          titleAs="h2"
+          icon={<BookOpen className="h-8 w-8" />}
+          title="No documentation page for this file"
+          description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
+        />
+        {referencesPanel}
+      </div>
     );
   }
 
@@ -62,6 +67,8 @@ export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
       <article data-chat-selection="" className="max-w-none overflow-hidden">
         {docSlot}
       </article>
+
+      {referencesPanel}
     </div>
   );
 }

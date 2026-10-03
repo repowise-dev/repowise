@@ -20,18 +20,16 @@ from enum import StrEnum
 class DriftKind(StrEnum):
     """The reference classes this detector ships.
 
-    ``SYMBOL`` is deliberately absent. Phase 1 measured it at a 55-69% flag
-    rate across two repositories and killed it: backticks in technical prose
-    mean "this is a literal token", not "this is a code symbol". The top
-    flagged tokens were ``string``, ``boolean``, ``true``, ``OPENAI_API_KEY``,
-    ``PATH`` and ``HEAD``. The extraction premise is wrong, so a better graph
-    would not rescue it.
+    ``SYMBOL`` flags only a token git proves was a symbol definition when its
+    line was written and is defined nowhere now (:mod:`.symbols`); backticks
+    alone mean "literal", and flagging on shape was 55-69% noise.
     """
 
     PATH = "path"
     LINK = "link"
     ANCHOR = "anchor"
     COMMAND = "command"
+    SYMBOL = "symbol"
 
 
 class DriftVerdict(StrEnum):
@@ -77,6 +75,9 @@ class DocReference:
     """The enclosing heading trail, joined by " > ". Used to tell prose that
     *describes* the repository from prose that *teaches* the reader to add to
     it, which is a confidence tier rather than an exclusion."""
+    column: int = field(default=-1, compare=False)
+    """0-based offset of ``raw`` in the untrimmed line, or -1 when unknown.
+    Outside equality, so one reference repeated on a line still dedupes."""
 
 
 @dataclass
@@ -107,6 +108,15 @@ class DocDriftFindingData:
     never applied: this detector does not rewrite documents."""
     suggestion_basis: str = ""
     """How ``suggestion`` was found, from :data:`~.constants.SuggestionBasis`."""
+    suggested_line: str = ""
+    """The whole document line with ``suggestion`` in place of every copy of
+    the reference, or empty. Only a run that read the document has it."""
+    suggestion_columns: tuple[tuple[int, int], ...] = ()
+    """Each replaced span on the line: 1-based start and exclusive end, in
+    UTF-16 code units."""
+    defined_in: tuple[str, ...] = ()
+    """``SYMBOL`` only: the files that defined the name when the line was
+    written, and where they live now. Lets a change that edits one own it."""
 
 
 @dataclass(frozen=True)
@@ -133,6 +143,18 @@ class ResolvedDocReference:
     """1-indexed line within the document."""
     section: str = ""
     """The enclosing heading trail, so a reader can find the passage."""
+
+
+@dataclass(frozen=True)
+class SymbolScope:
+    """Which stored ``SYMBOL`` findings a write replaces: every one in
+    ``documents``, and elsewhere only the ``(document, target)`` pairs listed."""
+
+    documents: frozenset[str] = frozenset()
+    references: frozenset[tuple[str, str]] = frozenset()
+
+    def covers(self, document: str, target: str) -> bool:
+        return document in self.documents or (document, target) in self.references
 
 
 @dataclass
@@ -169,6 +191,10 @@ class DocDriftReport:
     ("which documents mention this file"). Retained rather than recomputed,
     because the resolver already had each one. Scoped by
     ``authoritative_paths`` exactly as findings are."""
+    symbol_scope: SymbolScope | None = field(default=None)
+    """The ``SYMBOL`` findings this report speaks for; ``None`` means every one
+    in ``authoritative_paths``. An incremental update re-resolves only the
+    references it could have changed, and the write carries the rest forward."""
     authoritative_paths: frozenset[str] | None = field(default=None)
     """Document paths this report may speak for; ``None`` means all of them.
     Mirrors dead code's field of the same name so an incremental re-check can

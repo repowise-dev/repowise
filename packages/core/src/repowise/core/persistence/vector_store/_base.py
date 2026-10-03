@@ -8,19 +8,21 @@ re-exported from the package ``__init__`` so the historical import path
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 from ..information_floor import count_page_denied_a_vector, meets_information_floor
-from ..search import SearchResult
+from ..search import FILE_VOCABULARY_KEY, SearchResult
 
 __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
     "EMBED_TEXT_MAX_CHARS",
+    "FILE_VOCABULARY_KEY",
     "STORED_SNIPPET_CHARS",
     "BatchChunkFailure",
     "BatchEmbeddingError",
@@ -126,6 +128,7 @@ def embed_item(
     target_path: str,
     summary: str,
     content: str,
+    page_metadata: Mapping[str, object] | str | None = None,
 ) -> tuple[str, str, dict] | None:
     """Build the one ``(page_id, text, metadata)`` item every writer embeds.
 
@@ -164,6 +167,11 @@ def embed_item(
     resolves as a link target, and a reader who arrives at it still learns the
     file exists. It is only kept out of the index, where its cost is paid by
     other pages. The floor is 0 by default, which admits everything.
+
+    ``page_metadata`` is the page's metadata, as a dict (a generated page) or
+    the stored JSON string (a ``wiki_pages`` row). Only
+    :data:`FILE_VOCABULARY_KEY` is read from it, and appended after the
+    content; the floor still measures ``content`` alone.
     """
     if not title.strip():
         raise ValueError(
@@ -174,7 +182,7 @@ def embed_item(
     if not meets_information_floor(content):
         count_page_denied_a_vector()
         return None
-    parts = [p for p in (title, target_path, summary, content) if p]
+    parts = [p for p in (title, target_path, summary, content, _vocabulary(page_metadata)) if p]
     return (
         page_id,
         "\n".join(parts),
@@ -188,6 +196,18 @@ def embed_item(
             "content": content[:STORED_SNIPPET_CHARS],
         },
     )
+
+
+def _vocabulary(page_metadata: Mapping[str, object] | str | None) -> str:
+    """The file vocabulary stored in *page_metadata*, or ``""``."""
+    if isinstance(page_metadata, str):
+        try:
+            page_metadata = json.loads(page_metadata or "{}")
+        except ValueError:
+            return ""
+    if not isinstance(page_metadata, Mapping):
+        return ""
+    return str(page_metadata.get(FILE_VOCABULARY_KEY) or "")
 
 
 def iter_embed_chunks(

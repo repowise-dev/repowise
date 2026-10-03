@@ -86,6 +86,7 @@ class BrainMethodDetector:
                         "max_nesting": fn.max_nesting,
                         "dependents_count": ctx.dependents_count,
                         "centrality_floor": floor,
+                        "dispatch_share": fn.dispatch_share,
                     },
                     reason=(
                         f"Brain Method: {fn.name} is {fn.nloc} lines, CCN {fn.ccn}, "

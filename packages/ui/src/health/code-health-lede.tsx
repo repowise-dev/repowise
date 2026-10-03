@@ -89,6 +89,12 @@ export interface CodeHealthLedeProps {
   pillar?: LedePillar;
   /** Rendered under the prose, for the host's pillar deep-links. */
   action?: React.ReactNode;
+  /**
+   * `secondary` when something else leads the page (Fix first on Code
+   * Health): one line with the score and its band, and the prose and the
+   * ribbon behind "More". `lead` is the full opening read.
+   */
+  variant?: "lead" | "secondary";
 }
 
 /** "3 months" / "1 month", from a day count. */
@@ -103,12 +109,15 @@ export function CodeHealthLede({
   distribution,
   pillar = "health",
   action,
+  variant = "lead",
 }: CodeHealthLedeProps) {
   const health = summary.average_health;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
   const hotspot = summary.hotspot_health;
+  const worstTestPath = summary.worst_test_path;
+  const worstTestScore = summary.worst_test_score;
   // Read off the response, not the page's control: the two disagree while a
   // request is in flight, and a figure captioned by the mode the reader just
   // asked for rather than the one it was computed under is the whole bug this
@@ -157,7 +166,7 @@ export function CodeHealthLede({
   ];
 
 
-  return (
+  const full = (
     <div className="flex flex-col gap-6">
       <PageLede
         label="Code health"
@@ -262,10 +271,67 @@ export function CodeHealthLede({
             , {describeGap(hotspot, health)}
           </p>
         )}
+
+        {/* Tests are ranked apart from production files, so the weakest one
+            would otherwise never be named on this page. */}
+        {worstTestPath && worstTestScore != null && (
+          <p className="mt-2.5">
+            Test files are ranked apart. The lowest scoring is{" "}
+            <span className="break-all font-mono text-[12px] text-[var(--color-text-primary)]">
+              {worstTestPath}
+            </span>{" "}
+            at{" "}
+            <strong
+              className="font-semibold"
+              style={{ color: healthBandColor(bandForScore(worstTestScore)) }}
+            >
+              {formatScore(worstTestScore)}
+            </strong>
+            .
+          </p>
+        )}
       </PageLede>
 
       <StatRibbon stats={stats} />
     </div>
+  );
+
+  if (variant === "lead") return full;
+
+  return (
+    <details className="group">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          Code health
+        </span>
+        <span
+          className="text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]"
+          {...(healthChip ? { style: { color: healthChip.color } } : {})}
+        >
+          {formatScore(health)}
+        </span>
+        <span className="text-xs text-[var(--color-text-tertiary)]">
+          out of 10 across {formatNumber(summary.file_count)} files
+        </span>
+        {healthChip ? (
+          <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: healthChip.color }}
+            />
+            {healthChip.label}
+          </span>
+        ) : null}
+        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open:hidden">
+          More
+        </span>
+        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open:inline">
+          Less
+        </span>
+      </summary>
+      <div className="mt-5">{full}</div>
+    </details>
   );
 }
 

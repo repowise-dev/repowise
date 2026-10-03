@@ -29,6 +29,7 @@ import pathspec
 import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
+from ..code_origin import is_generated_header
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -73,6 +74,25 @@ class SkippedSourceFile(NamedTuple):
     path: str
     size_kb: int
     reason: str  # "over_max_size" | "minified"
+
+
+class _DirIgnore(NamedTuple):
+    """One directory's nested ignore rules, matched against a child's name.
+
+    Kept apart because they differ in authority: git never ignores a tracked
+    file, so a ``.gitignore`` rule yields to the tracked set while a
+    ``.repowiseIgnore`` rule is the user's own exclusion and always applies.
+    """
+
+    gitignore: pathspec.PathSpec
+    extra: pathspec.PathSpec
+
+
+class _TrackedPaths(NamedTuple):
+    """What git tracks under the root: files, and every directory holding one."""
+
+    files: frozenset[str]
+    dirs: frozenset[str]
 
 
 @dataclass
@@ -127,6 +147,13 @@ class TraversalStats:
     """
     unknown_language_files_truncated: bool = False
     """True once the cap above dropped a name, so a reader can say "at least"."""
+    generated_files: list[str] = field(default_factory=list)
+    """Paths behind ``skipped_generated``, so the index scope can name them.
+
+    Uncapped: one short string per dropped file, bounded by the tree the
+    traverser already holds a record of, and a capped list filled by parallel
+    workers would name a different subset on every run.
+    """
 
 
 log = structlog.get_logger(__name__)
@@ -152,6 +179,9 @@ _MAX_UNKNOWN_LANGUAGE_PATHS = 500
 _REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".api",  # also matches Kotlin's .klib.api
+        ".asm",  # assembly that calls or defines C/C++ symbols by name
+        ".def",  # a Windows module-definition file's EXPORTS list
+        ".s",  # .s and .S, matched lowercased
         ".properties",
         ".rst",
         ".topic",
@@ -249,16 +279,6 @@ _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
     "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
 )
 
-# Generated file markers (checked in first 512 bytes)
-_GENERATED_MARKERS: tuple[str, ...] = (
-    "Code generated",
-    "DO NOT EDIT",
-    "This file was automatically generated",
-    "GENERATED CODE",
-    "AUTO-GENERATED",
-    "@generated",
-)
-
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Package-root manifests for monorepo detection, from the language registry.
@@ -353,9 +373,16 @@ class FileTraverser:
         self._extra_exclude = _compile_gitignore(patterns)
         # Absolute dir path -> that directory's nested ignore spec. The root is
         # pre-seeded because its files are already loaded above.
-        self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
-            str(self.repo_root): self._extra_ignore,
+        self._dir_ignore_cache: dict[str, _DirIgnore] = {
+            str(self.repo_root): _DirIgnore(_compile_gitignore([]), self._extra_ignore),
         }
+        # Lazy: read only once a .gitignore rule matches something.
+        self._tracked: _TrackedPaths | None = None
+        self._tracked_lock = threading.Lock()
+        # Gitignored dirs walked only for the tracked files they hold. A nested
+        # rule is matched against the child name alone, so without this the
+        # untracked files beside a tracked `.gitkeep` would slip in.
+        self._ignored_tracked_dirs: set[str] = set()
         # Parsed even when submodules are included: the set exempts them from
         # the nested-repo skip, since an initialized submodule has a `.git` file.
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
@@ -415,6 +442,10 @@ class FileTraverser:
     @property
     def _distributions(self) -> frozenset[str]:
         return self._console_script_tables().distributions
+
+    @property
+    def _distribution_inits(self) -> frozenset[str]:
+        return self._console_script_tables().package_inits
 
     # ------------------------------------------------------------------
     # Public API
@@ -490,12 +521,12 @@ class FileTraverser:
                 self.stats.total_paths_walked += 1
                 yield dirpath_obj / filename
 
-    def _get_dir_ignore(self, dirpath: Path) -> pathspec.PathSpec:
-        """Return the per-directory ignore spec, loading and caching on first access.
+    def _get_dir_ignore(self, dirpath: Path) -> _DirIgnore:
+        """Return the per-directory ignore specs, loading and caching on first access.
 
-        Merges the directory's nested ``.gitignore`` and ``.repowiseIgnore``
-        (in that order), as git applies a ``.gitignore`` to its own directory.
-        Patterns are matched against the immediate child name.
+        The directory's nested ``.gitignore`` and ``.repowiseIgnore``, as git
+        applies a ``.gitignore`` to its own directory. Patterns are matched
+        against the immediate child name.
 
         Read outside the lock and written under it, like
         :meth:`_console_script_tables`, since the callers are per-path workers.
@@ -503,24 +534,48 @@ class FileTraverser:
         key = str(dirpath)
         spec = self._dir_ignore_cache.get(key)
         if spec is None:
-            lines: list[str] = []
-            for name in (".gitignore", self._extra_ignore_filename):
-                ignore_file = dirpath / name
-                if ignore_file.exists():
-                    lines.extend(
-                        ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    )
-            spec = _compile_gitignore(lines)
+            spec = _DirIgnore(
+                load_extra_ignore_spec(dirpath, ".gitignore"),
+                load_extra_ignore_spec(dirpath, self._extra_ignore_filename),
+            )
             with self._dir_ignore_lock:
                 # Keep the first published spec so every caller shares one object.
                 spec = self._dir_ignore_cache.setdefault(key, spec)
         return spec
 
+    def _tracked_paths(self) -> _TrackedPaths:
+        """Git's tracked files under the root, read once; empty outside a repo.
+
+        Double-checked locking as in :meth:`_console_script_tables`: the first
+        caller may be a per-path worker, and each duplicate is a git call.
+        """
+        if self._tracked is None:
+            with self._tracked_lock:
+                if self._tracked is None:
+                    # Deferred: git_refs reaches analysis modules that import ingestion.
+                    from ..git_refs import tracked_paths
+
+                    files = tracked_paths(str(self.repo_root))
+                    dirs = {p.as_posix() for f in files for p in Path(f).parents}
+                    dirs.discard(".")
+                    self._tracked = _TrackedPaths(files, frozenset(dirs))
+        return self._tracked
+
+    def _is_tracked(self, rel_str: str, *, is_dir: bool = False) -> bool:
+        """Whether git tracks the file, or for a directory any file under it.
+
+        Git ignores only untracked paths, so a ``.gitignore`` match yields to
+        this: a broad rule such as ``logs`` cannot drop a file a nested
+        ``.gitignore`` re-included with ``!`` and git tracks.
+        """
+        tracked = self._tracked_paths()
+        return rel_str in (tracked.dirs if is_dir else tracked.files)
+
     def _should_skip_dir(
         self,
         dirname: str,
         rel_path: Path,
-        dir_ignore: pathspec.PathSpec | None = None,
+        dir_ignore: _DirIgnore | None = None,
     ) -> bool:
         if dirname in _BLOCKED_DIRS:
             return True
@@ -528,14 +583,34 @@ class FileTraverser:
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True
         dir_pattern = rel_str + "/"
-        if (
-            self._gitignore.match_file(dir_pattern)
-            or self._extra_ignore.match_file(dir_pattern)
-            or self._extra_exclude.match_file(dir_pattern)
+        if self._extra_ignore.match_file(dir_pattern) or self._extra_exclude.match_file(
+            dir_pattern
         ):
             return True
         # Per-directory ignore: pattern is relative to the parent directory.
-        return dir_ignore is not None and dir_ignore.match_file(dirname + "/")
+        if dir_ignore is not None and dir_ignore.extra.match_file(dirname + "/"):
+            return True
+        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dirname + "/")
+        return self._dir_gitignored(rel_str, nested)
+
+    def _dir_gitignored(self, rel_str: str, nested_match: bool) -> bool:
+        """Whether ``.gitignore`` prunes the directory, which it may not if git tracks a file in it."""
+        if not (
+            nested_match
+            or self._gitignore.match_file(rel_str + "/")
+            or self._in_ignored_tracked_dir(rel_str)
+        ):
+            return False
+        if not self._is_tracked(rel_str, is_dir=True):
+            return True
+        self._ignored_tracked_dirs.add(rel_str)
+        return False
+
+    def _in_ignored_tracked_dir(self, rel_str: str) -> bool:
+        """Whether a gitignored directory kept for its tracked files holds *rel_str*."""
+        return bool(self._ignored_tracked_dirs) and any(
+            p.as_posix() in self._ignored_tracked_dirs for p in Path(rel_str).parents
+        )
 
     def _is_repo_boundary(self, rel_str: str, abs_path: Path) -> bool:
         """True (and counted) for an excluded submodule or a nested git repo."""
@@ -607,18 +682,30 @@ class FileTraverser:
         """The stats counter of the first path rule that excludes this file, if any."""
         if abs_path.suffix.lower() in _BLOCKED_EXTENSIONS:
             return "skipped_blocked_extension"
-        if self._gitignore.match_file(rel_str):
+        if self._root_gitignored(rel_str):
             return "skipped_gitignore"
         if self._extra_ignore.match_file(rel_str):
             return "skipped_extra_ignore"
         if self._extra_exclude.match_file(rel_str):
             return "skipped_extra_exclude"
-        # Per-directory .repowiseIgnore: check filename against the parent dir's spec.
-        if self._get_dir_ignore(abs_path.parent).match_file(abs_path.name):
+        if self._dir_ignore_drops(abs_path, rel_str):
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
         return None
+
+    def _root_gitignored(self, rel_str: str) -> bool:
+        """Whether the root ``.gitignore`` (or a kept ignored dir) drops an untracked file."""
+        return (
+            self._gitignore.match_file(rel_str) or self._in_ignored_tracked_dir(rel_str)
+        ) and not self._is_tracked(rel_str)
+
+    def _dir_ignore_drops(self, abs_path: Path, rel_str: str) -> bool:
+        """Whether the parent directory's own ignore files drop the file, by name."""
+        dir_ignore = self._get_dir_ignore(abs_path.parent)
+        if dir_ignore.extra.match_file(abs_path.name):
+            return True
+        return dir_ignore.gitignore.match_file(abs_path.name) and not self._is_tracked(rel_str)
 
     def _resolve_language(
         self, abs_path: Path, rel_str: str, size_bytes: int
@@ -664,7 +751,9 @@ class FileTraverser:
             or not _is_generated(abs_path)
         ):
             return False
-        self._count("skipped_generated")
+        with self._count_lock:
+            self.stats.skipped_generated += 1
+            self.stats.generated_files.append(rel_str)
         log.debug("Skipping generated file", path=rel_str)
         return True
 
@@ -686,6 +775,12 @@ class FileTraverser:
         if language is None or self._skip_generated(abs_path, rel_str, language):
             return None
 
+        manifest_entry = (
+            _is_console_script_target(rel_str, self._console_script_modules)
+            or rel_str in self._distribution_inits
+        )
+        is_test = is_test_related_path(rel_str, language)
+        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -693,12 +788,13 @@ class FileTraverser:
             size_bytes=size_bytes,
             git_hash="",
             last_modified=datetime.fromtimestamp(stat.st_mtime),
-            is_test=is_test_related_path(rel_str, language),
+            is_test=is_test,
             is_config=_is_config_file(language),
-            is_api_contract=_is_api_contract(abs_path, language),
-            is_entry_point=_is_entry_point(
-                rel_str, abs_path, language, self._console_script_modules
-            ),
+            is_api_contract=not is_test and _is_api_contract(abs_path, language),
+            # A runner loads a test file, but no reader enters the system there.
+            is_entry_point=entry and not is_test,
+            is_manifest_entry=manifest_entry,
+            is_reachability_root=entry,
         )
 
     # ------------------------------------------------------------------
@@ -706,61 +802,78 @@ class FileTraverser:
     # ------------------------------------------------------------------
 
     def _detect_monorepo(self) -> tuple[list[PackageInfo], bool]:
-        """Detect package sub-directories by looking for manifest files.
+        """Packages: manifest directories at any depth, checked against workspaces.
 
-        Candidate dirs the main traversal would never enter (nested git
-        repos, submodules, gitignored/blocked dirs) are rejected up front, so
-        a package the walk skips is neither reported nor scanned.
+        Candidates come from :meth:`package_root_dirs`, so a package the walk
+        skips is neither reported nor scanned. Roots under test or example trees
+        are dropped: a fixture or sample carries a manifest without being one
+        of the repo's packages.
+
+        A root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work) is the
+        authority for its manifest kind: its members are ``declared``, and an
+        undeclared root is dropped when one of its manifests is a declared kind
+        (the package manager does not build it) or when it sits inside a
+        declared member (a template or fixture shipped with that package).
+        Undeclared roots of kinds no declaration covers are kept.
         """
+        from ..support_paths import is_test_or_example_path
+        from .workspace_members import declared_workspace_members, manifest_package_name
+
         packages: list[PackageInfo] = []
-        seen_paths: set[str] = set()
+        members = declared_workspace_members(self.repo_root)
+        all_members = set().union(*members.values())
         # Mirrors GraphBuilder._prune_nested_git.
         prune_nested = not (self._include_submodules or self._include_nested_repos)
 
-        for depth in (1, 2):
-            pattern = "/".join(["*"] * depth) + "/*"
-            for candidate in self.repo_root.glob(pattern):
-                if candidate.name not in _MANIFEST_FILES:
-                    continue
-                pkg_dir = candidate.parent
-                rel_pkg_path = pkg_dir.relative_to(self.repo_root)
-                rel_pkg = rel_pkg_path.as_posix()
-                if rel_pkg in seen_paths:
-                    continue
-                if self.dir_chain_skipped(rel_pkg_path):
-                    continue
-                seen_paths.add(rel_pkg)
-                lang, entry_pts = _scan_package_dir(
-                    pkg_dir,
-                    self.repo_root,
-                    prune_nested_git=prune_nested,
-                    is_pruned=self.dir_chain_skipped,
+        for rel_pkg, found in sorted(self.package_manifests().items()):
+            pkg_dir = self.repo_root / rel_pkg
+            manifests = sorted(found)
+            if is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
+                continue
+            declaring = [m for m in manifests if rel_pkg in members.get(m, ())]
+            if not declaring and (
+                any(m in members for m in manifests)
+                or any(p.as_posix() in all_members for p in Path(rel_pkg).parents)
+            ):
+                continue
+            manifest = (declaring or manifests)[0]
+            lang, entry_pts = _scan_package_dir(
+                pkg_dir,
+                self.repo_root,
+                prune_nested_git=prune_nested,
+                is_pruned=self.dir_chain_skipped,
+            )
+            packages.append(
+                PackageInfo(
+                    name=manifest_package_name(pkg_dir / manifest) or pkg_dir.name,
+                    path=rel_pkg,
+                    language=lang,
+                    entry_points=entry_pts,
+                    manifest_file=manifest,
+                    declared=bool(declaring),
                 )
-                packages.append(
-                    PackageInfo(
-                        name=pkg_dir.name,
-                        path=rel_pkg,
-                        language=lang,
-                        entry_points=entry_pts,
-                        manifest_file=candidate.name,
-                    )
-                )
+            )
 
-        packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
 
     def package_root_dirs(self) -> set[str]:
         """Every directory holding a package manifest, at any depth.
 
         Shares :func:`.package_roots.scan_package_roots` with health's module
-        attribution, and this traverser's own skip semantics, so the two agree
-        on what a package is. Distinct from :meth:`get_repo_structure`'s
-        ``packages``, which stops at depth 2 and pays for language and
-        entry-point detection per package.
+        attribution, and this traverser's own skip semantics (nested-repo
+        opt-ins included), so the two agree on what a package is.
         """
-        from .package_roots import scan_package_roots
+        return set(self.package_manifests())
 
-        return scan_package_roots(self.repo_root, is_pruned=self.dir_chain_skipped)
+    def package_manifests(self) -> dict[str, frozenset[str]]:
+        """:meth:`package_root_dirs` with the manifest filenames each one holds."""
+        from .package_roots import scan_package_manifests
+
+        return scan_package_manifests(
+            self.repo_root,
+            is_pruned=self.dir_chain_skipped,
+            prune_nested_git=not (self._include_submodules or self._include_nested_repos),
+        )
 
     def dir_chain_skipped(self, rel_dir: Path) -> bool:
         """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
@@ -930,8 +1043,11 @@ def _looks_minified(abs_path: Path) -> bool | None:
 def _is_generated(abs_path: Path) -> bool:
     """Return True if the file appears to be auto-generated.
 
-    A generated-file banner sits on the first line or two. Requiring the
-    marker there keeps the check off docblocks that merely mention one.
+    A generated-file banner sits on the first line or two, in a comment or a
+    module docstring. Code and prose that merely mention codegen (a string
+    literal "Auto-generated by …", a docstring about "the auto-generated
+    client") are not banners; :func:`repowise.core.code_origin.is_generated_header`
+    holds the rule.
     """
     name = abs_path.name
     if any(name.endswith(sfx) for sfx in _GENERATED_SUFFIXES):
@@ -941,22 +1057,37 @@ def _is_generated(abs_path: Path) -> bool:
             header = f.read(512)
     except OSError:
         return False
-    banner = "\n".join(header.splitlines()[:2]).upper()
-    return any(marker.upper() in banner for marker in _GENERATED_MARKERS)
+    return is_generated_header(header)
 
 
 def _is_config_file(language: LanguageTag) -> bool:
     return language in ("yaml", "toml", "json", "dockerfile", "makefile")
 
 
+# A spec named in its filename is a data file; ``openapi.ts`` is code that reads
+# one, and a code file earns the flag only from its routes (api_contract_detector).
+_API_SPEC_LANGUAGES: frozenset[str] = frozenset({"yaml", "json"})
+_API_SPEC_NAME_WORDS: frozenset[str] = frozenset({"openapi", "swagger"})
+# The version key every OpenAPI/Swagger document carries (``openapi: 3.1.0``,
+# ``"swagger": "2.0"``); generator configs named after the format lack it.
+_API_SPEC_VERSION_KEY = re.compile(
+    rb"""^\s*\{?\s*["']?(?:openapi|swagger)["']?\s*:\s*["']?\d""", re.M
+)
+
+
 def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool:
     if language in ("proto", "graphql"):
         return True
-    name_lower = abs_path.name.lower()
-    return any(
-        marker in name_lower
-        for marker in ("openapi", "swagger", "schema.graphql", "api.yaml", "api.json")
-    )
+    if language not in _API_SPEC_LANGUAGES:
+        return False
+    stem = abs_path.name.lower().rsplit(".", 1)[0]
+    # Whole words only: ``tsconfig.api.json`` is not an API spec, ``api.yaml`` may be.
+    if stem != "api" and _API_SPEC_NAME_WORDS.isdisjoint(re.split(r"[-_.]+", stem)):
+        return False
+    try:
+        return _API_SPEC_VERSION_KEY.search(abs_path.read_bytes()) is not None
+    except OSError:
+        return False
 
 
 def _stem_is_entry_point(abs_path: Path) -> bool:
@@ -964,18 +1095,14 @@ def _stem_is_entry_point(abs_path: Path) -> bool:
     return stem in _ENTRY_POINT_STEMS
 
 
-def _is_entry_point(
-    rel_str: str,
-    abs_path: Path,
-    language: str,
-    console_script_modules: frozenset[str],
-) -> bool:
-    """Whether this file gets ``FileInfo.is_entry_point``.
+def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
+    """Whether this file's *name* earns ``FileInfo.is_entry_point``.
 
     A conventional filename or stem is a guess, so it passes through
     ``not_an_execution_start``, the same correction the wiki's orientation list
-    uses. A ``[project.scripts]`` target is named evidence, so it is checked
-    outside that gate: this flag is what exempts a file from dead-code detection.
+    uses. A manifest-named file (a ``[project.scripts]`` target) is evidence,
+    so the caller ORs it in outside that gate. Dead-code exemption reads
+    ``is_reachability_root``, which every entry point also carries.
     """
     filename = abs_path.name
     named_entry = (
@@ -983,9 +1110,7 @@ def _is_entry_point(
         or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
         or _stem_is_entry_point(abs_path)
     )
-    if named_entry and not not_an_execution_start(rel_str, language):
-        return True
-    return _is_console_script_target(rel_str, console_script_modules)
+    return named_entry and not not_an_execution_start(rel_str, language)
 
 
 class ConsoleScriptTables(NamedTuple):
@@ -997,6 +1122,8 @@ class ConsoleScriptTables(NamedTuple):
     """Dotted module targets, used for entry-point detection."""
     distributions: frozenset[str]
     """``[project].name`` values — the distributions this repo installs as."""
+    package_inits: frozenset[str]
+    """Repo-relative ``__init__.py`` of each distribution's own import package."""
 
 
 def _collect_console_scripts(
@@ -1015,12 +1142,13 @@ def _collect_console_scripts(
     names: set[str] = set()
     modules: set[str] = set()
     distributions: set[str] = set()
+    inits: set[str] = set()
     try:
         config_files = list(
             iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
         )
     except OSError:
-        return ConsoleScriptTables(frozenset(), frozenset(), frozenset())
+        return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         project = _pyproject_project_table(config_file)
         if project is None:
@@ -1028,8 +1156,27 @@ def _collect_console_scripts(
         dist = project.get("name")
         if isinstance(dist, str) and dist.strip():
             distributions.add(dist.strip())
+            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                inits.add(init)
         _add_script_targets(project, names, modules)
-    return ConsoleScriptTables(frozenset(names), frozenset(modules), frozenset(distributions))
+    return ConsoleScriptTables(
+        frozenset(names), frozenset(modules), frozenset(distributions), frozenset(inits)
+    )
+
+
+def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
+    """The distribution's import package ``__init__.py``, flat or ``src/`` layout.
+
+    Ceiling: the import name is the normalised distribution name, so a package
+    that installs under another name (``[tool.setuptools] packages``, hatch
+    ``packages``) is not found; reading those tables is the upgrade path.
+    """
+    name = re.sub(r"[-.]+", "_", dist.strip()).lower()
+    inits = (base / name / "__init__.py", base / "src" / name / "__init__.py")
+    init = next((path for path in inits if path.is_file()), None)
+    if init is None or not init.is_relative_to(repo_root):
+        return None
+    return init.relative_to(repo_root).as_posix()
 
 
 def _pyproject_project_table(config_file: Path) -> dict | None:

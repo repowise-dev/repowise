@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -247,6 +248,21 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     return missing
 
 
+_DOMAIN_WORD_SUFFIXES = ("", "s", "es", "er", "ers")
+
+
+def _names_domain_word(token: str, words: set[str], text: str) -> bool:
+    """*token* as a word or with a common suffix, or (6+ chars) a word it begins.
+
+    A hyphenated token (``client-side``) is matched as a phrase in *text*.
+    """
+    if "-" in token:
+        return re.search(rf"\b{re.escape(token)}\b", text) is not None
+    if any(f"{token}{suffix}" in words for suffix in _DOMAIN_WORD_SUFFIXES):
+        return True
+    return len(token) >= 6 and any(word.startswith(token) for word in words)
+
+
 def _detect_question_domain(question: str) -> str | None:
     """Return ``"ui"``, ``"backend"``, or ``None`` when the question is ambiguous.
 
@@ -254,9 +270,12 @@ def _detect_question_domain(question: str) -> str | None:
     token sets fire, or neither, no penalty applies rather than miscategorise a
     cross-cutting question.
     """
-    qlow = question.lower()
-    has_ui = any(tok in qlow for tok in _UI_QUESTION_TOKENS)
-    has_backend = any(tok in qlow for tok in _BACKEND_QUESTION_TOKENS)
+    # Whole words, identifiers kept intact: ``module_page`` names a symbol, not
+    # a UI page, and ``client`` is not ``cli``. Hyphens split (``settings-page``).
+    text = question.lower()
+    words = set(re.findall(r"[a-z0-9_]+", text))
+    has_ui = any(_names_domain_word(tok, words, text) for tok in _UI_QUESTION_TOKENS)
+    has_backend = any(_names_domain_word(tok, words, text) for tok in _BACKEND_QUESTION_TOKENS)
     if has_ui and not has_backend:
         return "ui"
     if has_backend and not has_ui:

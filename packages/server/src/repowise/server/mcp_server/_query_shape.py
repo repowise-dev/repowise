@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os.path
 import re
+from collections.abc import Container
 from functools import cache
 
 
@@ -127,24 +128,138 @@ _IDENT_TOKEN_RE = re.compile(
 )
 
 
-def _embedded_identifiers(query: str) -> list[str]:
-    """Identifier-shaped tokens carried inside a natural-language query."""
-    return _IDENT_TOKEN_RE.findall(query)
+# Every word, dotted chains kept whole. Which of them are identifiers is
+# decided against the symbol table (``_embedded_identifiers`` with ``names``),
+# not by shape: shape alone misses ``proxyExecute`` and ``OpenAIProvider`` and
+# takes ``TypeScript``.
+_WORD_CHAIN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-def _identifier_candidates(query: str, mode: str) -> list[str]:
+def _identifier_shaped(token: str) -> bool:
+    """At least 3 chars with a capital, an underscore or a digit. Plain
+    lowercase words (``method``, ``class``) name symbols too broadly to count."""
+    return len(token) >= 3 and ("_" in token or any(ch.isupper() or ch.isdigit() for ch in token))
+
+
+def _folds_case(token: str) -> bool:
+    """Whether a case-insensitive match may stand for ``token``.
+
+    Mixed case past the first letter, or an underscore. A sentence-initial
+    ``Where`` or an all-caps ``API`` would otherwise fold onto a lowercase
+    ``where`` or ``api`` symbol, which the question never named.
+    """
+    body = token.strip("_")
+    return "_" in body or (
+        any(ch.islower() for ch in body) and any(ch.isupper() for ch in body[1:])
+    )
+
+
+def _names_symbol(token: str, names: Container[str]) -> bool:
+    """Case-sensitive first, then case-insensitive where ``_folds_case`` allows;
+    a dotted token also counts when its last part names a symbol."""
+    if token in names or (_folds_case(token) and token.lower() in names):
+        return True
+    return "." in token and _names_symbol(token.rsplit(".", 1)[1], names)
+
+
+def _embedded_identifiers(query: str, names: Container[str] | None = None) -> list[str]:
+    """Identifier tokens carried inside a natural-language query.
+
+    Without ``names``: the shape regex alone. With ``names`` (the indexed
+    symbol names), a token counts when it names at least one of them, or the
+    last part of a dotted token does: ``executeWithTool`` and
+    ``client.proxyExecute`` count when indexed, ``TypeScript`` does not unless
+    a symbol carries that name. A token no prose word fits
+    (``_looks_like_code_name``) counts even unindexed, so a search can say it
+    does not exist. ``names`` is tested for the token, then for its lowered
+    form, so a container that also answers for each name's lowered spelling
+    gets the case-insensitive leg.
+    """
+    if names is None:
+        return _IDENT_TOKEN_RE.findall(query)
+    return [
+        token
+        for token in _name_tokens(query)
+        if _names_symbol(token, names) or _looks_like_code_name(token)
+    ]
+
+
+def _name_tokens(query: str) -> list[str]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [t for t in _WORD_CHAIN_RE.findall(query) if "." in t or _identifier_shaped(t)]
+
+
+def _name_lookup_keys(query: str) -> set[str]:
+    """Lowered names ``_embedded_identifiers`` may test for ``query``, so a
+    caller loads only these rows of the symbol table."""
+    return {t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query)}
+
+
+_CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+_LOWER_CAMEL_RE = re.compile(r"[a-z]{2,}[a-z0-9]*[A-Z][a-z]")
+
+
+def _looks_like_code_name(token: str) -> bool:
+    """Shaped so no prose word or product name fits it.
+
+    snake_case, lowerCamel (``proxyExecute``), or three or more capitalised
+    humps (``AnthropicStreamingAdapter``). ``TypeScript``, ``GitHub``,
+    ``iPhone`` and ``macOS`` do not fit, so a name like them that matches no
+    symbol never reads as "that symbol does not exist".
+    """
+    if not _WORD_CHAIN_RE.fullmatch(token):
+        return False  # prose around a name ("AuthService login") is not one name
+    leaf = token.rsplit(".", 1)[-1].strip("_")
+    if "_" in leaf or _LOWER_CAMEL_RE.match(leaf):
+        return True
+    return leaf[:1].isupper() and len(_CAMEL_HUMP_RE.findall(leaf)) >= 3
+
+
+def _names_a_path(token: str, paths: list[str]) -> bool:
+    """Whether ``token``'s last dotted part is a directory or file stem among
+    ``paths``: a module the question names, which no symbol table carries."""
+    leaf = token.rsplit(".", 1)[-1]
+    return any(leaf == seg.split(".", 1)[0] for path in paths for seg in path.split("/"))
+
+
+# The label and score ceiling on the pages a search returns for a named
+# symbol that is not indexed: they answer the prose around the name at best.
+NOT_THE_NAMED_SYMBOL = "related, not the named symbol"
+_NOT_THE_NAMED_SYMBOL_CEILING = 0.45
+
+
+def _mark_not_the_named_symbol(items: list[dict]) -> None:
+    """Label ``items`` as related to the question, not the missing symbol, and
+    hold their scores under the 0.5 an agent would trust.
+
+    ``relevance_score`` (what ranks and what clients read) is scaled so the
+    best item sits at the ceiling, keeping the order; ``confidence_score`` is
+    capped where present.
+    """
+    top = max((item.get("relevance_score") or 0.0 for item in items), default=0.0)
+    scale = min(1.0, _NOT_THE_NAMED_SYMBOL_CEILING / top) if top else 1.0
+    for item in items:
+        item["relation"] = NOT_THE_NAMED_SYMBOL
+        if item.get("relevance_score"):
+            item["relevance_score"] = round(item["relevance_score"] * scale, 4)
+        if "confidence_score" in item:
+            item["confidence_score"] = min(item["confidence_score"], _NOT_THE_NAMED_SYMBOL_CEILING)
+
+
+def _identifier_candidates(query: str, mode: str, names: Container[str] | None = None) -> list[str]:
     """Identifier tokens the query is asking after, for the exact-match signal.
 
     A single-token query IS the identifier (symbol mode); a natural-language
     query carrying identifiers (hybrid mode) exposes them the same way
     ``_resolve_mode`` used to route here. Concept/path queries name none.
+    ``names`` validates the hybrid tokens (see ``_embedded_identifiers``).
     """
     if mode == "symbol":
         q = query.strip()
         canonical = _canonical_symbol_query(q)
         return [q, canonical[1]] if canonical else ([q] if q else [])
     if mode == "hybrid":
-        return _embedded_identifiers(query)
+        return _embedded_identifiers(query, names)
     return []
 
 
@@ -184,14 +299,15 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
 _VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
 
 
-def _resolve_mode(query: str, mode: str | None) -> str:
+def _resolve_mode(query: str, mode: str | None, names: Container[str] | None = None) -> str:
     """Resolve ``mode="auto"`` to a concrete branch from the query shape.
 
     Explicit modes pass through. ``auto`` routes path-shaped queries to path
     search, single identifier-shaped tokens to symbol search, and queries that
     merely *carry* an identifier inside natural language to hybrid; everything
     else stays concept (the original wiki-semantic path). The routing reuses
-    the exact heuristics that previously only emitted a grep_hint.
+    the exact heuristics that previously only emitted a grep_hint. With
+    ``names``, only validated identifiers route to hybrid.
     """
     m = (mode or "auto").lower()
     if m not in _VALID_MODES:
@@ -204,7 +320,7 @@ def _resolve_mode(query: str, mode: str | None) -> str:
         return "path"
     if _looks_like_exact_token(query):
         return "symbol"
-    if _embedded_identifiers(query):
+    if _embedded_identifiers(query, names):
         return "hybrid"
     return "concept"
 

@@ -12,7 +12,7 @@ export interface DeadCodeFindingResponse {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   start_line: number | null;
   end_line: number | null;
   /** Effective deletion-readiness — re-derived from confidence + risk factors. */

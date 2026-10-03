@@ -145,6 +145,17 @@ _HEDGE_MARKERS = (
     "not shown here",
     "material shown",
     "not visible in",
+    # Scoped to the retrieved material: bare, they read behaviour
+    # ("the validator does not show an error") as a hedge.
+    "evidence does not identify",
+    "evidence does not show",
+    "evidence does not specify",
+    "material does not identify",
+    "material does not show",
+    "material does not specify",
+    "excerpts do not identify",
+    "excerpts do not show",
+    "excerpts do not specify",
     "unable to determine",
     "not contain sufficient",
     "not contain enough",

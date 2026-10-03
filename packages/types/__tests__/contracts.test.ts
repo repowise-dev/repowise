@@ -63,7 +63,9 @@ describe("ChatArtifact discriminated union", () => {
         expectTypeOf(a.data.distance).toEqualTypeOf<number>();
       } else if (a.type === "dead_code") {
         expectTypeOf(a).toEqualTypeOf<DeadCodeArtifact>();
-        expectTypeOf(a.data.total_findings).toEqualTypeOf<number>();
+        if (a.data.mode !== "finding") {
+          expectTypeOf(a.data.summary.total_findings).toEqualTypeOf<number>();
+        }
       } else if (a.type === "diagram") {
         expectTypeOf(a).toEqualTypeOf<DiagramArtifact>();
         expectTypeOf(a.data.mermaid_syntax).toEqualTypeOf<string>();

@@ -23,6 +23,7 @@ is an accusation.
 
 from __future__ import annotations
 
+from ....ingestion.git_indexer.fix_shape import is_code_path
 from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -43,6 +44,14 @@ def _is_hotspot(ctx: FileContext) -> bool:
     return bool((ctx.git_meta or {}).get("is_hotspot"))
 
 
+def _has_something_to_test(ctx: FileContext) -> bool:
+    """Code with at least one function. A config file (``vite.config.ts``, a
+    ``.d.ts``, a non-code language) or a file with no function (types,
+    constants, a settings module) has nothing a test could exercise, so the
+    absence of one is not a gap."""
+    return is_code_path(ctx.file_path) and bool(ctx.all_functions)
+
+
 class UntestedHotspotDetector:
     name = "untested_hotspot"
     category = "test_coverage"
@@ -52,6 +61,8 @@ class UntestedHotspotDetector:
         # the suite itself, so where coverage is ingested every test file reads
         # as 0% covered and a churning one would be accused of it.
         if is_test_related_path(ctx.file_path, ctx.language):
+            return []
+        if not _has_something_to_test(ctx):
             return []
         if not _is_hotspot(ctx):
             return []

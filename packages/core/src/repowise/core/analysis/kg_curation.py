@@ -373,7 +373,10 @@ def _curate_entry_points(
     ``main.py``. Config/data files (``server.json``) and generic-glue leaves
     (a resolver's deep ``index.py``) are dropped from candidacy outright.
     ``project.entry_points`` holds the top few, ``project.entry_candidates`` the
-    full ranked list. When ingestion flagged no entries at all, the strong
+    full ranked list. A manifest-declared entry (``FileInfo.is_manifest_entry``)
+    ranks first and is exempt from the barrel and glue drops: a package's
+    declared ``src/index.ts`` is its front door whatever its shape or depth.
+    When ingestion flagged no entries at all, the strong
     :func:`score_entry_points` scorers (entry-style filenames) fill in, so the
     orientation panel never opens empty on repos without a detectable main.
     """
@@ -382,7 +385,10 @@ def _curate_entry_points(
     pagerank = graph_builder.pagerank() or {}
     betweenness = _betweenness(graph_builder)
 
-    paths = _flagged_entry_paths(kg, pf_by_path)
+    manifest = frozenset(
+        path for path, pf in pf_by_path.items() if getattr(pf.file_info, "is_manifest_entry", False)
+    )
+    paths = _flagged_entry_paths(kg, pf_by_path, manifest)
     if not paths:
         # No flagged entries survived: score >= 3 means an entry-style name or
         # flag, never just a shallow or high-PageRank file.
@@ -393,7 +399,7 @@ def _curate_entry_points(
         ]
     candidates = [(path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)) for path in paths]
 
-    ranked = rank_entry_points(candidates, conventional_entry_stems())
+    ranked = rank_entry_points(candidates, conventional_entry_stems(), manifest)
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 
@@ -405,11 +411,14 @@ def _betweenness(graph_builder: Any) -> dict[str, float]:
         return {}
 
 
-def _flagged_entry_paths(kg: KnowledgeGraphResult, pf_by_path: dict[str, Any]) -> list[str]:
+def _flagged_entry_paths(
+    kg: KnowledgeGraphResult, pf_by_path: dict[str, Any], manifest: frozenset[str]
+) -> list[str]:
     """Ingestion-flagged entry files that survive candidacy, in node order.
 
     A flagged re-export barrel is retagged ``barrel`` in the presentation view
-    (the AST graph's flag is untouched) and dropped.
+    (the AST graph's flag is untouched) and dropped, unless a manifest declares
+    it. Test and example paths are dropped either way.
     """
     paths: list[str] = []
     for node in kg.nodes:
@@ -418,6 +427,9 @@ def _flagged_entry_paths(kg: KnowledgeGraphResult, pf_by_path: dict[str, Any]) -
         path = node.get("filePath", "")
         language = (node.get("language") or "").lower()
         if _off_the_entry_path(path, language):
+            continue
+        if path in manifest:
+            paths.append(path)
             continue
         if _is_barrel_path(path, pf_by_path):
             _retag_as_barrel(node)

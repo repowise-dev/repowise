@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from repowise.core.analysis.doc_drift import DocDriftAnalyzer
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
 from repowise.core.analysis.doc_drift.resolver import RepoIndex, resolve
 from repowise.core.analysis.doc_drift.suggest import (
+    apply_suggestion,
     git_renames,
     suggest_all,
     unique_close_match,
@@ -315,3 +317,49 @@ def test_git_renames_stops_at_an_outright_deletion(tmp_path: Path):
 def test_git_renames_outside_a_repository_is_empty(tmp_path: Path):
     assert git_renames(tmp_path, ["a.py"]) == {}
     assert git_renames(tmp_path, []) == {}
+
+
+# ---------------------------------------------------------------------------
+# apply_suggestion
+# ---------------------------------------------------------------------------
+
+
+def _placed_ref(kind, raw, target, line):
+    column = line.index(raw)
+    return DocReference(kind, raw, target, "docs/guide.md", 1, line.strip(), column=column)
+
+
+def test_path_suggestion_replaces_the_target_inside_what_was_written():
+    line = "See [x](./src/old.py#top) now"
+    ref = _placed_ref(DriftKind.LINK, "./src/old.py#top", "src/old.py", line)
+    new_line, columns = apply_suggestion(line, ref, "src/new/")
+    assert new_line == "See [x](./src/new/#top) now"
+    assert columns == ((11, 21),)
+
+
+def test_anchor_suggestion_replaces_the_whole_reference():
+    line = "See [x](g.md#old)"
+    ref = _placed_ref(DriftKind.ANCHOR, "g.md#old", "docs/g.md#old", line)
+    assert apply_suggestion(line, ref, "g.md#new") == ("See [x](g.md#new)", ((9, 17),))
+
+
+def test_columns_count_utf16_units_before_the_span():
+    line = "\U0001f680 `make biuld`"
+    ref = _placed_ref(DriftKind.COMMAND, "make biuld", "make:biuld", line)
+    _, columns = apply_suggestion(line, ref, "make build")
+    # The emoji is one code point but two UTF-16 units.
+    assert columns == ((5, 15),)
+
+
+def test_a_reference_not_at_its_column_is_not_placed():
+    ref = DocReference(DriftKind.PATH, "a.py", "a.py", "d.md", 1, "", column=3)
+    assert apply_suggestion("nothing here", ref, "b.py") is None
+    assert apply_suggestion("x `a.py`", replace(ref, column=-1), "b.py") is None
+
+
+def test_every_standalone_copy_on_the_line_is_replaced():
+    line = "`load_rows()`, then `load_rows()`, not `preload_rows()`"
+    ref = _placed_ref(DriftKind.SYMBOL, "load_rows()", "load_rows", line)
+    new_line, columns = apply_suggestion(line, ref, "load_records()")
+    assert new_line == "`load_records()`, then `load_records()`, not `preload_rows()`"
+    assert columns == ((2, 13), (22, 33))

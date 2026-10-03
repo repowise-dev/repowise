@@ -176,6 +176,20 @@ def test_a_test_importing_a_file_pairs_it_whatever_the_names() -> None:
     assert "src/cli/main.py" in files_with_paired_tests(g, paths, {"tests/unit/cli/test_init.py"})
 
 
+def test_a_test_importing_a_barrel_pairs_what_it_re_exports() -> None:
+    g = _dep_graph(
+        ("test/router.test.ts", "src/index.ts", "imports"),
+        ("src/index.ts", "src/router.ts", "imports"),
+        ("src/router.ts", "src/util.ts", "imports"),
+        ("test/leaf.test.ts", "src/leaf.ts", "imports"),
+        ("src/leaf.ts", "src/deep.ts", "imports"),
+    )
+    paths = {"src/index.ts", "src/router.ts", "src/util.ts", "src/leaf.ts", "src/deep.ts"}
+    paired = files_with_paired_tests(g, paths, {"test/router.test.ts", "test/leaf.test.ts"})
+    # The barrel and what it re-exports; one hop only, never the whole closure.
+    assert paired == {"src/index.ts", "src/router.ts", "src/leaf.ts"}
+
+
 def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
     # ``distill/test_engine.py`` tests the distill engine, not health's.
     g = _dep_graph(("tests/distill/test_engine.py", "src/distill/engine.py", "imports"))

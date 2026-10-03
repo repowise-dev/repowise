@@ -186,7 +186,7 @@ def test_stale_cache_version_degrades_to_recompute(tmp_path):
         domain="centrality_cache.pkl",
     )
     assert _lookup(CentralityCache(tmp_path), "symbol", _graph([("a", "b")]), "sig-1") is None
-    assert cc._CACHE_VERSION == 3
+    assert cc._CACHE_VERSION == 4
 
 
 async def test_compute_metrics_parallel_with_cache(tmp_path):

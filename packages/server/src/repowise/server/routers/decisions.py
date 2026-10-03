@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import (
     AGREEMENT_KIND,
     ARCHITECTURAL_KIND,
+    HISTORY_CURRENCIES,
     is_governing,
 )
 from repowise.core.persistence import crud, decision_graph
@@ -82,7 +83,7 @@ def _in_lane(currency: str | None, lane: str) -> bool:
     if lane == "governing":
         return currency is not None and is_governing(currency)
     if lane == "history":
-        return currency in ("superseded", "dismissed")
+        return currency in HISTORY_CURRENCIES
     return currency == lane
 
 

@@ -46,6 +46,10 @@ byte unchanged:
                                   ``x in big_list`` membership test).
 ``async_blocking_member(node)``   a non-call member read that blocks in async
                                   (C# ``task.Result``).
+``task_already_complete(node)``   the blocking read/call targets a task already
+                                  awaited earlier in the method (C# ``.Result``
+                                  after ``await Task.WhenAll(t)``), so it does
+                                  not block.
 ``list_bound_names(root)``        names provably bound to a list literal /
                                   comprehension in this file — the gate for the
                                   ``membership_test_against_list_in_loop`` marker.
@@ -199,6 +203,14 @@ class BasePerfDialect:
         """Boundary kind (db / network / filesystem / subprocess) if this call
         is an *execution sink*, else ``None`` ("not an I/O round-trip")."""
         return None
+
+    def shows_a_query(self, call: Node) -> bool:
+        """The call's own shape is db evidence (a SQL argument, a query chain).
+
+        Counted alongside a db import by the dialects whose DB verbs need
+        evidence; ``False`` for a dialect that recognises no such shape.
+        """
+        return False
 
     def call_sink_kind(
         self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
@@ -605,6 +617,13 @@ class BasePerfDialect:
         :meth:`blocking_sync_api` instead. Default ``None``.
         """
         return None
+
+    def task_already_complete(self, node: Node) -> bool:
+        """True if the blocking ``node`` (a ``blocking_sync_api`` call or an
+        ``async_blocking_member`` read) targets a task that is provably complete
+        because it was awaited earlier in the same method. Default ``False``.
+        """
+        return False
 
     def unbounded_read_bound_methods(self) -> frozenset[str]:
         """Method names anywhere in a chain that prove a DB read is bounded.

@@ -83,6 +83,7 @@ async def _run_dead_code_analysis(
             source_map=source_map,
             repo_root=repo_path,
             unindexed_source_files=unindexed_source_files,
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
 
         def _step(_stage: str) -> None:
@@ -113,6 +114,7 @@ async def _run_doc_drift_analysis(
     source_map: dict[str, bytes] | None,
     *,
     file_infos: list[Any] | None = None,
+    graph_builder: Any | None = None,
     repo_id: str = "",
     repo_path: Path | None = None,
     progress: ProgressCallback | None,
@@ -126,6 +128,7 @@ async def _run_doc_drift_analysis(
     """
     try:
         from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+        from repowise.core.analysis.doc_drift.symbols import SymbolOptions, graph_symbol_names
 
         # analyze() drives three stages: collect, index, resolve.
         if progress:
@@ -142,6 +145,9 @@ async def _run_doc_drift_analysis(
             source_map=source_map,
             tracked_paths=tracked_paths,
             repo_root=repo_path,
+            symbols=(
+                SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
+            ),
         )
 
         def _step(_stage: str) -> None:
@@ -191,7 +197,8 @@ def _build_pipeline_coverage(
 
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-        report_paths = list(explicit_paths) if explicit_paths else cfg.report_paths(repo_path)
+        reports = dict.fromkeys(explicit_paths) if explicit_paths else cfg.reports(repo_path)
+        report_paths = list(reports)
         if not report_paths:
             return {}, [], None, None
 
@@ -203,6 +210,8 @@ def _build_pipeline_coverage(
             coverage_format=cfg.format,
             strip_prefix=cfg.strip_prefix,
             path_prefix=cfg.path_prefix,
+            report_prefixes=reports,
+            ignore=cfg.ignore,
         )
 
         if progress:
@@ -254,6 +263,7 @@ async def _run_health_analysis(
 ) -> Any | None:
     """Run code-health analysis (complexity + biomarkers + scoring)."""
     try:
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
 
@@ -264,21 +274,6 @@ async def _run_health_analysis(
             # the entire pre-walk — most of the phase's wall-clock.
             progress.on_phase_start("health", 2 * len(parsed_files))
 
-        # Build a {file_path → community label} map for the refactoring
-        # detectors. Community detection is already computed for the graph
-        # view, so this is essentially free. It is not the ``module`` column:
-        # that is a path, written from the package boundaries.
-        community_label_map: dict[str, str] = {}
-        try:
-            cd = graph_builder.community_detection()
-            ci = graph_builder.community_info()
-            for node_id, comm_id in cd.items():
-                info = ci.get(comm_id)
-                label = getattr(info, "label", None) if info else None
-                if label:
-                    community_label_map[node_id] = label
-        except Exception as exc:
-            logger.debug("health_community_label_map_failed", error=str(exc))
 
         # Ingest coverage (auto-discovered or explicitly passed) so biomarkers
         # see real line/branch coverage instead of the has_test_file fallback.
@@ -300,7 +295,7 @@ async def _run_health_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
-            community_label_map=community_label_map,
+            community_label_map=file_community_labels(graph_builder),
             coverage_map=coverage_map,
             duplication_cache_dir=(
                 resolve_store_dir(repo_path) if repo_path is not None else None

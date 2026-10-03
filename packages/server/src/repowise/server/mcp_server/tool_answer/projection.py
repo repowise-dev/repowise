@@ -411,8 +411,8 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         return
     try:
         from repowise.core.persistence.database import get_session
-        from repowise.server.mcp_server._basis import basis_cache_key
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
         from repowise.server.mcp_server._scope import unrelated_scope_hint
 
@@ -424,7 +424,7 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
                 session,
                 repository.id,
                 [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+                cache_key=f"{repository.id}:{index_state_key(repository)}",
             )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:

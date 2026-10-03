@@ -127,12 +127,16 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # Overload signatures (the .scm keeps method ones to class bodies).
+            "function_signature": "function",
+            "method_signature": "method",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
         visibility_fn=ts_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
+        declaration_node_types=frozenset({"function_signature", "method_signature"}),
     ),
     "javascript": LanguageConfig(
         symbol_node_types={

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.server.mcp_server._query_shape import _WORD_CHAIN_RE, _identifier_shaped
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
@@ -77,23 +78,11 @@ def _extract_question_identifiers(question: str) -> set[str]:
     snake_case, CamelCase and dotted paths, at least 3 chars and not
     stopwords. Drives question-aware promotion in ``_hydrate_symbols_for_hits``.
     """
-    import re
-
     ids: set[str] = set()
-    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", question):
+    for tok in _WORD_CHAIN_RE.findall(question):
         # A dotted path yields both the full thing and each part.
-        parts = tok.split(".")
-        candidates = [tok, *parts]
-        for c in candidates:
-            if len(c) < 3:
-                continue
-            if c.lower() in _STOPWORDS:
-                continue
-            # Pure-lowercase words (``method``, ``class``) match too broadly.
-            has_upper = any(ch.isupper() for ch in c)
-            has_under = "_" in c
-            has_digit = any(ch.isdigit() for ch in c)
-            if has_upper or has_under or has_digit:
+        for c in (tok, *tok.split(".")):
+            if c.lower() not in _STOPWORDS and _identifier_shaped(c):
                 ids.add(c)
     return ids
 
