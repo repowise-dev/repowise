@@ -45,7 +45,7 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder, semantic_search_status
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
@@ -561,8 +561,8 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
             "semantic": (
-                "available"
-                if result.generated_pages and scope_embedder not in {None, "mock"}
+                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+                if result.generated_pages
                 else "unavailable"
             ),
             "next_command": "repowise reindex" if result.generated_pages else None,

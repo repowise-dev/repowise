@@ -92,6 +92,7 @@ def regenerate_deterministic_pages(
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
     full_scope: bool = False,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -119,6 +120,7 @@ def regenerate_deterministic_pages(
         prior_page_ids=prior_page_ids,
         degrade_label="Template page refresh",
         full_scope=full_scope,
+        stats_out=stats_out,
     )
 
 
@@ -137,6 +139,7 @@ def regenerate_deterministic_page_ids(
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
     vector_store: Any = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Render exact deterministic page ids from the complete repository view.
 
@@ -164,6 +167,7 @@ def regenerate_deterministic_page_ids(
         degrade_label="Structural page refresh",
         only_page_ids=page_ids,
         vector_store=vector_store,
+        stats_out=stats_out,
     )
 
 
@@ -185,11 +189,16 @@ def _render_pages(
     full_scope: bool = False,
     only_page_ids: set[str] | None = None,
     vector_store: Any = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
     Every file page is structural now, so there is one render mode: the template
     renderer, driven by ``deterministic=True``. There is no model path to choose.
+
+    ``stats_out["embed_failed_pages"]`` accumulates the pages whose vectors
+    failed to land, so the caller can fail the run instead of reporting a
+    healthy semantic index.
     """
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.providers.llm.template import TemplateProvider
@@ -255,7 +264,7 @@ def _render_pages(
         # A template render takes every page it is fed; deterministic mode
         # bypasses the budget already, so no page-id scoping is needed.
         with console.status("  Re-rendering wiki pages from structure…"):
-            return run_async(
+            pages = run_async(
                 generator.generate_all(
                     affected_parsed,
                     affected_source,
@@ -266,8 +275,15 @@ def _render_pages(
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
                     only_page_ids=only_page_ids,
+                    # Without it a failed embed was logged and nothing else.
+                    on_warning=degraded.append,
                 )
             )
+        if stats_out is not None:
+            stats_out["embed_failed_pages"] = (
+                stats_out.get("embed_failed_pages", 0) + generator.embed_failed_pages
+            )
+        return pages
     except Exception as exc:
         degraded.append(f"{degrade_label}: {exc}")
         return []

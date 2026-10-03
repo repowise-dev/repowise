@@ -210,6 +210,13 @@ repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
+**Exit status when embedding fails.** With a real embedder (anything but
+`mock`), a run whose page vectors fail to write, for example because the
+LanceDB install is broken, still saves its pages and full-text index but
+exits `1`, records `search.semantic: unavailable` in the index scope, and names
+the fix: reinstall the dependency, then `repowise reindex`. `update` follows the
+same rule. The keyless `mock` embedder never fails a run this way.
+
 **Documentation output limit.** Set `max_tokens` in
 `.repowise/config.yaml` to bound each model-written page. It is persistent, not
 a per-run flag, and is honored by `init`, `update`, `generate`, `restyle`,
@@ -2073,6 +2080,10 @@ Rebuild the vector search index by re-embedding all wiki pages. No LLM calls, on
 | `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock`, or `auto` (default: auto) |
 | `--batch-size` | Embedding batch size (default: 32) |
 
+A reindex that writes every item with a real embedder marks semantic search
+available again in the index scope, clearing what a failed `init` or `update`
+recorded.
+
 ```bash
 repowise reindex
 repowise reindex --embedder gemini --batch-size 50
@@ -2090,6 +2101,10 @@ Run health checks on the wiki setup. Auto-detects workspace mode; in workspace m
 | `--workspace` / `-w` | Force workspace mode |
 | `--no-workspace` | Force single-repo mode |
 | `--format` | Output: `table` (default) or `json` |
+
+A `Vector store` row fails when `.repowise/lancedb` exists but cannot be
+opened, and names the error. A store that opens but holds none of the indexable
+pages reports them all missing rather than in sync.
 
 ```bash
 repowise doctor                          # auto-detects

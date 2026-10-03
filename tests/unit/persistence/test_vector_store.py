@@ -587,3 +587,24 @@ async def test_lancedb_embed_batch_failed_write_reports_every_chunk(tmp_path, mo
         assert caught.value.successful_count == 0
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_lancedb_partial_install_fails_with_a_named_cause(tmp_path, monkeypatch, mock_embedder):
+    """A partial install imports fine and lacks the async API.
+
+    That used to raise a bare ``AttributeError`` from deep inside the first
+    write, which the embed step reported with no hint that the install was
+    the problem.
+    """
+    import sys
+    import types
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    monkeypatch.setitem(sys.modules, "lancedb", types.ModuleType("lancedb"))
+    store = LanceDBVectorStore(str(tmp_path / "lance"), mock_embedder)
+
+    with pytest.raises(RuntimeError, match="connect_async") as excinfo:
+        await store._ensure_connected()
+    assert "pip install --force-reinstall lancedb" in str(excinfo.value)

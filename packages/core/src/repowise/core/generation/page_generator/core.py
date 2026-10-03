@@ -176,6 +176,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # table.
         self._prior_pages: dict[str, PriorPage] = prior_pages or {}
         self._reuse_count: int = 0
+        # Pages whose vectors failed to land this run. Read by callers after
+        # ``generate_all``: a failed embed leaves semantic search without
+        # them, which a run must not report as healthy.
+        self.embed_failed_pages: int = 0
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -286,6 +290,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # onboarding level would otherwise report the previous run's
         # vocabulary as its own.
         reset_house_terms()
+        self.embed_failed_pages = 0
 
         return await run_generate_all(
             self,

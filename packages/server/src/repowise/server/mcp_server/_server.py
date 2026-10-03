@@ -388,6 +388,27 @@ async def _warm_lancedb() -> None:
             _state._lancedb_ready.set()
 
 
+def _mark_vector_store_unreadable(exc: BaseException, alias: str | None = None) -> None:
+    """Flag semantic search degraded: the index exists but cannot be opened.
+
+    Reuses the embedder status ``build_meta`` already reads, so
+    ``embedder_degraded`` and ``embedder_warning`` carry it. Without this a
+    broken LanceDB install served an empty in-memory store with
+    ``embedder_degraded: false``.
+    """
+    where = f" for '{alias}'" if alias else ""
+    reason = (
+        f"The semantic index{where} exists but could not be opened "
+        f"({type(exc).__name__}: {exc}). Semantic search (search_codebase, "
+        "get_answer) is off; full-text search still works. To fix: "
+        "pip install --force-reinstall lancedb, then restart the MCP server."
+    )
+    _log.error(reason)
+    status = dict(_state._embedder_status or {"active": "mock", "requested": None})
+    status.update(degraded=True, reason=reason)
+    _state._embedder_status = status
+
+
 async def _load_vector_stores(repo_path: str | None) -> None:
     """Load embedder + vector stores in the background.
 
@@ -412,25 +433,25 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
+        from pathlib import Path
+
+        lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")
 
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            if repo_path:
-                from pathlib import Path
-
-                lance_dir = Path(repo_path) / ".repowise" / "lancedb"
-                if lance_dir.exists():
-                    vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                    # Step 2 — pre-connect so first search() is instant.
-                    await vs._ensure_connected()
-                    vector_store = vs
-        except ImportError:
-            pass
-        except Exception:
-            _log.warning("LanceDB pre-connect failed — using InMemory fallback")
+            if lance_dir is not None and lance_dir.exists():
+                vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+                # Step 2: pre-connect so first search() is instant.
+                await vs._ensure_connected()
+                vector_store = vs
+        except Exception as exc:
+            # ImportError included: with an index on disk, a missing lancedb
+            # is as broken as an unreadable one. No index is a keyless repo.
+            if lance_dir is not None and lance_dir.exists():
+                _mark_vector_store_unreadable(exc)
 
         # decision_store is repointed to the shared page store — decisions are
         # now embedded under the "decision:" namespace within the same table.
@@ -537,6 +558,7 @@ async def _lifespan(server: FastMCP):
             workspace_root=ws_root,
             ws_config=ws_config,
             embedder_factory=_query_embedder,
+            on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
         )
 
         # Eagerly load the default repo so tools work immediately. A failure

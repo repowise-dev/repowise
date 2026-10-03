@@ -24,12 +24,7 @@ PAGE_MISSING = "file_page:dropped.py"
 
 
 async def _build_repo(tmp_path: Path) -> Path:
-    """A repo whose database holds two pages and whose store holds one.
-
-    The reconciliation only reports a missing page when the store is
-    non-empty — an empty store reads as "not indexed yet", not as drift — so
-    the kept page is what makes the missing one visible.
-    """
+    """A repo whose database holds two pages and whose store holds one."""
     import git as gitpython
 
     from repowise.core.persistence import (
@@ -140,3 +135,46 @@ def test_a_failed_reconciliation_no_longer_passes_as_a_bare_note(tmp_path: Path)
     _ok, detail = broken["Store consistency"]
     assert "RuntimeError" in detail
     assert "store unreadable" in detail
+
+
+def test_an_unopenable_vector_store_is_a_failing_row(tmp_path: Path, monkeypatch) -> None:
+    """It used to read as an empty store, and so as "in sync"."""
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+
+    async def _boom(self):
+        raise RuntimeError("LanceDB is missing or broken (AttributeError: connect_async)")
+
+    monkeypatch.setattr(LanceDBVectorStore, "_ensure_connected", _boom)
+    rows = _rows(repo_path)
+
+    assert "Vector store" in rows
+    ok, detail = rows["Vector store"]
+    assert ok is False
+    assert "connect_async" in detail
+    assert "repowise reindex" in detail
+    assert rows["SQL ↔ Vector Store"] != (True, "in sync")
+
+
+def test_an_empty_vector_store_is_not_in_sync(tmp_path: Path) -> None:
+    import shutil
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    lance_dir = repo_path / ".repowise" / "lancedb"
+    shutil.rmtree(lance_dir)
+
+    async def _empty_table():
+        store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+        await store._ensure_connected()
+        await store.close()
+
+    lance_dir.mkdir()
+    asyncio.run(_empty_table())
+    ok, detail = _rows(repo_path)["SQL ↔ Vector Store"]
+
+    assert ok is False
+    assert detail == "2 missing, 0 orphaned"

@@ -162,9 +162,14 @@ class LanceDBVectorStore(VectorStore):
             return
         try:
             import lancedb  # type: ignore[import]
-        except ImportError as exc:
+
+            connect_async = lancedb.connect_async
+        except (ImportError, AttributeError) as exc:
+            # A partial install imports fine and lacks the async API, which
+            # used to surface as a bare AttributeError far from its cause.
             raise RuntimeError(
-                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
+                f"LanceDB is missing or broken ({type(exc).__name__}: {exc}). "
+                "Reinstall it with: pip install --force-reinstall lancedb"
             ) from exc
 
         # ``Session`` arrived after the oldest supported LanceDB; without it
@@ -175,7 +180,7 @@ class LanceDBVectorStore(VectorStore):
             if session_cls is not None
             else {}
         )
-        self._db = await lancedb.connect_async(self._db_path, **kwargs)
+        self._db = await connect_async(self._db_path, **kwargs)
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)

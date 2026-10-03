@@ -144,15 +144,21 @@ async def _open_vector_store(repo_path: Path) -> Any:
     _publish_embedder_status(requested, embedder)
     lance_dir = repo_path / REPOWISE_DIR / "lancedb"
     if lance_dir.is_dir():
-        try:
-            from repowise.core.persistence.vector_store import LanceDBVectorStore
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            return LanceDBVectorStore(str(lance_dir), embedder=embedder)
-        except Exception:
-            # No lancedb wheel, or an unreadable table. The tools that do not
-            # need vector search still work off the session factory and FTS,
-            # so degrade rather than refuse to run.
-            pass
+        store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+        try:
+            # Connected here, as the server does: the store imports lancedb
+            # lazily, so a missing or broken install only fails on first use.
+            await store._ensure_connected()
+            return store
+        except Exception as exc:
+            # The tools that do not need vector search still work off the
+            # session factory and FTS, so degrade rather than refuse to run,
+            # but say so in ``_meta`` instead of passing for healthy.
+            from repowise.server.mcp_server._server import _mark_vector_store_unreadable
+
+            _mark_vector_store_unreadable(exc)
     return InMemoryVectorStore(embedder=embedder)
 
 

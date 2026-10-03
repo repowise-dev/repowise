@@ -29,7 +29,7 @@ Every response carries `_meta`. Fields are present only when they carry a signal
 | `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
 | `index_scope` | When the index records it | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
-| `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode | Which embedder, and why |
+| `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |
 | `newer_release` | Once per server process | A newer repowise is published; restart the MCP server after upgrading |
 | `response_budget` | Always | `limit_chars` (the ceiling), `tier` (`default` or `expanded`), `serialized_chars` (size delivered) |
 | `omitted` | When content was cut | `refs`, `tokens`, `restore`. See [Truncation and recovery](#truncation-and-recovery) |
