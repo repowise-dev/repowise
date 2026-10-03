@@ -16,10 +16,13 @@ import { useMemo } from "react";
 import { cn } from "../../lib/cn";
 import { scoreBadgeClass } from "../tokens";
 import {
+  HEALTH_UNSUPPORTED_LABEL,
+  NEUTRAL_FILL,
   PERFORMANCE_STATE_LABEL,
   performanceBurden,
   performanceFill,
   performanceSentence,
+  scoreText,
 } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
 
@@ -60,7 +63,12 @@ function rankFiles(
         return a.file_path.localeCompare(b.file_path);
       });
   }
-  return [...files].sort((a, b) => a.score - b.score || a.file_path.localeCompare(b.file_path));
+  // A file with no score sorts last: nothing measured it, so it is neither
+  // worst nor best.
+  const key = (f: CodeHealthMapFile) => f.score ?? Number.POSITIVE_INFINITY;
+  return [...files].sort(
+    (a, b) => key(a) - key(b) || a.file_path.localeCompare(b.file_path),
+  );
 }
 
 const LIST_HEADING: Record<string, string> = {
@@ -138,7 +146,7 @@ export function MapFieldList({
                     </span>
                   ) : (
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-                      {f.score.toFixed(1)}
+                      {f.score == null ? "—" : f.score.toFixed(1)}
                     </span>
                   )}
                 </span>
@@ -198,22 +206,7 @@ export function MapInspector({
             The mark is the node as the canvas draws it, from the same
             function, so the selection and the field it was picked out of can
             never describe the file differently. */}
-        {overlay === "performance" ? (
-          <span
-            aria-hidden
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-            style={{ backgroundColor: performanceFill(file) }}
-          />
-        ) : (
-          <span
-            className={cn(
-              "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
-              scoreBadgeClass(file.score),
-            )}
-          >
-            {file.score.toFixed(1)}
-          </span>
-        )}
+        <InspectorMark file={file} overlay={overlay} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">
           {name}
         </span>
@@ -262,7 +255,9 @@ export function MapInspector({
         {overlay === "performance" ? (
           // Still available, but as one supporting figure among several rather
           // than as the headline the lens is not about.
-          <span className="tabular-nums">code health {file.score.toFixed(1)}</span>
+          <span className="tabular-nums">code health {scoreText(file)}</span>
+        ) : file.score == null ? (
+          <span>{HEALTH_UNSUPPORTED_LABEL}</span>
         ) : null}
         <span className="tabular-nums">{file.nloc.toLocaleString()} NLOC</span>
         {file.line_coverage_pct != null ? (
@@ -279,5 +274,37 @@ export function MapInspector({
         Open details
       </button>
     </section>
+  );
+}
+
+/** The lead mark: the node as the field draws it, or the score pill. */
+function InspectorMark({
+  file,
+  overlay,
+}: {
+  file: CodeHealthMapFile;
+  overlay: CodeHealthOverlay;
+}) {
+  // Under performance, or for a file with no score, the mark is the node as
+  // the field draws it: a score pill would claim a figure the lens is not
+  // about, or one nothing measured.
+  if (overlay === "performance" || file.score == null) {
+    return (
+      <span
+        aria-hidden
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+        style={{ backgroundColor: overlay === "performance" ? performanceFill(file) : NEUTRAL_FILL }}
+      />
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
+        scoreBadgeClass(file.score),
+      )}
+    >
+      {file.score.toFixed(1)}
+    </span>
   );
 }

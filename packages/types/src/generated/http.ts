@@ -13,6 +13,8 @@ export interface ActionCommand {
   purpose: string;
   mcp?: string | null;
   cli?: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
 }
 
 export interface ActionContext {
@@ -89,6 +91,11 @@ export interface ActionsResponse {
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+}
+
+export interface AgentPromptResponse {
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  text: string;
 }
 
 /** One month of agent-vs-human commit volume. */
@@ -1598,13 +1605,8 @@ export interface FixItem {
   verify: FixVerify;
   context: FixContext[];
   source: FixSource;
-  next_call: FixNextCall;
+  next_call: ActionCommand;
   why_ranked?: FixRankFact[];
-}
-
-export interface FixNextCall {
-  tool: string;
-  arguments: Record<string, unknown>;
 }
 
 export interface FixRankFact {
@@ -1873,6 +1875,7 @@ export interface HealthFindingResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 /**
@@ -1895,6 +1898,7 @@ export interface HealthFindingWithSymbolResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
   symbol_id?: string | null;
 }
 
@@ -1956,6 +1960,7 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: string;
   primary_reason?: string | null;
@@ -2035,6 +2040,27 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+}
+
+/** One file on the impact / effort plane. */
+export interface ImpactEffortPoint {
+  file_path: string;
+  effort_lines: number;
+  effort_basis: string;
+  recoverable_health: number;
+  tier?: string | null;
+  fix_rank?: number | null;
+}
+
+/** Every file the work queue's filters keep, up to ``cap``. */
+export interface ImpactEffortResponse {
+  points?: ImpactEffortPoint[];
+  plotted?: number;
+  total?: number;
+  cap?: number;
+  effort_midline_lines?: number;
+  gain_midline_points?: number;
+  history_only_excluded?: number;
 }
 
 /**
@@ -2612,6 +2638,12 @@ export interface ProviderValidationResponse {
   error?: string | null;
 }
 
+/** What the ``fix_first`` scope leaves out of a page's filtered set. */
+export interface RefactoringHiddenCounts {
+  total?: number;
+  by_reason?: Record<string, number>;
+}
+
 /** One page of composed opportunities, with facets and the rollup. */
 export interface RefactoringOpportunitiesResponse {
   items?: Record<string, unknown>[];
@@ -2622,6 +2654,8 @@ export interface RefactoringOpportunitiesResponse {
   facets?: Record<string, Record<string, number>>;
   summary?: Record<string, unknown> | null;
   ignored_arguments?: Record<string, string> | null;
+  scope?: "fix_first" | "all";
+  hidden?: RefactoringHiddenCounts | null;
 }
 
 /**
@@ -2747,6 +2781,42 @@ export interface RefactoringTargetsResponse {
 export interface RefactoringTypeCount {
   type: string;
   count: number;
+}
+
+export interface RelatedWorkFile {
+  file_path: string;
+  lenses?: Record<string, RelatedWorkLens>;
+}
+
+/** One row another lens holds for the file, compact enough to list. */
+export interface RelatedWorkItem {
+  lens: "findings" | "fix_first" | "refactoring" | "performance" | "dead_code";
+  id: string;
+  kind?: string | null;
+  title?: string | null;
+  symbol?: string | null;
+  severity?: string | null;
+  tier?: string | null;
+  rank?: number | null;
+  line?: number | null;
+  code_origin?: string | null;
+  deprecated?: boolean | null;
+}
+
+export interface RelatedWorkLens {
+  items?: RelatedWorkItem[];
+  total?: number;
+}
+
+/** The files to look up, repo-relative. Validated by the route. */
+export interface RelatedWorkRequest {
+  file_paths: string[];
+}
+
+/** ``RelatedWork.as_dict()``: files in request order. */
+export interface RelatedWorkResponse {
+  files?: RelatedWorkFile[];
+  per_lens_limit?: number;
 }
 
 export interface RepoCreate {

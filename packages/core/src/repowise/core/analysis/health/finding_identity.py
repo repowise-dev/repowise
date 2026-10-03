@@ -72,7 +72,14 @@ are made relative to the symbol, so neither moves with an unrelated edit.
 """
 
 _DERIVED_DETAIL_KEYS = frozenset(
-    {"opportunity_id", "reliable_entry_reachability", "dispatch_share", "deprecated"}
+    {
+        "opportunity_id",
+        "reliable_entry_reachability",
+        "dispatch_share",
+        "deprecated",
+        "loop_line",
+        "deepest_block",
+    }
 )
 """Keys version 1 left out of its hash; only :func:`legacy_finding_public_id` reads it."""
 

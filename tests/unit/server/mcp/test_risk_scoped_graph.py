@@ -14,7 +14,10 @@ from sqlalchemy import select
 
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
-from repowise.server.mcp_server.tool_risk.assessment import _dependency_population
+from repowise.server.mcp_server.tool_risk.assessment import (
+    _assess_one_target,
+    _dependency_population,
+)
 from repowise.server.mcp_server.tool_risk.get_risk import _load_dependency_graph
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
@@ -133,3 +136,26 @@ async def test_scoped_load_stops_at_the_second_hop(factory, graph_repo):
     # The root, its dependents within two hops, and what the root imports.
     assert set(scoped.node_meta) == {"a.py", "b.py", "c.py", "e.py", "z.py"}
     assert scoped.dep_counts["a.py"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_target", ["./a.py", r".\a.py"])
+async def test_assessment_normalizes_target_before_dependency_lookup(
+    factory, graph_repo, raw_target
+):
+    async with factory() as s:
+        repository = await s.get(Repository, graph_repo)
+        assert repository is not None
+        node_meta, import_links, reverse_deps = await _whole_graph(s, graph_repo)
+        kwargs = {
+            "all_edge_map": {},
+            "import_links": import_links,
+            "reverse_deps": reverse_deps,
+            "node_meta": node_meta,
+        }
+        normalized = await _assess_one_target(s, repository, "a.py", **kwargs)
+        variant = await _assess_one_target(s, repository, raw_target, **kwargs)
+
+    assert normalized["dependents_total"] == 3
+    for field in ("dependents", "dependents_total", "impact_surface"):
+        assert variant[field] == normalized[field]

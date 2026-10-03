@@ -20,6 +20,16 @@ from .renderer import RendererMap, github_slug
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
+# A narrow, explicit phrase set, not a fuzzy heuristic: "you can find it in
+# `src/index.ts`" must still be checked, so a bare "your" is not enough on its
+# own. Each phrase names the reader's own project, never this one.
+_READER_PROJECT_RE = re.compile(
+    r"\byour\s+(?:project|app|repo|own|codebase)\b"
+    r"|\b(?:in|to)\s+your\b"
+    r"|\byour\b[^.!?]{0,40}'s\b",
+    re.I,
+)
+
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
 # ``#`` reports every inbound link to a setext heading as broken.
@@ -249,6 +259,26 @@ def _under_opaque(idx: RepoIndex, path: str) -> bool:
     return any(path == d or path.startswith(f"{d}/") for d in idx.opaque_dirs)
 
 
+def _is_reader_project_reference(ref: DocReference) -> bool:
+    """Whether *ref*'s own sentence places the path in the reader's project, not this one.
+
+    ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
+    is the source line stripped of leading whitespace, while ``column`` indexes
+    the unstripped one, so slicing ``context`` by ``column`` directly would be
+    off by exactly the amount of indentation a list item or a blockquote adds.
+    A plain substring search sidesteps the mismatch, since ``context`` already
+    strips consistently from both.
+
+    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``) so
+    "This mirrors your project's layout. See ``src/gone.ts`` for details."
+    still reports the real miss in its own, unrelated sentence.
+    """
+    idx = ref.context.find(ref.raw)
+    preceding = ref.context[:idx] if idx != -1 else ref.context
+    sentence_start = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?")) + 1
+    return bool(_READER_PROJECT_RE.search(preceding[sentence_start:]))
+
+
 def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resolution:
     target = ref.target
     if _exists(idx, target):
@@ -260,6 +290,14 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
 
     if _under_opaque(idx, target) or _under_opaque(idx, relative):
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "inside-submodule")
+
+    # A path the prose itself places in the reader's own project ("add this to
+    # your project's `src/setupTests.ts`") is not a claim about this repository
+    # at all, and must not even reach the anchoring rule below: `src`, `config`,
+    # `app` and the like are exactly the top-level directories most repos have,
+    # so such a path passes anchoring and falls through to a false MISSING.
+    if _is_reader_project_reference(ref):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, "reader-project")
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the

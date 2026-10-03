@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -404,6 +405,31 @@ def test_each_resolution_origin_carries_one_confidence() -> None:
         + "\n".join(f"  {o}: {c}" for o, c in sorted(split.items()))
         + "\n\nSplit the origin, or give the strategies one confidence."
     )
+
+
+def test_graph_docs_origin_badge_matches_vocabulary() -> None:
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    graph_doc = (root / "docs/layers/GRAPH.md").read_text(encoding="utf-8")
+    match = re.search(r"badge/(\d+)-resolution_origins-", graph_doc)
+
+    assert match is not None, "GRAPH.md resolution-origin badge is missing"
+    assert int(match.group(1)) == len(RESOLUTION_ORIGIN_VALUES)
+
+
+def test_language_support_origin_table_matches_vocabulary() -> None:
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    text = (root / "docs/layers/LANGUAGE_SUPPORT.md").read_text(encoding="utf-8")
+    section = text.split("### Every call edge says how it was resolved", 1)[1]
+    table, remainder = section.split("That is the complete vocabulary of ", 1)
+    names = re.findall(r"^\| `([a-z_]+)` \|", table, re.MULTILINE)
+
+    assert len(names) == len(set(names)), "origin table has duplicate rows"
+    assert set(names) == RESOLUTION_ORIGIN_VALUES
+    assert int(remainder.split(".", 1)[0]) == len(RESOLUTION_ORIGIN_VALUES)
 
 
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])

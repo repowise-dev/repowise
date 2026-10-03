@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .rows import field
+from .rows import field, scored_rows
 
 HealthBand = Literal["excellent", "good", "fair", "needs_work", "at_risk"]
 
@@ -121,10 +121,11 @@ def distribution(metrics: list[Any]) -> dict[str, Any]:
     bands: dict[str, dict[str, float]] = {b: {"files": 0, "nloc": 0} for b in BAND_ORDER}
     total_files = 0
     total_weight = 0
-    for m in metrics:
+    # A file with no score (no health dialect for its language) has no band.
+    for m in scored_rows(metrics):
         if field(m, "file_path") is None:
             continue
-        score = float(field(m, "score", 10.0))
+        score = float(field(m, "score"))
         weight = max(int(field(m, "nloc", 0) or 0), 1)
         band = band_for(score)
         bands[band]["files"] += 1

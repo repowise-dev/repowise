@@ -35,6 +35,24 @@ async def test_get_dead_code(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_dead_code_summary_says_what_it_counts(setup_mcp):
+    from repowise.server.mcp_server import get_dead_code
+
+    plain = (await get_dead_code())["summary"]
+    assert "filtered_findings" in plain["scope"]
+    assert "filters" not in plain  # defaults are not echoed
+
+    # A filter that keeps nothing: the totals still count every open finding,
+    # and the summary names the filters that emptied the tiers.
+    result = await get_dead_code(directory="nowhere", min_confidence="high")
+    summary = result["summary"]
+    assert summary["total_findings"] == 3
+    assert summary["filtered_findings"] == 0
+    assert summary["filters"] == {"directory": "nowhere", "min_confidence": 0.7}
+    assert summary["scope"] == plain["scope"]
+
+
+@pytest.mark.asyncio
 async def test_get_dead_code_safe_only(setup_mcp):
     from repowise.server.mcp_server import get_dead_code
 

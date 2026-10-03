@@ -313,6 +313,44 @@ def test_a_content_match_binds_the_path_not_the_matched_line(adapter: CodexAdapt
     assert results == [{"file": "src/app.py"}]
 
 
+def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) -> None:
+    """A ``path:line:`` match with no separator in the path is still a path."""
+    call_event = adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output(
+            [{"type": "input_text", "text": "Exit code: 0\nOutput:\napp.py:12:    # TODO\n"}]
+        )
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"file": "app.py"}]
+    assert call_event is not None
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_a_bare_root_level_filename_is_kept(adapter: CodexAdapter) -> None:
+    """``rg --files``/``rg -l`` output with no ``:line:`` still admits a root file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(_search_then_output([{"type": "input_text", "text": "Output:\nsetup.py\n"}]))
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"file": "setup.py"}]
+
+
+def test_a_bare_prose_line_is_still_dropped(adapter: CodexAdapter) -> None:
+    """Loosening the bare-line filter must not admit stray prose as a file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output([{"type": "input_text", "text": "Output:\nNo files were searched\n"}])
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == []
+
+
 def test_unreadable_search_output_neither_raises_nor_erases(adapter: CodexAdapter) -> None:
     """``normalize`` may not raise on content, and must not drop a real result."""
     adapter.normalize(RG_CALL)

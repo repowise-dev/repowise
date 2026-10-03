@@ -5,15 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.analysis.health.perf.serving import parse_query
+from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
+from repowise.core.analysis.next_call import ActionCommand
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.services.performance_health import (
     PerformanceHealthService,
     PerformancePage,
-    parse_query,
 )
 from repowise.server.services.refactoring_health import RefactoringHealthService
-from repowise.server.services.refactoring_health import parse_query as parse_refactoring_query
 
 # The opportunity id space is shared with the performance pillar's, and told
 # apart by prefix alone, so ``opportunity_id`` stays one selector.
@@ -130,6 +131,7 @@ async def _refactoring_blocks(
     lead_type: str | None = None,
     confidence: str | None = None,
     effort: str | None = None,
+    scope: str | None = None,
 ) -> _RefactoringBlocks:
     """Read the materialized queue and its rollup.
 
@@ -149,6 +151,7 @@ async def _refactoring_blocks(
             lead_type=lead_type,
             confidence=confidence,
             effort=effort,
+            scope=scope,
             file_paths=list(file_paths) if file_paths is not None else None,
             limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
             offset=cursor if emits_queue else 0,
@@ -179,6 +182,10 @@ def _render_refactoring(
         result["refactoring_opportunities"] = page.items
         result["refactoring_opportunities_total"] = page.total
         result["refactoring_opportunities_emitted"] = len(page.items)
+        result["refactoring_opportunities_scope"] = page.scope
+        if page.hidden is not None:
+            # What the default scope leaves out, by reason; ``all`` lists it.
+            result["refactoring_opportunities_hidden"] = page.hidden
         if len(page.items) < page.total:
             result["refactoring_opportunities_reduced_reason"] = (
                 "collection_cap" if req.limit > _REFACTORING_COLLECTION_CAP else "limit"
@@ -196,10 +203,11 @@ def _render_refactoring(
             **refactoring.summary,
             "facets": page.facets if page else {},
             "view": req.refactoring_view,
-            "next_call": (
-                "get_health(include=['refactoring'], "
-                "only=['refactoring_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked refactoring opportunities, lead first",
+                "get_health",
+                {"include": ["refactoring"], "only": ["refactoring_opportunities"], "limit": 6},
+            ).as_dict(),
         }
 
 
@@ -224,8 +232,9 @@ def _render_performance(
         result["performance_summary"] = {
             **performance.summary,
             "facets": page.facets if page else {},
-            "next_call": (
-                "get_health(include=['performance'], "
-                "only=['performance_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked performance opportunities, lead first",
+                "get_health",
+                {"include": ["performance"], "only": ["performance_opportunities"], "limit": 6},
+            ).as_dict(),
         }

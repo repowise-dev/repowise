@@ -29,6 +29,7 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
+    SdkClientOwner,
     ensure_reasoning_supported,
     fallback_model_option,
     provider_retry_stop,
@@ -279,7 +280,7 @@ def _discover_openai_model_options(
     return tuple(_openai_option(model_id, fallback_model=fallback_model) for model_id in model_ids)
 
 
-class OpenAIProvider(BaseProvider):
+class OpenAIProvider(SdkClientOwner, BaseProvider):
     """OpenAI Chat Completions provider.
 
     Args:
@@ -306,16 +307,21 @@ class OpenAIProvider(BaseProvider):
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
         self._base_url = resolved_base_url or "https://api.openai.com/v1"
-        http_client = None
-        if resolved_base_url and _is_loopback_url(resolved_base_url):
-            import httpx
+        loopback = bool(resolved_base_url and _is_loopback_url(resolved_base_url))
 
-            http_client = httpx.AsyncClient(trust_env=False)
-        self._client = AsyncOpenAI(
-            api_key=resolved_key,
-            base_url=resolved_base_url,
-            http_client=http_client,
-        )
+        def _new_client() -> AsyncOpenAI:
+            http_client = None
+            if loopback:
+                import httpx
+
+                http_client = httpx.AsyncClient(trust_env=False)
+            return AsyncOpenAI(
+                api_key=resolved_key,
+                base_url=resolved_base_url,
+                http_client=http_client,
+            )
+
+        self._open_client(_new_client)
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker

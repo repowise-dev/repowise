@@ -24,6 +24,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import plan_view
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import project_scope
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
@@ -60,7 +61,7 @@ from repowise.server.mcp_server.tool_health.population import Population, load_p
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.summary import _leads_by_file
 from repowise.server.services.performance_health import PerformanceHealthService
-from repowise.server.services.refactoring_health import RefactoringHealthService, plan_view
+from repowise.server.services.refactoring_health import RefactoringHealthService
 
 FIX_FIRST_CAP = 5
 """Items in the dashboard's ``fix_first`` block, however large ``limit`` is.
@@ -276,6 +277,7 @@ async def _read_pillars(
         lead_type=req.refactoring_type,
         confidence=req.refactoring_confidence,
         effort=req.refactoring_effort,
+        scope=req.refactoring_scope,
     )
     performance = await _performance_blocks(
         performance_service,

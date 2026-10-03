@@ -17,10 +17,10 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from itertools import pairwise
 from typing import Any, Literal
 
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.code_origin import path_origin
+from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 
 from .facts import ObservationFacts, detail_map, is_performance, observation_facts
 
@@ -33,82 +33,57 @@ from the string alone. Version 1 ids carry no digit and remain readable as
 version 1. Moving this constant means bumping ``HEALTH_ANALYZER_VERSION`` with
 it, which forces the rescore that restamps every stored finding.
 
-Version 3 classes schema migrations as ``tooling`` in :func:`execution_context`,
-a kernel input. Digests of every other path are unchanged; only the prefix moved.
+Version 3 keys a cause by its intervention, not by the sink it reaches: one
+loop reaching three sinks was three opportunities under version 2. It also
+classes schema migrations as ``tooling`` in :func:`execution_context`, a kernel
+input.
 """
 
 ExecutionContext = Literal["production", "tooling", "test", "unknown"]
+
+# Where the edit lands: the function holding the loop, a helper every caller
+# reaches the sink through, or top-level script code.
+InterventionKind = Literal["function", "shared_helper", "module"]
+
+MODULE_SCOPE = "__module__"
+"""The symbol name for top-level code, the same synthetic node the graph uses."""
 
 CausalKey = tuple[Any, ...]
 
 _ID_PREFIX = "perf"
 _ID_PATTERN = re.compile(rf"^{_ID_PREFIX}(\d*)_[0-9a-f]{{20}}$")
 
-_TOOLING_PARTS = frozenset(
-    {
-        ".github",
-        "benchmarks",
-        "build",
-        "devtools",
-        # Schema migrations run once per deploy, not per request: Django and
-        # Flask-Migrate ``migrations/``, EF Core ``Migrations/``.
-        "migrations",
-        "scripts",
-        "tooling",
-        "tools",
-    }
-)
-
-_TOOLING_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
-"""Adjacent directories that mark migrations where neither name does alone.
-
-Rails keeps them in ``db/migrate``. Alembic keeps them in ``versions/`` under
-its script directory; a bare ``versions/`` is too common (API versions) to
-class on its own. Ceiling: an Alembic script directory with another name is
-recognised only by its sibling ``env.py``, which a path-only classifier cannot
-see.
-"""
-
-_UNCLASSIFIABLE_PARTS = frozenset(
-    {
-        "demo",
-        "demos",
-        "doc",
-        "docs",
-        "example",
-        "examples",
-        "sample",
-        "samples",
-        "third_party",
-        "thirdparty",
-        "vendor",
-    }
-)
-"""Directories that do not say whether their code ships.
-
-Reporting these as production would assert exposure the tree does not support,
-which is the one thing the fallback must not do.
-"""
+# Origins whose code may or may not ship: a copied library, a generator's
+# output, a docs tree. Calling such code production would assert an exposure
+# the tree does not support, which is the one thing the fallback must not do.
+_UNKNOWN_ORIGINS = frozenset({"vendored", "generated", "docs_example"})
+_TOOLING_ORIGINS = frozenset({"tooling", "build"})
+# Example, demo and docs trees at any depth. Not ``website/``: a site can serve
+# a shipped installer script.
+_UNKNOWN_DIRS = EXAMPLE_DIR_TOKENS | (DOC_DIR_TOKENS - {"website"})
 
 
 def code_context(file_path: str) -> ExecutionContext:
     """Whether this code ships, without :func:`execution_context`'s CLI rule.
 
-    A CLI is product code an edit can improve, so code-shape surfaces read
-    this; only performance treats a CLI loop as off the request path.
+    Read from the shared :func:`~repowise.core.code_origin.path_origin`, so a
+    build script, a tool, a test or a copied library means the same here as in
+    every other layer. Two rules are this layer's own: a file with no
+    directory, and an example, demo or docs tree at any depth, carry no
+    evidence either way and are ``unknown``. A CLI is product code an edit can
+    improve, so code-shape surfaces read this; only performance treats a CLI
+    loop as off the request path.
     """
     normalized = file_path.replace("\\", "/")
     if not normalized:
         return "unknown"
-    if is_test_related_path(file_path):
+    origin = path_origin(normalized)
+    if origin == "test":
         return "test"
-    segments = normalized.lower().split("/")
-    parts = set(segments)
-    if parts & _TOOLING_PARTS:
+    if origin in _TOOLING_ORIGINS:
         return "tooling"
-    if any(pair in _TOOLING_DIR_PAIRS for pair in pairwise(segments[:-1])):
-        return "tooling"
-    if parts & _UNCLASSIFIABLE_PARTS or "/" not in normalized:
+    dirs = normalized.lower().split("/")[:-1]
+    if origin in _UNKNOWN_ORIGINS or not dirs or any(d in _UNKNOWN_DIRS for d in dirs):
         return "unknown"
     return "production"
 
@@ -135,42 +110,53 @@ def cost_shape(marker: str) -> str:
     return marker
 
 
+def shared_helper(facts: ObservationFacts) -> str | None:
+    """The helper the repetition passes through, when the loop is not the edit.
+
+    On ``loop owner -> helper -> ... -> sink`` every caller reaches the sink
+    through the sink's immediate caller, so that helper is the one place a
+    batched form settles them all. A two-node path has no helper: the loop
+    owner calls the sink-holding function itself, so the loop is the edit.
+    """
+    if facts.cross_function and facts.path_depth >= 3:
+        return facts.meaningful_predecessor
+    return None
+
+
 def causal_key(facts: ObservationFacts) -> CausalKey:
-    """The v2 identity kernel.
+    """The v3 identity kernel: one cause per intervention and cost family.
 
-    A cross-function cause is named by the pair the intervention lives in:
-    the sink that pays the cost and the caller that repeats it. Naming it by
-    the sink alone merged every workflow that happened to reach a shared
-    infrastructure helper, so a session opener reached from many unrelated
-    callers read as one cause. Requiring the caller to match splits those, and
-    leaves a genuinely shared helper merged however many callers reach it,
-    because they all reach the sink through that helper.
+    The unit is the place a person edits. A loop is named by the function that
+    holds it, so the sinks it reaches, the call sites inside it, and the
+    co-signals of one cost family (``io_in_loop`` with ``nested_loop_with_io``)
+    are members of one cause, not one cause each. A shared helper is named by
+    itself, so unrelated callers that reach a sink through it stay one cause,
+    and unrelated callers of a generic sink stay apart because each loop owner
+    is its own intervention.
 
-    A same-function cause has no call path and is named by its own location.
+    Boundary stays in: a loop doing database and filesystem work holds two
+    different changes. The loop's own line does not: two loops in one function
+    are one edit site, and their lines stay in the evidence. That is a ceiling,
+    not a claim that they are one loop: findings record the sink's line and not
+    the loop's, so splitting per loop would need the walk to carry the loop
+    line into ``details`` first.
 
     Everything outside these tuples is display or derived data and stays out:
-    prose, line ends, storage ids, rank factors, confidence, reachability, and
-    provenance.
+    prose, lines, sinks, storage ids, rank factors, confidence, reachability,
+    and provenance.
     """
     context = execution_context(facts.file_path)
-    predecessor = facts.meaningful_predecessor
-    if facts.cross_function and predecessor is not None:
-        return (
-            "cross-function",
-            context,
-            cost_shape(facts.marker),
-            facts.boundary_kind,
-            predecessor,
-            facts.terminal_sink,
-        )
+    family = cost_shape(facts.marker)
+    helper = shared_helper(facts)
+    if helper is not None:
+        return ("shared_helper", context, family, facts.boundary_kind, helper)
     return (
-        "local",
+        "function",
         context,
-        facts.marker,
+        family,
         facts.boundary_kind,
         facts.file_path,
-        facts.function_name,
-        facts.line_start,
+        facts.function_name or None,
     )
 
 
@@ -190,18 +176,20 @@ def key_boundary(key: CausalKey) -> str | None:
     return key[3]
 
 
-def key_is_cross_function(key: CausalKey) -> bool:
-    return key[0] == "cross-function"
+def key_intervention_kind(key: CausalKey) -> InterventionKind:
+    if key[0] == "shared_helper":
+        return "shared_helper"
+    return "function" if key[5] else "module"
 
 
-def key_intervention_symbol(key: CausalKey) -> str | None:
-    """The caller the whole group shares, and therefore the place to edit."""
-    return key[4] if key_is_cross_function(key) else None
+def key_intervention_symbol(key: CausalKey) -> str:
+    """The place the whole group shares, and therefore the place to edit.
 
-
-def key_terminal_sink(key: CausalKey) -> str | None:
-    """The sink the whole group shares. Read off the key, never off a member."""
-    return key[5] if key_is_cross_function(key) else None
+    Every group has one: top-level script code is named for its module.
+    """
+    if key[0] == "shared_helper":
+        return key[4]
+    return f"{key[4]}::{key[5] or MODULE_SCOPE}"
 
 
 def opportunity_id_model_version(opportunity_id: str) -> int | None:
@@ -286,22 +274,24 @@ def shared_path_suffix(paths: list[tuple[str, ...]]) -> tuple[str, ...]:
 
 
 __all__ = [
+    "MODULE_SCOPE",
     "PERFORMANCE_MODEL_VERSION",
     "CausalKey",
     "ExecutionContext",
+    "InterventionKind",
     "causal_key",
     "cost_shape",
     "execution_context",
     "group_observations",
     "key_boundary",
     "key_context",
+    "key_intervention_kind",
     "key_intervention_symbol",
-    "key_is_cross_function",
-    "key_terminal_sink",
     "link_performance_findings",
     "model_state",
     "opportunity_id_for_finding",
     "opportunity_id_model_version",
+    "shared_helper",
     "shared_path_suffix",
     "stable_id",
 ]

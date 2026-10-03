@@ -268,7 +268,7 @@ def test_what_the_change_wrote_outranks_what_it_only_touched():
 
 
 def test_a_performance_finding_on_test_code_is_not_reported(make_repo):
-    """The perf model reasons about request-reachable paths; a test is not one."""
+    """Performance findings are about code that serves requests; a test does not."""
     repo = make_repo()
     repo.commit("seed", {"tests/test_app.py": python_io_in_loop(in_loop=False)})
     repo.commit("loop", {"tests/test_app.py": python_io_in_loop(in_loop=True)})
@@ -430,6 +430,20 @@ def test_exclusions_and_extensions_narrow_the_compared_scope(make_repo):
 
     assert all(not f.path.startswith("vendor/") for f in excluded.findings)
     assert excluded.scope.changed == 1
+
+
+def test_include_paths_keep_only_the_named_paths(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+
+    included = compare(repo, "HEAD", include_paths=("vendor/",))
+
+    assert all(f.path.startswith("vendor/") for f in included.findings)
+    assert included.scope.changed == 1
 
 
 def test_change_finding_ids_are_deterministic_across_runs(make_repo):

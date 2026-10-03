@@ -24,7 +24,7 @@ from typing import Any
 
 from ..rows import field
 
-REFACTORING_MODEL_VERSION = 3
+REFACTORING_MODEL_VERSION = 4
 """Version of the identity semantics. v1 was the fresh-UUID-per-index era.
 
 The version is the id prefix rather than a hash input, so a stale id is

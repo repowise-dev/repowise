@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -53,6 +54,18 @@ class FindingSets:
     findings_total: int
     test_finding_rows: list[Any] = field(default_factory=list)
     test_findings_total: int = 0
+    #: Row id -> why the finding can wait, for each lower-priority row.
+    lower_priority: dict[Any, str] = field(default_factory=dict)
+
+
+def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[Any, str]]:
+    """Ranked *rows* with those worth doing first ahead, and each later row's
+    reason. Shapes are measured over *measured_over*, the set before any
+    dimension filter, so a filter never changes a function's tier."""
+    reasons = dict(zip((r.id for r in measured_over), finding_priorities(measured_over), strict=True))
+    ranked = sorted(_rank_emitted(rows), key=lambda r: reasons.get(r.id) is not None)
+    labels = {r.id: LOW_PRIORITY_LABEL[why] for r in ranked if (why := reasons.get(r.id))}
+    return ranked, labels
 
 
 def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
@@ -82,8 +95,8 @@ async def load_targeted_findings(
         ),
         "file_path",
     ))
-    emitted = _rank_emitted(
-        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)]
+    emitted, labels = _tiered(
+        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)], finding_rows
     )
     return FindingSets(
         finding_rows=emitted,
@@ -91,6 +104,7 @@ async def load_targeted_findings(
         legend_rows=emitted,
         emitted=emitted,
         findings_total=len(emitted),
+        lower_priority=labels,
     )
 
 
@@ -107,8 +121,8 @@ async def load_dashboard_findings(
     )
     # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
     # change because the caller asked to see one dimension.
-    emitted = _rank_emitted(
-        [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)]
+    emitted, labels = _tiered(
+        [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)], lead_rows
     )
     # Test findings get their own bucket instead of crowding the headline
     # list. Split before the cap, so each list is the top ``limit`` of its
@@ -132,19 +146,19 @@ async def load_dashboard_findings(
         findings_total=len(prod_emitted),
         test_finding_rows=[by_id[i] for i in test_head_ids if i in by_id],
         test_findings_total=len(test_emitted),
+        lower_priority=labels,
     )
 
 
 async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest) -> list[Any]:
     """Narrow read over every open finding.
 
-    The columns ``_leads_by_file`` reads, plus ``dimension`` and ``id``. A
-    SQLAlchemy ``Row`` exposes them as attributes, so the reduction and the
-    exclude filter run against it unchanged.
-
-    ``details_json`` joins only when the performance dimension is asked for:
-    perf findings carry ``health_impact: 0``, so only then can one reach the
-    head, and the column is not worth its read cost otherwise.
+    The columns ``_leads_by_file`` reads, plus ``dimension`` and ``id``, and
+    what the worth tier measures a function by (``function_name``, the span,
+    ``severity``, ``details_json``). A SQLAlchemy ``Row`` exposes them as
+    attributes, so the reduction and the exclude filter run against it
+    unchanged. Ceiling: ``details_json`` is read for every open finding, for
+    the tier; storing the tier on the row would make this read narrow again.
     """
     lite_cols = [
         HealthFinding.id,
@@ -153,17 +167,12 @@ async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest)
         HealthFinding.biomarker_type,
         HealthFinding.reason,
         HealthFinding.dimension,
+        HealthFinding.severity,
+        HealthFinding.details_json,
+        HealthFinding.function_name,
+        HealthFinding.line_start,
+        HealthFinding.line_end,
     ]
-    if "performance" in req.dimension_filter:
-        lite_cols.append(HealthFinding.details_json)
-    if req.wants_performance_opportunities:
-        lite_cols.extend(
-            [
-                HealthFinding.function_name,
-                HealthFinding.line_start,
-                HealthFinding.line_end,
-            ]
-        )
     return list(
         (
             await session.execute(

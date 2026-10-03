@@ -38,6 +38,7 @@ export interface FileHealthFinding {
   dimension?: HealthDimension;
   /** `"unverified"` for a provisional finding type; null for a validated one. */
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface FileHealthMetric {

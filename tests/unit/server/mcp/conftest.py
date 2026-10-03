@@ -639,7 +639,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "function_name": "authenticate",
                 "line_start": 10,
                 "line_end": 80,
-                "details": {"ccn": 15, "cognitive": 30, "nloc": 70},
+                "details": {"ccn": 15, "cognitive": 30, "nloc": 70, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 1.2,
                 "reason": "authenticate has cyclomatic complexity 15",
             },

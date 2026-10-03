@@ -25,6 +25,12 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_ORDERS,
+    CANONICAL_VIEWS,
+    DEFAULT_VIEW,
+    parse_query,
+)
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
@@ -36,13 +42,7 @@ from repowise.server.schemas import (
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
 )
-from repowise.server.services.refactoring_health import (
-    CANONICAL_ORDERS,
-    CANONICAL_VIEWS,
-    DEFAULT_VIEW,
-    RefactoringHealthService,
-    parse_query,
-)
+from repowise.server.services.refactoring_health import RefactoringHealthService
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
@@ -409,6 +409,13 @@ async def get_refactoring_opportunities(
     file_path: str | None = Query(None, description="One repo-relative file path"),
     search: str | None = Query(None, description="Substring of the file path"),
     mechanical: bool = Query(False, description="Only opportunities with a mechanical step"),
+    scope: str | None = Query(
+        None,
+        description=(
+            "fix_first (default for the open queue with no file_path): only what Fix first "
+            "would take, the rest counted in `hidden` | all: the full inventory"
+        ),
+    ),
     view: str = Query(DEFAULT_VIEW, description=" | ".join(CANONICAL_VIEWS)),
     order: str | None = Query(None, description=" | ".join(CANONICAL_ORDERS)),
     step_preview: int = Query(
@@ -440,6 +447,7 @@ async def get_refactoring_opportunities(
         order=order,
         limit=limit,
         offset=offset,
+        scope=scope,
     )
     page = await _service(session, repo_id).page(
         query,
@@ -455,7 +463,10 @@ async def get_refactoring_opportunities(
         "next_offset": page.next_offset,
         "facets": page.facets,
         "summary": page.summary,
+        "scope": page.scope,
     }
+    if page.hidden is not None:
+        body["hidden"] = page.hidden
     if ignored:
         body["ignored_arguments"] = ignored
     return body

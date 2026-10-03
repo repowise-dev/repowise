@@ -2,7 +2,8 @@
 
 ``dispatch_share`` is the share of a function's decision points that sit
 inside its largest top-level dispatch on one subject, arms and what they nest. ``deprecated`` is a declaration marker or a
-top-level deprecation warning. Neither moves a CCN, threshold or score.
+top-level deprecation warning. The size and complexity markers judge a function
+mostly made of one dispatch outside it.
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
+from repowise.core.analysis.health.biomarkers.nested_complexity import NestedComplexityDetector
 from repowise.core.analysis.health.complexity import walk_file
+from repowise.core.analysis.health.complexity.dispatch import judged_ccn, judged_nesting
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
 from repowise.core.analysis.health.finding_identity import finding_public_id
@@ -205,10 +209,22 @@ def test_java_switch_and_equals_chain() -> None:
     if ("a".equals(cmd)) {} else if ("b".equals(cmd)) {} else if ("c".equals(cmd)) {}
     return 0;
   }
+  int h(String p) {
+    if (Names.ISO.matches(p)) {} else if (Names.BASIC_DATE.matches(p)) {} else if (Names.TIME.matches(p)) {}
+    return 0;
+  }
+  int k(String p) {
+    if (iso.matches(p)) {} else if (basic.matches(p)) {} else if (time.matches(p)) {}
+    return 0;
+  }
 }""",
     )
     assert fns["f"].dispatch_share == 0.75
     assert fns["g"].dispatch_share == 1.0
+    # A constant receiver is the arm's key: the chain tests ``p``.
+    assert fns["h"].dispatch_share == 1.0
+    # Three different variables test ``p``; nothing says they are keys.
+    assert fns["k"].dispatch_share == 0.0
 
 
 def test_csharp_flat_switch_expression_is_one_point() -> None:
@@ -377,7 +393,7 @@ export const serveStatic = (options: {
 _TANGLED = b"""
 import warnings
 
-def tangled(x):
+def tangled(x, y):
     warnings.warn("tangled is deprecated", DeprecationWarning)
     total = 0
     if x == 1:
@@ -390,15 +406,36 @@ def tangled(x):
         total += 4
     elif x == 5:
         total += 5
-    elif x == 6:
+    if y == 6:
         total += 6
-    elif x == 7:
+    elif y == 7:
         total += 7
-    elif x == 8:
+    elif y == 8:
         total += 8
-    elif x == 9:
+    elif y == 9:
         total += 9
     return total
+
+def lookup(x):
+    if x == 1:
+        return 1
+    elif x == 2:
+        return 2
+    elif x == 3:
+        return 3
+    elif x == 4:
+        return 4
+    elif x == 5:
+        return 5
+    elif x == 6:
+        return 6
+    elif x == 7:
+        return 7
+    elif x == 8:
+        return 8
+    elif x == 9:
+        return 9
+    return 0
 
 def fine():
     return 1
@@ -428,9 +465,15 @@ def _evaluate(path: str):
 def test_complexity_findings_carry_dispatch_share_and_deprecated() -> None:
     _, findings, _ = _evaluate("src/tangled.py")
     complex_method = next(f for f in findings if f.biomarker_type == "complex_method")
-    # The chain holds all nine decision points.
-    assert complex_method.details["dispatch_share"] == 1.0
+    # The larger chain holds five of the nine decision points.
+    assert complex_method.details["dispatch_share"] == 0.56
     assert complex_method.details["deprecated"] is True
+
+
+def test_a_function_that_is_one_dispatch_earns_no_complex_method() -> None:
+    # ``lookup`` is CCN 10, every point in one chain on ``x``.
+    _, findings, _ = _evaluate("src/tangled.py")
+    assert not [f for f in findings if f.function_name == "lookup"]
 
 
 def test_metric_carries_code_origin() -> None:
@@ -453,3 +496,83 @@ def test_new_detail_keys_leave_the_finding_id_unchanged() -> None:
         **{**base.__dict__, "details": {**base.details, "dispatch_share": 0.8, "deprecated": True}}
     )
     assert finding_public_id(annotated) == finding_public_id(base)
+
+
+@pytest.mark.parametrize(
+    ("ccn", "share", "arm", "judged"),
+    [(30, 0.5, 0, 30), (30, 0.6, 0, 13), (12, 1.0, 0, 1), (250, 0.87, 0, 33), (37, 0.94, 12, 15)],
+)
+def test_judged_ccn_reads_outside_a_dominant_dispatch_and_its_heaviest_arm(
+    ccn: int, share: float, arm: int, judged: int
+) -> None:
+    fn = SimpleNamespace(ccn=ccn, dispatch_share=share, dispatch_arm=arm)
+    assert judged_ccn(fn) == judged
+
+
+def test_judged_nesting_drops_the_dispatch_levels() -> None:
+    assert judged_nesting(SimpleNamespace(max_nesting=4, dispatch_share=0.59)) == 4
+    assert judged_nesting(SimpleNamespace(max_nesting=4, dispatch_share=1.0)) == 2
+    assert judged_nesting(SimpleNamespace(max_nesting=7, dispatch_share=0.97)) == 5
+
+
+def test_heaviest_arm_is_what_the_arm_itself_charges() -> None:
+    fns = _functions(
+        "csharp",
+        """class A {
+  int Flat(int k) { switch (k) { case 1: return 1; case 2: return 2; case 3: return 3; } return 0; }
+  int Fat(int k, int a, int b) {
+    switch (k) {
+      case 1: if (a > 0) { if (b > 0) { return 1; } } return 0;
+      case 2: return 2;
+      case 3: return 3;
+    }
+    return 0;
+  }
+  int Chain(int k, int a) {
+    if (k == 1) { if (a > 0) { return 1; } } else if (k == 2) { return 2; } else if (k == 3) { return 3; }
+    return 0;
+  }
+}""",
+    )
+    assert fns["Flat"].dispatch_arm == 0
+    assert fns["Fat"].dispatch_arm == 2
+    assert fns["Chain"].dispatch_arm == 1
+
+
+def test_a_switch_with_a_tangled_arm_keeps_complex_method() -> None:
+    arm = "".join(f"if (a > {i}) {{ total += {i}; }} " for i in range(9))
+    cases = "".join(f"case {i}: return {i}; " for i in range(2, 12))
+    fns = _functions(
+        "csharp",
+        f"class A {{ int F(int k, int a) {{ int total = 0; switch (k) {{ case 1: {arm}return total; {cases}}} return 0; }} }}",
+    )
+    fn = fns["F"]
+    assert fn.dispatch_share >= 0.6 and fn.dispatch_arm == 9
+    ctx = SimpleNamespace(all_functions=[fn])
+    assert [r.function_name for r in ComplexMethodDetector().detect(ctx)] == ["F"]
+
+
+def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
+    # switch, case, if, if: four levels, two of them the dispatch's own.
+    fns = _functions(
+        "csharp",
+        """class A {
+  int F(int ins, int fmt) {
+    switch (ins) {
+      case 1: return 1;
+      case 2: return 2;
+      default:
+        if (ins > 3) { if (fmt == 4) { return 4; } }
+        return fmt;
+    }
+  }
+  int G(int a, int b, int c, int d) {
+    if (a > 0) { if (b > 0) { if (c > 0) { if (d > 0) { return 1; } } } }
+    return 0;
+  }
+}""",
+    )
+    ctx = SimpleNamespace(all_functions=list(fns.values()))
+    flagged = {r.function_name for r in NestedComplexityDetector().detect(ctx)}
+    assert fns["F"].max_nesting == 4 and fns["F"].dispatch_share >= 0.6
+    assert flagged == {"G"}

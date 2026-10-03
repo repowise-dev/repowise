@@ -66,14 +66,20 @@ def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> N
     """
     findings, repository = data.findings, data.reference_repository
     result["findings"] = pager.bound(
-        [_serialize_finding(f, repository) for f in findings.finding_rows],
+        [
+            _serialize_finding(f, repository, findings.lower_priority.get(f.id))
+            for f in findings.finding_rows
+        ],
         "findings",
     )
     result["findings_total"] = findings.findings_total
     # Dashboard mode only (targeted mode already set ``findings``), so this
     # uses the same production/test split as ``top_findings``.
     result["test_findings"] = pager.bound(
-        [_serialize_finding(f, repository) for f in findings.test_finding_rows],
+        [
+            _serialize_finding(f, repository, findings.lower_priority.get(f.id))
+            for f in findings.test_finding_rows
+        ],
         "test_findings",
     )
     result["test_findings_total"] = findings.test_findings_total

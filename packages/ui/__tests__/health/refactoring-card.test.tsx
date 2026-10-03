@@ -47,6 +47,21 @@ function findings(): RefactoringTargetFinding[] {
   ];
 }
 
+describe("RefactoringCard lower priority", () => {
+  it("labels a demoted finding and leaves the others unlabelled", () => {
+    const [a, b] = findings();
+    render(
+      <RefactoringCard
+        target={target({
+          all_findings: [{ ...a!, lower_priority: "lower priority: near the bar" }, b!],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Show all 3 findings/ }));
+    expect(screen.getAllByText(/Lower priority: near the bar/)).toHaveLength(1);
+  });
+});
+
 describe("RefactoringCard lazy findings", () => {
   it("offers the expander from finding_count, without the findings themselves", () => {
     // The list response no longer ships `all_findings`; the expander must not
@@ -129,5 +144,45 @@ describe("a file led by a history marker", () => {
     render(<RefactoringCard target={target()} onGeneratePrompt={vi.fn()} />);
     expect(screen.getByText("AI fix prompt")).toBeInTheDocument();
     expect(screen.queryByText("Watch")).not.toBeInTheDocument();
+  });
+});
+
+describe("the row's labels and action", () => {
+  it("labels a test file, and only a test file", () => {
+    const { rerender } = render(<RefactoringCard target={target({ is_test: true })} />);
+    expect(screen.getByText("test")).toBeInTheDocument();
+    rerender(<RefactoringCard target={target({ is_test: false })} />);
+    expect(screen.queryByText("test")).not.toBeInTheDocument();
+  });
+
+  it("shows the core action sentence as the row's action line", () => {
+    render(
+      <RefactoringCard target={target({ primary_suggestion: "Split this function." })} />,
+    );
+    expect(screen.getByText("Action").parentElement?.textContent).toBe(
+      "ActionSplit this function.",
+    );
+  });
+
+  it("offers a checkbox for the finding the row names", () => {
+    const toggle = vi.fn();
+    render(
+      <RefactoringCard
+        target={target({ primary_finding_id: "f1" })}
+        onToggleSelect={toggle}
+        selected
+      />,
+    );
+    const box = screen.getByRole("checkbox", {
+      name: /Select the .* finding in packages\/core\/pipeline\/incremental.py/,
+    });
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ primary_finding_id: "f1" }));
+  });
+
+  it("offers no checkbox when the row names no finding", () => {
+    render(<RefactoringCard target={target()} onToggleSelect={vi.fn()} />);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });

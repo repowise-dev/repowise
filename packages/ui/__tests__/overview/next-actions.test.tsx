@@ -129,7 +129,14 @@ describe("NextActions", () => {
 
 describe("the action drawer", () => {
   it("opens on a row click with the evidence link, the facts and the prompt", async () => {
-    render(<NextActions data={response([], [action()])} hrefFor={() => "/repos/r/files/src/a.py"} />);
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(
+      <NextActions
+        data={response([], [action()])}
+        hrefFor={() => "/repos/r/files/src/a.py"}
+        loadPrompt={loadPrompt}
+      />,
+    );
     fireEvent.click(screen.getByRole("listitem", { name: /Open Raise test coverage/ }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("link", { name: /Open the file/ })).toHaveAttribute(
@@ -138,8 +145,17 @@ describe("the action drawer", () => {
     );
     expect(within(dialog).getByText("Why it is on the list")).toBeInTheDocument();
     expect(within(dialog).getByText("Not measured.")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /Copy prompt/ })).toBeInTheDocument();
-    expect(within(dialog).getAllByText(/Line coverage on this file reaches 80%/).length).toBe(2);
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith(action(), expect.any(String));
+    expect(within(dialog).getByRole("button", { name: /Copy prompt/ })).toBeEnabled();
+  });
+
+  it("leaves the prompt out when the host cannot load one", async () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText("Hand it to an agent")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /Copy prompt/ })).toBeNull();
   });
 });
 
@@ -175,3 +191,73 @@ describe("actionHref", () => {
     ).toBe("/repos/r/decisions/d1");
   });
 });
+
+describe("the fix_first rule", () => {
+  // Shaped the way core's `fix_first` rule emits a Fix-first item: title and
+  // why verbatim, the gain first among the facts, the steps as evidence.
+  const fixFirst = action({
+    id: "act_fix",
+    rule: "fix_first",
+    tier: "act_now",
+    horizons: ["week", "quarter"],
+    title: "Extract lines 60-122 of quick_repo_scan into compute_info",
+    impact: "quick_repo_scan: CCN 15, 44 lines, nests 3 deep; 4 files import it, changed 5 times in 90 days.",
+    why: [
+      { label: "gain", value: "+1.7 health on this file", basis: "inferred" },
+      { label: "files that import it", value: "4", basis: "measured" },
+    ],
+    target: {
+      kind: "symbol",
+      path: "packages/cli/src/repowise/cli/ui/repo_scanner.py",
+      symbol: "quick_repo_scan",
+    },
+    surface: "findings",
+    effort: "S",
+    done_when: "It leaves Fix first on the next update.",
+    details: [
+      {
+        path: "packages/cli/src/repowise/cli/ui/repo_scanner.py",
+        line: 60,
+        symbol: null,
+        marker: null,
+        severity: null,
+        reason: "Extract lines 60-122 of quick_repo_scan into compute_info(repo_path) -> info",
+        ref: null,
+      },
+    ],
+    details_total: 1,
+    commands: [
+      {
+        purpose: "The full item: steps, tests to run, risk",
+        mcp: 'get_health(fix_id="fix1_2b0e5c0acbb469f46aa9")',
+        cli: "repowise health",
+      },
+    ],
+  });
+
+  it("renders title, file:line and why on the row", () => {
+    render(<NextActions data={response([fixFirst], [])} hrefFor={() => null} />);
+    const row = screen.getByRole("listitem", { name: /Open Extract lines 60-122/ });
+    expect(within(row).getByText("packages/cli/src/repowise/cli/ui/repo_scanner.py:60")).toBeInTheDocument();
+    expect(within(row).getByText(/CCN 15, 44 lines/)).toBeInTheDocument();
+    expect(within(row).getByText("+1.7 health on this file")).toBeInTheDocument();
+  });
+
+  it("hands the item to the host's prompt, and no hot-path copy remains", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Extract lines 60-122 of quick_repo_scan");
+    render(<NextActions data={response([fixFirst], [])} hrefFor={() => null} loadPrompt={loadPrompt} />);
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Extract lines 60-122/ }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Extract lines 60-122 of quick_repo_scan");
+    expect(loadPrompt).toHaveBeenCalledWith(fixFirst, expect.any(String));
+    expect(document.body.textContent).not.toMatch(/hot path/i);
+  });
+
+  it("adds no location line when the title already names the file", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    const row = screen.getByRole("listitem", { name: /Open Raise test coverage/ });
+    expect(within(row).queryByText("src/a.py:")).toBeNull();
+    expect(within(row).getAllByText("src/a.py").length).toBe(1);
+  });
+});
+

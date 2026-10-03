@@ -7,8 +7,10 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
-from repowise.core.persistence.crud import get_health_finding_by_public_id
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
+from repowise.core.persistence.crud import get_health_finding_by_public_id, get_health_findings
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -25,10 +27,7 @@ from repowise.server.mcp_server.tool_health.serialize import (
     _legacy_health_finding_id,
     _serialize_finding,
 )
-from repowise.server.services.performance_health import (
-    PerformanceHealthService,
-    evidence_block,
-)
+from repowise.server.services.performance_health import PerformanceHealthService
 from repowise.server.services.refactoring_health import RefactoringHealthService
 
 
@@ -81,6 +80,14 @@ async def _detail_response(
     return None
 
 
+async def _lower_priority(session: Any, repository_id: str, finding: Any) -> str | None:
+    """The finding's tier reason, measured over its file's open findings as
+    the list measured it."""
+    peers = await get_health_findings(session, repository_id, file_path=finding.file_path)
+    reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
+    return LOW_PRIORITY_LABEL.get(reasons.get(finding.id) or "")
+
+
 async def _finding_detail_response(
     session: Any, repository: Any, reference_repository: str, finding_id: str
 ) -> dict[str, Any]:
@@ -89,7 +96,11 @@ async def _finding_detail_response(
         "mode": "finding",
         "finding_id": finding_id,
         "finding": (
-            _serialize_finding(match, reference_repository) if match else None
+            _serialize_finding(
+                match, reference_repository, await _lower_priority(session, repository.id, match)
+            )
+            if match
+            else None
         ),
         "resolved": match is not None,
         "_meta": _build_meta(

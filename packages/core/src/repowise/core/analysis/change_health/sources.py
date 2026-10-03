@@ -339,8 +339,9 @@ def filter_changes(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[FileChange]:
-    """Drop the changes a caller's extension and exclusion filters exclude.
+    """Drop the changes a caller's extension, inclusion and exclusion filters exclude.
 
     One implementation, because a change the health comparison counted and one
     the change manifest counted have to be the same change; two copies of this
@@ -353,14 +354,23 @@ def filter_changes(
         if exclude_patterns
         else None
     )
+    keep = (
+        pathspec.PathSpec.from_lines("gitwildmatch", include_paths)
+        if include_paths
+        else None
+    )
     exts = {e if e.startswith(".") else f".{e}" for e in extensions}
-    return [change for change in changes if _counts(change, spec, exts)]
+    return [change for change in changes if _counts(change, spec, exts, keep)]
 
 
-def _counts(change: FileChange, spec: object | None, exts: set[str]) -> bool:
+def _counts(
+    change: FileChange, spec: object | None, exts: set[str], keep: object | None = None
+) -> bool:
     """Whether *change* survives the caller's filters. One path, one decision."""
     path = change.head_path or change.base_path or ""
     if not path:
+        return False
+    if keep is not None and not keep.match_file(change.head_path):  # type: ignore[attr-defined]
         return False
     if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
         return False

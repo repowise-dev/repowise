@@ -26,6 +26,7 @@ import {
 } from "@/lib/api/code-health";
 import type { HealthCounts, HealthScope } from "@repowise-dev/types/health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
+import { FixFirstSection } from "@/components/code-health/fix-first-section";
 
 export function TriageTab({
   repoId: id,
@@ -116,6 +117,7 @@ export function TriageTab({
       highlightPaths={highlightPaths}
       hotspotsSlot={hotspotsSlot}
       trendSlot={trendSlot}
+      leadSlot={<FixFirstSection repoId={id} />}
     />
   );
 }

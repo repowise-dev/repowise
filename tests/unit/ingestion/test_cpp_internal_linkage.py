@@ -72,3 +72,26 @@ def test_static_inline_in_a_header_still_binds(tmp_path: Path) -> None:
     (tmp_path / "app.cpp").write_text("int run(int *p) { return load(p); }\n")
     graph = _build(tmp_path)
     assert _callees_of(graph, "app.cpp::run") == {"atomic.hpp::load"}
+
+
+def test_static_objectivec_function_in_another_m_file_is_not_bound(tmp_path: Path) -> None:
+    (tmp_path / "bench.m").write_text("static int make_client(void) { return 1; }\n")
+    (tmp_path / "server.m").write_text("int start(void) { return make_client(); }\n")
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "server.m::start") == set()
+
+
+def test_static_objectivec_function_does_not_hide_the_linkable_one(tmp_path: Path) -> None:
+    (tmp_path / "bench.m").write_text("static int make_client(void) { return 1; }\n")
+    (tmp_path / "net.m").write_text("int make_client(void) { return 2; }\n")
+    (tmp_path / "server.m").write_text("int start(void) { return make_client(); }\n")
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "server.m::start") == {"net.m::make_client"}
+
+
+def test_static_objectivec_function_in_the_same_m_file_still_binds(tmp_path: Path) -> None:
+    (tmp_path / "util.m").write_text(
+        "static int helper(void) { return 1; }\nint run(void) { return helper(); }\n"
+    )
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "util.m::run") == {"util.m::helper"}

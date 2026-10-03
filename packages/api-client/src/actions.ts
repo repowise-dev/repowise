@@ -4,6 +4,7 @@ import type {
   ActionStateResponse,
   WorkspaceActionsResponse,
 } from "@repowise-dev/types/actions";
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import { apiGet, apiPut } from "./client";
 
 /** Both horizons in one call, so the week and quarter lenses switch without a fetch. */
@@ -19,6 +20,18 @@ export async function setActionState(
   return apiPut<ActionStateResponse>(
     `/api/repos/${repoId}/actions/${encodeURIComponent(actionId)}/state`,
     body,
+  );
+}
+
+/** One action as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getActionPrompt(
+  repoId: string,
+  actionId: string,
+  opts: { flavor?: AgentPromptFlavor } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/actions/${encodeURIComponent(actionId)}/prompt`,
+    { flavor: opts.flavor },
   );
 }
 

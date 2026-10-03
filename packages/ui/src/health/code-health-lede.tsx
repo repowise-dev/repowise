@@ -33,6 +33,7 @@ import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { healthBand, healthBandColor, scoreTextColor } from "./tokens";
 import { HealthDistributionBar } from "./health-distribution-bar";
+import { HEALTH_UNSUPPORTED_NOTICE } from "./map/lens";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -89,9 +90,36 @@ export interface CodeHealthLedeProps {
   pillar?: LedePillar;
   /** Rendered under the prose, for the host's pillar deep-links. */
   action?: React.ReactNode;
+  /**
+   * `secondary` when something else leads the page (Fix first on Code
+   * Health): one line with the score and its band, and the prose and the
+   * ribbon behind "More". `lead` is the full opening read.
+   */
+  variant?: "lead" | "secondary";
 }
 
 /** "3 months" / "1 month", from a day count. */
+function UnanalysedLede({ action }: { action?: React.ReactNode }) {
+  return (
+    <PageLede label="Code health" value="Not analysed" action={action}>
+      <p>{HEALTH_UNSUPPORTED_NOTICE}</p>
+    </PageLede>
+  );
+}
+
+/** The files a scored figure left out because health has no dialect for them. */
+function UnanalysedNote({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const one = count === 1;
+  return (
+    <>
+      {" "}
+      {formatNumber(count)} more {one ? "file is" : "files are"} in a language health does not
+      analyse yet, so {one ? "it is" : "they are"} left out of this figure.
+    </>
+  );
+}
+
 function windowLabel(days: number): string {
   const months = Math.max(1, Math.round(days / 30));
   return months === 1 ? "month" : `${months} months`;
@@ -103,8 +131,12 @@ export function CodeHealthLede({
   distribution,
   pillar = "health",
   action,
+  variant = "lead",
 }: CodeHealthLedeProps) {
   const health = summary.average_health;
+  // No file scored: every file is in a language health has no dialect for.
+  // There is no figure to lead with, so the lede says that instead of a 10.
+  if (health == null) return <UnanalysedLede action={action} />;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
@@ -159,7 +191,7 @@ export function CodeHealthLede({
   ];
 
 
-  return (
+  const full = (
     <div className="flex flex-col gap-6">
       <PageLede
         label="Code health"
@@ -217,6 +249,7 @@ export function CodeHealthLede({
           duplication, coverage
           {codeShape ? "" : ", churn and ownership"}.
           {healthChip ? <> That puts it in the {healthChip.label} band.</> : null}
+          <UnanalysedNote count={summary.unanalysed_file_count ?? 0} />
           {perf != null && (
             <>
               {" "}
@@ -287,6 +320,44 @@ export function CodeHealthLede({
 
       <StatRibbon stats={stats} />
     </div>
+  );
+
+  if (variant === "lead") return full;
+
+  return (
+    <details className="group">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          Code health
+        </span>
+        <span
+          className="text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]"
+          {...(healthChip ? { style: { color: healthChip.color } } : {})}
+        >
+          {formatScore(health)}
+        </span>
+        <span className="text-xs text-[var(--color-text-tertiary)]">
+          out of 10 across {formatNumber(summary.file_count)} files
+        </span>
+        {healthChip ? (
+          <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: healthChip.color }}
+            />
+            {healthChip.label}
+          </span>
+        ) : null}
+        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open:hidden">
+          More
+        </span>
+        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open:inline">
+          Less
+        </span>
+      </summary>
+      <div className="mt-5">{full}</div>
+    </details>
   );
 }
 

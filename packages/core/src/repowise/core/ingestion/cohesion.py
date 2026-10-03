@@ -38,6 +38,19 @@ SAME_NAMESPACE_HINT = "same_namespace"
 #: target reachable, but no code depends on it, so it cannot close a cycle.
 DOC_COMMENT_HINT = "doc_comment"
 
+#: Hint stamped on a parent module's edge to a child it declares (Rust
+#: ``mod child;``). The declaration places the child in the module tree; it uses
+#: nothing from it, so the child importing its parent is not a cycle. Any real
+#: import or type use between the same two files withdraws the hint
+#: (:func:`withdraw_declaration_hint`).
+MODULE_DECLARATION_HINT = "module_declaration"
+
+#: Hint stamped on a Java, Kotlin or C# ``type_use`` edge whose every type name
+#: the source file declares itself (two classes that each nest a ``Node``, an
+#: ``expect``/``actual`` pair). The language binds those names to the file's own
+#: declaration, so the edge depends on nothing in its target.
+OWN_TYPE_NAME_HINT = "own_type_name"
+
 #: Languages whose import statement names a *compilation unit* that is exactly a
 #: directory, so a fan-out landing in the importer's own directory landed on its
 #: siblings — and a unit cannot depend on itself.
@@ -78,8 +91,16 @@ COHESION_HINTS: frozenset[str] = frozenset(
         "header_source_pair",  # C/C++ foo.h <-> foo.c
         DOC_COMMENT_HINT,  # PHP name seen only in a comment: not co-membership,
         # but the same split applies (reachability yes, cycle no)
+        MODULE_DECLARATION_HINT,  # Rust parent module declaring its child
+        OWN_TYPE_NAME_HINT,  # JVM / C# name the source file declares itself
     }
 )
+
+
+def withdraw_declaration_hint(data: dict[str, Any]) -> None:
+    """Drop the module-declaration hint once a real reference shares the edge."""
+    if data.get("hint_source") == MODULE_DECLARATION_HINT:
+        del data["hint_source"]
 
 
 def is_cohesion_edge(data: Any) -> bool:

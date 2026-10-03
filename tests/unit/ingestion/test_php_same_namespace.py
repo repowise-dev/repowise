@@ -131,7 +131,7 @@ def test_relative_qualified_names_resolve_from_the_namespace_or_an_alias() -> No
     )
     target = "src/View/Concerns/CompilesViews.php"
     assert graph.get_edge_data("src/View/Compiler.php", target)["hint_source"] == QUALIFIED_NAME_HINT
-    assert graph.has_edge("src/Other.php", target)
+    assert graph.get_edge_data("src/Other.php", target)["imported_names"] == ["CompilesViews"]
     assert graph.number_of_edges() == 2
 
 
@@ -159,6 +159,8 @@ def test_fully_qualified_reference_from_a_global_file() -> None:
     )
     edge = graph.get_edge_data("config/auth.php", "app/Actions/Login.php")
     assert edge is not None and edge["hint_source"] == QUALIFIED_NAME_HINT
+    # The class as its file declares it, which is what dead code matches.
+    assert edge["imported_names"] == ["Login"]
     assert graph.number_of_edges() == 1
 
 

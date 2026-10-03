@@ -596,6 +596,17 @@ async def test_get_dead_code_repo_all(workspace_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_dead_code_repo_all_summary_says_what_it_counts(workspace_mcp):
+    from repowise.server.mcp_server import get_dead_code
+
+    summary = (await get_dead_code(repo="all", directory="nowhere"))["summary"]
+    assert summary["total_findings"] >= 2
+    assert summary["filtered_findings"] == 0
+    assert "filtered_findings" in summary["scope"]
+    assert summary["filters"] == {"directory": "nowhere"}
+
+
+@pytest.mark.asyncio
 async def test_get_dead_code_specific_repo(workspace_mcp):
     from repowise.server.mcp_server import get_dead_code
 

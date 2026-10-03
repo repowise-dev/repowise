@@ -154,7 +154,7 @@ _JS_TS = MockDialect(
 # Keyed by ``LanguageTag`` (``ingestion/models.py``); one dialect may serve
 # several tags. Go and Java are absent deliberately: neither has a trustworthy
 # assertion count, and that is this marker's denominator. Measurements and
-# reasoning in LANGUAGE_SUPPORT.md#code-health-coverage.
+# reasoning in docs/architecture/language-support.md#test-quality-markers-per-language.
 MOCK_DIALECTS: dict[str, MockDialect] = {
     "python": _PYTHON,
     "javascript": _JS_TS,

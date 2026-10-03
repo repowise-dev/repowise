@@ -269,15 +269,16 @@ def _fix_items():
 
 def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
     items = _fix_items()
-    assert [i.tier for i in items] == ["now", "next", "later"]
+    # The growing, reachable database loop leads; it needs judgment.
+    assert [i.tier for i in items] == ["next", "now", "later"]
     actions = _run(code.fix_first, _facts(fix_first=items)).actions
     assert [(a.tier, a.title) for a in actions] == [
-        ("act_now", items[0].title),
-        ("plan", items[1].title),
+        ("plan", items[0].title),
+        ("act_now", items[1].title),
     ]
-    assert actions[0].horizons == ("week", "quarter") and actions[1].horizons == ("quarter",)
-    assert actions[1].surface == "performance"
-    assert actions[0].commands[0].mcp == f'get_health(fix_id="{items[0].id}")'
+    assert actions[1].horizons == ("week", "quarter") and actions[0].horizons == ("quarter",)
+    assert actions[0].surface == "performance"
+    assert actions[1].commands[0].mcp == f'get_health(fix_id="{items[1].id}")'
     assert len({a.action_id for a in actions}) == 2
 
 

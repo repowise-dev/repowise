@@ -1185,6 +1185,17 @@ class TestUnknownLanguageFileRecording:
         assert [s.path for s in traverser.stats.unknown_language_files] == ["guide.rst"]
         assert traverser.stats.unknown_language_files[0].reason == "unknown_language"
 
+    def test_records_files_that_name_native_symbols(self, tmp_path: Path) -> None:
+        # A .def EXPORTS list and assembly name C/C++ symbols no parsed file does.
+        (tmp_path / "CustomAction.def").write_text("EXPORTS\n    SetInstallLocationCA\n")
+        (tmp_path / "barrier.S").write_text("PATCH_LABEL JIT_WriteBarrier_Patch_Label\n")
+        (tmp_path / "helpers.asm").write_text("extern JIT_Helper:proc\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        recorded = sorted(s.path for s in traverser.stats.unknown_language_files)
+        assert recorded == ["CustomAction.def", "barrier.S", "helpers.asm"]
+
     def test_ignores_formats_that_name_no_code(self, tmp_path: Path) -> None:
         # The tail is dominated by these, and a name-matching clamp fed prose
         # suppresses findings on coincidence rather than on evidence.

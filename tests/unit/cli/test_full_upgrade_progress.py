@@ -127,3 +127,11 @@ def test_full_upgrade_fts_cleanup_retries_after_failure(
     assert deleted == [["file_page:obsolete.py"]]
     assert indexed == ["file_page:current.py"]
     assert load_cleanup_debt(tmp_path)["fts"] == set()
+
+
+def test_full_upgrade_restores_parse_only_attrs_after_the_reparse() -> None:
+    """The rehydrated graph lacks decorators/modifiers; the health pass needs them."""
+    src = _upgrade_source()
+
+    reparse = src.index("_reparse(repo_path")
+    assert src.index("restore_parse_only_attrs(parsed_files)") > reparse

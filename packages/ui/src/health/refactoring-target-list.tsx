@@ -34,6 +34,9 @@ export interface HealthWorkQueueListProps {
   emptyMessage?: string;
   /** File path of the card to flash-highlight (quadrant click). */
   highlightedPath?: string | null | undefined;
+  /** Bulk triage selection, by file path. */
+  selectedPaths?: ReadonlySet<string> | undefined;
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
 
 export function HealthWorkQueueList({
@@ -46,6 +49,8 @@ export function HealthWorkQueueList({
   refactoringOpportunityHref,
   emptyMessage = "No health work items match the current filters.",
   highlightedPath,
+  selectedPaths,
+  onToggleSelect,
 }: HealthWorkQueueListProps) {
   const [visible, setVisible] = useState(CARD_PAGE);
 
@@ -108,6 +113,8 @@ export function HealthWorkQueueList({
             onLoadOpportunity={onLoadOpportunity}
             refactoringOpportunityHref={refactoringOpportunityHref}
             highlighted={highlightedPath === t.file_path}
+            selected={selectedPaths?.has(t.file_path) ?? false}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </div>

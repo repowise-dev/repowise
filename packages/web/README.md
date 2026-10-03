@@ -1,210 +1,39 @@
-# repowise Web UI
+# repowise web UI
 
-Next.js 15 frontend for the repowise codebase documentation engine. Provides an interactive interface for exploring AI-generated wiki pages, dependency graphs, code analytics, and architectural insights for any indexed repository.
+The local dashboard: a Next.js app that renders the wiki, graph, health, dead
+code, decisions and the other views for an indexed repository. `repowise serve`
+downloads a prebuilt copy on first run, caches it, and runs it on port 3000.
 
-## Tech Stack
+## Where it sits
 
-| Layer | Technology |
-|-------|------------|
-| Framework | Next.js 15 (App Router), React 19, TypeScript 5.7 |
-| Styling | Tailwind CSS v4 (CSS-first, no config file), custom design tokens in `globals.css` |
-| Components | Radix UI primitives, class-variance-authority for variants |
-| Data Fetching | SWR (stale-while-revalidate) with 30s polling, Server-Sent Events for live job progress |
-| Graph Viz | @xyflow/react (React Flow) with ELK layout (elkjs) |
-| Charts | Recharts (bar/donut charts), D3.js (force-directed minimap, treemap) |
-| Diagrams | Mermaid v11 (embedded in wiki pages) |
-| Code Rendering | Shiki (syntax highlighting), next-mdx-remote (wiki content) |
-| Search | cmdk command palette (Cmd+K), Fuse.js client-side fuzzy search |
-| URL State | nuqs (type-safe URL search params for bookmarkable views) |
-| Animation | Framer Motion |
-| Icons | Lucide React |
-| Fonts | Geist Sans + Geist Mono |
+This is the `repowise-web` npm workspace in the repowise monorepo. Pages live in
+`src/app/`, app-specific components in `src/components/`, and the API client in
+`src/lib/api/`. Shared components come from `packages/ui`, shared types from
+`packages/types`, and the typed client from `packages/api-client`. It reads
+everything from the API in `packages/server`.
 
-## Pages & Features
+## Install the product
 
-### Dashboard (`/`)
-
-The home page. Shows aggregate stats across all registered repositories (total files, symbols, entry points, dead code findings), a list of repos with quick-action buttons, and recent indexing jobs with their status.
-
-### Repository Overview (`/repos/[id]`)
-
-Landing page for a single repo. Displays health score, git insights (commit activity, churn distribution, bus factor), documentation coverage, and quick links to all sub-pages. Includes a **Graph Intelligence** section with expandable architecture communities (cohesion scores, member lists, neighboring communities) and execution flows panel (entry point scoring, BFS call traces, cross-community classification). Operations panel for triggering sync and full-resync jobs.
-
-### Repository Overview — Standalone (`/repos/[id]/overview`)
-
-Dedicated overview surface separate from the repo landing page. Aggregates 15 parallel data fetches and degrades gracefully on any failure. Sections include the key metrics strip, attention panel (auto-derived issues), language donut, ownership treemap, hotspots mini-leaderboard, decisions timeline, module minimap, dependency heatmap, community summary grid, execution flows panel, and Git Insights row (churn histogram, commit-category donut + sparkline, bus-factor panel).
-
-### Wiki Pages (`/repos/[id]/wiki/[...slug]`)
-
-The core documentation viewer. Renders AI-generated wiki pages as MDX with:
-- Shiki syntax-highlighted code blocks
-- Embedded Mermaid diagrams (flowcharts, sequence diagrams, etc.)
-- Auto-generated sticky table of contents with anchor-linked headings (scroll-to-heading)
-- Confidence badge showing freshness (fresh/stale/outdated) with last-updated tooltip
-- Git history panel showing the file's change timeline
-- Regenerate button to force a fresh AI pass on stale pages
-- Graph intelligence sidebar (XL screens) with PageRank/betweenness percentiles, community label, degree counts, entry point badge
-- Hallucination warnings — surfaces LLM validation findings (symbol references not found in source) as amber banners
-- Version history with diff view — browse previous page versions and compare changes inline
-
-### Dependency Graph (`/repos/[id]/graph`)
-
-Interactive React Flow graph with ELK layout engine. Supports five view modes:
-- **Module view** — hierarchical module organization with drill-down
-- **Architecture view** — entry point reachability analysis
-- **Dead code view** — highlights unreachable files with confidence groups
-- **Hot files view** — commit activity heatmap overlay
-- **Full graph** — complete dependency graph
-
-Three color modes: **Language** (per-language coloring), **Community** (Leiden community clusters with real labels from analysis), **Risk** (churn-based).
-
-Features pan/zoom, path finder for dependency chains, community detail panel (click any node in community mode to see members, cohesion, and neighboring communities with cross-edge counts), and URL param support for deep-linking color modes.
-
-### Search (`/repos/[id]/search`)
-
-Full-text and semantic search across all wiki pages. Includes a type toggle (FTS / semantic / hybrid), debounced input, and result cards with highlighted snippets. Also powers the global command palette (Cmd+K) accessible from anywhere.
-
-### Symbol Index (`/repos/[id]/symbols`)
-
-Sortable, filterable table of all extracted symbols (functions, classes, constants, etc.). Filter by kind and language. Click any row to open a two-panel detail drawer: left side shows the symbol's signature, docstring, and location; right side shows **graph intelligence** — PageRank/betweenness percentile badges, in/out degree, community membership, callers and callees with confidence scoring, and class heritage (extends/implements relationships).
-
-### Documentation Coverage (`/repos/[id]/coverage`)
-
-Donut chart of overall documentation freshness plus a per-file table showing each page's confidence score, status (fresh/stale/outdated), and a per-row regenerate button for targeted updates.
-
-### Code Ownership (`/repos/[id]/ownership`)
-
-Contributor attribution view with granularity toggle (file/directory). Shows ownership percentages, knowledge silo badges (files owned by a single contributor), and a contributor activity chart.
-
-### Hotspots (`/repos/[id]/hotspots`)
-
-Ranked table of high-churn files with churn bar charts and an owner leaderboard. Helps identify files that change frequently and may need architectural attention.
-
-### Dead Code (`/repos/[id]/dead-code`)
-
-Tabbed view of dead code findings (unreachable files, unused exports). Supports row-level actions (ignore, mark as false positive), bulk selection, and a trigger to run fresh analysis. Summary bar shows counts by category.
-
-### Documentation Explorer (`/repos/[id]/docs`)
-
-Split-pane documentation browser (VS Code-style). Left panel is a searchable file tree with type/freshness filters and colored freshness dots. Right panel renders full wiki content with:
-- Mermaid diagram rendering and syntax-highlighted code blocks with copy buttons
-- Graph intelligence sidebar (PageRank/betweenness percentiles, community, callers/callees)
-- Version history browser with LCS-based inline diff view
-- Hallucination warning banners for pages with detected inaccuracies
-- Deep-linkable page selection via URL search params (`?page=...`)
-- Export All (single `.md`) and Download ZIP buttons
-
-### Architectural Decisions (`/repos/[id]/decisions`)
-
-Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing context, rationale, alternatives, and consequences rendered as markdown, with Confirm/Dismiss/Deprecate actions.
-
-### Blast Radius (`/repos/[id]/blast-radius`)
-
-Pre-PR structural-impact estimator. Paste changed file paths (one per line) — or click hotspot suggestions — and get an uncalibrated structural-impact score (0–10 normalized points), raw direct structural weights, transitive affected files with depth, historical co-change warnings, recommended reviewers, and explicit test-analysis state. The structural score is not a runtime-breakage probability or the authoritative live change-risk signal.
-
-### Cost Tracking (`/repos/[id]/costs`)
-
-LLM token usage and spend dashboard. Shows total cost, total calls, input/output token counts (all-time), a daily-spend bar chart, and a breakdown table grouped by day, model, or operation.
-
-### Workspace Dashboard (`/workspace`)
-
-Multi-repo workspace surface. Aggregates totals (files, symbols, average doc coverage, hotspot count, page count) across all registered repos, renders a RepoCard grid with per-repo stats, surfaces cross-repo intelligence (workspace-wide co-change summary, API contract counts by type with provider/consumer split), and shows a top cross-repo co-changes table with deep links into the full views.
-
-### Cross-Repo Co-Changes (`/workspace/co-changes`)
-
-Full browser for files across repositories that change together based on git history. Filterable by source/target repo with summary stats (total pairs, distinct repo pairs).
-
-### API Contracts (`/workspace/contracts`)
-
-All detected API contracts (HTTP, gRPC, topic) and the provider/consumer file links between repos. Filter by contract type, repo, or role. Surfaces unmatched contracts (providers without consumers, or vice versa).
-
-### Settings (`/settings` and `/repos/[id]/settings`)
-
-Global settings page with sections for API connection, LLM provider/model selection, webhook configuration, and MCP integration. Per-repo settings available under each repository.
-
-## Architecture
-
-### Data Flow
-
-```
-Server Components (RSC)          Client Components
-─────────────────────────        ──────────────────────
-Fetch data via apiGet()    ──>   SWR hooks for polling/revalidation
-Render static content            useSSE() for live job progress
-Pass props to client             nuqs for URL state persistence
-                                 useState for transient UI
+```bash
+uv tool install repowise      # or: pipx install repowise / pip install repowise
+cd your-repo
+repowise init
+repowise serve                # API on :7337, web UI on :3000
 ```
 
-Most pages are **React Server Components** that fetch data server-side. Client components are used only where interactivity is needed (D3 canvas, command palette, SSE streams, form state). The `"use client"` boundary is kept as narrow as possible.
+## Develop on it
 
-### API Proxy
-
-`next.config.ts` rewrites `/api/*` to `REPOWISE_API_URL/api/*`, so the frontend never hardcodes the backend URL and CORS is handled at the proxy layer.
-
-### API Client (`src/lib/api/`)
-
-Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbols.ts`, `jobs.ts`, `git.ts`, `dead-code.ts`, `decisions.ts`, `health.ts`. Each module exports typed async functions wrapping `apiGet`/`apiPost`/`apiPatch` from `client.ts`. Auth is handled via Bearer token from `localStorage` (browser) or `REPOWISE_API_KEY` env var (server).
-
-### Custom Hooks (`src/lib/hooks/`)
-
-| Hook | Purpose |
-|------|---------|
-| `useRepo` | SWR wrapper for repository data with 30s refresh |
-| `usePage`, `usePageVersions` | Page content and version history |
-| `useSearch` | Debounced search (300ms, min 2 chars) |
-| `useGraph` (+ variants) | Graph data with stable caching (no revalidate on focus) |
-| `useCommunities`, `useCommunityDetail` | Community summaries and detail data |
-| `useGraphMetrics` | Per-node PageRank, betweenness, percentiles |
-| `useCallersCallees` | Symbol call graph with confidence and heritage |
-| `useExecutionFlows` | Entry point traces with community crossing |
-| `useSSE` | Generic SSE hook with reconnection, exponential backoff, named events |
-| `useJob` | Combines SWR polling + SSE streaming for real-time job monitoring |
-| `useDebounce` | Generic value debounce |
-
-### Component Organization (`src/components/`)
-
-```
-components/
-  ui/           Radix-based primitives (button, card, dialog, tabs, tooltip, etc.)
-  layout/       Sidebar, mobile nav
-  wiki/         Wiki renderer (RSC + client), code blocks, Mermaid, ToC, confidence badge, version history with diff
-  graph/        React Flow canvas, toolbar, legend, tooltip, community panel, path finder
-  search/       Command palette, search bar, result cards
-  jobs/         Generation progress (SSE), job logs
-  repos/        Add repo dialog, operations panel, run config form
-  coverage/     Coverage donut chart, freshness table
-  dead-code/    Findings table, row actions, summary bar
-  decisions/    Decisions table, detail view, health widget
-  git/          Churn bars, contributor charts, hotspot/ownership tables
-  symbols/      Symbol table, symbol drawer, symbol graph panel (metrics + callers)
-  dashboard/    Health ring, attention panel, quick actions, language donut,
-                ownership treemap, community summary grid, execution flows panel,
-                module minimap, dependency heatmap, hotspots mini, decisions timeline
-  chat/         Streaming chat interface, message bubbles, model selector,
-                tool-call blocks, source citations, conversation history, artifact panel
-  workspace/    Repo cards, cross-repo summary, co-change table,
-                contract links table, contract type / role badges
-  settings/     Connection, MCP integration, webhook, provider sections
-  shared/       Stat cards, empty states
+```bash
+npm install                   # from the repository root (npm workspaces)
+repowise serve --no-ui        # start only the API on :7337
+npm run dev                   # web UI with hot reload on :3000
 ```
 
-### Design System
+The server-side API address defaults to `http://localhost:7337`; set
+`REPOWISE_API_URL` to point elsewhere. See
+[CONTRIBUTING.md](../../.github/CONTRIBUTING.md).
 
-Dark-mode only. All visual tokens are CSS custom properties in `src/styles/globals.css` — surfaces, borders, text colors, accent blue (`#5B9CF6`), confidence colors (green/yellow/red), language colors for graph nodes, edge type colors, typography scale, spacing grid, radii, and z-index layers. Changing the design means editing one file.
+## Documentation
 
-## Development
-
-```powershell
-# From repo root — requires the repowise API server on port 7337
-$env:REPOWISE_API_URL = "http://localhost:7337"
-npm run dev --workspace packages/web
-# Open http://localhost:3000
-```
-
-```powershell
-# Type check
-npm run type-check --workspace packages/web
-
-# Lint
-npm run lint --workspace packages/web
-```
+- CLI commands, including `serve`: [docs/reference/CLI_REFERENCE.md](../../docs/reference/CLI_REFERENCE.md)
+- How the system is built: [docs/architecture/](../../docs/architecture/)

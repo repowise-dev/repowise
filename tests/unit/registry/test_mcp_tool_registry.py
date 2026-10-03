@@ -178,3 +178,20 @@ def test_apply_annotations_reach_a_real_fastmcp_server(registry):
     assert tool.annotations is not None
     assert tool.annotations.readOnlyHint is False
     assert tool.annotations.destructiveHint is True
+
+
+def test_register_stores_available_when_as_is(registry):
+    def needs_flows(facts) -> bool:
+        return facts.counts.get("flows", 0) > 0
+
+    @registry.register(available_when=needs_flows)
+    async def gated() -> dict:
+        return {}
+
+    @registry.register
+    async def plain() -> dict:
+        return {}
+
+    by_name = {entry.name: entry for entry in registry.entries()}
+    assert by_name["gated"].available_when is needs_flows
+    assert by_name["plain"].available_when is None

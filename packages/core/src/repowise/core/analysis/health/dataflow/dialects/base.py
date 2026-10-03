@@ -40,7 +40,7 @@ precision-first contract the perf pillar depends on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -55,6 +55,18 @@ class Occurrence:
 
     name: str
     line: int  # 1-indexed
+    column: int = 0  # 0-indexed, where the reference starts
+    #: A declaration only: the column on ``line`` where its declarator ends,
+    #: which is where the new name starts to exist. A read on that line at or
+    #: past it reads the new variable; one before it (the declaration's own
+    #: initializer) reads an outer variable of the same name. None for any
+    #: other write, and for a declarator that ends on a later line.
+    declared_at: int | None = None
+    #: A use recorded only because the paired write may not happen (a write
+    #: inside a ``switch`` / ``match`` arm the CFG keeps as one statement), not
+    #: a read in the source. It keeps must-def proofs conservative; code that
+    #: asks what a span actually reads skips it.
+    echo: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,8 +128,22 @@ class BaseDefUseDialect:
 
     def _occ(self, node: Node) -> Occurrence:
         return Occurrence(
-            name=(node.text or b"").decode("utf-8", "replace"), line=node.start_point[0] + 1
+            name=(node.text or b"").decode("utf-8", "replace"),
+            line=node.start_point[0] + 1,
+            column=node.start_point[1],
         )
+
+    def _declare(self, defs: list[Occurrence], start: int, declarator: Node) -> None:
+        """Mark ``defs[start:]`` as names *declarator* declares.
+
+        Call it right after the declarator's targets are collected and before
+        its initializer is walked, so a write nested in the initializer is not
+        taken for a declaration.
+        """
+        end_row, end_col = declarator.end_point
+        for i in range(start, len(defs)):
+            if defs[i].line == end_row + 1:
+                defs[i] = replace(defs[i], declared_at=end_col)
 
     # -- read (use) collection ------------------------------------------------
 
@@ -150,6 +176,69 @@ class BaseDefUseDialect:
             return
         for child in node.named_children:
             self.collect_reads(child, out)
+
+    def collect_captured_reads(self, node: Node | None, out: list[Occurrence]) -> None:
+        """Append the reads made inside nested scopes under *node* to *out*.
+
+        :meth:`collect_reads` stops at a nested function or lambda because its
+        reads are not the statement's own. A closure still reads the enclosing
+        function's variables, though, so code that moves one of them has to
+        see those reads: a span whose closure reads a local needs it passed in,
+        and a span defining a local a later closure reads has to return it.
+        Left out: names the nested scope binds as its own parameters, its own
+        name (a nested ``def``), and locals it writes on a line before it first
+        reads them (``const t2 = v * 2``), which are its own variables. A local
+        written and read on one line is kept, which can only add a parameter or
+        a return, never drop one.
+        """
+        if node is None:
+            return
+        if not self._is_scope_boundary(node):
+            for child in node.named_children:
+                self.collect_captured_reads(child, out)
+            return
+        writes, reads = self._closure_def_use(node)
+        bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
+        out.extend(occ for occ in reads if occ.name not in bound)
+
+    def _closure_def_use(self, node: Node) -> tuple[list[Occurrence], list[Occurrence]]:
+        """Writes and reads inside nested scope *node*, deeper closures included.
+
+        The body goes through the dialect's own walk, which tells a declaration
+        from a read; a scope with no ``body`` field falls back to plain reads.
+        """
+        writes: list[Occurrence] = []
+        reads: list[Occurrence] = []
+        body = node.child_by_field_name("body")
+        process = getattr(self, "_process", None)
+        if body is not None and process is not None:
+            process(body, writes, reads)
+            self.collect_captured_reads(body, reads)
+            return writes, reads
+        name = node.child_by_field_name("name")
+        for child in node.named_children:
+            if name is None or child.id != name.id:
+                self.collect_reads(child, reads)
+                self.collect_captured_reads(child, reads)
+        return writes, reads
+
+    def _closure_bound_names(self, node: Node) -> set[str]:
+        """Names a nested scope binds as its own parameters.
+
+        A closure's parameter list is often shaped unlike a function's
+        (``x => ...``, ``|x| ...``), so the identifiers under it are read
+        directly on top of what :meth:`parameter_defs` finds.
+        """
+        bound = {occ.name for occ in self.parameter_defs(node)}
+        stack = [node.child_by_field_name("parameters"), node.child_by_field_name("parameter")]
+        while stack:
+            cur = stack.pop()
+            if cur is None:
+                continue
+            if cur.type in self.identifier_kinds and cur.text:
+                bound.add(cur.text.decode("utf-8", "replace"))
+            stack.extend(cur.named_children)
+        return bound
 
     def _is_scope_boundary(self, node: Node) -> bool:
         """True if *node* opens a nested scope whose reads are not this
@@ -199,6 +288,39 @@ class BaseDefUseDialect:
         self, node: Node, lmap: LanguageNodeMap, *, head_only: bool
     ) -> StatementDefUse:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    def _process(
+        self, node: Node | None, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """Process *node* whose writes execute only on some path (a switch or
+        match arm, an expression-position ``if`` / loop, a ``let-else`` arm).
+
+        Each def found within is recorded as a def AND a use: the may-def keeps
+        the variable in every "written in this region" set while its paired use
+        stays upward-exposed, so a downstream must-def proof can only get more
+        conservative, never less. The paired use is marked :attr:`Occurrence.echo`.
+        """
+        inner_defs: list[Occurrence] = []
+        for child in node.named_children:  # not the node itself: no re-dispatch
+            self._process(child, inner_defs, uses)
+        defs.extend(inner_defs)
+        uses.extend(echoes(inner_defs))
+
+
+def echoes(defs: list[Occurrence]) -> list[Occurrence]:
+    """The may-def uses paired with *defs* (see :attr:`Occurrence.echo`)."""
+    return [replace(occ, echo=True) for occ in defs]
+
+
+def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:
+    """Names whose first write comes on an earlier line than their first read."""
+    first_read: dict[str, int] = {}
+    for occ in reads:
+        first_read[occ.name] = min(occ.line, first_read.get(occ.name, occ.line))
+    return {w.name for w in writes if w.line < first_read.get(w.name, w.line + 1)}
 
 
 # The registry, populated by ``dialects/__init__.py`` from each language module.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
@@ -140,13 +141,17 @@ def _compute_kpis(
     hotspot_paths: set[str] | None = None,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
+    unanalysed: int = 0,
 ) -> dict[str, Any]:
+    """*metrics* are scored rows; *unanalysed* counts the files left out of
+    them because health has no dialect for their language."""
     if not metrics:
         return {
             "file_count": 0,
             "average_health": None,
             "band": None,
-            "analysis_status": "unavailable",
+            # A repository of only unsupported languages is not missing data.
+            "analysis_status": NO_DIALECT_STATUS if unanalysed else "unavailable",
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,

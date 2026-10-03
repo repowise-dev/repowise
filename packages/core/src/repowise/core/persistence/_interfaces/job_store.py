@@ -78,6 +78,7 @@ class JobStore(ABC):
         *,
         cursor: str | None = None,
         error: str | None = None,
+        metadata: dict | None = None,
     ) -> JobRecord:
         """Update lifecycle state. ``cursor`` advances on each checkpoint;
         ``error`` is populated on failure transitions."""

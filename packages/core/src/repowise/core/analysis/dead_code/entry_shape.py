@@ -9,10 +9,16 @@ never imported in the first place:
   a shebang) is started by a command, not by an import;
 * three or more unreachable files in one directory exporting the same names
   are a convention-loaded set (pages, handlers, migrations) whose loader the
-  graph does not see.
+  graph does not see;
+* a file exporting everything such a set exports, plus more (a tool that
+  also exports its input type), belongs to the same set.
 
-Each caps the finding to the review tier; none drops it. Shape is not proof of
-use, so the file stays listed as a candidate for a person to check.
+Each caps the finding to the review tier, except a program: a file whose
+first line is a shebang or that runs under a ``__main__`` guard is an entry
+point, so :func:`drop_program_entries` removes it. The cap also stops
+"no commits in 90 days" lifting such a file to the high tier, since an
+untouched loaded file is not an unused one. Shape is not proof of use, so the
+file stays listed as a candidate for a person to check.
 """
 
 from __future__ import annotations
@@ -74,22 +80,65 @@ def _is_main_guard(test: ast.expr) -> bool:
     )
 
 
-def _script_reason(path: str, blob: bytes) -> str | None:
-    """Why *blob* reads as something run rather than imported, or None."""
-    if blob.startswith(b"#!"):
-        return "Starts with a shebang, so it is run directly rather than imported"
+def _parse_python(path: str, blob: bytes) -> ast.Module | None:
+    """*blob* parsed, when it is Python source that parses; else None."""
     if REGISTRY.from_extension(PurePosixPath(path).suffix) != "python" or path.endswith(".pyi"):
         return None
     try:
-        return _python_script_reason(ast.parse(blob))
+        return ast.parse(blob)
     except (SyntaxError, ValueError, RecursionError):
         return None
 
 
-def _python_script_reason(tree: ast.Module) -> str | None:
+def _program_reason(path: str, blob: bytes) -> str | None:
+    """Why *blob* says it is a program: a shebang or a Python main guard."""
+    # ``#![`` opens a Rust inner attribute (``#![doc = ...]``), not a shebang.
+    if blob.startswith(b"#!") and not blob.startswith(b"#!["):
+        return "Starts with a shebang, so it is run directly rather than imported"
+    tree = _parse_python(path, blob) if b"__main__" in blob else None
+    if tree is not None and any(
+        isinstance(stmt, ast.If) and _is_main_guard(stmt.test) for stmt in tree.body
+    ):
+        return 'Has an `if __name__ == "__main__"` block, so it is run as a script'
+    return None
+
+
+def is_program(path: str, blob: bytes) -> bool:
+    """Whether *blob* says it is a program: a shebang, or a Python main guard.
+
+    Either is the author stating the file is started by a command. Statements
+    at module level are weaker (an imported module can run code on load), so
+    they only cap a finding, through :func:`_script_reason`.
+    """
+    return _program_reason(path, blob) is not None
+
+
+def drop_program_entries(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """Drop unreachable files that are programs: nothing imports an entry point.
+
+    "No importer" is the wrong claim for a file whose first line is a shebang
+    or that runs under ``if __name__ == "__main__"``. Returns a new list.
+    """
+    return [
+        f
+        for f in findings
+        if f.kind is not DeadCodeKind.UNREACHABLE_FILE
+        or not is_program(f.file_path, source_map.get(f.file_path, b""))
+    ]
+
+
+def _script_reason(path: str, blob: bytes) -> str | None:
+    """Why *blob* reads as something run rather than imported, or None."""
+    if reason := _program_reason(path, blob):
+        return reason
+    tree = _parse_python(path, blob)
+    return _module_statement_reason(tree) if tree is not None else None
+
+
+def _module_statement_reason(tree: ast.Module) -> str | None:
     for stmt in tree.body:
-        if isinstance(stmt, ast.If) and _is_main_guard(stmt.test):
-            return 'Has an `if __name__ == "__main__"` block, so it is run as a script'
         # A bare constant is a docstring or ``...``; anything else executes on load.
         if isinstance(stmt, _LOOPS_AND_BLOCKS) or (
             isinstance(stmt, ast.Expr) and not isinstance(stmt.value, ast.Constant)
@@ -105,6 +154,20 @@ def _cohorts(shapes: Mapping[str, frozenset[str]]) -> dict[str, int]:
         if shape:  # no exports is no shape to share
             groups[(str(PurePosixPath(path).parent), shape)].append(path)
     return {p: len(ps) for ps in groups.values() if len(ps) >= MIN_COHORT_SIZE for p in ps}
+
+
+def _cohort_shapes(
+    shapes: Mapping[str, frozenset[str]], cohort_size: Mapping[str, int]
+) -> dict[str, set[frozenset[str]]]:
+    """Per directory, the export shapes of its cohorts.
+
+    A cohort, not one default-only file: a lone route stub beside an ordinary
+    component says nothing about how the component is loaded.
+    """
+    out: dict[str, set[frozenset[str]]] = defaultdict(set)
+    for path in cohort_size:
+        out[str(PurePosixPath(path).parent)].add(shapes[path])
+    return out
 
 
 def clamp_entry_shaped(
@@ -129,12 +192,19 @@ def clamp_entry_shaped(
         for f in unreachable
     }
     cohort_size = _cohorts(shapes)
+    cohort_shapes = _cohort_shapes(shapes, cohort_size)
 
     for finding in unreachable:
         if finding.confidence <= RISK_CAP_CONFIDENCE:
             continue
         path = finding.file_path
-        reason = _entry_reason(path, shapes[path], source_map.get(path), cohort_size.get(path))
+        reason = _entry_reason(
+            path,
+            shapes[path],
+            source_map.get(path),
+            cohort_size.get(path),
+            cohort_shapes.get(str(PurePosixPath(path).parent), set()),
+        )
         if reason is None:
             continue
         finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
@@ -144,7 +214,11 @@ def clamp_entry_shaped(
 
 
 def _entry_reason(
-    path: str, shape: frozenset[str], blob: bytes | None, cohort_size: int | None
+    path: str,
+    shape: frozenset[str],
+    blob: bytes | None,
+    cohort_size: int | None,
+    cohort_shapes: set[frozenset[str]],
 ) -> str | None:
     """The first entry shape *path* has, as an evidence line, or None."""
     if shape == {"default"}:
@@ -156,5 +230,12 @@ def _entry_reason(
         return (
             f"One of {cohort_size} unreachable files in its directory exporting "
             f"the same names ({names}), the shape of a convention-loaded set"
+        )
+    if fits := [s for s in cohort_shapes if s < shape]:
+        # min() keeps the evidence line stable when two cohort shapes fit.
+        names = ", ".join(sorted(min(fits, key=sorted))[:3])
+        return (
+            f"Exports what a convention-loaded set in its directory exports ({names}) "
+            "and more, so it belongs to that set; its age is not evidence it is unused"
         )
     return None

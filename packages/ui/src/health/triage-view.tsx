@@ -88,6 +88,7 @@ export function TriageView({
   highlightPaths,
   hotspotsSlot,
   trendSlot,
+  leadSlot,
 }: {
   adapter: CodeHealthAdapter;
   /** Trend fetched once by the host. Consumed by `trendSlot`; accepted here so
@@ -118,6 +119,12 @@ export function TriageView({
    */
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
+  /**
+   * What the page leads with, above the score. When set, the score drops to
+   * one secondary line with the rest behind "More": a ranked list of what to
+   * fix answers "what do I do?" and the score only answers "how bad is it?".
+   */
+  leadSlot?: ReactNode;
 }) {
   const { cacheKey } = adapter;
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
@@ -158,6 +165,8 @@ export function TriageView({
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
+        {/* The lead has its own request, so it never waits on this one. */}
+        {leadSlot}
         {/* Shapes and widths match the real layout. A skeleton that does not
             causes a reflow when content lands, which reads as slower than
             showing nothing. */}
@@ -171,11 +180,14 @@ export function TriageView({
 
   if (error) {
     return (
-      <ApiError
-        title="Couldn't load health data"
-        message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
-        onRetry={() => void mutate()}
-      />
+      <div className="flex flex-col gap-6">
+        {leadSlot}
+        <ApiError
+          title="Couldn't load health data"
+          message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
+          onRetry={() => void mutate()}
+        />
+      </div>
     );
   }
 
@@ -183,11 +195,13 @@ export function TriageView({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
+      {leadSlot}
       <CodeHealthLede
         summary={overview.summary}
         accuracy={overview.defect_accuracy ?? null}
         distribution={overview.distribution ?? null}
         pillar={overlay === "maintainability" ? "maintainability" : "health"}
+        variant={leadSlot ? "secondary" : "lead"}
       />
 
       <OverviewSection

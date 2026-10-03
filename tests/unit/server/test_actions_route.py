@@ -92,3 +92,39 @@ async def test_overlong_action_id_is_rejected(actions_client: AsyncClient) -> No
         f"/api/repos/{repo['id']}/actions/{'x' * 40}/state", json={"state": "dismissed"}
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_prompt_is_core_rendering_of_the_listed_action(
+    actions_client: AsyncClient, session_factory
+) -> None:
+    from repowise.core.agent_prompts import render_action
+
+    repo = await create_test_repo(actions_client)
+    await _seed_secret(session_factory, repo["id"])
+    url = f"/api/repos/{repo['id']}/actions"
+    secret = next(
+        a
+        for a in (await actions_client.get(url)).json()["horizons"]["quarter"]["actions"]
+        if a["rule"] == "live_secret"
+    )
+
+    resp = await actions_client.get(f"{url}/{secret['id']}/prompt", params={"flavor": "cursor"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "flavor": "cursor",
+        "text": render_action(secret, "cursor", repo["name"]),
+    }
+    assert f"## Action (`{repo['name']}`)" in resp.json()["text"]
+    default = (await actions_client.get(f"{url}/{secret['id']}/prompt")).json()
+    assert default["flavor"] == "generic"
+
+
+@pytest.mark.anyio
+async def test_prompt_rejects_bad_flavor_and_unknown_ids(actions_client: AsyncClient) -> None:
+    repo = await create_test_repo(actions_client)
+    url = f"/api/repos/{repo['id']}/actions/act_0123456789abcdef/prompt"
+    assert (await actions_client.get(url, params={"flavor": "vim"})).status_code == 422
+    assert (await actions_client.get(url)).status_code == 404
+    missing_repo = "/api/repos/nope/actions/act_0123456789abcdef/prompt"
+    assert (await actions_client.get(missing_repo)).status_code == 404

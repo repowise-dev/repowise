@@ -346,6 +346,46 @@ async def test_test_files_are_out_of_scope(client: AsyncClient, session_factory)
 
 
 @pytest.mark.anyio
+async def test_a_plan_the_registry_withholds_is_not_attention(
+    client: AsyncClient, session_factory
+) -> None:
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    plan = {
+        "refactoring_type": "extract_method",
+        "target_symbol": "work",
+        "line_start": 1,
+        "line_end": 20,
+        "impact_delta": 2.0,
+        "effort_bucket": "S",
+        "confidence": "high",
+    }
+    async with get_session(session_factory) as session:
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                {**plan, "file_path": "src/shown.py", "source_biomarker": "complex_method"},
+                {
+                    **plan,
+                    "refactoring_type": "extract_helper",
+                    "file_path": "src/hidden.py",
+                    "source_biomarker": "dry_violation",
+                },
+            ],
+        )
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session, repo_id, decision_health={}, knowledge_silos=[]
+        )
+
+    paths = [i["target_id"] for i in result["items"] if i["type"] == "refactoring"]
+    assert paths == ["src/shown.py"]
+    assert result["by_source"]["refactoring"] == 1
+
+
+@pytest.mark.anyio
 async def test_areas_roll_up_and_lead_with_the_worst_item(
     client: AsyncClient, session_factory
 ) -> None:

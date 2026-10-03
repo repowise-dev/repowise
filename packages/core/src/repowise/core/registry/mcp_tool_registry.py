@@ -33,7 +33,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .tool_selection import AvailabilityFacts
 
 TOOL_TIERS = frozenset({"canonical", "utility", "specialist"})
 TOOL_SAFETY_KINDS = frozenset({"read_only", "generative", "mutating"})
@@ -76,6 +79,9 @@ class ToolEntry:
     marks whether the tool is part of the curated default surface; opt-in tools
     set it ``False``. ``requires_workspace`` marks tools that only do useful
     work in workspace mode, so they are hidden from single-repo servers.
+    ``available_when``, when set, is a predicate over
+    :class:`~repowise.core.registry.tool_selection.AvailabilityFacts`; the tool
+    is hidden whenever it returns ``False``.
     """
 
     fn: Callable[..., Any]
@@ -90,6 +96,7 @@ class ToolEntry:
     presentation: str = "generic"
     safety: str = "read_only"
     evidence_basis: str = "unknown"
+    available_when: Callable[[AvailabilityFacts], bool] | None = None
 
 
 class MCPToolRegistry:
@@ -99,6 +106,8 @@ class MCPToolRegistry:
         self._entries: list[ToolEntry] = []
         self._applied_to: list[Any] = []
 
+    # The keyword list mirrors ToolEntry field by field and is due to collapse
+    # into a single metadata object once another field joins it.
     def register(
         self,
         *args: Any,
@@ -112,14 +121,15 @@ class MCPToolRegistry:
         presentation: str = "generic",
         safety: str = "read_only",
         evidence_basis: str = "unknown",
+        available_when: Callable[[AvailabilityFacts], bool] | None = None,
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
 
         Supports both decorator forms — bare ``@register`` and
-        ``@register()`` — so call sites read naturally. ``default`` and
-        ``requires_workspace`` annotate the tool for the selection layer
-        (see :class:`ToolEntry`); any other keyword arguments are reserved
+        ``@register()`` — so call sites read naturally. ``default``,
+        ``requires_workspace`` and ``available_when`` annotate the tool for
+        the selection layer (see :class:`ToolEntry`); any other keyword arguments are reserved
         for future ``description=`` / ``name=`` overrides and ignored.
         """
 
@@ -162,6 +172,7 @@ class MCPToolRegistry:
                     presentation=presentation,
                     safety=safety,
                     evidence_basis=evidence_basis,
+                    available_when=available_when,
                 )
             )
             fn.__dict__["__repowise_trust_kind__"] = trust_kind

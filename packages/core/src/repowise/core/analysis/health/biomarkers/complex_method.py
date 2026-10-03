@@ -1,11 +1,13 @@
 """Complex Method — high cyclomatic complexity.
 
 Flags functions with CCN ≥ 9. A conservative threshold for the boundary
-between "ok" and "complex".
+between "ok" and "complex". A function that is mostly one dispatch on one
+value is judged on the CCN outside it (``complexity/dispatch.py``).
 """
 
 from __future__ import annotations
 
+from ..complexity.dispatch import judged_ccn
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -26,7 +28,7 @@ class ComplexMethodDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(fn.ccn, fn.nloc)
+            severity = self.severity_for(judged_ccn(fn), fn.nloc)
             if severity is None:
                 continue
             out.append(

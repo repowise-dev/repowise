@@ -21,11 +21,16 @@ import type {
   PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   HealthScope,
   HealthCounts,
+  RelatedWorkResponse,
 } from "@repowise-dev/types/health";
+import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import type { Paginated } from "@repowise-dev/types";
-import { apiGet, apiPatch } from "./client";
+import { apiGet, apiPatch, apiPost } from "./client";
 
 export type {
   BiomarkerBreakdownRow,
@@ -58,6 +63,9 @@ export type {
   HealthWorkItem,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortPoint,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   ModuleCoverageRow,
   PerformanceActionabilityState,
   PerformanceExecutionContext,
@@ -72,6 +80,10 @@ export type {
   RefactoringQuery,
   RefactoringTarget,
   RefactoringTargetsResponse,
+  RelatedWorkFile,
+  RelatedWorkItem,
+  RelatedWorkLens,
+  RelatedWorkResponse,
 } from "@repowise-dev/types/health";
 
 export async function getHealthOverview(
@@ -247,6 +259,20 @@ export async function getHealthWorkQueue(
   );
 }
 
+/**
+ * Every file the work queue's filters keep, placed by effort and recoverable
+ * health. Takes the queue's own filters so the plane and the list agree.
+ */
+export async function getHealthImpactEffort(
+  repoId: string,
+  opts?: ImpactEffortQuery,
+): Promise<ImpactEffortResponse> {
+  return apiGet<ImpactEffortResponse>(
+    `/api/repos/${repoId}/health/impact-effort`,
+    opts as Record<string, string | number | boolean | undefined>,
+  );
+}
+
 /** @deprecated Use getHealthWorkQueue; the response is file triage, not plans. */
 export const getRefactoringTargets = getHealthWorkQueue;
 
@@ -258,4 +284,52 @@ export async function getChurnComplexity(
     `/api/repos/${repoId}/health/churn-complexity`,
     opts,
   );
+}
+
+/**
+ * Fix first: the ranked queue core builds, its lead, and what each eligibility
+ * rule excluded. `scope: "all"` keeps test files in the queue.
+ */
+export async function getFixFirst(
+  repoId: string,
+  opts: { limit?: number; scope?: FixScope } = {},
+): Promise<FixFirstQueue> {
+  return apiGet<FixFirstQueue>(`/api/repos/${repoId}/health/fix-first`, {
+    limit: opts.limit,
+    scope: opts.scope,
+  });
+}
+
+/** One Fix-first item by its stable id, wherever it ranks. */
+export async function getFixFirstItem(
+  repoId: string,
+  fixId: string,
+  opts: { scope?: FixScope } = {},
+): Promise<FixItem> {
+  return apiGet<FixItem>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}`,
+    { scope: opts.scope },
+  );
+}
+
+/** One Fix-first item as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getFixFirstItemPrompt(
+  repoId: string,
+  fixId: string,
+  opts: { flavor?: AgentPromptFlavor; scope?: FixScope } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}/prompt`,
+    { flavor: opts.flavor, scope: opts.scope },
+  );
+}
+
+/** What every other lens holds for these files (1 to 200, repo-relative). */
+export async function getRelatedWork(
+  repoId: string,
+  filePaths: string[],
+): Promise<RelatedWorkResponse> {
+  return apiPost<RelatedWorkResponse>(`/api/repos/${repoId}/health/related-work`, {
+    file_paths: filePaths,
+  });
 }

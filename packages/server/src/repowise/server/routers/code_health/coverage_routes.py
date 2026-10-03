@@ -36,6 +36,11 @@ from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 from ._router import router
 
 
+def _score(m: Any) -> float | None:
+    """A file's health score; ``None`` where health has no dialect for it."""
+    return round(m.score, 2) if m.score is not None else None
+
+
 @router.get(
     "/api/repos/{repo_id}/health/coverage",
     response_model=CoverageResponse,
@@ -128,7 +133,7 @@ async def health_coverage(
         for f in files:
             m = metric_by_path.get(f["file_path"])
             if m is not None:
-                f["health_score"] = round(m.score, 2)
+                f["health_score"] = _score(m)
                 f["nloc"] = m.nloc
 
     # Always over the repo-wide read, never over ``files``: this is what the
@@ -268,7 +273,7 @@ async def _inferred_coverage(
         {
             "file_path": m.file_path,
             "reached": m.file_path in reached,
-            "health_score": round(m.score, 2),
+            "health_score": _score(m),
             "nloc": m.nloc,
         }
         for m in rows[:limit]

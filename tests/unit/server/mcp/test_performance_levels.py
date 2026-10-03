@@ -98,8 +98,9 @@ async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materializ
     assert "performance_directive" not in result
     perf = [i for i in result["fix_first"]["items"] if i["kind"] == "perf_fix"]
     assert perf, result["fix_first"]
-    # The five callers behind one shared helper are one intervention, one item.
-    shared = [i for i in perf if i["target"]["symbol"] == "load"]
+    # The five callers behind one shared helper are one intervention, one item;
+    # it points at the loop of its first caller, so its title names the helper.
+    shared = [i for i in perf if i["title"].endswith(" load")]
     assert len(shared) == 1, perf
     assert shared[0]["next_call"]["arguments"]["opportunity_id"].startswith("perf")
     assert 0 < len(json.dumps(shared[0])) <= 1500
@@ -124,7 +125,8 @@ async def test_the_summary_rolls_up_and_names_the_next_call(setup_mcp, materiali
     assert summary["actionability"].get("plan_ready", 0) == 0
     assert summary["with_plan_total"] == 2
     assert summary["analyzed_commit"] == "c" * 40
-    assert "get_health" in summary["next_call"]
+    assert summary["next_call"]["tool"] == "get_health"
+    assert summary["next_call"]["arguments"]["only"] == ["performance_opportunities"]
     assert len(json.dumps(summary)) <= 3000
 
 
@@ -266,7 +268,7 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     assert result["intervention_symbol"] == "src/shared.py::load"
     assert result["plan_status"] == "available"
     # The plan address space is the refactoring layer's content identity.
-    assert result["plan_reference"].startswith("refac3_")
+    assert result["plan_reference"].startswith("refac4_")
     assert result["confidence"] == "high"
     assert result["fix"]["safety"] == "advisory"
     assert [step["order"] for step in result["plan_steps"]] == [1, 2, 3, 4, 5]
@@ -349,7 +351,7 @@ async def test_the_summary_costs_the_same_however_many_causes_there_are(
     for index in range(40):
         row = _row(materialized, f"src/bulk_{index}.py", 500 + index)
         row.details_json = row.details_json.replace(
-            "src/db.py::fetch", f"src/db.py::fetch_{index}"
+            "src/shared.py::load", f"src/shared.py::load_{index}"
         )
         session.add(row)
     await session.flush()
@@ -397,7 +399,7 @@ async def test_the_lead_links_the_exact_plan_for_the_exact_lead(setup_mcp, mater
 
     page = await get_health(include=["performance"], only=["performance_opportunities"], limit=1)
     lead = page["performance_opportunities"][0]
-    assert lead["plan_reference"].startswith("refac3_")
+    assert lead["plan_reference"].startswith("refac4_")
     plan = await get_health(plan_id=lead["plan_reference"])
     assert plan["resolved"] is True
 
@@ -413,10 +415,10 @@ async def test_the_queue_costs_the_same_however_many_opportunities_there_are(
         await get_health(include=["performance"], only=["performance_opportunities"], limit=2)
 
     for index in range(40):
-        # A distinct sink per row, so these are forty causes rather than one.
+        # A distinct helper per row, so these are forty causes rather than one.
         row = _row(materialized, f"src/bulk_{index}.py", 500 + index)
         row.details_json = row.details_json.replace(
-            "src/db.py::fetch", f"src/db.py::fetch_{index}"
+            "src/shared.py::load", f"src/shared.py::load_{index}"
         )
         session.add(row)
     await session.flush()

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, status_rank
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.test_paths import is_test_related_path
 
 from ..models import DecisionRecord, GitMetadata
 
@@ -149,9 +150,10 @@ class _Lanes:
 async def _ungoverned_hotspots(
     session: AsyncSession, repository_id: str, governed_files: set[str]
 ) -> list[str]:
-    """Hotspot files no accepted decision names, hottest first.
+    """Hotspot production files no accepted decision names, hottest first.
 
     Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
+    Test files are left out: churn in a test is not a design choice to record.
     """
     hotspot_result = await session.execute(
         select(
@@ -163,7 +165,11 @@ async def _ungoverned_hotspots(
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
-    hotspot_rows = {row[0]: (row[1], row[2]) for row in hotspot_result.all()}
+    hotspot_rows = {
+        row[0]: (row[1], row[2])
+        for row in hotspot_result.all()
+        if not is_test_related_path(row[0])
+    }
 
     def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:
         score, churn = hotspot_rows[file_path]

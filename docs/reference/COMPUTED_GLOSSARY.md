@@ -50,7 +50,7 @@ workspace overlays, MCP responses, and CLI output.
 | Signature | Compact declaration text. | `build_signature()` via parser extractors | `def create_app(config: Config) -> FastAPI` |
 | Symbol docstring | Human text attached to a symbol, when extractable. | `extract_symbol_docstring()` | `"Create and configure the API app."` |
 | Module docstring | File-level docstring. | `extract_module_docstring()` | `"Command-line entry points."` |
-| Visibility | Public/private/protected/internal classification. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
+| Visibility | Public/private/protected/internal classification. A Python name listed in a literal module-level `__all__` reads public even when underscore-prefixed; a name the list omits keeps its name-based visibility. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
 | Async flag | Whether a symbol is async. | `_is_async_node()` | `async def fetch() -> is_async=true` |
 | Complexity estimate | Symbol complexity field, persisted to symbols. | Parser/model pipeline; defaults to `1` unless language extraction enriches it | `complexity_estimate: 3` |
 | Decorators | Decorator/modifier strings captured with a symbol. | `ASTParser._extract_symbols()` | `["@router.get('/users')"]` |
@@ -131,7 +131,7 @@ workspace overlays, MCP responses, and CLI output.
 | Lines added/deleted 90d | Recent churn by numstat. | `_index_file()` | `{lines_added_90d: 340, lines_deleted_90d: 87}` |
 | Average commit size | `(lines_added_90d + lines_deleted_90d) / commit_count_90d`. | `_index_file()` | `35.6` |
 | Merge commit count 90d | Number of merge commits touching the file recently. | `_index_file()` | `merge_commit_count_90d: 2` |
-| Original path | Earliest path found through rename-follow history. | `_detect_original_path()` | `legacy/auth/session.py` |
+| Original path | Earliest path found through rename-follow history. | `detect_original_path()` | `legacy/auth/session.py` |
 | Temporal hotspot score | Exponentially decayed churn score with 180-day half-life. | `_index_file()` | `2.43` |
 | Churn percentile | Rank percentile among indexed files by temporal hotspot score, with 90-day commits as tiebreak. | `_compute_percentiles()` | `0.88` |
 | Hotspot flag | Top churn file: percentile >= 0.75 and has recent commits. | `_compute_percentiles()` | `is_hotspot: true` |
@@ -174,8 +174,6 @@ workspace overlays, MCP responses, and CLI output.
 | Architecture diagram context | Top PageRank nodes, selected edges, communities, SCC groups. | `assemble_architecture_diagram()` | Mermaid graph inputs for 50 nodes and 200 edges |
 | API contract context | Raw API contract plus endpoint/schema hints. | `assemble_api_contract()` | `endpoints: ["GET /users"]`, `schemas: ["User"]` |
 | Infra page context | Raw infra file plus target names. | `assemble_infra_page()` | `Dockerfile`, `Makefile`, `terraform` files |
-| Diff summary context | Changed files, symbol diffs, affected pages, trigger commit/diff. | `assemble_diff_summary()` | `{added_files: ["src/new.py"], affected_page_ids: [...]}` |
-| Cross-package context | Monorepo boundary summary between packages. | `assemble_cross_package()` | `{source_package: "cli", target_package: "core", coupling_strength: 5}` |
 | Dependency summaries | Summaries of already-generated dependency pages. | `assemble_file_page()` with `page_summaries` | `{ "src/db.py": "Database access layer..." }` |
 | RAG context | Snippets from vector search for related generated pages. | `_generate_file_page_from_ctx()` | `["[file_page:src/schema.py]\nDefines API schema..."]` |
 | Token estimate | `len(text) // 4` heuristic. | `ContextAssembler._estimate_tokens()` | `3200` |
@@ -206,8 +204,7 @@ workspace overlays, MCP responses, and CLI output.
 | Decision record | ADR-like row from code comments, git, docs, or CLI/manual entry. | `DecisionExtractor`, CRUD, CLI | `{title: "Use Redis for sessions", status: "active"}` |
 | Inline marker decision | Decision extracted from comments such as `WHY:`, `DECISION:`, `TRADEOFF:`, `ADR:`. | `scan_inline_markers()` | `# DECISION: cache auth sessions in Redis` |
 | Git archaeology decision | LLM-structured decision inferred from significant commit messages with decision keywords. | `mine_git_archaeology()` | `migrate from REST client to generated OpenAPI client` |
-| README-mined decision | Decision extracted from docs such as README, CLAUDE, ARCHITECTURE, DESIGN. | `mine_readme_docs()` | `"We use SQLite by default because setup should be local-first."` |
-| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `readme_mining`, `cli` |
+| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `adr`, `cli` |
 | Decision confidence | Source-specific extraction confidence. | `DecisionExtractor` | `0.95` inline LLM, `0.70` git signal, `0.60` README mining, `1.0` manual |
 | Affected files | Files linked to a decision from graph neighbors, commit files, or manual input. | `DecisionExtractor` | `["src/auth.py", "src/session.py"]` |
 | Affected modules | Directories the affected files live in, deduped and capped; for records that name no file, the deepest directories mentioned in the decision text. | `resolve_module_nodes()` and `_infer_modules_from_text()` | `["packages/core/src/repowise/core/pipeline", "tests/unit/pipeline"]` |

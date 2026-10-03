@@ -79,10 +79,10 @@ def test_a_cross_function_hit_outranks_the_same_hit_inside_one_function() -> Non
 
 
 def test_the_gated_markers_carry_their_hotness_proof() -> None:
-    """``hot_path_sync_io`` is only ever emitted on a hot, reachable function.
+    """``hot_path_sync_io`` is only ever emitted on a hot, central function.
 
     ``perf.gated.collect_centrality_gated`` will not produce it otherwise, so
-    its presence *is* the request-reachability signal and needs no new column.
+    its presence *is* the centrality signal and needs no new column.
     It therefore outranks the cheap in-loop CPU markers at the same boundary,
     while sitting level with a plain N+1 marker — it proves hotness and no
     multiplier, the loop proves a multiplier and no hotness.

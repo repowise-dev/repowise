@@ -1,8 +1,10 @@
-# Change review — the Python API for reviewing one change
+# Change review API
+
+The Python API for reviewing one change.
 
 Everything the MCP tools and the CLI know about a change is computed by
 `repowise.core`, and that core is importable on its own. This page is for a
-program that wants the whole review in one object rather than a rendered
+program that wants the whole review in one object, not a rendered
 response: a bot commenting on a pull request, a CI job gating a merge, an
 editor extension, a service that never has a checkout to score from.
 
@@ -31,10 +33,10 @@ for entry in bundle.manifest:
 
 ## Reviewing a change you have no checkout of
 
-This is the case a hosted consumer actually has: the bytes arrived from an API
+This is the case for a service that receives changes over an API: the bytes arrived from an API
 or an artifact, and there is no repository on disk. Build a `RevisionPair`
 describing the change, hand over both sides' content, and the rest is
-identical — same analyzers, same verdict.
+identical: same analyzers, same verdict.
 
 ```python
 from repowise.core.analysis.change_health import (
@@ -70,13 +72,13 @@ source = MappingRevisionSource(
     head={"app/service.py": head_bytes},
 )
 
-# No repo_path: there is no checkout, so the shape score is unsupported rather
-# than wrong. Every lane that works from content still answers.
+# No repo_path: there is no checkout, so the shape score is reported as unsupported,
+# not wrong. Every lane that works from content still answers.
 bundle = ChangeReviewService(source).review(ChangeReviewRequest())
 ```
 
 `FileChange` carries a `diff_status` for providers that cannot always supply a
-usable patch — set it to `truncated` for a size-capped API page and `binary`
+usable patch: set it to `truncated` for a size-capped API page and `binary`
 for a blob. Without it, "no lines changed" and "we never saw the lines" look
 identical downstream, which is the one thing this type exists to prevent.
 
@@ -91,15 +93,15 @@ carries one of five states:
 | State | Meaning | Reading it as "fine" would be |
 |---|---|---|
 | `available` | Computed. An empty population is a real answer. | correct |
-| `partial` | Some of the requested scope was analysed. | wrong — the change is not cleared |
-| `unavailable` | The data was required and could not be read. | **wrong — this is a failure** |
+| `partial` | Some of the requested scope was analysed. | wrong: the change is not cleared |
+| `unavailable` | The data was required and could not be read. | **wrong: this is a failure** |
 | `degraded` | Computation failed or fell back to something weaker. | wrong |
-| `unsupported` | Nobody asked, or this provider cannot answer at all. | wrong — nothing was checked |
+| `unsupported` | Nobody asked, or this provider cannot answer at all. | wrong: nothing was checked |
 
 ```python
 for name in bundle.degraded_lanes:
     state = bundle.lane(name)
-    print(f"{name}: {state.state} — {state.reason}")
+    print(f"{name}: {state.state}: {state.reason}")
 ```
 
 The distinction that matters most in practice: **`unavailable` is not
@@ -112,10 +114,10 @@ never render the way "these files have never broken" renders.
 
 | Lane | Field | Notes |
 |---|---|---|
-| `manifest` | `bundle.manifest` | Every counted path, its status, diff reliability and added line spans. The one counted universe — the request's extension and exclude filters are applied here, once. |
+| `manifest` | `bundle.manifest` | Every counted path, its status, diff reliability and added line spans. The one counted universe: the request's extension and exclude filters are applied here, once. |
 | `risk` | `bundle.risk` | Diff shape ranked against the repository's recent commits. Needs a checkout or a pre-scored result. |
 | `health` | `bundle.health` | What the change newly made worse, each finding naming its attribution basis. |
-| `contracts` | `bundle.contracts` | Changed symbols whose callers sit outside the change. |
+| `contracts` | `bundle.contracts` | Changed symbols whose callers sit outside the change, split into test and production callers. A signature change carries `signature_effect` (`compatible`, `breaking`, `unknown`) and a `signature_reason` naming the parameter, judged from the indexed parameter list and return type only; a text-only change is not reported as one. |
 | `tests` | `bundle.tests` | Impacted tests, measured coverage kept distinct from graph-inferred candidates. |
 | `prior_fixes` | via `bundle.risk` | The bug-fix history the risk walk already read. |
 | `independent_changes` | `bundle.independent_changes` | When the diff is several changes the index does not connect. |
@@ -124,7 +126,7 @@ never render the way "these files have never broken" renders.
 Populations are **uncapped**. Core returns everything and says how much there
 is; deciding how many rows to show is a surface's job, not core's.
 
-`bundle.directive` is the verdict, its reasons and its next actions, as data —
+`bundle.directive` is the verdict, its reasons and its next actions, as data:
 a status, a plain factual headline, and `ReviewAction`s with stable
 fingerprints so a caller can tell a repeated action from a new one. It carries
 no Markdown, no URLs and no tool-call syntax, because two surfaces that render
@@ -137,7 +139,7 @@ it differently still have to reach the same conclusion.
 The service is synchronous and fetches nothing that needs a database session,
 a network call or a snapshot artifact. A caller collects those and hands them
 over; the service decides what they mean. A caller that collects nothing still
-gets a bundle, with those lanes honestly marked `unsupported`.
+gets a bundle, with those lanes marked `unsupported`.
 
 ```python
 from repowise.core.analysis.change_review import ChangeReviewEvidence, ContractInputs
@@ -145,21 +147,21 @@ from repowise.core.analysis.change_review import ChangeReviewEvidence, ContractI
 bundle = service.review(
     ChangeReviewRequest(revspec="HEAD"),
     evidence=ChangeReviewEvidence(
-        # Run the comparison alongside your other work rather than losing that
-        # concurrency to a synchronous lane.
+        # Run the comparison alongside your other work and pass the result in,
+        # so a synchronous lane does not cost you that concurrency.
         health=precomputed_delta,
         tests=await analyze_test_impact(session, repo_id, changed_paths),
         contracts=ContractInputs(
             graph=graph, base_parsed=base_parsed, head_parsed=head_parsed,
-            # True when the base side came from the last indexed snapshot
-            # rather than this change's real base.
+            # True when the base side came from the last indexed snapshot,
+            # not this change's real base.
             base_is_snapshot=True,
         ),
     ),
 )
 ```
 
-`skip={"risk"}` drops a lane you do not want the cost of. It is reported as
+`ChangeReviewEvidence(skip=frozenset({"risk"}))` drops a lane you do not want the cost of. It is reported as
 `unsupported`, never as empty.
 
 ---
@@ -183,6 +185,6 @@ removing or renaming one, or changing what an existing field means, does.
 
 ## Related
 
-- The same evidence rendered for an agent: [MCP_TOOLS.md](MCP_TOOLS.md)
+- The same evidence rendered for an agent: [MCP_TOOLS.md](../agent/MCP_TOOLS.md)
 - `repowise risk` for the terminal, which reports the change-shape score and
   the independent-change split.

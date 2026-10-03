@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 
@@ -15,6 +16,90 @@ from .extractors import node_text as _node_text
 # add it here if one ever does, or ``union U;`` reads as a definition.
 _CPP_TYPE_SPECIFIER_NODES = frozenset({"class_specifier", "struct_specifier", "enum_specifier"})
 _CPP_EXPORT_FORWARD_DECLARATION_NODES = frozenset({"declaration", "field_declaration"})
+
+# Keywords that open a C/C++ scope. tree-sitter reads an unknown macro line
+# right before one (``FMT_BEGIN_NAMESPACE``, ``ABSL_NAMESPACE_BEGIN``) as a
+# return type, so the namespace or type comes back as a ``function_definition``
+# whose head holds the keyword as a stray identifier or ERROR token.
+_CPP_SCOPE_KEYWORDS = frozenset({"namespace", "class", "struct", "union", "enum"})
+# Name tokens a stray keyword is read as: ``field_identifier`` inside a class body.
+_CPP_NAME_TOKENS = frozenset({"identifier", "field_identifier"})
+# Declarators a misread scope can have: its bare name, qualified or not, or a
+# stray ``template <...>`` (``MACRO template <typename T> class X {``). A real
+# function wraps each of these in a function_declarator.
+_CPP_SCOPE_DECLARATORS = _CPP_NAME_TOKENS | {"qualified_identifier", "template_function"}
+
+
+def _keyword_token(node: Node) -> str | None:
+    if node.type in _CPP_SCOPE_KEYWORDS:
+        return node.type
+    if node.type in _CPP_NAME_TOKENS and node.text is not None:
+        word = node.text.decode("utf-8", errors="replace")
+        return word if word in _CPP_SCOPE_KEYWORDS else None
+    return None
+
+
+def _macro_named_type_keyword(node: Node) -> str | None:
+    """``class MACRO X {``: a bodiless specifier named after the macro, then the real name."""
+    type_node = node.child_by_field_name("type")
+    declarator = node.child_by_field_name("declarator")
+    if type_node is None or type_node.type not in _CPP_TYPE_SPECIFIER_NODES:
+        return None
+    if declarator is None or declarator.type != "identifier":
+        return None
+    if type_node.child_by_field_name("body") is not None:
+        return None
+    return type_node.type.removesuffix("_specifier")
+
+
+def misread_scope_keyword(node: Node) -> str | None:
+    """The keyword of a namespace or type that tree-sitter read as a function.
+
+    Two macro shapes: ``MACRO namespace x {`` / ``MACRO class X {`` (the
+    keyword sits in the definition's head) and ``class MACRO X {`` (the macro
+    reads as a bodiless class name and the real name as the declarator).
+    None for every real function definition.
+    """
+    if node.type != "function_definition":
+        return None
+    macro_named = _macro_named_type_keyword(node)
+    if macro_named is not None:
+        return macro_named
+    # A real function behind a macro (``API struct S *f()``) can also carry the
+    # keyword in its head, but its declarator wraps a function_declarator.
+    declarator = node.child_by_field_name("declarator")
+    if declarator is None or declarator.type not in _CPP_SCOPE_DECLARATORS:
+        return None
+    keywords = (_keyword_token(token) for token in _head_tokens(node))
+    return next((keyword for keyword in keywords if keyword is not None), None)
+
+
+def _head_tokens(node: Node) -> Iterator[Node]:
+    """The definition's children before its body, looking one level into ERROR nodes."""
+    body = node.child_by_field_name("body")
+    for child in node.children:
+        if body is not None and child.id == body.id:
+            return
+        yield from (child.children if child.type == "ERROR" else (child,))
+
+
+def _misread_namespace_ids(matches: list[dict]) -> frozenset[int]:
+    """Misread namespaces enclosing any matched definition.
+
+    Their contents are module-level declarations, so they must not count as
+    the callable ancestor that drops a nested definition.
+    """
+    found: set[int] = set()
+    seen: set[int] = set()
+    def_nodes = (node for capture_dict in matches for node in capture_dict.get("symbol.def", []))
+    for def_node in def_nodes:
+        ancestor = def_node.parent
+        while ancestor is not None and ancestor.id not in seen:
+            seen.add(ancestor.id)
+            if misread_scope_keyword(ancestor) == "namespace":
+                found.add(ancestor.id)
+            ancestor = ancestor.parent
+    return frozenset(found)
 
 
 @dataclass(frozen=True)
@@ -72,10 +157,12 @@ class CppExportTypes:
     capture_ids: set[int] = field(default_factory=set)
     macro_names: set[str] = field(default_factory=set)
     macro_def_ids: set[int] = field(default_factory=set)
+    namespace_ids: frozenset[int] = frozenset()
 
     @cached_property
-    def parent_ids(self) -> frozenset[int]:
-        return frozenset(self.parents)
+    def container_ids(self) -> frozenset[int]:
+        """Misread nodes that hold declarations, not code: never a callable ancestor."""
+        return frozenset(self.parents) | self.namespace_ids
 
     def add(
         self,
@@ -98,7 +185,7 @@ class CppExportTypes:
 
 def collect_cpp_export_types(matches: list[dict], src: str) -> CppExportTypes:
     """Recover every macro-decorated type the query matched in one C++ file."""
-    found = CppExportTypes()
+    found = CppExportTypes(namespace_ids=_misread_namespace_ids(matches))
     cpp_export_matches = [
         capture_dict
         for capture_dict in matches

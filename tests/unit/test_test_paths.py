@@ -14,6 +14,7 @@ from repowise.core.test_paths import (
     is_test_path,
     is_test_related_path,
     is_test_support_path,
+    is_unambiguous_test_path,
 )
 
 # (path, language or None, expected classification)
@@ -52,6 +53,28 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/main/java/Latest.java", None, ""),
     # .net sibling test projects
     ("Foo.Tests/Bar.cs", None, "test"),
+    # PascalCase suite folders, one word with no separator (PowerToys)
+    ("src/common/updating/UnitTests/UpdatingTests.cpp", None, "test"),
+    ("src/modules/AdvancedPaste/AdvancedPaste.UnitTests/Mocks/Clipboard.cs", None, "support"),
+    ("src/modules/peek/Peek.UITests/PeekFilePreviewTests.cs", None, "test"),
+    ("src/modules/x/FuzzTests/fuzz.cpp", None, "test"),
+    ("src/unitTests/parser.ts", None, "test"),
+    # ...plural only, and only with the capital: singular names one thing
+    ("src/ui/HitTest/hit.cpp", None, ""),
+    ("src/contests/rules.py", None, ""),
+    ("src/Latests/x.cs", None, ""),
+    # gradle test fixtures and QA projects (elasticsearch)
+    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "test"),
+    ("x-pack/plugin/sql/qa/server/src/main/java/org/x/JdbcBase.java", None, "test"),
+    ("qa/logging-spi/src/main/java/org/x/Spi.java", None, "test"),
+    ("src/qa/answer.py", None, ""),  # a question-answering module
+    ("app/qa/src/model.py", None, ""),  # qa is the project itself
+    ("gradle/internal/testfixtures/DeployPlugin.java", None, ""),
+    ("src/testfixtures/pkg/mod.py", None, ""),  # the Python testfixtures library
+    ("packages/qa/cli/src/main.ts", None, ""),  # shipped QA tooling
+    ("src/qa/tools/src/x.py", None, ""),
+    ("qa/tools/src/report.py", None, ""),
+    ("docs/qa/guide/src/x.md", None, ""),
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),
@@ -103,6 +126,17 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("apps/client-e2e/src/app.cy.ts", None, "test"),
     ("apps/client-e2e/src/support/commands.ts", None, "support"),
     ("mylib/unit.tests/run.py", None, "test"),
+    # `test suite(s)` names a suite of tests when it is a build module with its
+    # own `src` root: a Gradle module of shared test classes, serde's no_std check
+    ("server/server-test-suites/jvm/src/io/x/suites/EngineStressSuite.kt", None, "test"),
+    ("server/server-test-suites/common/src/io/x/suites/Utils.kt", None, "test"),
+    ("server/x-test-suites/src/main/kotlin/io/x/ContentSuite.kt", None, "test"),
+    ("test_suite/no_std/src/main.rs", None, "test"),
+    # ...and not as a product feature folder or a docs page set
+    ("src/api/test-suites/route.ts", None, ""),
+    ("apps/web/src/features/test-suite/List.tsx", None, ""),
+    ("docs/test-suites/overview.md", None, ""),
+    ("conformance/test-suite/run.py", None, ""),
     # ...so a word that merely contains a test token, or a compound that is
     # *about* testing, is not a test tree
     ("src/latest-release/api.py", None, ""),
@@ -110,6 +144,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("docs/test-api/class-test.md", None, ""),
     ("docs/test-tools/index.md", None, ""),
     ("src/generators/e2e-project/index.ts", None, ""),
+    ("apps/office-suite/src/main.ts", None, ""),
+    ("packages/test-suite-runner/index.js", None, ""),
+    ("server/server-test-host/src/io/x/TestEngine.kt", None, ""),
     # singular `test` heads a compound naming one thing - a generator, an
     # executor, a package, an example project - in either spelling
     ("src/generators/component-test/index.ts", None, ""),
@@ -160,6 +197,13 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # Support directories count anywhere, .github included.
     (".github/test-data/expected.json", None, "support"),
     (".github/actions/notify/__snapshots__/Button.snap", None, "support"),
+    # C/C++ helpers shared by tests (abseil, leveldb)
+    ("absl/strings/cord_test_helpers.h", None, "test"),
+    ("absl/random/internal/distribution_test_util.cc", None, "test"),
+    ("absl/log/log_basic_test_impl.inc", None, "test"),
+    ("util/env_posix_test_helper.h", None, "test"),
+    ("absl/strings/str_cat.h", None, ""),
+    ("crates/searcher/src/searcher/util.rs", None, ""),
 )
 
 
@@ -226,3 +270,25 @@ def test_camel_prefix_rule_mirrors_the_suffix_rule() -> None:
     # leak onto an unrelated extension.
     assert not is_test_path("src/testkeymap.dpr", "pascal")
     assert not is_test_path("src/TestKeymap.txt", "pascal")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/unit/test_engine.py", True),
+        ("tests/conftest.py", True),
+        ("packages/ui/__tests__/table.test.tsx", True),
+        ("src/test/java/FooTest.java", True),
+        ("pkg/server/handler_test.go", True),
+        # Named like tests, but production modules inside a source tree.
+        ("packages/core/src/repowise/core/test_paths.py", False),
+        ("packages/core/src/repowise/core/analysis/test_impact.py", False),
+        ("packages/core/src/repowise/core/distill/filters/test_output.py", False),
+        ("src/app/lib/format.test.ts", False),
+        ("src/app/lib/format.py", False),
+    ],
+)
+def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
+    path: str, expected: bool
+) -> None:
+    assert is_unambiguous_test_path(path) is expected

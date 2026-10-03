@@ -35,3 +35,34 @@ async def test_unknown_scope_is_rejected(client, session, tmp_path) -> None:
     await session.commit()
     resp = await client.get(f"/api/repos/{repo_id}/health/fix-first?scope=tests")
     assert resp.status_code == 422
+
+
+async def test_item_prompt_is_core_rendering_of_the_item(client, session, tmp_path) -> None:
+    from repowise.core.agent_prompts import render_fix_item
+
+    repo_id = await _repo(client, session, tmp_path)
+    await seed_fix_first(session, repo_id)
+    await session.commit()
+    lead = (await client.get(f"/api/repos/{repo_id}/health/fix-first")).json()["lead"]
+    name = (await client.get(f"/api/repos/{repo_id}")).json()["name"]
+
+    url = f"/api/repos/{repo_id}/health/fix-first/{lead['id']}/prompt"
+    body = (await client.get(url, params={"flavor": "claude-code-mcp"})).json()
+    assert body == {"flavor": "claude-code-mcp", "text": render_fix_item(lead, "claude-code-mcp", name)}
+    assert "## Look closer (Repowise MCP)" in body["text"]
+
+
+async def test_item_prompt_rejects_bad_flavor_and_unknown_ids(client, session, tmp_path) -> None:
+    repo_id = await _repo(client, session, tmp_path)
+    await session.commit()
+    url = f"/api/repos/{repo_id}/health/fix-first/fix1_missing/prompt"
+    assert (await client.get(url, params={"flavor": "vim"})).status_code == 422
+    assert (await client.get(url)).status_code == 404
+    assert (await client.get("/api/repos/nope/health/fix-first/fix1_missing/prompt")).status_code == 404
+
+
+async def test_unknown_repository_is_404_for_the_item_and_its_prompt(client) -> None:
+    for suffix in ("", "/prompt"):
+        resp = await client.get(f"/api/repos/nope/health/fix-first/fix1_missing{suffix}")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Repository not found"

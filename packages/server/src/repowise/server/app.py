@@ -274,7 +274,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Shutdown: dispose engine, stop scheduler, close vector store.
     """
     db_url = _resolve_server_db_url()
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, short_lived=False)
     await init_db(engine)
     session_factory = create_session_factory(engine)
     await _reset_stale_jobs(session_factory)

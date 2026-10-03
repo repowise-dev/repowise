@@ -21,7 +21,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -266,9 +266,12 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
 ]
 
 # Combined prefilter: one search per line rejects the (overwhelmingly common)
-# clean lines before the per-pattern loop runs. Matches iff some pattern in
-# _PATTERNS matches, so findings are unchanged.
-_ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
+# clean lines before the per-pattern loop runs. Matches iff some pattern that
+# loop runs matches, so findings are unchanged. Call kinds are found by
+# ``_call_findings`` instead, and searching for them here cost a third of it.
+_ANY_PATTERN = re.compile(
+    "|".join(f"(?:{p.pattern})" for p, kind, _ in _PATTERNS if kind not in _CALL_KINDS)
+)
 
 # Patterns whose calls legitimately span multiple physical lines: the opening
 # ``subprocess.<call>(`` lands on one line and ``shell=True`` on another. The
@@ -516,123 +519,108 @@ def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     return text[:cut]
 
 
+# Where each masking state can change. Every other character keeps the state,
+# so the scan jumps from one of these to the next instead of walking each one.
+_CODE_STOP = re.compile(r"[{}/#'\"`]")
+_TEMPLATE_STOP = re.compile(r"\$\{|`|\\")
+_STRING_STOP = {
+    marker: re.compile(re.escape(marker) + r"|\\") for marker in ("'", '"', "'''", '"""')
+}
+_NOT_NEWLINE = re.compile(r"[^\n]")
+
+
 def _mask_comments_and_strings(source: str, *, strings: bool = True) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
     Strings are still tracked when they are kept, so a ``#`` or ``//`` inside
-    one does not open a comment.
+    one does not open a comment. Newlines are never blanked.
     """
-    chars = list(source)
+    out: list[str] = []
+    copied = 0
 
-    def blank(at: int, width: int = 1) -> None:
-        chars[at : at + width] = [" "] * width
+    def blank(start: int, end: int) -> None:
+        nonlocal copied
+        out.append(source[copied:start])
+        out.append(_NOT_NEWLINE.sub(" ", source[start:end]))
+        copied = end
 
+    size = len(source)
     i = 0
     state = "code"
     quote = ""
     triple = False
     template_depth = 0
-    while i < len(source):
+    while i < size:
         if state == "line_comment":
-            if source[i] == "\n":
-                state = "code"
-            else:
-                blank(i)
-            i += 1
+            stop = source.find("\n", i)
+            stop = size if stop == -1 else stop
+            blank(i, stop)
+            i = stop + 1
+            state = "code"
             continue
         if state == "block_comment":
-            if source.startswith("*/", i):
-                blank(i, 2)
-                i += 2
-                state = "code"
-            else:
-                if source[i] != "\n":
-                    blank(i)
-                i += 1
+            stop = source.find("*/", i)
+            stop = size if stop == -1 else stop + 2
+            blank(i, stop)
+            i = stop
+            state = "code"
             continue
-        if state == "string":
-            marker = quote * (3 if triple else 1)
-            if source.startswith(marker, i):
-                if strings:
-                    blank(i, len(marker))
-                i += len(marker)
+        if state in {"string", "template"}:
+            pattern = (
+                _TEMPLATE_STOP if state == "template" else _STRING_STOP[quote * (3 if triple else 1)]
+            )
+            match = pattern.search(source, i)
+            # A backslash escapes the character after it, whatever it is.
+            stop = size if match is None else min(match.end() + (match.group() == "\\"), size)
+            if strings:
+                blank(i, stop)
+            i = stop
+            if match is not None and match.group() != "\\":
                 state = "code"
-            elif source[i] == "\\":
-                if strings:
-                    blank(i)
-                if i + 1 < len(source):
-                    if strings and source[i + 1] != "\n":
-                        blank(i + 1)
-                    i += 2
-                else:
-                    i += 1
-            else:
-                if strings and source[i] != "\n":
-                    blank(i)
-                i += 1
-            continue
-        if state == "template":
-            if source.startswith("${", i):
-                if strings:
-                    blank(i, 2)
-                i += 2
-                template_depth = 1
-                state = "code"
-            elif source[i] == "`":
-                if strings:
-                    blank(i)
-                i += 1
-                state = "code"
-            elif source[i] == "\\":
-                if strings:
-                    blank(i)
-                if i + 1 < len(source):
-                    if strings and source[i + 1] != "\n":
-                        blank(i + 1)
-                    i += 2
-                else:
-                    i += 1
-            else:
-                if strings and source[i] != "\n":
-                    blank(i)
-                i += 1
+                template_depth = 1 if match.group() == "${" else template_depth
             continue
 
-        if template_depth and source[i] == "{":
+        match = _CODE_STOP.search(source, i)
+        if match is None:
+            break
+        i = match.start()
+        char = source[i]
+        if template_depth and char == "{":
             template_depth += 1
             i += 1
-        elif template_depth and source[i] == "}":
+        elif template_depth and char == "}":
             if strings:
-                blank(i)
+                blank(i, i + 1)
             template_depth -= 1
             i += 1
             if template_depth == 0:
                 state = "template"
-        elif source.startswith("//", i) or source[i] == "#":
-            width = 2 if source.startswith("//", i) else 1
-            blank(i, width)
+        elif char == "#" or source.startswith("//", i):
+            width = 1 if char == "#" else 2
+            blank(i, i + width)
             i += width
             state = "line_comment"
         elif source.startswith("/*", i):
-            blank(i, 2)
+            blank(i, i + 2)
             i += 2
             state = "block_comment"
-        elif source[i] == "`":
+        elif char == "`":
             if strings:
-                blank(i)
+                blank(i, i + 1)
             i += 1
             state = "template"
-        elif source[i] in {"'", '"'}:
-            quote = source[i]
+        elif char in {"'", '"'}:
+            quote = char
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
             if strings:
-                blank(i, width)
+                blank(i, i + width)
             i += width
             state = "string"
         else:
             i += 1
-    return "".join(chars)
+    out.append(source[copied:])
+    return "".join(out)
 
 
 def source_lines(source: str) -> list[str]:
@@ -644,9 +632,21 @@ def source_lines(source: str) -> list[str]:
     return [line.removesuffix("\r") for line in source.split("\n")]
 
 
-def _call_findings(file_path: str, source: str) -> list[dict]:
-    """Find executable eval/exec calls with AST or bounded lexical fallback."""
-    if file_path.lower().endswith((".py", ".pyi")):
+def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
+    """Find executable eval/exec calls with AST or bounded lexical fallback.
+
+    *masked* returns the source with comments and strings blanked, built on
+    first use and shared with the caller.
+    """
+    is_python = file_path.lower().endswith((".py", ".pyi"))
+    # Masking only blanks characters, so every call found below names ``eval``
+    # or ``exec`` in the source, and outside Python ``exec`` counts only through
+    # ``child_process``. ``ast`` folds non-ASCII identifiers (NFKC), so such
+    # Python files still parse.
+    words = ("eval", "exec") if is_python else ("eval", "child_process")
+    if not any(word in source for word in words) and (not is_python or source.isascii()):
+        return []
+    if is_python:
         try:
             tree = ast.parse(source)
         except SyntaxError:
@@ -679,7 +679,7 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
                 )
             return findings
 
-    masked = _mask_comments_and_strings(source)
+    masked_source = masked()
     lines = source_lines(source)
     findings = []
 
@@ -688,15 +688,14 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
         snippet = _snippet(lines[lineno - 1]) if lineno <= len(lines) else ""
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
-    is_python = file_path.lower().endswith((".py", ".pyi"))
     for pattern, kind, severity in _CALL_PATTERNS:
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
-        for match in pattern.finditer(masked):
+        for match in pattern.finditer(masked_source):
             add(kind, severity, match.start())
 
     if not is_python:
-        for offset in _child_process_exec_calls(source, masked):
+        for offset in _child_process_exec_calls(source, masked_source):
             add("exec_call", "high", offset)
 
     return findings
@@ -728,24 +727,32 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     lines = source_lines(source)
     is_prose = file_path.lower().endswith(_PROSE_EXTENSIONS)
 
+    # Masking is the costly step and most files match no pattern at all, so
+    # each form is built once, on first use. Prose has no comments or strings
+    # to set apart: its text is read as written.
+    masks: dict[bool, tuple[str, list[str]]] = {}
+
+    def mask(strings: bool = True) -> tuple[str, list[str]]:
+        if strings not in masks:
+            text = source if is_prose else _mask_comments_and_strings(source, strings=strings)
+            masks[strings] = (text, lines if is_prose else source_lines(text))
+        return masks[strings]
+
+    def masked_line(lineno: int, line: str, *, strings: bool = True) -> str:
+        masked_lines = mask(strings)[1]
+        return masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
+
     if not is_prose:
-        findings.extend(_call_findings(file_path, source))
+        findings.extend(_call_findings(file_path, source, lambda: mask()[0]))
 
-    # Prose has no comments or strings to set apart: its text is read as written.
-    masked = source if is_prose else _mask_comments_and_strings(source)
-    masked_lines = source_lines(masked)
-    # Comments alone: a public env name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
-    comment_lines = (
-        lines if is_prose else source_lines(_mask_comments_and_strings(source, strings=False))
-    )
-
-    # Line-by-line pattern scan
+    # Line-by-line pattern scan. A line's edges and the newline around it read
+    # alike to every lookaround in ``_ANY_PATTERN``, so a file the whole-source
+    # search rejects has no matching line, and most files are such.
     is_low_sev_file = _is_low_severity_path(file_path)
-    for lineno, line in enumerate(lines, start=1):
+    scan_lines = lines if _ANY_PATTERN.search(source) else []
+    for lineno, line in enumerate(scan_lines, start=1):
         if not _ANY_PATTERN.search(line):
             continue
-        code_line = masked_lines[lineno - 1] if lineno <= len(masked_lines) else line
-        uncommented = comment_lines[lineno - 1] if lineno <= len(comment_lines) else line
         snippet: str | None = None
         keyword_hits: list[tuple[dict, str]] = []
         vendor_values: list[str] = []
@@ -755,12 +762,14 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             if is_prose and kind not in SECRET_KINDS:
                 continue
             if kind in _MASKED_KINDS:
-                match = pattern.search(code_line)
+                match = pattern.search(masked_line(lineno, line))
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.
-                match = _match_starting_in(pattern, line, code_line)
+                match = _match_starting_in(pattern, line, masked_line(lineno, line))
             elif kind == "public_env_secret":
-                # A comment naming the variable is not code reading it.
+                # A comment naming the variable is not code reading it. Comments
+                # alone: the name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
+                uncommented = masked_line(lineno, line, strings=False)
                 match = _match_starting_in(pattern, line, uncommented)
             else:
                 # Vendor key shapes are real wherever they sit, comments included.
@@ -796,7 +805,15 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     for pattern, kind, severity in _SPANNING_PATTERNS:
         if is_prose and kind not in SECRET_KINDS:
             continue
-        for match in pattern.finditer(masked if kind in _MASKED_KINDS else source):
+        if kind in _MASKED_KINDS:
+            # The masked pattern opens with this literal, which masking keeps
+            # verbatim, so a source without it cannot match.
+            if "subprocess." not in source:
+                continue
+            text = mask()[0]
+        else:
+            text = source
+        for match in pattern.finditer(text):
             if kind in SECRET_KINDS:
                 val = match.group(1) if match.groups() else ""
                 if not _is_secret_value(kind, val):

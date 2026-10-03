@@ -34,10 +34,9 @@ class PerfOpportunityView:
     affected_call_sites_total: int
     observations_total: int
     evidence: list[dict[str, Any]]
-
-    @property
-    def is_cross_function(self) -> bool:
-        return self.intervention_symbol is not None
+    # A member reached its sink through a call: every group names an
+    # intervention, so the symbol alone no longer says this.
+    is_cross_function: bool = False
 
     def summary(self) -> str:
         if self.is_cross_function:
@@ -95,4 +94,5 @@ def _view(opportunity: Any) -> PerfOpportunityView:
         affected_call_sites_total=opportunity.affected_call_sites_total,
         observations_total=opportunity.observations_total,
         evidence=evidence[:EVIDENCE_CAP],
+        is_cross_function=any(len(row.get("path") or ()) >= 2 for row in evidence),
     )

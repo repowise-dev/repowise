@@ -9,9 +9,17 @@ schemas exist to prevent. The envelopes around them are pinned.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
+
+
+class RefactoringHiddenCounts(BaseModel):
+    """What the ``fix_first`` scope leaves out of a page's filtered set."""
+
+    total: int = 0
+    #: Count per Fix-first exclusion reason, largest first.
+    by_reason: dict[str, int] = {}
 
 
 class RefactoringOpportunitiesResponse(BaseModel):
@@ -29,6 +37,10 @@ class RefactoringOpportunitiesResponse(BaseModel):
     summary: dict[str, Any] | None = None
     #: Present only when the request carried arguments the query ignored.
     ignored_arguments: dict[str, str] | None = None
+    #: ``fix_first``: only what Fix first would take; ``all``: the inventory.
+    scope: Literal["fix_first", "all"] = "all"
+    #: Under ``fix_first``, the rest of the filtered set, by reason.
+    hidden: RefactoringHiddenCounts | None = None
 
 
 class RefactoringRollupResponse(BaseModel):

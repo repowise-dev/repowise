@@ -32,6 +32,11 @@ import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatNumber } from "../lib/format";
 import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
+import { CodeBlock } from "./plan-detail";
+import { SourceExcerpt } from "./source-excerpt";
+import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
+import { GenerateCodePanel } from "./generate-code-panel";
+import { extractHelperDetail } from "./types";
 import {
   ORDERING_NOTE,
   STATUS_LABEL,
@@ -41,11 +46,14 @@ import {
   isRelocated,
 } from "./opportunity";
 import type {
+  GeneratedCode,
   OpportunityStatus,
   OpportunityStep,
   RefactoringOpportunityDetail,
   RefactoringOpportunityDetailResolved,
+  RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
+
 
 /** The drill-down an agent should call. Same shape the performance drawer uses,
  *  because it is the same agent surface. */
@@ -53,7 +61,7 @@ export function opportunityHandoffCall(opportunityId: string): string {
   return `get_health(opportunity_id="${opportunityId}")`;
 }
 
-export interface OpportunityDrawerProps {
+export interface OpportunityDrawerProps extends RelatedWorkSlotProps {
   detail: RefactoringOpportunityDetail | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -69,6 +77,13 @@ export interface OpportunityDrawerProps {
   /** Open one step as a single plan, in the plan inspector. */
   onOpenStep?: ((planId: string) => void) | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
+  /**
+   * The file's text, for a step's inline excerpt. The same read the file view
+   * makes; omit it and a step shows only what its stored plan carries.
+   */
+  readSource?: ((path: string) => Promise<string>) | undefined;
+  /** Opt-in model drafting of one step's diff. Omit when generation is off. */
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
 }
 
 export function OpportunityDrawer({
@@ -81,13 +96,18 @@ export function OpportunityDrawer({
   onStatusChange,
   onOpenStep,
   fileHref,
+  readSource,
+  onGenerateCode,
+  related,
+  relatedWorkHref,
+  onNavigate,
 }: OpportunityDrawerProps) {
   const resolved = detail?.found ? detail : null;
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        closeLabel="Close opportunity"
+        closeLabel="Close refactoring plan"
         className="w-full max-w-[680px] sm:w-[92vw]"
       >
         {resolved ? (
@@ -97,13 +117,18 @@ export function OpportunityDrawer({
             onStatusChange={onStatusChange}
             onOpenStep={onOpenStep}
             fileHref={fileHref}
+            readSource={readSource}
+            onGenerateCode={onGenerateCode}
+            related={related}
+            relatedWorkHref={relatedWorkHref}
+            onNavigate={onNavigate}
           />
         ) : loading ? (
           <>
             <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
-              Loading opportunity
+              Loading refactoring plan
             </SheetTitle>
-            <SkeletonRegion className="space-y-4 px-5 py-5" label="Loading opportunity">
+            <SkeletonRegion className="space-y-4 px-5 py-5" label="Loading refactoring plan">
               <Skeleton className="h-16 rounded-none" />
               <Skeleton className="h-40 rounded-none" />
             </SkeletonRegion>
@@ -111,7 +136,7 @@ export function OpportunityDrawer({
         ) : detail && !detail.found ? (
           <>
             <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
-              Opportunity unavailable
+              Refactoring plan unavailable
             </SheetTitle>
             <div className="space-y-2 px-5 py-5 text-sm text-[var(--color-text-secondary)]">
               <p>
@@ -131,12 +156,12 @@ export function OpportunityDrawer({
         ) : error ? (
           <>
             <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
-              Opportunity unavailable
+              Refactoring plan unavailable
             </SheetTitle>
             <p className="px-5 py-5 text-sm text-[var(--color-text-secondary)]">{error}</p>
           </>
         ) : (
-          <SheetTitle className="sr-only">Refactoring opportunity</SheetTitle>
+          <SheetTitle className="sr-only">Refactoring plan</SheetTitle>
         )}
       </SheetContent>
     </Sheet>
@@ -149,6 +174,11 @@ function DrawerBody({
   onStatusChange,
   onOpenStep,
   fileHref,
+  readSource,
+  onGenerateCode,
+  related,
+  relatedWorkHref,
+  onNavigate,
 }: {
   detail: RefactoringOpportunityDetailResolved;
   onAiPrompt?: ((detail: RefactoringOpportunityDetailResolved) => void) | undefined;
@@ -160,8 +190,14 @@ function DrawerBody({
     | undefined;
   onOpenStep?: ((planId: string) => void) | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
-}) {
+  readSource?: ((path: string) => Promise<string>) | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+} & RelatedWorkSlotProps) {
   const meta = typeMeta(detail.lead_refactoring_type || "");
+  const plansById = React.useMemo(
+    () => new Map(detail.plans.map((plan) => [plan.id, plan])),
+    [detail.plans],
+  );
   const name = detail.file_path.split("/").pop() ?? detail.file_path;
   const others = detail.affected_files.filter((f) => f !== detail.file_path);
   // The opportunity resolved but its steps did not load. Everything else in the
@@ -229,6 +265,10 @@ function DrawerBody({
         )}
       </div>
 
+      <p className="border-b border-[var(--color-border-default)] px-5 py-2 text-[12px] text-[var(--color-text-secondary)]">
+        {blastRadiusLine(detail)}
+      </p>
+
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
         {/* Tri-state, stated in words. `null` is its own sentence: the layer had
             no dominant finding to compare against, which is not the same claim
@@ -245,7 +285,7 @@ function DrawerBody({
             <h4 className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               Triage
             </h4>
-            <div role="radiogroup" aria-label="Triage this opportunity" className="flex flex-wrap gap-1.5">
+            <div role="radiogroup" aria-label="Triage this refactoring plan" className="flex flex-wrap gap-1.5">
               {TRIAGE_STATUSES.map((option) => {
                 const current = option.value === status;
                 return (
@@ -279,7 +319,7 @@ function DrawerBody({
                 failed ? "mt-1 text-[11.5px] text-[var(--color-error)]" : "sr-only"
               }
             >
-              {failed ? "Could not save that. The opportunity is unchanged." : ""}
+              {failed ? "Could not save that. The refactoring plan is unchanged." : ""}
             </p>
           </section>
         ) : null}
@@ -295,8 +335,8 @@ function DrawerBody({
           ) : null}
           {stepsUnavailable ? (
             <p className="text-[12.5px] text-[var(--color-text-secondary)]">
-              The {detail.step_count} step{detail.step_count === 1 ? "" : "s"} for this opportunity
-              could not be loaded. Try again shortly, or ask for it by id below.
+              The {detail.step_count} step{detail.step_count === 1 ? "" : "s"} for this refactoring
+              plan could not be loaded. Try again shortly, or ask for it by id below.
             </p>
           ) : null}
           <ol className="space-y-3">
@@ -305,8 +345,11 @@ function DrawerBody({
                 key={step.plan_id}
                 step={step}
                 index={i}
+                plan={plansById.get(step.plan_id)}
                 onOpenStep={onOpenStep}
                 fileHref={fileHref}
+                readSource={readSource}
+                onGenerateCode={onGenerateCode}
               />
             ))}
           </ol>
@@ -317,11 +360,13 @@ function DrawerBody({
           ) : null}
         </section>
 
-        {detail.validation_profiles.length > 0 ? (
-          <section>
-            <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Validation
-            </h4>
+        {/* Always present: "nothing guards this" is the answer a person most
+            needs before changing the file, so its absence is said, not hidden. */}
+        <section>
+          <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Verify
+          </h4>
+          {detail.validation_profiles.length > 0 ? (
             <div className="space-y-4">
               {detail.validation_profiles.map((profile) => (
                 <ValidationSummary
@@ -331,8 +376,21 @@ function DrawerBody({
                 />
               ))}
             </div>
-          </section>
-        ) : null}
+          ) : (
+            <p className="text-[12.5px] text-[var(--color-text-secondary)]">
+              No guarding tests found. Write one that pins the current behaviour before applying
+              these steps.
+            </p>
+          )}
+        </section>
+
+        <RelatedWork
+          related={related?.file_path === detail.file_path ? related : null}
+          relatedWorkHref={relatedWorkHref}
+          onNavigate={onNavigate}
+          exclude={["refactoring"]}
+          headingLevel="h4"
+        />
 
         {detail.evidence.length > 0 ? (
           <section>
@@ -441,13 +499,20 @@ function DrawerBody({
 function StepCard({
   step,
   index,
+  plan,
   onOpenStep,
   fileHref,
+  readSource,
+  onGenerateCode,
 }: {
   step: OpportunityStep;
   index: number;
+  /** The step's stored plan, when the detail carried it. */
+  plan?: RefactoringPlan | undefined;
   onOpenStep?: ((planId: string) => void) | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
+  readSource?: ((path: string) => Promise<string>) | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
 }) {
   const meta = typeMeta(step.refactoring_type);
   const mechanical = step.applicability.classification === "mechanical";
@@ -524,6 +589,80 @@ function StepCard({
           Not established: {step.applicability.unknowns.map(humanizeBiomarker).join(", ")}.
         </p>
       ) : null}
+
+      <StepCode step={step} plan={plan} readSource={readSource} onGenerateCode={onGenerateCode} />
     </li>
   );
+}
+
+/**
+ * The code a step changes, and a diff of the change when one is asked for.
+ *
+ * Closed by default: a drawer of seven open excerpts would bury the order of
+ * the steps, which is the drawer's subject. The excerpt prefers the text the
+ * stored plan carries (an extract-helper block); otherwise it reads the file
+ * the way the file view does and cuts the step's span out of it.
+ */
+function StepCode({
+  step,
+  plan,
+  readSource,
+  onGenerateCode,
+}: {
+  step: OpportunityStep;
+  plan?: RefactoringPlan | undefined;
+  readSource?: ((path: string) => Promise<string>) | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const stored = plan ? extractHelperDetail(plan) : null;
+  const canRead = Boolean(readSource && step.line_start);
+  if (!stored?.snippet && !canRead && !plan) return null;
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="rounded text-[12px] font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        {open ? "Hide the code" : "Show the code"}
+      </button>
+      {open ? (
+        <div className="mt-2 space-y-3">
+          {stored?.snippet ? (
+            <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
+          ) : canRead ? (
+            <SourceExcerpt
+              path={step.file_path}
+              start={step.line_start!}
+              end={step.line_end ?? step.line_start!}
+              readSource={readSource!}
+            />
+          ) : null}
+          {plan && onGenerateCode ? (
+            <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          ) : plan ? (
+            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+              A diff preview is drafted by a model on request. Code generation is off here.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Who else the change reaches, in one line, for every type: the files the
+ * steps edit, and the files that import the lead file when the store has it.
+ */
+export function blastRadiusLine(
+  detail: Pick<RefactoringOpportunityDetailResolved, "affected_files_total" | "dependents">,
+): string {
+  const files = detail.affected_files_total;
+  const touched = `Touches ${formatNumber(files)} file${files === 1 ? "" : "s"}`;
+  if (detail.dependents == null) return `${touched}; importers not recorded.`;
+  const deps = detail.dependents;
+  return `${touched}; ${formatNumber(deps)} file${deps === 1 ? " imports" : "s import"} it.`;
 }

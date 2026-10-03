@@ -58,6 +58,11 @@ class MSBuildProject:
     project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
     project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    #: Explicit ``<Compile Include>`` items, ``/``-separated and unevaluated. A
+    #: file linked in from outside the project directory (``..\Shared\X.cs``,
+    #: ``$(CommonPath)X.cs``) belongs to this project too, which the directory
+    #: walk cannot see.
+    compile_includes: list[str] = field(default_factory=list)
     package_id: str | None = None  # <PackageId>, the id this project publishes under
     #: Tri-state on purpose: None = the project says nothing, which is not the
     #: same as an explicit <IsPackable>false</IsPackable>.
@@ -68,6 +73,20 @@ class MSBuildProject:
     def name(self) -> str:
         """Display name — the .csproj filename without extension."""
         return self.path.stem
+
+    @property
+    def published_id(self) -> str | None:
+        """The id this project publishes a package under, or None when it does not.
+
+        Packability is opt-in, never assumed: an SDK-style project is packable
+        by default, so treating silence as yes would make every internal
+        project in a solution a published library.
+        """
+        if self.is_packable is False:
+            return None
+        if not (self.is_packable or self.generate_package_on_build or self.package_id is not None):
+            return None
+        return self.package_id or self.assembly_name or self.path.stem
 
 
 # Strip XML namespace prefix from a tag — MSBuild docs say the namespace
@@ -92,6 +111,12 @@ def _tristate(value: str | None) -> bool | None:
     if text in ("true", "enable", "1"):
         return True
     return False if text in ("false", "disable", "0") else None
+
+
+def _compile_items(include: str | None) -> list[str]:
+    """The ``;``-separated items of a ``<Compile Include>``, wildcards dropped."""
+    items = (item.strip().replace("\\", "/") for item in (include or "").split(";"))
+    return [item for item in items if item and "*" not in item]
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -131,6 +156,8 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
                 rel = include.replace("\\", "/")
                 target = (project.project_dir / rel).resolve()
                 project.project_references.append(target)
+        elif tag == "Compile":
+            project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag == "PackageReference":
             pkg = elem.get("Include")
             if pkg:

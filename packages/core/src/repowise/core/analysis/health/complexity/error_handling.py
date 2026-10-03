@@ -4,7 +4,7 @@ Ported from the bench-validated detector (24/24 fixtures across 11
 languages). Precision-first: every detector targets the unambiguous
 shape and degrades to "no signal" rather than guessing.
 
-``_collect_error_handling`` is a whole-tree pass emitting one
+``_eh_visit`` runs on each node of the walker's single file scan, emitting one
 ``ErrorHandlingHit`` per swallowed catch / bare except / Rust panic-unwrap /
 Go err-swallow it finds, anywhere in the file (not just function bodies).
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from . import rust_unwrap
 from .languages import LanguageNodeMap
 from .models import ErrorHandlingHit
 
@@ -172,15 +173,24 @@ def _eh_rust_in_test(node: Node) -> bool:
 def _eh_rust_hit(node: Node) -> bool:
     """True when *node* is an unwrap/expect call or a panic-family macro."""
     if node.type == "call_expression":
-        fn = node.child_by_field_name("function")
-        if fn is not None and fn.type == "field_expression":
-            fld = fn.child_by_field_name("field")
-            return fld is not None and _eh_text(fld) in _RUST_UNWRAP_METHODS
-        return False
+        return rust_unwrap.method_call_parts(node)[0] in _RUST_UNWRAP_METHODS
     if node.type == "macro_invocation":
         mac = node.child_by_field_name("macro")
         return mac is not None and _eh_text(mac) in _RUST_PANIC_MACROS
     return False
+
+
+def _eh_rust_append(node: Node, hits: list[ErrorHandlingHit]) -> None:
+    """Record a Rust hit unless it provably cannot panic, labelled with its idiom."""
+    if node.type == "macro_invocation":
+        kind = "panic_macro"
+    elif rust_unwrap.cannot_panic(node):
+        return
+    else:
+        kind = "unsafe_unwrap"
+    hits.append(
+        ErrorHandlingHit(kind, rust_unwrap.anchor_line(node), rust_unwrap.idiom(node))
+    )
 
 
 def _eh_go_cond_is_err_check(cond_text: str) -> bool:
@@ -221,43 +231,53 @@ def _eh_go_hit(node: Node) -> bool:
     return False
 
 
-def _collect_error_handling(
-    root: Node, language: str, lmap: LanguageNodeMap
-) -> list[ErrorHandlingHit]:
-    """Whole-tree pass: every error-handling anti-pattern with its line.
+# The node types ``_eh_rust_hit`` / ``_eh_go_hit`` can fire on.
+_EH_RUST_KINDS = frozenset({"call_expression", "macro_invocation"})
+_EH_GO_KINDS = frozenset({"if_statement", "short_var_declaration", "assignment_statement"})
 
-    Catch-clause shapes reuse the ``LanguageNodeMap`` catch kinds (Python
-    ``except_clause``; JS/TS/Java/C++/C# ``catch_clause``; Kotlin
+
+def _eh_node_kinds(language: str, lmap: LanguageNodeMap) -> frozenset[str]:
+    """Every node type ``_eh_visit`` can emit a hit on, so the shared file scan
+    skips the call for every other node."""
+    kinds = set(lmap.catch_kinds)
+    if language == "rust":
+        kinds |= _EH_RUST_KINDS
+    elif language == "go":
+        kinds |= _EH_GO_KINDS
+    return frozenset(kinds)
+
+
+def _eh_visit(
+    node: Node, language: str, lmap: LanguageNodeMap, hits: list[ErrorHandlingHit]
+) -> None:
+    """Append the error-handling anti-pattern at *node*, if it is one.
+
+    Called by ``file_scan`` for each node anywhere in the file (module-level
+    code too: anti-patterns are not confined to function bodies), which sorts
+    the hits by line. Catch-clause shapes reuse the ``LanguageNodeMap`` catch
+    kinds (Python ``except_clause``; JS/TS/Java/C++/C# ``catch_clause``; Kotlin
     ``catch_block``); Rust and Go have no catch nodes and use their own
-    recognizers. Module-level code is covered too — anti-patterns are not
-    confined to function bodies.
+    recognizers.
     """
-    hits: list[ErrorHandlingHit] = []
     catch_kinds = lmap.catch_kinds
-    is_python = language == "python"
-    is_rust = language == "rust"
-    is_go = language == "go"
-    stack: list[Node] = [root]
-    while stack:
-        node = stack.pop()
-        if catch_kinds and node.type in catch_kinds:
-            block = _eh_find_body_block(node)
-            if block is not None and _eh_body_is_swallowed(block, language):
-                hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
-            if is_python and _eh_is_bare_except(node) and not _eh_body_ends_in_raise(block, language):
-                # ``except:`` / ``except BaseException:`` also swallow
-                # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
-                kind = "bare_except" if _eh_catches_base(node) else "broad_except"
-                hits.append(ErrorHandlingHit(kind, node.start_point[0] + 1))
-        elif is_rust and _eh_rust_hit(node):
-            # A panic-family macro aborts unconditionally; unwrap/expect converts
-            # a Result/Option into a panic. Different claims → different kinds.
-            # ``.unwrap()`` inside a ``#[test]`` is the intended failure signal.
-            if not _eh_rust_in_test(node):
-                kind = "panic_macro" if node.type == "macro_invocation" else "unsafe_unwrap"
-                hits.append(ErrorHandlingHit(kind, node.start_point[0] + 1))
-        elif is_go and _eh_go_hit(node):
-            hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))
-        stack.extend(node.children)
-    hits.sort(key=lambda h: h.line)
-    return hits
+    if catch_kinds and node.type in catch_kinds:
+        block = _eh_find_body_block(node)
+        if block is not None and _eh_body_is_swallowed(block, language):
+            hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
+        if (
+            language == "python"
+            and _eh_is_bare_except(node)
+            and not _eh_body_ends_in_raise(block, language)
+        ):
+            # ``except:`` / ``except BaseException:`` also swallow
+            # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
+            kind = "bare_except" if _eh_catches_base(node) else "broad_except"
+            hits.append(ErrorHandlingHit(kind, node.start_point[0] + 1))
+    elif language == "rust" and _eh_rust_hit(node):
+        # A panic-family macro aborts unconditionally; unwrap/expect converts
+        # a Result/Option into a panic. Different claims → different kinds.
+        # ``.unwrap()`` inside a ``#[test]`` is the intended failure signal.
+        if not _eh_rust_in_test(node):
+            _eh_rust_append(node, hits)
+    elif language == "go" and _eh_go_hit(node):
+        hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))

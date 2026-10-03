@@ -7,6 +7,8 @@ the source; a count that cannot be made is ``None`` with an evidence line.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from tests.unit.dead_code._helpers import _build_graph, _old_date
 
@@ -82,7 +84,11 @@ def test_unreadable_file_is_unknown_not_guessed():
     assert by_path["pkg/a.py"].lines == 1
 
 
-def test_zombie_package_sums_real_file_lines():
+def test_zombie_package_sums_real_file_lines(tmp_path: Path):
+    # The manifests that make each folder a package, read from the checkout.
+    for pkg in ("pkgA", "pkgB"):
+        (tmp_path / pkg).mkdir()
+        (tmp_path / pkg / "pyproject.toml").write_text("[project]", encoding="utf-8")
     g = _build_graph(
         nodes={
             "pkgA/one.py": _file(10),
@@ -91,9 +97,9 @@ def test_zombie_package_sums_real_file_lines():
         }
     )
     source_map = {"pkgA/one.py": b"a\nb\n", "pkgA/two.py": b"c\n", "pkgB/three.py": b"d\n"}
-    report = DeadCodeAnalyzer(g, git_meta_map={}, source_map=source_map).analyze(
-        {"detect_unreachable_files": False, "detect_unused_exports": False}
-    )
+    report = DeadCodeAnalyzer(
+        g, git_meta_map={}, source_map=source_map, repo_root=tmp_path
+    ).analyze({"detect_unreachable_files": False, "detect_unused_exports": False})
     zombie = next(
         f
         for f in report.findings

@@ -7,19 +7,22 @@ construction: a per-node-type handler adds one arm per case, and the arms are
 independent of each other. ``dispatch_share`` lets a reader tell that shape
 apart from a function that is complex all over.
 
+A complexity marker reads a function at or above :data:`DISPATCH_SHARE`
+through :func:`judged_ccn` and :func:`judged_nesting`: the decision points
+outside its one dispatch plus those of its heaviest arm, and its nesting less
+the levels the dispatch opens. A per-case handler is flagged when the code
+around the dispatch, or one of its arms, is complex on its own.
+
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
 path). It counts the same nodes :mod:`.cyclomatic` charged, so a flat switch
-that CCN charges one point is one point here too. It is a fact read beside
-CCN; it changes no CCN, threshold or score.
+that CCN charges one point is one point here too. It changes no stored CCN.
 
 "Top level" means not nested inside another branch, case or catch. Loops,
 ``try`` / ``with`` blocks and closures are walked through, since a visitor's
 dispatch usually sits inside the loop that reads the next token, and a
 middleware factory's inside the closure it returns.
 
-The 0.6 cut a consumer reads it against was fitted on labelled dev repos (see
-the tests); it is not a property of the fact.
 """
 
 from __future__ import annotations
@@ -40,11 +43,22 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
+    from .models import FunctionComplexity
+
+#: A function whose largest dispatch on one value holds this share of its
+#: decision points is mostly that dispatch. Fitted on the dev labels only:
+#: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
+DISPATCH_SHARE = 0.6
+#: Nesting levels a dispatch opens before its arms' own code: a ``switch`` and
+#: its ``case``. A same-subject ``if`` chain opens one, so this is the bound.
+_DISPATCH_LEVELS = 2
 
 # An ``if`` with one ``elif`` is a decision, not a dispatch; the same holds for
 # a run of guards.
 _MIN_ARMS = 3
 
+# The ``else`` part of an ``if`` where a grammar gives it no ``alternative`` field.
+_ELSE_KINDS = frozenset({"else_clause", "else"})
 _WRAPPER_KINDS = frozenset({"parenthesized_expression", "condition_clause"})
 _COMPARISON_KINDS = frozenset(
     {
@@ -62,8 +76,11 @@ _COMPARISON_KINDS = frozenset(
 _TYPE_TEST_FUNCTIONS = frozenset({"isinstance", "issubclass", "type", "hasattr"})
 # Methods that test their receiver.
 _RECEIVER_TESTS = frozenset(
-    {"equals", "equalsignorecase", "is_a?", "kind_of?", "instance_of?", "startswith"}
+    {"equals", "equalsignorecase", "matches", "is_a?", "kind_of?", "instance_of?", "startswith"}
 )
+# A receiver that names a constant (``FormatNames.ISO8601.matches(input)``) is
+# the arm's key, so the test is on its argument.
+_CONSTANT_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _LITERAL_MARKERS = ("string", "integer", "number", "float", "true", "false", "null", "nil", "char")
 _MAX_SUBJECT_CHARS = 80
 _SPACE_RE = re.compile(r"\s+")
@@ -111,6 +128,14 @@ def _call_parts(node: Node) -> tuple[str, Node | None, list[Node]]:
     return name.rsplit(".", 1)[-1].lower(), receiver, args
 
 
+def _receiver_test_subject(receiver: Node | None, args: list[Node]) -> str | None:
+    """``x.equals(y)`` tests ``x``, unless ``x`` is a literal or a constant key."""
+    subject = _name(receiver)
+    if subject is not None and _CONSTANT_RE.match(subject.rsplit(".", 1)[-1]):
+        subject = None
+    return subject or (_name(args[0]) if args else None)
+
+
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     """The one name a condition tests, ``None`` when it tests no single one."""
     node = _unwrap(node)
@@ -132,7 +157,7 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
         if name in _TYPE_TEST_FUNCTIONS and receiver is None and args:
             return _name(args[0])
         if name in _RECEIVER_TESTS:
-            return _name(receiver) or (_name(args[0]) if args else None)
+            return _receiver_test_subject(receiver, args)
     return None
 
 
@@ -159,13 +184,14 @@ def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
     return len(subjects) == 1 and None not in subjects
 
 
+def _is_chain_head(node: Node) -> bool:
+    """An ``if`` that starts a chain rather than continuing one."""
+    return node.type in _ELSE_IF_NODE_KINDS and not _is_elif_continuation(node)
+
+
 def _is_lone_if(node: Node) -> bool:
     """An ``if`` that neither continues nor is continued by an ``elif``."""
-    return (
-        node.type in _ELSE_IF_NODE_KINDS
-        and not _is_elif_continuation(node)
-        and len(_chain_arms(node)) == 1
-    )
+    return _is_chain_head(node) and len(_chain_arms(node)) == 1
 
 
 def _has_subject(node: Node) -> bool:
@@ -185,9 +211,41 @@ class _Siblings(NamedTuple):
     children: list[Node]
 
 
+class Dispatch(NamedTuple):
+    """A function's largest dispatch: its decision points and its heaviest arm's."""
+
+    points: int = 0
+    arm: int = 0
+
+
 def _points(nodes: list[Node], lmap: LanguageNodeMap) -> int:
     """Decision points the CCN walk charges inside *nodes*."""
     return _walk_function_body(_Siblings(nodes), lmap)[0] - 1  # type: ignore[arg-type]
+
+
+def _if_arm_points(node: Node, lmap: LanguageNodeMap) -> int:
+    """Decision points in one ``if`` arm's body, not its condition or ``else``."""
+    skip = {
+        c.id
+        for c in (node.child_by_field_name("condition"), node.child_by_field_name("alternative"))
+        if c is not None
+    }
+    body = [
+        c
+        for c in node.named_children
+        if c.id not in skip and c.type not in _ELSE_KINDS and not _is_elif_continuation(c)
+    ]
+    return _points(body, lmap)
+
+
+def _if_dispatch(nodes: list[Node], arms: list[Node], lmap: LanguageNodeMap) -> Dispatch:
+    """A same-subject ``if`` chain (one node) or guard run (its ``if`` nodes)."""
+    return Dispatch(_points(nodes, lmap), max(_if_arm_points(a, lmap) for a in arms))
+
+
+def _switch_dispatch(node: Node, cases: list[Node], lmap: LanguageNodeMap) -> Dispatch:
+    """A ``switch`` / ``match``; an arm's own case point is the dispatch's, not the arm's."""
+    return Dispatch(_points([node], lmap), max(_points([c], lmap) - 1 for c in cases))
 
 
 def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]:
@@ -210,36 +268,62 @@ def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]
     return runs
 
 
-def dispatch_points(body: Node, lmap: LanguageNodeMap) -> int:
-    """Decision points inside the largest top-level dispatch on one subject."""
+def _node_dispatch(node: Node, lmap: LanguageNodeMap) -> Dispatch | None:
+    """*node* as a ``switch`` on a subject or the head of a same-subject ``if`` chain."""
+    if node.type in lmap.switch_kinds:
+        cases = [c for c in _collect_case_children(node, lmap) if c.is_named]
+        return _switch_dispatch(node, cases, lmap) if cases and _has_subject(node) else None
+    if node.type not in lmap.branch_kinds or not _is_chain_head(node):
+        return None
+    arms = _chain_arms(node)
+    return _if_dispatch([node], arms, lmap) if _one_subject(arms, lmap) else None
+
+
+def _dispatches(children: list[Node], lmap: LanguageNodeMap) -> list[Dispatch]:
+    """Every dispatch among one parent's *children*: guard runs, chains, switches."""
+    found = [_if_dispatch(run, run, lmap) for run in _guard_runs(children, lmap)]
+    found.extend(d for c in children if (d := _node_dispatch(c, lmap)) is not None)
+    return found
+
+
+def dispatch_points(body: Node, lmap: LanguageNodeMap) -> Dispatch:
+    """The largest top-level dispatch on one subject, by decision points."""
     stop_kinds = lmap.case_kinds | lmap.catch_kinds | lmap.function_kinds
-    best = 0
+    descend_past = stop_kinds | lmap.switch_kinds | lmap.branch_kinds
+    best = Dispatch()
     stack: list[Node] = [body]
     while stack:
-        parent = stack.pop()
-        children = [c for c in parent.children if c.is_named]
-        for run in _guard_runs(children, lmap):
-            best = max(best, _points(run, lmap))
-        for node in children:
-            if node.type in lmap.switch_kinds:
-                if _has_subject(node) and any(
-                    c.is_named for c in _collect_case_children(node, lmap)
-                ):
-                    best = max(best, _points([node], lmap))
-                continue
-            if node.type in lmap.branch_kinds:
-                if (
-                    node.type in _ELSE_IF_NODE_KINDS
-                    and not _is_elif_continuation(node)
-                    and _one_subject(_chain_arms(node), lmap)
-                ):
-                    best = max(best, _points([node], lmap))
-                continue
-            if node.type not in stop_kinds:
-                stack.append(node)
+        children = [c for c in stack.pop().children if c.is_named]
+        best = max([best, *_dispatches(children, lmap)])
+        stack.extend(c for c in children if c.type not in descend_past)
     return best
 
 
 def dispatch_share(points: int, ccn: int) -> float:
     """*points* as a fraction of the function's decision points, to two decimals."""
     return round(points / (ccn - 1), 2) if ccn > 1 and points > 0 else 0.0
+
+
+def judged_ccn(fn: FunctionComplexity) -> int:
+    """The CCN a complexity marker judges *fn* by.
+
+    Below :data:`DISPATCH_SHARE` that is its CCN. At or above it, the points
+    outside the dispatch plus its heaviest arm's: a switch of one-line cases
+    reads as the code around it, one with a tangled arm as that arm.
+    """
+    if fn.dispatch_share < DISPATCH_SHARE:
+        return fn.ccn
+    return fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm
+
+
+def judged_nesting(fn: FunctionComplexity) -> int:
+    """The nesting a marker judges *fn* by: less the dispatch's own levels once it dominates.
+
+    The deepest block of a dominated function is almost always in an arm, so
+    this subtracts the most a dispatch opens. A block that deep outside the
+    dispatch is under-read by the same amount (the ceiling of not tracking
+    which side the deepest block is on).
+    """
+    if fn.dispatch_share < DISPATCH_SHARE:
+        return fn.max_nesting
+    return max(fn.max_nesting - _DISPATCH_LEVELS, 0)

@@ -8,7 +8,7 @@ This module owns every judgement about how much a group costs and how far a
 change to it reaches: the marker, boundary, context, and provenance tables and
 the four magnitude facets read off them. Whether a change is *safe* is the
 neighbouring module's question, and the only thing this one takes from it is
-the actionability state that orders actionable work first.
+the actionability state that breaks a tie in value.
 
 Every input is already carried on the group. Ranking issues no query of its
 own, per opportunity or otherwise.
@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from math import log2
 from typing import Any
+
+from ..rows import field
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
 """What one crossing of each boundary costs, as an order of magnitude.
@@ -69,8 +71,26 @@ NON_LEADING_MARKERS = frozenset({"lazy_load_in_loop"})
 
 ``lazy_load_in_loop`` measured 81% on held-out Django (47/58, 2026-09-26), inside the
 80-90% tier whose pre-registered rule is "advisory, never leads". Remove a marker once a
-held-out sample puts it at 90% or above.
+held-out sample puts it at 90% or above, or list the ORM that cleared it below.
 """
+
+LEADING_ORMS = {"lazy_load_in_loop": frozenset({"django"})}
+"""ORMs a non-leading marker may lead for, read off each finding's ``details["orm"]``.
+
+Django cleared the bar on a fresh held-out sample after narrowing (29/32 = 90.6%,
+Wilson LB 75.8%); SQLAlchemy has fewer than 30 labels and stays non-leading.
+"""
+
+
+def may_lead(marker: str, orms: set[Any]) -> bool:
+    """Whether a group of *marker* with members on *orms* may lead the directive.
+
+    Every member has to be on an ORM that cleared the bar: one unmeasured member
+    is enough to keep the group from leading.
+    """
+    if marker not in NON_LEADING_MARKERS:
+        return True
+    return bool(orms) and orms <= LEADING_ORMS.get(marker, frozenset())
 
 UNKNOWN_MULTIPLIER_POINTS = 1
 """A detector added without a weight under-ranks rather than jumps the queue."""
@@ -102,12 +122,27 @@ characterised reports ``unknown`` rather than borrowing a neighbour's shape.
 """
 
 ACTIONABILITY_ORDER = {"plan_ready": 0, "advisory": 1, "investigate": 2, "expected": 3}
-"""Actionable work sorts above evidence, whatever the raw magnitude.
+"""The tie-break between groups of equal value: the more actionable one first.
 
-A generic sink accumulates points through sheer volume. Left to the score
-alone it buries every group somebody could act on today, which is the wrong
-lead for both an agent and a person. ``expected`` is never a lead.
+Value leads. Sorting actionability first put a low-value plan above a costly
+cause nobody had a plan for yet, so the queue's order said "easy" where it
+should say "worth it". A plan-ready group is still never buried by an equal
+one, and the default queue leaves out what has no strategy at all, which is
+what kept a generic sink's volume from crowding out actionable work.
 """
+
+DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
+DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
+"""What the queue holds when a caller names no filter: production work with a strategy.
+
+Test, tooling and unclassified code, ``expected`` repetition, and causes with no
+supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)
+are true and stay one filter away, but none of them is work to schedule. Each is
+counted by :func:`default_queue_exclusion` so leaving it out is never silent.
+"""
+
+DEFAULT_QUEUE_EXCLUSIONS = ("test", "tooling", "unknown", "expected", "no_strategy")
+"""Every reason the default queue leaves a cause out, in the order it is checked."""
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
 _CHANGE_RISK_BANDS = ((1, "contained"), (4, "moderate"))
@@ -241,14 +276,46 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
+def default_queue_exclusion(
+    item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
+) -> str | None:
+    """Why the default queue leaves *item* out, or ``None`` when it is queued.
+
+    One reason per cause, context first, so the counts of every reason and the
+    queue add up to the whole. Reads an opportunity, an ORM row or a plain row.
+    *contexts* widens the queue for a caller that asked for more (Fix first's
+    ``scope="all"`` keeps test code); the state rule never moves.
+    """
+    context = field(item, "execution_context")
+    if context not in contexts:
+        return context
+    state = field(item, "actionability_state")
+    if state in DEFAULT_QUEUE_STATES:
+        return None
+    return "expected" if state == "expected" else "no_strategy"
+
+
+def default_queue_counts(items: list[Any]) -> dict[str, Any]:
+    """The default queue's size and what it leaves out, by reason."""
+    excluded = dict.fromkeys(DEFAULT_QUEUE_EXCLUSIONS, 0)
+    queued = 0
+    for item in items:
+        reason = default_queue_exclusion(item)
+        if reason is None:
+            queued += 1
+        else:
+            excluded[reason] = excluded.get(reason, 0) + 1
+    return {"total": queued, "excluded": excluded}
+
+
 def rank_sort_key(item: Any) -> tuple[int, int, int, str]:
-    """A total order: actionable first, then rank, leverage, and id.
+    """A total order: value first, then actionability, leverage, and id.
 
     The id tail is what makes it total, so ties never float between runs.
     """
     return (
-        ACTIONABILITY_ORDER[item.actionability_state],
         -item.rank_score,
+        ACTIONABILITY_ORDER[item.actionability_state],
         -item.affected_call_sites_total,
         item.opportunity_id,
     )
@@ -260,17 +327,25 @@ __all__ = [
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
     "CROSS_FUNCTION_POINTS",
+    "DEFAULT_QUEUE_CONTEXTS",
+    "DEFAULT_QUEUE_EXCLUSIONS",
+    "DEFAULT_QUEUE_STATES",
+    "LEADING_ORMS",
     "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
+    "NON_LEADING_MARKERS",
     "PROVENANCE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
     "amplification",
     "band",
     "change_risk",
+    "default_queue_counts",
+    "default_queue_exclusion",
     "dominant_marker",
     "exposure",
     "leverage",
     "loop_magnitude",
+    "may_lead",
     "observation_rank",
     "rank_factors",
     "rank_sort_key",

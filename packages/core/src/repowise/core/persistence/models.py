@@ -1044,6 +1044,10 @@ class GitFunctionBlame(Base):
     owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_line_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # JSON list of the most recent distinct commits over the range, capped at
+    # ``function_blame_rollup.COMMIT_SET_LIMIT``. Split File's co-change edge
+    # reads it when a re-score has no blame index. NULL on rows written before.
+    commit_shas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -2122,9 +2126,12 @@ class HealthFileMetric(Base):
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
-    max_ccn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_nesting: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL for a file whose language health has no dialect for: nothing walked
+    # it, so a number would claim a measurement that never happened. A store
+    # created while these were NOT NULL is rebuilt by ``init_db``.
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nloc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duplication_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     has_test_file: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -2152,7 +2159,8 @@ class HealthFileMetric(Base):
     # fills those in without re-scoring anything.
     is_test: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Where the file's code comes from (``production`` / ``test`` /
-    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling``), decided
+    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling`` /
+    # ``build``), decided
     # by ``repowise.core.code_origin`` with the file's head in hand, so a
     # reader ranking what to fix never re-reads or re-parses the file. NULL on
     # rows written before the column existed.

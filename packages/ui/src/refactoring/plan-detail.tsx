@@ -76,7 +76,7 @@ function FileRef({
 /** A read-only source block with a line-number gutter. Scrolls horizontally on
  *  its own so a long line never widens the page. The gutter counts up from
  *  `startLine` so the numbers match the file the block came from. */
-function CodeBlock({ code, startLine }: { code: string; startLine: number | null }) {
+export function CodeBlock({ code, startLine }: { code: string; startLine: number | null }) {
   const lines = code.split("\n");
   const base = startLine ?? 1;
   const gutterWidth = `${String(base + lines.length - 1).length}ch`;

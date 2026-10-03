@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
 from ....analysis.finding_registry import excluded_types
+from ....analysis.health.complexity.languages import has_health_dialect
 from ....analysis.health.finding_identity import (
     finding_public_id,
     legacy_finding_public_id,
@@ -29,9 +31,10 @@ from ....analysis.health.ranking import (
     sort_metrics_worst_first,
     worst_metric,
 )
-from ....analysis.health.rows import detail_map, split_tests
+from ....analysis.health.rows import detail_map, split_tests, split_unscored
 from ....analysis.health.scope import scores_language
-from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
+from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
+from ....analysis.health.worth import LowPriority, finding_priorities
 from ....test_paths import is_test_related_path
 from ...models import (
     DocDriftFinding,
@@ -204,13 +207,18 @@ async def replace_governance_findings(
     await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
+def _opt(cast: Any, value: Any) -> Any:
+    """*value* through *cast*, keeping ``None`` (a file health never walked)."""
+    return None if value is None else cast(value)
+
+
 def _health_metric_row_data(metric: Any) -> dict:
     """One metric dataclass as column values. Both writers go through here."""
     return {
         "file_path": metric.file_path,
-        "score": float(metric.score),
-        "max_ccn": int(metric.max_ccn),
-        "max_nesting": int(metric.max_nesting),
+        "score": _opt(float, metric.score),
+        "max_ccn": _opt(int, metric.max_ccn),
+        "max_nesting": _opt(int, metric.max_nesting),
         "nloc": int(metric.nloc),
         "duplication_pct": metric.duplication_pct,
         "has_test_file": bool(metric.has_test_file),
@@ -341,6 +349,34 @@ async def prune_unscored_health_rows(session: AsyncSession, repository_id: str) 
     return removed
 
 
+async def clear_unanalysed_scores(session: AsyncSession, repository_id: str) -> int:
+    """Drop the numbers stored for files in a language health has no dialect for.
+
+    A store written before such files were left unscored holds a 10.0 and a
+    max_ccn of 1 for each, which every average would keep counting until a full
+    rescore. The answer comes from the language alone, so an update fixes it in
+    place, git history or not. Files with no graph node are left alone, as in
+    ``prune_unscored_health_rows``. Returns the number of rows cleared.
+    """
+    languages = await get_file_language_map(session, repository_id)
+    paths = [p for p, lang in languages.items() if lang and not has_health_dialect(lang)]
+    cleared = 0
+    for i in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(paths[i : i + _BATCH_SIZE]),
+                HealthFileMetric.score.is_not(None),
+            )
+        )
+        for row in rows.scalars().all():
+            for name in (*SCORE_FIELDS, "max_ccn", "max_nesting"):
+                setattr(row, name, None)
+            cleared += 1
+    await session.flush()
+    return cleared
+
+
 async def backfill_module_attribution(
     session: AsyncSession,
     repository_id: str,
@@ -432,12 +468,15 @@ async def get_health_findings(
     min_severity: str | None = None,
     severity: str | None = None,
     file_path: str | None = None,
+    file_paths: Sequence[str] | None = None,
     dimension: str | None = None,
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    limit: int | None = None,
 ) -> list[HealthFinding]:
-    """Findings for one repository, ordered by health impact.
+    """Findings for one repository: worth doing first ahead of lower-priority
+    ones (``worth.finding_priorities``), each part ordered by health impact.
 
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
@@ -455,6 +494,9 @@ async def get_health_findings(
     ``open`` / ``acknowledged`` / ``resolved`` / ``false_positive``, or ``all``
     to drop the filter, so a triage surface can show what it has already
     reviewed without a second read.
+
+    ``file_paths`` scopes to a set of files in one read; an empty sequence
+    matches nothing. ``limit`` caps the rows returned, in that order.
     """
     q = select(HealthFinding).where(HealthFinding.repository_id == repository_id)
     statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -477,6 +519,8 @@ async def get_health_findings(
         q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
+    if file_paths is not None:
+        q = q.where(HealthFinding.file_path.in_(list(file_paths)))
     if dimension is not None:
         # Older rows predate the split and carry a NULL dimension that homes
         # under "defect"; fold those in so a defect filter never drops them.
@@ -497,10 +541,44 @@ async def get_health_findings(
         q = q.where(HealthFinding.severity.in_(allowed))
     q = q.order_by(HealthFinding.health_impact.desc())
     result = await session.execute(q)
-    return _filter_excluded_paths(
+    kept = _filter_excluded_paths(
         list(result.scalars().all()),
         await _health_exclude_spec(session, repository_id),
     )
+    # A filter that drops some of a function's findings would misread its
+    # shape, so the tier then reads every open finding on the kept files.
+    narrowed = bool(types or exact or min_severity or dimension) or statuses != ["open"]
+    reasons = (
+        await health_finding_priorities(session, repository_id, kept)
+        if narrowed
+        else dict(zip((f.id for f in kept), finding_priorities(kept), strict=True))
+    )
+    # Stable: each tier keeps the impact order. The cap applies after the tier.
+    ordered = sorted(kept, key=lambda f: reasons[f.id] is not None)
+    return ordered if limit is None else ordered[:limit]
+
+
+async def health_finding_priorities(
+    session: AsyncSession, repository_id: str, findings: Sequence[HealthFinding]
+) -> dict[str, LowPriority | None]:
+    """Each finding's ``worth`` reason by id, measured over every open,
+    shown finding on its file: a list filtered by marker, severity or status
+    still tiers a function by its whole shape."""
+    paths = sorted({f.file_path for f in findings})
+    peers: list[HealthFinding] = []
+    for i in range(0, len(paths), _BATCH_SIZE):
+        q = select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.file_path.in_(paths[i : i + _BATCH_SIZE]),
+            HealthFinding.biomarker_type.not_in(excluded_types()),
+        )
+        peers.extend((await session.execute(q)).scalars().all())
+    known = {f.id for f in peers}
+    # A finding outside the open set (resolved, acknowledged) is measured with it.
+    peers.extend(f for f in findings if f.id not in known)
+    reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
+    return {f.id: reasons[f.id] for f in findings}
 
 
 async def get_deduction_by_path(
@@ -607,14 +685,9 @@ async def get_average_health(session: AsyncSession, repository_id: str) -> float
         ),
         await _health_exclude_spec(session, repository_id),
     )
-    if not rows:
-        return None
-    total_nloc = sum(max(r.nloc, 1) for r in rows)
-    if total_nloc:
-        avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
-    else:
-        avg = sum(r.score for r in rows) / len(rows)
-    return round(avg, 2)
+    # Files with no score (no health dialect for their language) are skipped,
+    # so a repository of nothing else reads unmeasured, never 10.0.
+    return _rounded(nloc_weighted_attr(rows, "score"))
 
 
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
@@ -665,10 +738,14 @@ async def get_health_summary(
     """
     if metrics is None:
         metrics = await get_health_metrics(session, repository_id)
+    # A file in a language health has no dialect for is stored unscored. It is
+    # counted apart and left out of every figure below.
+    metrics, unanalysed = split_unscored(metrics)
     if not metrics:
         return {
             "file_count": 0,
-            "average_health": 10.0,
+            "unanalysed_file_count": unanalysed,
+            "average_health": None if unanalysed else 10.0,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "worst_test_path": None,
@@ -689,42 +766,14 @@ async def get_health_summary(
             "worst_performance_path": None,
             "worst_performance_score": None,
         }
-    total_nloc = sum(max(m.nloc, 1) for m in metrics)
-    if total_nloc:
-        avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    else:
-        avg = sum(m.score for m in metrics) / len(metrics)
+    avg = nloc_weighted_attr(metrics, "score")
 
-    # Maintainability headline: NLOC-weighted average over the per-file
-    # maintainability scores (skipping rows that predate the split / lack one).
-    # ``None`` when no row carries a maintainability score so the surface reads
-    # "not measured" rather than a misleading 10.0.
-    maint_scored = [m for m in metrics if getattr(m, "maintainability_score", None) is not None]
-    maintainability_average: float | None = None
-    if maint_scored:
-        maint_nloc = sum(max(m.nloc, 1) for m in maint_scored)
-        if maint_nloc:
-            maintainability_average = (
-                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_scored) / maint_nloc
-            )
-        else:
-            maintainability_average = sum(m.maintainability_score for m in maint_scored) / len(
-                maint_scored
-            )
-
-    # Performance headline: same NLOC-weighted average over the per-file
-    # performance scores (static performance RISK). ``None`` when no row carries
-    # a performance score so the surface reads "not measured" rather than 10.0.
+    # The two co-surfaced pillars: the same NLOC weighting over their own
+    # columns, ``None`` when no row carries one so a surface reads "not
+    # measured" rather than a misleading 10.0.
+    maintainability_average = nloc_weighted_attr(metrics, "maintainability_score")
+    performance_average = nloc_weighted_attr(metrics, "performance_score")
     perf_scored = [m for m in metrics if getattr(m, "performance_score", None) is not None]
-    performance_average: float | None = None
-    if perf_scored:
-        perf_nloc = sum(max(m.nloc, 1) for m in perf_scored)
-        if perf_nloc:
-            performance_average = (
-                sum(m.performance_score * max(m.nloc, 1) for m in perf_scored) / perf_nloc
-            )
-        else:
-            performance_average = sum(m.performance_score for m in perf_scored) / len(perf_scored)
 
     # Worst-performance file: the lowest per-file performance score, surfaced only
     # when there is genuine risk (score < 10) so a clean repo shows no actionable
@@ -772,7 +821,8 @@ async def get_health_summary(
         )
     return {
         "file_count": len(metrics),
-        "average_health": round(avg, 2),
+        "unanalysed_file_count": unanalysed,
+        "average_health": _rounded(avg),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "worst_test_path": worst_test.file_path if worst_test is not None else None,

@@ -16,7 +16,7 @@ from ...ingestion.models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES, FileIn
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
 from ..health import HealthAnalyzer, HealthFindingData
-from ..health.complexity.languages import get_language_map
+from ..health.complexity.languages import has_health_dialect
 from ..health.source_reader import MappingSourceReader
 
 #: Files above this size are skipped rather than parsed on both sides.
@@ -41,11 +41,7 @@ def language_for(path: str) -> str | None:
     would let a docs-only change read as a clean bill of health.
     """
     language = language_of(path)
-    if language is None:
-        return None
-    if language == "sql":  # walked by the sqlglot path, not a node map
-        return language
-    return language if get_language_map(language) is not None else None
+    return language if has_health_dialect(language) else None
 
 
 def is_generated(source: bytes) -> bool:

@@ -674,6 +674,146 @@
       "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration.",
       "reliable_entry_reachability": null,
       "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "one_loop_many_sinks",
+      "extra": {},
+      "file_path": "src/app/migrate.py",
+      "finding_ref": "one_loop_many_sinks-00",
+      "function_name": "apply",
+      "line_end": 587,
+      "line_start": 587,
+      "path": [
+        "src/app/migrate.py::apply",
+        "src/app/migrate.py::_move"
+      ],
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:587 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "one_loop_many_sinks",
+      "extra": {},
+      "file_path": "src/app/migrate.py",
+      "finding_ref": "one_loop_many_sinks-01",
+      "function_name": "apply",
+      "line_end": 590,
+      "line_start": 590,
+      "path": [
+        "src/app/migrate.py::apply",
+        "src/app/migrate.py::_fold_one"
+      ],
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:590 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "one_loop_many_sinks",
+      "extra": {},
+      "file_path": "src/app/migrate.py",
+      "finding_ref": "one_loop_many_sinks-02",
+      "function_name": "apply",
+      "line_end": 591,
+      "line_start": 591,
+      "path": [
+        "src/app/migrate.py::apply",
+        "src/app/migrate.py::_write_alias"
+      ],
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:591 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "one_loop_mixed_shapes",
+      "extra": {},
+      "file_path": "src/app/jobs.py",
+      "finding_ref": "one_loop_mixed_shapes-00",
+      "function_name": "drain",
+      "line_end": 40,
+      "line_start": 40,
+      "path": [],
+      "reason": "one_loop_mixed_shapes: io_in_loop at src/app/jobs.py:40 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "nested_loop_with_io",
+      "boundary_kind": "db",
+      "case": "one_loop_mixed_shapes",
+      "extra": {},
+      "file_path": "src/app/jobs.py",
+      "finding_ref": "one_loop_mixed_shapes-01",
+      "function_name": "drain",
+      "line_end": 42,
+      "line_start": 42,
+      "path": [],
+      "reason": "one_loop_mixed_shapes: nested_loop_with_io at src/app/jobs.py:42 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "one_loop_mixed_shapes",
+      "extra": {},
+      "file_path": "src/app/jobs.py",
+      "finding_ref": "one_loop_mixed_shapes-02",
+      "function_name": "drain",
+      "line_end": 44,
+      "line_start": 44,
+      "path": [
+        "src/app/jobs.py::drain",
+        "src/app/db.py::save"
+      ],
+      "reason": "one_loop_mixed_shapes: io_in_loop at src/app/jobs.py:44 repeats work per iteration.",
+      "reliable_entry_reachability": true,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "lazy_load_in_loop",
+      "boundary_kind": "db",
+      "case": "lazy_load_by_orm",
+      "extra": {
+        "eager_load": "select_related(\"project\")",
+        "orm": "django",
+        "relationship": "Issue.project"
+      },
+      "file_path": "app/issues/views.py",
+      "finding_ref": "lazy_load_by_orm-00",
+      "function_name": "issue_list",
+      "line_end": 30,
+      "line_start": 30,
+      "path": [],
+      "reason": "lazy_load_by_orm: lazy_load_in_loop at app/issues/views.py:30 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "lazy_load_in_loop",
+      "boundary_kind": "db",
+      "case": "lazy_load_by_orm",
+      "extra": {
+        "eager_load": "selectinload(Incident.owner)",
+        "orm": "sqlalchemy",
+        "relationship": "Incident.owner"
+      },
+      "file_path": "app/incidents/service.py",
+      "finding_ref": "lazy_load_by_orm-01",
+      "function_name": "notify_owners",
+      "line_end": 50,
+      "line_start": 50,
+      "path": [],
+      "reason": "lazy_load_by_orm: lazy_load_in_loop at app/incidents/service.py:50 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
     }
   ]
 }

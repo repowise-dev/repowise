@@ -12,7 +12,7 @@ from datetime import datetime
 
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.graph._rehydrate import _NODE_ATTR_KEYS
-from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
 
 
 def _fi(path: str) -> FileInfo:
@@ -199,3 +199,31 @@ def test_reachability_root_survives_rehydration():
     hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
     assert hydrated.graph().nodes["c.py"]["is_reachability_root"] is True
     assert not hydrated.graph().nodes["a.py"].get("is_reachability_root")
+
+
+def test_parse_only_symbol_attrs_come_back_from_the_reparse():
+    sym = Symbol(
+        id="a.py::A::f",
+        name="f",
+        qualified_name="a.A.f",
+        kind="method",
+        signature="f()",
+        start_line=1,
+        end_line=2,
+        docstring=None,
+        decorators=["@override"],
+        parent_name="A",
+        modifiers=("override",),
+    )
+    parsed = _parsed("a.py")
+    parsed.symbols.append(sym)
+    original = GraphBuilder()
+    original.add_file(parsed)
+    original.build()
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert "modifiers" not in hydrated.graph().nodes[sym.id]
+    hydrated.restore_parse_only_attrs([parsed])
+    node = hydrated.graph().nodes[sym.id]
+    assert node["modifiers"] == ("override",)
+    assert node["decorators"] == ["@override"]

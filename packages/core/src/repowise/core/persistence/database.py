@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool, StaticPool
-from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
 from .models import Base
@@ -44,6 +44,13 @@ log = structlog.get_logger(__name__)
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
+# Page cache per connection, in KiB (negative = size, not pages). The 2 MiB
+# default makes every insert into a large index miss: writing 1.8M graph edges
+# (random-uuid primary key plus the unique edge key) took 77s at the default
+# and 44s at 64 MiB in raw sqlite3. The cache fills only as pages are touched,
+# so a small store pays nothing for the ceiling.
+_SQLITE_CACHE_KIB = 65536
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
     """Return the pragma list to apply to a SQLite connection.
@@ -57,6 +64,7 @@ def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
         ("foreign_keys", "ON"),
+        ("cache_size", str(-_SQLITE_CACHE_KIB)),
     )
 
 
@@ -254,6 +262,7 @@ def create_engine(
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
     busy_timeout_ms: int | None = None,
+    short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -266,6 +275,25 @@ def create_engine(
                          small value for best-effort secondary writers that must
                          never stall the primary writer (issue #326). Ignored
                          for non-SQLite backends.
+        short_lived:     Whether this engine is created, used, and disposed
+                         within a single call (the pattern almost every caller
+                         follows: one CLI command, one workspace update, one
+                         background task). Defaults to True, which uses
+                         NullPool for PostgreSQL — one connection per checkout,
+                         closed on dispose, so a short-lived engine can never
+                         hold more than a single Postgres server slot, and an
+                         engine that outlives its creating event loop can never
+                         hand back a dead pooled connection to a later one
+                         (issue #2062's failure class). Pass False only for an
+                         engine stored for a process's lifetime and reused
+                         across many requests — currently just the FastAPI app
+                         and the MCP server — where SQLAlchemy's pooled
+                         AsyncAdaptedQueuePool is the correct choice and
+                         NullPool would open a fresh connection per request.
+                         Ignored for SQLite, which already always uses
+                         NullPool (or StaticPool for :memory:) regardless of
+                         this flag — SQLite has no equivalent long-lived-pool
+                         need since ``aiosqlite`` connections are cheap.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -282,8 +310,21 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL. SQLAlchemy pools these connections with
+        # AsyncAdaptedQueuePool by default — asyncpg does NOT provide its own
+        # pool here (that only happens if something calls asyncpg.create_pool,
+        # which nothing in this codebase does). Every create_engine() call in
+        # this codebase except the long-lived server/MCP engines is
+        # short-lived (create, use, dispose within one async function), so
+        # there's no reuse to gain from pooling and every pooled-but-idle
+        # connection is a Postgres server slot held for no benefit — or,
+        # worse, one that survives past a closed event loop and gets handed
+        # to a later, unrelated caller (#2062's failure class). NullPool caps
+        # a short-lived engine's footprint at exactly one connection instead
+        # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if short_lived:
+            kwargs["poolclass"] = NullPool
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
@@ -400,6 +441,43 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
     step(connection)
 
 
+#: Tables a SQLite store rebuilds when a column the model now allows NULL in is
+#: still NOT NULL on disk: SQLite cannot relax a constraint in place, and the
+#: additive reconciler below never does. Leaf tables only, since nothing may
+#: reference a table that is copied, dropped and renamed. Each holds derived
+#: rows, so an interrupted rebuild costs a recompute, never source data.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+
+
+def _relax_not_null(connection: object, table: object) -> None:
+    """Rebuild *table* from the model if a now-nullable column is NOT NULL.
+
+    SQLite's documented procedure: create the new shape under a staging name,
+    copy the shared columns, drop the old table, rename, recreate indexes.
+    """
+    live = {c["name"]: c for c in inspect(connection).get_columns(table.name)}  # type: ignore[attr-defined]
+    columns = [c for c in table.columns if c.name in live]  # type: ignore[attr-defined]
+    if not any(c.nullable and not live[c.name]["nullable"] for c in columns):
+        return
+    name = table.name  # type: ignore[attr-defined]
+    staging = f"_rebuild_{name}"
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    ddl = str(CreateTable(table).compile(dialect=dialect))  # type: ignore[arg-type]
+    quoted = dialect.identifier_preparer.quote(name)
+    ddl = ddl.replace(f"CREATE TABLE {quoted} ", f'CREATE TABLE "{staging}" ', 1)
+    shared = ", ".join(f'"{c.name}"' for c in columns)
+    run = connection.execute  # type: ignore[attr-defined]
+    run(text(f'DROP TABLE IF EXISTS "{staging}"'))
+    run(text(ddl))
+    run(text(f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"'))
+    run(text(f'DROP TABLE "{name}"'))
+    run(text(f'ALTER TABLE "{staging}" RENAME TO "{name}"'))
+    # Indexes went with the old table. Not a per-row loop: one per declared index.
+    for index in table.indexes:  # type: ignore[attr-defined]
+        run(CreateIndex(index))
+    log.info("schema_table_rebuilt_for_nullable", table=name)
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -502,6 +580,15 @@ def _reconcile_schema(connection: object) -> None:
             data_step = _DATA_STEPS_ON_ADD.get(what)
             if data_step is not None and not any(name == what for name, _ in failures):
                 _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+
+        # --- Nullability (SQLite only) -----------------------------------
+        # After the columns, so the copy carries every one of them, and before
+        # the indexes, which the rebuild recreates itself.
+        if continue_past_failure and table.name in _SQLITE_REBUILD_FOR_NULLABLE:
+            _run(
+                f"{table.name}:nullable",
+                lambda table=table: _relax_not_null(connection, table),
+            )
 
         # --- Indexes ---------------------------------------------------
         # Only model-declared indexes (i.e. ``Index(...)`` on the table

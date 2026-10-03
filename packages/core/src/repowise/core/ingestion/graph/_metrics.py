@@ -358,6 +358,7 @@ class MetricsMixin:
             log.warning("Symbol PageRank did not converge, using uniform scores")
             n = sub.number_of_nodes()
             self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        self._release_symbol_subgraph()
         return self._symbol_pagerank_cache
 
     def symbol_betweenness_centrality(self) -> dict[str, float]:
@@ -369,7 +370,19 @@ class MetricsMixin:
             self._symbol_betweenness_cache = {}
             return self._symbol_betweenness_cache
         self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
+        self._release_symbol_subgraph()
         return self._symbol_betweenness_cache
+
+    def _release_symbol_subgraph(self) -> None:
+        """Drop the cached symbol subgraph once both symbol kernels have scored it.
+
+        It is a full copy of every symbol node and call edge, and these two
+        kernels are its only readers; kept, it sat beside the graph for the
+        rest of the run. A later caller gets it rebuilt on demand.
+        """
+        if self._symbol_pagerank_cache is not None and self._symbol_betweenness_cache is not None:
+            with self._subgraph_lock:
+                self._symbol_subgraph_cache = None
 
     def betweenness_scoring(self, kind: str) -> Any | None:
         """Return the provenance of *kind*'s betweenness, or ``None`` if unscored.

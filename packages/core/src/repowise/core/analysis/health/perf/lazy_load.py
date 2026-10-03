@@ -717,7 +717,7 @@ def _loop_hit(
         fn_name,
         "db",
         func_start=fn.start_point[0] + 1,
-        path=(subject, fix),
+        path=(subject, fix, orm),
         loop=loop_facts,
     )
 

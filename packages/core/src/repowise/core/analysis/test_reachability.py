@@ -450,6 +450,7 @@ async def tests_reaching(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    test_files: set[str] | None = None,
 ) -> dict[str, list[str]]:
     """Test files that reach each of *targets*, keyed by target path.
 
@@ -458,7 +459,12 @@ async def tests_reaching(
     or as unknown.
     """
     found = await tests_reaching_by_tier(
-        session, repo_id, targets, call_depth=call_depth, import_depth=import_depth
+        session,
+        repo_id,
+        targets,
+        call_depth=call_depth,
+        import_depth=import_depth,
+        test_files=test_files,
     )
     return {target: reached.tests for target, reached in found.items()}
 

@@ -10,6 +10,8 @@ import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.next_call import ActionCommand
+
 #: Bumped when ranking, eligibility or the item shape changes meaning.
 FIX_FIRST_MODEL_VERSION = 1
 
@@ -34,8 +36,25 @@ FIX_LEVELS: tuple[str, ...] = get_args(FixLevel)
 FixFactBasis = Literal["measured", "inferred", "unknown"]
 FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 
+# ``unknown``, ``expected`` and ``no_strategy`` are the performance default
+# queue's own reasons (``opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS``).
 FixExclusion = Literal[
-    "test", "tooling", "generated", "expected", "no_plan", "below_min_worth", "history_only"
+    "test",
+    "tooling",
+    "unknown",
+    "generated",
+    "expected",
+    "no_strategy",
+    "no_plan",
+    "below_min_worth",
+    "history_only",
+    "vendored",
+    "docs_example",
+    "deprecated",
+    "inherent_dispatch",
+    "small_function",
+    "no_concrete_step",
+    "low_value_kind",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 
@@ -147,12 +166,6 @@ class FixSource:
 
 
 @dataclass(frozen=True, slots=True)
-class FixNextCall:
-    tool: str
-    arguments: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
 class FixItem:
     id: str
     rank: int
@@ -171,7 +184,7 @@ class FixItem:
     verify: FixVerify
     context: tuple[FixContext, ...]
     source: FixSource
-    next_call: FixNextCall
+    next_call: ActionCommand
     why_ranked: tuple[FixRankFact, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -189,7 +202,7 @@ class FixItem:
             "gain": self.gain.text,
             "effort": self.effort.bucket,
             "confidence": self.confidence.level,
-            "next_call": asdict(self.next_call),
+            "next_call": self.next_call.as_dict(),
         }
 
 
@@ -214,6 +227,10 @@ class FixFirstQueue:
     basis: dict[str, str | None] = field(
         default_factory=lambda: {"analyzed_commit": None, "health_analyzed_at": None}
     )
+    #: Every open refactoring opportunity the builder read, by id: ``None``
+    #: when it is eligible, else the exclusion that kept it out. The
+    #: refactoring view's default scope reads it; never on the wire.
+    refactoring_reasons: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def lead(self) -> FixItem | None:
@@ -256,7 +273,6 @@ __all__ = [
     "FixFirstQueue",
     "FixGain",
     "FixItem",
-    "FixNextCall",
     "FixRankFact",
     "FixRisk",
     "FixSource",

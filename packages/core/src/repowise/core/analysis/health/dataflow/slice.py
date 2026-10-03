@@ -15,8 +15,9 @@ it cuts at statement boundaries within a single block (so never a partial
 branch or a mid-``try`` split), contains no control-flow jump that leaves the
 region (``return`` / ``raise`` / ``break`` / ``continue`` -> single clean exit),
 removes real complexity (at least one decision point), is substantial enough to
-matter, and has at most one return and a small parameter list. Everything else
-is suppressed -- ten great extractions, not two hundred maybes.
+matter without being nearly the whole body, and has at most one return and a
+small parameter list. Everything else is suppressed -- ten great extractions,
+not two hundred maybes.
 
 Line-based liveness over D2's def/use occurrences realises the IN/OUT inference;
 the CFG/jump scan realises the single-exit predicate. The jump and nested-scope
@@ -50,6 +51,13 @@ _MAX_PARAMS = 5  # too many ins => the span is not cohesive
 _MAX_RETURNS = 1  # a single clean return (v1); multi-output is future work
 # Backstop against a pathological function producing too many sub-ranges.
 _MAX_CANDIDATES = 4000
+# A span holding this share of the body's code lines or more is the whole
+# function under another name, not a split: what stays behind is a guard, a
+# wrapper (``try`` / ``with``) or the final ``return``. Measured on 301 plans
+# from seven repos (Python, TS, Go, Java, Rust): 52 sat at or above 0.75, and
+# nearly all of those at 0.8 or more left only such a shell. The span offered
+# instead may be the same block minus a statement, just under the cut.
+_MAX_BODY_SHARE = 0.75
 
 
 @dataclass(frozen=True)
@@ -97,9 +105,13 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     # The statement container of the body (Go nests it in a ``statement_list``
     # inside the ``block``); spans covering it whole are not extractions.
     body_container = _unwrap_container(body, lmap.block_kinds)
+    lines = _function_lines(fn_node)
+    max_slice_nloc = _MAX_BODY_SHARE * _stmts_nloc(body_container.named_children, lines)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    declared_first = _declared_before_read(analysis.def_use)
     hoisted = _hoisted_bindings(def_lines, use_lines)
+    decl_lines = _declaration_lines(analysis.def_use)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -107,7 +119,13 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         | lmap.catch_kinds
         | lmap.boolean_operator_kinds
     )
-    jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    jump_kinds = (
+        lmap.return_kinds
+        | lmap.raise_kinds
+        | lmap.break_kinds
+        | lmap.continue_kinds
+        | lmap.yield_kinds
+    )
     scope_kinds = lmap.function_kinds | lmap.lambda_kinds
     # Expression-oriented grammars (nonempty ``statement_wrapper_kinds``): a
     # block's last child that is not a statement is its tail expression -- the
@@ -119,13 +137,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         else None
     )
 
-    lines = _function_lines(fn_node)
     out: list[Extraction] = []
     evaluated = 0
     for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id
+        keeps_tail = tail_stmt_kinds is not None and _tail_is_block_value(
+            stmts, tail_stmt_kinds, fn_node, lmap
+        )
         # One subtree walk per statement, then O(1) metrics per span via
         # prefix sums. _span_metrics processes each span statement's subtree
         # independently, so a span's decision count is the sum over its
@@ -140,15 +160,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             nested_prefix = [0]
             code_prefix = [0]
             for st in stmts:
-                d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
+                d, jmp = _span_metrics(
+                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
+                )
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
                 nested_prefix.append(
                     nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
                 )
-                code_prefix.append(
-                    code_prefix[-1] + len(_code_line_numbers(st, lines, drop_docstrings=True))
-                )
+                code_prefix.append(code_prefix[-1] + _stmts_nloc([st], lines))
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -160,28 +180,28 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 # Never extract the whole function body (that is not a split).
                 if is_body and length == n:
                     continue
-                if (
-                    tail_stmt_kinds is not None
-                    and j == n - 1
-                    and stmts[j].type not in tail_stmt_kinds
-                ):
+                if keeps_tail and j == n - 1:
                     continue
                 decisions = dec_prefix[j + 1] - dec_prefix[i]
                 has_jump = jump_prefix[j + 1] > jump_prefix[i]
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
                 slice_nloc = code_prefix[j + 1] - code_prefix[i]
-                if slice_nloc < _MIN_SLICE_NLOC:
+                if not _MIN_SLICE_NLOC <= slice_nloc < max_slice_nloc:
                     continue
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e)
+                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
                     continue
                 if any(s <= first_def <= e and first_use < s for first_def, first_use in hoisted):
+                    continue
+                if _declaration_escapes(
+                    s, e, returns, decl_lines, def_lines, use_lines, declared_first
+                ):
                     continue
                 if nested_prefix[j + 1] > nested_prefix[i]:
                     continue
@@ -202,6 +222,58 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     return _sorted(out)
 
 
+def _tail_is_block_value(
+    stmts: list[Node], tail_stmt_kinds: frozenset[str], fn_node: Node, lmap: LanguageNodeMap
+) -> bool:
+    """True when the block's last statement is its value, which a span may not
+    end on (lifting it would drop the value).
+
+    That is a bare tail expression, and also an unterminated statement-wrapped
+    one (Rust parses a tail ``if`` / ``match`` with no ``;`` as an
+    ``expression_statement``) whose value something consumes: an ``else``
+    block in a ``let`` initializer, the body of a function with a return type.
+    A loop body's value, and that of a block in statement position, is
+    discarded, so ending there stays allowed.
+    """
+    if not stmts:
+        return False
+    last = stmts[-1]
+    if last.type not in tail_stmt_kinds:
+        return True
+    if last.type not in lmap.statement_wrapper_kinds or last.children[-1].type == ";":
+        return False
+    return _block_value_used(last.parent, fn_node, lmap)
+
+
+def _block_value_used(block: Node, fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """Whether the value of *block* reaches anything, climbing through the
+    conditional chain that carries it (``else`` / ``match`` arms)."""
+    node = block
+    while True:
+        parent = node.parent
+        if parent is None or parent.id == fn_node.id:
+            return fn_node.child_by_field_name("return_type") is not None
+        verdict = _value_hop(node, parent, lmap)
+        if verdict is not None:
+            return verdict
+        node = parent
+
+
+def _value_hop(node: Node, parent: Node, lmap: LanguageNodeMap) -> bool | None:
+    """One step of :func:`_block_value_used`: True or False when *parent*
+    settles whether *node*'s value is used, None to keep climbing."""
+    if parent.type in lmap.loop_kinds:
+        return False  # a loop body's value is discarded
+    if parent.type in lmap.block_kinds:
+        # Only the last statement carries a block's value onward.
+        return None if parent.named_children[-1].id == node.id else False
+    if parent.type in lmap.statement_wrapper_kinds:
+        return False if parent.children[-1].type == ";" else None
+    if parent.type in lmap.value_passthrough_kinds:
+        return None
+    return True  # a let initializer, an argument, an operand
+
+
 def _function_lines(fn_node: Node) -> list[str]:
     """Source rows indexed by absolute row, rebuilt from the function's own text.
 
@@ -210,6 +282,11 @@ def _function_lines(fn_node: Node) -> list[str]:
     """
     text = (fn_node.text or b"").decode("utf-8", errors="replace")
     return [""] * fn_node.start_point[0] + text.splitlines()
+
+
+def _stmts_nloc(stmts: list[Node], lines: list[str]) -> int:
+    """Code lines of *stmts* by the walker's NLOC rule, summed per statement."""
+    return sum(len(_code_line_numbers(st, lines, drop_docstrings=True)) for st in stmts)
 
 
 def _sorted(candidates: list[Extraction]) -> list[Extraction]:
@@ -223,7 +300,8 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     """Per-variable sorted def lines and use lines from D2's facts.
 
     Parameter definitions are included (seeded at the signature line), so a
-    parameter naturally counts as "defined before" any body span.
+    parameter naturally counts as "defined before" any body span. Reads inside
+    nested closures (``def_use.captured``) count as uses at their own line.
     """
     def_lines: dict[str, list[int]] = defaultdict(list)
     use_lines: dict[str, list[int]] = defaultdict(list)
@@ -231,6 +309,14 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
         def_lines[d.var].append(d.line)
     for bdu in def_use.blocks.values():
         for u in bdu.uses:
+            # A may-def's paired use is bookkeeping, not a read: counted, a
+            # binder declared inside a ``match`` arm became its own parameter.
+            if not u.echo:
+                use_lines[u.name].append(u.line)
+    # A closure's read counts where the closure is written: lifting the code
+    # around it moves the read with it. Only names this function binds matter.
+    for u in def_use.captured:
+        if u.name in def_lines:
             use_lines[u.name].append(u.line)
     for lines in def_lines.values():
         lines.sort()
@@ -239,17 +325,47 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     return def_lines, use_lines
 
 
+def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines where a declaration of it comes before its first
+    read on the same line.
+
+    Lines alone cannot order a write and a read that share one. A C-style
+    ``for (int i = 0; i < n; i++)`` declares ``i`` and then reads it, while
+    ``total = total + a[i]`` reads ``total`` and then writes it. Only a
+    declaration is ordered here, by where its declarator ends: a read past that
+    point sees the new name, and a read inside the declaration's own
+    initializer (Go's ``x := x + 1`` in an inner scope) still sees the outer
+    one. A plain assignment keeps the line rule.
+    """
+    first_read: dict[tuple[str, int], int] = {}
+    for bdu in def_use.blocks.values():
+        for u in bdu.uses:
+            if u.echo:
+                continue
+            key = (u.name, u.line)
+            first_read[key] = min(u.column, first_read.get(key, u.column))
+    declared: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        # No read on the line sorts before any declarator, so it never matches.
+        if d.declared_at is not None and d.declared_at <= first_read.get((d.var, d.line), -1):
+            declared[d.var].add(d.line)
+    return {var: frozenset(lines) for var, lines in declared.items()}
+
+
 def _infer_in_out(
     def_lines: dict[str, list[int]],
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
+    declared_first: dict[str, frozenset[int]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
     IN: a variable read in the span whose first in-span read is not preceded by
     an in-span write, and which has a definition before the span (a parameter or
-    an earlier assignment). OUT: a variable written in the span and read after
+    an earlier assignment). A write on the same line as that read precedes it
+    only where *declared_first* (:func:`_declared_before_read`) says the line
+    declares the name first. OUT: a variable written in the span and read after
     it, with no redefinition between the span and that first later read.
     """
     params: list[str] = []
@@ -262,7 +378,8 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            if not any(ln < first_use for ln in in_defs):
+            declared = first_use in (declared_first or {}).get(var, ())
+            if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 
         if in_defs:
@@ -337,6 +454,65 @@ def _hoisted_bindings(
         if defs and uses and uses[0] < defs[0]:
             hoisted.append((defs[0], uses[0]))
     return sorted(hoisted)
+
+
+def _declaration_lines(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
+    """Per variable, the lines that declare it (a ``let`` / ``var`` / ``:=`` /
+    typed local, as the dialect marks with ``declared_at``)."""
+    lines: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        if d.declared_at is not None:
+            lines[d.var].add(d.line)
+    return {var: frozenset(found) for var, found in lines.items()}
+
+
+def _declaration_escapes(
+    s: int,
+    e: int,
+    returns: tuple[str, ...],
+    decl_lines: dict[str, frozenset[int]],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+) -> bool:
+    """True when the span declares a name the code after it still refers to.
+
+    A returned name is fine: the caller declares it from the helper's result.
+    Otherwise the declaration leaves with the span and the caller's next
+    reference names nothing, even when that reference is a plain assignment
+    (Go ``var out T`` in the span, ``out = x`` after it, which is why liveness
+    did not make it an OUT). A later reference that declares the name afresh
+    (``y, err := g()``, a second ``for i := ...``, whose reads on that line
+    follow the declaration per *declared_first*) needs nothing from the span.
+    Block scopes are not modelled, so a same-named variable of an outer scope
+    read after the span also refuses: a missed span, never a broken one.
+    """
+    return any(
+        var not in returns
+        and any(s <= ln <= e for ln in declared)
+        and _needed_after(var, e, declared, def_lines, use_lines, declared_first)
+        for var, declared in decl_lines.items()
+    )
+
+
+def _needed_after(
+    var: str,
+    e: int,
+    declared: frozenset[int],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+) -> bool:
+    """True when the first reference to *var* after line *e* relies on an
+    earlier declaration: it is a plain use or assignment, not a fresh one."""
+    uses = use_lines.get(var, ())
+    after = [ln for ln in (*def_lines.get(var, ()), *uses) if ln > e]
+    if not after:
+        return False
+    first = min(after)
+    if first not in declared:
+        return True
+    return first in uses and first not in declared_first.get(var, ())
 
 
 def _outs_definitely_assigned(
@@ -656,14 +832,37 @@ def _all_blocks(
     return blocks
 
 
+def _exit_macros(lmap: LanguageNodeMap) -> tuple[frozenset[str], frozenset[str]]:
+    """The macro node kinds and the macro names that exit the function."""
+    return lmap.exit_macro_kinds, lmap.exit_macro_names
+
+
+def _is_jump(
+    node: Node,
+    jump_kinds: frozenset[str],
+    exit_macros: tuple[frozenset[str], frozenset[str]],
+) -> bool:
+    """True for a jump node, or a macro whose name is in *exit_macros*
+    (matched by its last segment: ``bail`` in ``anyhow::bail!``)."""
+    if node.type in jump_kinds:
+        return True
+    kinds, names = exit_macros
+    if node.type not in kinds:
+        return False
+    macro = node.child_by_field_name("macro")
+    name = macro.child_by_field_name("name") or macro if macro is not None else None
+    return name is not None and bool(name.text) and name.text.decode("utf-8", "replace") in names
+
+
 def _span_metrics(
     span: list[Node],
     decision_kinds: frozenset[str],
     jump_kinds: frozenset[str],
     scope_kinds: frozenset[str],
+    exit_macros: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset()),
 ) -> tuple[int, bool]:
     """Decision-point count and jump presence within *span* (nested scopes are
-    not descended into)."""
+    not descended into). A macro named in *exit_macros* counts as a jump."""
     decisions = 0
     has_jump = False
     for root in span:
@@ -671,8 +870,7 @@ def _span_metrics(
         while stack:
             node = stack.pop()
             t = node.type
-            if t in jump_kinds:
-                has_jump = True
+            has_jump = has_jump or _is_jump(node, jump_kinds, exit_macros)
             if t in decision_kinds:
                 decisions += 1
             for child in node.children:

@@ -6,6 +6,8 @@
  * Python twins disagree.
  */
 
+import type { ActionCommand } from "./actions.js";
+
 export type FixTier = "now" | "next" | "later";
 
 export type FixKind = "refactor" | "perf_fix" | "finding";
@@ -25,11 +27,20 @@ export type FixFactBasis = "measured" | "inferred" | "unknown";
 export type FixExclusion =
   | "test"
   | "tooling"
+  | "unknown"
   | "generated"
   | "expected"
+  | "no_strategy"
   | "no_plan"
   | "below_min_worth"
-  | "history_only";
+  | "history_only"
+  | "vendored"
+  | "docs_example"
+  | "deprecated"
+  | "inherent_dispatch"
+  | "small_function"
+  | "no_concrete_step"
+  | "low_value_kind";
 
 /** `all` keeps test files, labelled in `context`. */
 export type FixScope = "production" | "all";
@@ -53,11 +64,6 @@ export interface FixStep {
   file_path: string;
   line: number | null;
   mechanical: boolean;
-}
-
-export interface FixNextCall {
-  tool: string;
-  arguments: Record<string, unknown>;
 }
 
 export interface FixItem {
@@ -87,7 +93,7 @@ export interface FixItem {
   /** History signals: shown beside the item, never ranked on. */
   context: { label: string; value: string }[];
   source: { opportunity_id: string | null; plan_ids: string[]; finding_ids: string[] };
-  next_call: FixNextCall;
+  next_call: ActionCommand;
   /** The value inputs and the tier reason, so the order is explainable. */
   why_ranked: { factor: string; value: string }[];
 }
@@ -103,7 +109,7 @@ export interface FixItemCompact {
   gain: string;
   effort: FixEffort;
   confidence: FixLevel;
-  next_call: FixNextCall;
+  next_call: ActionCommand;
 }
 
 export interface FixFirstTotals {

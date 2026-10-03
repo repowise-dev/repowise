@@ -25,6 +25,7 @@ from . import (
     overview_routes,  # noqa: F401
     performance_routes,  # noqa: F401
     refactoring_routes,  # noqa: F401
+    related_work_routes,  # noqa: F401
     trends_routes,  # noqa: F401
 )
 from ._router import router

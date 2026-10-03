@@ -264,3 +264,156 @@ def test_fsharp_single_expression_body_is_a_known_undercount() -> None:
     """
     _require_language("fsharp")
     assert _rows("fsharp", "let f x =\n  if x > 0 then 1 else 2\n", "fs") == {"f": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Go
+# --------------------------------------------------------------------------- #
+
+_GO_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "a flat select counts once for the dispatch, at any width",
+        "package main\n\nfunc drain(ch chan int, done chan bool) int {\n"
+        "\ttotal := 0\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n\t\ttotal += v\n"
+        "\tcase <-done:\n\t\ttotal += 100\n"
+        "\tcase ch <- 1:\n\t\ttotal += 1\n"
+        "\t}\n"
+        "\treturn total\n}\n",
+        {"drain": 2},
+    ),
+    (
+        "a select with a default arm stays flat",
+        "package main\n\nfunc drain(ch chan int, done chan bool) int {\n"
+        "\ttotal := 0\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n\t\ttotal += v\n"
+        "\tcase <-done:\n\t\ttotal += 100\n"
+        "\tdefault:\n\t\ttotal -= 1\n"
+        "\t}\n"
+        "\treturn total\n}\n",
+        {"drain": 2},
+    ),
+    (
+        "control flow inside a select arm counts on top of the dispatch",
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n"
+        "\t\tif v > 0 {\n\t\t\treturn v\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n",
+        {"pick": 4},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _GO_CASES],
+    ids=[label for label, _, _ in _GO_CASES],
+)
+def test_go_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("go")
+    assert _rows("go", source, "go") == expected
+
+
+def test_go_select_agrees_with_an_equivalent_switch() -> None:
+    """``select`` is a dispatch, so an arm is worth what a ``switch`` case is.
+
+    tree-sitter-go spells the construct ``select_statement`` with
+    ``communication_case`` arms; neither type appeared in the map, so every arm
+    was invisible and a three-arm select scored CCN 1 (a straight line) while
+    the equivalent three-case switch scored 2. Only ``default`` registered,
+    because ``default_case`` is shared with ``switch``.
+    """
+    _require_language("go")
+    select = (
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n"
+        "\t\tif v > 0 {\n\t\t\treturn v\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n"
+    )
+    switch = (
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tswitch {\n"
+        "\tcase ch != nil:\n"
+        "\t\tif ch != nil {\n\t\t\treturn 1\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n"
+    )
+    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# TypeScript / JavaScript
+# --------------------------------------------------------------------------- #
+
+_TS_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "a flat switch counts once for the dispatch, default included",
+        """
+function pick(x: number): number {
+  switch (x) { case 1: return 1; case 2: return 2; default: return 0; }
+}
+""",
+        {"pick": 2},
+    ),
+    (
+        "control flow inside a default arm counts on top of the dispatch",
+        """
+function pick(x: number): number {
+  switch (x) {
+    case 1: return 1;
+    default: { if (x > 0) { return 2; } return 3; }
+  }
+}
+""",
+        {"pick": 4},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _TS_CASES],
+    ids=[label for label, _, _ in _TS_CASES],
+)
+def test_typescript_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("typescript")
+    assert _rows("typescript", source, "ts") == expected
+
+
+def test_typescript_default_arm_agrees_with_java() -> None:
+    """``switch_default`` is a separate node in the JS/TS grammar.
+
+    ``case_kinds`` named only ``switch_case``, so a complex ``default:`` arm
+    never counted while Java / C# / Objective-C / C counted theirs. The same
+    dispatch must score the same in both languages.
+    """
+    _require_language("typescript")
+    _require_language("java")
+    typescript = """
+function pick(x: number): number {
+  switch (x) {
+    case 1: return 1;
+    default: { if (x > 0) { return 2; } return 3; }
+  }
+}
+"""
+    java = """
+public class A {
+  int pick(int x) {
+    switch (x) {
+      case 1: return 1;
+      default: { if (x > 0) { return 2; } return 3; }
+    }
+  }
+}
+"""
+    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4

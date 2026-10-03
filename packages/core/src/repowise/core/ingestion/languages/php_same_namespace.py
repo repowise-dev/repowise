@@ -29,6 +29,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ..cohesion import DOC_COMMENT_HINT, SAME_NAMESPACE_HINT
+from ..extractors.bindings.php import php_class_name
 from .scope_scan import FileScope, ScopeTier, emit_scope_edges
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ _STRING_OR_COMMENT_RE = re.compile(
 _NOT_NEWLINE_RE = re.compile(r"[^\n]")
 
 
-def _blank_comments(text: str) -> str:
+def blank_php_comments(text: str) -> str:
     """*text* with every comment blanked to spaces, strings and newlines kept."""
     return _STRING_OR_COMMENT_RE.sub(
         lambda m: m.group() if m.group()[0] in "'\"" else _NOT_NEWLINE_RE.sub(" ", m.group()),
@@ -200,8 +201,20 @@ def resolve_php_same_namespace_refs(
     # Code first, so a name used in code gets its real hint. The second pass
     # reads the raw text, comments included; ``emit_scope_edges`` skips any
     # pair already linked, so it only adds files no code names.
-    code_texts = sorted((path, _blank_comments(text)) for path, text in texts.items())
-    added = emit_scope_edges(graph, code_texts, plan, skip_names=frozenset(), ident_re=_NAME_RE)
+    code_texts = sorted((path, blank_php_comments(text)) for path, text in texts.items())
+    added = emit_scope_edges(
+        graph,
+        code_texts,
+        plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
+    )
     return added + emit_scope_edges(
-        graph, sorted(texts.items()), comment_plan, skip_names=frozenset(), ident_re=_NAME_RE
+        graph,
+        sorted(texts.items()),
+        comment_plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
     )

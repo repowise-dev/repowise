@@ -9,7 +9,7 @@ from datetime import datetime
 from ..context import RepoContext
 from ..facts import FileFacts, RepoFacts
 from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
-from ._text import code, plural, py_list
+from ._text import code, plural
 
 #: Files that tell the week's story as well as the quarter's: busy fragile
 #: files someone touched this week, strongest first.
@@ -136,19 +136,22 @@ def _regression_details(found: list) -> tuple[ActionDetail, ...]:
 def _regression_commands(paths: list[str], sha: str) -> tuple[ActionCommand, ...]:
     first = paths[0]
     return (
-        ActionCommand(
+        ActionCommand.call(
             "Every open finding in these files, with its line and reason",
-            mcp=f'get_health(targets={py_list(paths[:10])}, include=["biomarkers"])',
+            "get_health",
+            {"targets": paths[:10], "include": ["biomarkers"]},
             cli=f"repowise health --file {first}",
         ),
-        ActionCommand(
+        ActionCommand.call(
             "The commit that last made the first file worse, and what it put at risk",
-            mcp=f'get_change_risk(revspec="{sha}")',
+            "get_change_risk",
+            {"revspec": sha},
             cli=f"git show {sha[:12]} -- {first}",
         ),
-        ActionCommand(
+        ActionCommand.call(
             "A file's structure and callers before editing it",
-            mcp=f'get_context(targets=["{first}"], include=["skeleton", "callers"])',
+            "get_context",
+            {"targets": [first], "include": ["skeleton", "callers"]},
             cli=f"repowise context {first}",
         ),
     )
@@ -309,14 +312,16 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                     else ()
                 ),
                 commands=(
-                    ActionCommand(
+                    ActionCommand.call(
                         "Its bug-fix history, co-change partners and test gaps",
-                        mcp=f'get_risk(targets=["{f.path}"])',
+                        "get_risk",
+                        {"targets": [f.path]},
                         cli=f"repowise risk -t {f.path}",
                     ),
-                    ActionCommand(
+                    ActionCommand.call(
                         "Every open finding in the file",
-                        mcp=f'get_health(targets=["{f.path}"], include=["biomarkers"])',
+                        "get_health",
+                        {"targets": [f.path], "include": ["biomarkers"]},
                         cli=f"repowise health --file {f.path}",
                     ),
                 ),
@@ -429,14 +434,16 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                     for p in members
                 ),
                 commands=(
-                    ActionCommand(
+                    ActionCommand.call(
                         "Bug-fix history and co-change partners for the most fixed files",
-                        mcp=f"get_risk(targets={py_list(members[:5])})",
+                        "get_risk",
+                        {"targets": members[:5]},
                         cli="repowise risk " + " ".join(f"-t {p}" for p in members[:5]),
                     ),
-                    ActionCommand(
+                    ActionCommand.call(
                         "Why the folder is shaped this way",
-                        mcp=f'get_why(targets=["{folder}/"])',
+                        "get_why",
+                        {"targets": [f"{folder}/"]},
                         cli=f"repowise why {folder}/",
                     ),
                 ),
@@ -506,9 +513,10 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 ),
                 details_total=item.action.steps_total,
                 commands=(
-                    ActionCommand(
+                    ActionCommand.call(
                         "The full item: steps, tests to run, risk",
-                        mcp=f'get_health(fix_id="{item.id}")',
+                        "get_health",
+                        {"fix_id": item.id},
                         cli="repowise health",
                     ),
                 ),

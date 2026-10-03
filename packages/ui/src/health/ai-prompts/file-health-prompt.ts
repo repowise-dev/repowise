@@ -22,7 +22,8 @@ import {
  */
 export interface FileHealthPromptInput {
   file_path: string;
-  score: number;
+  /** `null` when health has no dialect for the file's language. */
+  score: number | null;
   nloc?: number | null;
   module?: string | null;
   defect_score?: number | null;
@@ -164,7 +165,9 @@ function healthSnapshot(
   trendDelta: number | null | undefined,
 ): string {
   return bulletList([
-    `Health score: **${file.score.toFixed(1)}/10** (lower is worse; 10.0 is clean)`,
+    file.score == null
+      ? "Health score: not analysed (no health support for this language yet)"
+      : `Health score: **${file.score.toFixed(1)}/10** (lower is worse; 10.0 is clean)`,
     deductionLine(file.total_deduction, categoryCount),
     trendLine(trendDelta),
     file.nloc != null ? `Size: ${file.nloc} NLOC` : null,

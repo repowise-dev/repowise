@@ -111,6 +111,16 @@ def test_default_order_is_deterministic() -> None:
     assert forward == reverse == ["A", "B", "C"]
 
 
+def test_a_test_file_plan_never_leads_the_canonical_order() -> None:
+    plans = [
+        _plan("helper", file_path="tests/test_core.py", impact=9.0),
+        _plan("worker", impact=1.0),
+    ]
+    ranked = build_recommendations(plans)
+    assert [item.suggestion.target_symbol for item in ranked] == ["worker", "helper"]
+    assert ranked[1].rank_score > ranked[0].rank_score
+
+
 def test_legacy_persisted_row_rehydrates_without_phase3_fields() -> None:
     suggestion = rehydrate_suggestion(
         {
@@ -194,6 +204,43 @@ def test_the_test_named_for_the_file_survives_the_cap() -> None:
     reached = ReachedBy(["tests/a/test_other.py", "tests/unit/test_core.py"], "import-graph", 2)
     validation = build_validation_plan(plan, {}, {"src/core.py": reached}, test_limit=1)
     assert validation.tests == ["tests/unit/test_core.py"]
+
+
+def test_a_reached_conftest_validates_with_the_tests_under_it() -> None:
+    """``pytest tests/unit/conftest.py`` collects nothing; the tests below it run."""
+    from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
+
+    test_files = {"tests/unit/conftest.py", "tests/unit/test_core.py", "tests/other/test_x.py"}
+    reached = ReachedBy(
+        ["tests/unit/conftest.py"], "call-graph", 1, ("tests/unit/conftest.py",)
+    )
+    validation = build_validation_plan(
+        _plan("fixture"), {}, {"src/core.py": _expand_scopes("src/core.py", reached, test_files)}
+    )
+    assert validation.basis == "inferred"
+    assert validation.tests == ["tests/unit/test_core.py"]
+    assert validation.commands == ["pytest tests/unit/test_core.py"]
+
+
+def test_a_root_conftest_expansion_is_ranked_before_it_is_capped() -> None:
+    """A root conftest stands for every test; the cut keeps the nearest, not the first."""
+    from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
+    from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+
+    many = {f"tests/aaa/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 20)}
+    test_files = {"conftest.py", "tests/unit/test_core.py", *many}
+    reached = ReachedBy(["conftest.py"], "call-graph", 1, ("conftest.py",))
+
+    expanded = _expand_scopes("src/core.py", reached, test_files)
+
+    assert expanded.total == MAX_TESTS_PER_TARGET + 21
+    assert len(expanded.tests) == MAX_TESTS_PER_TARGET
+    assert expanded.tests[0] == "tests/unit/test_core.py"  # named for the target
+    assert expanded.all_tests is None  # plan ranking scores the capped list only
+    validation = build_validation_plan(_plan("fixture"), {}, {"src/core.py": expanded})
+    assert validation.total == MAX_TESTS_PER_TARGET + 21
+    assert validation.truncated is True
+    assert validation.tests[0] == "tests/unit/test_core.py"
 
 
 def test_aggregate_validation_total_deduplicates_tests_across_targets() -> None:
@@ -339,6 +386,36 @@ def test_a_truncated_test_list_widens_the_command_past_the_shown_tests() -> None
     assert plan.truncated is True
     assert len(plan.tests) == 3
     assert plan.commands == ["pytest tests/test_orders.py"]
+
+
+def test_a_plan_in_a_language_with_no_known_runner_suggests_no_command() -> None:
+    """The fallback used to be ``npm run test`` for every file that was not
+    Python or JS, in repos with no ``package.json``. A wrong command is worse
+    than none: every consumer treats an empty list as nothing to suggest."""
+    for path in ("src/Foo/Bar.cs", "src/native/foo.cpp", "server/Translog.java", "a/b.go"):
+        plan = build_validation_plan(_plan("target", file_path=path), {}, {})
+        assert plan.commands == [], path
+
+
+def test_tests_in_a_language_with_no_known_runner_suggest_no_command() -> None:
+    reached = ReachedBy(
+        via="call-graph",
+        total=1,
+        tests=["tests/BarTests.cs::Ok"],
+        all_tests=["tests/BarTests.cs::Ok"],
+    )
+    plan = build_validation_plan(
+        _plan("target", file_path="src/Foo/Bar.cs"), {}, {"src/Foo/Bar.cs": reached}
+    )
+    assert plan.tests == ["tests/BarTests.cs::Ok"]
+    assert plan.commands == []
+
+
+def test_python_and_js_plans_keep_their_default_commands() -> None:
+    python = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {})
+    assert python.commands == ["pytest"]
+    typescript = build_validation_plan(_plan("target", file_path="web/app.ts"), {}, {})
+    assert typescript.commands == ["npm test", "npm run type-check"]
 
 
 def test_an_untruncated_test_list_keeps_the_precise_command() -> None:

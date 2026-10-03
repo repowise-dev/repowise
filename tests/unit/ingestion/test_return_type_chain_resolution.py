@@ -215,7 +215,7 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
-    assert frozenset({"cpp", "go"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+    assert frozenset({"cpp", "csharp", "go"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
 
 
 def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
@@ -461,3 +461,189 @@ def test_go_external_return_type_does_not_bind_a_same_named_repo_type(tmp_path: 
     ).resolve_file("cmd/run.go", [call])
 
     assert resolved == []
+
+
+# A fluent C# API: every link returns an interface, and most links are
+# extension methods on it or on an interface it extends.
+_FLUENT_SYNTAX = (
+    "public interface IValidator {}\n"
+    "public interface IRuleBuilder<T, out TProperty> {\n"
+    "  IRuleBuilderOptions<T, TProperty> SetValidator(IValidator validator);\n}\n"
+    "public interface IRuleBuilderInitial<T, out TProperty> : IRuleBuilder<T, TProperty> {}\n"
+    "public interface IRuleBuilderOptions<T, out TProperty> : IRuleBuilder<T, TProperty> {}\n"
+)
+_FLUENT_EXTENSIONS = (
+    "public static class Rules {\n"
+    "  public static IRuleBuilderOptions<T, P> Must<T, P>"
+    "(this IRuleBuilder<T, P> rule, Func<P, bool> check) { return null; }\n"
+    "  public static IRuleBuilderOptions<T, P> WithMessage<T, P>"
+    "(this IRuleBuilderOptions<T, P> rule, string text) { return rule; }\n"
+    "  public static IRuleBuilderOptions<T, P> WithMessage<T, P>"
+    "(this IRuleBuilderOptions<T, P> rule, string text, int code, bool log) { return rule; }\n"
+    "  public static IRuleBuilderOptions<T, P> When<T, P>"
+    "(this IRuleBuilderOptions<T, P> rule, Func<T, bool> check) { return rule; }\n"
+    "}\n"
+)
+_FLUENT_BASE = (
+    "public abstract class AbstractValidator<T> {\n"
+    "  public IRuleBuilderInitial<T, P> RuleFor<P>(Func<T, P> pick) { return null; }\n"
+    "  public void When(Func<T, bool> check, Action body) {}\n"
+    "  public void WithMessage(string text) {}\n}\n"
+)
+_FLUENT_HERITAGE = {
+    "Syntax.cs::IRuleBuilderInitial": {"Syntax.cs::IRuleBuilder"},
+    "Syntax.cs::IRuleBuilderOptions": {"Syntax.cs::IRuleBuilder"},
+    "Validator.cs::ModelValidator": {"Base.cs::AbstractValidator"},
+}
+
+
+def _csharp_chain_edges(
+    tmp_path: Path, body: str, extra: dict[str, str] | None = None
+) -> dict[tuple[str, int | None], tuple[str, str]]:
+    """``{(method, argument count): (callee id, origin)}`` for a validator body."""
+    files = {
+        "Syntax.cs": _FLUENT_SYNTAX,
+        "Rules.cs": _FLUENT_EXTENSIONS,
+        "Base.cs": _FLUENT_BASE,
+        "Validator.cs": (
+            "public class ModelValidator : AbstractValidator<Model> {\n"
+            "  public ModelValidator() { " + body + " }\n}\n"
+        ),
+        **(extra or {}),
+    }
+    parsed: dict[str, ParsedFile] = {}
+    for path, source in files.items():
+        parsed.update(_parse(tmp_path, path, "csharp", source))
+    resolver = CallResolver(parsed, {}, repo_path=str(tmp_path), heritage_parents=_FLUENT_HERITAGE)
+    edges = {}
+    for call in parsed["Validator.cs"].calls:
+        for edge in resolver.resolve_file("Validator.cs", [call]):
+            edges[(call.target_name, call.argument_count)] = (edge.callee_id, edge.origin)
+    return edges
+
+
+def test_csharp_chain_binds_the_extensions_its_links_return(tmp_path: Path) -> None:
+    """`RuleFor(..).Must(..).WithMessage(..).When(..)` is extension after extension.
+
+    `When` used to bind to the validator's own inherited `When`, as if the call
+    had no receiver. `Must` extends the interface `RuleFor`'s result inherits,
+    and `When` is typed from `WithMessage`'s result: read with no receiver,
+    that link would be the validator's own void `WithMessage`.
+    """
+    edges = _csharp_chain_edges(
+        tmp_path, 'RuleFor(x => x.Text).Must(t => t != null).WithMessage("m").When(m => true);'
+    )
+
+    assert edges[("Must", 1)][0] == "Rules.cs::Rules::Must"
+    assert edges[("WithMessage", 1)][0] == "Rules.cs::Rules::WithMessage#2"
+    assert edges[("When", 1)] == ("Rules.cs::Rules::When", "receiver_extension_global")
+
+
+def test_csharp_chain_binds_an_inherited_interface_member(tmp_path: Path) -> None:
+    edges = _csharp_chain_edges(tmp_path, "RuleFor(x => x.Child).SetValidator(null);")
+
+    assert edges[("SetValidator", 1)] == (
+        "Syntax.cs::IRuleBuilder::SetValidator",
+        "return_type_import",
+    )
+
+
+def test_csharp_chain_narrows_to_the_overload_its_arguments_select(tmp_path: Path) -> None:
+    edges = _csharp_chain_edges(
+        tmp_path, 'RuleFor(x => x.Text).Must(t => true).WithMessage("m", 7, true);'
+    )
+
+    assert edges[("WithMessage", 3)][0] == "Rules.cs::Rules::WithMessage#4"
+
+
+def test_csharp_chain_on_a_repository_type_without_the_member_refuses(tmp_path: Path) -> None:
+    """A known head type with no such member is not a call on `this`."""
+    edges = _csharp_chain_edges(
+        tmp_path,
+        "Plain.Make().When(m => true, null);",
+        {"Plain.cs": "public class Plain { public static Plain Make() { return null; } }\n"},
+    )
+
+    assert ("When", 2) not in edges
+
+
+def test_csharp_chain_on_a_type_with_an_external_base_keeps_the_fallback(tmp_path: Path) -> None:
+    """The external base may declare the member, so nothing is proven."""
+    edges = _csharp_chain_edges(
+        tmp_path,
+        "Plain.Make().Flush();",
+        {
+            "Plain.cs": (
+                "public class Plain : Stream { public static Plain Make() { return null; } }\n"
+                "public class Sink { public void Flush() {} }\n"
+            )
+        },
+    )
+
+    assert edges[("Flush", 0)][0] == "Plain.cs::Sink::Flush"
+
+
+def test_csharp_chain_on_a_builtin_type_refuses(tmp_path: Path) -> None:
+    edges = _csharp_chain_edges(
+        tmp_path,
+        "Store.Load().ConfigureAwait(false);",
+        {
+            "Store.cs": (
+                "public class Store { public static Task<int> Load() { return null; }\n"
+                "  public void ConfigureAwait(bool flag) {} }\n"
+            )
+        },
+    )
+
+    assert ("ConfigureAwait", 1) not in edges
+
+
+def test_csharp_chain_on_a_type_parameter_keeps_the_fallback(tmp_path: Path) -> None:
+    """`TBuilder` is no type the repository declares; its members are its constraint's.
+
+    Nothing proves the bare-name answer wrong, so the fallback still runs.
+    """
+    edges = _csharp_chain_edges(
+        tmp_path,
+        "Builder.Create().Add().Build();",
+        {
+            "Builder.cs": (
+                "public class Builder { public static Builder Create() { return null; }\n"
+                "  public object Build() { return null; } }\n"
+                "public static class BuilderExtensions {\n"
+                "  public static TBuilder Add<TBuilder>(this TBuilder builder) { return builder; }\n}\n"
+            )
+        },
+    )
+
+    assert edges[("Build", 0)][0] == "Builder.cs::Builder::Build"
+
+
+def test_csharp_chain_links_that_name_each_other_end_unresolved(tmp_path: Path) -> None:
+    """Two chains on one line whose links key onto each other cannot recurse."""
+    edges = _csharp_chain_edges(tmp_path, "var a = First().Second(); var b = Second().First();")
+
+    assert edges == {}
+
+
+def test_csharp_chain_link_whose_declarations_disagree_has_no_type(tmp_path: Path) -> None:
+    """Two same-arity `Then` overloads share one id but return different types.
+
+    Neither return type is the link's, so the next link is not refused on
+    whichever declaration the id happened to keep.
+    """
+    edges = _csharp_chain_edges(
+        tmp_path,
+        'RuleFor(x => x.Text).Must(t => true).Then(1).WithMessage("m");',
+        {
+            "Steps.cs": (
+                "public static class Steps {\n"
+                "  public static IRuleBuilderOptions<T, P> Then<T, P>"
+                "(this IRuleBuilderOptions<T, P> rule, int n) { return rule; }\n"
+                "  public static IRuleBuilderInitial<T, P> Then<T, P>"
+                "(this IRuleBuilderInitial<T, P> rule, int n) { return rule; }\n}\n"
+            )
+        },
+    )
+
+    assert ("WithMessage", 1) in edges

@@ -54,6 +54,8 @@ def read_source_text(
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
     ".py": (
         "importlib.import_module",
+        # ``from importlib import import_module``, then a bare call.
+        "import_module(",
         "__import__(",
         "importlib.reload",
         "pkgutil.iter_modules",

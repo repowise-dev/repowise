@@ -13,10 +13,15 @@ import type {
 import type { RecommendationValidation, RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { AdaptivePanel } from "../../shared/adaptive-panel";
+import { InfoTip } from "../../shared/info-tip";
 import { ProvenancePathList } from "../../shared/provenance-path-list";
 import { performancePlanDetail } from "../../refactoring/types";
+import { SourceExcerpt } from "../../refactoring/source-excerpt";
 import { ValidationSummary } from "../../refactoring/validation-summary";
+import { EFFORT_LABEL, WORK_UNIT_LABEL } from "../labels";
+import { RelatedWork, useRelatedWork } from "../related-work";
 import type { PerformanceViewAdapter } from "./adapter";
+import { LowerPriorityTag } from "../lower-priority-tag";
 import { RawObservations } from "./evidence";
 import {
   ACTIONABILITY_LABEL,
@@ -25,8 +30,12 @@ import {
   boundaryLabel,
   CONFIDENCE_LABEL,
   contextLabel,
+  FACET_GLOSSARY,
   humanizeToken,
-  opportunityEvidenceLine,
+  INTERVENTION_KIND_LABEL,
+  interventionKind,
+  loopHeaderAbove,
+  moduleScopeLabel,
   opportunityTitle,
   planPresentation,
   siblingFixLabel,
@@ -66,15 +75,19 @@ function Field({
   label,
   value,
   detail,
+  hint,
 }: {
   label: string;
   value: string;
   detail?: string | undefined;
+  /** What the facet means, from the glossary, on hover or tap. */
+  hint?: string | undefined;
 }) {
   return (
     <div className="min-w-0">
-      <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      <dt className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {label}
+        {hint ? <InfoTip content={hint} label={`What ${label.toLowerCase()} means`} /> : null}
       </dt>
       <dd className="mt-0.5 text-sm font-medium text-[var(--color-text-primary)]">{value}</dd>
       {detail ? (
@@ -282,6 +295,11 @@ function PlanSection({
   return (
     <Section title="Plan">
       <p className="text-sm font-medium text-[var(--color-text-primary)]">{presentation.label}</p>
+      {opportunity.lower_priority ? (
+        <p className="mt-1">
+          <LowerPriorityTag reason={opportunity.lower_priority} />
+        </p>
+      ) : null}
       <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{presentation.detail}</p>
       {opportunity.fix ? (
         <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
@@ -375,16 +393,14 @@ export function OpportunityDrawer({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      eyebrow="Performance opportunity"
-      title={current ? opportunityTitle(current) : "Performance opportunity"}
+      eyebrow="Performance fix"
+      title={current ? opportunityTitle(current) : "Performance fix"}
       widthClassName="md:max-w-[680px]"
     >
       {current ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-7 overflow-y-auto px-5 py-5">
-            <p className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-              {opportunityEvidenceLine(current)}
-            </p>
+            <WhereToEdit opportunity={current} />
 
             {unresolved ? <ModelStateNotice state={unresolved.model_state} /> : null}
             {resolved ? <ModelStateNotice state={resolved.model_state} /> : null}
@@ -403,6 +419,10 @@ export function OpportunityDrawer({
 
             <MapLink adapter={adapter} opportunity={current} />
 
+            <FixSummary opportunity={current} />
+
+            <CodeSection opportunity={current} adapter={adapter} />
+
             <Section title="What the evidence shows">
               <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
                 <Field label="Context" value={contextLabel(current.execution_context)} />
@@ -420,14 +440,28 @@ export function OpportunityDrawer({
                 <Field
                   label="Amplification"
                   value={humanizeToken(current.facets.amplification)}
+                  hint={FACET_GLOSSARY.amplification}
                 />
-                <Field label="Exposure" value={humanizeToken(current.facets.exposure)} />
-                <Field label="Leverage" value={humanizeToken(current.facets.leverage)} />
-                <Field label="Change risk" value={humanizeToken(current.facets.change_risk)} />
+                <Field
+                  label="Exposure"
+                  value={humanizeToken(current.facets.exposure)}
+                  hint={FACET_GLOSSARY.exposure}
+                />
+                <Field
+                  label="Leverage"
+                  value={humanizeToken(current.facets.leverage)}
+                  hint={FACET_GLOSSARY.leverage}
+                />
+                <Field
+                  label="Change risk"
+                  value={humanizeToken(current.facets.change_risk)}
+                  hint={FACET_GLOSSARY.change_risk}
+                />
                 {current.facets.loop_magnitude && current.facets.loop_magnitude !== "n/a" ? (
                   <Field
                     label="Loop magnitude"
                     value={humanizeToken(current.facets.loop_magnitude)}
+                    hint={FACET_GLOSSARY.loop_magnitude}
                   />
                 ) : null}
               </dl>
@@ -495,6 +529,8 @@ export function OpportunityDrawer({
               plan={plan}
             />
 
+            <RelatedSection adapter={adapter} filePath={current.file_path} />
+
             {current.evidence.some((item) => item.path.length > 0) ? (
               <Section title="Caller to sink paths">
                 <ProvenancePathList
@@ -545,6 +581,117 @@ export function OpportunityDrawer({
         </div>
       ) : null}
     </AdaptivePanel>
+  );
+}
+
+/**
+ * The fix in three facts a person decides on: what it buys (core's words),
+ * how big the change is, and where it goes.
+ */
+/**
+ * Under the title: where the edit goes. The sink is not repeated here; it is
+ * named once, under the code it is reached from.
+ */
+function WhereToEdit({ opportunity }: { opportunity: PerformanceOpportunity }) {
+  const kind = interventionKind(opportunity);
+  const symbol = opportunity.intervention_symbol?.trim();
+  const where = symbol ? (moduleScopeLabel(symbol) ?? symbol) : opportunity.file_path;
+  return (
+    <p className="text-xs text-[var(--color-text-tertiary)]">
+      Edit {kind ? `${INTERVENTION_KIND_LABEL[kind].toLowerCase()}, ` : ""}
+      <span className="break-all font-mono text-[var(--color-text-secondary)]">{where}</span>
+    </p>
+  );
+}
+
+function FixSummary({ opportunity }: { opportunity: PerformanceOpportunity }) {
+  const effort = opportunity.plan_economics?.effort_bucket;
+  const effortLabel =
+    effort && effort in EFFORT_LABEL ? EFFORT_LABEL[effort as keyof typeof EFFORT_LABEL] : null;
+  return (
+    <Section title={`The ${WORK_UNIT_LABEL.perf_fix}`}>
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+        <Field
+          label="Gain"
+          value={opportunity.gain_text ?? "Not stated by this server"}
+          detail="The repeated work the fix removes. Not a measured time saving."
+        />
+        <Field
+          label="Effort"
+          value={effortLabel ?? "Not sized"}
+          {...(effortLabel ? {} : { detail: "No stored plan, so the change was not sized." })}
+        />
+      </dl>
+    </Section>
+  );
+}
+
+/**
+ * The code: the loop's call, read from the checkout at the line the first
+ * observation stored, and the sink it reaches. The sink is a symbol without a
+ * stored line, so it is named rather than excerpted.
+ */
+function CodeSection({
+  opportunity,
+  adapter,
+}: {
+  opportunity: PerformanceOpportunity;
+  adapter: PerformanceViewAdapter;
+}) {
+  const first = opportunity.evidence.find((item) => item.line_start != null);
+  const sink = opportunity.terminal_sink?.trim();
+  if (!first && !sink) return null;
+  return (
+    <Section title="The code">
+      {first ? (
+        <div className="space-y-1.5">
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Where the loop makes the call,{" "}
+            <span className="break-all font-mono text-[var(--color-text-secondary)]">
+              {first.file_path}:{first.line_start}
+            </span>
+          </p>
+          {adapter.readSource ? (
+            <SourceExcerpt
+              path={first.file_path}
+              start={first.line_start!}
+              end={(first.line_end ?? first.line_start!) + 2}
+              readSource={adapter.readSource}
+              widen={(fileLines) => loopHeaderAbove(fileLines, first.line_start!)}
+            />
+          ) : null}
+        </div>
+      ) : null}
+      {sink ? (
+        <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">
+          It reaches{" "}
+          <span className="break-all font-mono text-[var(--color-text-secondary)]">
+            {moduleScopeLabel(sink) ?? sink}
+          </span>
+          .
+        </p>
+      ) : null}
+    </Section>
+  );
+}
+
+/** What the other lenses hold for the file this cause is fixed in. */
+function RelatedSection({
+  adapter,
+  filePath,
+}: {
+  adapter: PerformanceViewAdapter;
+  filePath: string;
+}) {
+  const data = useRelatedWork(adapter.getRelatedWork, [filePath]);
+  return (
+    <RelatedWork
+      related={data?.files?.[0]}
+      relatedWorkHref={adapter.relatedWorkHref}
+      onNavigate={adapter.navigate}
+      exclude={["performance"]}
+      headingLevel="h4"
+    />
   );
 }
 

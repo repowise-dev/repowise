@@ -118,9 +118,10 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                     for s in found
                 ),
                 commands=(
-                    ActionCommand(
+                    ActionCommand.call(
                         "Where the value is read and who calls it",
-                        mcp=f'get_context(targets=["{path}"], include=["callers"])',
+                        "get_context",
+                        {"targets": [path], "include": ["callers"]},
                         cli=f"repowise context {path}",
                     ),
                 ),
@@ -191,9 +192,10 @@ def broken_doc_refs(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                     for d in found
                 ),
                 commands=(
-                    ActionCommand(
+                    ActionCommand.call(
                         "Every broken reference, with a likely replacement where one is known",
-                        mcp=f'get_context(targets=["{doc}"], include=["doc_drift"])',
+                        "get_context",
+                        {"targets": [doc], "include": ["doc_drift"]},
                         cli="repowise doc-drift",
                     ),
                 ),
@@ -272,9 +274,10 @@ def dead_code_batch(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         ),
         details_total=len(found),
         commands=(
-            ActionCommand(
+            ActionCommand.call(
                 "The deletion-ready list with the evidence for each",
-                mcp="get_dead_code(safe_only=True)",
+                "get_dead_code",
+                {"safe_only": True},
                 cli="repowise dead-code --safe-only",
             ),
         ),
@@ -310,9 +313,10 @@ def stale_decision(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             confidence="medium",
             done_when="The decision is re-accepted, amended or superseded.",
             commands=(
-                ActionCommand(
+                ActionCommand.call(
                     "The decision, the code it governs, and how it drifted",
-                    mcp=f'get_why(id="{d.id}")',
+                    "get_why",
+                    {"id": d.id},
                     cli="repowise decision health",
                 ),
             ),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import (
     build_performance_opportunities,
@@ -201,6 +203,92 @@ def test_lock_fix_targets_the_single_lock_owner_not_the_shared_sink():
     assert plan.target_symbol == "lock.py::critical"
 
 
+def test_lock_fix_skips_a_test_owned_critical_section():
+    """A lock held in a test method names no production I/O to move."""
+    T = "server/src/test/java/org/elasticsearch/index/translog/TranslogTests.java"
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            T,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{T}::TranslogTests::testConcurrentWriteViewsAndSnapshot",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    assert opportunity.execution_context == "test"
+    assert opportunity.fix is not None
+    assert performance_fix_suggestions([opportunity]) == []
+
+
+def test_lock_fix_still_targets_a_production_owned_critical_section():
+    """Same shape, production lock owner: the plan is unaffected by the fix."""
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            P,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{P}::Translog::writeAndFlush",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    assert opportunity.execution_context == "production"
+    plan = performance_fix_suggestions([opportunity])[0]
+    assert plan.plan["strategy"] == "shrink_lock_scope"
+    assert plan.target_symbol == f"{P}::Translog::writeAndFlush"
+
+
+def test_skip_reads_the_opportunity_context_not_an_individual_evidence_path():
+    """Context is a grouping-key field, one value per opportunity, not per finding.
+
+    A lock owner's own file decides the group's ``execution_context`` (see
+    ``causal.causal_key``); the call path recorded as evidence is display data
+    and is not re-inspected here. This pins that the skip in
+    ``performance_fix_suggestions`` reads ``opportunity.execution_context`` as
+    a whole and does not walk evidence looking for a test-looking path node.
+    """
+    T = "server/src/test/java/org/elasticsearch/index/translog/TranslogTests.java"
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            P,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{T}::TranslogTests::testConcurrentWriteViewsAndSnapshot",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    # The finding's own file (a production file) decides the group's context,
+    # even though the recorded call path's first node names a test method.
+    assert opportunity.execution_context == "production"
+    assert opportunity.evidence[0]["path"][0].startswith(T)
+
+    plan = performance_fix_suggestions([opportunity])[0]
+    assert plan.plan["strategy"] == "shrink_lock_scope"
+
+
 def test_distinct_lock_owners_behind_one_helper_do_not_claim_one_lock_fix():
     """One shared helper, two critical sections: no single scope to shorten."""
     opportunity = build_performance_opportunities(
@@ -224,6 +312,27 @@ def test_distinct_lock_owners_behind_one_helper_do_not_claim_one_lock_fix():
     assert opportunity.fix is None
     assert opportunity.actionability_state == "investigate"
     assert opportunity.prerequisites == ("single_lock_owner",)
+
+
+@pytest.mark.parametrize("boundary", ["filesystem", "subprocess"])
+def test_lock_that_serializes_local_io_gets_no_move_it_out_plan(boundary):
+    """A file store's save or a once-only launch under its lock: the lock is the point."""
+    opportunity = build_performance_opportunities(
+        [
+            _finding(
+                "store.py",
+                3,
+                marker="blocking_io_under_lock",
+                boundary=boundary,
+                call_path=("store.py::save", "store.py::write_file"),
+            )
+        ]
+    )[0]
+
+    assert opportunity.fix is None
+    assert opportunity.actionability_state == "investigate"
+    assert opportunity.prerequisites == ("io_not_guarded_by_lock",)
+    assert performance_fix_suggestions([opportunity]) == []
 
 
 def test_performance_fix_plan_carries_closed_strategy_and_true_totals():
@@ -426,7 +535,34 @@ def test_a_plan_lists_its_edits_and_marks_only_proven_ones_mechanical():
     parallel_plan = performance_fix_suggestions(proven)[0].plan
 
     assert [step["order"] for step in batch_plan["steps"]] == [1, 2]
-    assert batch_plan["steps"][0]["symbol"] == "a.py::run"
+    # The bulk form goes on the callee the loop repeats, not on the loop's owner.
+    assert batch_plan["steps"][0]["symbol"] == "db.py::fetch"
+    assert batch_plan["intervention_symbol"] == "a.py::run"
     assert batch_plan["steps"][1]["line"] == 2
     assert (batch_plan["mechanical_steps"], batch_plan["judgment_steps"]) == (0, 2)
     assert (parallel_plan["mechanical_steps"], parallel_plan["judgment_steps"]) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("orms", "leads"),
+    [
+        (("django",), True),
+        (("sqlalchemy",), False),
+        # One unmeasured member keeps the group from leading.
+        (("django", "sqlalchemy"), False),
+        # A store written before the ORM was recorded.
+        ((None,), False),
+    ],
+)
+def test_a_lazy_load_may_lead_only_on_an_orm_that_cleared_the_bar(orms, leads):
+    rows = [
+        _finding("app/views.py", 10 + index, marker="lazy_load_in_loop", orm=orm)
+        for index, orm in enumerate(orms)
+    ]
+    (opportunity,) = build_performance_opportunities(rows)
+    assert opportunity.may_lead is leads
+
+
+def test_every_other_marker_may_lead():
+    (opportunity,) = build_performance_opportunities([_finding("a.py", 1)])
+    assert opportunity.may_lead is True

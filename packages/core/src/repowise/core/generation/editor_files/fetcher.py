@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-from repowise.core.analysis.health.rows import split_tests
+from repowise.core.analysis.health.rows import scored_rows, split_tests
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
@@ -360,7 +360,9 @@ class EditorFileDataFetcher:
         KPIs, then the lead of the Fix-first queue every other surface renders.
         ``None`` when no health data yet.
         """
-        metric_rows = list(
+        # Scored rows only: a file in a language health has no dialect for
+        # carries no score, and a repository of nothing else has no block.
+        metric_rows = scored_rows(
             (
                 await self._session.execute(
                     select(HealthFileMetric).where(

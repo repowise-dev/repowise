@@ -121,12 +121,10 @@ def _render_stored_refactoring_targets(
     wrote.
     """
     from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.analysis.health.refactoring.serving import parse_query
     from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
     from repowise.core.persistence import crud
-    from repowise.server.services.refactoring_health import (
-        RefactoringHealthService,
-        parse_query,
-    )
+    from repowise.server.services.refactoring_health import RefactoringHealthService
 
     def keep(path: str) -> bool:
         if file_filter and path != file_filter:
@@ -165,6 +163,7 @@ def _render_stored_refactoring_targets(
             return {
                 "summary": summary,
                 "total": page.total,
+                "hidden": page.hidden,
                 "details": details,
                 "metrics": metrics,
                 "findings": findings,
@@ -181,10 +180,15 @@ def _render_stored_refactoring_targets(
     analyzed_commit = stored["summary"].get("analyzed_commit")
     if fmt == "table":
         commit = f" at {analyzed_commit[:7]}" if analyzed_commit else ""
+        hidden = (stored["hidden"] or {}).get("total") or 0
+        scope = (
+            f"{stored['total']} worth doing ({hidden} more in the full inventory)"
+            if stored["hidden"] is not None
+            else f"{stored['total']} open opportunities"
+        )
         console.print(
-            f"[dim]Read from the index{commit}. Showing {len(rows)} of "
-            f"{stored['total']} open opportunities. Pass --recompute to analyze the "
-            "working tree instead.[/dim]"
+            f"[dim]Read from the index{commit}. Showing {len(rows)} of {scope}. "
+            "Pass --recompute to analyze the working tree instead.[/dim]"
         )
     _emit(
         targets,
@@ -198,12 +202,23 @@ def _render_stored_refactoring_targets(
             "source": "index",
             "analyzed_commit": analyzed_commit,
             "opportunities_total": stored["total"],
+            "opportunities_hidden": stored["hidden"],
             "targets": targets,
             "refactoring_opportunities": rows,
             "refactoring_plans": plans,
         },
     )
     return True
+
+
+def _rankable(findings: list, metrics: list) -> list:
+    """Findings on files that carry a score.
+
+    A file stored with no score (a language health has no dialect for) is not
+    ranked: a stand-in 10.0 would invent one. The API queue skips it too.
+    """
+    unscored = {m.file_path for m in metrics if m.score is None}
+    return [f for f in findings if f.file_path not in unscored]
 
 
 def _build_targets(
@@ -215,7 +230,7 @@ def _build_targets(
         sugg_by_file.setdefault(_suggestion_path(s), []).append(s)
 
     by_file: dict[str, list] = {}
-    for f in findings:
+    for f in _rankable(findings, metrics):
         by_file.setdefault(f.file_path, []).append(f)
 
     metric_by_path = {m.file_path: m for m in metrics}
@@ -613,7 +628,8 @@ def _plan_detail_console(p: dict) -> list[str]:
         cuts = pl.get("cut_edges", [])
         out.append(
             f"    [dim]import cycle of {ev.get('cycle_size')} files "
-            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)[/dim]"
+            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}[/dim]"
         )
         for e in cuts:
             out.append(f"    [dim]-[/dim] invert {e['from']} -> {e['to']}")
@@ -682,7 +698,10 @@ def _plan_detail_md(p: dict) -> list[str]:
         )
     elif kind == "break_cycle":
         cuts = pl.get("cut_edges", [])
-        out.append(f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s):")
+        out.append(
+            f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}:"
+        )
         for e in cuts:
             out.append(f"      - invert {e['from']} -> {e['to']}")
     elif kind == "split_file":
@@ -698,6 +717,11 @@ def _plan_detail_md(p: dict) -> list[str]:
         if residual and residual.get("symbols"):
             out.append(f"      - core (shared): {', '.join(residual['symbols'])}")
     return out
+
+
+def _idiom_note(pl: dict) -> str:
+    """Marks a cycle the detector judged idiomatic, so its cut reads as optional."""
+    return " (same directory, idiomatic; optional)" if pl.get("idiom") else ""
 
 
 def _helper_site(pl: dict) -> str:

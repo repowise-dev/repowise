@@ -52,8 +52,17 @@ class TestParityGoldens:
 
     def test_test_stem_suffixes_match_historical_set(self) -> None:
         # "_unittest" (C/C++ GoogleTest convention) was a conscious
-        # addition to the historical {"_test", "_spec"} union.
-        assert set(REGISTRY.test_stem_suffixes()) == {"_test", "_spec", "_unittest"}
+        # addition to the historical {"_test", "_spec"} union, and so are the
+        # C/C++ test-helper stems (cord_test_helpers.h, log_basic_test_impl.inc).
+        assert set(REGISTRY.test_stem_suffixes()) == {
+            "_test",
+            "_spec",
+            "_unittest",
+            "_test_helper",
+            "_test_helpers",
+            "_test_util",
+            "_test_impl",
+        }
 
     def test_test_infixes_match_historical_set(self) -> None:
         # `.test-d.` is the TypeScript type-test infix (`*.test-d.ts`).
@@ -125,6 +134,8 @@ class TestParityGoldens:
             "src/test/java",
             "src/test/kotlin",
             "src/test/scala",
+            "src/testfixtures/java",
+            "src/testfixtures/kotlin",
         )
 
     def test_test_dir_suffixes_union(self) -> None:

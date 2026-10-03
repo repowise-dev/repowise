@@ -84,11 +84,14 @@ async def _badge_average_health(session: AsyncSession, repo_id: str) -> float | 
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     avg = await crud.get_average_health(session, repo_id)
+    if avg is not None:
+        return avg
     # A repo with no metrics has always badged as a perfect 10.0 here, because
     # ``get_health_summary`` returns 10.0 for an empty table. Preserved rather
-    # than quietly corrected: the crud helper reports "unmeasured" honestly as
-    # ``None``, and mapping that to 10.0 is this endpoint's existing contract.
-    return 10.0 if avg is None else avg
+    # than quietly corrected: mapping "unmeasured" to 10.0 is this endpoint's
+    # existing contract. Rows with no score are another answer: every file is
+    # in a language health has no dialect for, and that badges "no data".
+    return None if await crud.get_scored_file_paths(session, repo_id) else 10.0
 
 
 @router.get("/api/repos/{repo_id}/health/badge.json", response_model=HealthBadgeResponse)

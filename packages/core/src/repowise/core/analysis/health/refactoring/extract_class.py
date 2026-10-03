@@ -19,19 +19,23 @@ cohesive classes, so the gate demands genuine state to partition:
 - the class is one the cohesion biomarker already flags (``lcom4 >= 2``,
   ``method_count >= _MIN_METHODS``), so the list never exceeds what health
   surfaces;
-- at least two *field-bearing* groups — the state splits into ≥2 independent
-  stateful clusters, not "one core + loose helpers";
+- at least two groups that are a class of their own: state (``holds_state``,
+  two or more fields) and behaviour (two or more methods), so the class
+  splits into independent clusters, not "one core + loose helpers".
+  Accessors, setters or a counter over one field are how a data class or
+  builder exposes its state, and one method is a method, not a class;
 - a minimum field density (fields per method) — this rejects stateless
   strategy / dialect classes (many independent predicate methods, almost no
   shared state) that LCOM4 over-fires on but that should never be "split".
 
-The displayed plan keeps only the substantive groups (field-bearing or
-multi-method); lone fieldless helper methods don't constitute their own
-extracted class and are dropped from the split so the plan reads honestly.
+The displayed plan keeps only those stateful groups; the rest stay with the
+class.
 """
 
 from __future__ import annotations
 
+from ..complexity.class_analysis import cohesion_applies, holds_state
+from ..complexity.models import CohesionGroup
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -53,13 +57,10 @@ _MIN_METHODS = 5
 _MIN_FIELD_DENSITY = 0.4
 
 
-def _is_substantive(group: object) -> bool:
-    """A group worth extracting on its own: ≥2 methods, or ≥1 method that
-    touches ≥1 field. Filters out lone, fieldless helper methods so a class
-    isn't sold as an N-way split when it is really "one class + loners"."""
-    methods = getattr(group, "methods", [])
-    fields = getattr(group, "fields", [])
-    return len(methods) >= 2 or (len(methods) >= 1 and len(fields) >= 1)
+def _is_extractable(group: CohesionGroup) -> bool:
+    """A group that could stand as its own class: it holds state and has
+    more than one method."""
+    return holds_state(group) and len(group.methods) >= 2
 
 
 @register
@@ -68,6 +69,8 @@ class ExtractClassDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         out: list[RefactoringSuggestion] = []
+        if not cohesion_applies(ctx.file_path, ctx.language):
+            return out
         impact_by_class = self._impact_by_class(ctx)
 
         for cls in ctx.classes:
@@ -80,12 +83,7 @@ class ExtractClassDetector(RefactoringDetector):
             if field_density < _MIN_FIELD_DENSITY:
                 continue
             # The split must partition real state into ≥2 stateful clusters.
-            field_bearing = [g for g in components if getattr(g, "fields", None)]
-            if len(field_bearing) < 2:
-                continue
-            # Present only the substantive groups; lone fieldless helpers don't
-            # form their own class. Re-check we still have a ≥2-way split.
-            substantive = [g for g in components if _is_substantive(g)]
+            substantive = [g for g in components if _is_extractable(g)]
             if len(substantive) < 2:
                 continue
 

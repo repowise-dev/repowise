@@ -191,6 +191,125 @@ _TEMPLATES: dict[str, str] = {
         "(`repowise decision supersede`) or by adding a 'relates_to' edge "
         "with a clarifying rationale."
     ),
+    # Test quality, advisory.
+    "assertion_free_test": (
+        "Assert on the result. This test runs the code and checks nothing, so it "
+        "passes whatever the code does; add an assertion on the value or the side "
+        "effect the test exists to protect."
+    ),
+    "mock_saturated_test": (
+        "Test behaviour, not wiring. Replace mocks of the code's own collaborators "
+        "with real objects or a fake, and keep mocks for the slow or external "
+        "boundaries."
+    ),
+    # Performance: per-iteration work.
+    "io_in_loop": (
+        "Batch the I/O. Fetch or write everything the loop needs in one call "
+        "before or after it (a bulk query, an IN clause, a batch request) and "
+        "look the results up in memory inside the loop."
+    ),
+    "nested_loop_with_io": (
+        "Lift the I/O out of the inner loop. Batch the inner call across the "
+        "outer loop's items, or load the data once and index it by key."
+    ),
+    "lazy_load_in_loop": (
+        "Load the relationship with the parent rows. Add selectinload or "
+        "joinedload (prefetch_related or select_related in Django) to the query "
+        "the loop iterates."
+    ),
+    "serial_await_in_loop": (
+        "Run independent awaits together. When the iterations do not depend on "
+        "each other, gather them (asyncio.gather, Promise.all, Task.WhenAll) "
+        "with a bound on concurrency."
+    ),
+    "string_concat_in_loop": (
+        "Build the string once. Collect the pieces in a list or buffer inside the "
+        "loop and join them after it."
+    ),
+    "regex_compile_in_loop": (
+        "Compile the pattern once. Move the compile call out of the loop into a "
+        "constant or a field and reuse it."
+    ),
+    "resource_construction_in_loop": (
+        "Create the client once. Construct the connection or client before the "
+        "loop and reuse it for every iteration."
+    ),
+    "lock_in_loop": (
+        "Take the lock once. Acquire it around the whole loop, or collect the "
+        "changes and apply them in one critical section."
+    ),
+    "defer_in_loop": (
+        "Release the resource each iteration. Close it at the end of the loop "
+        "body, or move the body into its own function so the defer runs per "
+        "iteration."
+    ),
+    "json_parse_in_loop": (
+        "Parse once. Hoist the parse or stringify out of the loop, and replace a "
+        "JSON round-trip clone with structuredClone."
+    ),
+    "membership_test_against_list_in_loop": (
+        "Look up in a set. Build a set from the list once before the loop and "
+        "test membership against it."
+    ),
+    "list_insert_zero_in_loop": (
+        "Stop inserting at the front. Use collections.deque with appendleft, or "
+        "append and reverse once after the loop."
+    ),
+    "pandas_iterrows_in_loop": (
+        "Vectorize the loop. Express the per-row work as a column operation, or "
+        "use itertuples when row access is unavoidable."
+    ),
+    "pd_concat_in_loop": (
+        "Concatenate once. Append each frame to a list inside the loop and call "
+        "pd.concat on the list after it."
+    ),
+    "array_spread_in_reduce": (
+        "Mutate the accumulator. Push into it and return it, so each step does "
+        "not copy everything gathered so far."
+    ),
+    "goroutine_in_unbounded_loop": (
+        "Bound the fan-out. Use a worker pool, a semaphore channel or an errgroup "
+        "with a limit so the goroutine count does not grow with the input."
+    ),
+    "nested_loop_quadratic": (
+        "Remove the inner scan. If the inner loop searches for a match, index the "
+        "inner collection by key in a map or set once."
+    ),
+    # Performance: blocking work.
+    "blocking_sync_in_async": (
+        "Use the async form of the call (asyncio.sleep, an async HTTP client, "
+        "asyncio subprocess), or run the blocking call in a thread executor."
+    ),
+    "hot_path_sync_io": (
+        "If this function runs on a latency-sensitive path, cache the result, "
+        "move the call to startup, or make it asynchronous."
+    ),
+    "blocking_io_under_lock": (
+        "Do the I/O outside the lock. Read or write first, then take the lock "
+        "only to update the shared state."
+    ),
+    "unbounded_read_reduced_in_memory": (
+        "Select in the query. Move the per-key reduction into SQL (DISTINCT ON, "
+        "a window function, a view) so only the rows you keep are read."
+    ),
+    # SQL.
+    "sql_cartesian_join": (
+        "Add the join predicate. Rewrite the comma join as JOIN ... ON the "
+        "columns that relate the tables, or as CROSS JOIN if the product is "
+        "intended."
+    ),
+    "sql_high_complexity": (
+        "Split the routine. Move branching business logic into the application "
+        "or into smaller routines, each with one job."
+    ),
+    "sql_select_star": (
+        "Name the columns. Replace * with the column list the view's consumers "
+        "read, so a new source column does not change the view's shape."
+    ),
+    "sql_update_delete_without_where": (
+        "Confirm the statement should touch every row. Add the WHERE clause it "
+        "needs, or a comment stating that the full-table change is intended."
+    ),
 }
 
 

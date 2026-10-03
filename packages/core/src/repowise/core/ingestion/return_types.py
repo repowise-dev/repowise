@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .type_names import bare_type_name
+from .type_names import bare_type_name, type_argument_count
 
 _NULLISH_UNION = re.compile(r"\s*\|\s*(?:null|undefined)\b")
 _CPP_PREFIX = re.compile(r"^(?:(?:const|volatile|typename|class|struct)\s+)+")
@@ -116,7 +116,8 @@ def normalize_return_type(raw: str, language: str) -> str | None:
 
     Generic arguments are intentionally not unwrapped: ``future<T>.get()`` is
     a method on ``future``, not on ``T``. Language-specific punctuation is
-    removed here, at the boundary where signatures enter resolution.
+    removed here, at the boundary where signatures enter resolution. A C#
+    generic keeps its arity, ``IFoo`1``, as a declared receiver type does.
     """
 
     value = raw.strip()
@@ -134,4 +135,8 @@ def normalize_return_type(raw: str, language: str) -> str | None:
             value = _CPP_SUFFIX.sub("", value)
 
     name = bare_type_name(value).strip()
-    return name if name.isidentifier() else None
+    if not name.isidentifier():
+        return None
+    if language == "csharp" and (arity := type_argument_count(value)):
+        return f"{name}`{arity}"
+    return name

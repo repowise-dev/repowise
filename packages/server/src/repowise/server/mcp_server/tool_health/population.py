@@ -10,6 +10,7 @@ from sqlalchemy import select
 from repowise.core.analysis.health.counts import parse_counts
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.models import split_by_origin
+from repowise.core.analysis.health.rows import scored_rows
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import _get_exclude_spec, filter_rows_by_attr
@@ -29,6 +30,9 @@ class Population:
     reported_counts: str
     unscored_files: int
     unscored_paths: set[str]
+    # Files stored with no score because health has no dialect for their
+    # language. Out of every block; a target among them says so.
+    unanalysed_paths: set[str]
     file_targets: list[str]
     matched_modules: set[str]
     scoped: bool
@@ -81,6 +85,12 @@ async def load_population(
         all_metrics = [m for m in all_metrics if not m.is_test]
         scope_paths = {m.file_path for m in all_metrics}
 
+    # Before ``counts``, so a file nobody measured is reported as that rather
+    # than as a code-shape reading with no recorded split.
+    listed = all_metrics
+    unanalysed_paths = {m.file_path for m in all_metrics if m.score is None}
+    all_metrics = scored_rows(all_metrics)
+
     # Composes with the scope: a re-read off the stored structure/history
     # split, not a rescore. Findings narrow by origin, not by path, so a row
     # it cannot read lands in ``unscored_files`` with its findings intact.
@@ -93,7 +103,7 @@ async def load_population(
         unscored_paths = before - {m.file_path for m in all_metrics}
 
     file_targets, matched_modules = _expand_module_targets(
-        all_metrics, req.module_targets, req.file_targets
+        listed, req.module_targets, req.file_targets
     )
     # Keyed off the raw targets, not the resolved ones: a target that resolves
     # to nothing must not fall through to repo-wide numbers.
@@ -107,6 +117,7 @@ async def load_population(
         reported_counts=reported_counts,
         unscored_files=unscored_files,
         unscored_paths=unscored_paths,
+        unanalysed_paths=unanalysed_paths,
         file_targets=file_targets,
         matched_modules=matched_modules,
         scoped=scoped,

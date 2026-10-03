@@ -1857,7 +1857,7 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
     from sqlalchemy import select
 
     from repowise.core.analysis.health.scoring import compute_kpis
-    from repowise.core.analysis.health.trends import snapshot_file_maps
+    from repowise.core.analysis.health.trends import snapshot_fields
     from repowise.core.persistence.crud import get_hotspot_file_paths, save_health_snapshot
     from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 
@@ -1886,21 +1886,9 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
             .all()
         )
         kpis = compute_kpis(metrics, await get_hotspot_file_paths(session, repo_id))
-        scores_map, deductions_map = snapshot_file_maps(metrics, findings)
-        await save_health_snapshot(
-            session,
-            repo_id,
-            hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-            average_health=float(kpis.get("average_health", 10.0)),
-            worst_performer_path=kpis.get("worst_performer_path"),
-            worst_performer_score=kpis.get("worst_performer_score"),
-            per_file_scores=scores_map,
-            per_file_deductions=deductions_map,
-            structure_average=kpis.get("structure_average"),
-            history_average=kpis.get("history_average"),
-            production_average=kpis.get("production_average"),
-            maintainability_average=kpis.get("maintainability_average"),
-        )
+        fields = snapshot_fields(kpis, metrics, findings)
+        if fields is not None:
+            await save_health_snapshot(session, repo_id, **fields)
     except Exception as exc:
         logger.warning("health_snapshot_skipped", error=str(exc))
 
@@ -1977,6 +1965,61 @@ async def save_full_health_report(
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+
+
+async def refresh_governance_findings(
+    session: Any, repo_id: str, *, recompose_queue: bool = True
+) -> int:
+    """Rebuild the governance findings from the stored decisions and health rows.
+
+    Every writer that runs the governance pass comes through here: the index
+    after its decisions are stored, the update after its decision steps, and
+    the full health re-score, whose findings replace deletes these rows along
+    with every other open finding. Returns the number of findings written.
+
+    ``recompose_queue`` re-folds the refactoring queue when findings were
+    written, since it is composed over the stored findings and may have been
+    built before these rows existed. Only that queue: the performance
+    finalizer reads ``performance`` findings, and every governance biomarker
+    is ``organizational``. A caller that finalizes the queue next anyway
+    passes ``False``.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.governance import build_governance_findings
+    from repowise.core.persistence.crud import (
+        finalize_refactoring_opportunities,
+        get_decision_health_summary,
+        get_scored_file_paths,
+        replace_governance_findings,
+    )
+    from repowise.core.persistence.models import DecisionRecord
+
+    # One savepoint: the replace deletes before it inserts, and the queue
+    # reconciles as a whole, so a failure must leave neither half-written.
+    async with session.begin_nested():
+        decisions = list(
+            (
+                await session.execute(
+                    select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        findings = build_governance_findings(
+            health_summary=await get_decision_health_summary(session, repo_id),
+            decisions=decisions,
+            scored_paths=await get_scored_file_paths(session, repo_id),
+        )
+        await replace_governance_findings(session, repo_id, findings)
+        if findings and recompose_queue:
+            await finalize_refactoring_opportunities(
+                session, repo_id, analyzed_commit=await _analyzed_commit(session, repo_id)
+            )
+    if findings:
+        logger.info("governance_findings_persisted", repo_id=repo_id, count=len(findings))
+    return len(findings)
 
 
 async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
@@ -2213,53 +2256,9 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
 
     # ---- Governance findings (additive pass, after decisions are persisted) ----
     # Runs after bulk_upsert_decisions + detect_supersessions_and_conflicts so
-    # the decision graph is complete. Best-effort — never breaks persist.
+    # the decision graph is complete. Best-effort: never breaks persist.
     try:
-        from sqlalchemy import select as _select
-
-        from repowise.core.analysis.health.governance import build_governance_findings
-        from repowise.core.persistence.crud import (
-            get_decision_health_summary,
-            get_scored_file_paths,
-            replace_governance_findings,
-        )
-        from repowise.core.persistence.models import DecisionRecord
-
-        _dr_result = await session.execute(
-            _select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
-        )
-        _decisions = list(_dr_result.scalars().all())
-        _health_summary = await get_decision_health_summary(session, repo_id)
-        _gov_findings = build_governance_findings(
-            health_summary=_health_summary,
-            decisions=_decisions,
-            scored_paths=await get_scored_file_paths(session, repo_id),
-        )
-        await replace_governance_findings(session, repo_id, _gov_findings)
-        if _gov_findings:
-            logger.info(
-                "governance_findings_persisted",
-                repo_id=repo_id,
-                count=len(_gov_findings),
-            )
-            # The refactoring queue is a fold over the stored findings and was
-            # composed above, before these rows existed, so without a second
-            # pass a fresh index ranks every opportunity against a finding set
-            # holding none of its governance causes. Only this queue: the
-            # performance finalizer reads ``performance`` findings, and every
-            # governance biomarker is ``organizational``.
-            from repowise.core.persistence.crud import (
-                finalize_refactoring_opportunities,
-            )
-
-            # Savepointed like the first composition: this writer reconciles
-            # the whole queue, so a half-failed one would leave it half-described.
-            async with session.begin_nested():
-                await finalize_refactoring_opportunities(
-                    session,
-                    repo_id,
-                    analyzed_commit=await _analyzed_commit(session, repo_id),
-                )
+        await refresh_governance_findings(session, repo_id)
     except Exception as _gov_err:
         logger.debug("governance_findings_skipped", error=str(_gov_err))
 
