@@ -1444,6 +1444,7 @@ class HealthAnalyzer:
             source,
             is_test=bool(pf.file_info.is_test),
             project=self._project(),
+            repo_root=self.repo_root,
         )
 
     def _installed(self, path: str) -> bool:

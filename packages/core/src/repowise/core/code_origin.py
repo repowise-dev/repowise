@@ -24,6 +24,7 @@ a caller holding a bare path gets the same answer.
 
 from __future__ import annotations
 
+import os
 import re
 from functools import cache, lru_cache
 from itertools import pairwise
@@ -492,12 +493,67 @@ def _is_tool_example(name: str, dirs: list[str]) -> bool:
     return _SOURCE_ROOT not in dirs[: dirs.index(example_dir)]
 
 
-def _is_docs_example(name: str, dirs: list[str]) -> bool:
+# A docs-named folder that is not plainly ``docs`` (``doc``,
+# ``documentation-website``, ``docs-site``) counts only with evidence: a
+# docs-site generator's config in it or one level down (Writerside keeps its
+# under ``Writerside/``). Without one it may be a shipped package.
+_DOCS_SITE_NAME_RE = re.compile(r"^(?:docs?|documentation)(?:[-_.].*)?$")
+_DOCS_SITE_MARKERS = frozenset(
+    {
+        "writerside.cfg",
+        "mkdocs.yml",
+        "mkdocs.yaml",
+        "docusaurus.config.js",
+        "docusaurus.config.ts",
+        "docusaurus.config.mjs",
+        "hugo.toml",
+        "hugo.yaml",
+        "_config.yml",  # Jekyll
+        "conf.py",  # Sphinx
+        "book.toml",  # mdBook
+        "antora.yml",
+        "docfx.json",
+        ".vitepress",
+    }
+)
+
+
+@lru_cache(maxsize=4096)
+def _is_docs_site(folder: str) -> bool:
+    """Whether *folder* (an absolute path) holds a docs-site generator config."""
+    try:
+        with os.scandir(folder) as entries:
+            children = [(e.name.lower(), e.path, e.is_dir()) for e in entries]
+    except OSError:
+        return False
+    if any(name in _DOCS_SITE_MARKERS for name, _, _ in children):
+        return True
+    for _, child, is_dir in children:
+        if not is_dir:
+            continue
+        try:
+            with os.scandir(child) as entries:
+                if any(e.name.lower() in _DOCS_SITE_MARKERS for e in entries):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_docs_example(normalized: str, dirs: list[str], repo_root: str | None) -> bool:
     # Anything under a docs root already counts, examples beneath it included.
-    return (
+    if (
         any(d in _DOCS_ROOT_TOKENS for d in dirs)
         or bool(dirs and _is_example_dir(dirs[0]))
-        or _is_tool_example(name, dirs)
+        or _is_tool_example(normalized, dirs)
+    ):
+        return True
+    if repo_root is None:
+        return False
+    parts = normalized.split("/")
+    return any(
+        _DOCS_SITE_NAME_RE.match(d) and _is_docs_site(os.path.join(repo_root, *parts[: i + 1]))
+        for i, d in enumerate(dirs)
     )
 
 
@@ -621,6 +677,7 @@ def code_origin(
     *,
     is_test: bool | None = None,
     project: str | None = None,
+    repo_root: str | os.PathLike[str] | None = None,
 ) -> CodeOrigin:
     """The one origin of the file at repo-relative *path*.
 
@@ -634,6 +691,10 @@ def code_origin(
 
     *project* is the repository's name, so its own release banner is not
     taken for someone else's.
+
+    *repo_root* lets a docs-named folder other than ``docs`` count as docs
+    when it holds a docs-site generator's config; without it only the path
+    rules apply.
     """
     split = _split(path)
     if split is None:
@@ -651,11 +712,15 @@ def code_origin(
         and _third_party_header(header, project)
     ):
         return "vendored"
-    return _maintained_origin(normalized, name, dirs, is_test)
+    return _maintained_origin(normalized, name, dirs, is_test, repo_root)
 
 
 def _maintained_origin(
-    normalized: str, name: str, dirs: list[str], is_test: bool | None
+    normalized: str,
+    name: str,
+    dirs: list[str],
+    is_test: bool | None,
+    repo_root: str | os.PathLike[str] | None,
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
     examples, tooling, or production, in that precedence."""
@@ -663,7 +728,7 @@ def _maintained_origin(
         return "build"
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
-    if _is_docs_example(name, dirs):
+    if _is_docs_example(normalized, dirs, None if repo_root is None else str(repo_root)):
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
