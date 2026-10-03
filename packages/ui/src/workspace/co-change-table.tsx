@@ -8,7 +8,7 @@ import { cn } from "../lib/cn";
 import { formatDate, formatDateTime } from "../lib/format";
 import { PAIR_MICRO as MICRO } from "../coupling/pair-drawer-parts";
 import { SESSIONS_DEFINITION, STRENGTH_DEFINITION } from "./co-change-facts";
-import type { WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
+import type { WorkspaceCoChangeEvidence, WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
 
 interface CoChangeTableProps {
   coChanges: WorkspaceCoChangeEntry[];
@@ -34,6 +34,47 @@ export function coChangeKey(cc: WorkspaceCoChangeEntry): string {
 // Priority 2 hides below md, matching the shared ResponsiveTable scale. The two
 // files and the strength stay at every width.
 const HIDE_BELOW_MD = "max-md:hidden";
+
+/**
+ * The bounded sample behind one pair: which authors, which matched commits, and
+ * how far apart they landed. Collapsed by default, so a reader scans the list
+ * and opens only the pair they doubt. The counts are small by construction
+ * (`_MAX_EVIDENCE_COMMIT_PAIRS`, `_MAX_EVIDENCE_AUTHORS` in the miner), so this
+ * never renders an unbounded block.
+ */
+function EvidenceCell({ evidence }: { evidence: WorkspaceCoChangeEvidence }) {
+  const authors = evidence.authors ?? [];
+  const pairs = evidence.commit_pairs ?? [];
+  if (authors.length === 0 && pairs.length === 0) {
+    return <span className="text-[var(--color-text-tertiary)]">none recorded</span>;
+  }
+  return (
+    <details className="group">
+      <summary className="flex cursor-pointer list-none items-center justify-end gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
+        <span className="inline-block transition-transform group-open:rotate-90" aria-hidden>
+          ▸
+        </span>
+        <span className="tabular-nums">
+          {pairs.length > 0 ? `${pairs.length} commit pair${pairs.length === 1 ? "" : "s"}` : "evidence"}
+        </span>
+      </summary>
+      <div className="mt-1.5 flex flex-col items-end gap-1 text-[var(--color-text-tertiary)]">
+        {authors.length > 0 ? <span className="whitespace-nowrap">{authors.join(", ")}</span> : null}
+        {pairs.map((pair) => (
+          <span key={`${pair.source_sha}|${pair.target_sha}`} className="whitespace-nowrap font-mono">
+            <span className="tabular-nums">{pair.source_sha}</span>
+            <span aria-hidden> → </span>
+            <span className="tabular-nums">{pair.target_sha}</span>
+            <span>{` · ${pair.gap_hours}h`}</span>
+          </span>
+        ))}
+        {evidence.max_gap_hours > 0 ? (
+          <span>{`max gap ${evidence.max_gap_hours}h`}</span>
+        ) : null}
+      </div>
+    </details>
+  );
+}
 
 function splitPath(path: string): [dir: string, base: string] {
   const i = path.lastIndexOf("/");
@@ -125,6 +166,13 @@ const CoChangeRow = React.memo(function CoChangeRow({ cc, compact, selected, onS
               {cc.last_date ? formatDate(cc.last_date) : "unknown"}
             </span>
           </td>
+          <td className={`px-3 py-2.5 text-right align-middle text-xs ${HIDE_BELOW_MD}`}>
+            {cc.evidence ? (
+              <EvidenceCell evidence={cc.evidence} />
+            ) : (
+              <span className="text-[var(--color-text-tertiary)]">—</span>
+            )}
+          </td>
         </>
       )}
     </tr>
@@ -176,6 +224,15 @@ export function CoChangeTable({ coChanges, compact = false, onSelect, selectedKe
                 </th>
                 <th className={cn(MICRO, "px-3 py-2 text-right font-normal", HIDE_BELOW_MD)}>
                   Last together
+                </th>
+                <th className={cn(MICRO, "px-3 py-2 text-right font-normal", HIDE_BELOW_MD)}>
+                  <span className="inline-flex items-center gap-1">
+                    Evidence
+                    <InfoTip
+                      content="Supporting evidence for the pair: authors, example matched commit pairs, and the time gap between them. Sampled and capped, so a pair backed by hundreds of commits shows a few examples."
+                      label="What the evidence column shows"
+                    />
+                  </span>
                 </th>
               </>
             )}
