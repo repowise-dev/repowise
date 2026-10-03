@@ -9,6 +9,7 @@ import { createCliRunner } from "./core/cliRunner";
 import { RepowiseContext } from "./core/context";
 import { registerStatusBar } from "./features/statusBar";
 import { registerOnboarding } from "./features/onboarding";
+import { registerHosted } from "./features/hosted";
 import { registerServerManager } from "./features/serverManager";
 import { registerMcp } from "./features/mcp";
 import { registerDiagnostics } from "./features/diagnostics";
@@ -83,6 +84,7 @@ export function activate(extCtx: vscode.ExtensionContext): void {
   extCtx.subscriptions.push(
     registerStatusBar(ctx),
     registerOnboarding(ctx),
+    registerHosted(ctx, extCtx.globalState),
     registerServerManager(ctx),
     registerMcp(ctx),
     registerDiagnostics(ctx),
