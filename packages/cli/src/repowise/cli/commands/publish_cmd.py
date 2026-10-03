@@ -73,9 +73,10 @@ def publish_command(
     if result.url:
         console.print(f"  [cyan][link={result.url}]{escape(result.url)}[/link][/cyan]")
     for line in result.details:
-        console.print(f"  [dim]{escape(line)}[/dim]")
+        console.print(f"  [dim]{escape(line)}[/dim]", highlight=False)
     if result.outcome != "not_github":
-        console.print(f"\n[dim]{escape(pub.PUSHED_ONLY)}[/dim]")
+        # No highlighting: it would colour "<branch>" inside the dim line.
+        console.print(f"\n[dim]{escape(pub.PUSHED_ONLY)}[/dim]", highlight=False)
 
     if result.open_url and not no_open:
         webbrowser.open(result.open_url)
