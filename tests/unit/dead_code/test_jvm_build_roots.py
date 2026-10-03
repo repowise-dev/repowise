@@ -43,6 +43,34 @@ _FILES = {
     "server/src/main/java/org/sample/core/Orphan.java": (
         "package org.sample.core;\n\npublic class Orphan {\n}\n"
     ),
+    # Signal-Server: an unused top-level record whose name is also a nested
+    # record in another package and a protobuf message.
+    "app/src/main/java/org/sample/entities/SetKeyRequest.java": (
+        "package org.sample.entities;\n\npublic record SetKeyRequest(String key) {\n}\n"
+    ),
+    "app/src/main/java/org/sample/entities/Shared.java": (
+        "package org.sample.entities;\n\npublic class Shared {\n}\n"
+    ),
+    "app/src/main/java/org/sample/entities/SharedUser.java": (
+        "package org.sample.entities;\n\npublic class SharedUser {\n"
+        "    Shared shared;\n    public static void main(String[] args) {}\n}\n"
+    ),
+    "app/src/main/java/org/sample/controllers/ArchiveController.java": (
+        "package org.sample.controllers;\n\npublic class ArchiveController {\n"
+        "    public record SetKeyRequest(String key) {}\n"
+        "    public static class Shared {}\n"
+        "    void set(SetKeyRequest request, Shared shared) {}\n"
+        "    public static void main(String[] args) {}\n}\n"
+    ),
+    "app/src/main/java/org/sample/grpc/BackupsService.java": (
+        "package org.sample.grpc;\n\nimport org.sample.backup.SetKeyRequest;\n\n"
+        "public class BackupsService {\n    void set(SetKeyRequest request) {}\n"
+        "    public static void main(String[] args) {}\n}\n"
+    ),
+    "app/src/main/proto/backups.proto": (
+        'syntax = "proto3";\n\npackage org.sample.backup;\n\n'
+        "message SetKeyRequest {\n  string key = 1;\n}\n"
+    ),
 }
 
 
@@ -95,6 +123,16 @@ def test_class_nothing_names_is_still_reported(tmp_path: Path):
     assert "Orphan" in _named(_report(tmp_path), DeadCodeKind.UNUSED_EXPORT)
 
 
+def test_name_meaning_another_type_elsewhere_is_not_a_use(tmp_path: Path):
+    # A same-named nested record in another package and a generated message
+    # class imported from another package both mean other types.
+    assert "SetKeyRequest" in _named(_report(tmp_path), DeadCodeKind.UNUSED_EXPORT)
+
+
+def test_same_package_use_counts_despite_a_same_named_type_elsewhere(tmp_path: Path):
+    assert "Shared" not in _named(_report(tmp_path), DeadCodeKind.UNUSED_EXPORT)
+
+
 def test_class_annotations_reach_the_symbol():
     from repowise.core.ingestion.models import FileInfo
 
@@ -106,3 +144,18 @@ def test_class_annotations_reach_the_symbol():
     )
     [cls] = [s for s in ASTParser().parse_file(info, source).symbols if s.name == "C"]
     assert "@State(Scope.Thread)" in cls.decorators[0]
+
+
+def test_kotlin_expect_declaration_is_the_same_type():
+    from repowise.core.analysis.dead_code.jvm_name_scope import JvmNameScope
+
+    common = "common/src/org/sample/mp/Engine.kt"
+    actual = "jvm/src/org/sample/mp/BridgeJvm.kt"
+    source_map = {
+        common: (
+            b"package org.sample.mp\n\ninternal expect class Bridge(x: Int)\n\n"
+            b"class Engine {\n    private val bridge = Bridge(1)\n}\n"
+        ),
+        actual: b"package org.sample.mp\n\ninternal actual class Bridge actual constructor(x: Int)\n",
+    }
+    assert JvmNameScope(source_map).can_refer("Bridge", actual, set(source_map), common)

@@ -61,6 +61,7 @@ from .constants import (
     is_tool_config,
 )
 from .entry_shape import export_shape
+from .jvm_name_scope import JvmNameScope
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
 
@@ -269,10 +270,29 @@ def _used_in(paths: list[str]) -> _Verdict:
     return _Verdict(_Answer.USED, (in_code or paths)[0], in_code=bool(in_code))
 
 
+def _uses_elsewhere(
+    finding: DeadCodeFindingData, files: set[str], scope: JvmNameScope | None
+) -> list[str]:
+    """The files other than *finding*'s own whose mention of its name is a use."""
+    declaring = finding.file_path
+    return sorted(
+        f
+        for f in files - {declaring}
+        if not _is_own_type_sibling(f, declaring)
+        and (scope is None or scope.can_refer(finding.symbol_name, declaring, files, f))
+    )
+
+
 def _verdicts(
-    source_map: dict[str, bytes], candidates: list[DeadCodeFindingData]
+    source_map: dict[str, bytes],
+    candidates: list[DeadCodeFindingData],
+    scope: JvmNameScope | None = None,
 ) -> dict[int, _Verdict]:
-    """One verdict per candidate, from one repo-wide scan plus targeted reads."""
+    """One verdict per candidate, from one repo-wide scan plus targeted reads.
+
+    With *scope*, another file's mention counts only when its bare name can
+    refer to the candidate's own class.
+    """
     # Built from the candidates alone, which is what keeps a whole-repo scan
     # affordable: the index only ever holds the names some finding asks about.
     answerable = {searchable_token(f.symbol_name) for f in candidates} - {b""}
@@ -291,11 +311,7 @@ def _verdicts(
             out[id(finding)] = _NOT_SEARCHABLE
             continue
         files = occurrences.get(token, set())
-        elsewhere = sorted(
-            f
-            for f in files - {finding.file_path}
-            if not _is_own_type_sibling(f, finding.file_path)
-        )
+        elsewhere = _uses_elsewhere(finding, files, scope)
         if elsewhere:
             out[id(finding)] = _used_in(elsewhere)
         elif finding.file_path in files:
@@ -389,12 +405,14 @@ def drop_bare_name_uses(
     written in code outside the declaration is the use the import graph
     cannot see, so the finding is wrong rather than doubtful. A mention only
     in documentation or config is left to :func:`clamp_unverified_absence`.
+    A mention whose name means another type there (a same-named nested type,
+    a generated message class) is not a use; see :mod:`.jvm_name_scope`.
     Returns a new list.
     """
     candidates = [f for f in findings if _uses_bare_names(f)]
     if not candidates or not source_map:
         return findings
-    verdicts = _verdicts(source_map, candidates)
+    verdicts = _verdicts(source_map, candidates, JvmNameScope(source_map))
     used = {key for key, verdict in verdicts.items() if verdict.in_code}
     return [f for f in findings if id(f) not in used]
 
