@@ -63,8 +63,8 @@ async def _seed(session) -> str:
         [
             GitMetadata(repository_id=rid, file_path="src/core.py", commit_count_90d=12,
                         last_commit_at=ANCHOR - timedelta(days=1), bug_magnet=True),
-            HealthFileMetric(repository_id=rid, file_path="src/core.py", max_ccn=12, nloc=300,
-                             is_test=False),
+            HealthFileMetric(repository_id=rid, file_path="src/core.py", score=10.0, max_ccn=12,
+                             nloc=300, is_test=False),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="change_entropy",
                           severity="high", health_impact=3.0),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="complex_method",
