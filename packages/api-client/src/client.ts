@@ -40,16 +40,22 @@ function resolveToken(): string | null {
   return token ?? null;
 }
 
-function buildHeaders(extra?: Record<string, string>): Headers {
-  const headers = new Headers({
+// A plain object rather than `Headers`, so requests also work in runtimes
+// that have no `Headers` global (see createAdapterFetch).
+function requestHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...extra,
-  });
+  };
   const token = resolveToken();
   if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+    headers["Authorization"] = `Bearer ${token}`;
   }
   return headers;
+}
+
+function buildHeaders(extra?: Record<string, string>): Headers {
+  return new Headers(requestHeaders(extra));
 }
 
 export class ApiClientError extends Error {
@@ -178,7 +184,7 @@ export async function apiGet<T>(
   }
   const res = await doFetch(url.toString(), {
     method: "GET",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...fetchOptions,
   });
   return handleResponse<T>(res);
@@ -200,7 +206,7 @@ export async function apiPost<T>(
   }
   const res = await doFetch(url.toString(), {
     method: "POST",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -215,7 +221,7 @@ export async function apiPut<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "PUT",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -230,7 +236,7 @@ export async function apiPatch<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "PATCH",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -244,7 +250,7 @@ export async function apiDelete<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "DELETE",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...fetchOptions,
   });
   return handleResponse<T>(res);

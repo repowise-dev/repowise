@@ -51,8 +51,60 @@ describe("createAdapterFetch", () => {
     expect(call?.init.method).toBe("POST");
     expect(call?.init.body).toBe('{"name":"x"}');
     expect(call?.init.headers).toEqual({
-      "content-type": "application/json",
-      authorization: "Bearer secret",
+      "Content-Type": "application/json",
+      Authorization: "Bearer secret",
+    });
+  });
+
+  it("flattens a Headers instance into a plain object", async () => {
+    const { calls, minimal } = fakeMinimal(respond(200, "{}"));
+    await createAdapterFetch(minimal)("http://h", { headers: new Headers({ "X-A": "1" }) });
+    expect(calls[0]?.init.headers).toEqual({ "x-a": "1" });
+  });
+
+  describe("without a Headers global", () => {
+    const realHeaders = globalThis.Headers;
+    afterEach(() => {
+      globalThis.Headers = realHeaders;
+    });
+
+    it("sends apiGet and apiPost with plain-object headers", async () => {
+      // @ts-expect-error simulating a runtime that has no Headers global
+      delete globalThis.Headers;
+      expect(typeof globalThis.Headers).toBe("undefined");
+
+      const { calls, minimal } = fakeMinimal(respond(200, '{"ok":true}'));
+      configureApiClient({
+        baseUrl: "http://h",
+        token: () => "tok",
+        fetch: createAdapterFetch(minimal),
+      });
+
+      await expect(apiGet("/api/a", { q: "x" })).resolves.toEqual({ ok: true });
+      await expect(apiPost("/api/b", { n: 1 })).resolves.toEqual({ ok: true });
+
+      const expectedHeaders = {
+        "Content-Type": "application/json",
+        Authorization: "Bearer tok",
+      };
+      expect(calls).toEqual([
+        { url: "http://h/api/a?q=x", init: { method: "GET", headers: expectedHeaders } },
+        {
+          url: "http://h/api/b",
+          init: { method: "POST", headers: expectedHeaders, body: '{"n":1}' },
+        },
+      ]);
+    });
+
+    it("omits Authorization when no token resolves", async () => {
+      // @ts-expect-error simulating a runtime that has no Headers global
+      delete globalThis.Headers;
+
+      const { calls, minimal } = fakeMinimal(respond(200, "{}"));
+      configureApiClient({ baseUrl: "http://h", fetch: createAdapterFetch(minimal) });
+
+      await apiGet("/api/a");
+      expect(calls[0]?.init.headers).toEqual({ "Content-Type": "application/json" });
     });
   });
 
