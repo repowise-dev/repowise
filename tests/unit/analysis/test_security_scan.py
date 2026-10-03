@@ -1050,6 +1050,8 @@ class TestSecretPrecision:
         [
             'client = OpenAI(api_key="ollama")\n',
             'client = OpenAI(api_key="lmstudio")\n',
+            '_IGNORE_TOKEN = "repowise-security-ignore"\n',
+            'API_KEY_HEADER = "x-api-key"\n',
             '<Bar token="--chart-1" />\n',
         ],
     )
@@ -1060,6 +1062,8 @@ class TestSecretPrecision:
         "source",
         [
             'TOKEN = "sk-live-9f8a7b6c5d4e"\n',
+            'SECRET = "k3y-9f8a-7b6c-5d4e-a1b2"\n',
+            'API_KEY = "Ab-cd-Ef-gh-ij-kl"\n',
             'API_KEY = "sk-a****"\n',
             f'API_KEY = "{"q" * 40}"\n',
         ],
