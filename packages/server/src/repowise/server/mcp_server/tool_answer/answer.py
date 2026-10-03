@@ -349,7 +349,7 @@ async def get_answer(
 
     Responses fit 24,000 serialized chars. Pass ``include=["evidence"]`` for
     the deduplicated expanded evidence projection (32,000 chars). Reductions
-    carry counts and an exact recovery call.
+    carry counts and a recovery: repeat the call with that include.
 
     Args:
         question: developer question.
@@ -730,7 +730,7 @@ async def get_answer(
 
     Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
     for the deduplicated expanded projection, capped at 32,000. Reductions carry
-    totals, emitted counts, reasons, and an exact one-call recovery.
+    totals, emitted counts, reasons, and a recovery: the same call with that include.
 
     Args:
         question: Developer question.

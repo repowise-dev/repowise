@@ -192,12 +192,10 @@ def test_adversarial_duplicate_evidence_survives_once_with_exact_recovery():
     assert compact["retrieval_reduced_reason"] == "confidence_projection_and_deduplication"
     assert compact["_meta"]["projection"]["recovery"] == {
         "tool": "get_answer",
-        "arguments": {
-            "question": "how does auth work",
-            "include": ["evidence"],
-            "scope": "src/auth",
-        },
+        "same_arguments": True,
+        "arguments": {"include": ["evidence"]},
     }
+    assert "how does auth work" not in json.dumps(compact["_meta"])
     assert expanded["retrieval"], "the advertised one-call expansion must recover evidence"
 
 

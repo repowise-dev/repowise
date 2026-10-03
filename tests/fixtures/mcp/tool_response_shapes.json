@@ -11,9 +11,9 @@
           "arguments": {
             "include": [
               null
-            ],
-            "question": null
+            ]
           },
+          "same_arguments": null,
           "tool": null
         }
       },
