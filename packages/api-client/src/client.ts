@@ -142,8 +142,9 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
  * Wraps a minimal HTTP primitive as a `fetch` for `configureApiClient`. Pure:
  * it never constructs `Headers` or `Response`, so it runs where those globals
  * do not exist. The returned object carries what this client reads (`ok`,
- * `status`, `statusText`, `json()`, `text()`); `statusText` is empty because
- * the primitive does not report one.
+ * `status`, `statusText`, `json()`, `text()`). The primitive reports no
+ * status text, so `statusText` is `HTTP <status>`, which is what an error
+ * with a non-JSON body shows as its detail.
  */
 export function createAdapterFetch(minimal: MinimalFetch): typeof fetch {
   const adapted = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -161,7 +162,7 @@ export function createAdapterFetch(minimal: MinimalFetch): typeof fetch {
     return {
       ok: res.ok,
       status: res.status,
-      statusText: "",
+      statusText: `HTTP ${res.status}`,
       json: async () => JSON.parse(res.text) as unknown,
       text: async () => res.text,
     } as unknown as Response;

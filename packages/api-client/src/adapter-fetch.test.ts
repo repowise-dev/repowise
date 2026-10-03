@@ -119,7 +119,7 @@ describe("createAdapterFetch", () => {
     expect((err as ApiClientError).detail).toBe("Repo not found");
   });
 
-  it("falls back to an empty detail when an error body is not JSON", async () => {
+  it("falls back to the HTTP status as detail when an error body is not JSON", async () => {
     const { minimal } = fakeMinimal(respond(502, "<html>Bad Gateway</html>"));
     configureApiClient({ baseUrl: "http://h", fetch: createAdapterFetch(minimal) });
 
@@ -127,7 +127,8 @@ describe("createAdapterFetch", () => {
 
     expect(err).toBeInstanceOf(ApiClientError);
     expect((err as ApiClientError).status).toBe(502);
-    expect((err as ApiClientError).detail).toBe("");
+    expect((err as ApiClientError).detail).toBe("HTTP 502");
+    expect((err as ApiClientError).message).toBe("API error 502: HTTP 502");
   });
 
   it("resolves an empty 204 body to undefined", async () => {
@@ -155,7 +156,7 @@ describe("createAdapterFetch", () => {
     });
 
     expect(await res.text()).toBe("graph TD");
-    expect(res.statusText).toBe("");
+    expect(res.statusText).toBe("HTTP 200");
     expect(calls[0]?.url).toBe("http://h/api/c4");
     expect(calls[0]?.init).toEqual({ headers: { "X-Test": "1" }, signal: controller.signal });
   });

@@ -10,6 +10,7 @@ import {
   DARK_CANVAS_BAND,
   GRADIENTS,
 } from "../src/brand.js";
+import { healthBandNodeFill } from "../src/health/tokens.js";
 
 // styles/globals.css is the single source of truth for the token system;
 // the brand constants exist for surfaces that can't resolve CSS vars. This
@@ -101,6 +102,20 @@ describe("dark canvas constants match the .dark block", () => {
 
   it("band map covers exactly the health bands", () => {
     expect(Object.keys(DARK_CANVAS_BAND).sort()).toEqual([...HEALTH_BAND_ORDER].sort());
+  });
+
+  it("band map uses the node token the in-app health surface paints each band with", () => {
+    for (const band of HEALTH_BAND_ORDER) {
+      // healthBandNodeFill returns `var(--color-node-<x>)`; map <x> to its
+      // DARK_CANVAS key (needs-work -> nodeNeedsWork).
+      const match = /^var\(--color-node-([a-z-]+)\)$/.exec(healthBandNodeFill(band));
+      expect(match, band).not.toBeNull();
+      const key = `node-${match![1]}`.replace(/-([a-z])/g, (_, c: string) =>
+        c.toUpperCase(),
+      ) as keyof typeof DARK_CANVAS;
+      expect(DARK_CANVAS[key], band).toBeDefined();
+      expect(DARK_CANVAS_BAND[band], band).toBe(DARK_CANVAS[key]);
+    }
   });
 
   it("band map resolves scores to the matching node token", () => {
