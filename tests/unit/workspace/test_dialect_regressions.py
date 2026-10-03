@@ -100,7 +100,7 @@ class TestExtractorSelfExclusion:
     SELF_PATHS = (
         "packages/core/src/repowise/core/workspace/extractors/http/fastapi.py",
         "packages/core/src/repowise/core/workspace/extractors/http/mounts.py",
-        "packages/core/src/repowise/core/workspace/extractors/topic_extractor.py",
+        "packages/core/src/repowise/core/workspace/extractors/topic/rabbitmq.py",
         "packages/core/src/repowise/core/workspace/extractors/grpc/python.py",
         "packages/core/src/repowise/core/workspace/extractors/data/sql_strings.py",
     )
@@ -124,6 +124,29 @@ class TestExtractorSelfExclusion:
         skip = make_exclude_predicate(("vendor/*",))
         assert skip("vendor/thing.py")
         assert not skip("app/thing.py")
+
+    def test_dotnet_test_projects_are_skipped(self) -> None:
+        # A .NET test project is a sibling directory named after the project
+        # it tests, not a `tests/` tree. Its HTTP calls and published messages
+        # became producers and consumers linked across repos (#2808).
+        skip = make_exclude_predicate()
+        assert skip("Foo.Worker.Tests/OrderPlacedTests.cs")
+        assert skip("src/Billing.Tests/Consumers/InvoiceConsumerTests.vb")
+
+    def test_a_dotnet_specs_project_is_still_scanned(self) -> None:
+        # Left in for the reason a `spec/` directory is: it can hold real
+        # OpenAPI or proto contracts.
+        skip = make_exclude_predicate()
+        assert not skip("Foo.Specs/openapi.yaml")
+
+    def test_a_name_that_only_ends_like_a_test_project_is_still_scanned(self) -> None:
+        skip = make_exclude_predicate()
+        assert not skip("LoadTests/Runner.cs")
+        assert not skip("src/Foo.Testing/Clients/OrdersClient.cs")
+
+    def test_dotnet_test_projects_are_scanned_when_tests_are_included(self) -> None:
+        skip = make_exclude_predicate(exclude_tests=False)
+        assert not skip("Foo.Worker.Tests/OrderPlacedTests.cs")
 
 
 class TestSqlCteAlias:

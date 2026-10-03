@@ -1,7 +1,9 @@
 """Content-keyed cache of the complexity walk, kept beside the index.
 
-The walk over a file is a pure function of its bytes, its language and the
-walker's version, and on an update most of the files the health pass walks
+The walk over a file is a pure function of its bytes, its grammar and the
+walker's version (and, where a repository configures one, its assertion
+vocabulary -- see :meth:`HealthWalkCache.key`), and on an update most of the
+files the health pass walks
 did not change: the performance closure re-walks every file whose call path
 reaches a changed sink, so the walk was two fifths of a one-file update.
 This keeps each file's :class:`FileComplexity` under its content hash the way
@@ -31,7 +33,7 @@ _CACHE_VERSION = 1
 
 
 class HealthWalkCache:
-    """``(language, content hash) -> pickled FileComplexity`` for one repository.
+    """``(grammar, content hash) -> pickled FileComplexity`` for one repository.
 
     ``load`` reads the previous run's entries; ``get`` and ``put`` serve the
     walk; ``save`` writes back the entries this run used or created, so a file
@@ -47,8 +49,22 @@ class HealthWalkCache:
         self.misses = 0
 
     @staticmethod
-    def key(language: str, content_hash: str) -> str:
-        return f"{language}:{content_hash}"
+    def key(grammar: str, content_hash: str, vocabulary: str = "") -> str:
+        """The cache key, optionally qualified by a configured vocabulary.
+
+        *grammar* is the tree-sitter grammar the walk used, which for ``.tsx``
+        is not the file's language tag. Keying on the language instead would
+        serve a ``.tsx`` walk for a byte-identical ``.ts`` file.
+
+        A repository that configures an assertion vocabulary breaks the "bytes
+        plus grammar plus version" purity this cache rests on, so the
+        vocabulary joins the key and an edit to it simply misses and ages out.
+        Empty is the overwhelmingly common case and keys exactly as before, so
+        no existing cache is invalidated by this parameter existing.
+        """
+        if not vocabulary:
+            return f"{grammar}:{content_hash}"
+        return f"{grammar}:{content_hash}:{vocabulary}"
 
     def load(self) -> None:
         try:

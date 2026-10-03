@@ -23,9 +23,11 @@ from typing import Any
 
 from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
+    TOPIC_KIND_BINDING,
     Contract,
     ContractLink,
     normalize_contract_id,
+    same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
@@ -223,6 +225,84 @@ class CodeApiCoverage:
 
 
 @dataclass
+class OpenApiCoverage:
+    """Bounded OpenAPI extraction coverage and explicit refusal reasons."""
+
+    documents: int = 0
+    parsed_documents: int = 0
+    unresolved_documents: int = 0
+    operations: int = 0
+    providers: int = 0
+    schemas_merged: int = 0
+    spec_only_providers: int = 0
+    request_states: dict[str, int] = field(default_factory=dict)
+    response_states: dict[str, int] = field(default_factory=dict)
+    refusal_reasons: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "documents": self.documents,
+            "parsed_documents": self.parsed_documents,
+            "unresolved_documents": self.unresolved_documents,
+            "operations": self.operations,
+            "providers": self.providers,
+            "schemas_merged": self.schemas_merged,
+            "spec_only_providers": self.spec_only_providers,
+            "request_states": self.request_states,
+            "response_states": self.response_states,
+            "refusal_reasons": self.refusal_reasons,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OpenApiCoverage:
+        return cls(
+            documents=data.get("documents", 0),
+            parsed_documents=data.get("parsed_documents", 0),
+            unresolved_documents=data.get("unresolved_documents", 0),
+            operations=data.get("operations", 0),
+            providers=data.get("providers", 0),
+            schemas_merged=data.get("schemas_merged", 0),
+            spec_only_providers=data.get("spec_only_providers", 0),
+            request_states=data.get("request_states", {}),
+            response_states=data.get("response_states", {}),
+            refusal_reasons=data.get("refusal_reasons", {}),
+        )
+
+    @classmethod
+    def from_stats(cls, stats_by_repo: dict[str, dict[str, int]]) -> OpenApiCoverage:
+        totals: dict[str, int] = {}
+        for repo_stats in stats_by_repo.values():
+            for key, value in repo_stats.items():
+                if key.startswith("openapi_"):
+                    totals[key] = totals.get(key, 0) + value
+
+        def states(side: str) -> dict[str, int]:
+            prefix = f"openapi_{side}_"
+            return {
+                state: totals.get(f"{prefix}{state}", 0)
+                for state in ("complete", "partial", "unsupported", "unresolved")
+            }
+
+        reason_prefix = "openapi_reason_"
+        return cls(
+            documents=totals.get("openapi_documents", 0),
+            parsed_documents=totals.get("openapi_documents_parsed", 0),
+            unresolved_documents=totals.get("openapi_documents_unresolved", 0),
+            operations=totals.get("openapi_operations", 0),
+            providers=totals.get("openapi_providers", 0),
+            schemas_merged=totals.get("openapi_schemas_merged", 0),
+            spec_only_providers=totals.get("openapi_spec_only_providers", 0),
+            request_states=states("request"),
+            response_states=states("response"),
+            refusal_reasons={
+                key.removeprefix(reason_prefix): value
+                for key, value in sorted(totals.items())
+                if key.startswith(reason_prefix)
+            },
+        )
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -248,6 +328,8 @@ class ExtractionDiagnostics:
     schema_coverage: SchemaCoverage = field(default_factory=SchemaCoverage)
     #: Published-package surface coverage. Reported, never asserted.
     code_api: CodeApiCoverage = field(default_factory=CodeApiCoverage)
+    #: OpenAPI document, operation, per-side fidelity, and refusal coverage.
+    openapi: OpenApiCoverage = field(default_factory=OpenApiCoverage)
 
     @property
     def http_consumer_coverage(self) -> float | None:
@@ -282,12 +364,14 @@ class ExtractionDiagnostics:
             "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
             "schema_coverage": self.schema_coverage.to_dict(),
             "code_api": self.code_api.to_dict(),
+            "openapi": self.openapi.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExtractionDiagnostics:
         schema = data.get("schema_coverage") or {}
         code = data.get("code_api") or {}
+        openapi = data.get("openapi") or {}
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -353,6 +437,7 @@ class ExtractionDiagnostics:
                 consumers=code.get("consumers", 0),
                 linked_providers=code.get("linked_providers", 0),
             ),
+            openapi=OpenApiCoverage.from_dict(openapi),
         )
 
 
@@ -379,7 +464,7 @@ def _classify_unmatched(
     # A matching provider exists. If every one shares this consumer's repo AND
     # service boundary, the call is intra-service and was filtered on purpose.
     all_internal = all(
-        p.repo == consumer.repo and p.service == consumer.service for p in candidates
+        same_service(p.repo, p.service, consumer.repo, consumer.service) for p in candidates
     )
     return UnmatchedReason.INTERNAL_ONLY if all_internal else UnmatchedReason.UNLINKED
 
@@ -445,7 +530,8 @@ def build_diagnostics(
     matched_providers: set[tuple[str, str, str]] = set()
     weak_links = 0
     for lk in links:
-        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, lk.contract_id))
+        consumer_id = lk.consumer_contract_id or lk.contract_id
+        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, consumer_id))
         matched_providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
         if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
             weak_links += 1
@@ -459,7 +545,8 @@ def build_diagnostics(
     by_reason: dict[str, int] = defaultdict(int)
     for c in consumers:
         key = _contract_key(c.repo, c.file_path, c.contract_id)
-        if key in matched_consumers:
+        # A binding is wiring its queue's consumers are matched through, not a call.
+        if key in matched_consumers or c.meta.get("kind") == TOPIC_KIND_BINDING:
             continue
         reason = _classify_unmatched(c, providers_by_norm_id)
         by_reason[reason] += 1
@@ -554,4 +641,5 @@ def build_diagnostics(
         symbol_identity=identity,
         schema_coverage=schema,
         code_api=code_api,
+        openapi=OpenApiCoverage.from_stats(stats_by_repo),
     )

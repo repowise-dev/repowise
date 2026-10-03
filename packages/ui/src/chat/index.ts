@@ -7,6 +7,7 @@ export * from "./use-chat-draft";
 export * from "./chat-composer";
 export * from "./chat-dock";
 export * from "./chat-context";
+export * from "./chat-suggestions";
 export * from "./chat-handoff";
 export * from "./ask-about-this";
 export * from "./chat-selection-affordance";

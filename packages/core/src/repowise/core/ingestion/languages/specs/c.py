@@ -23,13 +23,22 @@ BUILTIN_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: Stems of the helpers C and C++ tests share. Exported for cpp, which keeps
+#: the same test conventions.
+TEST_SUPPORT_STEM_SUFFIXES: tuple[str, ...] = (
+    "_test_helper",
+    "_test_helpers",
+    "_test_util",
+    "_test_impl",
+)
+
 SPEC = LanguageSpec(
     tag="c",
     display_name="C",
     import_support="full",
     # Same test conventions as C++ (GoogleTest/Unity): foo_test.c / test_foo.c.
     test_stem_prefixes=("test_",),
-    test_stem_suffixes=("_test", "_unittest"),
+    test_stem_suffixes=("_test", "_unittest", *TEST_SUPPORT_STEM_SUFFIXES),
     # A top-level include/ holds a C library's installed public headers —
     # its API surface (libuv, curl, openssl layouts). Root-anchored: a
     # vendored include/ deep in another tree must not mint the layer.

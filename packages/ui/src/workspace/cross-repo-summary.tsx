@@ -18,6 +18,9 @@ export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps
         .map(([k, v]) => `${v} ${k}`)
         .join(", ")
     : undefined;
+  const packageDescription = crossRepo?.package_diagnostic_count
+    ? `${crossRepo.package_diagnostic_count} Maven non-matches; ${crossRepo.package_diagnostics_emitted ?? 0} retained`
+    : undefined;
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -29,6 +32,7 @@ export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps
       <MetricCard
         label="Package Deps"
         value={crossRepo?.package_dep_count ?? 0}
+        {...(packageDescription ? { description: packageDescription } : {})}
         icon={<Package className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
       />
       <MetricCard

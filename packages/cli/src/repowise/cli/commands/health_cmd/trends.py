@@ -47,7 +47,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
             if repo is None:
                 return [], None
             snaps = await list_health_snapshots(session, repo.id)
-            return recent_kpis(snaps, limit=10), diff_snapshots(snaps)
+            return recent_kpis(snaps, limit=10, doc_drift=True), diff_snapshots(snaps)
 
     rows, summary = run_async(_fetch())
     if not rows:
@@ -88,6 +88,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     table.add_column("Average", justify="right")
     table.add_column("Worst", justify="right")
     table.add_column("Worst file", style="dim")
+    table.add_column("Doc drift", justify="right")
     for r in rows:
         table.add_row(
             (r["taken_at"] or "—")[:19],
@@ -95,6 +96,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
             f"{r['average_health']:.2f}",
             f"{r['worst_performer_score']:.2f}" if r["worst_performer_score"] is not None else "—",
             r["worst_performer_path"] or "—",
+            str(r["doc_drift_count"]) if r["doc_drift_count"] is not None else "—",
         )
     console.print(table)
 

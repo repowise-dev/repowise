@@ -281,7 +281,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -301,13 +302,19 @@ class ResolveMixin:
             ".cpp",
             ".cxx",
             ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
             *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
         )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -394,9 +401,21 @@ class ResolveMixin:
                             continue
                         if self._graph.has_node(rel):
                             rels.append(rel)
+                    # ``Policy`1`` is the generic ``Policy<T>``; symbol ids and
+                    # imported names spell it ``Policy``.
+                    local_name = fqn.rsplit(".", 1)[-1].split("`", 1)[0]
+                    fragments = tuple(sorted(rels))
+                    for rel in rels:
+                        # Two partial types sharing a bare name in one file
+                        # (``Policy`` and ``Policy<T>``, or two namespaces) are
+                        # told apart by nothing the call resolver sees, so
+                        # neither lends that file its fragments.
+                        key = (rel, local_name)
+                        self._partial_fragments[key] = (
+                            () if key in self._partial_fragments else fragments
+                        )
                     if len(rels) < 2:
                         continue
-                    local_name = fqn.rsplit(".", 1)[-1]
                     for a in rels:
                         for b in rels:
                             if a == b or self._graph.has_edge(a, b):
@@ -448,6 +467,34 @@ class ResolveMixin:
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -574,6 +621,7 @@ class ResolveMixin:
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
             heritage_parents=self._heritage_parents(),
+            partial_fragments=self._partial_fragments,
         )
 
         # Record which C/C++ declarations were paired with a definition. The

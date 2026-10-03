@@ -7,7 +7,7 @@ import { bandForScore } from "@repowise-dev/types/health";
 import { cn } from "../lib/cn";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FilesTreemap, type TreemapColor, type TreemapSize } from "./files-treemap";
-import { FilesTable, type SortKey } from "./files-table";
+import { FilesTable, lineCoverage, type SortKey } from "./files-table";
 // One `Fig`, shared with the file detail page. The two Files surfaces are meant
 // to emphasise a figure identically, and two identical local copies is how that
 // stops being true without anyone noticing.
@@ -166,7 +166,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
           cmp = num(a.loc) - num(b.loc);
           break;
         case "coverage":
-          cmp = num(a.coverage_pct) - num(b.coverage_pct);
+          cmp = num(lineCoverage(a)) - num(lineCoverage(b));
           break;
         case "name":
           cmp = a.file_path.localeCompare(b.file_path);

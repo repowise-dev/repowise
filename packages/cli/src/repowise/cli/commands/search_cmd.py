@@ -103,19 +103,20 @@ def _project_result(item: dict, *, multi: bool) -> dict:
                 "name": item.get("name") or "",
                 "qualified_name": item.get("qualified_name") or "",
                 "kind": item.get("kind") or "",
-                "path": item.get("file") or "",
+                "path": item.get("path") or item.get("file") or "",
                 "line": item.get("start_line"),
                 "symbol_id": item.get("symbol_id") or "",
             }
         )
     elif kind == "file":
-        out.update({"title": item.get("title") or "", "path": item.get("file") or ""})
+        path = item.get("path") or item.get("file") or ""
+        out.update({"title": item.get("title") or "", "path": path})
     else:
         out.update(
             {
                 "title": item.get("title") or "",
                 "page_type": item.get("page_type") or "",
-                "path": item.get("target_path") or "",
+                "path": item.get("path") or item.get("target_path") or "",
                 "snippet": item.get("snippet") or "",
             }
         )

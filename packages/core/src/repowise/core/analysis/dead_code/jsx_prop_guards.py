@@ -57,8 +57,7 @@ def extract_guarded_jsx_renders(
                 if c.type == "property_identifier":
                     prop_text = _node_text(c)
             if (
-                obj_text in ("props", "this.props", "self.props")
-                or obj_text.endswith(".props")
+                obj_text in ("props", "this.props", "self.props") or obj_text.endswith(".props")
             ) and prop_text:
                 return [prop_text]
         elif n.type == "identifier":
@@ -151,6 +150,11 @@ def extract_guarded_jsx_renders(
             "pair_pattern",
             "variable_declarator",
             "rest_pattern",
+            "formal_parameters",
+            "parameters",
+            "required_parameter",
+            "optional_parameter",
+            "assignment_pattern",
         ):
             for c in n.children:
                 if c.type not in (":", "=", ",", "[", "]", "{", "}", "...", "var", "let", "const"):
@@ -210,8 +214,26 @@ def extract_guarded_jsx_renders(
 
         return param_props if has_destructured_param else None
 
-    def _collect_function_local_vars(fn_node: Any) -> set[str]:
+    def _collect_function_param_names(fn_node: Any) -> set[str]:
+        for c in fn_node.children:
+            if c.type in ("formal_parameters", "parameters"):
+                return set(_extract_bound_names(c))
+        single_param = fn_node.child_by_field_name("parameter")
+        if single_param is not None:
+            return set(_extract_bound_names(single_param))
+        return set()
+
+    def _collect_function_local_vars(
+        fn_node: Any, inherited_vars: set[str] | None = None
+    ) -> set[str]:
+        # A nested callback closes over the variables in its enclosing
+        # component. Keep those names in scope while adding declarations from
+        # the callback itself; otherwise ``show && <Child />`` inside a
+        # callback is mistaken for a prop guard even when ``show`` is local
+        # state in the component.
         local_vars: set[str] = set(module_vars)
+        if inherited_vars:
+            local_vars.update(inherited_vars)
 
         def _scan(n: Any) -> None:
             if n != fn_node and n.type in (
@@ -237,6 +259,7 @@ def extract_guarded_jsx_renders(
         current_fn: str | None = None,
         local_vars: set[str] | None = None,
         param_props: set[str] | None = None,
+        function_depth: int = 0,
     ) -> None:
         current_local_vars = local_vars
         current_param_props = param_props
@@ -258,8 +281,15 @@ def extract_guarded_jsx_renders(
                         fn_name = _node_text(c)
                         break
             current_fn = fn_name or "Anonymous"
-            current_local_vars = _collect_function_local_vars(n)
-            current_param_props = _collect_function_param_props(n)
+            current_local_vars = _collect_function_local_vars(n, local_vars)
+            current_param_props = set(param_props or ())
+            current_param_props.update(_collect_function_param_props(n) or ())
+            if function_depth > 0:
+                # A callback parameter can shadow an outer destructured prop.
+                # Treat only the callback's own bindings as locals; the outer
+                # component's destructured props remain eligible guards.
+                current_local_vars.update(_collect_function_param_names(n))
+            function_depth += 1
 
         if n.type == "binary_expression":
             op = None
@@ -298,7 +328,13 @@ def extract_guarded_jsx_renders(
                             results.append((current_fn, target, prop_name))
 
         for child in n.children:
-            _walk(child, current_fn, current_local_vars, current_param_props)
+            _walk(
+                child,
+                current_fn,
+                current_local_vars,
+                current_param_props,
+                function_depth,
+            )
 
     _walk(tree.root_node)
     return results

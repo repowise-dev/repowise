@@ -19,13 +19,16 @@ export default defineConfig({
     // `@repowise-dev/types/health` → `<…/index.ts>/health`. That only breaks
     // runtime *value* imports (type-only imports are erased), which is why it
     // stayed latent until a test transitively value-imported a types subpath.
-    // Keep this list in sync with packages/types/package.json `exports`.
+    // Kept in sync with packages/types/package.json `exports` by
+    // __tests__/types-alias-parity.test.ts, because the comment alone was not
+    // enough the last time a subpath was added.
     alias: {
       "@repowise-dev/types/graph": path.resolve(__dirname, "../types/src/graph.ts"),
       "@repowise-dev/types/git": path.resolve(__dirname, "../types/src/git.ts"),
       "@repowise-dev/types/docs": path.resolve(__dirname, "../types/src/docs.ts"),
       "@repowise-dev/types/decisions": path.resolve(__dirname, "../types/src/decisions.ts"),
       "@repowise-dev/types/dead-code": path.resolve(__dirname, "../types/src/dead-code.ts"),
+      "@repowise-dev/types/doc-drift": path.resolve(__dirname, "../types/src/doc-drift.ts"),
       "@repowise-dev/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
@@ -36,6 +39,12 @@ export default defineConfig({
       "@repowise-dev/types/owners": path.resolve(__dirname, "../types/src/owners.ts"),
       "@repowise-dev/types/modules": path.resolve(__dirname, "../types/src/modules.ts"),
       "@repowise-dev/types/overview": path.resolve(__dirname, "../types/src/overview.ts"),
+      "@repowise-dev/types/actions": path.resolve(__dirname, "../types/src/actions.ts"),
+      "@repowise-dev/types/fix-first": path.resolve(__dirname, "../types/src/fix-first.ts"),
+      "@repowise-dev/types/agent-prompts": path.resolve(
+        __dirname,
+        "../types/src/agent-prompts.ts",
+      ),
       "@repowise-dev/types/files": path.resolve(__dirname, "../types/src/files.ts"),
       "@repowise-dev/types/external-systems": path.resolve(
         __dirname,
@@ -48,6 +57,17 @@ export default defineConfig({
       ),
       "@repowise-dev/types/coupling": path.resolve(__dirname, "../types/src/coupling.ts"),
       "@repowise-dev/types/stats": path.resolve(__dirname, "../types/src/stats.ts"),
+      "@repowise-dev/types/episodes": path.resolve(__dirname, "../types/src/episodes.ts"),
+      "@repowise-dev/types/risk-semantics": path.resolve(
+        __dirname,
+        "../types/src/risk-semantics.ts",
+      ),
+      "@repowise-dev/types/repos": path.resolve(__dirname, "../types/src/repos.ts"),
+      "@repowise-dev/types/serve-lock": path.resolve(__dirname, "../types/src/serve-lock.ts"),
+      "@repowise-dev/types/generated/http": path.resolve(
+        __dirname,
+        "../types/src/generated/http.ts",
+      ),
       "@repowise-dev/types": path.resolve(__dirname, "../types/src/index.ts"),
     },
   },

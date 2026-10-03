@@ -38,12 +38,23 @@ export function toChatUiMessages(
             },
           }
         : {}),
-      status: "done" as const,
+      // The wire never persists a status, so reload it from the same `error`
+      // key the live stream reads. Without this a failed read comes back from
+      // storage looking like a good one, and is cited as evidence again.
+      status:
+        typeof toolCall.result === "object" &&
+        toolCall.result !== null &&
+        "error" in toolCall.result
+          ? ("error" as const)
+          : ("done" as const),
       ...(toolCall.origin ? { origin: toolCall.origin } : {}),
     })),
     isStreaming: false,
     ...(message.content.provider ? { provider: message.content.provider } : {}),
     ...(message.content.model ? { model: message.content.model } : {}),
     ...(message.content.truncated ? { truncated: true } : {}),
+    ...(message.content.follow_ups?.length
+      ? { followUps: message.content.follow_ups }
+      : {}),
   }));
 }

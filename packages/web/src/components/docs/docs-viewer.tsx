@@ -183,10 +183,13 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
             Bus factor 1
           </Badge>
         )}
+        {/* Plain outline, like every other chip in this row. It used to carry
+            --color-error, which made it the loudest mark on the panel and put
+            it in the same colour vocabulary the health bands use. */}
         {fix?.magnet && (
           <Badge
             variant="outline"
-            className="text-[10px] border-[var(--color-error)]/40 text-[var(--color-error)]"
+            className="text-[10px]"
             title={`Repeatedly bug-fixed, most recently ${fix.age}.`}
           >
             <Bug className="h-2.5 w-2.5 mr-1" />
@@ -301,11 +304,14 @@ export function DocsViewer({
     [repoId],
   );
 
-  const hasTargetPath = !!page?.target_path;
   const targetPath = page?.target_path ?? "";
+  // Decided by page type, not path shape: a module page's target is a
+  // directory, which every row below would answer with nothing, and the
+  // reader already gives module pages their own history card.
+  const showSignals = !!targetPath && page?.page_type !== "module_page";
   // Security findings only make sense for real source files.
   const isFilePath =
-    hasTargetPath &&
+    showSignals &&
     !targetPath.includes("::") &&
     !targetPath.startsWith("onboarding/") &&
     !targetPath.startsWith("layer:");
@@ -344,7 +350,7 @@ export function DocsViewer({
         ) : undefined
       }
       intelligenceSlot={
-        hasTargetPath ? (
+        showSignals ? (
           // One "Signals" block, not five. At a glance, Importance, Community,
           // Call graph and Security each announced themselves with their own
           // uppercase label over a handful of rows, so the rail was mostly

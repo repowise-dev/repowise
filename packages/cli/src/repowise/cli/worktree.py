@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import console
+from repowise.cli.helpers import console, warn
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -90,9 +90,11 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
     update in the worktree upserts a second repository row named after the
     worktree dir, and every regenerated page lands under it while the seeded
     pages stay under the base row — prior-page reuse and repo-scoped queries
-    both silently split. Rewriting name + local_path (and retargeting the two
-    repo-level pages that are keyed by repo name) makes the copy fully the
-    worktree's own. Best-effort: an unmatched row means the base index is
+    both silently split. Rewriting name + local_path (and re-keying the two
+    repo-level pages whose id carries the repo name) makes the copy fully the
+    worktree's own. Ceiling: the vector store keeps the old page id until the
+    page is regenerated, so semantic search can return an id that no longer
+    resolves; re-keying vectors needs the store open, which seeding avoids. Best-effort: an unmatched row means the base index is
     unusual, and falling through leaves today's (pre-fix) behavior.
     """
     import sqlite3
@@ -114,12 +116,32 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
             "UPDATE repositories SET name = ?, local_path = ? WHERE id = ?",
             (dest_repo.name, str(dest_repo), repo_id),
         )
-        conn.execute(
-            "UPDATE wiki_pages SET target_path = ? "
-            "WHERE repository_id = ? AND target_path = ? "
-            "AND page_type IN ('repo_overview', 'architecture_diagram')",
-            (dest_repo.name, repo_id, old_name),
-        )
+        # A page id is ``<type>:<target_path>``, so the id moves with the target:
+        # generation writes the new id, and a page left under the old one is
+        # never regenerated and never found by ``generate --page``.
+        has_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"
+        ).fetchone()
+        for page_type in ("repo_overview", "architecture_diagram"):
+            old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
+            conn.execute(
+                "UPDATE wiki_pages SET id = ?, target_path = ? "
+                "WHERE repository_id = ? AND id = ?",
+                (new_id, dest_repo.name, repo_id, old_id),
+            )
+            conn.execute(
+                "UPDATE wiki_page_versions SET page_id = ? WHERE page_id = ?", (new_id, old_id)
+            )
+            conn.execute(
+                "UPDATE wiki_pages SET parent_page_id = ? "
+                "WHERE repository_id = ? AND parent_page_id = ?",
+                (new_id, repo_id, old_id),
+            )
+            if has_fts:
+                conn.execute(
+                    "UPDATE page_fts SET page_id = ?, target_path = ? WHERE page_id = ?",
+                    (new_id, dest_repo.name, old_id),
+                )
         conn.commit()
 
 
@@ -218,10 +240,10 @@ def seed_index_from_base(
             if include_submodules is not None:
                 state_include = st_data.get("include_submodules", False)
                 if include_submodules != state_include:
-                    console.print(
-                        f"[yellow]Warning: --include-submodules={include_submodules} "
+                    warn(
+                        f"--include-submodules={include_submodules} "
                         f"conflicts with copied state ({state_include}). Seeded state "
-                        f"will take precedence.[/yellow]"
+                        f"will take precedence."
                     )
 
             (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")

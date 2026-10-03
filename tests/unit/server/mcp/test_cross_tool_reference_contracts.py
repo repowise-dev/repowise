@@ -109,6 +109,7 @@ class Cell:
 _PATH_FIELDS = {
     "affected_files",
     "candidate",
+    "candidate_files",
     "candidates",
     "citations",
     "entry_points",
@@ -132,8 +133,15 @@ _SYMBOL_FIELDS = {
     "symbol_id",
     "target_node_id",
 }
+# Every lane that carries decision ids, not just the accepted one. A candidate
+# and a withdrawn decision are followable to ``get_why`` exactly as a governing
+# one is, so a consumer that can follow one can follow all three; listing only
+# ``decisions`` would have made the inventory blind to two thirds of what
+# ``get_context`` and ``get_why`` both emit.
 _DECISION_COLLECTIONS = {
     "decisions",
+    "candidates",
+    "history",
     "lineage",
     "recent_reversals",
     "top_active",
@@ -497,7 +505,9 @@ _CELL_LEDGER = tuple(
 
 
 @pytest.mark.asyncio
-async def test_canonical_emitter_reference_inventory(reference_repo, health_data, session) -> None:
+async def test_canonical_emitter_reference_inventory(
+    reference_repo, health_data, session
+) -> None:
     from repowise.server.mcp_server import (
         get_answer,
         get_change_risk,
@@ -509,8 +519,8 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
         get_symbol,
         get_why,
         search_codebase,
-        tool_middleware,
     )
+    from repowise.server.mcp_server._budget import OmissionCollector
 
     await _seed_plan(session, health_data)
     context_target = await _seed_context_omission(session, health_data, reference_repo)
@@ -519,13 +529,13 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
         "get_change_risk": (get_change_risk, ("HEAD",), {"baseline": 0}),
         "get_context": (get_context, (["src/auth/service.py"],), {"include": ["decisions"]}),
         "get_dead_code": (get_dead_code, (), {"min_confidence": "low"}),
-        # Every block this emitter can produce, so the inventory sees every
-        # reference kind it can mint. The only fixture finding whose function
-        # resolves to a symbol is the performance one.
+        # The performance finding is the fixture row whose function resolves
+        # to a symbol, so this one narrow projection carries file, symbol, and
+        # finding references without relying on dashboard budget choices.
         "get_health": (
             get_health,
             (),
-            {"include": ["biomarkers", "refactoring", "performance"]},
+            {"include": ["performance"], "only": ["top_findings"]},
         ),
         "get_overview": (get_overview, (), {"include": ["decisions"]}),
         "get_risk": (get_risk, (["src/auth/service.py"],), {}),
@@ -534,21 +544,29 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
         "search_codebase": (search_codebase, ("login",), {"mode": "symbol", "limit": 5}),
     }
     responses: dict[str, list[dict[str, Any]]] = {
-        name: [await tool_middleware(tool)(*args, **kwargs)]
+        name: [await tool(*args, **kwargs)]
         for name, (tool, args, kwargs) in calls.items()
     }
     responses["get_context"].append(
-        await tool_middleware(get_context)(
-            [context_target], include=["callers", "callees"]
-        )
+        await get_context([context_target], include=["callers", "callees"])
     )
+    # The real get_context graph-overflow/emission path is covered by
+    # test_high_fan_in_callers_signal_truncation. Keep this broad cross-tool
+    # inventory focused on the canonical reference shape and consumer contract
+    # with a store path independent of middleware and suite-global state.
+    sealed_context_omission: dict[str, Any] = {}
+    omission_collector = OmissionCollector("get_context", repo_root=reference_repo)
+    omission_collector.add(
+        f"{context_target} :: sealed inventory omission",
+        {"symbol_id": "src/generated/caller_062.py::call_062"},
+    )
+    omission_collector.attach(sealed_context_omission)
+    responses["get_context"].append(sealed_context_omission)
     # The plan list is an opt-in projection now: ``include=["refactoring"]``
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
     responses["get_health"].append(
-        await tool_middleware(get_health)(
-            include=["refactoring"], only=["refactoring_plans"]
-        )
+        await get_health(include=["refactoring"], only=["refactoring_plans"])
     )
     inventory = {
         emitter: [
@@ -588,10 +606,12 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
                 )
             for target in targets:
                 if target == "get_context":
-                    resolved = await tool_middleware(get_context)([ref.value])
+                    resolved = await get_context([ref.value])
                     card = resolved["targets"][ref.value]
                     assert card.get("error") is None, (ref, card)
-                    assert card.get("target") == ref.value
+                    # The ref resolves because the card is keyed on it; the
+                    # card no longer echoes the key back as a ``target`` field.
+                    assert "target" not in card
                     if ref.kind == "symbol":
                         _assert_symbol_card(
                             resolved,
@@ -612,7 +632,7 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
                             assert card["path"] == ref.expected_path
                         assert card.get("docs") or card.get("summary") or card.get("files")
                 elif target == "get_symbol":
-                    resolved = await tool_middleware(get_symbol)(ref.value)
+                    resolved = await get_symbol(ref.value)
                     if ref.kind == "symbol":
                         candidate = resolved
                         if "candidates" in resolved:
@@ -644,7 +664,7 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
                         assert resolved["verified"] is True
                         assert resolved["source"]
                 elif target == "get_why":
-                    resolved = await tool_middleware(get_why)(
+                    resolved = await get_why(
                         **(
                             {"reference": ref.expected_object}
                             if ref.entity_family == "evidence"
@@ -661,19 +681,19 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
                         assert decision["id"] == ref.value
                         assert decision.get("title") or decision.get("decision")
                 elif target == "get_dead_code":
-                    resolved = await tool_middleware(get_dead_code)(
+                    resolved = await get_dead_code(
                         min_confidence="low", finding_id=ref.value
                     )
                     assert resolved["resolved"] is True
                     assert resolved["finding"] == ref.expected_object
                 elif target == "get_health" and ref.kind == "finding":
-                    resolved = await tool_middleware(get_health)(finding_id=ref.value)
+                    resolved = await get_health(finding_id=ref.value)
                     assert resolved["resolved"] is True
                     assert _without_projection_counts(
                         resolved["finding"]
                     ) == _without_projection_counts(ref.expected_object)
                 elif target == "get_health":
-                    resolved = await tool_middleware(get_health)(plan_id=ref.value)
+                    resolved = await get_health(plan_id=ref.value)
                     assert resolved["resolved"] is True
                     assert resolved["plan"]["id"] == ref.value
                     assert resolved["plan"]["file_path"] == ref.expected_object["file_path"]
@@ -707,7 +727,8 @@ async def _seed_plan(session, repository_id: str) -> None:
 
 def _assert_symbol_card(result: dict, symbol_id: str, path: str, name: str) -> None:
     card = result["targets"][symbol_id]
-    assert card["target"] == symbol_id
+    # The map key is the target; the card no longer echoes it back as a field.
+    assert "target" not in card
     assert card["type"] == "symbol"
     assert card["docs"]["file_path"] == path
     assert card["docs"]["name"] == name
@@ -792,7 +813,7 @@ async def test_emitted_file_paths_resolve_to_content(reference_repo, path: str) 
     card = result["targets"][path]
     expected_type = "file" if "." in path.rsplit("/", 1)[-1] else "module"
     assert card.get("error") is None
-    assert card["target"] == path
+    assert "target" not in card
     assert card["type"] == expected_type, (path, card)
     assert "resolved_to" not in card
     assert card.get("docs") or card.get("summary") or card.get("files")
@@ -834,8 +855,8 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     health_data,
     session,
 ) -> None:
+    from repowise.core.analysis.dead_code.serving import dead_code_finding_id
     from repowise.server.mcp_server import get_dead_code, get_health
-    from repowise.server.mcp_server.tool_dead_code import _dead_code_finding_id
     from repowise.server.mcp_server.tool_health import (
         _health_finding_id,
         _refactoring_plan_id,
@@ -876,7 +897,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     plan_row = (await session.execute(select(RefactoringSuggestion))).scalars().first()
     for row, public_id, factory in (
         (health_row, health_finding["id"], _health_finding_id),
-        (dead_row, dead_finding["id"], _dead_code_finding_id),
+        (dead_row, dead_finding["id"], dead_code_finding_id),
         (plan_row, plan["id"], _refactoring_plan_id),
     ):
         replacement = copy(row)

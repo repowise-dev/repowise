@@ -66,6 +66,28 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
+def test_render_contains_machine_readable_index_scope(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        index_scope={
+            "run_mode": "fast",
+            "content_provenance": "none",
+            "git_tier": "essential",
+            "file_pages": {"eligible": 5, "generated": 0, "omitted": 5},
+            "analysis": {"unavailable": [], "skipped": ["generation"]},
+            "upgrade": {"status": "pending"},
+        },
+    )
+    result = gen.render(data)
+    assert "Scope: fast index · none content · essential Git" in result
+    assert "5 eligible file pages omitted" in result
+    assert '"eligible": 5' in result
+    assert '"generated": 0' in result
+    assert "repowise update --full" in result
+
+
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
@@ -142,7 +164,8 @@ def test_render_surfaces_performance_when_present(gen):
     result = gen.render(data)
     # Leads with the finding COUNT; the bounded [9,10] average and coverage %
     # are deliberately not rendered (nothing an agent can act on there).
-    assert "performance risk 7 open static I/O-in-loop / N+1 findings" in result
+    assert "performance risk 7 open static performance findings" in result
+    assert "N+1" not in result
 
 
 def test_render_omits_performance_when_unmeasured(gen):

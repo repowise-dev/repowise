@@ -64,6 +64,14 @@ class InstrumentedGroup(click.Group):
         #: name -> "module:attr", for commands not yet imported.
         self._lazy_commands: dict[str, str] = {}
 
+    def main(self, *args, **kwargs):
+        # Click expands wildcards in arguments on Windows by default, so a
+        # quoted ``--report "artifacts/**/lcov.info"`` arrived as several
+        # arguments, without the pruning the commands apply. A command that
+        # takes a glob expands it itself, the same on every platform.
+        kwargs.setdefault("windows_expand_args", False)
+        return super().main(*args, **kwargs)
+
     def add_lazy_command(self, name: str, target: str) -> None:
         """Register *name* without importing the module that defines it."""
         # Last registration wins, which is what ``click.Group.add_command``

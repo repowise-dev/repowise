@@ -143,9 +143,11 @@ def test_analyzer_caps_risk_file_even_when_old() -> None:
     assert set(risky.risk_factors) == {"database", "environment"}
     assert any("review before deleting" in e for e in risky.evidence)
 
-    # The ordinary file with identical git age is still confidently safe.
+    # The ordinary file with identical git age keeps its confidence; as a whole
+    # file it is a review candidate, never deletion-ready (REVIEW_ONLY_KINDS).
     ordinary = by_path["src/old_module.js"]
-    assert ordinary.safe_to_delete is True
+    assert ordinary.confidence > RISK_CAP_CONFIDENCE
+    assert ordinary.safe_to_delete is False
     assert ordinary.risk_factors == []
 
 
@@ -197,7 +199,7 @@ def test_analyzer_caps_untouched_service_worker() -> None:
     # demoted to a review candidate but still surfaces.
     assert sw.confidence == RISK_CAP_CONFIDENCE
 
-    assert by_path["src/old_module.js"].safe_to_delete is True
+    assert by_path["src/old_module.js"].confidence > RISK_CAP_CONFIDENCE
 
 
 def test_effective_safe_downgrades_persisted_service_worker() -> None:

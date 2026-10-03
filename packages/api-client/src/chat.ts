@@ -4,7 +4,11 @@
 
 import { apiGet, apiDelete, apiPatch, apiPost, BASE_URL, buildHeaders } from "./client";
 import type { ConversationResponse, ChatMessageResponse } from "./types";
-import type { ChatArtifact, ChatContext } from "@repowise-dev/types/chat";
+import type {
+  ChatArtifact,
+  ChatContext,
+  ChatSuggestion,
+} from "@repowise-dev/types/chat";
 
 export async function listConversations(
   repoId: string,
@@ -12,6 +16,19 @@ export async function listConversations(
   return apiGet<ConversationResponse[]>(
     `/api/repos/${repoId}/chat/conversations`,
   );
+}
+
+/**
+ * Questions built from what the page actually shows. Derived on the server from
+ * the same prefetch a first question would make, so this costs no model call.
+ */
+export async function getChatSuggestions(
+  repoId: string,
+  context: Pick<ChatContext, "kind" | "target">,
+): Promise<{ suggestions: ChatSuggestion[] }> {
+  const query = new URLSearchParams({ kind: context.kind });
+  if (context.target) query.set("target", context.target);
+  return apiGet(`/api/repos/${repoId}/chat/suggestions?${query.toString()}`);
 }
 
 export async function getConversation(

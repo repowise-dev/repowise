@@ -27,7 +27,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { OverviewSection, SectionLink } from "@repowise-dev/ui/overview";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
-import { AiPromptModal, buildHotspotAiPrompt } from "@repowise-dev/ui/health";
+import { AiPromptModal, buildHotspotAiPrompt, fileChatContext } from "@repowise-dev/ui/health";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { hotspotToFileCard } from "@repowise-dev/ui/shared/file-card";
 import type { Hotspot } from "@repowise-dev/types/git";
@@ -133,6 +133,7 @@ export function HotspotsSection({ repoId }: { repoId: string }) {
             : null
         }
         filePath={promptHotspot?.file_path}
+        chatContext={fileChatContext(promptHotspot?.file_path)}
         title="AI stabilization prompt"
         description="A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain."
       />

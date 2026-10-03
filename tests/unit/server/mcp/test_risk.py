@@ -6,6 +6,8 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -90,11 +92,11 @@ async def test_get_risk_normalizes_target_path(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_risk_repo_absolute_target_path(setup_mcp):
+async def test_get_risk_repo_absolute_target_path(setup_mcp, tmp_path):
     """A repo-absolute target is made repo-relative before the lookup (#1279)."""
     from repowise.server.mcp_server import get_risk
 
-    abs_target = "/tmp/test-repo/src/auth/service.py"
+    abs_target = str(tmp_path / "src" / "auth" / "service.py")
     result = await get_risk([abs_target])
     t = result["targets"][abs_target]
     assert t["hotspot_score"] == 0.92
@@ -176,6 +178,45 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_risk_pr_directive_names_its_next_calls(setup_mcp):
+    """The diff first, then the callers of what may break; tests_to_run gets no call."""
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+    diff, callers = directive["next_calls"]
+
+    assert diff["mcp"] == "get_change_risk()"
+    assert diff["cli"] == "repowise risk"
+    assert callers["tool"] == "get_context"
+    assert callers["arguments"] == {"targets": directive["may_break"][:5], "include": ["callers"]}
+    assert callers["mcp"].startswith('get_context(targets=["')
+
+
+@pytest.mark.asyncio
+async def test_get_risk_changed_files_alone_is_pr_mode(setup_mcp):
+    """The documented get_risk(changed_files=[...]) call assesses the changed set."""
+    from repowise.server.mcp_server import get_risk
+
+    alone = await get_risk(changed_files=["src/auth/service.py"])
+    explicit = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+
+    assert next(iter(alone)) == "directive"
+    assert alone["directive"] == explicit["directive"]
+    assert list(alone["targets"]) == ["src/auth/service.py"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_without_targets_or_changed_files_is_an_error(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk()
+
+    assert result["error"] == "targets or changed_files is required"
+    assert "targets" not in result
+
+
+@pytest.mark.asyncio
 async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup_mcp, session):
     """PR directive carries coverage-backed tests_to_run from the per-test map."""
     from repowise.core.analysis.health.coverage import TestCoverage
@@ -215,6 +256,7 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
     ]
     # The graph also reaches this file, and must not dilute a measured answer.
     assert directive["tests_to_run_basis"] == "measured"
+    assert directive["tests_to_run_kind"] == "test_id"
     assert "2 measured" in directive["summary"]
     assert {row["basis"] for row in directive["test_recommendations"]} == {
         "measured",
@@ -307,6 +349,7 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(setup
 
     assert directive["tests_to_run"] == ["tests/test_service.py"]
     assert directive["tests_to_run_basis"] == "inferred"
+    assert directive["tests_to_run_kind"] == "test_file"
     assert "inferred, not coverage-proven" in directive["summary"]
     assert "coverage-backed test(s) guard the change" not in directive["summary"]
 
@@ -321,6 +364,7 @@ async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_m
 
     assert directive["tests_to_run"] == []
     assert directive["tests_to_run_basis"] == "none"
+    assert directive["tests_to_run_kind"] is None
     assert directive["missing_tests"] == []
     assert directive["coverage_analysis"]["status"] == "unavailable"
     assert "missing_tests is withheld" in directive["summary"]
@@ -355,8 +399,12 @@ async def test_get_risk_test_compatibility_projection_cannot_contradict_typed_ro
     assert directive["tests_to_run_emitted"] == len(recommendations)
     assert directive["test_recommendations_emitted"] == len(recommendations)
     assert all(row["basis"] in {"measured", "inferred"} for row in recommendations)
-    assert all(row["basis"] in row["bases"] for row in recommendations)
-    assert all(row["repository_id"] == "repo1" for row in recommendations)
+    # ``bases`` rides only when it says something ``basis`` does not; absent
+    # means ``[basis]``. The repository is named once for the whole list rather
+    # than on every row.
+    assert all(row["basis"] in row.get("bases", [row["basis"]]) for row in recommendations)
+    assert all("repository_id" not in row for row in recommendations)
+    assert directive["test_recommendations_repository_id"] == "repo1"
 
 
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------
@@ -616,3 +664,134 @@ async def test_missing_tests_totals_use_full_precap_changed_file_population(setu
     assert directive["missing_tests_reduced_reason"] == "construction_cap"
     assert directive["missing_tests_truncated"] is True
     assert directive["missing_tests_omitted"] == 2
+
+
+def _co_change_row(**partner):
+    """The single row ``_build_co_changes`` makes from one stored partner record."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_risk.assessment import _build_co_changes
+
+    meta = SimpleNamespace(
+        co_change_partners_json=json.dumps([{"file_path": "b.py", **partner}])
+    )
+    rows, total = _build_co_changes(meta, {}, None)
+    assert total == 1
+    return rows[0]
+
+
+def test_co_change_direction_target_leads():
+    """The target seldom moves without the partner, so it is the antecedent."""
+    row = _co_change_row(count=2.0, frequency=8, self_commits=10, partner_commits=20)
+
+    assert row["direction"] == "a_to_b"
+    assert row["conf_ab"] == 0.8
+    assert row["conf_ba"] == 0.4
+
+
+def test_co_change_direction_partner_leads():
+    """The mirror case: the partner is the side that cannot move alone."""
+    row = _co_change_row(count=2.0, frequency=8, self_commits=20, partner_commits=10)
+
+    assert row["direction"] == "b_to_a"
+    assert row["conf_ab"] == 0.4
+    assert row["conf_ba"] == 0.8
+
+
+def test_co_change_direction_tie_is_undirected():
+    """Equal confidences report a tie rather than breaking the lead arbitrarily."""
+    row = _co_change_row(count=2.0, frequency=5, self_commits=10, partner_commits=10)
+
+    assert row["direction"] == "undirected"
+    assert row["conf_ab"] == 0.5
+    assert row["conf_ba"] == 0.5
+
+
+def test_co_change_direction_without_commit_totals():
+    """An index written before the commit totals existed stays undirected.
+
+    ``self_commits``/``partner_commits`` are absent from such a record, so there
+    is no denominator to divide by; the confidences are omitted rather than
+    emitted as a guessed zero.
+    """
+    row = _co_change_row(count=2.0, frequency=8)
+
+    assert row["direction"] == "undirected"
+    assert "conf_ab" not in row
+    assert "conf_ba" not in row
+
+
+@pytest.mark.asyncio
+async def test_get_risk_co_change_rows_carry_direction(setup_mcp):
+    """The field survives the whole pipeline, and says nothing it cannot back.
+
+    The seeded records carry no commit totals, so every row must come back
+    ``undirected`` with no confidence beside it -- a guessed ``0.0`` here would
+    read as "these files never change together", the opposite of unknown.
+    """
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"])
+    partners = result["targets"]["src/auth/service.py"]["co_change_partners"]
+
+    assert partners
+    for p in partners:
+        assert p["direction"] == "undirected"
+        assert "conf_ab" not in p
+        assert "conf_ba" not in p
+
+
+@pytest.mark.asyncio
+async def test_get_risk_card_reads_line_coverage_from_the_stored_report(setup_mcp, session):
+    from repowise.core.persistence.crud import save_coverage_files
+    from repowise.server.mcp_server import get_risk
+
+    await save_coverage_files(
+        session,
+        "repo1",
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "line_coverage_pct": 61.5,
+                "branch_coverage_pct": 40.0,
+                "total_coverable_lines": 200,
+            }
+        ],
+        source_format="lcov",
+    )
+    await session.commit()
+
+    card = (await get_risk(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
+
+    assert card["line_coverage_pct"] == 61.5
+    assert card["branch_coverage_pct"] == 40.0
+    assert "coverage_pct" not in card
+
+
+@pytest.mark.asyncio
+async def test_security_signals_are_ranked_high_first(setup_mcp, session):
+    """Severity is ranked, not sorted as text (which would put `high` last)."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import SecurityFinding
+    from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
+
+    for line, (kind, severity) in enumerate(
+        [("weak_hash", "low"), ("tls_verify_false", "med"), ("pickle_loads", "high")], start=1
+    ):
+        session.add(
+            SecurityFinding(
+                repository_id="repo1",
+                file_path="src/auth/service.py",
+                kind=kind,
+                severity=severity,
+                snippet="",
+                line_number=line,
+                commit_sha="",
+                detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    await session.flush()
+
+    signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
+    assert [s["severity"] for s in signals] == ["high", "med", "low"]

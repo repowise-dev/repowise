@@ -17,6 +17,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    warn,
 )
 from repowise.cli.output import emit_json, format_option, json_option, resolve_format
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
@@ -624,7 +625,7 @@ def _run_index_for_repo(
         file_count, symbol_count, _ = run_async(_do_index())
         console.print(f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols")
     except Exception as exc:
-        console.print(f"[yellow]Warning:[/yellow] Indexing failed for '{alias}': {exc}")
+        warn(f"Indexing failed for '{alias}': {exc}")
         return
 
     # Run LLM doc generation through the existing single-repo init pathway
@@ -802,14 +803,7 @@ def _generate_docs_for_added_repo(
             await upsert_pages_from_generated(session, pages, repo.id)
         fts = FullTextSearch(engine)
         await fts.ensure_index()
-        for p in pages:
-            await fts.index(
-                p.page_id,
-                p.title,
-                p.content,
-                summary=p.summary,
-                target_path=p.target_path,
-            )
+        await fts.index_pages(pages)
         await engine.dispose()
         return len(pages)
 

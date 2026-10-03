@@ -42,4 +42,15 @@ describe("StatRibbon", () => {
     const { container } = render(<StatRibbon stats={[{ label: "Files", value: "" }]} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("keeps a linked cell's caption", () => {
+    render(<StatRibbon stats={[{ label: "Contributors", value: "96", sub: "people", href: "/owners" }]} />);
+    expect(screen.getByRole("link")).toHaveTextContent("people");
+  });
+
+  it("sizes the grid to the cells, so four figures leave no empty column", () => {
+    const stats = ["a", "b", "c", "d"].map((label) => ({ label, value: "1" }));
+    const { container } = render(<StatRibbon stats={stats} />);
+    expect(container.querySelector("dl")).toHaveClass("lg:grid-cols-4");
+  });
 });

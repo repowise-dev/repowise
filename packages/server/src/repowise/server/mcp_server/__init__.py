@@ -78,7 +78,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "_build_visual_context": ("_graph_utils", "build_visual_context"),
     "_compute_alignment": ("_helpers", "_compute_alignment"),
     "_get_repo": ("_helpers", "_get_repo"),
-    "_is_path": ("_helpers", "_is_path"),
+    "_is_path": ("_query_shape", "_is_path"),
     "create_mcp_server": ("_server", "create_mcp_server"),
     "run_mcp": ("_server", "run_mcp"),
 }
@@ -97,17 +97,31 @@ def tool_middleware(fn: Any) -> Any:
        the whole session), so it must see the raw tool.
     2. ``trust`` — adds the final transport trust envelope.
     3. ``quantize`` — rounds every float in the response. Outside the shield so
-       shaped error responses are covered too, and inside the savings layer so
-       the ledger measures the payload as actually delivered.
-    4. ``budget`` — caps the delivered shape before savings are measured.
-    5. ``instrument`` — records the bounded result and adds savings metadata.
-    6. ``budget`` — accounts for those final middleware fields and rechecks.
+       shaped error responses are covered too.
+    4. ``budget`` — caps the delivered shape. Also reports the raw tool output
+       size to the interaction: this is the only layer that sees it before
+       anything has been shed.
+    5. ``instrument`` — derives the counterfactual and adds savings metadata.
+       It must be here rather than further out, because the estimators read
+       fields a later budget pass is free to drop.
+    6. ``timed`` — stamps ``_meta.timing_ms`` for any tool that did not.
+       On a lean envelope it removes the field instead (see ``_meta.full_meta``).
+    7. ``budget`` — accounts for those final middleware fields and rechecks.
+    8. ``record`` — writes the one savings event for the call.
+
+    Layer 8 is outside everything for a reason. The ledger row used to be
+    written at layer 5, after which ``timed`` stamped ``_meta`` and layer 7 ran
+    the budgeter twice more, free to shed content and re-stamp sizes. The
+    recorded delivered size was therefore one the agent never received. Each
+    layer now reports what only it can see, and the event is written when the
+    payload is final.
 
     Named rather than inlined at the ``apply`` call so tests can wrap a tool in
     the real composition; ``tests/unit/server/mcp/test_number_precision.py``
     relies on that to prove no raw double reaches an agent.
     """
     import inspect
+    import time
     from functools import wraps
 
     from repowise.server.mcp_server._budget import (
@@ -115,9 +129,11 @@ def tool_middleware(fn: Any) -> Any:
         resolve_response_budget_repo_root,
     )
     from repowise.server.mcp_server._failure_shield import shield
-    from repowise.server.mcp_server._meta import finalize_trust_envelope
+    from repowise.server.mcp_server._meta import finalize_trust_envelope, full_meta
     from repowise.server.mcp_server._rounding import quantize
+    from repowise.server.mcp_server._savings import event as savings_event
     from repowise.server.mcp_server._savings import instrument
+    from repowise.server.mcp_server._savings import interaction as savings_interaction
 
     evidence_kind = getattr(fn, "__repowise_trust_kind__", None)
     signature = inspect.signature(fn)
@@ -131,13 +147,46 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
+    def timed(inner: Any) -> Any:
+        """Stamp elapsed time for the tools that do not thread it themselves.
+
+        A tool that already reports ``timing_ms`` keeps its own number, which
+        measures its retrieval rather than the middleware around it. On a lean
+        envelope the field is a diagnostic, so it is removed instead.
+        """
+
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            started = time.perf_counter()
+            result = await inner(*args, **kwargs)
+            if isinstance(result, dict):
+                meta = result.setdefault("_meta", {})
+                if isinstance(meta, dict):
+                    if not full_meta(fn.__name__):
+                        meta.pop("timing_ms", None)
+                    elif meta.get("timing_ms") is None:
+                        meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            return result
+
+        return wrapped
+
     def budget(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
             repo_root = await resolve_response_budget_repo_root(signature, args, kwargs)
+            raw = await inner(*args, **kwargs)
+            live = savings_interaction.current()
+            if live is not None:
+                # Both instantiations run this closure, and the inner one runs
+                # first, so only its value has seen untrimmed output. Guarded
+                # rather than merely ignored: the measurement serializes the
+                # whole payload, and the outer layer's result is discarded.
+                if live.pre_budget_input_tokens is None:
+                    live.observe_pre_budget(savings_event.raw_response_tokens(raw))
+                live.repo_root = live.repo_root or (str(repo_root) if repo_root else None)
             result = enforce_response_budget(
                 fn.__name__,
-                await inner(*args, **kwargs),
+                raw,
                 signature=signature,
                 args=args,
                 kwargs=kwargs,
@@ -155,7 +204,64 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
-    return budget(instrument(budget(quantize(trust(shield(fn))))))
+    def record(inner: Any) -> Any:
+        """Open the interaction, then write its one event once nothing can change."""
+
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            with savings_interaction.begin(fn.__name__) as live:
+                result = await inner(*args, **kwargs)
+                savings_event.record(live, result)
+                return result
+
+        return wrapped
+
+    return record(budget(timed(instrument(budget(quantize(trust(shield(fn))))))))
+
+
+#: Restores FastMCP's indented text block, for a client that turns out to need it.
+PRETTY_JSON_ENV = "REPOWISE_MCP_PRETTY_JSON"
+
+
+def wire_result(payload: Any) -> Any:
+    """*payload* as FastMCP would serve it, with the text block compact.
+
+    FastMCP renders the text with ``indent=2`` beside a structured copy that is
+    already compact. The same ``fallback=str`` keeps a value JSON cannot hold
+    rendering as before, and the structured copy is converted exactly as
+    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
+    is left to FastMCP's own conversion.
+    """
+    import os
+
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    if pretty or not isinstance(payload, dict):
+        return payload
+    import pydantic_core
+    from mcp.types import CallToolResult, TextContent
+
+    text = pydantic_core.to_json(payload, fallback=str).decode()
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
+    )
+
+
+def registered_tool(fn: Any) -> Any:
+    """What the server registers: :func:`tool_middleware` plus the wire text.
+
+    Kept out of ``tool_middleware`` because tests and the CLI await the
+    middleware-wrapped functions directly and expect the dict back.
+    """
+    from functools import wraps
+
+    inner = tool_middleware(fn)
+
+    @wraps(inner)
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        return wire_result(await inner(*args, **kwargs))
+
+    return wrapped
 
 
 def ensure_full_surface() -> Any:
@@ -194,7 +300,7 @@ def ensure_full_surface() -> Any:
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    mcp_tool_registry.apply(_mcp, middleware=tool_middleware)
+    mcp_tool_registry.apply(_mcp, middleware=registered_tool)
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.

@@ -15,13 +15,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 from repowise.server.mcp_server._budget.budgeter import (
+    FIT_HEADROOM_CHARS,
     effective_char_budget,
     fit_to_budget,
     response_chars,
+    shed_stem,
     truncate_to_budget,
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
 from repowise.server.mcp_server._budget.hooks import run_post_enforce, run_post_shed
+from repowise.server.mcp_server._meta import full_meta
 
 DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
@@ -45,6 +48,36 @@ class ResponseBudgetContract:
     #: uncounted rather than proven absent, so the count is a lower bound.
     #: A ``<field>_total`` name here is also read as a reduction total.
     floor_fields: tuple[str, ...] = ()
+    #: ``(request token, shed-order keys)``. The token is an ``include`` value
+    #: or an argument whose presence is itself the request. Keys named here
+    #: shed last and trim to :func:`entitled_floor`; the ceiling still wins, so
+    #: this is priority, not immunity. Declaring nothing keeps a tool's
+    #: existing behaviour.
+    requested_projections: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+#: Arguments whose presence asks for the projection that answers them.
+_IMPLICIT_REQUEST_ARGUMENTS = ("query", "id", "reference", "changed_files", "targets")
+
+
+#: Every lane ``get_why`` answers a question about code with, across its modes:
+#: the decision records and their queue, the origin story, and the rationale,
+#: documentation and archaeology the ungoverned branch falls back to. Only the
+#: stems matter, because :func:`_requested_shed_keys` collapses these to stems
+#: and :func:`_prioritised_shed_order` re-derives the trim-before-drop order
+#: from the shed order itself.
+_WHY_ANSWER_PROJECTION = (
+    "decisions[]",
+    "candidates[]",
+    "history[]",
+    "related_documentation[]",
+    "code_rationale[]",
+    "episodes[]",
+    "git_archaeology.file_commits[]",
+    "git_archaeology.cross_references[]",
+    "git_archaeology.git_log[]",
+    "origin_story",
+)
 
 
 #: What a tool gets when it declares no priority of its own. An empty shed
@@ -68,6 +101,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
             "directive.may_break[]",
+            "directive.next_calls[]",
             "targets[]",
         ),
         protected=("directive", "targets"),
@@ -77,6 +111,23 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "impact_surface_total",
             "co_change_partners_total",
         ),
+        requested_projections=(
+            (
+                "changed_files",
+                (
+                    "directive.test_recommendations[]",
+                    "directive.tests_to_run[]",
+                    "directive.may_break[]",
+                    "directive.next_calls[]",
+                    "pr_blast_radius",
+                    "pr_blast_radius.guarding_tests",
+                ),
+            ),
+            # targets is required, so it is always asked for. Without this the
+            # deferred PR blocks jump ahead of it and the rows the caller
+            # named become the first thing trimmed.
+            ("targets", ("targets[]",)),
+        ),
     ),
     "get_change_risk": ResponseBudgetContract(
         "blocks",
@@ -84,14 +135,17 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # Cheapest loss first. Diff-shape context and history go before the
             # delta and the tests, so what to do survives what the diff weighs.
             "exclude_patterns",
-            "change_shape.independent_changes",
-            "change_shape",
+            "independent_changes",
+            "diff_shape",
+            "fix_history.overlap.files[]",
+            "fix_history.overlap",
             "fix_history.files[]",
             "fix_history.files",
             "fix_history",
-            "prior_fixes",
             "branch_overlap",
             "cross_repo",
+            "patch_coverage.files[]",
+            "patch_coverage",
             "impacted_tests",
             "health_delta.limits",
             "health_delta.skipped",
@@ -102,7 +156,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "health_delta",
             "classification",
             "risk_percentile",
-            "score",
         ),
     ),
     "get_answer": ResponseBudgetContract(
@@ -113,6 +166,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "retrieval[]",
             "retrieval",
             "code_rationale",
+            "quotes[]",
             "quotes",
             "symbol_bodies[]",
             "symbol_bodies",
@@ -122,9 +176,26 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "candidates",
             "fallback_targets[]",
             "fallback_targets",
+            # Last: a bare path is the fewest bytes per file worth opening.
+            "candidate_files[]",
+            "candidate_files",
         ),
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint", "degraded"),
+        requested_projections=(
+            (
+                "evidence",
+                (
+                    "retrieval[]",
+                    "retrieval",
+                    "symbol_bodies[]",
+                    "symbol_bodies",
+                    "quotes[]",
+                    "quotes",
+                    "code_rationale",
+                ),
+            ),
+        ),
     ),
     # Whole-block drops served 0 of 50 pages, 0 of 12 episodes and 0 of 58
     # mined rationale comments across the two modes. Trimming runs to
@@ -162,6 +233,18 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "candidates",
             "origin_story",
         ),
+        requested_projections=(
+            # A query is a question or a path, and targets with no query is
+            # path mode too — a single target is path mode outright. All three
+            # get the same entitlement, because the same call answered through
+            # a different argument is the same answer. Naming a lane the mode
+            # did not emit costs the other modes nothing: deferring an absent
+            # key sheds nothing.
+            ("query", _WHY_ANSWER_PROJECTION),
+            ("targets", _WHY_ANSWER_PROJECTION),
+            ("id", ("decisions[]",)),
+            ("reference", ("decisions[]",)),
+        ),
         expansion_argument=None,
         protected=(
             "mode",
@@ -188,13 +271,32 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "knowledge_map",
             "key_decisions",
             "outline_hint",
+            # Trim the sections before dropping the block: shed as one unit it
+            # served 0 of 40 while 73% of the budget went unspent.
+            "outline.sections[]",
             "outline",
+            # Built at three rows a horizon. The quarter trims first, since the
+            # week is the nearer ask, and the totals stay until the whole block
+            # goes.
+            "next_actions.quarter.actions[]",
+            "next_actions.week.actions[]",
+            "next_actions_reason",
+            "next_actions",
             "tool_surface",
             "repos[]",
             "key_modules[]",
             "content_md",
         ),
         protected=("title", "architecture", "entry_points"),
+        requested_projections=(
+            ("outline", ("outline.sections[]", "outline", "outline_hint")),
+            ("tour", ("guided_tour", "guided_tour_hint", "reading_order",
+                      "reading_order_hint")),
+            ("decisions", ("key_decisions",)),
+            ("graph", ("community_summary",)),
+            ("ownership", ("knowledge_map",)),
+            ("content", ("content_md",)),
+        ),
     ),
     "get_health": ResponseBudgetContract(
         "blocks",
@@ -204,6 +306,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trend.recent[]",
             "trend.alerts[]",
             "churn_complexity[]",
+            "doc_drift.findings[]",
             "test_findings[]",
             "top_findings[]",
             "findings[]",
@@ -221,12 +324,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         protected=(
             "mode",
-            "directive",
-            # Both pillar leads are bounded by construction and are the only
-            # actionable content a bare dashboard carries for them, so shedding
-            # one would leave that pillar with counts and nothing to do.
-            "performance_directive",
-            "refactoring_directive",
+            # The one lead, bounded by construction (at most five compact
+            # items): shedding it would leave the dashboard with nothing to do.
+            "fix_first",
+            "fix_id",
             "opportunity_id",
             "model_state",
             "targets",
@@ -236,6 +337,19 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "distribution",
             "gap_analysis",
         ),
+        # The drift block exists only when it was asked for, so its place in the
+        # shed order above would otherwise guarantee that the one caller who
+        # wants it is the one who loses it first. Declared for this key alone;
+        # every other block keeps the behaviour it has. Only the inner list is
+        # named, as ``coverage.files[]`` is: the block itself is not a shed-order
+        # key, and naming one the order lacks is an entry that does nothing.
+        #
+        # Declaring anything here makes ``_requested_shed_keys`` run on every
+        # call, which folds ``targets`` into the asked-for set through
+        # ``_IMPLICIT_REQUEST_ARGUMENTS``. Inert while no token below is named
+        # ``targets`` --- but adding one would silently entitle every targeted
+        # call, which is not what a projection declaration looks like it does.
+        requested_projections=(("doc_drift", ("doc_drift.findings[]",)),),
     ),
     # The tool caps source at 600 *lines*, and 600 lines of dense code measured
     # 79k chars — far past the ceiling that line cap was sized against. Callee
@@ -267,7 +381,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     # metadata that followed added roughly 2.6k.
     "search_codebase": ResponseBudgetContract(
         "blocks",
-        ("candidates", "results[]"),
+        ("candidates[]", "candidates", "results[]"),
         expansion_argument=None,
         protected=("results", "mode", "exact_match"),
     ),
@@ -378,6 +492,63 @@ def _call_uses_expansion(
     return bool(bound.arguments.get(contract.expansion_argument))
 
 
+def _include_tokens(value: Any) -> set[str]:
+    """Normalise an ``include`` argument to a set of tokens.
+
+    This layer sits outside the failure shield, so anything the caller can
+    send has to come back as a set rather than an exception.
+    """
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return {str(token) for token in value}
+    return set()
+
+
+def _requested_shed_keys(
+    contract: ResponseBudgetContract,
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> frozenset[str]:
+    """Shed-order stems this particular call asked for."""
+    if not contract.requested_projections:
+        return frozenset()
+    try:
+        bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        bound = dict(kwargs)
+
+    asked = _include_tokens(bound.get("include"))
+    asked.update(name for name in _IMPLICIT_REQUEST_ARGUMENTS if bound.get(name))
+
+    keys: set[str] = set()
+    for token, paths in contract.requested_projections:
+        if token in asked:
+            keys.update(shed_stem(path) for path in paths)
+    return frozenset(keys)
+
+
+def _prioritised_shed_order(
+    order: tuple[str, ...], requested: frozenset[str]
+) -> tuple[str, ...]:
+    """Move what the caller asked for to the back of the shed order.
+
+    Within that tail every trimmable key runs before any whole-block drop, so
+    two requested blocks cannot end with one trimmed to its floor and the
+    other dropped entirely. Relative order is otherwise preserved.
+    """
+    if not requested:
+        return order
+    deferred = tuple(key for key in order if shed_stem(key) in requested)
+    if not deferred:
+        return order
+    kept = tuple(key for key in order if shed_stem(key) not in requested)
+    trimmable = tuple(key for key in deferred if key.endswith("[]"))
+    whole = tuple(key for key in deferred if not key.endswith("[]"))
+    return kept + trimmable + whole
+
+
 def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:
     meta = result.setdefault("_meta", {})
     budget = meta.setdefault("response_budget", {})
@@ -458,6 +629,24 @@ def _stamp_completeness(
         meta["floor"] = sorted(floors)
 
 
+def _slim_accounting(
+    result: dict[str, Any], *, limit: int, tier: str, trimmed: bool
+) -> None:
+    """Keep the accounting blocks only where they carry news.
+
+    ``completeness`` stays when something was capped and ``response_budget``
+    when enforcement shed something or failed; otherwise both restate that the
+    whole answer arrived, on every call.
+    """
+    meta = result["_meta"]
+    if not meta.get("completeness", {}).get("capped"):
+        meta.pop("completeness", None)
+    if trimmed or "enforcement_error" in meta.get("response_budget", {}):
+        _stamp_accounting(result, limit=limit, tier=tier)
+    else:
+        meta.pop("response_budget", None)
+
+
 async def resolve_response_budget_repo_root(
     signature: inspect.Signature,
     args: tuple[Any, ...],
@@ -487,6 +676,7 @@ def _emergency_fit(
     contract: ResponseBudgetContract,
     collector: OmissionCollector,
     limit: int,
+    requested: frozenset[str] = frozenset(),
 ) -> None:
     """Bound an unexpectedly huge protected core without a false fit claim."""
     protected = {*contract.protected, "_meta"}
@@ -497,7 +687,12 @@ def _emergency_fit(
         and key not in {"truncated", "omission_marker"}
         and not key.endswith(("_total", "_emitted", "_reduced_reason"))
     ]
-    for key in sorted(removable, key=lambda item: response_chars(result[item]), reverse=True):
+    # Biggest first, but never a requested block while an unrequested one is
+    # still there to drop.
+    def order(item: str) -> tuple[bool, int]:
+        return (item in requested, -response_chars(result[item]))
+
+    for key in sorted(removable, key=order):
         if response_chars(result) <= limit:
             return
         value = result.pop(key)
@@ -582,6 +777,43 @@ def _emergency_fit(
             return
 
 
+def _lead_with_dropped_targets(
+    tool: str,
+    result: dict[str, Any],
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    limit: int,
+) -> None:
+    """Put any target the budget dropped first, with the call that fetches it.
+
+    The recovery is the same call narrowed to the dropped targets. It repeats
+    their names, so it rides along only while the response stays under *limit*.
+    """
+    dropped = result.get("dropped_targets")
+    if not dropped:
+        return
+    try:
+        bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        bound = dict(kwargs)
+    params = signature.parameters
+    arguments = {
+        name: value
+        for name, value in bound.items()
+        if value is not None and (name not in params or value != params[name].default)
+    }
+    arguments["targets"] = list(dropped)
+    lead: dict[str, Any] = {"dropped_targets": dropped}
+    recovery = {"tool": tool, "arguments": arguments}
+    if response_chars(result) + response_chars({"recovery": recovery}) <= limit:
+        lead["recovery"] = recovery
+    rest = {key: value for key, value in result.items() if key not in lead}
+    result.clear()
+    result.update(lead)
+    result.update(rest)
+
+
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -612,11 +844,16 @@ def enforce_response_budget(
     tier = "expanded" if expanded else "default"
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
+    # A block an earlier pass kept means that pass trimmed; the lean envelope
+    # keeps it so the outer pass does not hide the inner one's shedding.
+    trimmed = "response_budget" in (result.get("_meta") or {})
     _stamp_accounting(result, limit=limit, tier=tier)
+    entry_chars = result["_meta"]["response_budget"]["serialized_chars"]
 
     collector = OmissionCollector(tool, repo_root=repo_root)
     headroom = min(_FINAL_HEADROOM_CHARS, max(100, limit // 4))
     working_limit = max(1, limit - headroom)
+    requested = _requested_shed_keys(contract, signature, args, kwargs)
     if contract.strategy == "targets":
         truncate_to_budget(
             result,
@@ -624,22 +861,27 @@ def enforce_response_budget(
             collector=collector,
             record_counts=True,
         )
+        _lead_with_dropped_targets(
+            tool, result, signature, args, kwargs, limit - FIT_HEADROOM_CHARS
+        )
     else:
         fit_to_budget(
             result,
-            contract.shed_order,
+            _prioritised_shed_order(contract.shed_order, requested),
             collector,
             char_budget=working_limit,
             headroom=0,
             record_counts=True,
+            entitled=requested,
         )
         run_post_shed(tool, result, collector)
         collector.attach(result)
 
     if response_chars(result) > limit:
         emergency = OmissionCollector(tool, repo_root=repo_root)
-        _emergency_fit(result, contract, emergency, working_limit)
+        _emergency_fit(result, contract, emergency, working_limit, requested)
         emergency.attach(result)
+        trimmed = True
 
     run_post_enforce(tool, result)
 
@@ -652,6 +894,13 @@ def enforce_response_budget(
             "enforcement_error"
         ] = "protected response fields exceed the declared budget"
         _stamp_accounting(result, limit=limit, tier=tier)
+    if not full_meta(tool):
+        trimmed = (
+            trimmed
+            or not collector.empty
+            or result["_meta"]["response_budget"]["serialized_chars"] < entry_chars
+        )
+        _slim_accounting(result, limit=limit, tier=tier, trimmed=trimmed)
     return result
 
 

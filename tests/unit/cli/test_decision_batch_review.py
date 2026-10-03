@@ -19,7 +19,8 @@ from .test_decision_cmd import _seed_wiki_db
 
 _GOOD = "a" * 32
 _ALSO_GOOD = "b" * 32
-#: No rationale and no scope, so the acceptance contract refuses it.
+#: No reason and no scope, so the acceptance contract refuses it. context
+#: is blanked too: the seeder defaults it, and the reason reads it.
 _BARE = "c" * 32
 
 
@@ -39,6 +40,7 @@ def review_repo(tmp_path: Path) -> Path:
                 "status": "proposed",
                 "source": "pr",
                 "rationale": "",
+                "context": "",
                 "decision": "",
                 "affected_files": [],
             },

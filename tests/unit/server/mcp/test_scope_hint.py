@@ -154,16 +154,11 @@ async def test_layers_are_read_once_per_cache_key(
 
 
 @pytest.mark.asyncio
-async def test_get_context_stamps_the_key_only_with_seeded_layers(
-    setup_mcp, session: AsyncSession, monkeypatch
-):
+async def test_get_context_carries_no_scope_hint(setup_mcp, session: AsyncSession):
+    """The hint answers what a question-shaped reply missed; get_answer keeps it."""
     from repowise.server.mcp_server.tool_context.context import get_context
 
     rid = setup_mcp
-
-    bare = await get_context(targets=["src/auth/service.py"])
-    assert "scope_hint" not in bare["_meta"]
-
     await _seed(
         session,
         rid,
@@ -175,9 +170,7 @@ async def test_get_context_stamps_the_key_only_with_seeded_layers(
     _scope._CACHE.clear()
 
     seeded = await get_context(targets=["src/auth/service.py"])
-    assert seeded["_meta"]["scope_hint"] == (
-        "Unrelated to what was served: Automated Test Suites (2 files)."
-    )
+    assert "scope_hint" not in seeded["_meta"]
 
 
 @pytest.mark.asyncio
@@ -211,3 +204,20 @@ async def test_answer_projection_stamps_the_key_from_served_paths(
     empty = {"confidence": "high", "citations": [], "_meta": {"scope_hint": "stale sentence"}}
     await _refresh_freshness(empty, None)
     assert "scope_hint" not in empty["_meta"]
+
+
+@pytest.mark.asyncio
+async def test_the_test_layer_is_never_named(session: AsyncSession, repo_id: str):
+    await _seed(
+        session,
+        repo_id,
+        [
+            _layer(repo_id, "layer:test", "Automated Checks", ["tests/a.py", "tests/b.py"]),
+            _layer(repo_id, "layer:ui", "Web Screens", ["web/a.tsx"]),
+            _layer(repo_id, "layer:service", "Core Logic", ["src/core.py"]),
+        ],
+    )
+
+    hint = await unrelated_scope_hint(session, repo_id, ["src/core.py"], cache_key="k-test")
+
+    assert hint == "Unrelated to what was served: Web Screens (1 file)."

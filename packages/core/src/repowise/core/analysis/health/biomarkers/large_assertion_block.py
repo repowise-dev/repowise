@@ -28,7 +28,7 @@ class LargeAssertionBlockDetector:
         if not is_test_file(ctx.file_path):
             return []
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        for fn in ctx.all_functions:
             for start, end, count in fn.assertion_blocks:
                 if count < self._MIN_COUNT:
                     continue

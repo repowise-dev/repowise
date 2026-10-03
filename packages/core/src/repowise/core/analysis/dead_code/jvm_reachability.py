@@ -20,15 +20,17 @@ JVM source that view misses three real shapes:
 
 META-INF/services, JPMS ``provides ... with``, and Spring Boot autoconfig
 imports are *not* re-checked here — those are stamped as
-``is_entry_point`` on the file node during the JVM warmup (see
-:mod:`graph_warmups`), and the analyzer's existing entry-point skip
-honours them before reaching this hook.
+``is_reachability_root`` on the file node during the JVM warmup (see
+:mod:`graph_warmups`), and the analyzer's root skip honours them before
+reaching this hook.
 """
 
 from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Any
+
+from ...entry_candidacy import is_reachability_root
 
 # Class-level annotation names (without the leading ``@``) that mark the
 # bearing class as runtime-instantiated. Kept compact; full Spring
@@ -74,6 +76,10 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "Endpoint",
     "RestControllerEndpoint",
     "RegisterForReflection",
+    # JMH runs these by reflection; ``Benchmark`` sits on the methods.
+    "State",
+    "BenchmarkMode",
+    "Benchmark",
 })
 
 
@@ -125,10 +131,15 @@ def _file_defines_entry_class(graph: Any, file_node: str) -> bool:
         if edge.get("edge_type") != "defines":
             continue
         # Stereotype annotation on a class / record / object.
+        # One modifiers blob holds every annotation of the declaration.
         decorators = succ_data.get("decorators") or []
-        for dec in decorators:
-            if _annotation_base(dec) in _STEREOTYPE_ANNOTATIONS:
-                return True
+        if any(
+            _annotation_base(token) in _STEREOTYPE_ANNOTATIONS
+            for dec in decorators
+            for token in dec.split("@")
+            if token.strip()
+        ):
+            return True
         # ``main`` method — JAR / Kotlin file entry point.
         if (
             succ_data.get("kind") in ("method", "function")
@@ -168,7 +179,7 @@ def is_jvm_file_reachable(
         sib_data = graph.nodes.get(sibling, {})
         if graph.in_degree(sibling) > 0:
             return True
-        if sib_data.get("is_entry_point", False):
+        if is_reachability_root(sib_data):
             return True
         if _file_defines_entry_class(graph, sibling):
             return True

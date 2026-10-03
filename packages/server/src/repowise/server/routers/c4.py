@@ -79,9 +79,12 @@ async def get_c4_l1(
 @router.get("/{repo_id}/c4/l2", response_model=C4L2Response)
 async def get_c4_l2(
     repo_id: str,
+    co_changes: bool = Query(
+        False, description="Overlay co-change relations on the dependency edges"
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> C4L2Response:
-    view = await c4_builder.build_l2(session, repo_id)
+    view = await c4_builder.build_l2(session, repo_id, include_co_changes=co_changes)
     return C4L2Response(
         containers=[_container(c) for c in view.containers],
         external_systems=[external_system_response(e) for e in view.external_systems],

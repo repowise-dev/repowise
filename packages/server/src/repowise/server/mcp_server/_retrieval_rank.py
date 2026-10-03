@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 import re
 
-from repowise.server.mcp_server._query_terms import content_terms
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _INFLECTIONS = {
     "changed": "change",
@@ -20,6 +22,39 @@ _INFLECTIONS = {
 def _ranking_terms(text: str, *, max_terms: int = 8) -> set[str]:
     """Content terms with a tiny retrieval-only inflection normalisation."""
     return {_INFLECTIONS.get(term, term) for term in content_terms(text, max_terms=max_terms)}
+
+
+def _identifier_words(token: str) -> list[str]:
+    """``generateModulePage`` / ``generate_module_page`` -> ``[generate, module, page]``."""
+    return [w for w in re.split(r"[^a-z0-9]+", split_humps(token).lower()) if w]
+
+
+def _typed_compounds(query: str, terms: set[str]) -> dict[str, list[str]]:
+    """Ranking terms the query typed as one identifier, with their words.
+
+    A typed compound (``module_page``, ``modulePage``) also counts inside a
+    longer name (``generate_module_page``), which word-level tokens never produce.
+    """
+    compounds: dict[str, list[str]] = {}
+    for raw in _IDENTIFIER_RE.findall(query):
+        words = _identifier_words(raw)
+        if len(words) >= 2 and raw.lower() in terms:
+            compounds[raw.lower()] = words
+    return compounds
+
+
+def _names_compound(text: str, words: list[str]) -> bool:
+    """Whether an identifier in *text* holds *words* as consecutive whole words.
+
+    Prose never matches: ``module page`` is two identifiers, and ``this_test``
+    does not hold ``is_test``.
+    """
+    n = len(words)
+    for raw in _IDENTIFIER_RE.findall(text):
+        parts = _identifier_words(raw)
+        if any(parts[i : i + n] == words for i in range(len(parts) - n + 1)):
+            return True
+    return False
 
 
 def rerank_by_context_coverage(
@@ -48,11 +83,18 @@ def rerank_by_context_coverage(
                 hit.get("snippet", "") or "",
                 hit.get("summary", "") or "",
                 hit.get("target_path", "") or "",
+                # A page the symbol leg reached is about the names it matched.
+                " ".join(hit.get("_symbol_names") or ()),
             ]
         )
         for hit in hits
     ]
-    tokens_by_hit = [_ranking_terms(text, max_terms=128) for text in texts_by_hit]
+    compounds = _typed_compounds(query, terms)
+    tokens_by_hit = [
+        _ranking_terms(text, max_terms=128)
+        | {term for term, words in compounds.items() if _names_compound(text, words)}
+        for text in texts_by_hit
+    ]
     document_frequency = {
         term: sum(1 for tokens in tokens_by_hit if term in tokens) for term in terms
     }

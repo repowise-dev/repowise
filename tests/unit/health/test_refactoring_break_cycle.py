@@ -177,3 +177,97 @@ def test_cycle_edges_matches_full_edge_scan():
     assert cycle_edges(g, members) == reference(g, members)
     assert cycle_edges(g, ()) == []
     assert cycle_edges(None, members) == []
+
+
+_PHP_IDENTITY = (
+    "<?php\nnamespace App\\Identity;\nuse App\\Validation\\HostValidator;\n"
+    "class HostIdentity { public function check() { return new HostValidator(); } }\n"
+)
+
+
+def _php_break_cycles(tmp_path, validator_src: str) -> list:
+    from datetime import datetime
+
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    files = {
+        "src/Identity/HostIdentity.php": _PHP_IDENTITY,
+        "src/Validation/HostValidator.php": validator_src,
+    }
+    builder, parser = GraphBuilder(), ASTParser()
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        info = FileInfo(
+            path=rel,
+            abs_path=str(path),
+            language="php",
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        builder.add_file(parser.parse_file(info, text.encode()))
+    return _detect(builder.build(), "src/Identity/HostIdentity.php")
+
+
+def test_php_docblock_only_reference_does_not_close_a_cycle(tmp_path):
+    # HostValidator names HostIdentity only in comments; no code depends on it.
+    validator = (
+        "<?php\nnamespace App\\Validation;\n"
+        "/** Validates a host, see \\App\\Identity\\HostIdentity. */\n"
+        "class HostValidator {\n"
+        "    /** @param \\App\\Identity\\HostIdentity $host */\n"
+        "    public function ok($host) { return true; } // not HostIdentity-specific\n"
+        "}\n"
+    )
+    assert _php_break_cycles(tmp_path, validator) == []
+
+
+def test_php_use_both_ways_is_a_cycle(tmp_path):
+    validator = (
+        "<?php\nnamespace App\\Validation;\nuse App\\Identity\\HostIdentity;\n"
+        "class HostValidator { public function ok(HostIdentity $host) { return true; } }\n"
+    )
+    out = _php_break_cycles(tmp_path, validator)
+    assert len(out) == 1
+    assert out[0].plan["cycle"] == [
+        "src/Identity/HostIdentity.php",
+        "src/Validation/HostValidator.php",
+    ]
+
+
+def _detect_lang(g: nx.DiGraph, file_path: str, language: str) -> list:
+    idx = build_file_scc_index(g)
+    ctx = RefactoringContext(
+        file_path=file_path, language=language, nloc=50, graph=g, file_scc=idx.get(file_path)
+    )
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "break_cycle"]
+
+
+def test_same_directory_java_cycle_is_kept_but_demoted():
+    a, b = "src/com/acme/Project.java", "src/com/acme/User.java"
+    out = _detect_lang(_import_graph([(a, b), (b, a)]), a, "java")
+    assert len(out) == 1
+    assert out[0].confidence == "low"
+    assert out[0].evidence["idiom"] == out[0].plan["idiom"] == "same_directory"
+    assert out[0].target_symbol.startswith("cycle[2] (same directory, idiomatic): ")
+
+
+def test_cross_package_java_cycle_is_not_demoted():
+    a, b = "src/com/acme/api/Client.java", "src/com/acme/core/Engine.java"
+    out = _detect_lang(_import_graph([(a, b), (b, a)]), a, "java")
+    assert out[0].confidence == "high"
+    assert "idiom" not in out[0].evidence
+
+
+def test_same_directory_python_cycle_is_not_demoted():
+    # A Python import cycle fails at import time; it is never an idiom.
+    out = _detect_lang(_import_graph([("pkg/a.py", "pkg/b.py"), ("pkg/b.py", "pkg/a.py")]), "pkg/a.py", "python")
+    assert out[0].confidence == "high"

@@ -37,12 +37,16 @@ opens scenes directly.
 
 Known ceilings:
 
-* **``uid://``**: Godot 4.4 can write it in place of ``path=`` in an
-  ``ext_resource`` header, and resolving one needs the generated ``.uid``
-  sidecars this spec blocks from indexing. Recorded as an external reference
-  rather than guessed at (see ``resolvers/gdscript.py``). Not yet observed: a
-  ``grep`` over the four-repo validation corpus counted 1150 ``[ext_resource``
-  lines, all 1150 carrying ``path=``.
+* **A ``uid://`` ``ext_resource`` header** carries a ``uid=`` next to its
+  ``path=``, and this extractor resolves through the path, so the edge is
+  present either way. A script's uid also resolves through the generated
+  ``.uid`` sidecar this spec blocks from indexing (see
+  ``resolvers/gdscript.py``); a scene's does not, since Godot writes no
+  sidecar for ``.tscn`` / ``.tres`` and instead records the uid in the file's
+  own header. A header with ``uid=`` and no ``path=`` would still yield
+  nothing, but Godot writes both together: a ``grep`` over
+  ``godot-demo-projects`` counted 1555 ``[ext_resource`` lines, all 1555
+  carrying ``path=``.
 * **The binary scene and resource formats ``.scn`` / ``.res``** are not
   covered, not by ``extensions`` here and not by the suffix lists in
   ``resolvers/gdscript.py``. Godot writes text by default and the corpus has
@@ -79,9 +83,11 @@ SPEC = LanguageSpec(
     is_code=False,
     is_passthrough=True,
     # `res://` is absolute from the project root and resolves exactly, via the
-    # same resolver the .gd files use. The one gap (uid://) is a Godot
-    # build-cache artifact rather than a dialect we fail to read, so this is
-    # "full" where html's src/href tier is "partial".
+    # same resolver the .gd files use, and a `uid://` on an ext_resource
+    # header resolves through the `path=` Godot writes beside it. The one gap
+    # (a uid naming a scene, which has no sidecar) is a Godot build-cache
+    # artifact rather than a dialect we fail to read, so this is "full" where
+    # html's src/href tier is "partial".
     import_support="full",
     blocked_dirs=(".godot", ".import"),
     blocked_extensions=(".import", ".uid"),

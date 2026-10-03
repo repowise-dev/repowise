@@ -141,9 +141,14 @@ export function BiomarkerDetails({
 
   if (biomarkerType === "dry_violation") {
     const partner = str(details.worst_clone_partner);
-    const dup = num(details.duplication_pct);
+    // Cross-file share; rows stored before it was split out carry the
+    // whole-file ``duplication_pct``.
+    const crossDup = num(details.cross_file_duplication_pct);
+    const dup = crossDup ?? num(details.duplication_pct);
     const stats = joinStats(
-      dup != null ? `${dup.toFixed(0)}% duplicated` : null,
+      dup != null
+        ? `${dup.toFixed(0)}% duplicated${crossDup != null ? " in other files" : ""}`
+        : null,
       num(details.clone_pair_count) != null
         ? `${num(details.clone_pair_count)} clone pairs`
         : null,
@@ -211,7 +216,11 @@ export function BiomarkerDetails({
           <div>
             <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
             {" boundary"}
-            {crossFn ? " · cross-function N+1" : " · in loop body"}
+            {crossFn
+              ? kind === "db"
+                ? " · cross-function N+1"
+                : " · cross-function, in loop"
+              : " · in loop body"}
           </div>
         ) : null}
         {path.length > 1 ? (
@@ -459,16 +468,20 @@ export function BiomarkerDetails({
       );
       break;
     }
-    case "co_change_scatter":
+    case "co_change_scatter": {
+      // The percentile is the gate, so it is what makes the count meaningful.
+      const p = num(details.co_change_scatter_pct);
       line = joinStats(
         num(details.scatter) != null
           ? `co-changes with ${num(details.scatter)} files`
           : null,
+        p != null ? `${formatTopPercentile(p)} coupling` : null,
         num(details.commit_count_90d) != null
           ? `${num(details.commit_count_90d)} commits/90d`
           : null,
       );
       break;
+    }
     case "prior_defect": {
       const count = num(details.prior_defect_count);
       const windowDays = num(details.window_days);

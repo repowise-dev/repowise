@@ -3,6 +3,28 @@ import type { ChatMessageResponse } from "@/lib/api/types";
 import { toChatUiMessages } from "./to-chat-ui-messages";
 
 describe("toChatUiMessages", () => {
+  it.each([
+    ["an errored read", { error: "no git metadata available" }, "error"],
+    ["a good read", { score: 8.4 }, "done"],
+  ])("reloads %s with the right status", (_label, result, expected) => {
+    // The wire persists no status. Hardcoding "done" here laundered a failed
+    // read back into a successful one on every reload, and it was cited as
+    // evidence again.
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: {
+          tool_calls: [{ id: "t1", name: "get_risk", result }],
+        },
+        created_at: "2026-08-28T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]?.toolCalls[0]?.status).toBe(expected);
+  });
+
   it("restores the persisted artifact envelope without rebuilding it", () => {
     const stored: ChatMessageResponse[] = [
       {
@@ -159,5 +181,36 @@ describe("toChatUiMessages grounding and truncation", () => {
       },
     ]);
     expect(message).not.toHaveProperty("truncated");
+  });
+
+  it("restores next steps so a reload shows the same chips as the stream", () => {
+    const followUps = [
+      { text: "Which tests cover a.py?", source: "followup" as const },
+    ];
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "Risky.", follow_ups: followUps },
+        created_at: "2026-08-28T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]?.followUps).toEqual(followUps);
+  });
+
+  it("leaves a turn that proposed nothing without the field", () => {
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: { text: "From memory." },
+        created_at: "2026-08-28T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]).not.toHaveProperty("followUps");
   });
 });

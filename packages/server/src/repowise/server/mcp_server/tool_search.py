@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import Container
 from typing import Any
 
 from sqlalchemy import select
@@ -29,7 +30,6 @@ from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
     _get_repo,
-    _is_path,
     _resolve_all_contexts,
     _resolve_repo_context,
     attach_ignored_arguments,
@@ -39,21 +39,36 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
+from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
+from repowise.server.mcp_server._query_shape import (
+    _DECISION_DOWNWEIGHT,
+    _MIN_RELEVANCE_SCORE,
+    _VALID_MODES,
+    NOT_THE_NAMED_SYMBOL,
+    _canonical_symbol_query,
+    _embedded_identifiers,
+    _fetch_limit_for,
+    _has_exact_symbol,
+    _identifier_candidates,
+    _is_why_shaped,
+    _looks_like_code_name,
+    _looks_like_exact_token,
+    _mark_not_the_named_symbol,
+    _names_a_path,
+    _qual_norm,
+    _resolve_mode,
+    _symbol_matches_name,
+)
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_search_symbols import (
-    _qual_norm,
+    indexed_names,
     search_paths_single,
     search_symbols_single,
 )
 
 _log = logging.getLogger("repowise.mcp.search")
-
-# Minimum relevance score below which results are dropped. Prevents
-# returning semantically unrelated pages when the corpus has no real match.
-_MIN_RELEVANCE_SCORE = 0.03
 
 # Freshness tie-breaker, added (not multiplied) to a hit's fused relevance.
 # The RRF-fused score spaces adjacent ranks ~0.05 apart, so this stays under
@@ -61,98 +76,6 @@ _MIN_RELEVANCE_SCORE = 0.03
 # retrieval relevance. Recency itself scales it (0.5 for 90-day activity, 1.0
 # for 30-day).
 _FRESHNESS_TIEBREAK = 0.03
-
-# Pure-identifier pattern: a single bareword that looks like a code symbol
-# (no spaces, no punctuation other than _/.). These are almost always
-# better handled by Grep than by semantic search — vector embeddings of a
-# bare ``getCurrentUser`` quickly drift to thematically-similar but
-# textually-distant pages, while Grep would have found the literal usage
-# in milliseconds. We hint to Grep but still run the search so callers
-# that genuinely want fuzzy symbol search are not blocked.
-_IDENT_QUERY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{1,29}$")
-
-
-def _canonical_symbol_query(query: str) -> tuple[str, str] | None:
-    """Return ``(path, symbol)`` for an exact canonical ``path::Symbol`` query."""
-    stripped = query.strip().replace("\\", "/")
-    if "::" not in stripped:
-        return None
-    path, symbol = stripped.rsplit("::", 1)
-    if not path or not symbol or "/" not in path:
-        return None
-    return path, symbol
-
-
-def _looks_like_exact_token(query: str) -> bool:
-    """True when the query is a single identifier-shaped token best served by Grep."""
-    stripped = query.strip()
-    if not stripped or " " in stripped:
-        return False
-    return bool(_IDENT_QUERY_RE.match(stripped))
-
-
-# Identifier-shaped tokens inside a longer query: snake_case of any casing
-# (≥1 underscore, incl. _UPPER_SNAKE constants) or CamelCase (≥2 humps).
-# Plain English words never match.
-_IDENT_TOKEN_RE = re.compile(
-    r"\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]+)"
-    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b"
-    r"|\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b"
-)
-
-
-def _embedded_identifiers(query: str) -> list[str]:
-    """Identifier-shaped tokens carried inside a natural-language query."""
-    return _IDENT_TOKEN_RE.findall(query)
-
-
-def _identifier_candidates(query: str, mode: str) -> list[str]:
-    """Identifier tokens the query is asking after, for the exact-match signal.
-
-    A single-token query IS the identifier (symbol mode); a natural-language
-    query carrying identifiers (hybrid mode) exposes them the same way
-    ``_resolve_mode`` used to route here. Concept/path queries name none.
-    """
-    if mode == "symbol":
-        q = query.strip()
-        canonical = _canonical_symbol_query(q)
-        return [q, canonical[1]] if canonical else ([q] if q else [])
-    if mode == "hybrid":
-        return _embedded_identifiers(query)
-    return []
-
-
-def _qualified_name_matches(qn: str, wanted: set[str]) -> bool:
-    if not qn:
-        return False
-    if qn in wanted:
-        return True
-    return any("." in candidate and qn.endswith(f".{candidate}") for candidate in wanted)
-
-
-def _symbol_matches_name(item: dict, wanted: set[str]) -> bool:
-    symbol_id = (item.get("symbol_id") or "").strip().lower().replace("\\", "/")
-    if symbol_id and symbol_id in wanted:
-        return True
-    name = (item.get("name") or "").strip().lower()
-    if name and name in wanted:
-        return True
-    return _qualified_name_matches(_qual_norm(item.get("qualified_name")), wanted)
-
-
-def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
-    """True when some returned symbol's name/qualified-name equals a candidate.
-
-    Reuses the scorer's separator-normalisation so an agent's ``Class.method``
-    matches a ``Class::method`` qualified_name in the index. This is the score
-    cliff made explicit: an exact hit and a fuzzy neighbour look identical in
-    the result list otherwise, and the agent anchors on whatever ranks first.
-    """
-    if not candidates or not symbols:
-        return False
-    wanted = {c.strip().lower() for c in candidates if c.strip()}
-    wanted |= {_qual_norm(c) for c in candidates if c.strip()}
-    return any(_symbol_matches_name(symbol, wanted) for symbol in symbols)
 
 
 def _protect_exact_symbols(query: str, symbols: list[dict]) -> list[dict]:
@@ -203,7 +126,12 @@ def _prose_dominates(query: str, identifiers: list[str]) -> bool:
 
 
 def _interleave_hybrid(
-    query: str, symbols: list[dict], concepts: list[dict], limit: int, exact: bool
+    query: str,
+    symbols: list[dict],
+    concepts: list[dict],
+    limit: int,
+    exact: bool,
+    names: Container[str] | None = None,
 ) -> list[dict]:
     """Order one hybrid result window from the two incomparable score scales.
 
@@ -219,31 +147,75 @@ def _interleave_hybrid(
     synthesis in get_answer". There, concept pages lead and the fuzzy symbols
     fall to the tail (nothing is dropped, only reordered within the window).
     """
-    if not exact and concepts and _prose_dominates(query, _embedded_identifiers(query)):
+    if not exact and concepts and _prose_dominates(query, _embedded_identifiers(query, names)):
         reserved = min(len(symbols), limit // 2)
         return (concepts[: max(1, limit - reserved)] + symbols)[:limit]
     reserved = min(len(concepts), limit // 2)
     return (symbols[: max(1, limit - reserved)] + concepts)[:limit]
 
 
-# Decision records are short, dense title-statements; they win cosine
-# similarity against long file-page embeddings on any query containing
-# design nouns ("store", "SQLite", "cap", "prune") and crowd file pages
-# out of the top ranks entirely. Down-weight them unless the query is
-# why-shaped — rationale questions are get_why's territory, but a caller
-# who phrases one here clearly wants the decision pages ranked honestly.
-_DECISION_DOWNWEIGHT = 0.6
-
-_WHY_SHAPED_RE = re.compile(
-    r"^\s*(why|when\s+did|when\s+was|who\s+decided|who\s+chose|what\s+was\s+the\s+(reason|rationale))\b"
-    r"|\b(decision|decided|rationale|adr)\b",
-    re.IGNORECASE,
-)
+# Code-location windows over-fetch this many times ``limit`` so collapsing
+# same-file hits still leaves ``limit`` distinct files to serve.
+_FILE_WINDOW_OVERFETCH = 2
+# Other symbol names a collapsed row carries in ``symbols``.
+_MERGED_SYMBOL_CAP = 5
 
 
-def _is_why_shaped(query: str) -> bool:
-    """True when the query asks for rationale, so decision records should rank naturally."""
-    return bool(_WHY_SHAPED_RE.search(query))
+def _collapse_by_file(hits: list[dict]) -> list[dict]:
+    """One row per (repo, file), best first; rows naming no file pass through.
+
+    The first row of a file wins. A later symbol hit in the same file folds
+    into the winner's ``symbols`` as ``name:line`` (capped) instead of taking a
+    slot of its own, so ``limit`` buys distinct files; past the cap a trailing
+    ``+N more`` entry counts the rest. Precedent:
+    ``symbol_backed_pages`` collapses the same way for the concept tail.
+    """
+    first_of: dict[tuple, dict] = {}
+    extra: dict[int, int] = {}
+    out: list[dict] = []
+    for hit in hits:
+        path = hit_file_path(hit)
+        if path is None:
+            out.append(hit)
+            continue
+        key = (hit.get("repo"), path)
+        first = first_of.get(key)
+        if first is None:
+            first_of[key] = hit
+            out.append(hit)
+        elif hit.get("type") == "symbol" and first.get("type") == "symbol":
+            merged = first.setdefault("symbols", [])
+            if len(merged) < _MERGED_SYMBOL_CAP:
+                merged.append(f"{hit.get('name')}:{hit.get('start_line')}")
+            else:
+                extra[id(first)] = extra.get(id(first), 0) + 1
+    for hit in out:
+        if id(hit) in extra:
+            hit["symbols"].append(f"+{extra[id(hit)]} more")
+    return out
+
+
+def _hybrid_window(
+    query: str,
+    symbols: list[dict],
+    concepts: list[dict],
+    limit: int,
+    exact: bool,
+    names: Container[str] | None = None,
+) -> list[dict]:
+    """The hybrid window, with no page for a file a shown symbol row covers.
+
+    Pages are dropped only for symbols the window actually shows, then the
+    window is rebuilt so the freed slots backfill. Concepts only shrink and the
+    symbol share only grows, so this settles in a few passes.
+    """
+    while True:
+        window = _interleave_hybrid(query, symbols, concepts, limit, exact, names)
+        shown = {item.get("file") for item in window if item.get("type") == "symbol"}
+        kept = [c for c in concepts if c.get("target_path") not in shown]
+        if len(kept) == len(concepts):
+            return window
+        concepts = kept
 
 
 def _downweight_decisions(output: list[dict], query: str) -> None:
@@ -463,18 +435,6 @@ async def _append_symbol_backed(
     ]
     head = output[: max(0, limit - len(additions))]
     return head + additions + output[len(head) :]
-
-
-def _fetch_limit_for(limit: int, kind: str | None) -> int:
-    """Over-fetch headroom for post-filters and decision down-weighting.
-
-    Always over-fetch at least 3x: without headroom the down-weighting can
-    only reorder a window that decision records may already fill, so file
-    pages never surface. ``kind`` trims hardest (decision/module/overview
-    pages all classify as "doc"), so it gets 6x — 3x was measured to leave
-    zero implementation pages in the window on decision-heavy queries.
-    """
-    return limit * (6 if kind else 3)
 
 
 # Path-prefix heuristics for the ``kind`` filter. We classify a hit's
@@ -822,7 +782,7 @@ async def _search_single_repo(
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
-    return output[:limit]
+    return _collapse_by_file(output)[:limit]
 
 
 async def _federated_search(
@@ -855,6 +815,7 @@ async def _federated_search(
     if candidates := file_candidates(all_results, limit=limit):
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
+    add_row_paths(output)
     _drop_derivable_page_ids(output)
     return response
 
@@ -899,7 +860,7 @@ def _result_paths(results: list[dict]) -> list[str]:
     return paths
 
 
-def _grep_hint_for(query: str) -> str | None:
+def _grep_hint_for(query: str, names: Container[str] | None = None) -> str | None:
     """Zero-result recovery hint for identifier-shaped queries, else ``None``.
 
     Only attached when the search produced nothing (see call sites) — a
@@ -912,7 +873,7 @@ def _grep_hint_for(query: str) -> str | None:
             f"No indexed match for identifier {query!r}. Retry with "
             'mode="symbol" (or check spelling/casing). ' + EXHAUSTIVE_SWEEP_HINT
         )
-    if idents := _embedded_identifiers(query):
+    if idents := _embedded_identifiers(query, names):
         shown = ", ".join(repr(t) for t in idents[:3])
         return (
             f"Query names identifier(s) {shown} but nothing matched. Search "
@@ -920,34 +881,6 @@ def _grep_hint_for(query: str) -> str | None:
             "into get_symbol for its body. " + EXHAUSTIVE_SWEEP_HINT
         )
     return None
-
-
-_VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
-
-
-def _resolve_mode(query: str, mode: str | None) -> str:
-    """Resolve ``mode="auto"`` to a concrete branch from the query shape.
-
-    Explicit modes pass through. ``auto`` routes path-shaped queries to path
-    search, single identifier-shaped tokens to symbol search, and queries that
-    merely *carry* an identifier inside natural language to hybrid; everything
-    else stays concept (the original wiki-semantic path). The routing reuses
-    the exact heuristics that previously only emitted a grep_hint.
-    """
-    m = (mode or "auto").lower()
-    if m not in _VALID_MODES:
-        m = "auto"
-    if m != "auto":
-        return m
-    if _canonical_symbol_query(query):
-        return "symbol"
-    if _is_path(query):
-        return "path"
-    if _looks_like_exact_token(query):
-        return "symbol"
-    if _embedded_identifiers(query):
-        return "hybrid"
-    return "concept"
 
 
 async def _contexts_for(repo: str | None) -> list:
@@ -963,6 +896,30 @@ def _tag_repo(items: list[dict], ctx, multi: bool) -> None:
             item["repo"] = ctx.alias
 
 
+def _missing_named_symbols(
+    candidates: list[str], symbols: list[dict], canonical: bool, concepts: list[dict]
+) -> list[str]:
+    """Code-shaped names the query asks after that no returned symbol matches
+    exactly (or returned module path carries): they do not exist here. Judged
+    per name, so an indexed name beside a missing one hides nothing. Their
+    fuzzy neighbours would stand in for them, so the caller keeps only exact
+    symbols; the pages are marked here as related to the question, not the
+    symbol."""
+    if canonical:
+        return []
+    page_paths = [c.get("target_path") or "" for c in concepts]
+    missing = [
+        c
+        for c in candidates
+        if _looks_like_code_name(c)
+        and not _has_exact_symbol([c], symbols)
+        and not _names_a_path(c, page_paths)
+    ]
+    if missing:
+        _mark_not_the_named_symbol(concepts)
+    return missing
+
+
 async def _structured_search(
     query: str,
     limit: int,
@@ -972,6 +929,7 @@ async def _structured_search(
     repo: str | None,
     mode: str,
     grep_hint: str | None,
+    names: Container[str] | None = None,
 ) -> dict:
     """Run symbol / path / hybrid search and shape the response.
 
@@ -984,6 +942,9 @@ async def _structured_search(
     multi = len(contexts) > 1
 
     symbols: list[dict] = []
+    # Symbol rows past each repo's ``limit``: they only backfill slots that
+    # collapsing same-file rows frees, and never steer the exact-match signal.
+    spare: list[dict] = []
     files: list[dict] = []
     concepts: list[dict] = []
 
@@ -998,17 +959,21 @@ async def _structured_search(
     if canonical_symbol:
         symbol_query = canonical_symbol[1]
     if mode == "hybrid":
-        _idents = _embedded_identifiers(query)
+        _idents = _embedded_identifiers(query, names)
         if _idents:
             symbol_query = " ".join(_idents)
 
+    # Only the hybrid window collapses symbol rows, so only it over-fetches
+    # them; path hits are file pages, already one row per file.
+    fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
             s = await search_symbols_single(
-                ctx, symbol_query, limit, symbol_kind=symbol_kind, kind=kind
+                ctx, symbol_query, fetch, symbol_kind=symbol_kind, kind=kind
             )
             _tag_repo(s, ctx, multi)
-            symbols.extend(s)
+            symbols.extend(s[:limit])
+            spare.extend(s[limit:])
         if mode == "path":
             f = await search_paths_single(ctx, query, limit)
             _tag_repo(f, ctx, multi)
@@ -1021,8 +986,9 @@ async def _structured_search(
             concepts.extend(c)
 
     symbols.sort(key=lambda x: -(x.get("score") or 0.0))
+    spare.sort(key=lambda x: -(x.get("score") or 0.0))
     files.sort(key=lambda x: -(x.get("score") or 0.0))
-    candidates = _identifier_candidates(query, mode)
+    candidates = _identifier_candidates(query, mode, names)
     if mode == "symbol":
         symbols = _protect_exact_symbols(query, symbols)
     elif mode == "hybrid" and candidates:
@@ -1034,19 +1000,35 @@ async def _structured_search(
     # Computed once here so the hybrid interleave and the exact-match note below
     # agree on the same signal.
     exact = _has_exact_symbol(candidates, symbols) if candidates else False
+    missing = _missing_named_symbols(candidates, symbols, bool(canonical_symbol), concepts)
+    if missing:
+        symbols = [s for s in symbols if _has_exact_symbol(candidates, [s])]
+        spare = [s for s in spare if _has_exact_symbol(candidates, [s])]
 
     if mode == "symbol":
         results = symbols[:limit]
     elif mode == "path":
         results = files[:limit]
     else:  # hybrid: interleave symbol matches and concept pages for new files
-        sym_files = {s.get("file") for s in symbols}
-        concepts = [c for c in concepts if c.get("target_path") not in sym_files]
         # Federation appends per-repo concept lists in repo order — re-rank by
         # relevance so a strong page in repo B isn't buried under repo A's weak
         # ones. (Single-repo: already sorted upstream; this is a no-op.)
         concepts.sort(key=lambda x: -(x.get("relevance_score") or 0.0))
-        results = _interleave_hybrid(query, symbols, concepts, limit, exact)
+        window = _hybrid_window(query, symbols, concepts, limit, exact, names)
+        # One row per file, so ``limit`` buys distinct files (mode "symbol"
+        # stays row-per-symbol: overloads there are the answer). Collapsing
+        # keeps the window's order and frees the slots same-file rows took;
+        # the next pages, then the next symbols, fill them.
+        served = {id(item) for item in window}
+        rest = [item for item in concepts + symbols + spare if id(item) not in served]
+        results = _collapse_by_file(window + rest)[:limit]
+        # A code-location query wants files to open, so a module, onboarding
+        # or decision page is dropped from the window. Its slot is not
+        # refilled: on the retrieval guard a refill bought +0.01 coverage at
+        # limit 5 for -0.01 precision at limit 10. Kept when the caller asked
+        # for pages by type or kind="doc".
+        if not page_type and kind != "doc":
+            results = [item for item in results if hit_file_path(item)]
 
     repository = None
     if not multi:
@@ -1077,8 +1059,19 @@ async def _structured_search(
     # there is no exact hit to distinguish from the fuzz. ``candidates`` /
     # ``exact`` were computed above so ordering and this note stay consistent.
     if candidates:
-        response["exact_match"] = exact
-        if not exact:
+        response["exact_match"] = exact and not missing
+        if missing:
+            shown = ", ".join(repr(c) for c in missing[:3])
+            # An empty window has no page to qualify, and its grep_hint
+            # already carries the sweep advice.
+            pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if results else ""
+            sweep = "" if (grep_hint and not results) else " " + EXHAUSTIVE_SWEEP_HINT
+            response["note"] = (
+                f"No indexed symbol is named {shown}, so no symbol is returned "
+                f"for it.{pages} Recheck the spelling, or search a shorter part "
+                f"of the name.{sweep}"
+            )
+        elif not exact:
             shown = ", ".join(repr(c) for c in candidates[:3])
             response["note"] = (
                 f"No indexed symbol exactly matches {shown}. The results are "
@@ -1088,7 +1081,9 @@ async def _structured_search(
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
-    # Last, so nothing above has to know the field is on its way out.
+    # Last, so nothing above has to know the field is on its way out. Paths
+    # first, so a page whose target_path is dropped keeps its page_id.
+    add_row_paths(results)
     _drop_derivable_page_ids(results)
     return response
 
@@ -1120,23 +1115,23 @@ async def search_codebase(
     For QUESTIONS ("how does X work", "where is Y handled", "why is Z like
     this"), call get_answer instead: it runs this same hybrid retrieval
     internally and synthesizes a cited answer, so searching first is a wasted
-    round-trip. Use this tool when you want the raw ranked hits themselves —
-    enumerating matches, resolving an identifier to a symbol_id, or scoping a
-    later get_context call.
+    round-trip. Use this tool for the raw ranked hits: enumerating matches,
+    resolving an identifier to a symbol_id, or scoping get_context.
 
     mode="auto" (default) routes the query: identifier-shaped queries search
-    the indexed symbols (returns symbol_id/file/line bounds — pipe into
+    the indexed symbols (returns symbol_id/path/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
-    and conceptual queries run wiki-semantic search. Mixed queries run hybrid,
-    symbol hits first. Decision records rank below file pages unless the query
-    is why-shaped.
+    and conceptual queries run wiki-semantic search. Mixed queries run hybrid:
+    symbol hits first, then file-backed pages only. Decision records rank
+    below file pages unless the query is why-shaped.
 
-    `candidates` lists up to `limit` distinct openable file paths, best first.
-    Some results are pages, not files; this is what to Read.
+    Rows naming a file carry `path`; `candidates` is up to `limit`
+    distinct files to Read, best first.
 
     Args:
-        query: identifier, path, or natural-language query.
-        limit: max results (default 5).
+        query: identifier, path, or natural language.
+        limit: max results (default 5); distinct files outside
+            mode="symbol" (same-file symbols in `symbols`).
         page_type: restrict to one page type. Common: file_page (per-file
             docs, always present) or module_page (subsystem/concept pages).
             Any stored type filters (repo_overview, layer_page, scc_page,
@@ -1146,17 +1141,24 @@ async def search_codebase(
         mode: auto | concept | symbol | path | hybrid.
         symbol_kind: filter symbol hits by kind (function|class|method|...).
     """
-    grep_hint = _grep_hint_for(query)
-    resolved_mode = _resolve_mode(query, mode)
-
     # An unknown kind used to take the same ``return False`` as a kind that is
     # simply inapplicable, so a typo and a real empty result looked identical.
     ignored: list[dict[str, Any]] = []
     kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
+    # An unknown mode used to become ``auto`` with nothing said, so the caller
+    # got a different search than it asked for. Modes have always been
+    # case-insensitive; only a genuine miss is dropped, and under its own spelling.
+    if mode is not None and mode.lower() in _VALID_MODES:
+        mode = mode.lower()
+    mode = resolve_enum_argument(mode, _VALID_MODES, argument="mode", ignored=ignored)
+    # Loaded once so routing, candidates, ordering and the hint validate alike.
+    names = await indexed_names(await _contexts_for(repo), query)
+    grep_hint = _grep_hint_for(query, names)
+    resolved_mode = _resolve_mode(query, mode, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):
         structured = await _structured_search(
-            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint
+            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names
         )
         attach_ignored_arguments(structured, ignored)
         return structured
@@ -1222,6 +1224,8 @@ async def search_codebase(
         output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    # A file page and a symbol page of one file are one place to look.
+    output = _collapse_by_file(output)
     # Files the page retrievers structurally cannot see (a private helper, a
     # local name, anything a file page's public-symbol table omits) get the
     # weakest tail slots. No-op when the symbol leg names nothing new.
@@ -1246,5 +1250,6 @@ async def search_codebase(
         response["grep_hint"] = grep_hint
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
+    add_row_paths(output)
     _drop_derivable_page_ids(output)
     return response

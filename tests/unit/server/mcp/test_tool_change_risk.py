@@ -1,0 +1,879 @@
+"""How each ``get_change_risk`` enrichment degrades.
+
+A failed git call, health comparison, index read or changed-lines read must
+become a named state, never a crash or an empty list that reads as all-clear.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
+from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import tool_change_risk as tool
+from repowise.server.mcp_server._budget import OmissionCollector
+
+# ---------------------------------------------------------------------------
+# get_change_risk: git failures while scoring
+# ---------------------------------------------------------------------------
+
+
+async def _score_raising(monkeypatch, exc: BaseException, revspec=None) -> dict:
+    async def _context(_repo):
+        return SimpleNamespace(path="/repo")
+
+    def _raise(*_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(tool, "_resolve_repo_context", _context)
+    monkeypatch.setattr(tool, "score_live_change", _raise)
+    return await tool.get_change_risk(revspec)
+
+
+@pytest.mark.asyncio
+async def test_git_failure_reports_the_revspec_and_git_stderr(monkeypatch):
+    exc = subprocess.CalledProcessError(128, ["git"], stderr="fatal: bad object deadbeef\n")
+    result = await _score_raising(monkeypatch, exc, "deadbeef")
+    assert result == {"error": "Could not read change 'deadbeef': fatal: bad object deadbeef"}
+
+
+@pytest.mark.asyncio
+async def test_git_failure_without_stderr_falls_back_to_the_exception_text(monkeypatch):
+    exc = subprocess.CalledProcessError(1, ["git", "diff"], stderr="")
+    result = await _score_raising(monkeypatch, exc)
+    assert result["error"].startswith("Could not read change 'HEAD': ")
+    assert "returned non-zero exit status 1" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_git_timeout_is_an_error_naming_the_change(monkeypatch):
+    result = await _score_raising(monkeypatch, subprocess.TimeoutExpired(["git"], 30), "a..b")
+    assert result == {"error": "git timed out reading change 'a..b'."}
+
+
+# ---------------------------------------------------------------------------
+# Health comparison and its stored-finding references
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_health_comparison_degrades_to_unavailable(monkeypatch):
+    """The comparison runs in a thread beside the enrichments; it must never raise."""
+
+    def _broken(_path):
+        raise RuntimeError("worktree vanished")
+
+    monkeypatch.setattr(tool, "_delta_service", _broken)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.status == "unavailable"
+    assert delta.explanation == "Health comparison failed: worktree vanished"
+    assert delta.comparison_basis == "not_compared"
+    assert delta.findings == []
+
+
+def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
+    """A lazy import asking the loaded module for a name only the checkout has."""
+
+    def _stale(_path):
+        from repowise.core.ingestion.type_names import name_added_after_server_start  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _stale)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.status == "unavailable"
+    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert "name_added_after_server_start" in delta.explanation
+    assert "Restart the MCP server" in delta.explanation
+
+
+def test_a_missing_third_party_module_keeps_the_raw_failure(monkeypatch):
+    """Not a stale server: restarting would not install a dependency."""
+
+    def _missing(_path):
+        import repowise_no_such_dependency  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _missing)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.explanation.startswith("Health comparison failed: No module named")
+
+
+def _finding(path, biomarker, symbol, start, end):
+    return SimpleNamespace(
+        path=path,
+        biomarker_type=biomarker,
+        symbol=symbol,
+        line_start=start,
+        line_end=end,
+        health_reference=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_an_exact_twin_earns_a_stored_finding_reference(factory, health_data):
+    """Same file, marker, symbol and span, or no pointer at all.
+
+    A looser match would hand the agent a ``get_health`` id for a different
+    finding. The seed stores ``complex_method`` on ``authenticate`` at 10-80.
+    """
+    exact = _finding("src/auth/service.py", "complex_method", "authenticate", 10, 80)
+    shifted = _finding("src/auth/service.py", "complex_method", "authenticate", 11, 80)
+    other_file = _finding("src/db/models.py", "complex_method", "authenticate", 10, 80)
+    ctx = SimpleNamespace(session_factory=factory, alias="")
+    await tool._attach_health_references(
+        ctx, SimpleNamespace(findings=[exact, shifted, other_file])
+    )
+
+    assert exact.health_reference["tool"] == "get_health"
+    assert exact.health_reference["arguments"]["finding_id"]
+    assert shifted.health_reference is None
+    assert other_file.health_reference is None
+
+
+@pytest.mark.asyncio
+async def test_health_references_skip_the_index_when_there_is_nothing_to_match():
+    finding = _finding("a.py", "complex_method", "f", 1, 2)
+    await tool._attach_health_references(
+        SimpleNamespace(session_factory=None), SimpleNamespace(findings=[finding])
+    )
+    # object() as the factory would raise if it were ever opened.
+    await tool._attach_health_references(
+        SimpleNamespace(session_factory=object()), SimpleNamespace(findings=[])
+    )
+    assert finding.health_reference is None
+
+
+@pytest.mark.asyncio
+async def test_repository_is_none_without_a_factory_or_a_repository_row(factory):
+    assert await tool._repository(SimpleNamespace()) is None
+    assert await tool._repository(SimpleNamespace(session_factory=factory)) is None
+
+
+# ---------------------------------------------------------------------------
+# Changed lines
+# ---------------------------------------------------------------------------
+
+
+def test_filter_changed_applies_the_scores_suffixes_and_excludes():
+    changed = {"src/a.py": {1}, "src/b.ts": {2}, "docs/c.py": {3}}
+    assert tool._filter_changed(changed, (".py",), ("docs/",)) == {"src/a.py": {1}}
+    assert tool._filter_changed(changed, (), ()) == changed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "summary"),
+    [
+        (ValueError("not a ref"), "Could not read changed lines: not a ref"),
+        (subprocess.SubprocessError(), "Could not read changed lines from git."),
+        (OSError("git missing"), "Could not read changed lines from git."),
+    ],
+)
+async def test_changed_lines_failure_is_unknown_not_empty(monkeypatch, exc, summary):
+    import repowise.core.analysis.changed_lines as changed_lines_mod
+
+    def _raise(*_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(changed_lines_mod, "changed_lines", _raise)
+    assert await tool._changed_in_scope("/repo", None, (), ()) == ({}, ("unknown", summary))
+
+
+@pytest.mark.asyncio
+async def test_changed_lines_all_filtered_out_is_named(monkeypatch):
+    import repowise.core.analysis.changed_lines as changed_lines_mod
+
+    monkeypatch.setattr(
+        changed_lines_mod, "changed_lines", lambda *_a, **_k: ({"README.md": {1}}, "HEAD")
+    )
+    assert await tool._changed_in_scope("/repo", "HEAD", (".py",), ()) == (
+        {},
+        ("no_source_line_changes", "No changed source lines to map to tests."),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index reads that fail
+# ---------------------------------------------------------------------------
+
+
+def _get_repo_raising(monkeypatch, exc: BaseException) -> None:
+    async def _raise(_session, *_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(tool, "_get_repo", _raise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        LookupError("no repo"),
+        OperationalError("SELECT", {}, Exception("no such table: fix_events")),
+    ],
+)
+async def test_prior_fixes_stay_silent_when_there_is_no_record_to_read(
+    monkeypatch, factory, exc
+):
+    _get_repo_raising(monkeypatch, exc)
+    ctx = SimpleNamespace(session_factory=factory)
+    assert await tool._prior_fixes_block(ctx, {"a.py": {1}}) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "cls_name"),
+    [
+        (OperationalError("SELECT", {}, Exception("database is locked")), "OperationalError"),
+        (SQLAlchemyError("boom"), "SQLAlchemyError"),
+    ],
+)
+async def test_prior_fixes_render_a_failed_read_as_unavailable(
+    monkeypatch, factory, exc, cls_name
+):
+    _get_repo_raising(monkeypatch, exc)
+    block = await tool._prior_fixes_block(
+        SimpleNamespace(session_factory=factory), {"a.py": {1}}
+    )
+    assert block["status"] == "unavailable"
+    assert cls_name in block["reason"]
+    assert "not cleared" in block["summary"]
+
+
+@pytest.mark.asyncio
+async def test_impacted_tests_pass_a_changed_lines_error_through(factory, tmp_path):
+    block = await tool._impacted_tests_block(
+        SimpleNamespace(session_factory=factory),
+        {},
+        ("unknown", "Could not read changed lines from git."),
+        OmissionCollector("get_change_risk", repo_root=tmp_path),
+    )
+    assert block["status"] == "unknown"
+    assert block["summary"] == "Could not read changed lines from git."
+    assert block["tests_to_run"] == []
+    assert block["map_present"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "status"),
+    [(LookupError("no repo"), "no_index"), (SQLAlchemyError("boom"), "unknown")],
+)
+async def test_impacted_tests_degrade_on_an_unreadable_index(
+    monkeypatch, factory, tmp_path, exc, status
+):
+    _get_repo_raising(monkeypatch, exc)
+    block = await tool._impacted_tests_block(
+        SimpleNamespace(session_factory=factory),
+        {"a.py": {1}},
+        None,
+        OmissionCollector("get_change_risk", repo_root=tmp_path),
+    )
+    assert block["status"] == status
+    assert block["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_inferred_tests_treat_a_failed_graph_walk_as_no_reach(
+    monkeypatch, session, repo_id, tmp_path
+):
+    """A graph walk that throws falls back to "run the full suite", never an error."""
+    import repowise.core.analysis.test_reachability as reach
+
+    async def _raise(*_a, **_k):
+        raise RuntimeError("graph unreadable")
+
+    monkeypatch.setattr(reach, "tests_reaching", _raise)
+    block = await tool._inferred_impacted(
+        session, repo_id, ["a.py"], OmissionCollector("get_change_risk", repo_root=tmp_path)
+    )
+    assert block["status"] == "no_map"
+    assert "run the full suite" in block["summary"]
+
+
+@pytest.mark.asyncio
+async def test_inferred_tests_run_the_tests_under_a_conftest_not_the_conftest(
+    monkeypatch, session, repo_id, tmp_path
+):
+    """The walk reports a conftest it stopped at; pytest collects nothing from one.
+
+    It stands for the tests under its directory, so ``b.py``, reached only
+    through it, still gets tests rather than "run the full suite".
+    """
+    import repowise.core.analysis.test_reachability as reach
+
+    async def _test_files(*_a, **_k):
+        return {
+            "tests/unit/conftest.py",
+            "tests/unit/test_a.py",
+            "tests/unit/sub/test_b.py",
+            "tests/unit/helpers.py",
+            "tests/other/test_c.py",
+        }
+
+    async def _reaching(*_a, **_k):
+        return {"a.py": ["tests/unit/test_a.py"], "b.py": ["tests/unit/conftest.py"]}
+
+    monkeypatch.setattr(reach, "load_test_files", _test_files)
+    monkeypatch.setattr(reach, "tests_reaching", _reaching)
+    block = await tool._inferred_impacted(
+        session, repo_id, ["a.py", "b.py"], OmissionCollector("get_change_risk", repo_root=tmp_path)
+    )
+    # test_a reaches both files, so it leads.
+    assert block["tests_to_run"] == ["tests/unit/test_a.py", "tests/unit/sub/test_b.py"]
+    assert block["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_independent_changes_are_silent_for_one_file_or_an_unreadable_index(
+    monkeypatch, factory, tmp_path
+):
+    collector = OmissionCollector("get_change_risk", repo_root=tmp_path)
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=factory)
+    assert await tool._independent_changes_block(ctx, {"a.py": {1}}, collector) is None
+
+    _get_repo_raising(monkeypatch, SQLAlchemyError("boom"))
+    # revspec None is not a range, so no git call is made for commit sets.
+    assert (
+        await tool._independent_changes_block(ctx, {"a.py": {1}, "b.py": {2}}, collector)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_branch_scan_falls_back_to_git_only_when_the_index_will_not_open(
+    monkeypatch, factory
+):
+    """Branch overlap needs only git, so an index failure costs the ranking, not the block."""
+    scan = SimpleNamespace(overlap="git-only overlap")
+    monkeypatch.setattr(tool, "_scan_from_trunk", lambda _path, _files: scan)
+    _get_repo_raising(monkeypatch, LookupError("no repo"))
+    ctx = SimpleNamespace(path="/repo", session_factory=factory)
+    assert await tool._scan_overlap(ctx, ["a.py"]) == "git-only overlap"
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo block
+# ---------------------------------------------------------------------------
+
+
+def _enricher(**overrides):
+    base = {
+        "has_contract_data": True,
+        "has_breaking_changes": True,
+        "get_contract_links_as_provider": lambda _alias, _path: [],
+        "get_breaking_changes_for_repo": lambda _alias: [],
+        "get_breaking_changes": lambda: {},
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_cross_repo_ignores_breaking_changes_on_files_this_change_did_not_touch(monkeypatch):
+    change = {
+        "provider_file": "api/other.py",
+        "severity": "breaking",
+        "impacted_consumers": [{"repo": "web"}],
+    }
+    monkeypatch.setattr(tool, "_is_workspace_mode", lambda: True)
+    monkeypatch.setattr(
+        _state,
+        "_cross_repo_enricher",
+        _enricher(get_breaking_changes_for_repo=lambda _alias: [change]),
+    )
+    assert tool._cross_repo_block("api", ["api/orders.py"]) is None
+
+
+def test_cross_repo_block_never_raises(monkeypatch):
+    def _boom(_alias, _path):
+        raise RuntimeError("contracts.json unreadable")
+
+    monkeypatch.setattr(tool, "_is_workspace_mode", lambda: True)
+    monkeypatch.setattr(
+        _state, "_cross_repo_enricher", _enricher(get_contract_links_as_provider=_boom)
+    )
+    assert tool._cross_repo_block("api", ["api/orders.py"]) is None
+
+
+# ---------------------------------------------------------------------------
+# patch_coverage: the gate's number, read from stored coverage
+# ---------------------------------------------------------------------------
+
+
+def _collector(tmp_path) -> OmissionCollector:
+    return OmissionCollector("get_change_risk", repo_root=tmp_path)
+
+
+def _scored(ref: str = "main...HEAD", working_tree: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(working_tree=working_tree, features=SimpleNamespace(ref=ref))
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_is_the_gate_computation_on_stored_coverage(
+    monkeypatch, factory, session, tmp_path
+):
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files, upsert_repository
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    await save_coverage_files(
+        session,
+        repo.id,
+        [file_coverage("a.py", [1], [1, 2])],
+        source_format="lcov",
+        ingested_commit_sha="abc",
+    )
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert block["patch_coverage_pct"] == 50.0
+    assert block["scope"]["freshness"] == "current"
+    assert block["scope"]["label"] == "main...HEAD"
+
+    # Uncommitted edits were never measured: no commit vouches for them.
+    dirty = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True), _collector(tmp_path)
+    )
+    assert dirty["scope"]["freshness"] == "unknown"
+
+    # coverage.ignore reaches the agent surface as it does the CLI gate.
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  ignore: [a.py]\n", encoding="utf-8"
+    )
+    ignored = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert ignored["scope"]["ignored_file_count"] == 1
+    assert ignored["patch_coverage_pct"] is None
+
+    # So do the path-scoped gates in coverage.gates, and a failing one fails the gate.
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: a, paths: [a.py], fail_under: 80}\n",
+        encoding="utf-8",
+    )
+    gated = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    (gate,) = gated["path_gates"]
+    assert (gate["name"], gate["patch_coverage_pct"], gate["gate"]) == ("a", 50.0, "fail")
+    assert gated["gate"] == "fail"
+
+    # Uncommitted or stale coverage is not what the CLI gate judges: no verdict.
+    unjudged = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True), _collector(tmp_path)
+    )
+    assert unjudged["path_gates"][0]["gate"] == "no_data"
+    assert unjudged["gate"] == "not_set"
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "other")
+    stale = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert stale["scope"]["freshness"] == "stale"
+    assert stale["path_gates"][0]["gate"] == "no_data"
+
+    # An invalid entry is carried, and no gate is judged beside it.
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  gates:\n    - {name: a, paths: [a.py], fail_under: 80}\n"
+        "    - {name: b, paths: []}\n",
+        encoding="utf-8",
+    )
+    partial = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+    assert partial["scope"]["config_errors"] == [
+        "coverage.gates[1] ('b'): paths must be a non-empty list of globs."
+    ]
+    assert [g["gate"] for g in partial["path_gates"]] == ["no_data"]
+    assert partial["gate"] == "not_set"
+
+
+async def test_patch_coverage_compares_the_ingest_at_the_change_base(
+    monkeypatch, factory, session, tmp_path
+):
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import parse_lcov, resolve_reports
+    from repowise.core.persistence.crud import save_coverage_files, upsert_repository
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    for commit, hits in (("base0", "1"), ("abc", "0")):
+        lcov = f"SF:a.py\nDA:1,1\nDA:2,{hits}\nend_of_record\n"
+        resolved = resolve_reports([parse_lcov(lcov)], {"a.py"})
+        await save_coverage_files(
+            session,
+            repo.id,
+            resolved.files,
+            source_format="lcov",
+            provenance=resolved.provenance,
+            ingested_commit_sha=commit,
+        )
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    bases = []
+
+    def _change_base(_path, revspec):
+        bases.append(revspec)
+        return "base0"
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    monkeypatch.setattr(git_refs, "change_base", _change_base)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {2}}, None, "main...HEAD", _scored(), _collector(tmp_path)
+    )
+
+    assert bases == ["main...HEAD"]
+    project = block["project"]
+    assert (project["basis"], project["base_commit"], project["head_commit"]) == (
+        "history",
+        "base0",
+        "abc",
+    )
+    assert (project["delta_pct"], project["gate"]) == (-50.0, "not_set")
+    # A working-tree change measured from a push base starts at their merge-base.
+    assert tool._change_base(str(tmp_path), None, "main...working tree", True) == "base0"
+    assert bases[-1] == "main...HEAD"
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_their_files_risk(monkeypatch, factory, session, tmp_path):
+    from repowise.core import git_refs
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import (
+        save_coverage_files,
+        upsert_git_metadata,
+        upsert_repository,
+    )
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    await save_coverage_files(
+        session,
+        repo.id,
+        [file_coverage("a.py", [], [1]), file_coverage("hot.py", [], [1])],
+        source_format="lcov",
+        ingested_commit_sha="abc",
+    )
+    await upsert_git_metadata(session, repository_id=repo.id, file_path="hot.py", is_hotspot=True)
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1}, "hot.py": {1}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+
+    # tmp_path is no git repository: the index answers where it has a row.
+    hot, plain = block["files"]
+    assert hot["file_path"] == "hot.py"
+    assert hot["risk"]["basis"] == "index" and hot["risk"]["reasons"] == ["hotspot"]
+    assert plain["risk"]["basis"] == "unavailable"
+    assert block["risky"]["file_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_is_absent_without_a_readable_change_or_index(
+    monkeypatch, factory, tmp_path
+):
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+    error = ("unknown", "Could not read changed lines from git.")
+    c = _collector(tmp_path)
+    assert await tool._patch_coverage_block(ctx, {}, error, None, _scored(), c) is None
+    no_index = SimpleNamespace(session_factory=None, path=tmp_path)
+    assert await tool._patch_coverage_block(no_index, {"a.py": {1}}, None, None, _scored(), c) is None
+    _get_repo_raising(monkeypatch, LookupError("no repo"))
+    assert await tool._patch_coverage_block(ctx, {"a.py": {1}}, None, None, _scored(), c) is None
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_files_are_capped_to_what_needs_attention(
+    monkeypatch, factory, tmp_path
+):
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import compute_patch_coverage
+
+    coverage = {f"f{i}.py": file_coverage(f"f{i}.py", [], [1]) for i in range(15)}
+    coverage["ok.py"] = file_coverage("ok.py", [1], [1])
+    changed = {path: {1} for path in coverage}
+
+    async def _stored(*_a, **_k):
+        return compute_patch_coverage(changed, coverage)
+
+    import repowise.core.analysis.patch_coverage as pc_module
+
+    monkeypatch.setattr(pc_module, "stored_patch_coverage", _stored)
+    collector = _collector(tmp_path)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    async def _repo(_session, *_a, **_k):
+        return SimpleNamespace(id="r")
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    block = await tool._patch_coverage_block(ctx, changed, None, "HEAD", _scored(), collector)
+
+    assert len(block["files"]) == 10
+    assert all(f["status"] == "measured" and f["uncovered_ranges"] for f in block["files"])
+    # Totals still count every file, the fully covered one included.
+    assert block["file_counts"]["measured"] == 16
+    assert block["coverable_line_count"] == 16
+
+
+async def _stored_repo(monkeypatch, session, tmp_path, **save_kwargs):
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files, upsert_repository
+
+    repo = await upsert_repository(session, name="r", local_path=str(tmp_path))
+    await save_coverage_files(
+        session,
+        repo.id,
+        [file_coverage("a.py", [1], [1, 2])],
+        source_format="lcov",
+        ingested_commit_sha="abc",
+        **save_kwargs,
+    )
+    await session.commit()
+
+    async def _repo(_session, *_a, **_k):
+        return repo
+
+    monkeypatch.setattr(tool, "_get_repo", _repo)
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_the_test_to_extend(
+    monkeypatch, factory, session, tmp_path
+):
+    import repowise.core.analysis.patch_coverage as pc_module
+    from repowise.core import git_refs
+    from repowise.core.analysis.patch_coverage import TestHint
+
+    await _stored_repo(monkeypatch, session, tmp_path)
+    monkeypatch.setattr(git_refs, "resolve", lambda _p, _rev: "abc")
+    seen: dict = {}
+
+    async def _hints(_session, _repo_id, _pc, **kwargs):
+        seen.update(kwargs)
+        return {"a.py": (TestHint((2, 2), "run", ("tests/test_a.py",), "call_graph", 4),)}
+
+    monkeypatch.setattr(pc_module, "read_test_hints", _hints)
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+    assert block["files"][0]["hints"] == [
+        {"range": [2, 2], "symbol": "run", "tests": ["tests/test_a.py"],
+         "basis": "call_graph", "total": 4}
+    ]
+    # The checkout goes along so spans stored at the indexed commit can move.
+    assert seen == {"repo_path": str(tmp_path), "head_commit": "abc", "working_tree": False}
+
+    async def _unreadable(*_a, **_k):
+        return None  # read_test_hints logs its own failure and answers None
+
+    # An index that cannot answer leaves hints null and the figure intact.
+    monkeypatch.setattr(pc_module, "read_test_hints", _unreadable)
+    block = await tool._patch_coverage_block(
+        ctx, {"a.py": {1, 2}}, None, "HEAD", _scored(), _collector(tmp_path)
+    )
+    assert block["patch_coverage_pct"] == 50.0
+    assert block["files"][0]["hints"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_hint_read_is_logged_and_reads_as_none(monkeypatch):
+    import repowise.core.analysis.patch_coverage.hints as hints_module
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.analysis.patch_coverage import compute_patch_coverage, read_test_hints
+
+    async def _raise(*_a, **_k):
+        raise OperationalError("select", {}, Exception("no such table: wiki_symbols"))
+
+    monkeypatch.setattr(hints_module, "_read_test_hints", _raise)
+    # Record the call itself: whether a log record reaches caplog depends on how
+    # earlier tests configured logging, which a full run changes.
+    warned: list[str] = []
+    monkeypatch.setattr(hints_module.log, "warning", lambda event, **_k: warned.append(event))
+    pc = compute_patch_coverage({"a.py": {1}}, {"a.py": file_coverage("a.py", [], [1])})
+    assert await read_test_hints(object(), "r", pc) is None
+    assert warned == ["patch_coverage_hints_failed"]
+
+
+@pytest.mark.asyncio
+async def test_working_tree_coverage_is_current_only_when_ingested_after_the_last_edit(
+    monkeypatch, factory, session, tmp_path
+):
+    import os
+    from datetime import UTC, datetime
+
+    ingested = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    await _stored_repo(monkeypatch, session, tmp_path, ingested_at=ingested)
+    source = tmp_path / "a.py"
+    source.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    ctx = SimpleNamespace(session_factory=factory, path=tmp_path)
+
+    async def _block():
+        return await tool._patch_coverage_block(
+            ctx, {"a.py": {1, 2}}, None, None, _scored(working_tree=True),
+            _collector(tmp_path), label="origin/main...working tree",
+        )
+
+    os.utime(source, (ingested.timestamp() - 60,) * 2)
+    before = await _block()
+    assert before["scope"]["label"] == "origin/main...working tree"
+    assert before["scope"]["freshness"] == "current"
+    os.utime(source, (ingested.timestamp() + 60,) * 2)
+    assert (await _block())["scope"]["freshness"] == "stale"
+
+
+def test_push_base_is_the_ci_base_else_head(monkeypatch):
+    import repowise.core.ci.base as ci_base
+
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "origin/main...HEAD")
+    assert tool._push_base("/repo") == "origin/main"
+
+    def _none(_root):
+        raise ci_base.BaseNotFoundError("no base")
+
+    monkeypatch.setattr(ci_base, "default_revspec", _none)
+    assert tool._push_base("/repo") == "HEAD"
+
+
+def _patch_block(
+    covered: int, coverable: int, hints=None, freshness="current", label="origin/main...HEAD"
+) -> dict:
+    return {
+        "covered_line_count": covered,
+        "coverable_line_count": coverable,
+        "scope": {"freshness": freshness, "label": label},
+        "files": [{"hints": hints}],
+    }
+
+
+def test_the_directive_names_the_scope_and_the_tests_to_extend():
+    from repowise.server.mcp_server._change_health import patch_coverage_action
+
+    assert patch_coverage_action(None) is None
+    assert patch_coverage_action(_patch_block(3, 3)) is None
+    hints = [
+        {"tests": ["tests/test_a.py", "tests/test_b.py"]},
+        {"tests": ["tests/test_a.py"]},
+        {"tests": ["tests/test_c.py"]},
+    ]
+    assert patch_coverage_action(_patch_block(1, 3, hints)) == (
+        "2 changed executable lines since origin/main are uncovered; "
+        "extend tests/test_a.py, tests/test_c.py"
+    )
+    assert patch_coverage_action(_patch_block(0, 1, label="working tree")) == (
+        "1 changed executable line in the working tree is uncovered; "
+        "add tests for them (patch_coverage.files)"
+    )
+    # Stale coverage leads: its gaps are not real until the tests run again.
+    assert patch_coverage_action(_patch_block(0, 1, hints, freshness="stale")).startswith(
+        "Stored coverage predates this change: re-run the tests with coverage, then "
+        "`repowise coverage add`"
+    )
+
+
+def test_the_directive_names_partly_taken_lines_when_every_changed_line_ran():
+    from repowise.server.mcp_server._change_health import patch_coverage_action
+
+    block = {**_patch_block(3, 3), "branches": {"partial_line_count": 2}}
+    assert patch_coverage_action(block) == (
+        "2 changed lines since origin/main ran with a branch no test took; add tests "
+        "for the other way through (patch_coverage.files[].partial_ranges)"
+    )
+    assert patch_coverage_action({**block, "branches": None}) is None
+
+
+def _git(cwd, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def branch_repo(tmp_path, monkeypatch):
+    """``main`` has a.py; branch ``feat`` committed line 2; the push base is main."""
+    import repowise.core.ci.base as ci_base
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "a.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "init")
+    _git(tmp_path, "switch", "-qc", "feat")
+    (tmp_path / "a.py").write_text("a = 1\nb = 22\nc = 3\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "feat")
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "main...HEAD")
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_no_revspec_measures_everything_the_push_brings(branch_repo):
+    scored = ({"a.py": {9}}, None)  # what the score read; not what the push brings
+
+    # Clean tree: the branch since main, not just the last commit.
+    clean = await tool._push_change(str(branch_repo), None, False, (), (), scored)
+    assert clean == ({"a.py": {2}}, None, "main...HEAD", "main...HEAD")
+
+    # Dirty tree: committed and uncommitted together.
+    (branch_repo / "a.py").write_text("a = 1\nb = 22\nc = 33\n", encoding="utf-8")
+    dirty = await tool._push_change(str(branch_repo), None, True, (), (), scored)
+    assert dirty[:3] == ({"a.py": {2, 3}}, None, "main...working tree")
+
+    # An explicit revspec is measured as given.
+    assert await tool._push_change(str(branch_repo), "HEAD", False, (), (), scored) == (
+        *scored, None, "HEAD",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_push_base_falls_back(branch_repo, monkeypatch):
+    import repowise.core.ci.base as ci_base
+
+    (branch_repo / "a.py").write_text("a = 1\nb = 22\nc = 33\n", encoding="utf-8")
+    monkeypatch.setattr(ci_base, "default_revspec", lambda _root: "gone...HEAD")
+    scored = ({"a.py": {3}}, None)
+
+    # Dirty: the plain working-tree diff, labelled as such.
+    dirty = await tool._push_change(str(branch_repo), None, True, (), (), scored)
+    assert dirty[:3] == ({"a.py": {3}}, None, "working tree")
+    # Clean: what was scored.
+    _git(branch_repo, "commit", "-qam", "more")
+    assert await tool._push_change(str(branch_repo), None, False, (), (), scored) == (
+        *scored, None, None,
+    )
+
+
+def test_the_patch_coverage_action_joins_the_directive(monkeypatch):
+    def _broken(_path):
+        raise RuntimeError("no comparison")
+
+    monkeypatch.setattr(tool, "_delta_service", _broken)
+    delta = tool._compare_health("/repo", None, (), ())
+    payload = {"patch_coverage": _patch_block(1, 2, [{"tests": ["tests/test_a.py"]}])}
+
+    tool._attach_health(payload, delta, None, expand=False)
+    assert payload["directive"]["next_actions"][-1] == (
+        "1 changed executable line since origin/main is uncovered; extend tests/test_a.py"
+    )

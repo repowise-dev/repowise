@@ -111,7 +111,7 @@
 ; of which carry an import statement of their own. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Kotlin head extractor in
-; parser_helpers.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
+; lang_helpers/type_heads.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
 ; filters the kotlin-stdlib ubiquitous types.
 
 ; Function parameter: fun f(x: Bar) — `(user_type)` and `(nullable_type)`

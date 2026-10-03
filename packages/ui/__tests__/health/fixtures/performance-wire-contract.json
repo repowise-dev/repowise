@@ -48,6 +48,7 @@
     "file_path",
     "fix",
     "intervention_symbol",
+    "lower_priority",
     "observations_total",
     "opportunity_id",
     "performance_model_version",
@@ -70,7 +71,8 @@
     "amplification",
     "change_risk",
     "exposure",
-    "leverage"
+    "leverage",
+    "loop_magnitude"
   ],
   "evidence": [
     "biomarker_type",
@@ -89,21 +91,22 @@
     "value"
   ],
   "fix": [
+    "api",
     "rationale",
     "safety",
     "strategy"
   ],
   "detail_extra": [
     "analyzed_commit",
+    "found",
     "lifecycle_status",
-    "model_state",
-    "resolved"
+    "model_state"
   ],
   "unresolved_detail": [
     "detail",
+    "found",
     "model_state",
-    "opportunity_id",
-    "resolved"
+    "opportunity_id"
   ],
   "model_state": [
     "opportunity_id",

@@ -122,6 +122,8 @@ export interface ChatMessage {
     model?: string;
     /** The step ceiling was reached before a final answer. */
     truncated?: boolean;
+    /** Next steps derived from the artifacts this turn produced. */
+    follow_ups?: ChatSuggestion[];
   };
   created_at: string;
 }
@@ -153,6 +155,8 @@ export interface ChatUIMessage {
   model?: string;
   /** The step ceiling was reached before a final answer. */
   truncated?: boolean;
+  /** Next steps this turn earned. Absent on a turn that called no tool. */
+  followUps?: ChatSuggestion[];
 }
 
 // ---------------------------------------------------------------------------
@@ -265,27 +269,40 @@ export interface RiskReportArtifactData {
   classification?: string;
   warning?: string;
   error?: string;
+  /** `nothing_to_score` when the change has no counted files. */
+  status?: string;
+  /** True when uncommitted work was scored; false when a clean tree fell back to `HEAD`. */
+  working_tree?: boolean;
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
-  change_shape?: {
-    independent_changes?: {
-      count?: number;
-      summary?: string;
-      basis?: string;
-      ungrouped_files?: string[];
-      groups?: Array<{ files: string[]; bridging_files?: string[] }>;
-      [k: string]: unknown;
-    };
+  /** One line on diff size and spread; never a danger verdict. */
+  diff_shape?: string;
+  independent_changes?: {
+    count?: number;
+    summary?: string;
+    basis?: string;
+    ungrouped_files?: string[];
+    groups?: Array<{ files: string[]; bridging_files?: string[] }>;
     [k: string]: unknown;
   };
-  impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
+  impacted_tests?: {
+    tests_to_run?: string[];
+    status?: string;
+    summary?: string;
+    /** `measured` from stored coverage, `inferred` from the dependency graph. */
+    basis?: "measured" | "inferred" | "none";
+    /** Test ids, or whole test files when inferred. */
+    tests_to_run_kind?: "test_id" | "test_file" | null;
+    total?: number;
+    truncated?: boolean;
+  };
   /** Bug-fix record of the touched files: the "historically fragile" signal. */
   fix_history?: {
     available?: boolean;
     files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+    overlap?: { files_with_fixes?: number; total_fixes?: number };
   };
-  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
   /** Other open branches editing the files this change edits. */
   branch_overlap?: {
     base?: string;
@@ -385,6 +402,9 @@ export interface SearchResultsArtifactData {
     title: string;
     page_type: string;
     page_id?: string;
+    /** Openable repo-relative file; absent when the hit names no file. */
+    path?: string;
+    /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
     relevance_score?: number;
@@ -485,27 +505,46 @@ export interface DecisionsArtifact extends ArtifactEnvelopeIdentity {
   data: DecisionsArtifactData;
 }
 
-/** `get_dead_code` — confidence-tiered dead-code findings. */
-export interface DeadCodeArtifactData {
-  total_findings: number;
-  deletable_lines: number;
-  high_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-    lines: number;
-    safe_to_delete: boolean;
-  }>;
-  medium_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-  }>;
+/** One finding inside a `get_dead_code` tier. */
+export interface DeadCodeArtifactFinding {
+  file_path: string;
+  symbol_name?: string | null;
+  kind: string;
+  confidence: number;
+  reason: string;
+  lines: number | null;
+  safe_to_delete: boolean;
 }
+
+/** One confidence tier of a `get_dead_code` result. */
+export interface DeadCodeArtifactTier {
+  count: number;
+  findings: DeadCodeArtifactFinding[];
+  truncated: boolean;
+}
+
+/**
+ * `get_dead_code`: confidence-tiered dead-code findings. Totals sit in
+ * `summary`; a `tier` argument drops the tiers it did not ask for.
+ */
+export interface DeadCodeArtifactTiers {
+  mode?: undefined;
+  summary: {
+    total_findings: number;
+    deletable_lines: number;
+  };
+  tiers: Partial<Record<"high" | "medium" | "low", DeadCodeArtifactTier>>;
+}
+
+/** `get_dead_code(finding_id=...)`: one finding, or none when the id is unknown. */
+export interface DeadCodeArtifactLookup {
+  mode: "finding";
+  finding_id: string;
+  finding: DeadCodeArtifactFinding | null;
+  resolved: boolean;
+}
+
+export type DeadCodeArtifactData = DeadCodeArtifactTiers | DeadCodeArtifactLookup;
 export interface DeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code";
   data: DeadCodeArtifactData;
@@ -643,5 +682,8 @@ export type ChatSSEEvent =
     }
   /** Every turn ended in a tool call; `done` still follows. */
   | { type: "truncated"; loops: number }
+  /** Next steps for the turn that just finished, sent just before `done`.
+   *  A turn that failed or called no tool sends none. */
+  | { type: "suggestions"; suggestions: ChatSuggestion[] }
   | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

@@ -1,0 +1,170 @@
+{
+  "_comment": "Representative next actions in their wire shape (Action.as_dict()). repowise.core.agent_prompts.render_action renders golden.json from them; see tests/unit/agent_prompts/test_golden.py.",
+  "cases": [
+    {
+      "name": "evidence_over_cap",
+      "repo_name": "acme/api",
+      "action": {
+        "id": "act_0000000000000001",
+        "rule": "fresh_regressions",
+        "tier": "act_now",
+        "horizons": ["week", "quarter"],
+        "severity": "critical",
+        "title": "Clean up what this week's commits left in `src/billing.py`",
+        "impact": "3 commits in the last 7 days added or worsened them … the rest are older.",
+        "why": [
+          {"label": "critical", "value": "1", "basis": "measured"},
+          {"label": "callers", "value": "12", "basis": "inferred"},
+          {"label": "coverage", "value": "unknown", "basis": "unknown"}
+        ],
+        "target": {"kind": "symbol", "path": "src/billing.py", "symbol": "src/billing.py::Invoice.total"},
+        "surface": "commits",
+        "effort": "M",
+        "confidence": "high",
+        "done_when": "The findings close on the next update.",
+        "command": "repowise update",
+        "marker": "complex_method",
+        "evidence_ids": ["abc1234def"],
+        "evidence_total": 1234,
+        "includes": ["src/billing.py"],
+        "fingerprint": "fp1",
+        "details": [
+          {
+            "path": "src/billing.py",
+            "line": 40,
+            "symbol": "src/billing.py::Invoice.total",
+            "marker": "complex_method",
+            "severity": "critical",
+            "reason": "total has cyclomatic complexity 31 — \"too many\" branches",
+            "ref": "abc1234def5678abc1234def5678abc1234def56"
+          },
+          {
+            "path": "src/tax.py",
+            "line": null,
+            "symbol": null,
+            "marker": "made_up_marker",
+            "severity": null,
+            "reason": "",
+            "ref": "finding_abc"
+          },
+          {
+            "path": "src/ledger.py",
+            "line": 0,
+            "symbol": "Ledger",
+            "marker": null,
+            "severity": "high",
+            "reason": "deeply nested",
+            "ref": null
+          }
+        ],
+        "details_total": 1234,
+        "commands": [
+          {
+            "purpose": "Every open finding in these files",
+            "mcp": "get_health(targets=[\"src/billing.py\", \"src/tax.py\"], include=[\"biomarkers\"])",
+            "cli": "repowise health --file src/billing.py"
+          }
+        ]
+      }
+    },
+    {
+      "name": "includes_only",
+      "action": {
+        "id": "act_0000000000000002",
+        "rule": "fix_concentration",
+        "tier": "plan",
+        "horizons": ["quarter"],
+        "severity": "high",
+        "title": "Stabilise `src/payments/`",
+        "impact": "Most fixes in 90 days landed here.",
+        "why": [{"label": "fixes in 90 days", "value": "14", "basis": "measured"}],
+        "target": {"kind": "repo", "path": "", "symbol": null},
+        "surface": "file",
+        "effort": "L",
+        "confidence": "medium",
+        "done_when": "Fewer than 3 fixes land here in the next 90 days.",
+        "command": null,
+        "marker": null,
+        "evidence_ids": [],
+        "evidence_total": 0,
+        "includes": ["src/payments/a.py", "src/payments/b.py"],
+        "fingerprint": "fp2",
+        "details": [],
+        "details_total": 0,
+        "commands": [
+          {"purpose": "The folder's history", "mcp": "get_risk(targets=[\"src/payments/\"])", "cli": null},
+          {"purpose": "The fix log", "mcp": null, "cli": "repowise risk src/payments"}
+        ]
+      }
+    },
+    {
+      "name": "bare",
+      "repo_name": "",
+      "action": {
+        "id": "act_0000000000000003",
+        "rule": "coverage_missing",
+        "tier": "improve_signal",
+        "horizons": ["quarter"],
+        "severity": "low",
+        "title": "Ingest a coverage report",
+        "impact": "Coverage is unknown, so test gaps read as guesses.",
+        "why": [],
+        "target": {"kind": "file", "path": "pyproject.toml", "symbol": null},
+        "surface": "coverage",
+        "effort": "S",
+        "confidence": "high",
+        "done_when": "A coverage report is ingested.",
+        "command": null,
+        "marker": null,
+        "evidence_ids": [],
+        "evidence_total": 0,
+        "includes": [],
+        "fingerprint": "fp3",
+        "details": [],
+        "details_total": 0,
+        "commands": []
+      }
+    },
+    {
+      "name": "details_exact",
+      "repo_name": "café-ünïcode",
+      "action": {
+        "id": "act_0000000000000004",
+        "rule": "live_secret",
+        "tier": "act_now",
+        "horizons": ["week", "quarter"],
+        "severity": "critical",
+        "title": "Remove the live secret in `src/settings.py`",
+        "impact": "A credential is committed in plain text.",
+        "why": [{"label": "kind", "value": "hardcoded_secret", "basis": "measured"}],
+        "target": {"kind": "file", "path": "src/settings.py", "symbol": null},
+        "surface": "security",
+        "effort": "S",
+        "confidence": "high",
+        "done_when": "The scanner no longer flags the line.",
+        "command": "repowise security",
+        "marker": null,
+        "evidence_ids": [],
+        "evidence_total": 1,
+        "includes": [],
+        "fingerprint": "fp4",
+        "details": [
+          {
+            "path": "src/settings.py",
+            "line": 4,
+            "symbol": null,
+            "marker": "io_in_loop",
+            "severity": "high",
+            "reason": "TOKEN = \"sk_live_…\"",
+            "ref": "ABCDEF1234"
+          }
+        ],
+        "details_total": 1,
+        "commands": [
+          {"purpose": "Nothing to run", "mcp": null, "cli": null},
+          {"purpose": "The finding", "mcp": "get_security(targets=[\"src/settings.py\"])", "cli": "repowise security src/settings.py"}
+        ]
+      }
+    }
+  ]
+}

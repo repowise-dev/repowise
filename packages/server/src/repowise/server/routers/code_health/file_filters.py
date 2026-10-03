@@ -48,6 +48,7 @@ def metric_filter(
             return False
         if only_untested and m.has_test_file:
             return False
-        return not (only_failing and m.score >= GOOD_MIN)
+        # A file with no score (no health dialect for its language) is not failing.
+        return not (only_failing and (m.score is None or m.score >= GOOD_MIN))
 
     return keep

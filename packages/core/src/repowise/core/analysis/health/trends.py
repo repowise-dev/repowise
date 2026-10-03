@@ -37,6 +37,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any, TypeAlias
 
+from .rows import scored_rows
 from .scoring import SCORE_FLOOR, SCORE_MAX
 
 DECLINE_THRESHOLD: float = 0.5
@@ -396,6 +397,7 @@ def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "structure_average": None,
             "history_average": None,
             "maintainability_average": None,
+            **({"doc_drift_count": None} if "doc_drift_count" in row else {}),
         }
         for row in rows
     ]
@@ -407,12 +409,15 @@ def _point(snap: Any, attr: str) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
-def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
+def recent_kpis(
+    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* snapshots for CLI / API consumers.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
+    off by default so agent-facing trend rows stay as they were.
     """
     if not history:
         return []
@@ -439,6 +444,8 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
                 "maintainability_average": _point(snap, "maintainability_average"),
             }
         )
+        if doc_drift:
+            rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
     return rows
 
 
@@ -487,6 +494,7 @@ def snapshot_file_maps(
     (deepest is 12.91 of a possible 13.5), and recording the pre-cap sum
     instead would be recording a number the score was never computed from.
     """
+    metrics = scored_rows(metrics)
     per_file_scores = {m.file_path: round(float(m.score), 2) for m in metrics}
 
     totals: dict[str, float] = {}
@@ -502,6 +510,33 @@ def snapshot_file_maps(
         if float(m.score) <= SCORE_FLOOR and m.file_path in totals
     }
     return per_file_scores, per_file_deductions
+
+
+def snapshot_fields(
+    kpis: dict[str, Any], metrics: list[Any], findings: list[Any]
+) -> dict[str, Any] | None:
+    """``save_health_snapshot``'s keyword arguments for one health report.
+
+    ``None`` when no file carries a score (every file is in a language health
+    has no dialect for): a trend point would chart a 10.0 nobody measured.
+    Shared by the three snapshot writers for the reason
+    :func:`snapshot_file_maps` gives.
+    """
+    if "average_health" in kpis and kpis["average_health"] is None:
+        return None
+    scores_map, deductions_map = snapshot_file_maps(metrics, findings)
+    return {
+        "hotspot_health": float(kpis.get("hotspot_health", SCORE_MAX)),
+        "average_health": float(kpis.get("average_health", SCORE_MAX)),
+        "worst_performer_path": kpis.get("worst_performer_path"),
+        "worst_performer_score": kpis.get("worst_performer_score"),
+        "per_file_scores": scores_map,
+        "per_file_deductions": deductions_map,
+        "structure_average": kpis.get("structure_average"),
+        "history_average": kpis.get("history_average"),
+        "production_average": kpis.get("production_average"),
+        "maintainability_average": kpis.get("maintainability_average"),
+    }
 
 
 #: One normalized snapshot reading for a single file: when it was taken, the

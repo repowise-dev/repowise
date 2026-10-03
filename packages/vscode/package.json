@@ -93,10 +93,22 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["defect", "maintainability", "performance"]
+            "enum": ["defect", "maintainability", "performance", "advisory"]
           },
           "default": ["defect", "maintainability", "performance"],
-          "description": "Health dimensions included in the Problems panel."
+          "description": "Health dimensions included in the Problems panel. Advisory findings never deduct from a score, so they are off by default; they stay visible in the gutter, in hovers and to the language-model tools either way."
+        },
+        "repowise.docDrift.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show documentation-drift findings (paths, links, anchors, commands and code symbols a markdown file names that the tree no longer has) for visible markdown files in the Problems panel. On by default: findings are sparse and each names the line to edit."
+        },
+        "repowise.docDrift.diagnostics.minConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.7,
+          "description": "Lowest confidence a documentation-drift finding needs to appear in the Problems panel. Findings at 0.7 or above show as warnings, the rest as information."
         },
         "repowise.gutterHeat.enabled": {
           "type": "boolean",
@@ -240,6 +252,12 @@
         "title": "Open Settings",
         "category": "Repowise",
         "icon": "$(gear)"
+      },
+      {
+        "command": "repowise.publish",
+        "title": "Publish to repowise.dev",
+        "category": "Repowise",
+        "icon": "$(cloud-upload)"
       }
     ],
     "menus": {
@@ -308,7 +326,7 @@
       {
         "view": "repowise.home",
         "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
-        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings."
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
       },
       {
         "view": "repowise.home",
@@ -511,6 +529,15 @@
               "markdown": "media/walkthrough/connect-mcp.md"
             },
             "completionEvents": ["onCommand:repowise.configureMcp"]
+          },
+          {
+            "id": "shareTeam",
+            "title": "Share with your team and connect Claude.ai",
+            "description": "Publish this repo to repowise.dev: one link your team can open, and an MCP address for Claude.ai and ChatGPT. Free for public repos.\n[Publish It Free](command:repowise.publish)",
+            "media": {
+              "markdown": "media/walkthrough/share-team.md"
+            },
+            "completionEvents": ["onCommand:repowise.publish"]
           }
         ]
       }
@@ -550,6 +577,6 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.2",
     "vite": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.11"
   }
 }

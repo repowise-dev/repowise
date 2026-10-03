@@ -14,11 +14,10 @@ class TestRustNeverFlagPatterns:
     """Validate never-flag patterns cover Rust conventions."""
 
     def test_build_rs_never_flagged(self):
-        import fnmatch
+        # A build file by type (``code_origin``), not a glob.
+        from repowise.core.analysis.dead_code.constants import never_flag_path
 
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
-        path = "crates/typst-pdf/build.rs"
-        assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
+        assert never_flag_path("crates/typst-pdf/build.rs")
 
     def test_examples_never_flagged(self):
         import fnmatch
@@ -188,9 +187,9 @@ def _build_graph(
 class TestRustUnusedInternalsSkipped:
     """Private Rust symbols must not be flagged by unused_internals.
 
-    The graph builder does not emit intra-file call edges for Rust,
-    so every private function would appear 'uncalled'. Fix 1 skips
-    all Rust symbols in _detect_unused_internals.
+    rustc's own `dead_code` lint already reports unused private items,
+    with macro expansion and type information this analysis cannot
+    match, so _detect_unused_internals skips all Rust symbols.
     """
 
     def test_rust_private_function_not_flagged(self):

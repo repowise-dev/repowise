@@ -7,7 +7,7 @@ import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
   biomarkerInfo,
-  biomarkerDimension,
+  asBiomarkerDimension,
   CATEGORY_CAP,
   CATEGORY_LABEL,
   DIMENSION_CHIP,
@@ -21,13 +21,16 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
 import { AiPromptButton } from "./ai-prompt-button";
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
 import { FindingOpportunityLink } from "./file-opportunity";
+import { RelatedWork, type RelatedWorkSlotProps } from "./related-work";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
+import { ACTIONABILITY_LABEL } from "./performance/presentation";
+import { HEALTH_UNSUPPORTED_LABEL } from "./map/lens";
 import {
   SEVERITY_CHIP,
   SEVERITY_LABEL,
@@ -39,7 +42,7 @@ import {
 // The shared bands, never a local threshold: this pill sits beside marks that
 // all derive from `bandForScore`, and two of them disagreeing about where a
 // band starts describes one file two ways in one viewport.
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type {
   FileHealthTrend,
   FileSignals,
@@ -47,6 +50,8 @@ import type {
 } from "@repowise-dev/types/health";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
+import { LowerPriorityTag } from "./lower-priority-tag";
 import { ImpactFigure } from "./impact-figure";
 
 export interface HealthDrawerFinding {
@@ -62,11 +67,15 @@ export interface HealthDrawerFinding {
   details?: BiomarkerDetailsRecord | null;
   /** Home pillar; falls back to the biomarker's glossary dimension. */
   dimension?: BiomarkerDimension | string;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface HealthDrawerMetric {
   file_path: string;
-  score: number;
+  /** `null` when health has no dialect for the file's language. */
+  score: number | null;
   /** Structural counters — null when the host has no metric row for the
    *  file, so the drawer can say "not measured" instead of a misleading 0. */
   max_ccn: number | null;
@@ -86,7 +95,7 @@ export interface HealthDrawerMetric {
   total_deduction?: number | null;
 }
 
-export interface HealthFileDrawerProps {
+export interface HealthFileDrawerProps extends RelatedWorkSlotProps {
   open: boolean;
   onClose: () => void;
   loading?: boolean;
@@ -165,6 +174,9 @@ export function HealthFileDrawer({
   suggestions = {},
   opportunity,
   refactoringOpportunityHref,
+  related,
+  relatedWorkHref,
+  onNavigate,
   trend,
   signals,
   fileViewHref,
@@ -221,6 +233,8 @@ export function HealthFileDrawer({
           <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
             {CATEGORY_LABEL[info.category]}
           </span>
+          <VerificationTag verification={f.verification} />
+          <LowerPriorityTag reason={f.lower_priority} />
           {(() => {
             // A history marker wears a neutral "Watch" chip instead of its
             // pillar's: it is scored, but nothing in this file will clear it.
@@ -234,12 +248,7 @@ export function HealthFileDrawer({
                 </span>
               );
             }
-            const dim =
-              f.dimension === "maintainability" ||
-              f.dimension === "defect" ||
-              f.dimension === "performance"
-                ? f.dimension
-                : biomarkerDimension(f.biomarker_type);
+            const dim = asBiomarkerDimension(f.dimension, f.biomarker_type);
             return (
               <span
                 className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dim]}`}
@@ -457,25 +466,15 @@ export function HealthFileDrawer({
                   <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                     Code health
                   </p>
-                  <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-                    <span
-                      className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
-                      style={{ color: healthBandColor(bandForScore(metric.score)) }}
-                    >
-                      {metric.score.toFixed(1)}
-                    </span>
-                    <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
-                  </div>
-                  <span
-                    className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
-                    style={{
-                      color: healthBandColor(bandForScore(metric.score)),
-                      borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 40%, transparent)`,
-                      background: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 9%, transparent)`,
-                    }}
-                  >
-                    {HEALTH_BAND_LABEL[bandForScore(metric.score)]}
-                  </span>
+                  {metric.score == null ? (
+                    // Nothing measured this file, so there is no number and no
+                    // band: the words the map's grey node carries instead.
+                    <p className="text-sm text-[var(--color-text-secondary)]">
+                      Not analysed. {HEALTH_UNSUPPORTED_LABEL}.
+                    </p>
+                  ) : (
+                    <ScoreLede score={metric.score} />
+                  )}
 
                   {trend && trend.points.length >= 2 ? (
                     <div className="mt-1 flex items-center gap-2">
@@ -566,6 +565,15 @@ export function HealthFileDrawer({
 
               <BugHistorySection signals={signals} />
 
+              {/* Findings are this drawer's own list, and the performance lens
+                  already leads with the file's causes. */}
+              <RelatedWork
+                related={related}
+                relatedWorkHref={relatedWorkHref}
+                onNavigate={onNavigate}
+                exclude={lens === "performance" ? ["findings", "performance"] : ["findings"]}
+              />
+
               {/* Collapsed by default. This is the audit trail for a number
                   the drawer already states at the top, beside a leading cause
                   that names the biggest contributor in words. A reader who
@@ -624,6 +632,7 @@ export function HealthFileDrawer({
           open={promptOpen}
           onOpenChange={setPromptOpen}
           filePath={metric?.file_path ?? null}
+          chatContext={fileChatContext(metric?.file_path)}
           title="AI prompt for this file"
           description="Every scored finding, category ceiling, open performance cause and change signal this drawer holds, written up so an agent can triage the file before it edits anything."
           getPrompt={
@@ -827,6 +836,33 @@ function MeasuredNum({ v }: { v: number | null }) {
  * carry their band colour; counters are plain, because a nesting depth of 3 is
  * not good or bad news on its own.
  */
+/** The score and its band, for a file that has one. */
+function ScoreLede({ score }: { score: number }) {
+  return (
+    <>
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span
+          className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
+          style={{ color: healthBandColor(bandForScore(score)) }}
+        >
+          {formatScore(score)}
+        </span>
+        <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
+      </div>
+      <span
+        className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
+        style={{
+          color: healthBandColor(bandForScore(score)),
+          borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(score))} 40%, transparent)`,
+          background: `color-mix(in srgb, ${healthBandColor(bandForScore(score))} 9%, transparent)`,
+        }}
+      >
+        {HEALTH_BAND_LABEL[bandForScore(score)]}
+      </span>
+    </>
+  );
+}
+
 function MetricGrid({ metric }: { metric: HealthDrawerMetric }) {
   const cells: { label: string; value: React.ReactNode }[] = [
     {
@@ -917,7 +953,7 @@ function PillarScore({ v }: { v: number | null }) {
       className="text-lg font-semibold tabular-nums"
       style={{ color: healthBandColor(bandForScore(v)) }}
     >
-      {v.toFixed(1)}
+      {formatScore(v)}
       <span className="text-xs font-normal text-[var(--color-text-tertiary)]">/10</span>
     </span>
   );
@@ -1020,7 +1056,7 @@ function CauseRow({
           {biomarkerLabel(o.biomarker_type)}
         </span>
         <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
-          {ACTIONABILITY_WORD[o.actionability_state] ?? o.actionability_state}
+          {ACTIONABILITY_LABEL[o.actionability_state]}
         </span>
       </span>
       {location ? (
@@ -1052,8 +1088,3 @@ function CauseRow({
   );
 }
 
-const ACTIONABILITY_WORD: Record<string, string> = {
-  plan_ready: "Plan ready",
-  advisory: "Advisory",
-  investigate: "Investigate",
-};

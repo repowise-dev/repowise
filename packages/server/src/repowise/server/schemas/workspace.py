@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class WorkspaceRepoRemovedResponse(BaseModel):
+    """Response returned when a repo is removed from the workspace config."""
+
+    ok: bool = True
+    alias: str
+    remaining_repos: int
 
 
 class WorkspaceRepoEntry(BaseModel):
@@ -41,6 +51,9 @@ class WorkspaceRepoEntry(BaseModel):
 class WorkspaceCrossRepoSummary(BaseModel):
     co_change_count: int = 0
     package_dep_count: int = 0
+    package_diagnostic_count: int = 0
+    package_diagnostics_emitted: int = 0
+    package_diagnostic_codes: list[str] = []
     top_connections: list[dict] = []
 
 
@@ -118,6 +131,10 @@ class WorkspaceContractLinkEntry(BaseModel):
     #: than a display label. None when that side never bound to one.
     provider_symbol_id: str | None = None
     consumer_symbol_id: str | None = None
+    #: The consumer's own contract id when it is not spelled like ``contract_id``,
+    #: which names the provider's (a queue bound to that exchange, or a path
+    #: matched across case, a wildcard method or a mount prefix); None otherwise.
+    consumer_contract_id: str | None = None
 
 
 class WorkspaceContractsResponse(BaseModel):
@@ -168,6 +185,27 @@ class WorkspaceCoChangesResponse(BaseModel):
     #: of every pair in git history — each session's file list is bounded
     #: before pairing.
     total_mined: int = 0
+    #: The most pairs the miner keeps for any one repository pair, so a page
+    #: can say why every repository pair stops at the same count.
+    per_repo_pair_cap: int | None = None
+    #: The most pairs the miner keeps across the whole workspace.
+    total_cap: int | None = None
+    #: Which cap trimmed the stored overlay: ``"total"``, ``"per_repo_pair"``,
+    #: or None when nothing was dropped.
+    truncated_by: Literal["total", "per_repo_pair"] | None = None
+
+
+class WorkspaceCoChangeStructure(BaseModel):
+    """What declared structure connects one co-changing file pair."""
+
+    #: Contract links where one of the two files provides and the other consumes.
+    pair_links: list[WorkspaceContractLinkEntry]
+    #: Contract links between the two repositories through any files.
+    repo_links_total: int
+    repo_links_by_type: dict[str, int]
+    #: Contract links touching each file, whatever the other end.
+    source_file_links: int
+    target_file_links: int
 
 
 class WorkspaceGraphNode(BaseModel):
@@ -251,6 +289,50 @@ class WorkspaceOrphanProvider(BaseModel):
     contract_type: str
 
 
+class WorkspaceSymbolIdentity(BaseModel):
+    total: int = 0
+    bound: int = 0
+    unindexed_file: int = 0
+    bound_ratio: float | None = None
+    bound_ratio_indexed: float | None = None
+
+
+class WorkspaceSchemaCoverage(BaseModel):
+    total: int = 0
+    bound: int = 0
+    recovered: int = 0
+    shared_symbol: int = 0
+    unsupported_language: int = 0
+    non_callable: int = 0
+    eligible: int = 0
+    recovered_ratio: float | None = None
+    recovered_ratio_eligible: float | None = None
+
+
+class WorkspaceCodeApiCoverage(BaseModel):
+    manifests: int = 0
+    published: int = 0
+    unsupported_ecosystem: int = 0
+    providers: int = 0
+    consumers: int = 0
+    linked_providers: int = 0
+    published_ratio: float | None = None
+    linked_ratio: float | None = None
+
+
+class WorkspaceOpenApiCoverage(BaseModel):
+    documents: int = 0
+    parsed_documents: int = 0
+    unresolved_documents: int = 0
+    operations: int = 0
+    providers: int = 0
+    schemas_merged: int = 0
+    spec_only_providers: int = 0
+    request_states: dict[str, int] = {}
+    response_states: dict[str, int] = {}
+    refusal_reasons: dict[str, int] = {}
+
+
 class WorkspaceExtractionDiagnostics(BaseModel):
     total_providers: int = 0
     total_consumers: int = 0
@@ -266,6 +348,12 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     #: Share of located HTTP client calls that became a contract. ``None`` when
     #: none were located — 0/0 is not 100%.
     http_consumer_coverage: float | None = None
+
+    symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
+    schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
+    code_api: WorkspaceCodeApiCoverage = WorkspaceCodeApiCoverage()
+    openapi: WorkspaceOpenApiCoverage = WorkspaceOpenApiCoverage()
+    model_config = ConfigDict(extra="forbid")
 
 
 class WorkspaceSystemGraphResponse(BaseModel):
@@ -336,6 +424,9 @@ class WorkspaceBreakingChange(BaseModel):
     provider_service: str | None = None
     provider_node_id: str = ""
     detail: str
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
     field_name: str | None = None
     old_value: str | None = None
     new_value: str | None = None

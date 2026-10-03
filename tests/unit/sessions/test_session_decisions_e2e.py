@@ -169,6 +169,12 @@ async def test_init_pipeline_appends_session_decisions(tmp_path, monkeypatch):
 
     monkeypatch.setattr("repowise.core.sessions.miners.decisions.mine_session_decisions", fake_mine)
 
+    # The lane ships off; this covers the fold-in, not the default.
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  sources:\n    session: true\n", encoding="utf-8"
+    )
+
     class Graph:
         def graph(self):
             return None

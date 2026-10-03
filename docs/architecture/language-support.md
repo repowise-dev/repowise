@@ -34,7 +34,7 @@ new language needs one only when it hits the same kind of wall.
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
 - [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
-- [The three code-health dialect registries](#the-three-code-health-dialect-registries)
+- [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
 - [Workspace contract extraction](#workspace-contract-extraction)
 
 ---
@@ -185,9 +185,7 @@ derived.
 #### Step 1: Add a `LanguageSpec` module
 
 Language identity data lives in `languages/specs/`, **one module per language**.
-Create
-`packages/core/src/repowise/core/ingestion/languages/specs/mylang.py`
-exporting a single `SPEC`:
+Create a new module under `packages/core/src/repowise/core/ingestion/languages/specs/`, one module per language, exporting a single `SPEC`. For example, a new language can use a file named `mylang.py`:
 
 ```python
 """LanguageSpec for mylang."""
@@ -199,7 +197,10 @@ SPEC = LanguageSpec(
     display_name="MyLang",
     extensions=frozenset({".ml"}),
     grammar_package="tree_sitter_mylang",       # PyPI package name
+    grammar_loader="language",                  # package loader function
+    grammar_loader_args=(),                      # args for shared grammar packs
     scm_file="mylang.scm",                       # query file name
+    dead_code_exempt=False,                       # only for unobservable external entry
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("main.ml",),
     manifest_files=("mylang.toml", "mylang.build.json"),
@@ -210,6 +211,21 @@ SPEC = LanguageSpec(
     color_hex="#AB47BC",
 )
 ```
+
+Most grammar wheels expose a zero-argument `language()` function returning a
+PyCapsule. Shared grammar packs can instead declare `grammar_loader_args`; the
+loader may return either a capsule or a constructed `tree_sitter.Language`.
+COBOL uses this seam with
+`tree_sitter_language_pack.get_language("cobol")`, because no standalone
+Python COBOL grammar wheel exists. The pack downloads and caches that grammar
+on first use; the ordinary missing-grammar fallback still applies if it is not
+available.
+
+Set `dead_code_exempt=True` only when the runtime's entry paths fundamentally
+live outside the repository graph. COBOL uses it because JCL, schedulers and
+dynamic program calls cannot be proven by static source reachability. The flag
+suppresses file- and symbol-level dead-code claims without disabling parsing,
+call resolution or the rest of graph analysis.
 
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
@@ -365,7 +381,8 @@ sets from the registry automatically.
 
 ## What a new language does *not* get for free
 
-Steps 1–5 give you symbols, imports and a call graph. They do **not** give you:
+Steps 1–5 give you the symbols, imports and calls your query captures. They do
+**not** give you:
 
 - **Code-health markers.** The complexity walker uses its own per-language
   node-type map (`analysis/health/complexity/languages.py`), independent of your
@@ -446,11 +463,11 @@ The tiers, highest evidence first:
 | Confidence | Origins | Evidence |
 |:---:|---|---|
 | 0.95 | `same_file`, `self_scope`, `enclosing_class` | The callee is in this file, or on the caller's own class |
-| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file` | The receiver names a type declared in this file |
-| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, the three `*_same_package` typed variants, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, or an explicit import |
-| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, the three `*_import` typed variants | The receiver resolved through an imported file |
+| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file`, `scoped_name`, `receiver_extension_same_file`, `receiver_chain_same_file`, `return_type_same_file` | The receiver or returned type names a class in this file, every chained field stays in this file, or the call names its class directly |
+| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, `receiver_typed_same_package`, `receiver_field_same_package`, `receiver_framework_same_package`, `return_type_same_package`, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, an explicit import, or one unambiguous ancestor |
+| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
-| 0.75 | `receiver_global`, the three `*_global` typed variants | The `(class, method)` pair exists somewhere in the repo |
+| 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
 | 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
@@ -516,6 +533,9 @@ Two directions, deliberately separate:
   below the two same-class origins because the walk compares no signature and
   reads no visibility, so it can reach a method the language would not actually
   dispatch to. Gated on `_INHERITED_LANGUAGES`.
+  Python's `super().m()` walks the caller's C3 MRO instead and also emits
+  `self_inherited`; a base the repository does not declare ends the walk
+  unresolved, since it may declare `m` itself.
 - **Forward**: `dispatches_to`, a base method → an implementation that can
   answer for it. Named for what it asserts rather than for a heritage relation:
   the pass matches by method name and compares no signature, so it is a
@@ -543,7 +563,7 @@ remove. The distinctions that matter most when consuming the graph:
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
 
 Three derived sets are what consumers should read rather than re-deriving their
-own filter: `FILE_CODE_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
+own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
 `REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
 
 ### Flow termination
@@ -603,7 +623,7 @@ parse, where hitting it corrupts everything downstream. Object Pascal is the cur
 `.dpr`/`.dpk`/`.lpr` project files write `unit in 'path.pas'` clauses in their
 `uses` list, a syntax tree-sitter-pascal has no rule for, and hitting one used to
 corrupt every unit named after it in the same clause. Its sanitizer
-(`prepare_pascal_source` in `ingestion/parser_helpers.py`) is gated on `path`'s
+(`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
 sanitizer this way, rather than as an if-block in `parser.py`, means it stays
@@ -851,6 +871,12 @@ when nothing on that chain carries a script, when the script would come from
 another scene's `instance=ExtResource(...)`, or when the resolved script declares
 no such function. It is never matched on the method name alone.
 
+A `uid://` reference resolves through the `.uid` sidecar Godot writes for
+scripts; scenes get no sidecar, so a scene uid resolves through the `path=` on
+its `[ext_resource]` header instead. An `addons/` tree is exempt from dead-code
+reporting only when a `project.godot` sits above it, so a plugin's own repo
+reports normally.
+
 Two constructs the upstream grammar rejects: `$%UniqueName` (`$` and `%` are
 separate node-path forms, so the pair fails), and a bare call to a function named
 `export` or `onready` (`export()`), which the grammar still reserves at statement
@@ -941,9 +967,9 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-Note that C has **no map at all**, despite sharing the C++ grammar, so
-`get_language_map("c")` is `None` and the health pass never reaches a dialect for
-it. Registering C in the downstream registries would be dead configuration.
+C, F# and Objective-C have maps of their own (C separate from C++ despite the
+shared grammar), so they get complexity markers, but none of the three has a perf
+or dataflow dialect yet.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 
@@ -972,6 +998,10 @@ dialect reuses them instead of re-deriving them:
   this statement bind the name" question is per-grammar. (The Python, Ruby and
   Dart dialects predate the hook and keep their own tuned versions.)
 
+Object Pascal's DB and network sinks are gated on file-wide `uses` evidence: a
+file importing `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` in it,
+because a Pascal variable's declared type has no textual link back to its unit.
+
 ### 3. Dataflow: `analysis/health/dataflow/dialects/` (`DEFUSE_DIALECTS`)
 
 Intra-procedural CFG + def/use + reaching definitions, powering **Extract
@@ -995,47 +1025,104 @@ out of that is a wrong suggestion.
 All three registries are purely additive and degrade to silence: an unmapped
 language produces no findings rather than wrong ones.
 
+### Test-quality markers per language
+
+The test-quality markers need per-language data beyond the node map, and a
+language with no row produces no signal.
+
+- **Assertion count** (`analysis/health/asserts/lexicon.py`) has two tiers. The
+  narrow tier is the fixed `assert` / `expect` prefix match the scored
+  assertion-block markers are calibrated on. The broad tier adds a per-language
+  row plus a repo's `health.assertions` config, feeds only the advisory count,
+  and matches names exactly, never as prefixes (prefix families such as `check`
+  and `validate` match production functions, not assertions). Oracles that are
+  not plain assertion statements are counted at the broad tier too:
+  `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
+  property chains (`expect(x).to.be.null`), expression-bodied test lambdas and
+  private `_assert_*` helpers.
+- **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
+  rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
+  because Mockito states its checks as `verify(...)`, which counts toward
+  `verification_count` and not `assertion_count`, so an over-mocked Java test
+  arrives with a near-empty denominator.
+- **Assertion-free test** needs a per-language "is this a test case" rule
+  (`analysis/health/complexity/test_case.py`: a name prefix for Python, `TestXxx`
+  for Go, the `it(...)` / `test(...)` callback for JS/TS, `@Test` for Java) and
+  reports only for the detector's `SHIPPING_LANGUAGES` (JS, TS, TSX, Python).
+  Mock verification does count as an oracle here. Go and Java are classified but
+  not reported: Go hands `*testing.T` to package-level helpers and Java inherits
+  base-class helpers, which the oracle resolution below does not reliably reach.
+- **Oracle resolution.** A test that delegates its checks is not assertion-free.
+  Within a file, the names a function calls resolve against same-file functions
+  that assert. Across files, `asserts/oracle_reach.py` uses two lanes: a test
+  that is a graph symbol walks its own call edges (depth 2); an anonymous JS/TS
+  callback, which has no node, needs both a resolved edge from its file to the
+  asserting symbol and an unqualified call by name in its body. Only edges that
+  bind one definition are read (`import_merged` is excluded), and an unresolved
+  call suppresses nothing, so a gap leaves a false positive and never hides a
+  real finding.
+- **`.tsx` grammar.** A `.tsx` file is tagged `typescript`, but the complexity
+  walk, clone tokenizer and dataflow CFG pick the grammar from the path, so JSX
+  parses without error recovery.
+- **Every walked function is visible.** Markers read `all_functions`, the full
+  walked list, not a map keyed by function name, which would collapse anonymous
+  `it` callbacks and same-named methods on different classes to one row.
+  `duplicated_assertion_block` has no floor of its own; the `test_quality`
+  category cap (0.5) bounds its effect on a file's score.
+
 ---
 
 ## Workspace contract extraction
 
 In workspace mode (multiple repos indexed together), repowise links
-service-to-service API contracts (HTTP routes, gRPC services, and DB tables) so a
-provider endpoint in one repo connects to its consumers in another. The
-extractors live in `core/workspace/extractors/` and follow the same
-dialect-plugin shape: the orchestrator owns only the file walk, and each
-framework / client library is an independent module registered in a tuple.
+service-to-service contracts (HTTP routes, gRPC services, message topics,
+sockets, and DB tables) so a provider in one repo connects to its consumers in
+another. The extractors live in `core/workspace/extractors/` and share one
+dialect shape: each framework or client library is an independent module
+registered in a tuple, and one walk-and-dispatch loop runs them all.
 
 ```
 workspace/extractors/
   base.py            # iter_source_files walk + ScanContext (shared by all)
+  dialect.py         # ContractDialect protocol, build_contract, DialectExtractor
+  strings.py         # string expressions: argument scanning, constants, Arg selection
   langs.py           # registry-derived extension sets (JS_TS, PYTHON, RUST, …)
   http/
-    dialect.py       #   HttpDialect protocol + build_provider/consumer_contract
+    dialect.py       #   build_provider/consumer_contract
     paths.py         #   normalize_http_path + URL helpers
-    express.py  fastapi.py  spring.py  laravel.py  go.py  aspnet.py  # providers
-    js_clients.py  python_clients.py  csharp_http.py  rust_clients.py # consumers
-    rust_axum.py  mounts.py                                          # providers
-    __init__.py      #   HttpExtractor + PROVIDER_DIALECTS / CONSUMER_DIALECTS
-  grpc/
-    dialect.py       #   GrpcDialect protocol + make_grpc_contract
-    proto.py  go.py  java.py  python.py  typescript.py  csharp.py
-    __init__.py      #   GrpcExtractor + DIALECTS
+    client_calls.py  #   ClientCallMatch + consumer_contracts
+    express.py  nestjs.py  fastapi.py  spring.py  laravel.py  go.py  …  # providers
+    js_clients.py  node_clients.py  python_clients.py  php_clients.py  # consumers
+    __init__.py      #   HttpExtractor (adds router mounts + index passes)
+  grpc/              #   proto.py + languages.py (one table of stub shapes)
+  calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
+  topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
+                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+  socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
+workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
 ```
 
 A dialect declares the file extensions it understands (via `langs.py`) and turns
-regex matches into `Contract`s through shared builders, so every dialect emits
-identically-shaped providers/consumers and path-normalization lives in one place.
-**Adding a framework or client** means dropping one module into `http/`, `grpc/`,
-or `data/` and appending its dialect to the relevant registry tuple, with no
-orchestrator edits.
+matches into `Contract`s through shared builders, so every dialect emits
+identically-shaped providers/consumers and normalization lives in one place.
+**Adding a framework or client** means dropping one module into `http/`,
+`grpc/`, `topic/`, `socket/` or `data/` and appending its dialect to the
+relevant registry tuple, with no orchestrator edits. A dialect whose contracts
+span files (a Laravel job dispatched in one file runs on the queue its class
+declares in another) offers a `repo_pass()` instead: it sees every file, then
+names its contracts once. A contract type whose two ends can name one thing
+differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
+subscription) registers its extra passes, or its own `keys`, in
+`matching.MATCHERS`.
 
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
-| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` / URL-literal wrappers (JS/TS), `requests` / `httpx` (Python), `HttpClient` / `UnityWebRequest` / Best.HTTP (C#), `reqwest` (Rust) |
+| **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
+| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
+| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide.

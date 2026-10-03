@@ -4,6 +4,7 @@ import * as React from "react";
 import { cn } from "../lib/cn";
 import { scoreBadgeClass } from "./tokens";
 import type { CodeHealthMapFile } from "./code-health-map";
+import { scoreText } from "./map/lens";
 
 /** Labelled <select> used across the Triage queue filters. */
 export function FilterSelect({
@@ -112,14 +113,18 @@ export function FileSpotlight({
   return (
     <div className="space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
       <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold",
-            scoreBadgeClass(file.score),
-          )}
-        >
-          {file.score.toFixed(1)}
-        </span>
+        {file.score == null ? (
+          <span className="text-xs text-[var(--color-text-tertiary)]">{scoreText(file)}</span>
+        ) : (
+          <span
+            className={cn(
+              "inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold",
+              scoreBadgeClass(file.score),
+            )}
+          >
+            {file.score.toFixed(1)}
+          </span>
+        )}
         <span
           className="truncate text-sm font-medium text-[var(--color-text-primary)]"
           title={file.file_path}

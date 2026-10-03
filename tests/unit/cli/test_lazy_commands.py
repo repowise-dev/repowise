@@ -33,12 +33,13 @@ from repowise.core.registry import CLIRegistry, LazyCommand
 #: command is meant to require editing it.
 _EXPECTED_NAMES = frozenset(
     {
-        "agents", "ask", "augment", "context", "corrections", "costs", "coverage",
-        "dead-code", "decision", "delete", "distill", "doctor", "expand",
+        "agents", "ask", "augment", "config", "context", "corrections", "costs", "coverage",
+        "dead-code", "decision", "delete", "distill", "doc-drift", "doctor",
+        "expand",
         "export", "generate", "generate-claude-md", "health", "hook",
-        "impacted-tests", "init", "login", "logout", "mcp", "overlap", "reindex",
+        "impacted-tests", "init", "login", "logout", "mcp", "next", "overlap", "publish", "reindex",
         "restyle",
-        "risk", "saved", "search", "security", "serve", "status", "symbol",
+        "risk", "saved", "savings", "search", "security", "serve", "status", "symbol",
         "telemetry", "uninstall", "update", "watch", "whats-new", "whoami", "why",
         "wiki-styles", "workspace",
     }
@@ -210,3 +211,15 @@ def test_telemetry_tail_match_does_not_resolve_every_command() -> None:
     """
     loaded = _dispatch_and_report_loaded(["hook", "stats", "--help"])
     assert loaded == "['hook_cmd']", loaded
+
+
+def test_the_root_group_leaves_wildcard_arguments_to_the_commands(monkeypatch) -> None:
+    """Click's Windows wildcard expansion is off, so a quoted glob stays one argument."""
+    seen: dict = {}
+
+    def _main(self, *args, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(click.Group, "main", _main)
+    cli.main(["--version"])
+    assert seen["windows_expand_args"] is False

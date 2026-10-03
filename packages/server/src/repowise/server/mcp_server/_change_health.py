@@ -10,6 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
+from repowise.core.analysis.review_directive import (
+    CoveringTestEvidence,
+    ReviewAction,
+    ReviewDirective,
+    review_directive,
+)
 
 #: Actionable findings carried in the default response. The rest are counted
 #: and recoverable by an exact call, never silently dropped.
@@ -18,22 +24,124 @@ TOP_FINDINGS_LIMIT = 3
 #: Reasons carried on the directive.
 REASON_LIMIT = 3
 
-_BLOCKING_SEVERITIES = {"high", "critical"}
+#: Findings whose next-action is carried in the default response.
+_ACTIONABLE_FINDINGS = 2
 
-#: Dimensions whose findings are advice, not a gate. A performance advisory
-#: never blocks on its own; it ranks and it explains.
-_ADVISORY_DIMENSIONS = {"performance"}
+#: Test ids rendered into a single run command.
+_TESTS_SHOWN = 3
 
 
 def directive(delta: ChangeHealthDelta, tests: dict[str, Any] | None) -> dict[str, Any]:
-    """The first thing an agent reads: a verdict and what to do next."""
-    status, headline = _verdict(delta)
+    """The first thing an agent reads: a verdict and what to do next.
+
+    The verdict is decided by core. This caps it and renders it.
+    """
+    decided = review_directive(delta, _test_evidence(tests))
     return {
-        "status": status,
-        "headline": headline,
-        "reasons": _reasons(delta)[:REASON_LIMIT],
-        "next_actions": _next_actions(delta, tests),
+        "status": decided.status,
+        "headline": decided.headline,
+        "reasons": list(decided.reasons[:REASON_LIMIT]),
+        "next_actions": _render_actions(decided),
     }
+
+
+def _test_evidence(tests: dict[str, Any] | None) -> CoveringTestEvidence:
+    """Translate the tool's test block into the lane core reasons over."""
+    if not tests:
+        # No block at all: the lane was never consulted, so there is nothing to
+        # report and nothing to ask for.
+        return CoveringTestEvidence()
+    to_run = tuple(tests.get("tests_to_run") or ())
+    if to_run:
+        state = "available"
+    elif tests.get("status") in {"no_map", "no_index"}:
+        state = "unavailable"
+    else:
+        state = "available"
+    return CoveringTestEvidence(state=state, tests_to_run=to_run, basis=tests.get("basis"))
+
+
+def _render_actions(decided: ReviewDirective) -> list[str]:
+    """Strings for the wire. Every cap and every join belongs here, not in core."""
+    out: list[str] = []
+    inspected = 0
+    for action in decided.actions:
+        rendered = _render_action(action, inspected)
+        if rendered is None:
+            continue
+        if action.kind == "inspect_finding":
+            inspected += 1
+        out.append(rendered)
+    return out
+
+
+def _render_action(action: ReviewAction, inspected: int) -> str | None:
+    if action.kind == "inspect_finding":
+        if inspected >= _ACTIONABLE_FINDINGS:
+            return None
+        return f"{action.explanation} ({action.targets[0]})"
+    if action.kind == "run_tests":
+        return f"Run: {' '.join(action.targets[:_TESTS_SHOWN])}"
+    return action.explanation
+
+
+def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
+    """The next action for uncovered changed lines (else partly taken ones), ``None`` without.
+
+    Names the scope and the tests to extend from the rows' hints, riskiest
+    file first, so the agent writes the missing test where the suite already
+    exercises the code. Stale coverage leads instead: its gaps are not real yet.
+    """
+    uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
+    if uncovered <= 0:
+        return _partial_action(block)
+    lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
+    lines += _scope_words(block["scope"].get("label") or "")
+    if block["scope"]["freshness"] == "stale":
+        # Stale line numbers describe other code: the fix is a fresh run first.
+        return (
+            "Stored coverage predates this change: re-run the tests with coverage, then "
+            "`repowise coverage add` (the hook does it automatically) and call again "
+            f"({lines} read as uncovered until then)"
+        )
+    tests = _hinted_tests(block["files"])
+    text = f"{lines} {'is' if uncovered == 1 else 'are'} uncovered; "
+    if tests:
+        return text + f"extend {', '.join(tests[:_TESTS_SHOWN])}"
+    return text + "add tests for them (patch_coverage.files)"
+
+
+def _partial_action(block: dict[str, Any] | None) -> str | None:
+    """The next action when every changed line ran but some took only part of their branches."""
+    partial = _partial_line_count(block)
+    if not partial or block["scope"]["freshness"] == "stale":
+        return None
+    lines = f"{partial} changed line{'' if partial == 1 else 's'}"
+    lines += _scope_words(block["scope"].get("label") or "")
+    return (
+        f"{lines} ran with a branch no test took; add tests for the other way through "
+        "(patch_coverage.files[].partial_ranges)"
+    )
+
+
+def _partial_line_count(block: dict[str, Any] | None) -> int:
+    branches = (block or {}).get("branches") or {}
+    return branches.get("partial_line_count") or 0
+
+
+def _hinted_tests(rows: list[dict[str, Any]]) -> list[str]:
+    """Each hint's first test, in row order (riskiest file first), once each."""
+    firsts = (hint["tests"][0] for row in rows for hint in row.get("hints") or () if hint["tests"])
+    return list(dict.fromkeys(firsts))
+
+
+def _scope_words(label: str) -> str:
+    """``" since origin/main"`` for a branch diff, ``" in <label>"`` otherwise."""
+    if "..." in label:
+        return f" since {label.split('...', 1)[0]}"
+    if label == "working tree":
+        return " in the working tree"
+    return f" in {label}" if label else ""
 
 
 def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict[str, Any]:
@@ -114,62 +222,10 @@ def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any
 # -- internals --------------------------------------------------------------
 
 
-def _verdict(delta: ChangeHealthDelta) -> tuple[str, str]:
-    if delta.status in {"unavailable", "unsupported_range", "too_large", "timeout"}:
-        return "unknown", f"Change health could not be compared: {delta.explanation}"
-    if delta.status in {"analyzer_mismatch", "rules_mismatch", "stale_baseline"}:
-        return "unknown", f"No trustworthy baseline: {delta.explanation}"
-    blocking = [
-        f
-        for f in delta.findings
-        if f.severity in _BLOCKING_SEVERITIES and f.dimension not in _ADVISORY_DIMENSIONS
-    ]
-    if blocking:
-        lead = blocking[0]
-        return "review_required", (
-            f"{len(blocking)} new {_plural('finding', len(blocking))} "
-            f"{'needs' if len(blocking) == 1 else 'need'} review, "
-            f"starting with {lead.biomarker_type} in {lead.path}."
-        )
-    if delta.findings:
-        return "review_recommended", (
-            f"{len(delta.findings)} new {_plural('finding', len(delta.findings))} "
-            "of low or advisory severity."
-        )
-    if delta.status == "partial":
-        return "unknown", (
-            "Nothing new in what was compared, but part of the change was not analysed."
-        )
-    return "clear_in_analyzed_scope", "No supported new findings surfaced in the analyzed scope."
 
 
-def _reasons(delta: ChangeHealthDelta) -> list[str]:
-    reasons = [
-        f"{f.severity} {f.dimension}: {f.biomarker_type} in "
-        f"{f.symbol or f.path} ({f.attribution_basis})"
-        for f in delta.findings
-    ]
-    if delta.skipped:
-        reasons.append(
-            f"{len(delta.skipped)} changed {_plural('file', len(delta.skipped))} "
-            "were not analysed, so this is not a clean bill."
-        )
-    return reasons
 
 
-def _next_actions(delta: ChangeHealthDelta, tests: dict[str, Any] | None) -> list[str]:
-    actions: list[str] = []
-    for finding in delta.findings[:2]:
-        where = f"{finding.path}:{finding.line_start}" if finding.line_start else finding.path
-        actions.append(f"Inspect {where} ({finding.change_finding_id})")
-    to_run = (tests or {}).get("tests_to_run") or []
-    if to_run:
-        actions.append(f"Run: {' '.join(to_run[:3])}")
-    elif tests and tests.get("status") in {"no_map", "no_index"}:
-        actions.append("No measured test map; run the suite covering the changed files.")
-    if delta.skipped:
-        actions.append("Review the skipped files by hand; they were not compared.")
-    return actions
 
 
 def _counts(findings: list[ChangeFinding], attribute: str) -> dict[str, int]:
@@ -188,9 +244,6 @@ def _skipped(skipped: dict[str, str]) -> dict[str, Any]:
 
 
 def _call(revspec: str | None, *, extra: str) -> str:
+    # Single-quoted by contract (tests and clients pin it); new calls use next_call.render_call.
     ref = f"revspec={revspec!r}, " if revspec else ""
     return f"get_change_risk({ref}{extra})"
-
-
-def _plural(word: str, count: int) -> str:
-    return word if count == 1 else f"{word}s"

@@ -1,40 +1,36 @@
-# the theme system — Design Tokens & Contrast Matrix (Phase 0)
+# Design Tokens and Contrast Matrix
 
-> Source of truth for the redesign. These are the **resolved** semantic token
-> values — adjusted from the plan's design-intent table to pass the WCAG
-> contrast floors. Run `python3 docs/design/contrast_check.py` to regenerate
-> the matrix; it exits non-zero if any required pair regresses (CI gate).
+> The **resolved** semantic token values for the product UI, tuned to pass the
+> WCAG contrast floors below. Run `python3 docs/design/contrast_check.py` (a
+> wrapper for `packages/ui/scripts/contrast-check.py`) to regenerate the
+> matrix; it exits non-zero if any required pair regresses.
 
 ## Floors (both light + dark)
 
-- Body text on primary surfaces — **≥ 7.0** (AAA)
-- Secondary / large / status text, accent-on-surface — **≥ 4.5** (AA)
-- Interactive / non-text UI (active borders, hints) — **≥ 3.0**
+- Body text on primary surfaces: **≥ 7.0** (AAA)
+- Secondary / large / status text, accent-on-surface: **≥ 4.5** (AA)
+- Interactive / non-text UI (active borders, hints): **≥ 3.0**
 
-## §6 decisions (resolved)
+## Theme decisions
 
-1. **Default theme — Dark; explicit two-state toggle.** Preserves current
-   product behavior; Light is opt-in via the toggle. No "System" option —
-   product decision (2026-06-04): with the OS in dark mode System and Dark
-   looked identical and read as redundant; the choice stays explicit.
-   (`next-themes` `defaultTheme="dark"`, `enableSystem={false}`; the shared
-   ThemeToggle migrates stale persisted `"system"` values to dark.)
+1. **Default theme: Light, with an explicit two-state toggle.** Dark is opt-in
+   via the toggle and persists across reloads. There is no "System" option, so
+   the choice stays explicit. (`next-themes` `defaultTheme="light"`,
+   `enableSystem={false}`; the shared ThemeToggle migrates stale persisted
+   `"system"` values to light.)
 2. **Light-mode accent strategy.** The brand accent stays repowise orange
-   `#f59520` — it's `--color-accent-fill` (CTAs, active fills, focus ring) in
+   `#f59520`: it is `--color-accent-fill` (CTAs, active fills, focus ring) in
    **both** modes. Only accent *text/icons/links* darken to `#A16215`
    (`--color-accent-primary`) in light so they clear AA on white **and** warm
    paper (bright orange can't be AA as small text). Plum
    (`--color-accent-secondary`) is used for links-alt **and** data-viz.
 3. **Gradient intensity.** Restrained in-product (active states, small accent
    washes); bold in marketing (full hero meshes).
-4. **Dark-mode base — plum-tinted charcoal.** Dark surfaces carry a restrained
-   violet cast (`#17131d`→`#322a3e`, text `#eeeaf4`/`#a79db3`, lavender-alpha
-   borders) so the product is visually distinct from the crowd of
-   neutral-charcoal + orange UIs (user feedback: pure charcoal read "exactly
-   like Claude"). The tint is the theme system's own plum family at low
-   saturation; the orange accent still pops. **Light mode is unchanged**
-   (warm paper). *(Supersedes the earlier "neutral charcoal, Dark Orange
-   UI-kit" decision.)*
+4. **Dark-mode base: plum-tinted charcoal.** Dark surfaces carry a restrained
+   violet cast (`#17131d`->`#322a3e`, text `#eeeaf4`/`#a79db3`, lavender-alpha
+   borders) so the product is visually distinct from neutral-charcoal + orange
+   UIs. The tint is the theme's own plum family at low saturation; the orange
+   accent still pops. **Light mode** uses warm paper.
 
 ### The fill-vs-text split (why two accent tokens)
 
@@ -47,7 +43,7 @@ A single accent can't be both AA-as-text on white *and* vivid-as-a-CTA. So:
 | `--color-text-inverse` | `#FFFFFF` | `#17131D` | text on an `accent-primary` fill |
 | `--color-text-on-accent` | `#241B2C` | `#17131D` | text on the brand `accent-fill` |
 
-White on the bright `#f59520` fill is only ~2.0:1 — so CTAs use **dark** text
+White on the bright `#f59520` fill is only ~2.0:1, so CTAs use **dark** text
 (`text-on-accent`, 7.26:1). Existing `bg-accent-primary text-text-inverse`
 fills keep working because `text-inverse` flips per theme (white in light on
 the deep `#A16215` = 4.91:1; near-black plum in dark on bright `#F59520` = 8.02:1).
@@ -107,7 +103,7 @@ the deep `#A16215` = 4.91:1; near-black plum in dark on bright `#F59520` = 8.02:
 ```
 
 Gradients are for hero washes, primary CTAs, brand marks, empty-state art, and
-selected/active accents — never behind body text. Text over gradients uses
+selected/active accents, never behind body text. Text over gradients uses
 `--color-text-on-accent` / `--color-text-inverse` with a verified ≥4.5:1 floor.
 
 ## Community families (graph clustering palette)
@@ -122,7 +118,7 @@ a softer `-soft` satellite tint (leaf files). The graph cycles `community_id %
 These are tokens (`--color-community-1..12` + `-soft`) in `globals.css`, resolved
 at runtime by `getCommunityFamily` / `useCommunityFamilies` in
 `shared/use-theme-tokens.ts` (the canvas can't resolve `var()`, so it reads the
-computed token per theme and repaints on theme flip — same mechanism as Mermaid
+computed token per theme and repaints on theme flip, the same mechanism as Mermaid
 / C4 / `THEME_COLORS`).
 
 **Usage rule:** module/centroid nodes use `hub`; file/leaf nodes use the
@@ -145,10 +141,10 @@ crossCommunity = plum, internal = sage/green), mirroring `lib/confidence.ts`.
 | 11 | Deep teal | `#2F6B66` / `#558F89` | `#6FB3AB` / `#4A8780` |
 | 12 | Charcoal mauve | `#5E5360` / `#84778A` | `#A79DB3` / `#786F84` |
 
-Hub-on-canvas contrast is gated at **≥ 3.0:1** (non-text UI) in both modes —
+Hub-on-canvas contrast is gated at **≥ 3.0:1** (non-text UI) in both modes;
 families #1 (orange) and #10 (peach) were deepened in **light** to clear the
-floor on the warm paper canvas (`#F4EAE1`): orange `#F59520 → #C0641A`
-(1.92 → 3.49), peach `#D9825F → #B85A38` (2.42 → 3.88). The `-soft` satellites
+floor on the warm paper canvas (`#F4EAE1`): orange `#F59520 -> #C0641A`
+(1.92 -> 3.49), peach `#D9825F -> #B85A38` (2.42 -> 3.88). The `-soft` satellites
 are not gated (they sit behind hubs, never alone as the only signal).
 
 ## Contrast matrix (generated)

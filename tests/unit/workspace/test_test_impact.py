@@ -663,3 +663,110 @@ async def test_two_links_in_one_file_each_get_only_their_own_symbols_tests(
         "tests/api.test.ts": [BOUND.contract_id],
         "tests/list.test.ts": ["http::GET::/users"],
     }
+
+
+async def test_a_caller_supplies_its_own_reads_over_an_index_built_from_rows() -> None:
+    """No database: the index is built from rows and the reads take its handle.
+
+    Each read is handed the index's ``session``, whatever the caller put there,
+    so one join serves an index that never opened a ``wiki.db``.
+    """
+    from repowise.core.analysis.test_reachability import ReachedBy
+    from repowise.core.workspace.repo_index import IndexedSymbol
+
+    handle = object()
+    seen: list[object] = []
+
+    async def covering(session, repo_id, files):
+        seen.append(session)
+        return {"src/api.ts": [{"test_id": "tests/cov.test.ts::a"}]}
+
+    async def reaching(session, repo_id, targets, *, call_depth, import_depth, symbol_seeds=None):
+        seen.append(session)
+        if symbol_seeds:
+            return {"src/api.ts::getUser": ReachedBy(tests=["tests/walk.test.ts"], via="call-graph")}
+        return {}
+
+    symbol = IndexedSymbol(
+        symbol_id="src/api.ts::getUser",
+        name="getUser",
+        qualified_name="getUser",
+        kind="function",
+        signature="function getUser()",
+        file_path="src/api.ts",
+        start_line=1,
+        end_line=5,
+        visibility="public",
+    )
+    index = RepoIndex.from_symbols("frontend", [symbol], repo_id="r1", session=handle)
+    result = await analyze_workspace_test_impact(
+        WorkspaceIndex({"frontend": index}),
+        [BOUND],
+        CHANGED,
+        covering=covering,
+        reaching=reaching,
+    )
+    await index.close()  # the caller owns the handle; close leaves it alone
+
+    assert seen and all(s is handle for s in seen)
+    assert {(r.test_file, r.basis) for r in result.recommendations} == {
+        ("tests/cov.test.ts", "measured"),
+        ("tests/walk.test.ts", "inferred"),
+    }
+    assert result.unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# A conftest the walk stopped at
+# ---------------------------------------------------------------------------
+
+
+async def test_a_conftest_stands_for_the_tests_under_it_and_drops_out_with_none(
+    tmp_path: Path,
+) -> None:
+    """pytest collects nothing from a conftest; it runs for the tests below it.
+
+    ``client`` in ``tests/unit/conftest.py`` is the only caller of ``get_user``,
+    so its link is guarded by the test under that directory. ``tests/lonely/``
+    has no test, so ``list_users``, reached only by its conftest, has none.
+    """
+    index = await make_repo_index(
+        tmp_path / "frontend",
+        {"src/api.py": [_symbol("src/api.py::get_user"), _symbol("src/api.py::list_users")]},
+        alias="frontend",
+        graph_nodes=(
+            ("src/api.py", False),
+            ("tests/unit/conftest.py", True),
+            ("tests/unit/test_users.py", True),
+            ("tests/lonely/conftest.py", True),
+        ),
+        graph_edges=(
+            ("src/api.py", "src/api.py::get_user", "defines"),
+            ("src/api.py", "src/api.py::list_users", "defines"),
+            ("tests/unit/conftest.py", "tests/unit/conftest.py::client", "defines"),
+            ("tests/lonely/conftest.py", "tests/lonely/conftest.py::db", "defines"),
+            ("tests/unit/conftest.py::client", "src/api.py::get_user", "calls"),
+            ("tests/lonely/conftest.py::db", "src/api.py::list_users", "calls"),
+        ),
+    )
+    guarded = _link(consumer_file="src/api.py", consumer_symbol_id="src/api.py::get_user")
+    lonely = _link(
+        consumer_file="src/api.py",
+        consumer_symbol_id="src/api.py::list_users",
+        contract_id="http::GET::/users",
+    )
+    try:
+        both = await analyze_workspace_test_impact(
+            WorkspaceIndex({"frontend": index}), [guarded, lonely], CHANGED, include_measured=False
+        )
+        alone = await analyze_workspace_test_impact(
+            WorkspaceIndex({"frontend": index}), [lonely], CHANGED, include_measured=False
+        )
+    finally:
+        await index.close()
+
+    assert [(r.test_file, r.consumer_symbol_ids) for r in both.recommendations] == [
+        ("tests/unit/test_users.py", ["src/api.py::get_user"])
+    ]
+    assert not alone.recommendations
+    assert [row["state"] for row in alone.files_analyzed] == ["none"]

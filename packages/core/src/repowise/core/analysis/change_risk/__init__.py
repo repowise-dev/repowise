@@ -32,6 +32,7 @@ from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, RiskDriver, score_cha
 from .normalize import RiskNormalizer, review_priority_classification
 from .service import (
     ChangeRiskResult,
+    assess_change,
     change_risk_payload,
     normalize_extensions,
     range_anchor,
@@ -50,6 +51,7 @@ __all__ = [
     "FixHistoryUnavailableError",
     "RiskDriver",
     "RiskNormalizer",
+    "assess_change",
     "baseline_samples",
     "change_features_from_stored",
     "change_fix_density",

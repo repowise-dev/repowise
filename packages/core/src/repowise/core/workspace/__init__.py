@@ -44,6 +44,7 @@ _EXPORTS: dict[str, str] = {
     "CrossRepoCoChange": "cross_repo",
     "CrossRepoOverlay": "cross_repo",
     "CrossRepoPackageDep": "cross_repo",
+    "CrossRepoPackageDiagnostic": "cross_repo",
     "load_overlay": "cross_repo",
     "run_cross_repo_analysis": "cross_repo",
     "save_overlay": "cross_repo",

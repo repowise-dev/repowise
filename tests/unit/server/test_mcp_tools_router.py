@@ -103,6 +103,61 @@ async def test_router_get_and_patch(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_router_patch_routes_body_repo_id_to_workspace_database(tmp_path, session_factory):
+    """A body-only repo ID must select that repo's workspace database."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.database import get_session, init_db
+    from repowise.server.deps import verify_api_key
+    from repowise.server.routers import mcp as mcp_router
+
+    repo_id = "workspace-repo"
+    repo_path = tmp_path / repo_id
+    (repo_path / ".repowise").mkdir(parents=True)
+
+    workspace_engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(workspace_engine)
+    workspace_factory = async_sessionmaker(
+        workspace_engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with get_session(workspace_factory) as workspace_session:
+        await crud.upsert_repository(
+            workspace_session,
+            repo_id=repo_id,
+            name="workspace-repo",
+            local_path=str(repo_path),
+        )
+
+    app = FastAPI()
+    app.state.session_factory = session_factory
+    app.state.workspace_sessions = {repo_id: workspace_factory}
+    app.dependency_overrides[verify_api_key] = lambda: None
+    app.include_router(mcp_router.router)
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.patch(
+                "/api/mcp/tools",
+                json={"repo_id": repo_id, "tools": ["+get_dependency_path"]},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["repo_id"] == repo_id
+        assert response.json()["override"] == ["+get_dependency_path"]
+    finally:
+        await workspace_engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_router_patch_unknown_repo_404(monkeypatch):
     from fastapi import HTTPException
 

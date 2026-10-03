@@ -54,6 +54,37 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
     )
 
 
+def _report_query_compilation_failures(stats: Any, progress: ProgressCallback | None) -> None:
+    """Name any languages whose tree-sitter queries failed to compile.
+
+    Scoped to what traversal found. A query compilation failure (e.g. tree-sitter
+    ABI mismatch or invalid query syntax) leaves files with zero symbols.
+    Reporting it prominently tells the user why symbols are missing. Best-effort:
+    a reporting failure must not stop an index.
+    """
+    if progress is None or stats is None:
+        return
+    try:
+        lang_counts = getattr(stats, "lang_counts", None)
+        if not lang_counts:
+            return
+        from repowise.core.ingestion.parser import failed_query_languages
+
+        failed = failed_query_languages(lang_counts)
+        if not failed:
+            return
+        for lang, err in failed:
+            count = lang_counts.get(lang, 0)
+            emit_warning(
+                progress,
+                f"Failed to compile tree-sitter queries for {lang} ({count:,} files): {err}. "
+                f"Symbols for {lang} will not be extracted.",
+            )
+    except Exception:
+        logger.debug("query_preflight_failed", exc_info=True)
+        return
+
+
 async def _timed_step(
     label: str,
     fn: Any,
@@ -468,6 +499,7 @@ async def _run_ingestion(
     # carry no symbols, which is not something to find out from an empty
     # symbol list weeks later.
     _report_missing_grammars(getattr(traverser, "stats", None), progress)
+    _report_query_compilation_failures(getattr(traverser, "stats", None), progress)
 
     if progress:
         progress.on_phase_start("parse", len(file_infos))

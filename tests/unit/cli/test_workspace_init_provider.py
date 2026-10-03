@@ -18,6 +18,7 @@ import pytest
 
 from repowise.cli.commands.init_cmd import workspace as ws_mod
 from repowise.cli.commands.init_cmd.workspace import _ingest_and_generate_repo, _WorkspaceCtx
+from repowise.core.ingestion.git_indexer.records import GitHistoryCoverage, GitIndexSummary
 
 
 def _fake_result() -> SimpleNamespace:
@@ -27,6 +28,14 @@ def _fake_result() -> SimpleNamespace:
         generated_pages=[],
         knowledge_graph_result=None,
         repo_name="repo",
+        git_summary=SimpleNamespace(
+            history_coverage=GitHistoryCoverage(
+                eligible_files=3,
+                files_with_history=2,
+                global_commits=10,
+                per_file_limit=10,
+            )
+        ),
     )
 
 
@@ -80,7 +89,11 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr("repowise.core.pipeline.run_pipeline", fake_pipeline)
     monkeypatch.setattr(ws_mod, "persist_result", noop_async)
     monkeypatch.setattr(ws_mod, "get_head_commit", lambda *_a, **_k: "c0ffee")
-    monkeypatch.setattr(ws_mod, "save_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        ws_mod,
+        "save_state",
+        lambda _path, state, **_k: seen.update(saved_state=state),
+    )
     monkeypatch.setattr(ws_mod, "write_editor_project_files", lambda *_a, **_k: None)
     return seen
 
@@ -100,6 +113,40 @@ def test_the_index_phase_is_given_the_resolved_provider(
     _run(tmp_path, provider)
 
     assert captured["llm_client"] is provider
+
+
+def test_workspace_member_persists_the_shared_git_coverage(
+    tmp_path: Path, captured: dict[str, Any]
+) -> None:
+    _run(tmp_path, SimpleNamespace(provider_name="omp", model_name="omp/default"))
+
+    assert captured["saved_state"]["git_history_coverage"] == {
+        "eligible_files": 3,
+        "files_with_history": 2,
+        "unavailable_files": 0,
+        "retained_commits": 0,
+        "per_file_limit": 10,
+        "global_commits": 10,
+        "deep_commits": 0,
+        "recent_files": 0,
+        "deep_files": 0,
+        "fallback_files": 0,
+        "complete_through_depth": 0,
+        "workers": 1,
+    }
+
+
+def test_unavailable_git_history_clears_stale_coverage() -> None:
+    from repowise.cli.commands.init_cmd.persistence import (
+        apply_git_history_coverage_state,
+    )
+
+    state = {"git_history_coverage": {"eligible_files": 99}}
+    result = SimpleNamespace(git_summary=GitIndexSummary(0, 0, 0, 0.0))
+
+    apply_git_history_coverage_state(state, result)
+
+    assert "git_history_coverage" not in state
 
 
 def test_a_repo_path_provider_is_rebound_to_the_repo_being_indexed(

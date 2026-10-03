@@ -118,6 +118,7 @@ async def _run_git_indexing(
             on_commit_done=_on_commit_done,
             on_co_change_done=_on_co_change_done,
             on_warning=_on_warning,
+            timings=getattr(progress, "table", None),
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         _phase_done(progress, "git")

@@ -6,6 +6,8 @@ Covers Python, TypeScript, Go, Rust, Java, C++ — one test class per language.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.ingestion.parser import LANGUAGE_CONFIGS, ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
 
@@ -132,3 +134,46 @@ def run():
     )
 """
         assert self._calls(source, "m.py", "python")["target"] == 2
+
+
+_MODIFIER_CASES = (
+    (
+        "csharp",
+        "A.cs",
+        b"public static partial class P { [Obsolete] protected override void Impl() { } }",
+        {"P": ("public", "static", "partial"), "Impl": ("protected", "override")},
+    ),
+    (
+        "kotlin",
+        "A.kt",
+        b'open class A {\n  @Deprecated("x") override fun f() {}\n  fun g() {}\n}\n',
+        {"A": ("open",), "f": ("override",), "g": ()},
+    ),
+    (
+        "vbnet",
+        "A.vb",
+        b"Public Class A\n  Public Overrides Function F() As Integer\n    Return 1\n"
+        b"  End Function\nEnd Class\n",
+        {"F": ("public", "overrides")},
+    ),
+    ("typescript", "a.ts", b"class A extends B { override f() {} }", {"f": ("override",)}),
+    # Java writes ``@Override`` as an annotation; it stays a decorator.
+    ("java", "A.java", b"class A { @Override public void f() {} }", {"f": ()}),
+    # Scala access qualifiers name a scope, not a modifier.
+    (
+        "scala",
+        "A.scala",
+        b"class A { protected[this] def f(): Int = 1; override private[pkg] def g() = 2 }",
+        {"f": ("protected",), "g": ("override", "private")},
+    ),
+)
+
+
+@pytest.mark.parametrize(("language", "path", "source", "expected"), _MODIFIER_CASES)
+def test_declared_modifiers(
+    parser: ASTParser, language: str, path: str, source: bytes, expected: dict
+) -> None:
+    """Keyword modifiers land on ``Symbol.modifiers``; annotations do not."""
+    result = parser.parse_file(_make_file_info(path, language), source)
+    got = {s.name: s.modifiers for s in result.symbols if s.name in expected}
+    assert got == expected

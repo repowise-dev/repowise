@@ -16,7 +16,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.ranking import deduction_by_path
-from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS, hotspot_health
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
@@ -124,12 +124,14 @@ async def health_overview(
         deductions=deductions,
     )
 
-    # Ranked by health impact, so performance is out: its findings score zero
-    # impact by construction and would fill the tail of a defect ranking with
-    # rows the reader cannot compare against the ones above them. The counts
-    # and breakdowns above still see every dimension; only this queue is
-    # defect-and-maintainability work.
-    ranked = [f for f in findings if (getattr(f, "dimension", None) or "defect") != "performance"]
+    # Ranked by health impact, so the zero-impact dimensions are out: they
+    # would fill the tail with rows a reader cannot compare against the ones
+    # above. The counts above still see every dimension.
+    ranked = [
+        f
+        for f in findings
+        if (getattr(f, "dimension", None) or "defect") not in ZERO_IMPACT_DIMENSIONS
+    ]
     top_findings = await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in ranked[:limit]]
     )

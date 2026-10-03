@@ -1,0 +1,8 @@
+lint: 931 findings — 162 kept verbatim, 769 collapsed into 89 rules
+
+S101 Use of `assert` detected  (×16)
+66 |     assert urllib3_version_list != ["dev"]  # Verify urllib3 isn't installed from git.
+76 |     assert major >= 1  (×3)
+78 |         assert minor >= 21  (×3)
+
+[repowise#4f688e17124a: 11962 lines omitted (~103796 tokens); restore: repowise expand 4f688e17124a]

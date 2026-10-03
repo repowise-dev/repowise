@@ -96,6 +96,13 @@ def _project_target_entry(entry: dict) -> dict:
     ``git_archaeology`` the same three capped layers.
     """
     out: dict = {"governing_decisions": entry.get("governing_decisions") or []}
+    # Both authority lanes. Dropping the candidate one here would print an
+    # empty card for every repository with no acceptances, which is most of
+    # them: the tool moved unaccepted records out of ``governing_decisions``
+    # precisely so they stop reading as rules, not so they stop being shown.
+    for key in ("candidate_decisions", "candidate_decisions_omitted"):
+        if entry.get(key):
+            out[key] = entry[key]
     origin = entry.get("origin") or {}
     if origin:
         out["origin"] = {
@@ -131,8 +138,9 @@ def project(payload: dict) -> dict:
                         and target_context
     dashboard kept      summary, counts, and the head of each of
                         stale_decisions / proposed_awaiting_review /
-                        ungoverned_hotspots / conflicts, with the
-                        full count beside it
+                        ungoverned_hotspots / conflicts /
+                        retired_decisions / unscoped_decisions, with
+                        the full count beside it
     ==================  ===========================================
 
     Dropped throughout: a decision's ``context``, ``consequences``,
@@ -230,7 +238,14 @@ def project(payload: dict) -> dict:
             for target, entry in payload["target_context"].items()
         }
 
-    for key in ("stale_decisions", "proposed_awaiting_review", "ungoverned_hotspots", "conflicts"):
+    for key in (
+        "stale_decisions",
+        "proposed_awaiting_review",
+        "ungoverned_hotspots",
+        "conflicts",
+        "retired_decisions",
+        "unscoped_decisions",
+    ):
         values = payload.get(key)
         if values:
             out[key] = _capped(values)
@@ -374,6 +389,19 @@ def _render(projected: dict) -> None:
             console.print(
                 f"  {governing.get('title', '')} [dim]({governing.get('status', '')})[/dim]"
             )
+        for candidate in entry.get("candidate_decisions") or []:
+            # Labelled, never printed beside the rules unmarked. Nobody has
+            # accepted these, so they are a review request and not a rule.
+            console.print(
+                f"  [dim]candidate:[/dim] {candidate.get('title', '')} "
+                f"[dim]({candidate.get('status', '')})[/dim]"
+            )
+        omitted = entry.get("candidate_decisions_omitted") or {}
+        if omitted.get("suppressed"):
+            console.print(
+                f"  [dim]{omitted['suppressed']} candidate(s) not matching the "
+                f"question. {omitted.get('recover_with', '')}[/dim]"
+            )
         origin = entry.get("origin") or {}
         if origin.get("summary"):
             # Only set when there is no git history — the short "No git history
@@ -392,6 +420,8 @@ def _render(projected: dict) -> None:
         ("Stale decisions", "stale_decisions"),
         ("Proposed, awaiting review", "proposed_awaiting_review"),
         ("Conflicts", "conflicts"),
+        ("Retired", "retired_decisions"),
+        ("Accepted, naming no file", "unscoped_decisions"),
     ):
         rows = projected.get(key) or []
         if rows:
@@ -444,6 +474,8 @@ _RENDERABLE_BLOCKS = (
     "proposed_awaiting_review",
     "conflicts",
     "ungoverned_hotspots",
+    "retired_decisions",
+    "unscoped_decisions",
     "related_documentation",
     "episodes",
 )

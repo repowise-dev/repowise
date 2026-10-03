@@ -7,8 +7,21 @@ import {
   Minus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ChatArtifact, ChatHandoff, ChatUIMessage } from "@repowise-dev/types/chat";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import type {
+  ChatArtifact,
+  ChatHandoff,
+  ChatSuggestion,
+  ChatUIMessage,
+} from "@repowise-dev/types/chat";
 import { BrandMark } from "../shared/brand-mark";
 import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
@@ -19,6 +32,7 @@ import { ChatContextIndicator } from "./chat-context-indicator";
 import { getChatContextPresentation, type ChatContext } from "./chat-context";
 import { ChatInterface } from "./chat-interface";
 import { buildHandoffDraft } from "./chat-handoff";
+import { ChatSuggestions } from "./chat-suggestions";
 import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 
 export type ChatDockMode = "minimized" | "compact" | "expanded";
@@ -138,6 +152,9 @@ export interface ChatDockProps {
   error?: string | null;
   onSend: (text: string, context?: ChatContext) => void | Promise<void>;
   onCancel: () => void;
+  /** Suggestions derived from the live page. Omit to use the static tier the
+   *  page kind already carries. */
+  suggestions?: readonly ChatSuggestion[];
   /** Applied once, then handed back through `onCommandHandled` so remounting
    *  the dock does not replay it. */
   command?: ChatDockCommand | null;
@@ -184,6 +201,7 @@ export function ChatDock({
   error,
   onSend,
   onCancel,
+  suggestions,
   command,
   onCommandHandled,
   firstVisitHint,
@@ -309,6 +327,24 @@ export function ChatDock({
 
   const activeContext = dismissedContext === identity ? undefined : context;
   const presentation = getChatContextPresentation(activeContext);
+
+  // Openers before the first question, the last answer's next steps after, so
+  // the slot is never spent on a stale opener.
+  const chips = useMemo<readonly ChatSuggestion[]>(() => {
+    if (messages.length === 0) return suggestions ?? presentation.suggestions;
+    const last = messages[messages.length - 1];
+    return last?.role === "assistant" && !last.isStreaming
+      ? last.followUps ?? []
+      : [];
+  }, [messages, presentation.suggestions, suggestions]);
+
+  const seedDraft = useCallback(
+    (suggestion: ChatSuggestion) => {
+      setDraft(suggestion.text);
+      compactTextareaRef.current?.focus();
+    },
+    [setDraft],
+  );
 
   if (suppressed) return null;
 
@@ -478,24 +514,16 @@ export function ChatDock({
           autoFocus
           textareaRef={compactTextareaRef}
         />
-        {messages.length === 0 && draft.length === 0 && presentation.suggestions.length > 0 && (
-          /* Chips wrap rather than truncate: at 390px a one-line suggestion
-             loses the half of the question that made it specific. */
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {presentation.suggestions.map((text) => (
-              <button
-                key={text}
-                type="button"
-                onClick={() => {
-                  setDraft(text);
-                  compactTextareaRef.current?.focus();
-                }}
-                className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-              >
-                {text}
-              </button>
-            ))}
-          </div>
+        {draft.length === 0 && (
+          <ChatSuggestions
+            suggestions={chips}
+            onSelect={seedDraft}
+            layout="chips"
+            ariaLabel={
+              messages.length === 0 ? "Suggested questions" : "Next steps"
+            }
+            className="mt-2"
+          />
         )}
         {sendDisabled && sendDisabledReason && (
           <div className="mt-2 text-xs text-[var(--color-text-secondary)]">
@@ -584,6 +612,7 @@ export function ChatDock({
               {...(error !== undefined ? { error } : {})}
               onSend={send}
               onCancel={onCancel}
+              {...(suggestions ? { suggestions } : {})}
               draft={draft}
               onDraftChange={setDraft}
               onContextRemove={removeExpandedContext}

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path
+from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path, warn
 from repowise.cli.ui import load_dotenv
 
 
@@ -177,9 +177,8 @@ def mcp_command(
     workspace = _workspace_summary(repo_path, no_workspace=no_workspace)
     repowise_dir = repo_path / ".repowise"
     if workspace is None and not repowise_dir.exists():
-        console.print(
-            f"[yellow]Warning: No .repowise directory found at {repo_path}.[/yellow]\n"
-            "Run 'repowise init' first to generate documentation."
+        warn(
+            f"No .repowise directory found at {repo_path}.\nRun 'repowise init' first to generate documentation."
         )
 
     resolved_host = host or os.environ.get("REPOWISE_HOST", "127.0.0.1")
@@ -195,8 +194,12 @@ def mcp_command(
 
     tools_override: str | None = "all" if all_tools else tools
 
+    # Which of the ways a session can end this one was. Recorded in a finally
+    # so a fault is reported as one: leaving the field off for every failed
+    # session would make its absence mean either "faulted" or "older build".
+    outcome = "server_fault"
     try:
-        run_mcp(
+        outcome = run_mcp(
             transport=transport,
             repo_path=str(repo_path),
             host=resolved_host,
@@ -207,3 +210,7 @@ def mcp_command(
     except StoreUnavailableError as exc:
         # One line on stderr and exit 1, not a traceback the host respawns on.
         raise click.ClickException(str(exc)) from exc
+    finally:
+        from repowise.cli.platform import telemetry
+
+        telemetry.add_command_outcome(transport=transport, transport_outcome=outcome)

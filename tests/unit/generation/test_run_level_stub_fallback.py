@@ -131,3 +131,31 @@ def test_stub_fallback_is_kept_out_of_the_resume_ledger() -> None:
 
     embedded = [pid for batch in store.batches for (pid, *_rest) in batch]
     assert embedded == ["module_page:ok"]
+
+
+def test_the_streaming_sink_receives_the_sanitized_page() -> None:
+    """The sink writes the first stored version. Sanitizing only after the
+    level made the final pass rewrite the page and archive a spurious one."""
+    seen: list[str] = []
+
+    async def _go():
+        async def preamble():
+            page = _page("module_page:p")
+            page.content = "\n# module_page:p\n\nbody"
+            return page
+
+        run = SimpleNamespace(
+            semaphore=asyncio.Semaphore(1),
+            job_system=None,
+            job_id=None,
+            on_page_done=None,
+            on_page_ready=lambda page: seen.append(page.content),
+            vector_store=_RecordingStore(),
+            completed_page_summaries={},
+            timings=None,
+        )
+        await _GenerationRun.run_level(run, [("module_page:p", preamble())], level=4)
+
+    asyncio.run(_go())
+
+    assert seen == ["# module_page:p\n\nbody"]

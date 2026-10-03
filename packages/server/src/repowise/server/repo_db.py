@@ -44,11 +44,17 @@ def repo_db_file(local_path: str | Path) -> Path:
 
 
 def is_primary_db_for(app_state, local_path: str | Path) -> bool:
-    """True when the server's primary database *is* this repo's wiki.db.
+    """True when the server's primary database serves this repo.
 
-    In that case no per-repo engine is needed — the ambient session factory
-    already reads and writes the canonical file.
+    When a database URL is explicitly configured (e.g. PostgreSQL or a shared
+    database), all repositories in the workspace share the ambient primary
+    database regardless of file path. Otherwise (repo-local SQLite mode), returns
+    True only when the ambient database file matches this repo's ``wiki.db``.
     """
+    from repowise.core.persistence.database import get_configured_db_url
+
+    if get_configured_db_url() is not None:
+        return True
     db_url: str = getattr(app_state, "db_url", "") or ""
     return repo_db_file(local_path).as_posix() in db_url.replace("\\", "/")
 

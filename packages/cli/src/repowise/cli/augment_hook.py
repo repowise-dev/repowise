@@ -40,7 +40,9 @@ def main() -> None:
     try:
         from repowise.cli.commands.augment_cmd import _run_augment
 
-        _run_augment(client=_parse_client_arg(sys.argv[1:]))
+        _run_augment(
+            client=_parse_client_arg(sys.argv[1:]), coverage_only="--coverage-only" in sys.argv
+        )
     except (SystemExit, KeyboardInterrupt):
         raise
     except BaseException:

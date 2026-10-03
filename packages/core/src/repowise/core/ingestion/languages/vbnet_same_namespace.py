@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..cohesion import SAME_NAMESPACE_HINT
 from .csharp_same_namespace import _BCL_COMMON_TYPES
 from .scope_scan import FileScope, ScopeTier, emit_scope_edges
 
@@ -52,7 +53,6 @@ _VB_INTRINSICS = frozenset({
 
 _SKIP_NAMES = _BCL_COMMON_TYPES | _VB_INTRINSICS
 
-_SAME_NAMESPACE_HINT = "same_namespace"
 _PROJECT_IMPORT_HINT = "global_using"
 
 # The shared scan looks for a capitalised ASCII name. VB.NET estates are
@@ -131,7 +131,7 @@ def resolve_vbnet_same_namespace_refs(
         if own_namespaces:
             tiers.append(
                 ScopeTier(
-                    hint=_SAME_NAMESPACE_HINT,
+                    hint=SAME_NAMESPACE_HINT,
                     lookup=lambda ident: _declarers(own_namespaces, ident),
                 )
             )

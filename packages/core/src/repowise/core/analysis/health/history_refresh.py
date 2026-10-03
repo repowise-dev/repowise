@@ -19,10 +19,11 @@ from typing import Any
 
 from .biomarkers.base import BiomarkerResult, FileContext
 from .biomarkers.registry import registered_biomarkers
+from .complexity.languages import has_health_dialect
 from .governance import GOVERNANCE_BIOMARKERS
 from .models import HealthFindingData, Severity
 from .rows import detail_map, field
-from .scoring import attach_impacts, deduction_split, remap_severities, score_file
+from .scoring import attach_impacts, file_score_fields, remap_severities, score_file
 
 #: History markers whose whole input is the file's git metadata.
 REFRESHABLE_MARKERS: frozenset[str] = frozenset(
@@ -38,6 +39,9 @@ REFRESHABLE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+#: History markers that read a per-line blame index, which is never persisted.
+BLAME_MARKERS: frozenset[str] = frozenset({"code_age_volatility", "function_hotspot"})
+
 
 @dataclass
 class RefreshedFile:
@@ -45,12 +49,26 @@ class RefreshedFile:
 
     file_path: str
     findings: list[HealthFindingData]
-    score: float
-    defect_score: float
+    # Every number below is ``None`` for a file whose language health has no
+    # dialect for (``file_score_fields``).
+    score: float | None
+    defect_score: float | None
     maintainability_score: float | None
     performance_score: float | None
-    structure_deduction: float
-    history_deduction: float
+    structure_deduction: float | None
+    history_deduction: float | None
+
+
+def _analysed(language: str, metric: Any) -> bool:
+    """Whether the file's numbers are measurements.
+
+    Decided by the language when the graph knows it. A file with no graph node
+    keeps what its stored row says, so a missing language never wipes the
+    score of a file that was walked.
+    """
+    if language:
+        return has_health_dialect(language)
+    return field(metric, "score", None) is not None
 
 
 def as_biomarker_result(finding: Any) -> BiomarkerResult:
@@ -140,21 +158,10 @@ def refresh_history(
         rescored = attach_impacts(results, deductions)
         for finding in rescored:
             finding.file_path = path
-        structure, history = deduction_split(rescored)
+        numbers = file_score_fields(_analysed(ctx.language, metric), scores, rescored)
         rescored.extend(governance)
 
-        out.append(
-            RefreshedFile(
-                file_path=path,
-                findings=rescored,
-                score=round(scores["defect"], 2),
-                defect_score=round(scores["defect"], 2),
-                maintainability_score=_round_opt(scores["maintainability"]),
-                performance_score=_round_opt(scores["performance"]),
-                structure_deduction=structure,
-                history_deduction=history,
-            )
-        )
+        out.append(RefreshedFile(file_path=path, findings=rescored, **numbers))
     return out
 
 
@@ -172,10 +179,6 @@ def _carry(stored: Any, path: str) -> HealthFindingData:
         reason=field(stored, "reason", "") or "",
         dimension=field(stored, "dimension", "defect") or "defect",
     )
-
-
-def _round_opt(value: float | None) -> float | None:
-    return round(value, 2) if value is not None else None
 
 
 def active_contributors(git_meta_by_path: dict[str, dict]) -> int | None:

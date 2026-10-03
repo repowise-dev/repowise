@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 import click
 
 from repowise.cli.helpers import (
@@ -64,22 +67,22 @@ def _hook_target(
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
-def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+@click.option(
+    "--security",
+    is_flag=True,
+    default=False,
+    help="Also install a pre-commit hook that runs `repowise security check --staged` "
+    "and blocks a commit that adds a finding at or above high (skip once with "
+    "git commit --no-verify).",
+)
+def hook_install(path: str | None, workspace: bool, no_workspace: bool, security: bool) -> None:
     """Install a post-commit hook that auto-syncs after every commit."""
-    from repowise.cli.hooks import install
+    from repowise.cli.hooks import install, install_security
 
     target = _hook_target(path, workspace, no_workspace)
-
-    if target.is_workspace:
-        assert target.ws_root is not None and target.ws_config is not None
-        for entry in target.ws_config.repos:
-            abs_path = (target.ws_root / entry.path).resolve()
-            result = install(abs_path)
-            console.print(f"  {entry.alias}: [green]{result}[/green]")
-    else:
-        assert target.repo_path is not None
-        result = install(target.repo_path)
-        console.print(f"Post-commit hook: [green]{result}[/green]")
+    _run_post_commit_action(target, install, action="installed")
+    if security:
+        _run_security_action(target, install_security, style="green")
 
 
 @hook_group.command("uninstall")
@@ -98,21 +101,44 @@ def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
     help="Force single-repo mode even when invoked from a workspace.",
 )
 def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Remove the repowise post-commit hook."""
-    from repowise.cli.hooks import uninstall
+    """Remove everything repowise installed: the post-commit hook and the security block."""
+    from repowise.cli.hooks import uninstall, uninstall_security
 
     target = _hook_target(path, workspace, no_workspace)
+    _run_security_action(target, uninstall_security)
+    _run_post_commit_action(target, uninstall, action="uninstalled")
 
-    if target.is_workspace:
-        assert target.ws_root is not None and target.ws_config is not None
-        for entry in target.ws_config.repos:
-            abs_path = (target.ws_root / entry.path).resolve()
-            result = uninstall(abs_path)
-            console.print(f"  {entry.alias}: {result}")
-    else:
-        assert target.repo_path is not None
-        result = uninstall(target.repo_path)
-        console.print(f"Post-commit hook: {result}")
+
+def _run_post_commit_action(target, run: Callable[[Path], str], *, action: str) -> None:
+    """Run a post-commit hook action across indexed targets."""
+    entries = _target_repo_entries(target)
+    if not entries:
+        raise click.ClickException(
+            "No indexed repositories found. Run `repowise init` before managing hooks."
+        )
+
+    succeeded = 0
+    for alias, repo_path in entries:
+        result = run(repo_path)
+        label = f"  {alias}" if target.is_workspace else "Post-commit hook"
+        if result.startswith("not "):
+            console.print(f"{label}: [yellow]{result}[/yellow]")
+            continue
+        succeeded += 1
+        console.print(f"{label}: [green]{result}[/green]")
+
+    if not succeeded:
+        raise click.ClickException(f"No post-commit hooks were {action}.")
+
+
+def _run_security_action(target, run: Callable[[Path], str], *, style: str = "") -> None:
+    """The opt-in pre-commit security block across the same targets as the post-commit hook."""
+    for alias, repo_path in _target_repo_entries(target):
+        result = run(repo_path)
+        if not style and not result.startswith("removed"):
+            continue  # uninstall reports the block only where there was one
+        label = f"  {alias} pre-commit (security)" if target.is_workspace else "Pre-commit (security)"
+        console.print(f"{label}: [{style}]{result}[/{style}]" if style else f"{label}: {result}")
 
 
 @hook_group.group("rewrite")
@@ -134,17 +160,26 @@ def rewrite_group() -> None:
     """
 
 
-def _target_repo_paths(target) -> list:
-    """The repo paths a hook subcommand should act on (repowise repos only)."""
+def _target_repo_entries(target) -> list[tuple[str, Path]]:
+    """The indexed aliases and paths a hook subcommand should act on."""
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         return [
-            (target.ws_root / entry.path).resolve()
+            (entry.alias, (target.ws_root / entry.path).resolve())
             for entry in target.ws_config.repos
             if ((target.ws_root / entry.path).resolve() / ".repowise").is_dir()
         ]
     assert target.repo_path is not None
-    return [target.repo_path] if (target.repo_path / ".repowise").is_dir() else []
+    return (
+        [(target.repo_path.name, target.repo_path)]
+        if (target.repo_path / ".repowise").is_dir()
+        else []
+    )
+
+
+def _target_repo_paths(target) -> list[Path]:
+    """The repo paths a hook subcommand should act on (repowise repos only)."""
+    return [repo_path for _, repo_path in _target_repo_entries(target)]
 
 
 def _print_rewrite_hook_status(label: str, status) -> None:
@@ -350,6 +385,10 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
     """Remove the rewrite hooks and the AGENTS.md awareness section."""
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations.codex_config import (
+        remove_agents_md_distill_section,
+    )
+    from repowise.cli.helpers import save_distill_commands_enabled
 
     removed = ClaudeCodeAdapter().uninstall_rewrite_hook()
     console.print(f"Rewrite hook: {'[green]removed[/green]' if removed else 'not installed'}")
@@ -360,14 +399,23 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
         console.print(
             f"Codex rewrite hook: {'[green]removed[/green]' if codex_removed else 'not installed'}"
         )
-        from repowise.cli.editor_integrations.codex_config import (
-            remove_agents_md_distill_section,
-        )
 
-        target = _hook_target(path, workspace, no_workspace)
-        for repo_path in _target_repo_paths(target):
-            if remove_agents_md_distill_section(repo_path):
-                console.print(f"  [green]✓[/green] AGENTS.md distill section removed ({repo_path})")
+    target = _hook_target(path, workspace, no_workspace)
+    for repo_path in _target_repo_paths(target):
+        if remove_agents_md_distill_section(repo_path):
+            console.print(f"  [green]✓[/green] AGENTS.md distill section removed ({repo_path})")
+
+    if target.is_workspace:
+        assert target.ws_root is not None and target.ws_config is not None
+        for entry in target.ws_config.repos:
+            abs_path = (target.ws_root / entry.path).resolve()
+            if (abs_path / ".repowise").is_dir():
+                save_distill_commands_enabled(abs_path, enabled=False)
+                console.print(f"  {entry.alias}: [yellow]disabled[/yellow]")
+    else:
+        assert target.repo_path is not None
+        if (target.repo_path / ".repowise").is_dir():
+            save_distill_commands_enabled(target.repo_path, enabled=False)
 
 
 @rewrite_group.command("status")
@@ -981,20 +1029,24 @@ def hook_backfill(path: str | None, all_projects: bool, days: int | None, reset:
     help="Force single-repo mode even when invoked from a workspace.",
 )
 def hook_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Check if the repowise post-commit hook is installed."""
-    from repowise.cli.hooks import status
+    """Check if the repowise post-commit hook (and the security pre-commit block) is installed."""
+    from repowise.cli.hooks import security_status, status
 
     target = _hook_target(path, workspace, no_workspace)
+
+    def _line(label: str, result: str) -> str:
+        icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
+        return f"  {icon} {label}: {result}"
 
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         for entry in target.ws_config.repos:
             abs_path = (target.ws_root / entry.path).resolve()
-            result = status(abs_path)
-            icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
-            console.print(f"  {icon} {entry.alias}: {result}")
+            console.print(_line(entry.alias, status(abs_path)))
+            if (result := security_status(abs_path)).startswith("installed"):
+                console.print(_line(f"{entry.alias} pre-commit (security)", result))
     else:
         assert target.repo_path is not None
-        result = status(target.repo_path)
-        icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
-        console.print(f"  {icon} post-commit: {result}")
+        console.print(_line("post-commit", status(target.repo_path)))
+        if (result := security_status(target.repo_path)).startswith("installed"):
+            console.print(_line("pre-commit (security)", result))

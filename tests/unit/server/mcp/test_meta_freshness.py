@@ -63,6 +63,28 @@ def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
     assert "index_behind" not in out
 
 
+def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text(
+        '{"run_mode":"fast","git_tier":"essential","docs_mode":"none"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+
+    out = _meta.build_meta(repository=_repo(tmp_path))
+    whole = _meta.build_meta_with_full_scope(repository=_repo(tmp_path))
+
+    # An ordinary response carries the digest; what it says about the run is
+    # the same, and the diagnostics it leaves out are one get_overview away.
+    assert out["index_scope"]["run_mode"] == "fast"
+    assert out["index_scope"]["content_provenance"] == "none"
+    assert out["index_scope"]["projection"] == "compact"
+    assert whole["index_scope"]["run_mode"] == "fast"
+    assert whole["index_scope"]["content_provenance"] == "none"
+    assert whole["index_scope"]["git_history_coverage"] is None
+
+
 def test_served_target_changed_warns(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
@@ -224,7 +246,7 @@ def test_confident_answer_is_never_told_retrieval_found_nothing() -> None:
 
     assert answer_hint("high") is None
     assert answer_hint("medium") is None
-    assert "Read the listed fallback_targets" in (answer_hint("low") or "")
+    assert "candidate_files" in (answer_hint("low") or "")
 
 
 def test_no_answer_hint_names_an_external_tool() -> None:

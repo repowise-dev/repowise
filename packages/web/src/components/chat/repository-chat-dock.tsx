@@ -95,6 +95,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
         ...(chat.selectedModel ? { model: chat.selectedModel } : {}),
       })}
       onCancel={chat.cancel}
+      {...(chat.suggestions ? { suggestions: chat.suggestions } : {})}
       command={chat.dockCommand}
       onCommandHandled={chat.clearDockCommand}
       {...(introduce ? { firstVisitHint: CHAT_SHORTCUT_HINT } : {})}

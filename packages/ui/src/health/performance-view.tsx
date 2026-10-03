@@ -21,7 +21,13 @@ import {
 import type { PerformanceViewAdapter } from "./performance/adapter";
 import { capabilitiesOf } from "./performance/capabilities";
 import { OpportunityDrawer } from "./performance/drawer";
-import { ContextHint, ContextTabs, QueueFilters, ScopeLine } from "./performance/filters";
+import {
+  ContextHint,
+  ContextTabs,
+  QueueFilters,
+  ScopeLine,
+  SortControl,
+} from "./performance/filters";
 import { LegacyPerformanceFindings } from "./performance/legacy";
 import { OpportunityQueue } from "./performance/queue";
 import {
@@ -86,8 +92,19 @@ export function PerformanceView({
   const [selected, setSelected] = useState<PerformanceOpportunity | null>(null);
   const select = (next: PerformanceOpportunity | null) => {
     setSelected(next);
+    setInternalOpenId(null);
     onOpenOpportunityChange?.(next?.opportunity_id ?? null);
   };
+  // A sibling link inside the drawer opens another opportunity by id, the
+  // same way a shared link does. The host may not feed `openOpportunityId`
+  // back synchronously (or at all, if it does not track the URL), so this
+  // state carries the request until the fetch below resolves it.
+  const [internalOpenId, setInternalOpenId] = useState<string | null>(null);
+  const openById = (opportunityId: string) => {
+    setInternalOpenId(opportunityId);
+    onOpenOpportunityChange?.(opportunityId);
+  };
+  const effectiveOpenId = openOpportunityId ?? internalOpenId;
   // The handoff carries the verified plan when the drawer proved one, so a
   // plan-ready row hands over the ready payload rather than an instruction to
   // re-derive it.
@@ -126,9 +143,7 @@ export function PerformanceView({
   // them. The row shape and the detail shape share their fields, so what comes
   // back drives the same drawer a click does.
   const pendingId =
-    openOpportunityId && openOpportunityId !== selected?.opportunity_id
-      ? openOpportunityId
-      : null;
+    effectiveOpenId && effectiveOpenId !== selected?.opportunity_id ? effectiveOpenId : null;
   const { data: linked, error: linkError } = useSWR<PerformanceOpportunityDetail>(
     pendingId && adapter.getPerformanceOpportunity
       ? `performance-opportunity-link:${adapter.cacheKey}:${pendingId}`
@@ -140,7 +155,7 @@ export function PerformanceView({
     // Both branches of the detail carry an id, so the discriminant decides:
     // an id from a retired model resolves to a state, not to a cause, and
     // opening a drawer on it would render an empty panel.
-    if (linked?.resolved) setSelected(linked);
+    if (linked?.found) setSelected(linked);
   }, [linked]);
 
   if (!load) return <LegacyPerformanceFindings adapter={adapter} />;
@@ -184,6 +199,12 @@ export function PerformanceView({
       sub: `of ${summary.total.toLocaleString()} causes`,
     },
   ];
+  // A zero does not lead: when nothing is proven safe, the ribbon opens on
+  // what there is, and "Plan ready: 0" still reads, just not first.
+  if (!summary.actionability?.plan_ready) {
+    const first = stats.shift();
+    if (first) stats.push(first);
+  }
 
   return (
     <div className="space-y-8">
@@ -237,6 +258,11 @@ export function PerformanceView({
           }
         />
         <ContextHint context={filters.context} />
+
+        <SortControl
+          value={filters.sort}
+          onChange={(sort) => apply(withFilter(filters, "sort", sort))}
+        />
 
         {capabilities.serverFacets ? (
           <QueueFilters
@@ -292,10 +318,10 @@ export function PerformanceView({
         />
       </section>
 
-      {pendingId && (linkError || linked?.resolved === false) ? (
+      {pendingId && (linkError || linked?.found === false) ? (
         <LinkedCauseUnavailable
           opportunityId={pendingId}
-          detail={linked && !linked.resolved ? linked.detail : null}
+          detail={linked && !linked.found ? linked.detail : null}
           onDismiss={() => onOpenOpportunityChange?.(null)}
         />
       ) : null}
@@ -307,6 +333,7 @@ export function PerformanceView({
         planEnabled={capabilities.planById}
         onClose={() => select(null)}
         onAgentHandoff={(opportunity, plan) => setPromptFor({ opportunity, plan })}
+        onSelectById={openById}
       />
 
       <AiPromptModal

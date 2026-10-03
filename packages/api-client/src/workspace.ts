@@ -1,10 +1,12 @@
-import { apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPost } from "./client";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceContractDetail,
   WorkspaceCoChangesResponse,
+  WorkspaceCoChangeStructure,
   WorkspaceGraphResponse,
+  WorkspaceRepoRemovedResponse,
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
@@ -25,6 +27,12 @@ export async function getWorkspaceContracts(opts?: {
   contract_type?: string;
   repo?: string;
   role?: string;
+  /** Every whitespace-separated term must appear in the id, file, symbol, repo or service. */
+  q?: string;
+  /** true: only contracts on a matched link; false: only those on none. */
+  linked?: boolean;
+  /** false omits the link rows; `total_links` is still counted. */
+  include_links?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<WorkspaceContractsResponse> {
@@ -32,6 +40,9 @@ export async function getWorkspaceContracts(opts?: {
   if (opts?.contract_type) params.contract_type = opts.contract_type;
   if (opts?.repo) params.repo = opts.repo;
   if (opts?.role) params.role = opts.role;
+  if (opts?.q) params.q = opts.q;
+  if (opts?.linked != null) params.linked = String(opts.linked);
+  if (opts?.include_links === false) params.include_links = "false";
   if (opts?.limit != null) params.limit = String(opts.limit);
   if (opts?.offset != null) params.offset = String(opts.offset);
   return apiGet<WorkspaceContractsResponse>("/api/workspace/contracts", params);
@@ -65,6 +76,16 @@ export async function getWorkspaceCoChanges(opts?: {
   if (opts?.min_strength != null) params.min_strength = String(opts.min_strength);
   if (opts?.limit != null) params.limit = String(opts.limit);
   return apiGet<WorkspaceCoChangesResponse>("/api/workspace/co-changes", params);
+}
+
+/** Contract links behind one co-changing file pair, fetched when its drawer opens. */
+export async function getWorkspaceCoChangeStructure(pair: {
+  source_repo: string;
+  source_file: string;
+  target_repo: string;
+  target_file: string;
+}): Promise<WorkspaceCoChangeStructure> {
+  return apiGet<WorkspaceCoChangeStructure>("/api/workspace/co-changes/structure", pair);
 }
 
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
@@ -195,3 +216,17 @@ export async function getWorkspaceTestImpact(
     fetchOptions,
   );
 }
+
+/**
+ * Remove a repository entry from `.repowise-workspace.yaml`.
+ */
+export async function removeWorkspaceRepo(
+  alias: string,
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceRepoRemovedResponse> {
+  return apiDelete<WorkspaceRepoRemovedResponse>(
+    `/api/workspace/repos/${encodeURIComponent(alias)}`,
+    fetchOptions,
+  );
+}
+

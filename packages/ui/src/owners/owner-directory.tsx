@@ -98,9 +98,12 @@ export function OwnerDirectory({
     const deadLines = sorted.reduce((s, o) => s + o.dead_code_lines_owned, 0);
     const deadOwners = sorted.filter((o) => o.dead_code_lines_owned > 0).length;
     const deadFiles = sorted.reduce((s, o) => s + o.dead_code_files_owned, 0);
-    const active = sorted.filter((o) => o.commit_count_90d > 0).length;
+    // Null when the indexed commits do not cover the last 90 days: unknown, not zero.
+    const active = sorted.some((o) => o.commit_count_90d != null)
+      ? sorted.filter((o) => (o.commit_count_90d ?? 0) > 0).length
+      : null;
     const hotspots = sorted.reduce((s, o) => s + o.hotspots_owned, 0);
-    const commits90d = sorted.reduce((s, o) => s + o.commit_count_90d, 0);
+    const commits90d = sorted.reduce((s, o) => s + (o.commit_count_90d ?? 0), 0);
     return {
       deadFiles,
       hotspots,
@@ -149,14 +152,16 @@ export function OwnerDirectory({
       href: base ? `${base}/modules` : "#",
     });
   }
-  reads.push({
-    key: "active",
-    label: "Active this quarter",
-    value: summary.active.toLocaleString(),
-    unit: `of ${total.toLocaleString()}`,
-    why: `Committed in the last ${INACTIVE_DAYS} days. The rest are history, not staffing.`,
-    href: base ? `${base}/commits` : "#",
-  });
+  if (summary.active != null) {
+    reads.push({
+      key: "active",
+      label: "Active this quarter",
+      value: summary.active.toLocaleString(),
+      unit: `of ${total.toLocaleString()}`,
+      why: `Committed in the last ${INACTIVE_DAYS} days. The rest are history, not staffing.`,
+      href: base ? `${base}/commits` : "#",
+    });
+  }
   if (summary.deadLines > 0) {
     reads.push({
       key: "dead",

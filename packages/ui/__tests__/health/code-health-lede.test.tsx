@@ -76,9 +76,9 @@ describe("CodeHealthLede — the two readings of one figure", () => {
 
   it("says what it excluded, and that the findings now add up", () => {
     render(<CodeHealthLede summary={summary({ counts: "code_shape" })} />);
-    expect(
-      screen.getByText(/Change history excluded\. This scores the code alone/),
-    ).toBeTruthy();
+    expect(screen.getByText("Change history excluded.")).toBeTruthy();
+    // The rest of the caption waits behind Breakdown.
+    expect(screen.getByText(/This scores the code alone/).closest("details")).toBeTruthy();
     expect(screen.queryByText(/comes from change history/)).toBeNull();
   });
 
@@ -103,5 +103,90 @@ describe("CodeHealthLede — the two readings of one figure", () => {
   it("owns up to files it cannot score on this basis", () => {
     render(<CodeHealthLede summary={summary({ counts: "code_shape", unscored_files: 287 })} />);
     expect(screen.getByText(/287 files are not scored here/)).toBeTruthy();
+  });
+});
+
+describe("CodeHealthLede — the figure and its band agree at the edge", () => {
+  it("does not print 7.0 beside Fair for a score just under Good", () => {
+    const { container } = render(<CodeHealthLede summary={summary({ average_health: 6.98 })} />);
+    expect(screen.getByText("6.9")).toBeTruthy();
+    expect(screen.getByText("Fair")).toBeTruthy();
+    expect(container.textContent).not.toContain("7.0");
+  });
+});
+
+describe("CodeHealthLede: what the first screen shows", () => {
+  const accuracy = { hits: 17, k: 20, precision: 0.85, base_rate: 0.1, lift: 8.61, window_days: 180 };
+
+  it("shows the validation line with its facts, outside any disclosure", () => {
+    render(<CodeHealthLede summary={summary()} accuracy={accuracy as never} />);
+    const line = screen.getByText(/Ranked against real bug-fix history/);
+    expect(line.textContent).toContain("17 of the 20 files");
+    expect(line.textContent).toContain("85% against a 10% base rate");
+    expect(line.textContent).toContain("8.61× better");
+    expect(line.closest("details")).toBeNull();
+  });
+
+  it("keeps the band breakdown and the history share behind a closed Breakdown", () => {
+    const distribution = {
+      total_files: 2,
+      total_nloc: 100,
+      bands: {
+        at_risk: { pct: 50, files: 1, nloc: 50 },
+        excellent: { pct: 50, files: 1, nloc: 50 },
+      },
+    };
+    render(<CodeHealthLede summary={summary()} distribution={distribution as never} />);
+    const toggle = screen.getByText("Breakdown");
+    const details = toggle.closest("details")!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("50% at risk");
+    expect(details.textContent).toContain("comes from change history");
+  });
+
+  it("puts the method, performance and test-file notes behind How it is scored", () => {
+    render(
+      <CodeHealthLede
+        summary={summary({ worst_test_path: "tests/test_big.py", worst_test_score: 2.4 })}
+      />,
+    );
+    const details = screen.getByText("How it is scored").closest("details")!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("churn and ownership");
+    expect(details.textContent).toContain("Static performance is scored separately");
+    expect(details.textContent).toContain("Test files are ranked apart.");
+  });
+});
+
+describe("CodeHealthLede: the worst test file", () => {
+  it("names the lowest-scoring test file apart from production", () => {
+    const { container } = render(
+      <CodeHealthLede
+        summary={summary({ worst_test_path: "tests/test_big.py", worst_test_score: 2.4 })}
+      />,
+    );
+    expect(screen.getByText("tests/test_big.py")).toBeInTheDocument();
+    expect(container.textContent).toContain("Test files are ranked apart.");
+    expect(container.textContent).toContain("at 2.4.");
+  });
+
+  it("says nothing about tests when there are none, or the server predates it", () => {
+    const { container } = render(<CodeHealthLede summary={summary({ worst_test_path: null })} />);
+    expect(container.textContent).not.toContain("Test files are ranked apart");
+  });
+});
+
+describe("CodeHealthLede secondary, when Fix first leads the page", () => {
+  it("keeps one line with the score and its band, and the ribbon behind More", () => {
+    const { container } = render(<CodeHealthLede summary={summary()} variant="secondary" />);
+    const summaryLine = container.querySelector("summary")!;
+    expect(summaryLine.textContent).toContain("7.0");
+    expect(summaryLine.textContent).toContain("out of 10 across 3,787 files");
+    expect(summaryLine.textContent).toContain("More");
+    // The other figures still exist, inside the closed disclosure.
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("Maintainability");
+    expect(details.textContent).toContain("Hotspot health");
   });
 });

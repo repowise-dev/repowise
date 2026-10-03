@@ -12,6 +12,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from tree_sitter import Node
+
+from .extractors.cobol import (
+    cobol_symbol_end_line,
+    normalize_cobol_call_target,
+    normalize_cobol_symbol_name,
+)
 from .extractors.visibility import (
     csharp_visibility,
     dart_visibility,
@@ -28,6 +35,10 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+
+
+def _identity_name(name: str, _node_type: str) -> str:
+    return name
 
 
 @dataclass
@@ -65,11 +76,23 @@ class LanguageConfig:
     # what tells them apart downstream (see ``Symbol.is_declaration``).
     declaration_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Optional syntax-level normalization hooks. Most grammars capture a bare
+    # identifier and use the defaults. Languages whose grammar exposes a full
+    # header or quoted static target can normalize without branching in the
+    # parser.
+    symbol_name_fn: Callable[[str, str], str] = _identity_name
+    call_target_name_fn: Callable[[str, str], str] = _identity_name
+    symbol_end_line_fn: Callable[[Node, int], int] | None = None
+
     # Call-site node types that name a symbol without invoking it. Rust's
     # ``foo!(..)`` expands a ``macro_rules! foo``; which symbol the name means
     # is the same question a call asks, so these still run the call tiers, but
     # the edge they produce is ``references`` rather than ``calls``.
     reference_call_node_types: frozenset[str] = field(default_factory=frozenset)
+
+    # Children of a declaration that hold its keyword modifiers (C#
+    # ``modifier``, Kotlin ``modifiers``), read into ``Symbol.modifiers``.
+    modifier_node_types: frozenset[str] = field(default_factory=frozenset)
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
@@ -98,16 +121,27 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "type_alias_declaration": "type_alias",
             "enum_declaration": "enum",
             "method_definition": "method",
+            # Class properties holding a function (``static create = (...) => {}``,
+            # ``handler = function () {}``). The .scm pattern gates on the value
+            # being an arrow_function / function_expression, so no plain data
+            # property (``count = 0``) ever reaches this mapping; a class member
+            # is a member, so the kind is "method".
+            "public_field_definition": "method",
             "lexical_declaration": "function",  # const foo = () => {}
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # Overload signatures (the .scm keeps method ones to class bodies).
+            "function_signature": "function",
+            "method_signature": "method",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
         visibility_fn=ts_visibility,
+        modifier_node_types=frozenset({"override_modifier"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
+        declaration_node_types=frozenset({"function_signature", "method_signature"}),
     ),
     "javascript": LanguageConfig(
         symbol_node_types={
@@ -142,6 +176,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "rust": LanguageConfig(
         symbol_node_types={
             "function_item": "function",
+            "function_signature_item": "function",
             "struct_item": "struct",
             "enum_item": "enum",
             "trait_item": "trait",
@@ -159,7 +194,17 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         export_node_types=[],
         visibility_fn=rust_visibility,
         parent_extraction="impl",
-        parent_class_types=frozenset({"impl_item", "mod_item"}),
+        # ``trait_item`` parents a trait's own defaulted methods. Without it the
+        # ancestor walk runs past the trait to the enclosing ``mod``, or off the
+        # top of the file, and the method is emitted parentless -- which also
+        # keeps its kind at ``function``, since that upgrade is gated on having
+        # a parent.
+        parent_class_types=frozenset({"impl_item", "mod_item", "trait_item"}),
+        # A bodiless ``fn foo();`` is a declaration in the same sense a C
+        # prototype is: it promises a body it does not carry. Unmarked it reads
+        # as a definition, which puts a trait's method names into the global
+        # bare-name index that call resolution consults for unqualified calls.
+        declaration_node_types=frozenset({"function_signature_item"}),
         reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(
@@ -231,6 +276,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import"],
         export_node_types=[],
         visibility_fn=kotlin_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "object_declaration"}),
     ),
@@ -269,6 +315,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["using_directive", "global_using_directive"],
         export_node_types=[],
         visibility_fn=csharp_visibility,
+        modifier_node_types=frozenset({"modifier"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {
@@ -298,6 +345,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["imports_statement"],
         export_node_types=[],
         visibility_fn=vbnet_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {
@@ -322,6 +370,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=swift_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
     ),
@@ -369,6 +418,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=scala_visibility,
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
     ),
@@ -539,6 +589,26 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # method (found by tracing _find_parent's actual implementation, not
         # guessed).
         parent_class_types=frozenset({"declType"}),
+    ),
+    "cobol": LanguageConfig(
+        symbol_node_types={
+            "program_definition": "module",
+            # PROGRAM-ID without its terminal period is recovered as ERROR;
+            # cobol.scm predicates the capture to that header only.
+            "ERROR": "module",
+            "section_header": "function",
+            "paragraph_header": "function",
+            "data_description": "variable",
+        },
+        # COPY/include resolution is intentionally outside this good-tier cut.
+        import_node_types=[],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=normalize_cobol_symbol_name,
+        call_target_name_fn=normalize_cobol_call_target,
+        symbol_end_line_fn=cobol_symbol_end_line,
     ),
     "gdscript": LanguageConfig(
         symbol_node_types={

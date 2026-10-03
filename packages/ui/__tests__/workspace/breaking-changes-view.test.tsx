@@ -70,7 +70,7 @@ describe("BreakingChangesView", () => {
     noTimestamp.unmount();
 
     render(<BreakingChangesView report={report([])} />);
-    expect(screen.getByText(/no breaking changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/no contract compatibility findings/i)).toBeInTheDocument();
   });
 
   it("says it is still checking while loading", () => {
@@ -81,6 +81,27 @@ describe("BreakingChangesView", () => {
   it("summarises the counts and the impacted repos", () => {
     render(<BreakingChangesView report={report([change()])} />);
     expect(screen.getByText(/1 breaking, 0 warnings across 1 repo/i)).toBeInTheDocument();
+  });
+
+  it("renders comparison fidelity and endpoint exposure without failure claims", () => {
+    render(
+      <BreakingChangesView
+        report={
+          report([
+            change({
+              severity: "warning",
+              kind: "schema_comparison_uncertain",
+              side: "response",
+              comparison_source: "openapi",
+              comparison_key: "openapi-wire-v1",
+            }),
+          ])
+        }
+      />,
+    );
+    expect(screen.getByText("response · openapi · openapi-wire-v1")).toBeInTheDocument();
+    expect(screen.getByText("1 endpoint-exposed consumer")).toBeInTheDocument();
+    expect(screen.queryByText(/endangers/i)).not.toBeInTheDocument();
   });
 
   it("links the provider symbol and the consumer symbol when hrefs are supplied", () => {

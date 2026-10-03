@@ -24,6 +24,8 @@ This module is a leaf: it reads the language registry and nothing else.
 
 from __future__ import annotations
 
+import re
+
 from .language_data import get_builtin_types
 
 # A qualifier separator in any language we parse. PHP's ``\`` is here rather
@@ -90,6 +92,41 @@ def bare_type_name(raw: str) -> str:
     for separator in _QUALIFIER_SEPARATORS:
         text = text.rsplit(separator, 1)[-1]
     return text.strip()
+
+
+def type_argument_count(raw: str) -> int:
+    """How many type arguments the named type in *raw* is given.
+
+    ``Gen<A, B<C>>`` → 2; ``Gen<A>?`` → 1; ``Outer<A>.Inner`` and ``Plain`` → 0,
+    since only arguments on the last segment belong to the type named.
+    """
+    text = raw.strip().rstrip("?").rstrip()
+    while text.endswith("[]"):
+        text = text[:-2].rstrip()
+    if not text.endswith(">"):
+        return 0
+    depth = 0
+    commas = 0
+    for char in reversed(text):
+        if char == ">":
+            depth += 1
+        elif char == "<":
+            depth -= 1
+            if depth == 0:
+                return commas + 1
+        elif char == "," and depth == 1:
+            commas += 1
+    return 0
+
+
+def type_qualifier(raw: str) -> str:
+    """Return what ``bare_type_name`` drops from the front of *raw*, or ``""``.
+
+    ``os.FileInfo`` → ``os``; ``Plain`` → ``""``.
+    """
+    text = strip_type_arguments(raw.strip())
+    head = text[: len(text) - len(bare_type_name(text))]
+    return head.rstrip("".join(_QUALIFIER_SEPARATORS))
 
 
 # C++ template heads whose ``operator->`` forwards to their argument, so
@@ -168,3 +205,31 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
     if name in get_builtin_types(language):
         return False
     return not (len(name) == 1 and name.isupper())
+
+
+# The receiver of a C# extension method, as the parameter list spells it.
+# ``this`` is legal only on an extension method's first parameter, and the
+# parser keeps no modifiers, so this is the only surviving evidence a method is
+# one. Matched against the parameter list alone, because a default value may
+# hold a parenthesised string. An array receiver is captured so it can be
+# refused: ``this Order[]`` extends the array, not the element.
+_CSHARP_EXTENSION_RECEIVER = re.compile(
+    r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
+    r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
+)
+
+
+def csharp_extension_receiver(signature: str) -> str | None:
+    """The bare type a C# extension method extends, or None if it is not one.
+
+    Shape only, in keeping with this module: whether the name could resolve is
+    the caller's policy, not this module's.
+    """
+    _, opened, params = (signature or "").partition("(")
+    match = _CSHARP_EXTENSION_RECEIVER.match(params) if opened else None
+    if match is None:
+        return None
+    raw = match.group("type")
+    if "[" in raw:
+        return None
+    return bare_type_name(raw.rstrip("?")) or None

@@ -4,10 +4,9 @@ Two strategies, for two payload shapes:
 
 * :func:`truncate_to_budget` — the staged truncator ported from
   ``tool_context/truncation.py`` (which now re-exports from here). Every stage
-  walks ``result["targets"][name]["docs"|"skeleton"|"symbols"]``, so it is
-  ``get_context``-shaped and has one caller by design. Keep/drop decisions are
-  byte-identical to the original; the additions are an optional
-  :class:`OmissionCollector` and a skeleton-stripping stage.
+  walks ``result["targets"][name]``, so it is ``get_context``-shaped and has
+  one caller by design. Each target gets a fair share of the budget and
+  degrades inside it; a whole target is dropped only as a last resort.
 * :func:`fit_to_budget` — sheds whole named blocks in a tool-declared order,
   for the tools whose payload is a bag of independent blocks.
 
@@ -35,8 +34,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -164,6 +165,44 @@ def over_budget(
     return response_chars(response) > budget - headroom
 
 
+#: A requested collection keeps whichever of these is larger.
+REQUESTED_MIN_ROWS = 3
+REQUESTED_MIN_SHARE = 0.25
+
+
+def entitled_floor(total: int) -> int:
+    """Rows a caller-requested collection keeps before anything else sheds."""
+    if total <= REQUESTED_MIN_ROWS:
+        return total
+    return min(total, max(REQUESTED_MIN_ROWS, math.ceil(total * REQUESTED_MIN_SHARE)))
+
+
+def shed_stem(key: str) -> str:
+    """The response path a shed-order key names, with the ``[]`` form removed."""
+    return key[:-2] if key.endswith("[]") else key
+
+
+def _rows_to_keep(rows: Any, requested: bool) -> int:
+    """Tail-shed floor for one collection: its entitlement, or one row."""
+    if not requested or not isinstance(rows, (list, dict)):
+        return 1
+    return entitled_floor(len(rows))
+
+
+@dataclass(frozen=True)
+class _ShedLimits:
+    """The knobs every key in one :func:`fit_to_budget` pass shares."""
+
+    headroom: int
+    char_budget: int | None
+    record_counts: bool
+
+    def exceeded(self, response: dict[str, Any]) -> bool:
+        return over_budget(
+            response, headroom=self.headroom, char_budget=self.char_budget
+        )
+
+
 def fit_to_budget(
     response: dict[str, Any],
     order: Sequence[str],
@@ -172,6 +211,7 @@ def fit_to_budget(
     headroom: int = FIT_HEADROOM_CHARS,
     char_budget: int | None = None,
     record_counts: bool = False,
+    entitled: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Shed whole blocks named by *order* until *response* fits the budget.
 
@@ -181,12 +221,18 @@ def fit_to_budget(
     first. Shedding stops the moment the response fits, so an under-budget
     response — the common case — is untouched.
 
+    *entitled* names stems the caller asked for; their ``[]`` passes stop at
+    :func:`entitled_floor` instead of one row. The order still decides when a
+    block is reached, and the ceiling still wins.
+
     Drops go to *collector* as expandable ``[repowise#<ref>]`` markers and set
     ``truncated``. Call before the caller's :meth:`OmissionCollector.attach`,
     which is what ``headroom`` reserves for.
     """
+    limits = _ShedLimits(headroom, char_budget, record_counts)
+    requested = entitled or frozenset()
     for key in order:
-        if not over_budget(response, headroom=headroom, char_budget=char_budget):
+        if not limits.exceeded(response):
             break
         container, _, leaf = key.rpartition(".")
         target: Any = response
@@ -195,16 +241,8 @@ def fit_to_budget(
         if not isinstance(target, dict):
             continue
         if leaf.endswith("[]"):
-            _shed_tail(
-                response,
-                target,
-                leaf[:-2],
-                key[:-2],
-                collector,
-                headroom,
-                char_budget,
-                record_counts,
-            )
+            keep = _rows_to_keep(target.get(leaf[:-2]), shed_stem(key) in requested)
+            _shed_tail(response, target, leaf[:-2], key[:-2], collector, limits, keep)
         elif target.get(leaf):
             value = target.pop(leaf)
             collector.add(key, value)
@@ -220,19 +258,16 @@ def _shed_tail(
     leaf: str,
     label: str,
     collector: OmissionCollector,
-    headroom: int,
-    char_budget: int | None,
-    record_counts: bool,
+    limits: _ShedLimits,
+    keep: int = 1,
 ) -> None:
-    """Drop ranked rows from the tail of ``container[leaf]`` until it fits."""
+    """Drop ranked rows from the tail of ``container[leaf]`` down to *keep*."""
     rows = container.get(leaf)
     if not isinstance(rows, (list, dict)):
         return
     total = len(rows)
     dropped: list[Any] = []
-    while len(rows) > 1 and over_budget(
-        response, headroom=headroom, char_budget=char_budget
-    ):
+    while len(rows) > keep and limits.exceeded(response):
         if isinstance(rows, list):
             dropped.append(rows.pop())
         else:
@@ -240,7 +275,7 @@ def _shed_tail(
             dropped.append({name: rows.pop(name)})
     if dropped:
         collector.add(label, list(reversed(dropped)))
-        if record_counts:
+        if limits.record_counts:
             prior_reason = container.get(f"{leaf}_reduced_reason")
             collection_total = max(
                 total, int(container.get(f"{leaf}_total") or 0)
@@ -280,21 +315,24 @@ def _record_reduction(
 
     reductions = response.setdefault("_meta", {}).setdefault("reductions", [])
 
-    def visit(node: Any, node_path: str) -> None:
+    def visit(node: Any, node_path: str, parent: dict[str, Any], name: str) -> None:
         if isinstance(node, list):
+            # An earlier tail-shed may already have trimmed this list and left
+            # the population beside it. Reporting len() here would count only
+            # what the trim left, not what the caller lost overall.
             reductions.append(
                 {
                     "field": node_path,
-                    "total": len(node),
+                    "total": max(len(node), int(parent.get(f"{name}_total") or 0)),
                     "emitted": 0,
                     "reason": "response_budget",
                 }
             )
         elif isinstance(node, dict):
-            for name, child in node.items():
-                visit(child, f"{node_path}.{name}")
+            for child_name, child in node.items():
+                visit(child, f"{node_path}.{child_name}", node, child_name)
 
-    visit(value, path)
+    visit(value, path, container, field)
 
 
 def _with_budget_reason(prior_reason: Any) -> str:
@@ -310,7 +348,12 @@ def _with_budget_reason(prior_reason: Any) -> str:
 # Heavy optional fields we can strip from a target's docs block without losing
 # its identity. Ordering matters: earlier entries are dropped first because they
 # carry the most bytes per unit of navigational value.
-HEAVY_DOC_FIELDS: tuple[str, ...] = ("content_md", "documentation", "file_summary")
+HEAVY_DOC_FIELDS: tuple[str, ...] = (
+    "content_md",
+    "digest_md",
+    "documentation",
+    "file_summary",
+)
 
 
 def symbol_priority(sym: dict[str, Any], query_terms: set[str]) -> tuple[int, int, int]:
@@ -359,6 +402,155 @@ def query_terms_for(target: str) -> set[str]:
     return {t for t in (tail, target.lower()) if t}
 
 
+#: Keys a degraded target always keeps: what it is, whether it resolved, and
+#: the did-you-mean list or ambiguity candidates that answer a miss.
+_TARGET_IDENTITY_KEYS = frozenset(
+    {
+        "target",
+        "type",
+        "path",
+        "error",
+        "suggestions",
+        "docs",
+        "parent_page",
+        "freshness",
+        "fix_history",
+    }
+)
+_DOCS_IDENTITY_KEYS = frozenset({"title", "summary", "symbols", "candidates"})
+
+
+def _identity_card(tgt: dict[str, Any]) -> dict[str, Any]:
+    """What :func:`_fit_target` can reduce *tgt* to at most: identity and one symbol."""
+    card = {
+        key: value
+        for key, value in tgt.items()
+        if key in _TARGET_IDENTITY_KEYS or not isinstance(value, (list, dict))
+    }
+    docs = tgt.get("docs")
+    if isinstance(docs, dict):
+        card["docs"] = {
+            key: value[:1] if key == "symbols" and isinstance(value, list) else value
+            for key, value in docs.items()
+            if key in _DOCS_IDENTITY_KEYS or not isinstance(value, (list, dict))
+        }
+    return card
+
+
+def _symbols_trimmed(tgt: dict[str, Any]) -> dict[str, Any]:
+    """*tgt* with its symbols cut to their entitled floor, for sizing only."""
+    docs = tgt.get("docs")
+    symbols = docs.get("symbols") if isinstance(docs, dict) else None
+    if not isinstance(symbols, list):
+        return tgt
+    floor = entitled_floor(max(len(symbols), int(docs.get("symbols_total") or 0)))
+    return {**tgt, "docs": {**docs, "symbols": symbols[:floor]}}
+
+
+def _fit_target(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Degrade one target toward *share* chars.
+
+    Symbols trim to their entitled floor, then optional blocks go largest
+    first, then symbols trim to one. A target that still exceeds its share
+    after that is only its identity card, and stage 3 decides.
+    """
+    docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
+    symbols = docs.get("symbols") if docs is not None else None
+    if isinstance(symbols, list) and symbols:
+        query_terms = query_terms_for(name)
+        ordered = sorted(symbols, key=lambda s: symbol_priority(s, query_terms), reverse=True)
+        # The floor is the whole list's, so a later pass cannot erode it.
+        floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
+        _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+
+    def cost() -> int:
+        return len(json.dumps(tgt, separators=(",", ":"), default=str))
+
+    # (container, key, label): the target's own blocks and those nested in docs.
+    sources = ((tgt, _TARGET_IDENTITY_KEYS, ""), (docs or {}, _DOCS_IDENTITY_KEYS, "docs."))
+    blocks = [
+        (container, key, prefix + key)
+        for container, keep, prefix in sources
+        for key, value in container.items()
+        if key not in keep and isinstance(value, (list, dict))
+    ]
+    blocks.sort(key=lambda block: len(json.dumps(block[0][block[1]], default=str)), reverse=True)
+    for container, key, label in blocks:
+        if cost() <= share:
+            return
+        value = container.pop(key)
+        if collector is not None and value:
+            collector.add(f"{name} :: {label}", value)
+        result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
+        result["truncated"] = True
+        if record_counts and isinstance(value, list):
+            # Keeps a capped list's *_total / *_emitted beside it truthful.
+            _record_reduction(result, container, f"targets.{name}.{label}", key, value, emitted=0)
+
+    if cost() > share and isinstance(symbols, list) and symbols:
+        _trim_symbols(result, name, tgt, list(docs["symbols"]), share, 1, collector, record_counts)
+        head = docs["symbols"][0]
+        docstring = head.get("docstring")
+        if cost() > share and isinstance(docstring, str) and len(docstring) > 200:
+            # One symbol alone over the share: keep it, cut its docstring.
+            if collector is not None:
+                collector.add(f"{name} :: {head.get('name')} docstring", docstring)
+            docs["symbols"][0] = {**head, "docstring": docstring[:200]}
+            result["truncated"] = True
+
+
+def _trim_symbols(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    ordered: list[dict[str, Any]],
+    share: int,
+    floor: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Keep the highest-priority symbols that fit *share*, never fewer than *floor*.
+
+    Compact JSON is additive, so the target's size with a symbol list ``S`` is
+    its size with no symbols plus each kept symbol's cost plus the commas.
+    """
+    docs = tgt["docs"]
+    costs = [len(json.dumps(s, separators=(",", ":"), default=str)) for s in ordered]
+    docs["symbols"] = []
+    base = len(json.dumps(tgt, separators=(",", ":"), default=str))
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for sym, sym_cost in zip(ordered, costs, strict=True):
+        if len(kept) < floor or base + used + sym_cost + len(kept) <= share:
+            kept.append(sym)
+            used += sym_cost
+    docs["symbols"] = kept
+    if len(kept) == len(ordered):
+        return
+    kept_ids = {id(sym) for sym in kept}
+    dropped = [sym for sym in ordered if id(sym) not in kept_ids]
+    result["dropped_symbols"].setdefault(name, []).extend(
+        sym.get("name") or "<anonymous>" for sym in dropped
+    )
+    result["truncated"] = True
+    if record_counts:
+        docs["symbols_total"] = max(len(ordered), int(docs.get("symbols_total") or 0))
+        docs["symbols_emitted"] = len(kept)
+        docs["symbols_reduced_reason"] = "response_budget"
+    if collector is not None:
+        collector.add(
+            f"{name} :: symbols dropped from response",
+            "\n".join(json.dumps(s, separators=(",", ":"), default=str) for s in dropped),
+        )
+
+
 def truncate_to_budget(
     result: dict[str, Any],
     char_budget: int | None = None,
@@ -381,23 +573,25 @@ def truncate_to_budget(
     1.5. **Strip skeleton texts**, largest first. A skeleton block can be ~2k
          tokens per target; its text is replaced in-place by an omission
          marker (when a collector is present) so it stays one call away.
-    2.   **Shrink symbol lists within each target**, keeping the highest-priority
-         symbols per ``symbol_priority``. This preserves the navigational index
-         (names, signatures, line numbers) while dropping bulk docstrings.
-    3.   **Drop whole targets** from the tail of the list. Per spec we prefer
-         keeping fewer full-fidelity targets over many stubs, so once symbols
-         can't shrink further we evict entire targets rather than gutting them.
+    2.   **Fair share per target.** Each target gets an equal share of the
+         room the envelope leaves, with a small target's slack passed on. A
+         target over its share degrades in place (see :func:`_fit_target`):
+         symbols to their entitled floor, optional blocks largest first, then
+         symbols to one. Every target the caller named stays visible.
+         When the identity cards alone cannot fit (many targets on a narrow
+         budget), whole targets are evicted first, so the survivors keep
+         their detail.
+    3.   **Drop whole targets**, largest first, as the backstop.
 
-    Adds ``truncated: bool``, ``dropped_targets: list[str]``, and
-    ``dropped_symbols: dict[target, list[name]]`` top-level fields — additive
-    only, existing callers are unaffected.
+    Adds ``truncated: bool``, ``dropped_targets: list[str]``,
+    ``dropped_symbols: dict[target, list[name]]`` and
+    ``dropped_blocks: dict[target, list[key]]`` top-level fields.
 
     With a *collector*, every dropped piece of content is also captured and
     persisted, and the response gains ``omission_marker`` + ``_meta.omitted``
     (see :class:`OmissionCollector`). ``record_counts`` adds the shared
     ``*_total`` / emitted / reason fields for final-delivery accounting. With
-    neither option, behaviour is byte-identical to the original silent-drop
-    implementation.
+    neither option, drops are silent.
 
     Edge cases:
       * Empty ``targets`` → returns unchanged with ``truncated=False``.
@@ -424,6 +618,7 @@ def truncate_to_budget(
                 "final_chars": len(json.dumps(result, separators=(",", ":"), default=str)),
                 "dropped_targets": result["dropped_targets"],
                 "dropped_symbol_counts": {k: len(v) for k, v in result["dropped_symbols"].items()},
+                "dropped_blocks": result.get("dropped_blocks", {}),
             },
         )
     else:
@@ -432,7 +627,7 @@ def truncate_to_budget(
         # "nothing happened" on every untruncated response — and every response
         # is untruncated in the common case. Absent reads the same as empty to
         # a ``.get()``, which is how both projections already test them.
-        for key in ("truncated", "dropped_targets", "dropped_symbols"):
+        for key in ("truncated", "dropped_targets", "dropped_symbols", "dropped_blocks"):
             if not result.get(key):
                 result.pop(key, None)
     return result
@@ -503,82 +698,78 @@ def _run_stages(
         if _size() <= char_budget:
             return result
 
-    # Stage 2: prioritise symbols within each target. We iterate from the
-    # largest target down so the biggest offenders shrink first.
-    def _target_cost(item: tuple[str, Any]) -> int:
-        return len(json.dumps(item[1], default=str))
+    def _cost(value: Any) -> int:
+        return len(json.dumps(value, separators=(",", ":"), default=str))
 
-    for tgt_name, tgt in sorted(targets.items(), key=_target_cost, reverse=True):
-        docs = tgt.get("docs") if isinstance(tgt, dict) else None
-        if not isinstance(docs, dict):
-            continue
-        symbols = docs.get("symbols")
-        if not isinstance(symbols, list) or not symbols:
-            continue
-        query_terms = query_terms_for(tgt_name)
-        ordered = sorted(symbols, key=lambda s: symbol_priority(s, query_terms), reverse=True)
+    # Largest first; error cards last, since they are small and say "not found".
+    def _evictable_order() -> list[str]:
+        items = list(targets.items())
+        items.sort(
+            key=lambda kv: (
+                0 if isinstance(kv[1], dict) and "error" in kv[1] else 1,
+                len(json.dumps(kv[1], default=str)),
+            ),
+            reverse=True,
+        )
+        return [k for k, _ in items]
 
-        # Per-symbol greedy fit. The cost of the whole response with a symbol
-        # list ``S`` is exactly:
-        #     base + sum(cost(s) for s in S) + max(0, len(S) - 1)
-        # where ``base`` is the response size with this target's ``symbols``
-        # emptied and ``cost(s)`` is the symbol's compact-JSON length. Both are
-        # context-independent under the compact separators we serialise with,
-        # so we precompute each symbol's cost ONCE and track a running sum
-        # instead of re-serialising the entire response per candidate symbol
-        # (the old O(targets x symbols^2) behaviour). The keep/drop decision is
-        # byte-for-byte identical to the previous ``_size()``-per-symbol loop.
-        costs = [len(json.dumps(s, separators=(",", ":"), default=str)) for s in ordered]
-        docs["symbols"] = []
-        base = _size()
-        kept: list[dict[str, Any]] = []
-        dropped: list[str] = []
-        dropped_syms: list[dict[str, Any]] = []
-        sum_kept = 0
-        for sym, cost in zip(ordered, costs, strict=True):
-            # Tentative size if we add this symbol to the current kept set:
-            # the +len(kept) term is the comma separators for kept+1 entries.
-            tentative = base + sum_kept + cost + len(kept)
-            if tentative <= char_budget:
-                kept.append(sym)
-                sum_kept += cost
-            else:
-                dropped.append(sym.get("name") or "<anonymous>")
-                dropped_syms.append(sym)
-        symbol_content_reduced = False
-        if not kept and ordered:
-            # Edge case: a single symbol is larger than the budget. Keep one
-            # (truncating its docstring) rather than returning zero symbols —
-            # the caller at least learns the target resolved.
-            head = dict(ordered[0])
-            if isinstance(head.get("docstring"), str):
-                symbol_content_reduced = len(head["docstring"]) > 200
-                head["docstring"] = head["docstring"][:200]
-            kept = [head]
-            dropped = [s.get("name") or "<anonymous>" for s in ordered[1:]]
-            # The kept head lost its docstring tail too — capture the full
-            # original alongside the genuinely dropped tail.
-            dropped_syms = list(ordered)
-        docs["symbols"] = kept
-        if dropped or symbol_content_reduced:
-            if record_counts:
-                docs["symbols_total"] = max(
-                    len(ordered), int(docs.get("symbols_total") or 0)
-                )
-                docs["symbols_emitted"] = len(kept)
-                docs["symbols_reduced_reason"] = "response_budget"
-            if dropped:
-                result["dropped_symbols"][tgt_name] = dropped
-            result["truncated"] = True
-            if collector is not None and dropped_syms:
-                collector.add(
-                    f"{tgt_name} :: symbols dropped from response",
-                    "\n".join(
-                        json.dumps(s, separators=(",", ":"), default=str) for s in dropped_syms
-                    ),
-                )
+    def _evict(name: str) -> None:
+        evicted = targets.pop(name, None)
+        if collector is not None and evicted is not None:
+            collector.add(f"dropped target {name}", evicted)
+        result["dropped_targets"].append(name)
+        result["truncated"] = True
+        if record_counts:
+            result["targets_total"] = max(
+                targets_total, int(result.get("targets_total") or 0)
+            )
+            result["targets_emitted"] = len(targets)
+            result["targets_reduced_reason"] = "response_budget"
+
+    # Stage 2a: when even the identity cards cannot all fit, some targets must
+    # go anyway. Evict until the rest fit with only their symbols trimmed, so
+    # the survivors keep their blocks instead of every target being gutted.
+    def _size_with(card: Any) -> int:
+        envelope = _size() - sum(_cost(t) for t in targets.values())
+        return envelope + sum(
+            _cost(card(t)) if isinstance(t, dict) else _cost(t) for t in targets.values()
+        )
+
+    if _size_with(_identity_card) > char_budget:
+        for name in _evictable_order():
+            if len(targets) <= 1 or _size_with(_symbols_trimmed) <= char_budget:
+                break
+            _evict(name)
         if _size() <= char_budget:
             return result
+
+    # Stage 2b: every target gets a fair share of what the envelope leaves.
+    # Water-filling, smallest first: a target under its share keeps everything
+    # and its slack passes to the rest; one over it degrades in place. Each
+    # pass sees the dropped_* bookkeeping the previous one added to the
+    # envelope; stage 3 stays the backstop if that still does not settle.
+    for _ in range(3):
+        costs = {name: _cost(tgt) for name, tgt in targets.items()}
+        room = char_budget - (_size() - sum(costs.values()))
+        by_cost = sorted(targets, key=lambda name: costs[name])
+        for index, tgt_name in enumerate(by_cost):
+            share = room // (len(by_cost) - index)
+            tgt = targets[tgt_name]
+            if costs[tgt_name] > share and isinstance(tgt, dict):
+                _fit_target(result, tgt_name, tgt, share, collector, record_counts)
+            room -= _cost(tgt)
+        if _size() <= char_budget:
+            return result
+
+    # Stage 3: drop whole targets, largest first, until we fit.
+    for name in _evictable_order():
+        if len(targets) <= 1:
+            break
+        _evict(name)
+        if _size() <= char_budget:
+            break
+
+    return result
 
     # Stage 3: drop whole targets, largest first, until we fit. Prefer to keep
     # error-only targets (they're tiny and signal "not found" to the caller).

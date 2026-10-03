@@ -59,12 +59,59 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     ``coverage_gradient``.
     """
     from .biomarkers.registry import continuous_biomarkers
+    from .governance import GOVERNANCE_BIOMARKERS
+    from .rows import field as row_field
+    from .scoring import HISTORY_CATEGORY, biomarker_category, is_advisory
 
     if not findings:
         return None
+    # An advisory finding describes; it never accuses. Leaving it eligible made
+    # it the stated "one reason" for any file whose only open finding was
+    # advisory - printed beside a total deduction of zero.
+    candidates = [
+        item for item in findings if not is_advisory(row_field(item, "biomarker_type"))
+    ]
+    if not candidates:
+        return None
+    # A history marker is measured from git, so it names a file's context, not
+    # something an edit changes. When the file also carries a code-shape
+    # finding, that one leads: the Findings list put `change_entropy` at the
+    # head of four of its top five rows and asked an agent to fix it.
+    # Governance markers share the category but are work: writing or updating
+    # a decision clears them, so they stay eligible to lead.
+    shaped = [
+        item
+        for item in candidates
+        if biomarker_category(row_field(item, "biomarker_type")) != HISTORY_CATEGORY
+        or row_field(item, "biomarker_type") in GOVERNANCE_BIOMARKERS
+    ]
+    candidates = shaped or candidates
     continuous = continuous_biomarkers()
-    discrete = [item for item in findings if item.biomarker_type not in continuous]
-    return max(discrete or findings, key=lambda item: float(item.health_impact or 0.0))
+    discrete = [
+        item for item in candidates if row_field(item, "biomarker_type") not in continuous
+    ]
+    # A total order: equal impacts are common (two biomarkers on one file can
+    # quantise to the same deduction), and a bare ``max`` let input order pick
+    # the lead, so two indexes of one tree disagreed. Severity breaks the tie
+    # first; the rest only makes it stable.
+    return min(
+        discrete or candidates,
+        key=lambda item: (
+            -float(row_field(item, "health_impact") or 0.0),
+            _severity_rank(row_field(item, "severity")),
+            str(row_field(item, "biomarker_type") or ""),
+            row_field(item, "line_start") or 0,
+            str(row_field(item, "function_name") or ""),
+        ),
+    )
+
+
+def _severity_rank(severity: Any) -> int:
+    """Position in ``SEVERITY_ORDER`` (critical first); unknown sorts last."""
+    from .aggregation import SEVERITY_ORDER
+
+    value = str(severity or "")
+    return SEVERITY_ORDER.index(value) if value in SEVERITY_ORDER else len(SEVERITY_ORDER)
 
 
 def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
@@ -76,6 +123,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     report the second as context.
     """
     # Deferred: ``scoring`` imports this module for its data classes.
+    from .rows import field as row_field
     from .scoring import HISTORY_CATEGORY, biomarker_category
 
     code_shape: list[Any] = []
@@ -83,7 +131,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     for f in findings:
         target = (
             history
-            if biomarker_category(getattr(f, "biomarker_type", "")) == HISTORY_CATEGORY
+            if biomarker_category(row_field(f, "biomarker_type", "")) == HISTORY_CATEGORY
             else code_shape
         )
         target.append(f)
@@ -91,9 +139,18 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
 
 
 def primary_biomarker_by_file(findings: Iterable[Any]) -> dict[str, str]:
-    """Each file's dominant cause, keyed by path. See :func:`primary_finding`."""
+    """Each file's dominant cause, keyed by path. See :func:`primary_finding`.
+
+    A type the finding registry withholds never leads: the refactoring surfaces
+    that read this would otherwise name a finding no other surface shows.
+    """
+    from ..finding_registry import excluded_types
+
+    withheld = excluded_types()
     by_file: dict[str, list[Any]] = {}
     for finding in findings:
+        if finding.biomarker_type in withheld:
+            continue
         by_file.setdefault(finding.file_path, []).append(finding)
     leads = {path: primary_finding(items) for path, items in by_file.items()}
     return {path: lead.biomarker_type for path, lead in leads.items() if lead is not None}
@@ -104,9 +161,12 @@ class HealthFileMetricData:
     """Per-file aggregate. Persisted as a ``HealthFileMetric`` row."""
 
     file_path: str
-    score: float
-    max_ccn: int
-    max_nesting: int
+    # ``score``, ``max_ccn`` and ``max_nesting`` are ``None`` for a file whose
+    # language health has no dialect for: nothing walked it, so there is no
+    # measurement to store (``has_health_dialect``).
+    score: float | None
+    max_ccn: int | None
+    max_nesting: int | None
     nloc: int
     has_test_file: bool
     module: str | None = None
@@ -131,6 +191,10 @@ class HealthFileMetricData:
     # path classifier and carried here so every surface that narrows to
     # production reads a column instead of re-deriving the answer.
     is_test: bool = False
+    # Where the file's code comes from: ``production``, ``test``, ``vendored``,
+    # ``docs_example``, ``generated``, ``tooling`` or ``build``
+    # (:func:`repowise.core.code_origin.code_origin`). ``None`` when unknown.
+    code_origin: str | None = None
 
 
 @dataclass
@@ -144,6 +208,10 @@ class HealthReport:
     # Per-function blame rollup rows (``git_function_blame``), derived from the
     # FULL-tier blame index. Empty on ESSENTIAL tier / when blame is absent.
     function_blame_rows: list[dict] = field(default_factory=list)
+    # The repo-wide function-mod p80 this run computed over every walked
+    # function. Set only when the run actually saw the whole repo, so an
+    # incremental run never offers its changed-files subset for storage.
+    repo_function_mod_p80: int | None = None
     # Deterministic refactoring suggestions (``RefactoringSuggestion``), one
     # per detected opportunity. Produced by the refactoring layer in the same
     # per-file pass that produces findings; empty when the layer is disabled
@@ -156,9 +224,9 @@ class HealthReport:
     # to the ``coverage_files`` table. Empty when no coverage was ingested.
     coverage_files: list[Any] = field(default_factory=list)
     coverage_format: str | None = None
-    # True when the ingested coverage report mapped fewer than half its files
-    # to the repo tree (#1746); carried so the persister can stamp the rows.
-    coverage_mapping_partial: bool = False
+    # How the ingested report mapped to the repo tree (``CoverageProvenance``:
+    # formats, path counts, partial mapping #1746), for the persister to record.
+    coverage_provenance: Any = None
     # Incremental writers replace all dimensions only for ``authoritative_paths``.
     # ``performance_authoritative_paths`` may be wider: the bounded execution
     # closure whose performance rows/plans were recomputed for full parity.

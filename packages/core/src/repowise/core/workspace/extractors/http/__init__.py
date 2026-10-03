@@ -5,7 +5,10 @@ calls (consumers). Each framework / client library is an independent *dialect*
 module registered in :data:`PROVIDER_DIALECTS` / :data:`CONSUMER_DIALECTS`; the
 :class:`HttpExtractor` orchestrator owns only the file walk and dispatch. Adding
 a framework means dropping one dialect module and appending it to a registry —
-no orchestrator edits.
+no orchestrator edits. HTTP keeps its own orchestrator rather than the shared
+:class:`..dialect.DialectExtractor` because it runs two passes the others do
+not: router mounts collected across files, and the index-backed routes and
+client calls.
 """
 
 from __future__ import annotations
@@ -13,10 +16,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
+from ..dialect import ContractDialect, union_extensions
 from ..langs import PYTHON
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
-from .dialect import HttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
@@ -30,6 +33,7 @@ from .kotlin_clients import KotlinClientsDialect
 from .laravel import LaravelDialect
 from .micronaut import MicronautDialect
 from .mounts import merge_mount_maps
+from .nestjs import NestDialect
 from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
@@ -50,8 +54,9 @@ if TYPE_CHECKING:
     from ..base import SourceFile
 
 # Route-declaration recognisers (one framework each).
-PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
+PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     ExpressDialect(),
+    NestDialect(),
     FastApiDialect(),
     FlaskDialect(),
     SpringDialect(),
@@ -67,7 +72,7 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
 )
 
 # HTTP-client call recognisers (one client/language each).
-CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
+CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     JsClientsDialect(),
     PythonClientsDialect(),
     CSharpHttpDialect(),
@@ -93,25 +98,16 @@ _INDEX_BACKED_DIALECTS = frozenset({"fastapi"})
 _INDEX_BACKED_CONSUMER_DIALECTS = frozenset({"js-clients"})
 
 
-def _union_extensions(dialects: tuple[HttpDialect, ...]) -> frozenset[str]:
-    out: set[str] = set()
-    for d in dialects:
-        out |= d.extensions
-    return frozenset(out)
-
-
 class HttpExtractor:
     """Extract HTTP route contracts from source files via registered dialects."""
 
-    provider_dialects: tuple[HttpDialect, ...] = PROVIDER_DIALECTS
-    consumer_dialects: tuple[HttpDialect, ...] = CONSUMER_DIALECTS
+    provider_dialects: tuple[ContractDialect, ...] = PROVIDER_DIALECTS
+    consumer_dialects: tuple[ContractDialect, ...] = CONSUMER_DIALECTS
 
     @classmethod
     def source_extensions(cls) -> frozenset[str]:
         """Every extension this extractor's dialects claim."""
-        return _union_extensions(cls.provider_dialects) | _union_extensions(
-            cls.consumer_dialects
-        )
+        return union_extensions(cls.provider_dialects + cls.consumer_dialects)
 
     def extract(
         self,
@@ -143,7 +139,7 @@ class HttpExtractor:
         these contracts states its own denominator.
         """
         scanned = select_files(repo_path, self.source_extensions(), exclude, files)
-        mounts = self._collect_mounts(scanned)
+        mounts = self._collect_mounts(scanned, repo_alias)
 
         from ..from_index import (
             CONSUMER_INDEX_SUFFIXES,
@@ -210,19 +206,26 @@ class HttpExtractor:
                 contracts.extend(found)
         return contracts
 
-    def _collect_mounts(self, files: list[tuple[str, str, str]]) -> dict[str, str]:
+    def _collect_mounts(self, files: list[SourceFile], repo_alias: str) -> dict[str, str]:
         """Build the unambiguous repo-wide ``router-var -> mount-prefix`` map.
 
-        Each provider dialect may expose ``collect_mounts(content)``; results are
-        merged across every file, dropping any router name mounted at conflicting
-        prefixes (see :func:`merge_mount_maps`).
+        Any dialect may expose ``collect_mounts(ctx)``: a router mount, where
+        an app serves its routes, or a client instance another file imports.
+        Results are merged across every file, dropping any key two files
+        disagree on (see :func:`merge_mount_maps`).
         """
+        collectors = [
+            d
+            for d in self.provider_dialects + self.consumer_dialects
+            if hasattr(d, "collect_mounts")
+        ]
         per_file: list[dict[str, str]] = []
-        for _rel, suffix, content in files:
-            for dialect in self.provider_dialects:
-                collect = getattr(dialect, "collect_mounts", None)
-                if collect is not None and suffix in dialect.extensions:
-                    found = collect(content)
+        for rel_path, suffix, content in files:
+            ctx: ScanContext | None = None
+            for dialect in collectors:
+                if suffix in dialect.extensions:
+                    ctx = ctx or ScanContext(repo_alias, rel_path, suffix, content)
+                    found = dialect.collect_mounts(ctx)
                     if found:
                         per_file.append(found)
         return merge_mount_maps(per_file)

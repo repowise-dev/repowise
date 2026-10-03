@@ -560,8 +560,13 @@ def annotate_response_evidence(
     for context in (result.get("target_context") or {}).values():
         if not isinstance(context, dict):
             continue
-        for row in context.get("governing_decisions") or []:
-            if isinstance(row, dict):
+        # Both authority lanes. A candidate is the row a reader is most likely
+        # to want the provenance of, because deciding whether to accept it is
+        # the whole reason it is on the page.
+        for lane in ("governing_decisions", "candidate_decisions"):
+            for row in context.get(lane) or []:
+                if not isinstance(row, dict):
+                    continue
                 candidates = records_by_title.get(str(row.get("title") or ""), [])
                 if len(candidates) == 1:
                     row["id"] = candidates[0].id

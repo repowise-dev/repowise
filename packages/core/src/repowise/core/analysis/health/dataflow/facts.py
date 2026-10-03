@@ -395,3 +395,9 @@ class FileDataflowCache:
             fd = FileDataflow(abs_path, language, read_source=self._read_source)
             self._by_path[abs_path] = fd
         return fd
+
+    def release(self, abs_path: str) -> None:
+        """Drop a file's entry (its source, tree and analyses) once no later
+        consumer in the pass will ask for it, so a repository-wide pass holds
+        one file's parse at a time instead of every file it touched."""
+        self._by_path.pop(abs_path, None)

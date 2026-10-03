@@ -218,3 +218,40 @@ def test_is_workspace_property(fake_workspace, chdir):
     assert resolve_command_target().is_workspace is True
     chdir(fake_workspace / "backend")
     assert resolve_command_target().is_workspace is False
+
+
+# ---------------------------------------------------------------------------
+# single_repo_path — the narrowing every read-only command needs
+# ---------------------------------------------------------------------------
+
+
+def test_single_repo_path_honours_repo_alias(fake_workspace, chdir):
+    """``--repo`` resolves to workspace mode with ``repo_path`` left None, so a
+    command reading ``repo_path`` directly refuses every ``--repo`` call it
+    advertises. That is the bug this method exists to stop repeating."""
+    chdir(fake_workspace)
+    target = resolve_command_target(repo_alias="frontend")
+
+    assert target.repo_path is None
+    assert target.single_repo_path() == fake_workspace / "frontend"
+
+
+def test_single_repo_path_falls_back_to_the_primary(fake_workspace, chdir):
+    chdir(fake_workspace)
+    assert resolve_command_target().single_repo_path() == fake_workspace / "backend"
+
+
+def test_single_repo_path_passes_a_single_repo_through(fake_workspace, chdir):
+    chdir(fake_workspace / "backend")
+    target = resolve_command_target()
+
+    assert target.single_repo_path() == target.repo_path
+
+
+def test_single_repo_path_refuses_an_unknown_alias(fake_workspace, chdir):
+    chdir(fake_workspace)
+    target = resolve_command_target()
+    object.__setattr__(target, "repo_filter", "nope")
+
+    with pytest.raises(click.ClickException):
+        target.single_repo_path()

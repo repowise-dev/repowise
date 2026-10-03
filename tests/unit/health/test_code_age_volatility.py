@@ -34,7 +34,7 @@ def _ctx(fc: FunctionComplexity, blame: BlameIndex | None) -> FileContext:
         nloc=10,
         has_test_file=False,
         module=None,
-        function_metrics={fc.name: fc},
+        all_functions=(fc,),
         blame_index=blame,
     )
 

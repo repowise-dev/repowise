@@ -199,7 +199,8 @@ def test_carries_the_break_attributed_to_that_file(tmp_path: Path):
     assert block["consumer_repos"] == ["frontend"]
     assert block["summary"] == (
         "0 consumer link(s) in 1 other repo(s) touch the files this change edits"
-        "; 1 of the changed contracts broke them."
+        "; 1 provider incompatibility finding(s) and 0 comparison warning(s) "
+        "have endpoint-exposed consumers."
     )
 
 
@@ -294,7 +295,7 @@ def test_breaking_list_is_capped_and_says_by_how_much(tmp_path: Path):
     block = _block(_enricher(tmp_path, [], report), [PROVIDER_FILE])
     assert len(block["breaking_changes"]) == _CROSS_REPO_BREAKING_LIMIT
     assert block["breaking_changes_truncated"] == 2
-    assert f"{over} of the changed contracts broke them" in block["summary"]
+    assert f"{over} provider incompatibility finding(s)" in block["summary"]
 
 
 def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):

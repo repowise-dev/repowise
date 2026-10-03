@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 // Value imports must come from the package root, not the `/health` subpath:
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
-import { bandForScore } from "@repowise-dev/types";
+import { bandForScore, formatScore } from "@repowise-dev/types";
 import type { ChurnComplexityPoint } from "@repowise-dev/types/health";
 import { HEALTH_BAND_FILL } from "./tokens";
 
@@ -148,7 +148,7 @@ export function ChurnComplexityQuadrant({
                 onMouseLeave={() => setHovered(null)}
                 onClick={onSelect ? () => onSelect(p) : undefined}
               >
-                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${Math.round(p.churn_percentile)}th pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${p.score.toFixed(1)}`}</title>
+                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${Math.round(p.churn_percentile)}th pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${formatScore(p.score)}`}</title>
               </circle>
             );
           })}
@@ -157,7 +157,7 @@ export function ChurnComplexityQuadrant({
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs shadow-md">
             <span className="font-mono text-[var(--color-text-primary)]">{hovered.file_path}</span>
             <span className="ml-2 text-[var(--color-text-tertiary)]">
-              {hovered.commit_count_90d} commits · CCN {hovered.max_ccn} · {hovered.score.toFixed(1)}
+              {hovered.commit_count_90d} commits · CCN {hovered.max_ccn} · {formatScore(hovered.score)}
             </span>
           </div>
         ) : null}

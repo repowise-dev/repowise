@@ -124,6 +124,58 @@ describe("useChat lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    ["an errored read", { error: "no git metadata available" }, "error"],
+    ["a good read", { targets: { "a.py": {} } }, "done"],
+  ] as const)("marks %s on the tool call", async (_label, data, expected) => {
+    // The server reports an unservable read as an `error` key. Before this,
+    // tool_result set "done" unconditionally, so a failed read rendered
+    // identically to a good one and the answer above it looked evidence-backed.
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    mocks.postChatMessage.mockImplementationOnce(() =>
+      Promise.resolve(new Response(stream)),
+    );
+    const { result } = renderHook(() => useChat("r1"));
+
+    act(() => {
+      void result.current.sendMessage("What is risky here?");
+    });
+    await act(async () => {
+      streamController.enqueue(
+        new TextEncoder().encode(
+          [
+            `data: ${JSON.stringify({
+              type: "tool_start",
+              tool_id: "t1",
+              tool_name: "get_risk",
+              input: {},
+            })}
+`,
+            `data: ${JSON.stringify({
+              type: "tool_result",
+              tool_id: "t1",
+              tool_name: "get_risk",
+              summary: "Risk assessment",
+              artifact: { type: "risk_report", data },
+            })}
+`,
+          ].join(""),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages.at(-1)?.toolCalls?.[0]?.status).toBe(expected);
+
+    act(() => result.current.cancel());
+  });
+
   it.each(["resolve", "reject"] as const)(
     "ignores a late conversation %s from the previous repository",
     async (outcome) => {
@@ -282,6 +334,46 @@ describe("useChat grounding and truncation events", () => {
     expect(step?.artifact?.id).toBe("art-1");
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.error).toBeNull();
+  });
+
+  it("carries the turn's next steps onto the answer", async () => {
+    const followUps = [
+      { text: "Which decisions govern a.py?", source: "followup", toolHint: "get_why" },
+    ];
+    const push = streamed([
+      { type: "suggestions", suggestions: followUps },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("Is a.py risky?");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.followUps).toEqual(followUps);
+  });
+
+  it("drops the last turn's next steps when a new conversation starts", async () => {
+    const push = streamed([
+      {
+        type: "suggestions",
+        suggestions: [{ text: "Which decisions govern a.py?", source: "followup" }],
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("Is a.py risky?");
+      await push();
+      await sending;
+    });
+    expect(result.current.messages.at(-1)?.followUps).toHaveLength(1);
+
+    act(() => result.current.reset());
+    expect(result.current.messages).toEqual([]);
   });
 
   it("flags the answer when the server reports the step ceiling", async () => {

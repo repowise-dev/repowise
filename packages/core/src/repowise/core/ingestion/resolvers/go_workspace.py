@@ -135,7 +135,7 @@ def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     if ctx.repo_path is None:
         return ""
     # ``getattr``: the call resolver builds this index from a stand-in
-    # context with no source map (``call_resolver._Ctx``).
+    # context with no source map (``call_language_strategies._Ctx``).
     source_map = getattr(ctx, "source_map", None)
     return source_text(rel_path, ctx.repo_path / rel_path, source_map) or ""
 

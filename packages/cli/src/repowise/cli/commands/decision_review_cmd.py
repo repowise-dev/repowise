@@ -11,10 +11,11 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console, get_db_url_for_repo, run_async
-from repowise.cli.output import emit_json, emit_refusal, format_option
+from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 
 __all__ = [
     "candidates_command",
+    "dedupe_command",
     "export_command",
     "import_command",
     "merge_command",
@@ -244,6 +245,116 @@ def merge_command(decision_id: str, into_id: str, path: str | None, fmt: str) ->
         f"[green]Candidate {result['id'][:8]} merged into "
         f"{result['merged_into'][:8]}[/green]  [dim](the old id still resolves)[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# decision dedupe
+# ---------------------------------------------------------------------------
+
+
+@click.command("dedupe")
+@click.argument("path", required=False, default=None)
+@click.option("--apply", "apply_", is_flag=True, default=False, help="Write the plan.")
+@click.option(
+    "--tau",
+    default=None,
+    # Floored well below the 0.83 default but not at zero: this command deletes
+    # what it groups, and a threshold near zero groups the whole corpus.
+    type=click.FloatRange(0.5, 1.0),
+    help="Cosine threshold to fold at  [default: 0.83]",
+)
+@click.option(
+    "--limit",
+    default=10,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Clusters to list in the report.",
+)
+@format_option()
+def dedupe_command(
+    path: str | None, apply_: bool, tau: float | None, limit: int, fmt: str
+) -> None:
+    """Fold candidates that duplicate another candidate into one record.
+
+    Dry run by default. Folds only into a record the duplicate is itself
+    measured against, so a chain of near-neighbours is never collapsed into
+    one decision. Evidence and governed files move to the surviving record,
+    and every folded id keeps resolving.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
+    from repowise.cli.providers.vector_store import build_vector_store
+    from repowise.core.analysis.decisions.semantic_match import DEFAULT_DEDUP_TAU
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = _resolve_decision_repo(path, fmt)
+    threshold = DEFAULT_DEDUP_TAU if tau is None else tau
+
+    embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
+    # Test vectors are hashes, so they would group decisions that have nothing
+    # to do with each other, and this command deletes what it groups.
+    if isinstance(embedder, MockEmbedder):
+        emit_refusal(
+            "no_real_embedder",
+            "Decisions can only be compared with a real embedder, not test vectors.",
+            fmt,
+            remedy="Set an embedder key and run 'repowise reindex'.",
+        )
+    vector_store = build_vector_store(repo_path, embedder)
+    if vector_store is None:
+        emit_refusal(
+            "no_vector_store",
+            "This repo has no vector store to compare decisions with.",
+            fmt,
+            remedy="Set an embedder key and run 'repowise reindex'.",
+        )
+
+    async def _run():
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence.decision_dedupe import (
+            apply_dedupe,
+            plan_dedupe,
+            render_plan,
+        )
+
+        engine, sf = await _open(repo_path)
+        try:
+            async with get_session(sf) as session:
+                repo_id = await _repository_id(session, repo_path)
+                plan = await plan_dedupe(
+                    session, repo_id, vector_store=vector_store, tau=threshold
+                )
+                if apply_:
+                    try:
+                        plan = await apply_dedupe(
+                            session, repo_id, vector_store=vector_store, plan=plan
+                        )
+                    except Exception:
+                        # A fold that dies after its vectors are dropped leaves
+                        # records the matcher can no longer see; reindex is what
+                        # puts them back, and nothing else says so.
+                        notice_console(fmt).print(
+                            "[yellow]The sweep failed partway. No records were "
+                            "folded, but run [cyan]repowise reindex[/cyan] to "
+                            "restore any decision vectors it had removed.[/yellow]"
+                        )
+                        raise
+                return plan, render_plan(plan, limit=limit)
+        finally:
+            await engine.dispose()
+            await vector_store.close()
+
+    plan, report = run_async(_run())
+    if fmt == "json":
+        payload = plan.as_dict()
+        payload["applied"] = apply_
+        emit_json(payload)
+        return
+    if apply_ and not plan.degraded:
+        report = report.replace("(dry run)", "(applied)")
+    console.print(report)
+    if not apply_ and plan.clusters:
+        console.print("\n[dim]Nothing was written. Re-run with --apply.[/dim]")
 
 
 @click.command("split")

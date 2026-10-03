@@ -7,39 +7,35 @@
 ; Symbols
 ; ---------------------------------------------------------------------------
 
+; One pattern per declaration, modifiers optional: with a second pattern
+; that captured them, the bare one matched first and a class's annotations
+; (``@Component``, ``@State``) never reached its symbol.
 (class_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(class_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (interface_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(interface_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (enum_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 ; Java 16+ records: record Point(double x, double y) {}
 (record_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
-(record_declaration
-  (modifiers) @symbol.modifiers
-  name: (identifier) @symbol.name
-) @symbol.def
-
+; One pattern, modifiers optional: two overlapping patterns kept whichever
+; matched first, which dropped either the modifiers or the parameters that
+; name an overload.
 (method_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
@@ -47,12 +43,6 @@
 (constructor_declaration
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
-) @symbol.def
-
-; Public modifier capture
-(method_declaration
-  (modifiers) @symbol.modifiers
-  name: (identifier) @symbol.name
 ) @symbol.def
 
 ; ---------------------------------------------------------------------------
@@ -109,24 +99,10 @@
 ; bare name through the flat same-file index instead of against the caller's own
 ; class.
 ;
-; ``super`` is deliberately NOT in this alternation, and the reason is narrower
-; than "super is unsafe". Capturing any receiver makes the bare twin
-; member-shaped, which suppresses ``_enclosing_class_method``'s recursion
-; refusal — the guard that emits no edge when the flat index hands a method its
-; own name. The call then falls through to the same-file tier, and THAT is only
-; wrong when the file declares the target name on MORE THAN ONE class: the flat
-; index is last-wins, so it answers with a sibling's method.
-;
-; So the hazard is a property of the file, not of the keyword, and ``this`` is
-; not immune to it — it is merely far less likely to sit in such a file.
-; Measured on caffeine: ``super`` costs 2 wrong edges (``DelegationBenchmark``
-; declares ``get`` on both ``InheritMap`` and ``DelegateMap``), while all 3
-; self-recursive ``this.add()`` sites are safe because ``IntegerSum`` is the only
-; class in its file declaring ``add`` and the ``callee != caller`` guard then
-; refuses. ``super`` is excluded because its population sits in override-heavy
-; files where sibling classes share names; that costs recall only, which is the
-; right direction to err in. If a future session adds ``super``, the fix it
-; needs first is a same-file index keyed by class, not a wider capture.
+; ``super`` stays out: ``super.m()`` arrives bare, where the caller's own class
+; answers it and the recursion refusal drops an override calling itself. No
+; member strategy answers a ``super`` receiver for Java, so capturing one would
+; only move the call onto its bare-name fallback, which skips the caller's class.
 (method_invocation
   object: (this) @call.receiver
   name: (identifier) @call.target
@@ -177,7 +153,7 @@
 ; type of a factory, the element type of ``new Foo()``. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Java head extractor in
-; parser_helpers.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
+; lang_helpers/type_heads.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
 ; types and filters primitives plus the most ubiquitous ``java.lang`` /
 ; ``java.util`` / ``java.util.function`` builtins.
 

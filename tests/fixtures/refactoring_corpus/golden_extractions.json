@@ -9,7 +9,7 @@
           "rows"
         ],
         "returns": [],
-        "slice_nloc": 11,
+        "slice_nloc": 8,
         "start_line": 211
       },
       {
@@ -20,7 +20,7 @@
           "rows"
         ],
         "returns": [],
-        "slice_nloc": 10,
+        "slice_nloc": 8,
         "start_line": 212
       },
       {
@@ -31,7 +31,7 @@
           "rows"
         ],
         "returns": [],
-        "slice_nloc": 9,
+        "slice_nloc": 8,
         "start_line": 213
       },
       {
@@ -57,7 +57,7 @@
         "returns": [
           "changed"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 9,
         "start_line": 28
       },
       {
@@ -70,7 +70,7 @@
         "returns": [
           "changed"
         ],
-        "slice_nloc": 10,
+        "slice_nloc": 9,
         "start_line": 30
       }
     ],
@@ -85,7 +85,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 10
       },
       {
@@ -99,7 +99,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 12,
         "start_line": 11
       },
       {
@@ -114,7 +114,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 12
       },
       {
@@ -127,7 +127,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 10
       },
       {
@@ -141,7 +141,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 11,
+        "slice_nloc": 10,
         "start_line": 11
       },
       {
@@ -156,7 +156,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 10,
+        "slice_nloc": 9,
         "start_line": 12
       },
       {
@@ -170,7 +170,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 8,
+        "slice_nloc": 7,
         "start_line": 16
       },
       {
@@ -211,8 +211,21 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 6,
+        "slice_nloc": 5,
         "start_line": 16
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 21,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 5,
+        "start_line": 17
       }
     ],
     "elif_else_chain": [
@@ -226,7 +239,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 15,
+        "slice_nloc": 14,
         "start_line": 61
       },
       {
@@ -239,38 +252,12 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 12,
         "start_line": 63
       },
       {
         "ccn_removed": 2,
         "end_line": 74,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 12,
-        "start_line": 63
-      },
-      {
-        "ccn_removed": 2,
-        "end_line": 75,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 12,
-        "start_line": 64
-      },
-      {
-        "ccn_removed": 2,
-        "end_line": 73,
         "params": [
           "limit",
           "value"
@@ -283,7 +270,7 @@
       },
       {
         "ccn_removed": 2,
-        "end_line": 74,
+        "end_line": 75,
         "params": [
           "limit",
           "value"
@@ -318,6 +305,19 @@
           "label"
         ],
         "slice_nloc": 10,
+        "start_line": 63
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 74,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
         "start_line": 64
       },
       {
@@ -332,6 +332,19 @@
         ],
         "slice_nloc": 10,
         "start_line": 65
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 73,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 9,
+        "start_line": 64
       }
     ],
     "else_assigned_twin": [
@@ -345,7 +358,7 @@
         "returns": [
           "changed"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 11,
         "start_line": 44
       },
       {
@@ -358,7 +371,7 @@
         "returns": [
           "changed"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 45
       },
       {
@@ -371,38 +384,12 @@
         "returns": [
           "changed"
         ],
-        "slice_nloc": 10,
+        "slice_nloc": 9,
         "start_line": 47
       },
       {
         "ccn_removed": 1,
         "end_line": 55,
-        "params": [
-          "entry",
-          "limit"
-        ],
-        "returns": [
-          "changed"
-        ],
-        "slice_nloc": 9,
-        "start_line": 47
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 56,
-        "params": [
-          "entry",
-          "limit"
-        ],
-        "returns": [
-          "changed"
-        ],
-        "slice_nloc": 9,
-        "start_line": 48
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 54,
         "params": [
           "entry",
           "limit"
@@ -415,7 +402,7 @@
       },
       {
         "ccn_removed": 1,
-        "end_line": 55,
+        "end_line": 56,
         "params": [
           "entry",
           "limit"
@@ -450,6 +437,19 @@
           "changed"
         ],
         "slice_nloc": 7,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 7,
         "start_line": 48
       },
       {
@@ -464,6 +464,19 @@
         ],
         "slice_nloc": 7,
         "start_line": 49
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 54,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 6,
+        "start_line": 48
       }
     ],
     "for_else_clause": [
@@ -476,7 +489,7 @@
         "returns": [
           "flag"
         ],
-        "slice_nloc": 15,
+        "slice_nloc": 13,
         "start_line": 159
       },
       {
@@ -488,7 +501,7 @@
         "returns": [
           "flag"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 160
       },
       {
@@ -498,7 +511,7 @@
           "rows"
         ],
         "returns": [],
-        "slice_nloc": 13,
+        "slice_nloc": 12,
         "start_line": 161
       },
       {
@@ -530,7 +543,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 10,
+        "slice_nloc": 9,
         "start_line": 80
       }
     ],
@@ -545,7 +558,7 @@
         "returns": [
           "out"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 126
       },
       {
@@ -557,7 +570,7 @@
           "row"
         ],
         "returns": [],
-        "slice_nloc": 10,
+        "slice_nloc": 9,
         "start_line": 128
       },
       {
@@ -569,37 +582,12 @@
           "row"
         ],
         "returns": [],
-        "slice_nloc": 9,
-        "start_line": 128
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 137,
-        "params": [
-          "limit",
-          "out",
-          "row"
-        ],
-        "returns": [],
-        "slice_nloc": 9,
-        "start_line": 129
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 135,
-        "params": [
-          "limit",
-          "row"
-        ],
-        "returns": [
-          "scaled"
-        ],
         "slice_nloc": 8,
         "start_line": 128
       },
       {
         "ccn_removed": 1,
-        "end_line": 136,
+        "end_line": 137,
         "params": [
           "limit",
           "out",
@@ -632,6 +620,18 @@
           "scaled"
         ],
         "slice_nloc": 7,
+        "start_line": 128
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 136,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 7,
         "start_line": 129
       },
       {
@@ -645,6 +645,19 @@
         "returns": [],
         "slice_nloc": 7,
         "start_line": 130
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 135,
+        "params": [
+          "limit",
+          "row"
+        ],
+        "returns": [
+          "scaled"
+        ],
+        "slice_nloc": 6,
+        "start_line": 129
       }
     ],
     "loop_mutates_iterated": [
@@ -658,7 +671,7 @@
         "returns": [
           "seen"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 110
       }
     ],
@@ -673,7 +686,7 @@
         "returns": [
           "carry"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 94
       }
     ],
@@ -689,7 +702,7 @@
         "returns": [
           "names"
         ],
-        "slice_nloc": 25,
+        "slice_nloc": 18,
         "start_line": 226
       },
       {
@@ -702,7 +715,7 @@
         "returns": [
           "names"
         ],
-        "slice_nloc": 19,
+        "slice_nloc": 18,
         "start_line": 232
       },
       {
@@ -714,7 +727,7 @@
           "names"
         ],
         "returns": [],
-        "slice_nloc": 18,
+        "slice_nloc": 17,
         "start_line": 233
       },
       {
@@ -726,7 +739,7 @@
           "names"
         ],
         "returns": [],
-        "slice_nloc": 17,
+        "slice_nloc": 16,
         "start_line": 234
       },
       {
@@ -739,7 +752,7 @@
           "names"
         ],
         "returns": [],
-        "slice_nloc": 16,
+        "slice_nloc": 15,
         "start_line": 235
       }
     ],
@@ -755,7 +768,7 @@
         "returns": [
           "rate"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 11,
         "start_line": 182
       },
       {
@@ -768,7 +781,7 @@
         "returns": [
           "rate"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 183
       }
     ]
@@ -784,7 +797,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 15,
+        "slice_nloc": 14,
         "start_line": 10
       },
       {
@@ -797,7 +810,7 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 11
       },
       {
@@ -811,25 +824,12 @@
         "returns": [
           "average"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 12,
         "start_line": 12
       },
       {
         "ccn_removed": 1,
         "end_line": 24,
-        "params": [
-          "count",
-          "total"
-        ],
-        "returns": [
-          "average"
-        ],
-        "slice_nloc": 9,
-        "start_line": 16
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 23,
         "params": [
           "count",
           "total"
@@ -855,7 +855,7 @@
       },
       {
         "ccn_removed": 1,
-        "end_line": 22,
+        "end_line": 23,
         "params": [
           "count",
           "total"
@@ -891,6 +891,19 @@
         ],
         "slice_nloc": 7,
         "start_line": 18
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 22,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 6,
+        "start_line": 16
       },
       {
         "ccn_removed": 1,
@@ -930,7 +943,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 45
       },
       {
@@ -943,38 +956,12 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 11,
+        "slice_nloc": 10,
         "start_line": 47
       },
       {
         "ccn_removed": 1,
         "end_line": 56,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 10,
-        "start_line": 47
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 57,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 10,
-        "start_line": 48
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 55,
         "params": [
           "limit",
           "value"
@@ -987,7 +974,7 @@
       },
       {
         "ccn_removed": 1,
-        "end_line": 56,
+        "end_line": 57,
         "params": [
           "limit",
           "value"
@@ -1022,6 +1009,19 @@
           "label"
         ],
         "slice_nloc": 8,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 8,
         "start_line": 48
       },
       {
@@ -1036,6 +1036,19 @@
         ],
         "slice_nloc": 8,
         "start_line": 49
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 7,
+        "start_line": 48
       }
     ],
     "elseIfChain": [
@@ -1049,7 +1062,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 17,
+        "slice_nloc": 16,
         "start_line": 98
       },
       {
@@ -1062,38 +1075,12 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 100
       },
       {
         "ccn_removed": 2,
         "end_line": 112,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 13,
-        "start_line": 100
-      },
-      {
-        "ccn_removed": 2,
-        "end_line": 113,
-        "params": [
-          "limit",
-          "value"
-        ],
-        "returns": [
-          "label"
-        ],
-        "slice_nloc": 13,
-        "start_line": 101
-      },
-      {
-        "ccn_removed": 2,
-        "end_line": 111,
         "params": [
           "limit",
           "value"
@@ -1106,7 +1093,7 @@
       },
       {
         "ccn_removed": 2,
-        "end_line": 112,
+        "end_line": 113,
         "params": [
           "limit",
           "value"
@@ -1141,6 +1128,19 @@
           "label"
         ],
         "slice_nloc": 11,
+        "start_line": 100
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 112,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
         "start_line": 101
       },
       {
@@ -1155,6 +1155,19 @@
         ],
         "slice_nloc": 11,
         "start_line": 102
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 111,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 101
       }
     ],
     "ifWithoutElse": [
@@ -1168,7 +1181,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 12,
+        "slice_nloc": 11,
         "start_line": 29
       }
     ],
@@ -1183,7 +1196,7 @@
         "returns": [
           "seen"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 63
       }
     ],
@@ -1198,7 +1211,7 @@
         "returns": [
           "bucket"
         ],
-        "slice_nloc": 14,
+        "slice_nloc": 13,
         "start_line": 120
       },
       {
@@ -1210,36 +1223,12 @@
           "page"
         ],
         "returns": [],
-        "slice_nloc": 11,
+        "slice_nloc": 10,
         "start_line": 122
       },
       {
         "ccn_removed": 1,
         "end_line": 131,
-        "params": [
-          "bucket",
-          "limit",
-          "page"
-        ],
-        "returns": [],
-        "slice_nloc": 10,
-        "start_line": 122
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 132,
-        "params": [
-          "bucket",
-          "limit",
-          "page"
-        ],
-        "returns": [],
-        "slice_nloc": 10,
-        "start_line": 123
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 130,
         "params": [
           "bucket",
           "limit",
@@ -1251,7 +1240,7 @@
       },
       {
         "ccn_removed": 1,
-        "end_line": 131,
+        "end_line": 132,
         "params": [
           "bucket",
           "limit",
@@ -1283,6 +1272,18 @@
         ],
         "returns": [],
         "slice_nloc": 8,
+        "start_line": 122
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 131,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 8,
         "start_line": 123
       },
       {
@@ -1296,6 +1297,18 @@
         "returns": [],
         "slice_nloc": 8,
         "start_line": 124
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 130,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 7,
+        "start_line": 123
       }
     ],
     "record": [],
@@ -1310,7 +1323,7 @@
         "returns": [
           "label"
         ],
-        "slice_nloc": 13,
+        "slice_nloc": 11,
         "start_line": 81
       }
     ]

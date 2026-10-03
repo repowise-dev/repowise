@@ -30,6 +30,7 @@ GUESSED_ORIGINS: frozenset[str] = frozenset(
     {
         "global_unique",
         "receiver_global",
+        "receiver_extension_global",
         "receiver_typed_global",
         "receiver_field_global",
         "receiver_framework_global",
@@ -135,12 +136,3 @@ async def call_resolution_bases(
     """One basis entry per language that has call edges in this repo."""
     grouping = await _grouping(session, repo_id, cache_key)
     return [_entry(lang, origins) for lang, origins in sorted(grouping.items()) if origins]
-
-
-def basis_cache_key(repository: Any) -> str:
-    """A key that moves whenever the index does, cheapest field first."""
-    head = getattr(repository, "head_commit", None)
-    if head:
-        return str(head)
-    updated = getattr(repository, "updated_at", None)
-    return str(updated) if updated else "unknown"

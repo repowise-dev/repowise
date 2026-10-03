@@ -2,10 +2,10 @@
 
 /**
  * Breaking-changes rail for the Live System Map. Given a `BreakingChangeReport`,
- * it lists each changed provider contract (breaking first) and the consumers it
- * endangers, showing both code sides — the provider file that changed and the
- * consumer file that calls it. Pure presentation: the host owns the fetch and
- * passes the report in; the at-risk badges ride the map's overlay prop.
+ * it lists each provider compatibility finding (breaking first) and consumers
+ * exposed through direct links, showing both code sides — the provider file and
+ * the consumer file that calls it. Pure presentation: the host owns the fetch and
+ * passes the report in; compatibility badges ride the map's overlay prop.
  *
  * The rows themselves are `BreakingChangeRow`, shared with the contracts page.
  * The rail passes no href builders, so they stay plain text and every click

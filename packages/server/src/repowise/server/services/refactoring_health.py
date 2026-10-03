@@ -8,96 +8,44 @@ followed by a linear scan. Query, filter, order, page, facets, detail and the
 directive live here now, so the agent surface and the product surface cannot
 drift apart.
 
-Nothing in this module composes or ranks. Composition is
+The session-free half (query parsing, the sort/filter/facet rules and every
+response shape) is ``analysis/health/refactoring/serving.py``; this module
+runs the reads and hands rows to it. Nothing here composes or ranks. Composition is
 ``analysis/health/refactoring/opportunity.py`` and it runs at index time; this
 module reads what the finalizer wrote.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Sequence
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+from repowise.core.analysis.health.refactoring.serving import (
+    RefactoringQuery,
+    directive_from_summary,
+    evidence_block,
+    next_actions,
+    plan_payload,
+    serialize,
+    stored_validation,
+    summary_payload,
+    validation_from_profile,
+)
+from repowise.core.analysis.health.rows import detail_map, json_field
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
     refactoring_facet_counts,
+    refactoring_opportunity_ids,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
-
-# ``refactoring_view`` predates the opportunity. Both old values keep working
-# and both are documented in docs/layers/REFACTORING.md:
-#
-# - ``canonical``  the published rank order, ties and all. What the old default
-#   produced, kept for a caller that wants the score order verbatim.
-# - ``file_spread``  asked for one row per file. An opportunity *is* one file's
-#   work, so the spread is now satisfied by construction; the value maps onto
-#   the diversified order, which is what it was reaching for.
-# - ``diversified``  the new default. Rank order round-robined over cause and
-#   directory, because the ranked head is a genuine run of ties.
-_VIEW_ORDERS: dict[str, str] = {
-    "canonical": "rank",
-    "file_spread": "queue",
-    "diversified": "queue",
-}
-CANONICAL_VIEWS = tuple(_VIEW_ORDERS)
-DEFAULT_VIEW = "diversified"
-
-# The legacy plan list has no notion of the diversified order, so the new
-# default resolves to the value that list has always defaulted to.
-_PLAN_VIEWS = {"canonical": "canonical", "file_spread": "file_spread", "diversified": "canonical"}
-
-# The triage vocabulary, shared with health findings.
-_STATUSES = ("open", "acknowledged", "resolved", "false_positive")
-
-CANONICAL_ORDERS = ("queue", "rank", "health", "effort", "file")
-_CONFIDENCES = ("low", "medium", "high")
-_EFFORTS = ("S", "M", "L", "XL")
-_TYPES = (
-    "break_cycle",
-    "extract_class",
-    "extract_helper",
-    "extract_method",
-    "move_method",
-    "split_file",
-)
-
-_UNAVAILABLE = {
-    "status": "unavailable",
-    "reason": "no_refactoring_analysis",
-    "detail": "No refactoring analysis is stored for this repository. Run `repowise update`.",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class RefactoringQuery:
-    """A normalized queue request. The only shape either adapter passes down."""
-
-    lead_types: tuple[str, ...] | None = None
-    status: str = "open"
-    confidence: str | None = None
-    effort: str | None = None
-    mechanical_only: bool = False
-    addresses_primary: bool | None = None
-    file_paths: tuple[str, ...] | None = None
-    path_contains: str | None = None
-    view: str = DEFAULT_VIEW
-    order: str | None = None
-    limit: int = 20
-    offset: int = 0
-
-    @property
-    def resolved_order(self) -> str:
-        """An explicit ``order`` wins; otherwise the view picks one."""
-        if self.order in CANONICAL_ORDERS:
-            return self.order
-        return _VIEW_ORDERS.get(self.view, _VIEW_ORDERS[DEFAULT_VIEW])
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,99 +57,10 @@ class RefactoringPage:
     facets: dict[str, dict[str, int]] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
     ignored_arguments: dict[str, str] = field(default_factory=dict)
-
-
-def parse_query(
-    *,
-    lead_type: str | Sequence[str] | None = None,
-    status: str | None = None,
-    confidence: str | None = None,
-    effort: str | None = None,
-    mechanical: bool | None = None,
-    addresses_primary: bool | None = None,
-    file_paths: list[str] | tuple[str, ...] | None = None,
-    search: str | None = None,
-    view: str | None = None,
-    order: str | None = None,
-    limit: int = 20,
-    offset: int = 0,
-) -> tuple[RefactoringQuery, dict[str, str]]:
-    """Normalize a caller's arguments, naming anything it had to discard.
-
-    An unrecognized value is reported back rather than silently treated as "no
-    filter": a caller who misspells a type should not be told the repository is
-    clean.
-    """
-    ignored: dict[str, str] = {}
-
-    def admit(name: str, value: str | None, allowed: tuple[str, ...]) -> str | None:
-        if value is None:
-            return None
-        if value in allowed:
-            return value
-        ignored[name] = value
-        return None
-
-    def admit_many(
-        name: str, value: str | Sequence[str] | None, allowed: tuple[str, ...]
-    ) -> tuple[str, ...] | None:
-        """One value or several. A comma-separated string is how a query
-        parameter carries a set; every member is admitted on its own, so a
-        misspelling in a list is reported rather than narrowing the result to
-        the members that happened to be spelled right."""
-        if value is None:
-            return None
-        raw = value.split(",") if isinstance(value, str) else list(value)
-        kept = [item.strip() for item in raw if item.strip()]
-        good = tuple(item for item in kept if item in allowed)
-        bad = [item for item in kept if item not in allowed]
-        if bad:
-            ignored[name] = ",".join(bad)
-        return good or None
-
-    resolved_view = view or DEFAULT_VIEW
-    if resolved_view not in _VIEW_ORDERS:
-        ignored["refactoring_view"] = resolved_view
-        resolved_view = DEFAULT_VIEW
-    return (
-        RefactoringQuery(
-            lead_types=admit_many("refactoring_type", lead_type, _TYPES),
-            status=admit("status", status, _STATUSES) or "open",
-            confidence=admit("confidence", confidence, _CONFIDENCES),
-            effort=admit("effort", effort, _EFFORTS),
-            mechanical_only=bool(mechanical),
-            addresses_primary=addresses_primary,
-            file_paths=tuple(file_paths) if file_paths else None,
-            path_contains=(search or "").strip() or None,
-            view=resolved_view,
-            order=admit("order", order, CANONICAL_ORDERS),
-            limit=max(int(limit), 0),
-            offset=max(int(offset), 0),
-        ),
-        ignored,
-    )
-
-
-def plan_view(view: str | None) -> Literal["canonical", "file_spread"]:
-    """The legacy plan list's view for a caller's ``refactoring_view``."""
-    return _PLAN_VIEWS.get(view or DEFAULT_VIEW, "canonical")  # type: ignore[return-value]
-
-
-def evidence_block(
-    evidence: list[dict[str, Any]], total: int, offset: int
-) -> dict[str, Any]:
-    """One evidence page plus the exact call that reads the rest."""
-    emitted = len(evidence)
-    block: dict[str, Any] = {
-        "evidence": evidence,
-        "evidence_total": total,
-        "evidence_emitted": emitted,
-        "evidence_truncated": offset + emitted < total,
-    }
-    if block["evidence_truncated"]:
-        block["evidence_reduced_reason"] = "evidence_page"
-        block["evidence_next_cursor"] = offset + emitted
-    return block
+    scope: str = "all"
+    #: Under ``fix_first``: the opportunities the same filters match that Fix
+    #: first leaves out, ``{"total": n, "by_reason": {reason: n}}``.
+    hidden: dict[str, Any] | None = None
 
 
 class RefactoringHealthService:
@@ -231,24 +90,37 @@ class RefactoringHealthService:
         filters over the open set, so those two are bounded by the open row
         count rather than by the page. Neither has a consumer yet - index them
         when one exists, not before.
+
+        Under the ``fix_first`` scope the Fix-first queue (cached per store
+        write) says which opportunities it takes, and one id-only read of the
+        filtered set counts what it leaves out, by reason.
         """
+        filters: dict[str, Any] = {
+            "status": query.status,
+            "lead_types": list(query.lead_types) if query.lead_types else None,
+            "confidence": query.confidence,
+            "effort": query.effort,
+            "file_paths": list(query.file_paths) if query.file_paths is not None else None,
+            "path_contains": query.path_contains,
+            "path_prefix": query.path_prefix,
+            "mechanical_only": query.mechanical_only,
+            "addresses_primary": query.addresses_primary,
+        }
+        shown_ids: list[str] | None = None
+        hidden: dict[str, Any] | None = None
+        if query.scope == "fix_first":
+            shown_ids, hidden = await self._fix_first_scope(filters)
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
-            status=query.status,
-            lead_types=list(query.lead_types) if query.lead_types else None,
-            confidence=query.confidence,
-            effort=query.effort,
-            file_paths=list(query.file_paths) if query.file_paths else None,
-            path_contains=query.path_contains,
-            mechanical_only=query.mechanical_only,
-            addresses_primary=query.addresses_primary,
+            **filters,
+            opportunity_ids=shown_ids,
             order=query.resolved_order,
             limit=query.limit,
             offset=query.offset,
         )
         items = [
-            self._serialize(row, steps_limit=steps_per_item, evidence_limit=evidence_per_item)
+            serialize(row, steps_limit=steps_per_item, evidence_limit=evidence_per_item)
             for row in rows
         ]
         next_offset = query.offset + len(items)
@@ -262,26 +134,45 @@ class RefactoringHealthService:
                 # set while the list shows the resolved one would put a badge on
                 # a tab that returns nothing.
                 await refactoring_facet_counts(
-                    self._session, self._repository_id, status=query.status
+                    self._session,
+                    self._repository_id,
+                    status=query.status,
+                    opportunity_ids=shown_ids,
                 )
                 if with_facets
                 else {}
             ),
             summary=await self.summary() if with_summary else None,
+            scope=query.scope,
+            hidden=hidden,
         )
+
+    async def _fix_first_scope(
+        self, filters: dict[str, Any]
+    ) -> tuple[list[str], dict[str, Any]]:
+        """The filtered ids Fix first takes, and what it leaves out by reason.
+
+        Ceiling: the shown ids go back to the page read as an ``IN`` list, one
+        entry per open opportunity Fix first takes (94 on this repository).
+        Upgrade path: store the eligibility on the opportunity row at index
+        time and filter on the column.
+        """
+        queue = await load_fix_first(self._session, self._repository_id, limit=0)
+        reasons = queue.refactoring_reasons
+        matched = await refactoring_opportunity_ids(
+            self._session, self._repository_id, **filters
+        )
+        # The queue is keyed on the stores' newest write, so it has read every
+        # open id; one written between the two reads is in neither count.
+        shown = [i for i in matched if i in reasons and reasons[i] is None]
+        left_out = Counter(r for i in matched if (r := reasons.get(i)))
+        return shown, {"total": sum(left_out.values()), "by_reason": dict(left_out.most_common())}
 
     # -- headline ---------------------------------------------------------
 
     async def summary(self) -> dict[str, Any]:
         """The Level-1 rollup, read by primary key."""
-        row = await get_refactoring_summary(self._session, self._repository_id)
-        if row is None:
-            return dict(_UNAVAILABLE)
-        payload = _loads(row.summary_json)
-        payload["status"] = "available"
-        payload["refactoring_model_version"] = row.refactoring_model_version
-        payload["analyzed_commit"] = row.analyzed_commit
-        return payload
+        return summary_payload(await get_refactoring_summary(self._session, self._repository_id))
 
     async def directive(self) -> dict[str, Any]:
         """The Level-0 lead: one opportunity, and the exact call that opens it.
@@ -289,52 +180,9 @@ class RefactoringHealthService:
         The same primary-key read the summary uses, so a bare dashboard pays one
         statement for it and never touches the queue.
         """
-        row = await get_refactoring_summary(self._session, self._repository_id)
-        if row is None:
-            return dict(_UNAVAILABLE)
-        payload = _loads(row.summary_json)
-        lead = payload.get("lead")
-        if not lead:
-            return {
-                "status": "clear",
-                "reason": "no_open_opportunities",
-                "detail": "No refactoring opportunity is open for this repository.",
-                "opportunities_total": int(payload.get("opportunities_total") or 0),
-            }
-        addresses = lead.get("addresses_primary_problem")
-        directive: dict[str, Any] = {
-            "status": "available",
-            "opportunity_id": lead.get("opportunity_id"),
-            "fix_first": lead.get("file_path"),
-            "reason": lead.get("lead_biomarker"),
-            "lead_refactoring_type": lead.get("lead_refactoring_type"),
-            "steps": lead.get("step_count"),
-            "mechanical_steps": lead.get("mechanical_steps"),
-            "judgment_steps": lead.get("judgment_steps"),
-            "effort_bucket": lead.get("effort_bucket"),
-            "confidence": lead.get("confidence"),
-            "recovers_health_points": lead.get("recoverable_health"),
-            "addresses_primary_problem": addresses,
-            "opportunities_total": int(payload.get("opportunities_total") or 0),
-            "next_action": {
-                "tool": "get_health",
-                "arguments": {"opportunity_id": lead.get("opportunity_id")},
-            },
-        }
-        # The honest half. A file's plans very often answer a different question
-        # from the one that made it the worst file, and saying so beats routing
-        # an agent to cleanup it will read as the fix.
-        if addresses is False:
-            directive["note"] = (
-                f"These steps do not address {lead.get('lead_biomarker')!r}, this file's "
-                "dominant finding. Treat them as related cleanup, not the fix for it."
-            )
-        elif addresses is None:
-            directive["note"] = (
-                "No dominant finding was recorded for this file, so whether these steps "
-                "address it is unknown rather than no."
-            )
-        return directive
+        return directive_from_summary(
+            await get_refactoring_summary(self._session, self._repository_id)
+        )
 
     # -- detail -----------------------------------------------------------
 
@@ -348,21 +196,28 @@ class RefactoringHealthService:
         evidence_offset: int = 0,
         with_plans: bool = True,
     ) -> dict[str, Any]:
-        """One opportunity by id: an indexed seek, then its member plans."""
+        """One opportunity by id: an indexed seek, then its member plans.
+
+        ``found`` says whether the id named a stored row; ``status`` is the
+        opportunity's triage lifecycle. The lookup flag is not called
+        ``resolved`` because ``status`` can itself be ``resolved``, and a
+        payload reading ``resolved: true`` beside ``status: "open"`` would
+        contradict itself.
+        """
         row = await get_refactoring_opportunity(
             self._session, self._repository_id, opportunity_id
         )
         if row is None:
             return {
-                "resolved": False,
+                "found": False,
                 "opportunity_id": opportunity_id,
                 "reason": "unknown_opportunity_id",
             }
-        details = _loads(row.details_json)
+        details = detail_map(row)
         steps = list(details.get("steps") or [])
         page = steps[step_offset : step_offset + max(step_limit, 0)]
-        payload = self._serialize(row, steps_limit=None, evidence_limit=0)
-        payload["resolved"] = True
+        payload = serialize(row, steps_limit=None, evidence_limit=0)
+        payload["found"] = True
         payload["steps"] = page
         payload["steps_total"] = len(steps)
         payload["steps_emitted"] = len(page)
@@ -380,7 +235,7 @@ class RefactoringHealthService:
         payload["validation_profiles"] = list(details.get("validation_profiles") or [])
         payload["affected_files"] = list(details.get("affected_files") or [])
         payload["lead_finding_ids"] = list(details.get("lead_finding_ids") or [])
-        payload["next_actions"] = self._next_actions(row, page)
+        payload["next_actions"] = next_actions(row, page)
         if with_plans and page:
             payload["plans"] = await self._plans_for([s["plan_id"] for s in page])
         # Ordered steps carry ``relocated_by``; a surface that renders them must
@@ -419,9 +274,12 @@ class RefactoringHealthService:
             [rehydrate_suggestion(row)],
             metric_by_path=metric_by_path,
             centrality=centrality,
-            validations={0: _stored_validation(owner, row.public_id)},
+            validations={
+                0: stored_validation(owner, row.public_id)
+                or await self._performance_validation(row)
+            },
         )
-        payload = built[0].as_dict() if built else _plan_payload(row)
+        payload = built[0].as_dict() if built else plan_payload(row)
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}
@@ -435,6 +293,28 @@ class RefactoringHealthService:
                 "arguments": {"opportunity_id": owner.opportunity_id},
             }
         return result
+
+    async def _performance_validation(self, row: Any) -> Any:
+        """A performance plan's profile, stored on its opportunity at finalize.
+
+        Performance plans are never refactoring steps, so the step lookup above
+        cannot find them, and an empty fallback reports every one as untested.
+        """
+        from repowise.core.persistence.crud.analysis.performance import (
+            get_performance_opportunity,
+        )
+
+        if row.refactoring_type != "performance_fix":
+            return None
+        plan = json_field(row, "plan_json", {})
+        opportunity_id = plan.get("opportunity_id") if isinstance(plan, dict) else None
+        if not opportunity_id:
+            return None
+        owner = await get_performance_opportunity(
+            self._session, self._repository_id, opportunity_id
+        )
+        profile = (detail_map(owner).get("plan") or {}).get("validation") if owner else None
+        return validation_from_profile(profile) if profile else None
 
     async def _rank_inputs(self, file_path: str) -> tuple[dict[str, Any], dict[str, float]]:
         """The two rank inputs for one file, as seeks rather than repo reads.
@@ -490,6 +370,8 @@ class RefactoringHealthService:
                     .where(
                         RefactoringOpportunity.repository_id == self._repository_id,
                         RefactoringOpportunity.status == "open",
+                        RefactoringOpportunity.refactoring_model_version
+                        == REFACTORING_MODEL_VERSION,
                         RefactoringOpportunity.file_path == file_path,
                     )
                     .limit(5)
@@ -499,7 +381,7 @@ class RefactoringHealthService:
             .all()
         )
         for row in rows:
-            steps = _loads(row.details_json).get("steps") or []
+            steps = detail_map(row).get("steps") or []
             if any(step.get("plan_id") == public_id for step in steps):
                 return row
         return None
@@ -521,175 +403,7 @@ class RefactoringHealthService:
             .all()
         )
         by_id = {row.public_id: row for row in rows}
-        return [_plan_payload(by_id[pid]) for pid in plan_ids if pid in by_id]
-
-    def _next_actions(self, row: Any, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Structured follow-ups, so a drill-down ends somewhere rather than stops."""
-        actions: list[dict[str, Any]] = []
-        first = steps[0] if steps else None
-        if first and first.get("line_start") is not None and first.get("line_end") is not None:
-            actions.append(
-                {
-                    "why": "read the span the first step names",
-                    "tool": "get_symbol",
-                    "arguments": {
-                        "symbol_id": f"{first['file_path']}:{first['line_start']}-{first['line_end']}"
-                    },
-                }
-            )
-        actions.append(
-            {
-                "why": "what history says about touching this file",
-                "tool": "get_risk",
-                "arguments": {"targets": [row.file_path]},
-            }
-        )
-        if row.evidence_total:
-            actions.append(
-                {
-                    "why": "page the supporting observations",
-                    "tool": "get_health",
-                    "arguments": {
-                        "opportunity_id": row.opportunity_id,
-                        "only": ["refactoring_evidence"],
-                    },
-                }
-            )
-        return actions
-
-    def _serialize(
-        self, row: Any, *, steps_limit: int | None = None, evidence_limit: int = 0
-    ) -> dict[str, Any]:
-        details = _loads(row.details_json)
-        steps = list(details.get("steps") or [])
-        evidence = list(details.get("evidence") or [])
-        payload: dict[str, Any] = {
-            "opportunity_id": row.opportunity_id,
-            "refactoring_model_version": row.refactoring_model_version,
-            "status": row.status,
-            "file_path": row.file_path,
-            "lead_biomarker": row.lead_biomarker,
-            "lead_refactoring_type": row.lead_refactoring_type,
-            "addresses_primary_problem": row.addresses_primary_problem,
-            "effort_bucket": row.effort_bucket,
-            "confidence": row.confidence,
-            "step_count": row.step_count,
-            "mechanical_steps": row.mechanical_steps,
-            "judgment_steps": row.judgment_steps,
-            "evidence_total": row.evidence_total,
-            "affected_files_total": row.affected_files_total,
-            "recoverable_health": round(float(row.recoverable_health), 3),
-            "rank_score": round(float(row.rank_score), 4),
-            "rank_position": row.rank_position,
-            "queue_position": row.queue_position,
-            "rank_factors": details.get("rank_factors") or {},
-            "why_ranked": details.get("why_ranked") or [],
-        }
-        # The file's own size and reach, recorded by the finalizer. Omitted when
-        # the store predates them, so a surface can tell "not measured" from a
-        # genuine zero rather than plotting an unmeasured file at the origin.
-        for key in ("file_nloc", "dependents"):
-            if isinstance(details.get(key), int):
-                payload[key] = details[key]
-        if steps_limit is not None:
-            kept = steps[: max(steps_limit, 0)]
-            payload["steps"] = kept
-            payload["steps_total"] = len(steps)
-            payload["steps_emitted"] = len(kept)
-            if len(kept) < len(steps):
-                payload["steps_reduced_reason"] = "limit"
-        if evidence_limit:
-            payload.update(evidence_block(evidence[:evidence_limit], len(evidence), 0))
-        return payload
+        return [plan_payload(by_id[pid]) for pid in plan_ids if pid in by_id]
 
 
-def _stored_validation(owner: Any, public_id: str | None) -> Any:
-    """The validation profile the finalizer resolved for this step.
-
-    Test reachability is a graph walk over the whole unanswered set; it belongs
-    at index time, and this reads its result rather than repeating it.
-    """
-    from repowise.core.analysis.health.refactoring.recommendations import (
-        ValidationPlan,
-        ValidationTarget,
-    )
-
-    if owner is None or not public_id:
-        return None
-    details = _loads(owner.details_json)
-    wanted = next(
-        (
-            step.get("validation_profile_id")
-            for step in (details.get("steps") or [])
-            if step.get("plan_id") == public_id
-        ),
-        None,
-    )
-    if not wanted:
-        return None
-    profile = next(
-        (p for p in (details.get("validation_profiles") or []) if p.get("id") == wanted),
-        None,
-    )
-    if profile is None:
-        return None
-    target_fields = set(ValidationTarget.__dataclass_fields__)
-    values = {
-        key: value
-        for key, value in profile.items()
-        if key in ValidationPlan.__dataclass_fields__
-    }
-    values["targets"] = [
-        ValidationTarget(**{k: v for k, v in target.items() if k in target_fields})
-        for target in (profile.get("targets") or [])
-        if isinstance(target, dict)
-    ]
-    return ValidationPlan(**values)
-
-
-def _plan_payload(row: Any) -> dict[str, Any]:
-    """The stored plan, without re-hydrating rank or validation.
-
-    Detail reads the payload the detector wrote and the finalizer already
-    validated; recomputing benefit and coverage here is what made a one-row
-    lookup cost the repository.
-    """
-    return {
-        "id": row.public_id or row.id,
-        "refactoring_type": row.refactoring_type,
-        "file_path": row.file_path,
-        "target_symbol": row.target_symbol,
-        "line_start": row.line_start,
-        "line_end": row.line_end,
-        "plan": _loads(row.plan_json),
-        "evidence": _loads(row.evidence_json),
-        "blast_radius": _loads(row.blast_radius_json),
-        "impact_delta": row.impact_delta,
-        "effort_bucket": row.effort_bucket,
-        "confidence": row.confidence,
-        "source_biomarker": row.source_biomarker,
-        "status": row.status,
-    }
-
-
-def _loads(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-__all__ = [
-    "CANONICAL_ORDERS",
-    "CANONICAL_VIEWS",
-    "DEFAULT_VIEW",
-    "RefactoringHealthService",
-    "RefactoringPage",
-    "RefactoringQuery",
-    "evidence_block",
-    "parse_query",
-    "plan_view",
-]
+__all__ = ["RefactoringHealthService", "RefactoringPage"]

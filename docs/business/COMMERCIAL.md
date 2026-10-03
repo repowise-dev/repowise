@@ -42,13 +42,13 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 25 languages, two-tier dependency graph, call
+  (tree-sitter AST across 26 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
   module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  (53 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
@@ -80,11 +80,12 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
 - **Test intelligence, from a coverage report and from the call graph.** Ingests
-  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
-  service structurally cannot: answers *which tests reach this file* and *which
-  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
-  precision** measured against a real `coverage run --contexts=test`. Measured and
-  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
+  then does the half a coverage service structurally cannot: answers *which
+  tests reach this file* and *which tests does this diff exercise* **with no
+  report at all**, at **95.7% and 97.5% precision** measured against a real
+  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
@@ -99,17 +100,19 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **25 languages to a full AST** and places **39 on a five-rung
+Repowise parses **26 languages to a full AST** and places **40 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 25 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
+The 26 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
 JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
-dynamic-hint extractors, and code-health markers. A further **10 at Good tier** (C,
-Swift, PHP, Dart, Object Pascal/Delphi, GDScript, VB.NET, Elixir, F#, Objective-C) get all of that except the full
-health suite, with GDScript and F# also lacking framework edges and named bindings, and Luau
+dynamic-hint extractors, and code-health markers. A further **11 at Good tier** (C,
+Swift, PHP, Dart, Object Pascal/Delphi, COBOL, GDScript, VB.NET, Elixir, F#,
+Objective-C) get most of that without the full health suite. COBOL resolves
+literal `CALL` and local `PERFORM` targets but not copybooks or dynamic calls;
+GDScript and F# also lack framework edges and named bindings. Luau
 and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
@@ -123,8 +126,8 @@ would not survive a technical evaluation. Full ladder:
 [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
 **Languages are never gated.** Every one of them ships in the AGPL distribution,
-including the ones still climbing. What is on the way up, **COBOL** among them,
-is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
+including the ones still climbing. COBOL now ships at the Good tier; remaining
+work is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
 or framework that is not there, §5.4 covers having it built and maintained by us
 as a commercial line item, and the result still ships to everyone under AGPL.
 
@@ -157,7 +160,7 @@ the items that matter most to you can be prioritized.
 
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
-| Five intelligence layers | ✅ | ✅ |
+| Five foundational intelligence layers plus derived ones (change risk, tests, bug history, security, dead code) | ✅ | ✅ |
 | Ten task-shaped MCP tools (plus `list_repos`) | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
@@ -166,6 +169,7 @@ the items that matter most to you can be prioritized.
 | Auto-generated CLAUDE.md | ✅ | ✅ |
 | Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
+| Local CI security gate on a change (`repowise security check`, SARIF output, committed baseline) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |

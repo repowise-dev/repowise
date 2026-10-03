@@ -71,13 +71,13 @@ async def vector_store():
 
 
 @pytest.fixture
-async def repo_id(session: AsyncSession) -> str:
+async def repo_id(session: AsyncSession, tmp_path) -> str:
     """Create a test repository and return its ID."""
     repo = Repository(
         id="repo1",
         name="test-repo",
         url="https://github.com/example/test-repo",
-        local_path="/tmp/test-repo",
+        local_path=str(tmp_path),
         default_branch="main",
         settings_json="{}",
         created_at=_NOW,
@@ -564,21 +564,15 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
 
 
 @pytest.fixture
-async def setup_mcp(factory, fts, vector_store, populated_db):
+async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     """Configure the MCP module's global state for testing."""
     import repowise.server.mcp_server as mcp_mod
-    from repowise.server.mcp_server import _basis, _scope
-
-    # Every test repo shares one id and one updated_at, so a grouping cached
-    # from an earlier test would be served to the next one's different seed.
-    _basis.reset_cache()
-    _scope.reset_cache()
 
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
     mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
-    mcp_mod._repo_path = "/tmp/test-repo"
+    mcp_mod._repo_path = str(tmp_path)
 
     yield populated_db
 
@@ -645,7 +639,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "function_name": "authenticate",
                 "line_start": 10,
                 "line_end": 80,
-                "details": {"ccn": 15, "cognitive": 30, "nloc": 70},
+                "details": {"ccn": 15, "cognitive": 30, "nloc": 70, "deepest_block": {"start": 40, "end": 52}},
                 "health_impact": 1.2,
                 "reason": "authenticate has cyclomatic complexity 15",
             },
@@ -692,3 +686,78 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
     )
     await session.commit()
     return rid
+
+
+@pytest.fixture
+def debug_meta(monkeypatch):
+    """Restore the diagnostic ``_meta`` fields, for tests of the accounting itself."""
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_savings_writes_outside_a_test_repo(monkeypatch):
+    """Keep a tool call in these tests from banking a saving in the real repo.
+
+    Clearing the process-global repo path is not enough: the budget layer falls
+    back to the current working directory, which under pytest is the checkout
+    itself. So a test driving ``tool_middleware`` wrote canonical events into
+    the developer's own ledger, where they look like live traffic and are
+    recognisable only by their synthetic tool names.
+
+    Neutralised at the write rather than at the resolver, because the same
+    resolver decides where omission refs are stored and the budget tests depend
+    on that still working. A test that wants a real event drives the recorder
+    itself.
+    """
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_repo_path", None, raising=False)
+    from repowise.core.savings import recorder
+
+    monkeypatch.setattr(recorder, "record_event", lambda repo_root, payload: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_omission_writes_outside_a_test_repo(monkeypatch, tmp_path):
+    """Send dropped content somewhere disposable, not the developer's store.
+
+    The other half of the same leak. Clearing the repo path is not enough here
+    either: with no root to resolve from, ``default_store_path`` falls back to
+    the current working directory, which under pytest is the checkout, so a
+    test driving the budget layer wrote omission rows into the real
+    ``.repowise``. Twelve of them accumulated there carrying 1,047,171 tokens
+    of fixture padding, and because ``original_tokens`` is honest about the
+    size of synthetic content they read as the largest omissions in the store.
+
+    Redirected at the resolver rather than stubbed out, unlike the savings
+    writer above: the budget tests assert that a dropped value comes back, so
+    the store has to keep working. It just works somewhere else.
+    """
+    from repowise.core.distill import store as store_module
+    from repowise.server.mcp_server._budget import collector
+
+    store = tmp_path / "omissions" / "omissions.db"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    real = store_module.default_store_path
+
+    def resolve(start=None):
+        """Redirect only the rootless fallback, which is the whole leak.
+
+        A test that stands up its own repository and asks for *that* path gets
+        the real answer: several of them write through the budget layer and
+        then read the dropped content back out of the store they named, and a
+        blanket redirect sends the write to one database and the read to
+        another. What has no defensible answer under pytest is ``start=None``,
+        where the resolver falls back to the current working directory and
+        finds the developer's own checkout.
+        """
+        return store if start is None else real(start)
+
+    # Both, and the pair is the point. The collector imported the resolver by
+    # name at module scope, so patching only its source misses the write; every
+    # reader imports it inside the function, so patching only the collector
+    # misses the read.
+    monkeypatch.setattr(store_module, "default_store_path", resolve)
+    monkeypatch.setattr(collector, "default_store_path", resolve)

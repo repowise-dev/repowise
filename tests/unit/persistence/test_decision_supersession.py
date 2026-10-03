@@ -83,7 +83,7 @@ def _dec(title: str, decision: str, *, files: list[str]) -> dict:
     return {
         "title": title,
         "decision": decision,
-        "rationale": "",
+        "rationale": f"{title} was measured the better of the two",
         "source": "inline_marker",
         "status": "proposed",
         "affected_files": files,

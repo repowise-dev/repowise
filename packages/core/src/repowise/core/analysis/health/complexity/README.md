@@ -9,11 +9,12 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > |--------|----------------|
 > | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
 > | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
-> | `ast_utils.py` | Name/text helpers, function-node collection, parameter counting |
-> | `nloc.py` | Non-blank / non-comment line counting |
+> | `ast_utils.py` | Name/text helpers, callee-name reading, function-node collection, parameter counting |
+> | `file_scan.py` | The one descent the whole-file passes share (NLOC index, error handling, class nodes, Rust test spans, perf import names) |
+> | `nloc.py` | Non-blank / non-comment line counting (`CodeLineIndex`) |
 > | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
 > | `assertions.py` | Assertion-block detection (test-quality smells) |
-> | `error_handling.py` | Error-handling anti-pattern detection (`_collect_error_handling`) |
+> | `error_handling.py` | Error-handling anti-pattern detection (`_eh_visit`) |
 > | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
 > | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
 > | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
@@ -45,7 +46,11 @@ that opt in — see "Class-level metrics" below.
 ## Performance characteristics
 
 One parser instance per process (lazy-loaded via the ingestion registry).
-Single pass per file — no AST re-traversal. The walker re-parses the file
+One descent per file feeds every whole-file pass (`file_scan.py`); the
+per-function passes walk only their function's body, and the perf pass keeps
+its own descent for the loop / async / lock context it carries down the tree.
+Function and class NLOC are prefix-sum lookups, not subtree walks. The walker
+re-parses the file
 because `ParsedFile` does not carry the tree-sitter `Node` across the
 ingestion boundary; cost is acceptable (≲ 1 ms for typical files).
 
@@ -60,6 +65,10 @@ from repowise.core.analysis.health.complexity import (
 fcx: FileComplexity = walk_file(abs_path, language, source_bytes)
 fcx.functions  # list[FunctionComplexity]
 fcx.classes    # list[ClassComplexity]
+
+# Optional 4th argument: the repository's own assertion names, from the
+# `assertions:` config block. Reaches the broad assertion tier only.
+fcx = walk_file(abs_path, language, source_bytes, frozenset({"ensureinvariant"}))
 
 # Back-compat shortcut for callers that only need functions:
 results: list[FunctionComplexity] = walk_file_complexity(
@@ -160,8 +169,15 @@ opt-in fields:
   kinds whose callee name starts with `assert` or `expect` (covers
   `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`).
 
-A language that maps neither produces no assertion blocks — never a false
-positive. (Languages without an `expression_statement` wrapper — e.g.
+These two fields say which *nodes* can be an assertion. Which *names* count is
+separate, in `../asserts/lexicon.py`, and is two-tiered: the `assert`/`expect`
+prefixes above feed the calibrated block markers and never change, while a
+per-language row (Go's `t.Fatalf`, testify's `require`, should.js's `.should.`)
+feeds the advisory assertion total only. Adding a language's names is a row
+there; adding a language at all still starts here.
+
+A language that maps neither field produces no assertion facts at all — never a
+false positive, and no vocabulary row can give it any. (Languages without an `expression_statement` wrapper — e.g.
 Kotlin, where the call node sits directly in the statement list — are
 handled too: the call node is matched as the statement itself.)
 

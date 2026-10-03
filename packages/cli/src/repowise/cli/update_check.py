@@ -38,6 +38,7 @@ __all__ = [
     "get_cli_update_check_cached",
     "is_newer_version",
     "suggest_update_command",
+    "windows_upgrade_caveat",
 ]
 
 
@@ -77,6 +78,17 @@ def suggest_update_command(executable: str | None, python: str) -> tuple[str, st
     if "/uv/" in path or "uv/tools" in path or "/uv/tools/" in path:
         return ("uv tool upgrade repowise", "uv tool")
     return (f"{python} -m pip install -U repowise", "pip")
+
+
+def windows_upgrade_caveat() -> str | None:
+    """Return the pre-upgrade process warning needed on Windows."""
+    if sys.platform != "win32":
+        return None
+    return (
+        "On Windows, stop any running Repowise server or MCP process before upgrading. "
+        "`Repowise: Stop Server` only stops a server started by the VS Code extension; "
+        "otherwise close the MCP client or stop the server in its terminal."
+    )
 
 
 def _editable_checkout() -> Path | None:

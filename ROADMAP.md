@@ -34,13 +34,12 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **39 languages, 25 of them parsed to a full AST**.
+ladder covers **40 languages, 26 of them parsed to a full AST**.
 
 ### New languages
 
 | Language | Status | Why it is on the list |
 |---|---|---|
-| **COBOL** | **In development** | Asked for by enterprises with mainframe estates evaluating repowise. The codebases that most need an institutional-memory layer are often the ones whose authors have already retired. |
 | **PL/SQL** | Planned | We already parse SQL through sqlglot. Packages, procedures and triggers are where the business logic actually lives. |
 | **ABAP** | Exploring | The same argument as COBOL, in SAP estates. |
 | **RPG / AS400** | Exploring | Named alongside COBOL often enough to track. |
@@ -53,6 +52,7 @@ ladder covers **39 languages, 25 of them parsed to a full AST**.
 
 | Language | Status | Next |
 |---|---|---|
+| COBOL | Planned | Copybook resolution, source-format normalization, broader dialect coverage, and health markers |
 | Vue, Svelte | In development | Options-API members, `{#each}` and `v-for` head bindings, `.svelte.ts` rune modules |
 | C#, Scala, Ruby | Planned | Dataflow dialects, which is what Extract Method needs in order to lift a span safely |
 | Kotlin | Exploring | Dataflow is blocked on the grammar and needs either a grammar upgrade or a text-based jump seam. We would rather say blocked than planned. |

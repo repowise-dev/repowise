@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
+from repowise.core.analysis.decisions.provenance import (
+    completeness,
+    compute_confidence,
+    rank_for_source,
+)
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
 from repowise.core.analysis.external_systems.links import declaration_name_candidates
 from repowise.core.ingestion.cohesion import UNIT_FANOUT_LANGUAGES
@@ -484,7 +488,17 @@ def _record(candidate: _Candidate) -> ExtractedDecision:
         source=SOURCE_KEY,
         evidence_file=candidate.wrapper,
         evidence_line=candidate.symbol.start_line,
-        confidence=compute_confidence(rank_for_source(SOURCE_KEY), 1, "exact"),
+        confidence=compute_confidence(
+            rank_for_source(SOURCE_KEY),
+            1,
+            "exact",
+            filled_fields=completeness(
+                decision=decision,
+                rationale=rationale,
+                context=context,
+                consequences=consequences,
+            ),
+        ),
         status="proposed",
         source_quote=quote,
         # The counts are the ground truth, so the gate reads them as exact.

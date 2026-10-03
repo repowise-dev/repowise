@@ -57,6 +57,17 @@ T = TypeVar("T")
 console = Console(width=resolve_console_width(sys.stdout))
 err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
+
+def warn(text: str) -> None:
+    """Print a warning to stderr with the shared yellow ``Warning:`` prefix.
+
+    Every CLI warning funnels through this helper so warnings render on the
+    same ``err_console`` stream (never stdout) and use one ``[yellow]Warning:[/yellow]``
+    spelling instead of hand-synced copies scattered across commands.
+    """
+    err_console.print(f"[yellow]Warning:[/yellow] {text}")
+
+
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
 
@@ -77,35 +88,85 @@ def _clean_flag(value: str | None) -> bool:
 # Logging / structlog helpers
 # ---------------------------------------------------------------------------
 
+MACHINE_OUTPUT_LOGGER_NAMES = ("httpx", "httpcore", "repowise.core", "repowise.server")
 
-def silence_logs_for_machine_output() -> None:
-    """Suppress info/debug log output when stdout is machine-readable (JSON/md).
+@contextlib.contextmanager
+def silence_logs_for_machine_output():
+    """Suppress info/debug log output while stdout is machine-readable (JSON/md).
 
     Structlog and stdlib loggers write to stdout by default. When a command
     emits JSON or Markdown, those lines corrupt the output for downstream
     consumers (e.g. ``repowise health --format json | jq .kpis``).
 
-    Call this at the top of any command that supports ``--format json`` or
-    ``--format md`` before the ingestion pipeline starts.
+    Context manager, not a bare call: logger levels and the structlog
+    wrapper class are process-global with no other owner, so a caller that
+    forgot to restore them would permanently silence its own process — the
+    case that mattered in practice was a test session, where the mutation
+    outlived the test that made it and broke unrelated caplog assertions
+    later in the same run (see #1976).
+
+    Use as:
+
+        with silence_logs_for_machine_output():
+            emit_json_or_markdown(...)
     """
     import logging
 
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    for _name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_name).setLevel(logging.ERROR)
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+
+    previous_structlog_config: dict[str, Any] | None = None
     try:
         import structlog
 
-        # cache_logger_on_first_use=False is required: module-level
-        # ``structlog.get_logger`` calls snapshot the logger before configure()
-        # runs and would bypass this filter without it.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
-            cache_logger_on_first_use=False,
-        )
+        previous_structlog_config = dict(structlog.get_config())
     except ImportError:
         pass
+
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.ERROR)
+        if previous_structlog_config is not None:
+            import structlog
+
+            # cache_logger_on_first_use=False is required: module-level
+            # ``structlog.get_logger`` calls snapshot the logger before
+            # configure() runs and would bypass this filter without it.
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+                cache_logger_on_first_use=False,
+            )
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
+        if previous_structlog_config is not None:
+            import structlog
+
+            structlog.configure(**previous_structlog_config)
+
+def silence_logs_for_machine_output_until_close() -> None:
+    """Enter ``silence_logs_for_machine_output`` and restore it when the
+    current click command finishes.
+
+    ``silence_logs_for_machine_output`` is a context manager because it must
+    always restore what it mutates — but not every call site has a single
+    lexical block to wrap it around. An option callback (see the ``--format``
+    and ``--json`` callbacks in ``output.py``) returns before the command body
+    even starts running, so a ``with`` block there would restore the levels
+    before the command does any work. Re-indenting an entire command
+    function's body under one ``with`` is also a large, easy-to-get-wrong
+    diff at call sites deep inside long functions.
+
+    Solved the same way ``update_cmd`` already solves it for restoring
+    ``console.file``: register the undo against click's context instead of a
+    lexical scope, so it fires when the command finishes regardless of how
+    much code runs in between or where the call sits.
+    """
+    ctx = click.get_current_context()
+    cm = silence_logs_for_machine_output()
+    cm.__enter__()
+    ctx.call_on_close(lambda: cm.__exit__(None, None, None))
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +175,24 @@ def silence_logs_for_machine_output() -> None:
 
 
 def run_async(coro: Any) -> Any:
-    """Run an async coroutine from synchronous Click code."""
-    return asyncio.run(coro)
+    """Run an async coroutine from synchronous Click code.
+
+    Each call is its own event loop, and a command runs one LLM provider
+    through several of them. The provider's SDK client pools connections on
+    the loop that opened them, so they are closed here, before that loop goes
+    away: left pooled, they print ``Task exception was never retrieved ...
+    Event loop is closed`` from a later step (issue #2946). With no such
+    provider alive there is nothing to close.
+    """
+    from repowise.core.providers.llm.base import close_provider_clients
+
+    async def _run() -> Any:
+        try:
+            return await coro
+        finally:
+            await close_provider_clients()
+
+    return asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
@@ -206,18 +283,24 @@ def get_db_url_for_repo(repo_path: Path) -> str:
 
 
 @contextlib.asynccontextmanager
-async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+async def repo_index_session(
+    root: Path, *, reconcile: bool = True
+) -> AsyncIterator[tuple[AsyncSession, str] | None]:
     """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
 
     A scoring or scanning command must never fail because the index is absent,
     stale or locked, so every storage error yields ``None`` instead.
+    ``reconcile=False`` skips the schema reconcile, so a caller that only reads
+    writes nothing to the store.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.database import has_db_store
 
-    if not (root / REPOWISE_DIR / "wiki.db").is_file():
+    # The configured store, which may live outside the repo (REPOWISE_DB_URL).
+    if not has_db_store(root):
         yield None
         return
     # The stack keeps the session open across the yield and disposes the engine
@@ -225,7 +308,10 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     async with contextlib.AsyncExitStack() as stack:
         opened: tuple[AsyncSession, str] | None = None
         try:
-            engine = create_engine(get_db_url_for_repo(root))
+            url = get_db_url_for_repo(root)
+            if reconcile:
+                await reconcile_schema_best_effort(url)
+            engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
@@ -619,8 +705,8 @@ def head_commit_ts(repo_path: Path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    rather than wall clock, the same anchor the git history windows use, so
+    the cadence is deterministic and correct for historical checkouts.
 
     Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
     the same units the gate reads it back in.
@@ -742,8 +828,8 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
         try:
             save_repo_env_key(repo_path, env_var, value)
         except (OSError, ValueError) as exc:
-            err_console.print(
-                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+            warn(
+                f"could not save {env_var} to "
                 f".repowise/.env ({exc}). The index is complete, but "
                 f"`repowise mcp` will need {env_var} in its environment."
             )
@@ -927,8 +1013,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -954,6 +1040,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):
@@ -1006,7 +1095,7 @@ def resolve_provider(
         warnings = validate_provider_config(provider_name)
         if warnings:
             for warning in warnings:
-                err_console.print(f"[yellow]Warning:[/yellow] {warning}")
+                warn(warning)
             # For explicit provider requests, we still try to create it
             # The provider constructor will fail if the API key is actually required
 
@@ -1343,6 +1432,31 @@ class CommandTarget:
         if entry is None:
             return None
         return (self.ws_root / entry.path).resolve()
+
+    def single_repo_path(self) -> Path:
+        """The one repository to read, narrowing workspace mode to a repo.
+
+        ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
+        left ``None``, so a command that reads ``repo_path`` directly refuses
+        every ``--repo`` call it advertises. Three commands already hand-roll
+        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
+        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+
+        Raises ``click.ClickException`` when the alias is unknown or the
+        workspace declares no primary.
+        """
+        if not self.is_workspace:
+            assert self.repo_path is not None
+            return self.repo_path
+        if self.repo_filter is not None:
+            picked = self.resolve_repo_alias(self.repo_filter)
+            if picked is None:
+                raise click.ClickException(f"Unknown repo alias: {self.repo_filter}")
+            return picked
+        primary = self.primary_path()
+        if primary is None:
+            raise click.ClickException("Workspace has no primary repo configured.")
+        return primary
 
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always

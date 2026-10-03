@@ -7,10 +7,11 @@ grep for, and an identifier-exact query matches the description of the code
 rather than the code.
 
 The concept index closes that. It is rendered from the assembled symbol data
-and appended after the model has written the page, so the identifiers and the
-paths in it are the index's, not the model's, and no provider response can
-change them. That placement is the whole point: put the same table in the
-prompt and the model may reformat it, abbreviate a path, or drop it.
+into the page's agent digest after the model has written the page, so the
+identifiers and the paths in it are the index's, not the model's, and no
+provider response can change them. That placement is the whole point: put the
+same table in the prompt and the model may reformat it, abbreviate a path, or
+drop it.
 
 A page whose members export nothing renders no table rather than an empty one —
 a header row with no rows under it is a claim that the module has no public
@@ -140,13 +141,13 @@ async def test_rendered_page_carries_real_symbol_names_and_paths(
     """The identifiers reach the page the model wrote, spelled exactly."""
     page = await _module_page(prose_only_generator, resolver_module.contexts)
 
-    assert CONCEPT_INDEX_HEADING in page.content
-    assert "| Concept | Symbol | File |" in page.content
-    assert "`ResolverContext`" in page.content
-    assert "`resolve_imports`" in page.content
-    assert "`TsconfigResolver`" in page.content
-    assert "`packages/core/src/repowise/core/ingestion/resolvers/context.py`" in page.content
-    assert "`packages/core/src/repowise/core/ingestion/resolvers/tsconfig.py`" in page.content
+    assert CONCEPT_INDEX_HEADING in page.digest
+    assert "| Concept | Symbol | File |" in page.digest
+    assert "`ResolverContext`" in page.digest
+    assert "`resolve_imports`" in page.digest
+    assert "`TsconfigResolver`" in page.digest
+    assert "`packages/core/src/repowise/core/ingestion/resolvers/context.py`" in page.digest
+    assert "`packages/core/src/repowise/core/ingestion/resolvers/tsconfig.py`" in page.digest
 
 
 async def test_concept_column_spells_the_identifier_as_prose(prose_only_generator, resolver_module):
@@ -154,14 +155,14 @@ async def test_concept_column_spells_the_identifier_as_prose(prose_only_generato
     on the right, both on one line so either wording finds the page."""
     page = await _module_page(prose_only_generator, resolver_module.contexts)
 
-    assert "| Resolver context | `ResolverContext` |" in page.content
-    assert "| Resolve imports | `resolve_imports` |" in page.content
+    assert "| Resolver context | `ResolverContext` |" in page.digest
+    assert "| Resolve imports | `resolve_imports` |" in page.digest
 
 
 async def test_non_public_symbols_stay_off_the_table(prose_only_generator, resolver_module):
     page = await _module_page(prose_only_generator, resolver_module.contexts)
 
-    assert "_private_helper" not in page.content
+    assert "_private_helper" not in page.digest
 
 
 async def test_a_module_with_no_public_symbols_renders_no_table(prose_only_generator):
@@ -173,18 +174,18 @@ async def test_a_module_with_no_public_symbols_renders_no_table(prose_only_gener
 
     page = await _module_page(prose_only_generator, contexts)
 
-    assert CONCEPT_INDEX_HEADING not in page.content
-    assert "| Concept | Symbol | File |" not in page.content
+    assert CONCEPT_INDEX_HEADING not in page.digest
+    assert "| Concept | Symbol | File |" not in page.digest
 
 
-async def test_the_table_starts_on_its_own_line(prose_only_generator, resolver_module):
-    """Appending is string concatenation, and a heading glued to the last line
-    of the model's prose renders as body text. Assert the separator that has to
-    be there, not merely the absence of extra ones."""
+async def test_the_table_stays_off_the_body(prose_only_generator, resolver_module):
+    """The body is what a reader scrolls; the table is for search and agents."""
     page = await _module_page(prose_only_generator, resolver_module.contexts)
 
-    assert f"\n\n{CONCEPT_INDEX_HEADING}\n" in page.content
-    assert "\n\n\n" not in page.content
+    assert CONCEPT_INDEX_HEADING not in page.content
+    assert "`ResolverContext`" not in page.content
+    assert page.digest.startswith(CONCEPT_INDEX_HEADING)
+    assert "\n\n\n" not in page.digest
 
 
 def test_concept_index_orders_by_the_page_rank_of_the_file():

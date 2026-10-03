@@ -1,161 +1,205 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useTransition } from "react";
-import { Filter } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { Search } from "lucide-react";
+import { PaginationControls } from "@repowise-dev/ui/shared/pagination-controls";
+import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { contractsListHref, type ContractListFilters } from "./contract-href";
 
-/**
- * Every type the extractors can emit, in the order the select lists them.
- * Which of them a workspace actually holds is a separate question — see
- * `typeOptions`.
- */
+/** Every type the extractors can emit, in tab order. */
 const ALL_TYPES = ["http", "grpc", "socket", "topic", "data", "code"];
 
+/** Keystrokes settle for this long before the list is re-fetched. */
+const SEARCH_DEBOUNCE_MS = 300;
+
 /**
- * The type options this workspace can act on.
- *
- * A control that cannot act must look like it, and three of the five options
- * this select used to offer could not return a row on any workspace here:
- * `grpc`, `socket` and `topic` are all zero, while `code` — the single largest
- * type — had no option at all. The distribution is already on the workspace
- * payload, so the control is built from it rather than from the vocabulary,
- * and the count goes on the label so a reader knows what a filter is worth
- * before spending a click on it.
- *
- * `byType` must be the workspace-wide breakdown, not the one on the contracts
- * response: that one is computed after the filters are applied, so selecting a
- * type would delete every other option and strand the reader inside it.
- *
- * With no breakdown available the full vocabulary comes back rather than an
- * empty select — an unfiltered list is a worse failure than an option that
- * returns nothing.
+ * The type tabs, from the workspace-wide distribution rather than the
+ * vocabulary: a tab that can never return a row is a control that cannot act.
+ * `byType` must be the unfiltered breakdown, or picking a type would delete
+ * every other tab. A type someone linked to stays, so the URL never selects a
+ * tab that is not drawn.
  */
-function typeOptions(byType: Record<string, number> | null | undefined, selected: string) {
-  const present = byType
-    ? ALL_TYPES.filter((t) => (byType[t] ?? 0) > 0)
-    : ALL_TYPES;
-  // A type the vocabulary does not name still gets an option when the
-  // workspace holds one, so a new extractor is filterable before this list is.
+function typeTabs(byType: Record<string, number> | null, selected: string) {
+  const known = byType ? ALL_TYPES.filter((t) => (byType[t] ?? 0) > 0) : ALL_TYPES;
   const extra = byType
     ? Object.keys(byType).filter((t) => !ALL_TYPES.includes(t) && byType[t]! > 0)
     : [];
-  const values = [...present, ...extra];
-  // A type someone linked to directly stays selectable even when the workspace
-  // holds none of it, or the select would render blank against its own URL.
+  const values = [...known, ...extra];
   if (selected && !values.includes(selected)) values.push(selected);
+  const total = byType ? Object.values(byType).reduce((a, b) => a + b, 0) : null;
   return [
-    { value: "", label: "All types" },
-    ...values.map((value) => ({
-      value,
-      label: byType?.[value]
-        ? `${contractTypeLabel(value)} ${formatNumber(byType[value]!)}`
-        : contractTypeLabel(value),
+    { id: "", label: "All", ...(total != null ? { badge: formatNumber(total) } : {}) },
+    ...values.map((t) => ({
+      id: t,
+      label: contractTypeLabel(t),
+      ...(byType?.[t] ? { badge: formatNumber(byType[t]!) } : {}),
     })),
   ];
 }
 
-const ROLE_OPTIONS = [
-  { value: "", label: "All roles" },
-  { value: "provider", label: "Providers" },
-  { value: "consumer", label: "Consumers" },
-];
-
 const SELECT_CLASS =
-  "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-border-active)] disabled:opacity-60";
+  "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus-visible:border-[var(--color-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-60";
 
 /**
- * The contracts table's filters.
- *
- * The only stateful thing on an otherwise server-rendered page, and it keeps
- * its state in the URL rather than in React: the page re-renders on the server
- * with the new filter, so a filtered view is linkable and the table's counts
- * come from the same request that drew the rows.
+ * The list's controls. State lives in the URL, so a filtered view is linkable
+ * and the server renders the rows and their count from the same request. Each
+ * axis has one control: type is the tab row, the rest narrow within it.
  */
-export function ContractFilters({
+export function ContractListControls({
+  filters,
   repos,
   byType,
 }: {
+  filters: ContractListFilters;
   repos: string[];
   /** Workspace-wide contracts per type, from `contract_summary`. */
-  byType?: Record<string, number> | null;
+  byType: Record<string, number> | null;
 }) {
   const router = useRouter();
-  const params = useSearchParams();
   const [pending, startTransition] = useTransition();
-  const types = typeOptions(byType, params.get("type") ?? "");
+  const [text, setText] = useState(filters.q ?? "");
+  const current = useRef(filters);
+  current.current = filters;
 
-  const set = useCallback(
-    (key: string, value: string) => {
-      const next = new URLSearchParams(params.toString());
-      if (value) next.set(key, value);
-      else next.delete(key);
-      startTransition(() => {
-        router.push(next.size > 0 ? `?${next.toString()}` : "/workspace/contracts");
-      });
-    },
-    [params, router],
-  );
+  // Follow the URL when something else changes it (Back, a Browse link). The
+  // box's own debounced write is recognised and skipped, so text typed while
+  // that write was in flight is never overwritten.
+  const urlQ = filters.q ?? "";
+  const ownWrite = useRef<string | null>(null);
+  useEffect(() => {
+    if (ownWrite.current === urlQ) {
+      ownWrite.current = null;
+      return;
+    }
+    setText(urlQ);
+  }, [urlQ]);
+
+  const go = (next: ContractListFilters) => {
+    // Any change of filter starts the list from its first page.
+    const href = contractsListHref({ ...next, page: undefined }).split("#")[0]!;
+    startTransition(() => router.replace(href, { scroll: false }));
+  };
+
+  useEffect(() => {
+    const q = text.trim();
+    if (q === (current.current.q ?? "")) return;
+    const id = window.setTimeout(() => {
+      ownWrite.current = q;
+      go({ ...current.current, q });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+    // `go` reads the latest filters through the ref; only the text schedules.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        <Filter className="h-3.5 w-3.5" aria-hidden />
-        Filter
-      </span>
+    <div className="flex flex-col gap-3">
+      <ViewTabs
+        aria-label="Contract type"
+        tabs={typeTabs(byType, filters.type ?? "")}
+        value={filters.type ?? ""}
+        onValueChange={(type) => go({ ...filters, type })}
+      />
+      <div className="flex flex-wrap items-center gap-2" aria-busy={pending}>
+        <label className="relative min-w-[220px] flex-1">
+          <span className="sr-only">Search contracts</span>
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]"
+            aria-hidden
+          />
+          <input
+            type="search"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Search path, table, file, symbol or service"
+            className={`${SELECT_CLASS} w-full pl-8`}
+          />
+        </label>
 
-      <label className="sr-only" htmlFor="contract-type">
-        Contract type
-      </label>
-      <select
-        id="contract-type"
-        className={SELECT_CLASS}
-        disabled={pending}
-        value={params.get("type") ?? ""}
-        onChange={(e) => set("type", e.target.value)}
-      >
-        {types.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        <label className="sr-only" htmlFor="contract-repo">
+          Repository
+        </label>
+        <select
+          id="contract-repo"
+          className={SELECT_CLASS}
+          value={filters.repo ?? ""}
+          onChange={(e) => go({ ...filters, repo: e.target.value })}
+        >
+          <option value="">All repositories</option>
+          {repos.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
 
-      <label className="sr-only" htmlFor="contract-repo">
-        Repository
-      </label>
-      <select
-        id="contract-repo"
-        className={SELECT_CLASS}
-        disabled={pending}
-        value={params.get("repo") ?? ""}
-        onChange={(e) => set("repo", e.target.value)}
-      >
-        <option value="">All repositories</option>
-        {repos.map((r) => (
-          <option key={r} value={r}>
-            {r}
-          </option>
-        ))}
-      </select>
+        <label className="sr-only" htmlFor="contract-role">
+          Role
+        </label>
+        <select
+          id="contract-role"
+          className={SELECT_CLASS}
+          value={filters.role ?? ""}
+          onChange={(e) => go({ ...filters, role: e.target.value })}
+        >
+          <option value="">Providers and consumers</option>
+          <option value="provider">Providers</option>
+          <option value="consumer">Consumers</option>
+        </select>
 
-      <label className="sr-only" htmlFor="contract-role">
-        Role
-      </label>
-      <select
-        id="contract-role"
-        className={SELECT_CLASS}
-        disabled={pending}
-        value={params.get("role") ?? ""}
-        onChange={(e) => set("role", e.target.value)}
-      >
-        {ROLE_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        <label className="sr-only" htmlFor="contract-linked">
+          Link
+        </label>
+        <select
+          id="contract-linked"
+          className={SELECT_CLASS}
+          value={filters.linked ?? ""}
+          onChange={(e) => go({ ...filters, linked: e.target.value })}
+        >
+          <option value="">Linked or not</option>
+          <option value="yes">On a matched link</option>
+          <option value="no">On no link</option>
+        </select>
+
+        {pending ? (
+          <span className="text-[10px] text-[var(--color-text-tertiary)]" role="status">
+            Updating...
+          </span>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+/** Previous and next page of the list, keeping every filter. */
+export function ContractListPager({
+  filters,
+  page,
+  pageSize,
+  shown,
+  total,
+}: {
+  filters: ContractListFilters;
+  page: number;
+  pageSize: number;
+  shown: number;
+  total: number;
+}) {
+  const router = useRouter();
+  const to = (p: number) =>
+    router.push(contractsListHref({ ...filters, page: p }), { scroll: false });
+  const offset = (page - 1) * pageSize;
+  return (
+    <PaginationControls
+      offset={offset}
+      shown={shown}
+      total={total}
+      label="contracts"
+      onPrevious={page > 1 ? () => to(page - 1) : undefined}
+      onNext={offset + shown < total ? () => to(page + 1) : undefined}
+    />
   );
 }

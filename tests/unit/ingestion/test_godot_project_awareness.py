@@ -137,8 +137,9 @@ class TestSceneExtraction:
         assert _paths(extract_godot_imports(line)) == ["res://a.gd"]
 
     def test_uid_only_ext_resource_yields_nothing(self) -> None:
-        # Godot 4.4 may omit path=. Documented ceiling, recorded as no edge
-        # rather than a guess.
+        # A uid with no path= on the same header. Godot writes both together
+        # on real files, so this shape has no edge to give: recorded as no
+        # edge rather than a guess.
         line = '[ext_resource type="Script" uid="uid://bxyz" id="1_a"]\n'
         assert extract_godot_imports(line) == []
 
@@ -442,7 +443,12 @@ def _connection_edges(tmp_path: Path, files: dict[str, str]) -> nx.DiGraph:
         abs_path = tmp_path / rel
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_text(text, encoding="utf-8")
-        language = "gdscript" if rel.endswith(".gd") else "godot_resource"
+        if rel.endswith(".gd"):
+            language = "gdscript"
+        elif rel.endswith(".cs"):
+            language = "csharp"
+        else:
+            language = "godot_resource"
         symbols = []
         if language == "gdscript":
             for line in text.splitlines():
@@ -452,6 +458,14 @@ def _connection_edges(tmp_path: Path, files: dict[str, str]) -> nx.DiGraph:
                     symbols.append(
                         SimpleNamespace(id=sym_id, name=name, kind="function")
                     )
+                    graph.add_node(sym_id, node_type="symbol")
+        elif language == "csharp":
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("public void "):
+                    name = stripped[len("public void ") :].split("(", 1)[0].strip()
+                    sym_id = f"{rel}::{name}"
+                    symbols.append(SimpleNamespace(id=sym_id, name=name, kind="method"))
                     graph.add_node(sym_id, node_type="symbol")
         parsed[rel] = SimpleNamespace(
             file_info=_file_info(rel, language, str(abs_path)),
@@ -645,6 +659,24 @@ class TestSceneConnectionEdges:
             },
         )
         assert not graph.has_edge("main.tscn::__module__", "hud.gd::_on_start_pressed")
+
+    def test_a_csharp_handler_binds(self, tmp_path: Path) -> None:
+        # C# is a first-class Godot scripting option; a scene connecting to
+        # a C# script's method must bind exactly like a GDScript handler
+        # (issue #2303).
+        scene = ROOT_SCRIPT_SCENE.replace("hud.gd", "Hud.cs").replace(
+            'method="_on_start_pressed"', 'method="OnPressed"'
+        )
+        hud_cs = (
+            "public partial class Hud : CanvasLayer\n"
+            "{\n"
+            "    public void OnPressed()\n"
+            "    {\n"
+            "    }\n"
+            "}\n"
+        )
+        graph = _connection_edges(tmp_path, {"hud.tscn": scene, "Hud.cs": hud_cs})
+        assert graph.has_edge("hud.tscn::__module__", "Hud.cs::OnPressed")
 
     def test_the_handler_needs_a_scene(self, tmp_path: Path) -> None:
         parsed = {

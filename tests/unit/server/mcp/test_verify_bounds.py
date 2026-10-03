@@ -179,6 +179,20 @@ class TestRelocateSymbol:
         assert located is not None
         assert located[0] == 10
 
+    def test_relocate_serves_the_implementation_not_an_overload_stub(self) -> None:
+        source = (
+            "from typing import overload\n"
+            "\n"
+            "\n"
+            "@overload\n"
+            "def alpha(x: int) -> int: ...\n"
+            "@overload\n"
+            "def alpha(x: str) -> str: ...\n"
+            "def alpha(x):\n"
+            "    return x\n"
+        )
+        assert relocate_symbol(_row(), source) == (8, 9)
+
     def test_relocate_returns_none_for_missing_symbol(self) -> None:
         row = _row(name="ghost", symbol_id="pkg/mod.py::ghost")
         assert relocate_symbol(row, SHIFTED_SOURCE) is None

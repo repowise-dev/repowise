@@ -75,9 +75,10 @@ async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
 async def test_get_why_natural_language_with_targets(setup_mcp):
     from repowise.server.mcp_server import get_why
 
-    # Search with targets — decisions governing service.py should be boosted
+    # Search with targets — a record governing service.py and carrying the
+    # question's words is boosted above one that only carries the words.
     result = await get_why(
-        "authentication approach",
+        "why is JWT used for authentication",
         targets=["src/auth/service.py"],
     )
     assert result["mode"] == "search"
@@ -86,9 +87,13 @@ async def test_get_why_natural_language_with_targets(setup_mcp):
     # target_context should be present
     assert "target_context" in result
     ctx = result["target_context"]["src/auth/service.py"]
-    assert len(ctx["governing_decisions"]) >= 1
     assert ctx["origin"]["available"] is True
     assert ctx["origin"]["primary_author"] == "Alice"
+    # Nobody has accepted the fixture's records, so they are candidates and the
+    # rules lane is empty. Claiming otherwise is what this split exists to stop.
+    assert ctx["governing_decisions"] == []
+    assert ctx["candidate_decisions"]
+    assert result["answer_basis"] != "decision"
 
 
 @pytest.mark.asyncio
@@ -534,7 +539,8 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
     a path that also does everything else. The record ranked first is the one
     a reader acts on; the rest keep the stored proportion, which cost nothing.
     """
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     calls: list[tuple] = []
 
@@ -542,7 +548,7 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
         calls.append((root, tuple(nodes)))
         return "nothing in the 1 file it governs has changed since 2026-01-01"
 
-    monkeypatch.setattr(tool_why, "describe_decision_currency", _fake)
+    monkeypatch.setattr(path_mode, "describe_decision_currency", _fake)
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
     result = await get_why("src/auth/service.py")
@@ -554,10 +560,11 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
 
 @pytest.mark.asyncio
 async def test_get_why_stays_silent_when_git_cannot_decide(session, setup_mcp, monkeypatch):
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     monkeypatch.setattr(
-        tool_why, "describe_decision_currency", lambda root, **kw: None
+        path_mode, "describe_decision_currency", lambda root, **kw: None
     )
 
     result = await get_why("src/auth/service.py")
@@ -676,3 +683,66 @@ async def test_get_why_path_fits_on_an_ungoverned_file(session, setup_mcp, monke
     # The fallback really was over the line — otherwise this test proves nothing.
     assert result["truncated"] is True
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+def _meta_with(path: str, *messages: str):
+    import json as _json
+    from types import SimpleNamespace
+
+    commits = [
+        {"sha": f"s{i}", "message": m, "author": "a", "date": f"2026-01-0{i + 1}"}
+        for i, m in enumerate(messages)
+    ]
+    return SimpleNamespace(file_path=path, significant_commits_json=_json.dumps(commits))
+
+
+def test_cross_references_match_whole_tokens_not_substrings():
+    """``auth`` inside ``author`` is not a mention of an auth file."""
+    from repowise.server.mcp_server.tool_why.archaeology import _cross_references, _search_terms
+
+    path = "src/auth_cache.py"
+    basename, _stem, terms = _search_terms(path)
+    other = _meta_with(
+        "src/other.py",
+        "Credit the author in the cache docs",  # "auth" only inside "author"
+        "Invalidate auth cache on logout",  # both stem tokens as words
+    )
+
+    refs = _cross_references(path, basename, terms, [other])
+
+    assert [r["message"] for r in refs] == ["Invalidate auth cache on logout"]
+    assert refs[0]["matched_terms"] == ["auth", "cache"]
+
+
+@pytest.mark.asyncio
+async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session, setup_mcp):
+    """A record naming only files gone at HEAD is history, not a binding rule."""
+    import json
+
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.server.mcp_server import get_why
+
+    path = "src/other/legacy.py"
+    records = [
+        DecisionRecord(
+            id=f"gone{flag}",
+            repository_id=setup_mcp,
+            title=f"Legacy rule {flag}",
+            rationale="why",
+            affected_files_json=json.dumps([path]),
+            source="pr",
+            artifacts_gone=flag,
+        )
+        for flag in (True, False)
+    ]
+    session.add_all(records)
+    await session.flush()
+    for record in records:
+        await accept_decision(session, record, accepter="test", evidence=["pr#1"])
+    await session.flush()
+
+    result = await get_why("why legacy", targets=[path])
+
+    governing = result["target_context"][path]["governing_decisions"]
+    assert [d["id"] for d in governing] == ["goneFalse"]

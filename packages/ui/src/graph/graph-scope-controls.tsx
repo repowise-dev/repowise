@@ -162,6 +162,7 @@ export function GraphNarrowingSelect({
   communities,
   activeModule,
   activeCommunity,
+  activeCommunityLabel,
   onChange,
   className,
 }: {
@@ -170,12 +171,13 @@ export function GraphNarrowingSelect({
   communities?: readonly CommunitySummaryItem[] | undefined;
   activeModule: string | null;
   activeCommunity: number | null;
+  activeCommunityLabel?: string | undefined;
   /** Exactly one of the two is ever non-null. */
   onChange: (next: { module: string | null; community: number | null }) => void;
   className?: string | undefined;
 }) {
   const hasCommunities = (communities?.length ?? 0) > 0;
-  if (modules.length < 2 && !hasCommunities) return null;
+  if (modules.length < 2 && !hasCommunities && activeCommunity === null && !activeModule) return null;
 
   const prominent = modules.slice(0, PROMINENT_MODULES);
   const rest = modules.slice(PROMINENT_MODULES);
@@ -186,6 +188,16 @@ export function GraphNarrowingSelect({
   // nothing. Give the stale value an option that says so.
   const staleModule =
     activeModule && !modules.some((g) => g.id === activeModule) ? activeModule : null;
+  // When drilled into a community outside the largest 20 returned by the
+  // endpoint (or if communities haven't loaded yet), the controlled <select>
+  // would match no option and fall back to displaying the first option ("All files").
+  // Provide a fallback option for the active community.
+  const staleCommunity =
+    activeCommunity !== null &&
+    activeCommunity !== undefined &&
+    !communities?.some((c) => c.community_id === activeCommunity)
+      ? activeCommunity
+      : null;
 
   // Encoded rather than two parallel values, because a <select> has one value
   // and the two kinds share a namespace ("external" is a module id, 3 is a
@@ -216,9 +228,14 @@ export function GraphNarrowingSelect({
       >
         <option value="">All files</option>
         {staleModule && <option value={`m:${staleModule}`}>{staleModule} · 0</option>}
-        {hasCommunities && (
+        {(hasCommunities || staleCommunity !== null) && (
           <optgroup label="Community">
-            {communities!.map((c) => (
+            {staleCommunity !== null && (
+              <option value={`c:${staleCommunity}`}>
+                {activeCommunityLabel ?? `Community ${staleCommunity}`}
+              </option>
+            )}
+            {communities?.map((c) => (
               <option key={c.community_id} value={`c:${c.community_id}`}>
                 {c.label} · {formatNumber(c.member_count)}
               </option>

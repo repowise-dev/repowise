@@ -9,10 +9,93 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
+export interface ActionCommand {
+  purpose: string;
+  mcp?: string | null;
+  cli?: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
+}
+
+export interface ActionContext {
+  production_files: number;
+  active_authors_90d: number;
+  fix_commits_90d: number;
+  busy_threshold: number;
+  coverage: "measured" | "stale" | "unknown";
+}
+
+export interface ActionDetail {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
+  marker?: string | null;
+  severity?: string | null;
+  reason?: string;
+  ref?: string | null;
+}
+
+export interface ActionHorizon {
+  actions: NextAction[];
+  /** Every visible action in this horizon, not only those listed. */
+  total: number;
+  /** Actions the person dismissed, snoozed or marked done. */
+  hidden: number;
+  by_tier: Record<string, number>;
+}
+
+export interface ActionRuleStatus {
+  rule: string;
+  status: "evaluated" | "not_applicable" | "unavailable";
+  reason: string;
+  emitted: number;
+}
+
+export interface ActionStateRequest {
+  /** None clears the person's answer. */
+  state: "dismissed" | "snoozed" | "done" | null;
+  fingerprint?: string;
+  snooze_days?: number;
+}
+
+export interface ActionStateResponse {
+  action_id: string;
+  state: "dismissed" | "snoozed" | "done" | null;
+  until?: string | null;
+}
+
+export interface ActionTarget {
+  kind: "file" | "symbol" | "folder" | "document" | "decision" | "repo";
+  path: string;
+  symbol?: string | null;
+}
+
+export interface ActionWhy {
+  label: string;
+  value: string;
+  basis: "measured" | "inferred" | "unknown";
+}
+
+export interface ActionsResponse {
+  status: "available";
+  /** Newest indexed commit time; windows count back from it. */
+  anchor: string | null;
+  week_start: string | null;
+  context: ActionContext;
+  horizons: Record<string, ActionHorizon>;
+  rules: ActionRuleStatus[];
+  unavailable: Record<string, string>;
+}
+
 /** The provider/model this scope resolves to; ``None`` when unset. */
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+}
+
+export interface AgentPromptResponse {
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  text: string;
 }
 
 /** One month of agent-vs-human commit volume. */
@@ -333,6 +416,24 @@ export interface ChatRequest {
 }
 
 /**
+ * One composer chip. ``source`` lets a client rank a measured question
+ * above the static tier it already ships.
+ */
+export interface ChatSuggestion {
+  text: string;
+  source: "static" | "page" | "followup";
+  toolHint?: string | null;
+}
+
+/**
+ * Only the measured tier. An empty list means the page had nothing to
+ * measure, and the client's own static tier stands.
+ */
+export interface ChatSuggestionsResponse {
+  suggestions?: ChatSuggestion[];
+}
+
+/**
  * One file on the churn-vs-complexity scatter.
  *
  * Every figure is coerced by the producer, so none is nullable here: a zero
@@ -413,6 +514,8 @@ export interface CommitDetailResponse {
   agent_confidence?: string | null;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
+  files?: CommitFileResponse[];
+  health?: CommitHealthResponse | null;
 }
 
 /**
@@ -444,6 +547,46 @@ export interface CommitEvolutionResponse {
   granularity: string;
   first_commit_at?: string | null;
   last_commit_at?: string | null;
+}
+
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFileResponse {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  prior_fixes?: number | null;
+}
+
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  attribution_basis: string;
+  reason: string;
+}
+
+/**
+ * What a commit did to code health, as computed at index time.
+ *
+ * Absent on the commit, rather than empty, when the commit was never
+ * scanned — the scan is bounded, so older commits routinely have no row and
+ * that is not the same claim as "changed nothing".
+ */
+export interface CommitHealthResponse {
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  findings?: CommitHealthFindingResponse[];
 }
 
 /**
@@ -648,6 +791,56 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+/** One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them. */
+export interface CoverageHistoryPoint {
+  ingested_at: string;
+  ingested_commit_sha: string | null;
+  line_coverage_pct: number;
+  branch_coverage_pct: number | null;
+}
+
+/** How the report's own file entries mapped to the repository at ingest. */
+export interface CoverageReportPaths {
+  total: number;
+  matched: number;
+  unmatched: number;
+  ambiguous: number;
+  unmatched_sample: string[];
+}
+
+/** ``GET /health/coverage``. ``basis`` is absent when the graph was not consulted. */
+export interface CoverageResponse {
+  summary: CoverageSummary;
+  files: Record<string, unknown>[];
+  modules: Record<string, unknown>[];
+  modules_total: number;
+  basis?: "measured" | "inferred" | "none" | null;
+  inferred?: Record<string, unknown> | null;
+  history?: CoverageHistoryPoint[] | null;
+}
+
+/** The repository's stored coverage, aggregated. Zero counts and nulls when none is stored. */
+export interface CoverageSummary {
+  file_count: number;
+  covered_lines: number;
+  total_lines: number;
+  line_coverage_pct: number | null;
+  branch_coverage_pct: number | null;
+  source_format: string | null;
+  source_formats: string[];
+  mapping_partial: boolean | null;
+  ingested_at: string | null;
+  ingested_commit_sha: string | null;
+  report_paths: CoverageReportPaths | null;
+  freshness: CoverageSummaryFreshness | null;
+}
+
+/** Whether the coverage was measured at the commit the index describes. */
+export interface CoverageSummaryFreshness {
+  status: "current" | "stale" | "unknown";
+  indexed_commit: string | null;
+}
+
 /** 202 launch payload for a re-analysis (an index-only job, no LLM work). */
 export interface DeadCodeAnalyzeResponse {
   job_id: string;
@@ -663,7 +856,7 @@ export interface DeadCodeFindingResponse {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   start_line: number | null;
   end_line: number | null;
   safe_to_delete: boolean;
@@ -674,6 +867,7 @@ export interface DeadCodeFindingResponse {
   note: string | null;
   last_commit_at: string | null;
   commit_count_90d: number;
+  verification?: string | null;
 }
 
 export interface DeadCodeGraphNodeResponse {
@@ -738,6 +932,7 @@ export interface DecisionCountsResponse {
 
 export interface DecisionCreate {
   title: string;
+  kind?: "architectural" | "agreement" | null;
   context?: string;
   decision?: string;
   rationale?: string;
@@ -870,6 +1065,7 @@ export interface DecisionRecordResponse {
   confidence: number;
   staleness_score: number;
   verification?: string;
+  kind?: string;
   scope?: string | null;
   superseded_by: string | null;
   last_code_change: string | null;
@@ -878,6 +1074,9 @@ export interface DecisionRecordResponse {
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
   currency?: string | null;
+  accepter?: string | null;
+  accepter_kind?: string | null;
+  accepter_session?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -885,6 +1084,7 @@ export interface DecisionSettings {
   enabled?: boolean;
   llm?: boolean;
   preset?: string;
+  agent_acceptance?: boolean;
   discovery?: DecisionDiscoveryBudget;
   sources?: DecisionSourceState[];
   provider_available?: boolean;
@@ -898,6 +1098,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean | null;
   llm?: boolean | null;
   preset?: string | null;
+  agent_acceptance?: boolean | null;
   sources?: Record<string, DecisionSourcePatch> | null;
   discovery?: DecisionDiscoveryPatch | null;
   etag?: string | null;
@@ -963,49 +1164,97 @@ export interface DirectRiskEntry {
   structural_score: number;
   risk_score: number;
   temporal_hotspot: number;
+  churn_percentile: number;
+  is_hotspot: boolean;
   centrality: number;
 }
 
-export interface DistillSavingsGroup {
-  group: string;
-  events: number;
-  raw_tokens: number;
-  distilled_tokens: number;
-  saved_tokens: number;
+/**
+ * A naming document that carries drift somewhere in it.
+ *
+ * ``findings`` counts the whole document, not assertions about the file that
+ * was asked about. A drifted reference resolves to nothing, so no row here
+ * can say a document's description of that file is wrong.
+ */
+export interface DocDriftDocumentDriftResponse {
+  document: string;
+  findings: number;
 }
 
 /**
- * Savings rollup for the Costs page hero card.
+ * One assertion a document makes that the repository no longer satisfies.
  *
- * The ``distill`` block (``saved_tokens`` etc.) covers the ``repowise
- * distill`` command/hook path. The ``mcp`` block surfaces tokens already
- * dropped past MCP response budgets (the ``omissions`` store), which the
- * distill ledger never recorded. Savings are priced at the *coding agent's*
- * detected model (``pricing_model`` / ``pricing_agent`` / ``pricing_source``)
- * — they are input tokens that agent never had to read. ``available`` is
- * False when the repo has no omission store on disk (feature unused).
+ * ``file_path`` is the *document* to edit, never the target it names. A
+ * reader who reads it as the broken file has been told the opposite of the
+ * truth, which is why the field keeps the name every other drift surface
+ * gives it.
  */
-export interface DistillSavingsResponse {
-  available: boolean;
-  events?: number;
-  raw_tokens?: number;
-  distilled_tokens?: number;
-  saved_tokens?: number;
-  estimated_usd_saved?: number;
-  pricing_model?: string;
-  pricing_agent?: string;
-  pricing_source?: string;
-  per_filter?: DistillSavingsGroup[];
-  per_day?: DistillSavingsGroup[];
-  mcp_events?: number;
-  mcp_tokens?: number;
-  mcp_queries?: number;
-  mcp_per_tool?: McpDropGroup[];
-  missed_events?: number;
-  missed_tokens_est?: number;
-  missed_window_days?: number;
-  reread_events?: number;
-  reread_tokens_est?: number;
+export interface DocDriftFindingResponse {
+  id: string;
+  file_path: string;
+  line_number: number;
+  kind: string;
+  target: string;
+  confidence: number;
+  origin: string;
+  reason: string;
+  raw: string;
+  context: string;
+  evidence: string[];
+  fingerprint: string;
+  suggestion?: string | null;
+  suggestion_basis?: string | null;
+  first_seen_at?: string | null;
+  is_new?: boolean;
+}
+
+/**
+ * A document that names a file the repository still has.
+ *
+ * Deliberately weaker than a finding: it does not claim the document
+ * describes the file, or that its prose is current.
+ */
+export interface DocDriftReferenceResponse {
+  document: string;
+  line: number;
+  kind: string;
+  section?: string;
+}
+
+/** Which documents name one file: the reverse view, over HTTP. */
+export interface DocDriftReferencesResponse {
+  target_path: string;
+  references: DocDriftReferenceResponse[];
+  references_emitted: number;
+  references_total: number;
+  documents: number;
+  documents_with_drift: DocDriftDocumentDriftResponse[];
+  references_basis: string;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/** Findings for a repository, with the rollup that makes them legible. */
+export interface DocDriftResponse {
+  findings: DocDriftFindingResponse[];
+  findings_emitted: number;
+  summary: DocDriftSummaryResponse | null;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/**
+ * The rollup above the list, computed server-side over the same rows.
+ *
+ * ``findings_total`` counts every finding matching the query, including any
+ * the display cap left out, so a client cannot recompute a page as if it were
+ * the repository.
+ */
+export interface DocDriftSummaryResponse {
+  findings_total: number;
+  documents: number;
+  confidence: Record<string, number>;
+  by_kind: Record<string, number>;
+  findings_basis: string;
+  new_since_last_update?: number | null;
 }
 
 export interface EgoGraphResponse {
@@ -1271,6 +1520,50 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FixAction {
+  summary: string;
+  steps: FixStep[];
+  steps_total: number;
+  mechanical: boolean;
+}
+
+export interface FixConfidence {
+  level: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface FixContext {
+  label: string;
+  value: string;
+}
+
+export interface FixEffortEstimate {
+  bucket: "S" | "M" | "L" | "XL";
+  basis: string;
+}
+
+export interface FixFact {
+  label: string;
+  value: string;
+  basis?: "measured" | "inferred" | "unknown";
+}
+
+/** ``FixFirstQueue.as_dict()``: the stored fields plus the ``lead`` it derives. */
+export interface FixFirstQueueResponse {
+  items: FixItem[];
+  lead: FixItem | null;
+  totals: FixTotals;
+  by_improves: Record<string, number>;
+  model_version: number;
+  basis: Record<string, string | null>;
+}
+
+export interface FixGain {
+  kind: "health_points" | "performance";
+  value: number | null;
+  text: string;
+}
+
 /** One changed file's recency-weighted bug-fix record. */
 export interface FixHistoryFileResponse {
   path: string;
@@ -1292,6 +1585,80 @@ export interface FixHistoryResponse {
   density: number;
   percentile: number | null;
   files: FixHistoryFileResponse[];
+}
+
+export interface FixItem {
+  id: string;
+  rank: number;
+  tier: "now" | "next" | "later";
+  kind: "refactor" | "perf_fix" | "finding";
+  improves: "defect" | "maintainability" | "performance";
+  title: string;
+  target: FixTarget;
+  why: string;
+  facts: FixFact[];
+  action: FixAction;
+  gain: FixGain;
+  effort: FixEffortEstimate;
+  risk: FixRisk;
+  confidence: FixConfidence;
+  verify: FixVerify;
+  context: FixContext[];
+  source: FixSource;
+  next_call: ActionCommand;
+  why_ranked?: FixRankFact[];
+}
+
+export interface FixRankFact {
+  factor: string;
+  value: string;
+}
+
+export interface FixRisk {
+  level: "high" | "medium" | "low";
+  dependents: number | null;
+  files_touched: number;
+  text: string;
+}
+
+export interface FixSource {
+  opportunity_id?: string | null;
+  plan_ids?: string[];
+  finding_ids?: string[];
+}
+
+export interface FixStep {
+  order: number;
+  text: string;
+  file_path: string;
+  line?: number | null;
+  mechanical?: boolean;
+}
+
+export interface FixTarget {
+  file_path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+}
+
+export interface FixTest {
+  path: string;
+  reason: string;
+}
+
+export interface FixTotals {
+  candidates?: number;
+  eligible?: number;
+  shown?: number;
+  excluded?: Record<string, number>;
+}
+
+export interface FixVerify {
+  tests: FixTest[];
+  tests_total: number;
+  command: string | null;
+  basis: "measured" | "inferred" | "unknown";
 }
 
 /** Optional per-call overrides for the enrichment provider/model. */
@@ -1363,6 +1730,7 @@ export interface GitMetadataResponse {
   primary_owner_name: string | null;
   primary_owner_email: string | null;
   primary_owner_commit_pct: number | null;
+  primary_owner_line_pct?: number | null;
   recent_owner_name: string | null;
   recent_owner_commit_pct: number | null;
   top_authors: Record<string, unknown>[];
@@ -1506,6 +1874,8 @@ export interface HealthFindingResponse {
   details?: Record<string, unknown>;
   status: string;
   dimension?: string;
+  verification?: string | null;
+  lower_priority?: string | null;
 }
 
 /**
@@ -1527,6 +1897,8 @@ export interface HealthFindingWithSymbolResponse {
   details?: Record<string, unknown>;
   status: string;
   dimension?: string;
+  verification?: string | null;
+  lower_priority?: string | null;
   symbol_id?: string | null;
 }
 
@@ -1558,6 +1930,7 @@ export interface HealthTrendKpiRow {
   structure_average?: number | null;
   history_average?: number | null;
   maintainability_average?: number | null;
+  doc_drift_count?: number | null;
 }
 
 export interface HealthTrendResponse {
@@ -1587,6 +1960,7 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: string;
   primary_reason?: string | null;
@@ -1607,6 +1981,7 @@ export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
   finding_total?: number;
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }
@@ -1667,6 +2042,32 @@ export interface HotspotResponse {
   original_path?: string | null;
 }
 
+export interface IdentityResponse {
+  signed_in: boolean;
+  hints_enabled: boolean;
+}
+
+/** One file on the impact / effort plane. */
+export interface ImpactEffortPoint {
+  file_path: string;
+  effort_lines: number;
+  effort_basis: string;
+  recoverable_health: number;
+  tier?: string | null;
+  fix_rank?: number | null;
+}
+
+/** Every file the work queue's filters keep, up to ``cap``. */
+export interface ImpactEffortResponse {
+  points?: ImpactEffortPoint[];
+  plotted?: number;
+  total?: number;
+  cap?: number;
+  effort_midline_lines?: number;
+  gain_midline_points?: number;
+  history_only_excluded?: number;
+}
+
 /**
  * The 202 payload every background-job launch returns.
  *
@@ -1722,21 +2123,6 @@ export interface KnowledgeMapTarget {
   path: string;
   pagerank: number;
   doc_words: number;
-}
-
-/**
- * Per-tool MCP savings (``tool`` with the ``mcp:`` prefix stripped).
- *
- * ``kind`` distinguishes a ``"counterfactual"`` saving (the answer replaced raw
- * file exploration — recorded in the savings ledger) from a ``"truncation"``
- * drop (content trimmed past the response budget — the only signal for tools
- * without a counterfactual estimator yet).
- */
-export interface McpDropGroup {
-  tool: string;
-  events: number;
-  tokens: number;
-  kind?: string;
 }
 
 /** One tool in the configurable surface, with the flags a UI needs. */
@@ -1851,6 +2237,32 @@ export interface NeighboringCommunity {
   cross_edge_count: number;
 }
 
+export interface NextAction {
+  id: string;
+  rule: string;
+  tier: "act_now" | "plan" | "improve_signal";
+  horizons: ("week" | "quarter")[];
+  severity: "critical" | "high" | "medium" | "low";
+  /** Verb first; paths and symbols wrapped in backticks. */
+  title: string;
+  impact: string;
+  why: ActionWhy[];
+  target: ActionTarget;
+  surface: string;
+  effort: "S" | "M" | "L";
+  confidence: "high" | "medium";
+  done_when: string;
+  command?: string | null;
+  marker?: string | null;
+  evidence_ids: string[];
+  evidence_total: number;
+  includes: string[];
+  fingerprint: string;
+  details?: ActionDetail[];
+  details_total?: number;
+  commands?: ActionCommand[];
+}
+
 export interface NodeSearchResult {
   node_id: string;
   language: string;
@@ -1903,7 +2315,7 @@ export interface OwnerListEntry {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   bus_factor_risk_files: number;
 }
@@ -1924,7 +2336,7 @@ export interface OwnerProfileResponse {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
   bus_factor_risk_files: number;
@@ -1980,6 +2392,7 @@ export interface PageResponse {
   created_at: string;
   updated_at: string;
   content: string;
+  digest?: string;
   metadata: Record<string, unknown>;
 }
 
@@ -2041,6 +2454,152 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/** Branches on changed lines, reported beside patch coverage, never blended into it. */
+export interface PatchCoverageBranches {
+  branch_taken: number;
+  branch_total: number;
+  branch_coverage_pct: number | null;
+  partial_line_count: number;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
+export interface PatchCoverageFile {
+  file_path: string;
+  status: "measured" | "not_in_report" | "no_line_data" | "no_coverable_changes";
+  changed_line_count: number;
+  coverable_line_count: number;
+  covered_line_count: number;
+  patch_coverage_pct: number | null;
+  uncovered_ranges: number[][];
+  branch_taken: number;
+  branch_total: number;
+  partial_ranges: number[][];
+  risk: PatchCoverageFileRisk | null;
+  hints: PatchCoverageTestHint[] | null;
+}
+
+export interface PatchCoverageFileCounts {
+  measured: number;
+  not_in_report: number;
+  no_line_data: number;
+  no_coverable_changes: number;
+  out_of_scope: number;
+}
+
+export interface PatchCoverageFileRisk {
+  fix_pressure: number | null;
+  dependents: number | null;
+  hotspot: boolean | null;
+  bug_magnet: boolean | null;
+  basis: "git" | "index" | "git_and_index" | "unavailable";
+  risky: boolean;
+  reasons: string[];
+}
+
+/** A file whose coverage changed on lines the change did not touch. */
+export interface PatchCoverageOutsideChange {
+  file_path: string;
+  status: "changed" | "no_longer_measured";
+  newly_uncovered_ranges: number[][];
+  newly_uncovered_line_count: number;
+  newly_covered_line_count: number;
+  base_pct: number | null;
+  head_pct: number | null;
+  causes: PatchCoverageOutsideChangeCause[] | null;
+}
+
+/** A changed file that explains coverage lost outside the change. */
+export interface PatchCoverageOutsideChangeCause {
+  kind: "test_deleted" | "test_modified" | "dependent_changed";
+  path: string;
+  basis: "per_test" | "graph" | "name";
+}
+
+/** One path-scoped gate from ``coverage.gates``, judged on the change. */
+export interface PatchCoveragePathGate {
+  name: string;
+  paths: string[];
+  threshold: number | null;
+  informational: boolean;
+  measured_file_count: number;
+  unmeasured_file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
+/** Project coverage at the change's base against its head. */
+export interface PatchCoverageProject {
+  basis: "base_report" | "history";
+  base_commit: string | null;
+  head_commit: string | null;
+  base: PatchCoverageProjectTotals | null;
+  head: PatchCoverageProjectTotals | null;
+  delta_pct: number | null;
+  max_drop: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+  incomparable: string[];
+  outside_change: PatchCoverageOutsideChange[] | null;
+  outside_change_note: string | null;
+}
+
+export interface PatchCoverageProjectTotals {
+  covered_line_count: number;
+  coverable_line_count: number;
+  coverage_pct: number | null;
+}
+
+export interface PatchCoverageResponse {
+  patch_coverage_pct: number | null;
+  covered_line_count: number;
+  coverable_line_count: number;
+  threshold: number | null;
+  min_coverable_lines: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+  file_counts: PatchCoverageFileCounts;
+  files: PatchCoverageFile[];
+  scope: PatchCoverageScope;
+  path_gates: PatchCoveragePathGate[];
+  risky: PatchCoverageRisky | null;
+  project: PatchCoverageProject | null;
+  branches: PatchCoverageBranches | null;
+}
+
+/** Patch coverage over the measured files history marks as risky. */
+export interface PatchCoverageRisky {
+  file_count: number;
+  covered_line_count: number;
+  coverable_line_count: number;
+  patch_coverage_pct: number | null;
+  threshold: number | null;
+  gate: "pass" | "fail" | "no_data" | "not_set" | "too_small";
+}
+
+export interface PatchCoverageScope {
+  label: string;
+  source_formats: string[];
+  reports: string[];
+  report_path_count: number | null;
+  unmatched_report_path_count: number | null;
+  mapping_partial: boolean;
+  measured_commit: string | null;
+  freshness: "current" | "stale" | "unknown";
+  ignored_file_count: number;
+  config_errors: string[];
+  branch_data: "per_line" | "none" | "stored_before" | null;
+}
+
+/** Where to extend the tests for one uncovered range. */
+export interface PatchCoverageTestHint {
+  range: number[];
+  symbol: string | null;
+  tests: string[];
+  basis: "per_test" | "call_graph" | "import_graph" | "none";
+  total: number;
+}
+
 /**
  * What the map is counting.
  *
@@ -2085,6 +2644,16 @@ export interface ProviderValidationResponse {
   error?: string | null;
 }
 
+export interface PublishRequest {
+  repo_id: string;
+}
+
+/** What the ``fix_first`` scope leaves out of a page's filtered set. */
+export interface RefactoringHiddenCounts {
+  total?: number;
+  by_reason?: Record<string, number>;
+}
+
 /** One page of composed opportunities, with facets and the rollup. */
 export interface RefactoringOpportunitiesResponse {
   items?: Record<string, unknown>[];
@@ -2095,6 +2664,8 @@ export interface RefactoringOpportunitiesResponse {
   facets?: Record<string, Record<string, number>>;
   summary?: Record<string, unknown> | null;
   ignored_arguments?: Record<string, string> | null;
+  scope?: "fix_first" | "all";
+  hidden?: RefactoringHiddenCounts | null;
 }
 
 /**
@@ -2105,7 +2676,7 @@ export interface RefactoringOpportunitiesResponse {
  * part and anything else passes through rather than being dropped.
  */
 export interface RefactoringOpportunityDetailResponse {
-  resolved: boolean;
+  found: boolean;
   steps?: Record<string, unknown>[];
   steps_total?: number;
   steps_emitted?: number;
@@ -2222,6 +2793,42 @@ export interface RefactoringTypeCount {
   count: number;
 }
 
+export interface RelatedWorkFile {
+  file_path: string;
+  lenses?: Record<string, RelatedWorkLens>;
+}
+
+/** One row another lens holds for the file, compact enough to list. */
+export interface RelatedWorkItem {
+  lens: "findings" | "fix_first" | "refactoring" | "performance" | "dead_code";
+  id: string;
+  kind?: string | null;
+  title?: string | null;
+  symbol?: string | null;
+  severity?: string | null;
+  tier?: string | null;
+  rank?: number | null;
+  line?: number | null;
+  code_origin?: string | null;
+  deprecated?: boolean | null;
+}
+
+export interface RelatedWorkLens {
+  items?: RelatedWorkItem[];
+  total?: number;
+}
+
+/** The files to look up, repo-relative. Validated by the route. */
+export interface RelatedWorkRequest {
+  file_paths: string[];
+}
+
+/** ``RelatedWork.as_dict()``: files in request order. */
+export interface RelatedWorkResponse {
+  files?: RelatedWorkFile[];
+  per_lens_limit?: number;
+}
+
 export interface RepoCreate {
   name: string;
   local_path: string;
@@ -2255,6 +2862,7 @@ export interface RepoResponse {
   docs_skip_reason?: string | null;
   run_mode?: string | null;
   git_tier?: string | null;
+  index_scope?: Record<string, unknown> | null;
   initial_job_id?: string | null;
 }
 
@@ -2415,6 +3023,97 @@ export interface RiskScaleRange {
   maximum: number | null;
 }
 
+/** One agent's savings, labelled from the identity registry. */
+export interface SavingsAgentRow {
+  agent: string;
+  agent_display_name?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/**
+ * One bucket of a savings breakdown.
+ *
+ * ``group`` is nullable because one bucket genuinely has no name: an event
+ * written before its rate could be resolved has no model, and that is a real
+ * quantity -- how much saving carries no pricing evidence -- rather than a
+ * gap to drop from the list.
+ */
+export interface SavingsBreakdownRow {
+  group?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/** One kind of observed opportunity. Never part of achieved savings. */
+export interface SavingsOpportunityRow {
+  kind: string;
+  observations?: number;
+  estimated_potential_input_tokens?: number;
+}
+
+/**
+ * What agents avoided in one repository over one window.
+ *
+ * Every figure comes from the canonical savings ledger through the one core
+ * report service, so this response, the repository overview headline and
+ * ``repowise saved`` cannot disagree -- which the three of them did, in four
+ * separate ways, when each aggregated and priced the ledger for itself.
+ *
+ * Three things it deliberately keeps apart. *Measured* reductions are known
+ * before/after sizes from an operation that really ran; *inferred* avoidance
+ * is a documented counterfactual. *Priced* and *unpriced* tokens are split
+ * because an event records the rate it was worth at the time and some events
+ * carry none, and reporting a total as though it were all priced would be a
+ * guess. *Observed opportunities* are things that could have been saved and
+ * were not: they never enter the headline.
+ *
+ * ``available`` is False when the repository has no savings sidecar at all,
+ * which means "nothing has been measured here" and is different from a
+ * measured zero.
+ */
+export interface SavingsResponse {
+  available: boolean;
+  window_days?: number | null;
+  as_of?: string;
+  first_event_at?: string | null;
+  last_event_at?: string | null;
+  unique_events?: number;
+  successful_or_usable_partial_events?: number;
+  saving_interactions?: number;
+  mcp_queries_answered?: number;
+  dead_ends?: number;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  priced_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
+  saved_output_tokens?: number | null;
+  priced_saved_output_tokens?: number;
+  unpriced_saved_output_tokens?: number;
+  priced_output_savings_usd?: number;
+  baseline_events?: number;
+  reducing_events?: number;
+  baseline_input_tokens?: number;
+  baseline_saved_input_tokens?: number;
+  input_reduction_ratio?: number | null;
+  input_reduction_ratio_p90?: number | null;
+  per_operation?: SavingsBreakdownRow[];
+  per_surface?: SavingsBreakdownRow[];
+  per_agent?: SavingsAgentRow[];
+  per_model?: SavingsBreakdownRow[];
+  per_day?: SavingsBreakdownRow[];
+  opportunity_count?: number;
+  opportunity_tokens_excluded?: number;
+  per_opportunity_kind?: SavingsOpportunityRow[];
+  missed_events?: number;
+  missed_tokens_est?: number;
+  missed_window_days?: number;
+  reread_events?: number;
+  reread_tokens_est?: number;
+}
+
 export interface SearchResultResponse {
   page_id: string;
   title: string;
@@ -2549,7 +3248,9 @@ export interface TestImpactEvidence {
 
 export interface TestImpactFile {
   source_file: string;
-  status: "measured" | "inferred" | "unknown";
+  status: "measured" | "inferred" | "unknown" | "deleted";
+  change_status?: string | null;
+  head_present?: boolean;
   measured_tests: string[];
   measured_tests_total: number;
   inferred_tests: string[];
@@ -2582,6 +3283,7 @@ export interface TestImpactResponse {
   files_total: number;
   files_without_measured_tests: string[];
   unknown_files: string[];
+  deleted_files?: string[];
   coverage: TestImpactCoverage;
   inference: TestImpactInference;
   analysis: TestImpactAnalysis;
@@ -2650,6 +3352,11 @@ export interface WebhookResponse {
   status?: string;
 }
 
+export interface WorkspaceActionsResponse {
+  repos: WorkspaceRepoActions[];
+  cross_repo: WorkspaceCrossRepoAction[];
+}
+
 /** Architecture-complexity metrics over the system graph (Phase 6). */
 export interface WorkspaceArchitectureResponse {
   node_count?: number;
@@ -2692,6 +3399,9 @@ export interface WorkspaceBreakingChange {
   provider_service?: string | null;
   provider_node_id?: string;
   detail: string;
+  side?: string | null;
+  comparison_source?: string | null;
+  comparison_key?: string | null;
   field_name?: string | null;
   old_value?: string | null;
   new_value?: string | null;
@@ -2720,10 +3430,33 @@ export interface WorkspaceCoChangeEntry {
   last_date: string;
 }
 
+/** What declared structure connects one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  pair_links: WorkspaceContractLinkEntry[];
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  source_file_links: number;
+  target_file_links: number;
+}
+
 export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
   total: number;
   total_mined?: number;
+  per_repo_pair_cap?: number | null;
+  total_cap?: number | null;
+  truncated_by?: "total" | "per_repo_pair" | null;
+}
+
+export interface WorkspaceCodeApiCoverage {
+  manifests?: number;
+  published?: number;
+  unsupported_ecosystem?: number;
+  providers?: number;
+  consumers?: number;
+  linked_providers?: number;
+  published_ratio?: number | null;
+  linked_ratio?: number | null;
 }
 
 export interface WorkspaceConformanceResponse {
@@ -2795,6 +3528,7 @@ export interface WorkspaceContractLinkEntry {
   consumer_service?: string | null;
   provider_symbol_id?: string | null;
   consumer_symbol_id?: string | null;
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractSummary {
@@ -2811,9 +3545,20 @@ export interface WorkspaceContractsResponse {
   by_type?: Record<string, number>;
 }
 
+export interface WorkspaceCrossRepoAction {
+  kind: "breaking_contract";
+  title: string;
+  impact: string;
+  count: number;
+  repos: string[];
+}
+
 export interface WorkspaceCrossRepoSummary {
   co_change_count?: number;
   package_dep_count?: number;
+  package_diagnostic_count?: number;
+  package_diagnostics_emitted?: number;
+  package_diagnostic_codes?: string[];
   top_connections?: Record<string, unknown>[];
 }
 
@@ -2836,6 +3581,10 @@ export interface WorkspaceExtractionDiagnostics {
   consumers_by_layer?: Record<string, number>;
   http_consumers_unresolved?: number;
   http_consumer_coverage?: number | null;
+  symbol_identity?: Record<string, WorkspaceSymbolIdentity>;
+  schema_coverage?: WorkspaceSchemaCoverage;
+  code_api?: WorkspaceCodeApiCoverage;
+  openapi?: WorkspaceOpenApiCoverage;
 }
 
 export interface WorkspaceGraphEdge {
@@ -2892,11 +3641,32 @@ export interface WorkspaceNodeArchitectureRole {
   role?: string;
 }
 
+export interface WorkspaceOpenApiCoverage {
+  documents?: number;
+  parsed_documents?: number;
+  unresolved_documents?: number;
+  operations?: number;
+  providers?: number;
+  schemas_merged?: number;
+  spec_only_providers?: number;
+  request_states?: Record<string, number>;
+  response_states?: Record<string, number>;
+  refusal_reasons?: Record<string, number>;
+}
+
 export interface WorkspaceOrphanProvider {
   repo: string;
   file_path: string;
   contract_id: string;
   contract_type: string;
+}
+
+export interface WorkspaceRepoActions {
+  alias: string;
+  repo_id: string | null;
+  status: "available" | "unavailable";
+  reason?: string;
+  horizons?: Record<string, ActionHorizon>;
 }
 
 export interface WorkspaceRepoDiagnostics {
@@ -2928,6 +3698,13 @@ export interface WorkspaceRepoEntry {
   docs_skip_reason?: string | null;
 }
 
+/** Response returned when a repo is removed from the workspace config. */
+export interface WorkspaceRepoRemovedResponse {
+  ok?: boolean;
+  alias: string;
+  remaining_repos: number;
+}
+
 export interface WorkspaceResponse {
   is_workspace: boolean;
   workspace_root?: string | null;
@@ -2936,6 +3713,26 @@ export interface WorkspaceResponse {
   default_repo?: string | null;
   cross_repo_summary?: WorkspaceCrossRepoSummary | null;
   contract_summary?: WorkspaceContractSummary | null;
+}
+
+export interface WorkspaceSchemaCoverage {
+  total?: number;
+  bound?: number;
+  recovered?: number;
+  shared_symbol?: number;
+  unsupported_language?: number;
+  non_callable?: number;
+  eligible?: number;
+  recovered_ratio?: number | null;
+  recovered_ratio_eligible?: number | null;
+}
+
+export interface WorkspaceSymbolIdentity {
+  total?: number;
+  bound?: number;
+  unindexed_file?: number;
+  bound_ratio?: number | null;
+  bound_ratio_indexed?: number | null;
 }
 
 export interface WorkspaceSyncResponse {

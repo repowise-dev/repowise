@@ -10,7 +10,7 @@
  * ring on the matches instead of touching the thousands that did not match.
  */
 
-import { performanceSentence } from "./lens";
+import { performanceSentence, scoreText } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, FileNode } from "./types";
 
 /** Match rings drawn at once. Beyond this the field is the answer, not a mark. */
@@ -177,7 +177,8 @@ export function HoverCard({
         </div>
       ) : null}
       <div className="mt-0.5 text-[10px] leading-tight text-[var(--color-text-tertiary)] tabular-nums">
-        score {file.score.toFixed(1)} · {file.nloc.toLocaleString()} NLOC
+        {file.score == null ? scoreText(file) : `score ${scoreText(file)}`} ·{" "}
+        {file.nloc.toLocaleString()} NLOC
         {cov != null ? ` · ${Math.round(cov)}% cov` : ""}
         {file.has_test_file ? "" : " · untested"}
       </div>

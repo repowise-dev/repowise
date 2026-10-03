@@ -70,13 +70,14 @@ def make_repo(tmp_path: Path) -> Callable[[str], Repo]:
 # -- source builders --------------------------------------------------------
 # Each returns a function body whose complexity is driven by *branches*, so a
 # test can ask for "the same function, more complex" in any language without
-# hand-writing both revisions.
+# hand-writing both revisions. Every guard tests a different expression, so the
+# body is complex all over rather than one dispatch on ``value``.
 
 
 def python_complex(name: str, branches: int, *, indent: str = "") -> str:
     lines = [f"{indent}def {name}(value):"]
     for i in range(branches):
-        lines.append(f"{indent}    if value == {i} and value > {i - 1}:")
+        lines.append(f"{indent}    if value % {i + 2} == 0 and value > {i - 1}:")
         lines.append(f"{indent}        value = value + {i}")
     lines.append(f"{indent}    return value")
     return "\n".join(lines) + "\n"
@@ -85,7 +86,7 @@ def python_complex(name: str, branches: int, *, indent: str = "") -> str:
 def typescript_complex(name: str, branches: int) -> str:
     lines = [f"export function {name}(value: number): number {{"]
     for i in range(branches):
-        lines.append(f"  if (value === {i} && value > {i - 1}) {{")
+        lines.append(f"  if (value % {i + 2} === 0 && value > {i - 1}) {{")
         lines.append(f"    value = value + {i};")
         lines.append("  }")
     lines.append("  return value;")
@@ -96,7 +97,7 @@ def typescript_complex(name: str, branches: int) -> str:
 def go_complex(name: str, branches: int) -> str:
     lines = ["package main", "", f"func {name}(value int) int {{"]
     for i in range(branches):
-        lines.append(f"\tif value == {i} && value > {i - 1} {{")
+        lines.append(f"\tif value%{i + 2} == 0 && value > {i - 1} {{")
         lines.append(f"\t\tvalue = value + {i}")
         lines.append("\t}")
     lines.append("\treturn value")

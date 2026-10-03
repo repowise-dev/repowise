@@ -20,7 +20,6 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
-    HealthFileMetric,
     HealthFinding,
     PerformanceOpportunity,
     PerformanceSummary,
@@ -28,6 +27,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
+from ...sql import order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 
 if TYPE_CHECKING:
@@ -63,14 +63,20 @@ _OBSERVATION_COLUMNS = (
 )
 
 
-def opportunity_details(opportunity: OpportunityModel) -> dict[str, Any]:
+def opportunity_details(
+    opportunity: OpportunityModel, plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """The explanatory half of one opportunity, the half no query filters on.
 
     Everything a column already holds is deliberately absent, so the row and
-    the payload cannot drift into disagreeing about the same fact.
+    the payload cannot drift into disagreeing about the same fact. *plan* is
+    the stored plan's validation and economics, resolved once at finalize.
     """
     return {
+        **({"plan": plan} if plan else {}),
         "biomarker_types": list(opportunity.biomarker_types),
+        "intervention_kind": opportunity.intervention_kind,
+        "terminal_sinks": list(opportunity.terminal_sinks),
         "shared_path_suffix": list(opportunity.shared_path_suffix),
         "resource_fingerprints": list(opportunity.resource_fingerprints),
         "reliable_entry_reachability": opportunity.reliable_entry_reachability,
@@ -81,6 +87,9 @@ def opportunity_details(opportunity: OpportunityModel) -> dict[str, Any]:
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        "may_lead": opportunity.may_lead,
+        **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
+        "siblings": [dict(entry) for entry in opportunity.siblings],
     }
 
 
@@ -90,7 +99,10 @@ def _row_kwargs(
     position: int,
     plan_state: str,
     analyzed_commit: str | None,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from ....analysis.health.perf.serving import intervention_file
+
     fix = opportunity.fix
     return {
         "opportunity_id": opportunity.opportunity_id,
@@ -106,27 +118,29 @@ def _row_kwargs(
         "plan_state": plan_state,
         "fix_strategy": fix.strategy if fix else None,
         "fix_safety": fix.safety if fix else None,
-        "file_path": _intervention_file(opportunity),
+        "file_path": intervention_file(opportunity),
         "intervention_symbol": opportunity.intervention_symbol,
         "terminal_sink": opportunity.terminal_sink,
         "observations_total": opportunity.observations_total,
         "affected_call_sites_total": opportunity.affected_call_sites_total,
         "affected_files_total": opportunity.affected_files_total,
-        "details_json": json.dumps(opportunity_details(opportunity), separators=(",", ":")),
+        "details_json": json.dumps(opportunity_details(opportunity, plan), separators=(",", ":")),
         "analyzed_commit": analyzed_commit,
     }
 
 
-def _intervention_file(opportunity: OpportunityModel) -> str:
-    """The file a reader would open first: the intervention, else the evidence."""
-    symbol = opportunity.intervention_symbol
-    if symbol:
-        return symbol.split("::", 1)[0]
-    return opportunity.evidence[0]["file_path"] if opportunity.evidence else ""
-
-
-def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[str, str]) -> dict:
+def _summary_payload(
+    opportunities: list[OpportunityModel],
+    plan_states: dict[str, str],
+    plans: dict[str, dict[str, Any]] | None = None,
+) -> dict:
     """The compact current headline, written once and read by primary key."""
+    from ....analysis.health.perf.opportunity_rank import (
+        default_queue_counts,
+        default_queue_exclusion,
+    )
+    from ....analysis.health.perf.serving import intervention_file
+
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
     boundaries: dict[str, int] = {}
@@ -135,8 +149,18 @@ def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[st
         contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
         key = item.boundary_kind or "none"
         boundaries[key] = boundaries.get(key, 0) + 1
-    lead = opportunities[0] if opportunities else None
+    # The lead is the head of the default queue, so it is production work with a
+    # strategy; never a marker whose measured precision is below the bar for leading.
+    lead = next(
+        (
+            o
+            for o in opportunities
+            if default_queue_exclusion(o) is None and o.may_lead
+        ),
+        None,
+    )
     return {
+        "default_queue": default_queue_counts(opportunities),
         "actionability": counts,
         "context": contexts,
         "boundary": boundaries,
@@ -151,7 +175,7 @@ def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[st
             "execution_context": lead.execution_context,
             "intervention_symbol": lead.intervention_symbol,
             "terminal_sink": lead.terminal_sink,
-            "file_path": _intervention_file(lead),
+            "file_path": intervention_file(lead),
             "observations_total": lead.observations_total,
             "affected_call_sites_total": lead.affected_call_sites_total,
             "affected_files_total": lead.affected_files_total,
@@ -159,6 +183,7 @@ def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[st
             "why_ranked": [dict(entry) for entry in lead.why_ranked],
             "prerequisites": list(lead.prerequisites),
             "actionability_reason": lead.actionability_reason,
+            **({"plan": plan} if (plan := (plans or {}).get(lead.opportunity_id)) else {}),
         },
     }
 
@@ -197,9 +222,11 @@ async def finalize_performance_opportunities(
     opportunities = build_performance_opportunities(rows, evidence_limit=_EVIDENCE_LIMIT)
 
     await _restamp_findings(session, rows)
-    plan_states = await _replace_plans(session, repository_id, opportunities, policy)
-    await _reconcile_opportunities(session, repository_id, opportunities, plan_states, analyzed_commit)
-    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit)
+    plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
+    await _reconcile_opportunities(
+        session, repository_id, opportunities, plan_states, analyzed_commit, plans
+    )
+    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
     return len(opportunities)
 
 
@@ -234,8 +261,8 @@ async def _replace_plans(
     repository_id: str,
     opportunities: list[OpportunityModel],
     policy: PerformancePlanPolicy,
-) -> dict[str, str]:
-    """Write the authoritative plans and report each opportunity's plan state.
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """Write the authoritative plans; report each opportunity's plan state and facts.
 
     Plans are generated here rather than from an analysis report because the
     report sees one run's findings while this sees the merged stored set, and a
@@ -255,27 +282,45 @@ async def _replace_plans(
         for item in opportunities
     }
     if not policy.enabled:
-        return states
+        return states, {}
 
-    nloc_by_file = dict(
-        (
-            await session.execute(
-                select(HealthFileMetric.file_path, HealthFileMetric.nloc).where(
-                    HealthFileMetric.repository_id == repository_id
-                )
-            )
-        ).all()
-    )
     suggestions = performance_fix_suggestions(
-        opportunities,
-        nloc_by_file=nloc_by_file,
-        min_confidence=policy.min_confidence,
+        opportunities, min_confidence=policy.min_confidence
     )
+    rows = []
     for suggestion in suggestions:
-        session.add(RefactoringSuggestion(**_refactoring_row_kwargs(suggestion, repository_id)))
+        row = RefactoringSuggestion(**_refactoring_row_kwargs(suggestion, repository_id))
+        session.add(row)
+        rows.append(row)
         states[suggestion.plan["opportunity_id"]] = "available"
     await session.flush()
-    return states
+    return states, await _plan_facts(session, repository_id, rows)
+
+
+async def _plan_facts(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, dict[str, Any]]:
+    """Validation and economics per plan, resolved once here rather than per read.
+
+    Serving one plan cannot afford the test-reachability walk, and without this
+    it fell back to an empty profile that read as "no tests" for every plan.
+    """
+    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
+
+    if not rows:
+        return {}
+    facts: dict[str, dict[str, Any]] = {}
+    for recommendation in await hydrate_recommendations(session, repository_id, rows):
+        suggestion = recommendation.suggestion
+        facts[suggestion.plan["opportunity_id"]] = {
+            "steps": (suggestion.plan or {}).get("steps", []),
+            "effort_bucket": suggestion.effort_bucket,
+            "benefit": recommendation.benefit,
+            "cost": recommendation.cost,
+            "risk": recommendation.risk,
+            "validation": recommendation.validation.as_dict(),
+        }
+    return facts
 
 
 async def _reconcile_opportunities(
@@ -284,6 +329,7 @@ async def _reconcile_opportunities(
     opportunities: list[OpportunityModel],
     plan_states: dict[str, str],
     analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Update, insert, and resolve, in one pass over the stored rows."""
     stored = {
@@ -308,6 +354,7 @@ async def _reconcile_opportunities(
             position=position,
             plan_state=plan_states.get(item.opportunity_id, "no_safe_plan"),
             analyzed_commit=analyzed_commit,
+            plan=(plans or {}).get(item.opportunity_id),
         )
         row = stored.get(key)
         if row is None:
@@ -336,11 +383,14 @@ async def _write_summary(
     opportunities: list[OpportunityModel],
     plan_states: dict[str, str],
     analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
 ) -> None:
 
     from ....analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 
-    payload = json.dumps(_summary_payload(opportunities, plan_states), separators=(",", ":"))
+    payload = json.dumps(
+        _summary_payload(opportunities, plan_states, plans), separators=(",", ":")
+    )
     row = await session.get(PerformanceSummary, repository_id)
     if row is None:
         row = PerformanceSummary(repository_id=repository_id)
@@ -381,52 +431,18 @@ async def get_performance_opportunity(
     return result.scalars().first()
 
 
-def _predicates(
-    repository_id: str,
-    *,
-    contexts: frozenset[str] | None,
-    boundary: str | None,
-    confidence: str | None,
-    actionability: str | None,
-    file_paths: tuple[str, ...] | None,
-) -> list[Any]:
-    where: list[Any] = [
+def _predicates(repository_id: str, **params: Any) -> list[Any]:
+    """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table."""
+    from ....analysis.health.perf.serving import FILTERS
+    from ....analysis.health.queue_rules import active_filters
+
+    return [
         PerformanceOpportunity.repository_id == repository_id,
-        PerformanceOpportunity.status == "open",
+        *(
+            rule_predicate(PerformanceOpportunity, rule, value)
+            for rule, value in active_filters(FILTERS, {"status": "open", **params})
+        ),
     ]
-    if contexts is not None:
-        where.append(PerformanceOpportunity.execution_context.in_(sorted(contexts)))
-    if boundary is not None:
-        where.append(
-            PerformanceOpportunity.boundary_kind.is_(None)
-            if boundary == "none"
-            else PerformanceOpportunity.boundary_kind == boundary
-        )
-    if confidence is not None:
-        where.append(PerformanceOpportunity.evidence_confidence == confidence)
-    if actionability is not None:
-        where.append(PerformanceOpportunity.actionability_state == actionability)
-    if file_paths is not None:
-        where.append(PerformanceOpportunity.file_path.in_(list(file_paths)))
-    return where
-
-
-_ORDERS = {
-    "rank": (PerformanceOpportunity.rank_position.asc(),),
-    "leverage": (
-        PerformanceOpportunity.affected_call_sites_total.desc(),
-        PerformanceOpportunity.rank_position.asc(),
-    ),
-    "observations": (
-        PerformanceOpportunity.observations_total.desc(),
-        PerformanceOpportunity.rank_position.asc(),
-    ),
-}
-"""Orderings the queue offers, each ending in rank so every one is total.
-
-Applied in SQL rather than to the fetched page: sorting a page selected by a
-different key would order twenty rows correctly and the repository wrongly.
-"""
 
 
 async def list_performance_opportunities(
@@ -436,7 +452,7 @@ async def list_performance_opportunities(
     contexts: frozenset[str] | None = None,
     boundary: str | None = None,
     confidence: str | None = None,
-    actionability: str | None = None,
+    actionabilities: frozenset[str] | None = None,
     file_paths: tuple[str, ...] | None = None,
     sort: str = "rank",
     limit: int = 20,
@@ -447,12 +463,14 @@ async def list_performance_opportunities(
     Both statements are index-driven and the fetched rows are the page, so cost
     tracks the page rather than the repository.
     """
+    from ....analysis.health.perf.serving import sort_keys
+
     where = _predicates(
         repository_id,
         contexts=contexts,
         boundary=boundary,
         confidence=confidence,
-        actionability=actionability,
+        actionabilities=actionabilities,
         file_paths=file_paths,
     )
     total = int(
@@ -467,7 +485,7 @@ async def list_performance_opportunities(
             await session.execute(
                 select(PerformanceOpportunity)
                 .where(*where)
-                .order_by(*_ORDERS.get(sort, _ORDERS["rank"]))
+                .order_by(*order_by(PerformanceOpportunity, sort_keys(sort)))
                 .offset(offset)
                 .limit(limit)
             )
@@ -486,41 +504,24 @@ async def performance_facet_counts(
 ) -> list[tuple[str, str | None, str, str, str, int]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
-    Returned pre-aggregation rather than as finished facets so the caller can
-    cross-filter: a facet must be counted with every filter applied *except*
-    its own, or choosing one value would erase the alternatives.
+    Returned pre-aggregation, one ``(*FACET_FIELDS, count)`` tuple per group,
+    so ``perf.serving.fold_facets`` can cross-filter: a facet must be counted
+    with every filter applied *except* its own, or choosing one value would
+    erase the alternatives.
     """
-    where = _predicates(
-        repository_id,
-        contexts=None,
-        boundary=None,
-        confidence=None,
-        actionability=None,
-        file_paths=file_paths,
-    )
+    from ....analysis.health.perf.serving import FACET_FIELDS
+
+    columns = tuple(getattr(PerformanceOpportunity, name) for name in FACET_FIELDS)
     result = await session.execute(
-        select(
-            PerformanceOpportunity.execution_context,
-            PerformanceOpportunity.boundary_kind,
-            PerformanceOpportunity.evidence_confidence,
-            PerformanceOpportunity.actionability_state,
-            PerformanceOpportunity.plan_state,
-            func.count(),
-        )
-        .where(*where)
-        .group_by(
-            PerformanceOpportunity.execution_context,
-            PerformanceOpportunity.boundary_kind,
-            PerformanceOpportunity.evidence_confidence,
-            PerformanceOpportunity.actionability_state,
-            PerformanceOpportunity.plan_state,
-        )
+        select(*columns, func.count())
+        .where(*_predicates(repository_id, file_paths=file_paths))
+        .group_by(*columns)
     )
     return [tuple(row) for row in result.all()]
 
 
-_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate")
-"""The states a rollup breaks down. Named, so a fourth cannot vanish silently."""
+_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate", "expected")
+"""The states a rollup breaks down. Named, so a fifth cannot vanish silently."""
 
 
 class PerformanceFileRollup(NamedTuple):
@@ -532,6 +533,7 @@ class PerformanceFileRollup(NamedTuple):
     plan_ready: int
     advisory: int
     investigate: int
+    expected: int
     best_rank: int
     """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
 
@@ -550,14 +552,7 @@ async def performance_file_rollups(
     per-file query. Ordered best-rank first, which is the order a bounded map
     feed admits files in.
     """
-    where = _predicates(
-        repository_id,
-        contexts=None,
-        boundary=None,
-        confidence=None,
-        actionability=None,
-        file_paths=file_paths,
-    )
+    where = _predicates(repository_id, file_paths=file_paths)
     result = await session.execute(
         select(
             PerformanceOpportunity.file_path,
@@ -584,6 +579,7 @@ async def performance_file_rollups(
                 "plan_ready": 0,
                 "advisory": 0,
                 "investigate": 0,
+                "expected": 0,
                 "best_rank": best_rank or 0,
             },
         )
@@ -600,6 +596,7 @@ async def performance_file_rollups(
             plan_ready=row["plan_ready"],
             advisory=row["advisory"],
             investigate=row["investigate"],
+            expected=row["expected"],
             best_rank=row["best_rank"],
         )
         for path, row in folded.items()

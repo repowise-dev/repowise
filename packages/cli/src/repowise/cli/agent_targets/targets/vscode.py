@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
@@ -36,8 +38,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "vscode"
-DISPLAY_NAME = "VS Code"
+IDENTITY = identity.VSCODE
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://code.visualstudio.com/docs/copilot/chat/mcp-servers"
 
 EXTENSION_ID = "repowise-dev.repowise"
@@ -266,8 +269,8 @@ class VSCodeTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = None
-    session_adapter = None
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

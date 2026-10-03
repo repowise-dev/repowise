@@ -33,6 +33,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from repowise.core.code_origin import ship_rank
+
 from .models import CONFIDENCE_LEVELS, RefactoringSuggestion
 from .recommendations import EFFORT_COST, detector_native_benefit, priority_score
 from .recommendations import surface_confidence_risk as _surface_confidence_risk
@@ -133,14 +135,39 @@ def why_ranked(factors: dict[str, float], *, limit: int = 3) -> list[dict[str, A
     return [{"factor": name, "value": value} for name, value in ordered[:limit]]
 
 
-def rank_sort_key(opportunity: Any) -> tuple[float, str, str]:
-    """A total order. The id tail is what stops ties floating between runs."""
-    return (-opportunity.rank_score, opportunity.file_path, opportunity.opportunity_id)
+def rank_sort_key(opportunity: Any) -> tuple[int, bool, float, str, str]:
+    """A total order, production files first. The id tail is what stops ties
+    floating between runs.
+
+    A test file never leads: it has no users, and its helpers score badly by
+    design. Tests still rank among themselves, after every production file.
+    Build scripts, tools and copied code rank between the two
+    (:func:`~repowise.core.code_origin.ship_rank`).
+
+    Within each, work that recovers health comes first. A detector-native
+    benefit (a cycle's size, a split's group count) is not health, and on this
+    repo it outranked every real extraction once those were credited
+    proportionally; those opportunities stay listed, after the credited ones,
+    in their own order.
+    """
+    return (
+        ship_rank(opportunity.file_path),
+        not has_credit(opportunity),
+        -opportunity.rank_score,
+        opportunity.file_path,
+        opportunity.opportunity_id,
+    )
+
+
+def has_credit(opportunity: Any) -> bool:
+    """Whether the opportunity recovers any health at all."""
+    return float(opportunity.recoverable_health or 0.0) > 0.0
 
 
 __all__ = [
     "MECHANICAL_SHARE_WEIGHT",
     "PRIMARY_PROBLEM_WEIGHT",
+    "has_credit",
     "opportunity_benefit",
     "opportunity_risk",
     "rank_factors",

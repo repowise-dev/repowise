@@ -19,6 +19,9 @@ class DynamicEdge:
     edge_type: DynamicKind
     hint_source: str  # extractor name
     weight: float = 1.0
+    # The target's symbols the runtime reaches. Empty means the whole module:
+    # a ``dynamic_uses`` edge without names counts every public symbol as used.
+    imported_names: tuple[str, ...] = ()
 
 
 class DynamicHintExtractor(ABC):

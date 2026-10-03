@@ -272,7 +272,9 @@ def run_repo_generation(
     (the pages a resumed run skipped, which persistence must not sweep) and
     ``vector_store``
     (the latter is shared so the Phase-2C decision dedup matches + embeds
-    decisions into the same store the pages land in). Returns the pages.
+    decisions into the same store the pages land in), plus
+    ``embed_failed_pages`` (pages whose vectors failed to land). Returns the
+    pages.
 
     ``verbose`` controls only console output: the single-repo flow prints the
     page count + KG status; the workspace flow stays quiet and prints its own
@@ -289,7 +291,12 @@ def run_repo_generation(
         announce_file_page_cap(result.parsed_files, gen_config)
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
-    vector_store: Any = build_vector_store(repo_path, embedder_impl)
+    # One run, one store: ``init`` builds it before the pipeline and it arrives
+    # on ``result``. Only a caller whose embedder matches
+    # ``embedder_name_resolved`` may pre-set it.
+    vector_store: Any = getattr(result, "vector_store", None)
+    if vector_store is None:
+        vector_store = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
 
     deterministic = bool(getattr(gen_config, "deterministic", False))
@@ -330,6 +337,9 @@ def run_repo_generation(
     # is what persistence reads however the block exits.
     preserved_page_ids: set[str] = set()
     result.preserved_page_ids = preserved_page_ids
+    generation_scope: dict[str, int | None] = {}
+    result.generation_scope = generation_scope
+    generation_stats: dict[str, int] = {}
 
     with Progress(*columns, console=console) as gen_progress:
         gen_callback: Any = RichProgressCallback(gen_progress, console)
@@ -368,6 +378,8 @@ def run_repo_generation(
                     else None
                 ),
                 test_run=test_run,
+                selection_out=generation_scope,
+                stats_out=generation_stats,
             )
         )
         if warnings is not None:
@@ -390,6 +402,7 @@ def run_repo_generation(
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
+    result.embed_failed_pages = generation_stats.get("embed_failed_pages", 0)
 
     # A page whose provider call failed is still handed back, as a stub rendered
     # from structure alone, so that the row exists and a later run can find it

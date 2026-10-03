@@ -7,7 +7,7 @@ import contextlib
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -27,6 +27,14 @@ from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._transport import (
+    CLIENT_CLOSED,
+    SERVER_FAULT,
+    classify_termination,
+    client_closure_types,
+    guard_stdout,
+    log_outcome,
+)
 
 _log = __import__("logging").getLogger("repowise.mcp")
 
@@ -380,6 +388,28 @@ async def _warm_lancedb() -> None:
             _state._lancedb_ready.set()
 
 
+def _mark_vector_store_unreadable(exc: BaseException, alias: str | None = None) -> None:
+    """Flag semantic search degraded: the index exists but cannot be opened.
+
+    Recorded in ``_state._vector_store_errors``, which ``build_meta`` reads
+    beside the embedder status, so ``embedder_degraded`` and
+    ``embedder_warning`` carry it and a later embedder resolve cannot erase it.
+    Without this a broken LanceDB install served an empty in-memory store with
+    ``embedder_degraded: false``.
+    """
+    from repowise.core.persistence.vector_store.lancedb_store import store_open_fix_hint
+
+    where = f" for '{alias}'" if alias else ""
+    reason = (
+        f"The semantic index{where} exists but could not be opened "
+        f"({type(exc).__name__}: {exc}). Semantic search (search_codebase, "
+        "get_answer) is off; full-text search still works. To fix: "
+        f"{store_open_fix_hint(exc)}, then restart the MCP server."
+    )
+    _log.error(reason)
+    _state._vector_store_errors[alias or ""] = reason
+
+
 async def _load_vector_stores(repo_path: str | None) -> None:
     """Load embedder + vector stores in the background.
 
@@ -404,25 +434,26 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
+        from pathlib import Path
+
+        lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")
 
             from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            if repo_path:
-                from pathlib import Path
-
-                lance_dir = Path(repo_path) / ".repowise" / "lancedb"
-                if lance_dir.exists():
-                    vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                    # Step 2 — pre-connect so first search() is instant.
-                    await vs._ensure_connected()
-                    vector_store = vs
-        except ImportError:
-            pass
-        except Exception:
-            _log.warning("LanceDB pre-connect failed — using InMemory fallback")
+            if lance_dir is not None and lance_dir.exists():
+                vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+                # Step 2: pre-connect so first search() is instant.
+                await vs._ensure_connected()
+                vector_store = vs
+                _state._vector_store_errors.pop("", None)
+        except Exception as exc:
+            # ImportError included: with an index on disk, a missing lancedb
+            # is as broken as an unreadable one. No index is a keyless repo.
+            if lance_dir is not None and lance_dir.exists():
+                _mark_vector_store_unreadable(exc)
 
         # decision_store is repointed to the shared page store — decisions are
         # now embedded under the "decision:" namespace within the same table.
@@ -529,6 +560,7 @@ async def _lifespan(server: FastMCP):
             workspace_root=ws_root,
             ws_config=ws_config,
             embedder_factory=_query_embedder,
+            on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
         )
 
         # Eagerly load the default repo so tools work immediately. A failure
@@ -631,7 +663,7 @@ async def _lifespan(server: FastMCP):
         db_url = resolve_db_url(_state._repo_path)
 
         _log.info("repowise MCP: initialising database…")
-        engine = create_engine(db_url)
+        engine = create_engine(db_url, short_lived=False)
         try:
             await init_db(engine)
         except (OSError, OperationalError):
@@ -827,6 +859,77 @@ def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
     return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
 
 
+def _raise_group_leaf(
+    group: BaseExceptionGroup, transport: str, leaves: list[BaseException] | None = None
+) -> NoReturn:
+    """Log every leaf of a failed task group and re-raise the first.
+
+    The first carries the class names of all of them in
+    :data:`GROUP_LEAF_TYPES_ATTR`, which is what lets the layer recording the
+    outcome say whether one fault or several killed the server without
+    reaching back in here to re-derive it.
+    """
+    found = leaves if leaves is not None else group_leaves(group)
+    for leaf in found:
+        # A cancelled run is how a client-initiated shutdown looks, not a fault.
+        if isinstance(leaf, Exception):
+            _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+    log_outcome(SERVER_FAULT, transport, type(found[0]).__name__)
+    first = found[0]
+    # Best effort: a leaf class with __slots__ refuses the attribute, and the
+    # sibling names are not worth losing the exception over.
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(
+            first,
+            GROUP_LEAF_TYPES_ATTR,
+            tuple(sorted({type(leaf).__name__ for leaf in found})),
+        )
+    raise first from group
+
+
+def _warn_on_open_bind(transport: str, host: str) -> None:
+    """One line when a network transport is reachable and unauthenticated."""
+    if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+        _log.warning(
+            "SECURITY WARNING: MCP server (%s) is binding to %s without "
+            "REPOWISE_API_KEY. All tools are unauthenticated and "
+            "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+            transport,
+            host,
+        )
+
+
+def _run_network_transport(transport: str, host: str, port: int) -> None:
+    mcp.settings.host = host
+    mcp.settings.port = port
+    _configure_transport_security(host)
+    _warn_on_open_bind(transport, host)
+    mcp.run(transport=transport)
+
+
+def _run_stdio_transport() -> int:
+    """Run the stdio transport; returns how many stray stdout writes it saw."""
+    # stdout is the JSON-RPC channel on stdio, so every log line written there
+    # arrives at the client as a malformed protocol frame. Move the log sinks
+    # to stderr before anything can log.
+    from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+    route_logging_to_stderr()
+    # stdio servers are spawned per-session by the MCP client; when the client
+    # dies abnormally the stdio loop doesn't exit (and Windows never kills
+    # children), leaking servers that hold wiki.db handles. The watchdog exits
+    # this process once the client is gone.
+    from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+    start_parent_watchdog()
+    # The SDK writes frames through stdout's buffer, so anything arriving at
+    # the text layer is a stray print. The guard moves it to stderr, counts it,
+    # and the count is what names the session protocol_corrupted.
+    with guard_stdout() as guard:
+        mcp.run(transport="stdio")
+    return guard.writes
+
+
 def run_mcp(
     transport: str = "stdio",
     repo_path: str | None = None,
@@ -834,21 +937,29 @@ def run_mcp(
     port: int = 7338,
     tools: str | list[str] | None = None,
     workspace_mode: bool = True,
-) -> None:
-    """Run the MCP server with the specified transport.
+) -> str:
+    """Run the MCP server with the specified transport, and name how it ended.
 
     ``tools`` overrides which tools are advertised (see
     :func:`repowise.server.mcp_server._tool_selection.apply_tool_selection`);
     when omitted, the ``mcp.tools`` config block is honoured.
 
+    Returns one of the outcomes in :mod:`._transport`. A client closing a
+    transport it owns is one of them and returns normally: it is how a stdio
+    session ends, and raising there made an ordinary hang-up look like the
+    crash a host should respawn on. Only a genuine fault still raises.
+
     A task-group failure is unwrapped over the whole body, not around ``mcp.run``
     alone: surface construction and transport security run outside that call, and
-    a group raised by either escaped with its wrapper class intact. Every leaf is
-    logged, and the first is re-raised carrying the class names of all of them in
-    :data:`GROUP_LEAF_TYPES_ATTR`. That is what lets the layer recording the
-    outcome say whether one fault or several killed the server, without reaching
-    back in here to re-derive it.
+    a group raised by either escaped with its wrapper class intact. See
+    :func:`_raise_group_leaf` for what travels out of one.
     """
+    stray_writes = 0
+    # Startup and the transport run are caught separately. Both unwrap a task
+    # group, but only the run may end in a closure: a corrupt index artifact
+    # read during surface construction raises EOFError, which is a hang-up
+    # class, and classifying it as one would have reported a broken index as a
+    # clean session and exited 0.
     try:
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
@@ -857,59 +968,29 @@ def run_mcp(
 
         ensure_full_surface()
         apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    except BaseExceptionGroup as group:
+        _raise_group_leaf(group, transport)
 
-        if transport == "sse":
-            mcp.settings.host = host
-            mcp.settings.port = port
-            _configure_transport_security(host)
-            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-                _log.warning(
-                    "SECURITY WARNING: MCP server (sse) is binding to %s without "
-                    "REPOWISE_API_KEY. All tools are unauthenticated and "
-                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                    host,
-                )
-            mcp.run(transport="sse")
-        elif transport == "streamable-http":
-            mcp.settings.host = host
-            mcp.settings.port = port
-            _configure_transport_security(host)
-            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-                _log.warning(
-                    "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
-                    "REPOWISE_API_KEY. All tools are unauthenticated and "
-                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                    host,
-                )
-            mcp.run(transport="streamable-http")
+    try:
+        if transport in ("sse", "streamable-http"):
+            _run_network_transport(transport, host, port)
         else:
-            # stdout is the JSON-RPC channel on stdio, so every log line written
-            # there arrives at the client as a malformed protocol frame. Move the
-            # log sinks to stderr before anything can log.
-            from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
-
-            route_logging_to_stderr()
-            # stdio servers are spawned per-session by the MCP client; when the
-            # client dies abnormally the stdio loop doesn't exit (and Windows
-            # never kills children), leaking servers that hold wiki.db handles.
-            # The watchdog exits this process once the client is gone.
-            from repowise.server.mcp_server._watchdog import start_parent_watchdog
-
-            start_parent_watchdog()
-            mcp.run(transport="stdio")
+            stray_writes = _run_stdio_transport()
     except BaseExceptionGroup as group:
         leaves = group_leaves(group)
-        for leaf in leaves:
-            # A cancelled run is how a client-initiated shutdown looks, not a fault.
-            if isinstance(leaf, Exception):
-                _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
-        first = leaves[0]
-        # Best effort: a leaf class with __slots__ refuses the attribute, and the
-        # sibling names are not worth losing the exception over.
-        with contextlib.suppress(AttributeError, TypeError):
-            setattr(
-                first,
-                GROUP_LEAF_TYPES_ATTR,
-                tuple(sorted({type(leaf).__name__ for leaf in leaves})),
-            )
-        raise first from group
+        if classify_termination(transport, group, leaves=group_leaves) == CLIENT_CLOSED:
+            log_outcome(CLIENT_CLOSED, transport, type(leaves[0]).__name__)
+            return CLIENT_CLOSED
+        _raise_group_leaf(group, transport, leaves=leaves)
+    except client_closure_types() as exc:
+        # An ungrouped hang-up: the pipe broke, or the run was cancelled under
+        # us. The clause names those classes rather than catching broadly, so
+        # an interrupt and a server fault are never swallowed here.
+        if transport != "stdio":
+            raise
+        log_outcome(CLIENT_CLOSED, transport, type(exc).__name__)
+        return CLIENT_CLOSED
+
+    outcome = classify_termination(transport, None, stray_writes=stray_writes)
+    log_outcome(outcome, transport)
+    return outcome

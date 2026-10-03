@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
-from repowise.core.co_change import parse_partners
+from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
@@ -23,6 +23,7 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
 )
+from repowise.server.repo_paths import normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
@@ -35,45 +36,6 @@ _TOP_FIX_SYMBOLS = 3
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
-
-
-def normalize_target_path(target: str, repo_root: str | None = None) -> str:
-    """Normalize a caller-supplied file path to the POSIX-relative form stored
-    in ``git_metadata.file_path``.
-
-    ``get_risk`` matches ``file_path`` by exact string equality, but callers
-    reach it through git tools, shell completion, or editors that hand over a
-    backslash form (Windows), a leading ``./``, an absolute path, or a trailing
-    separator. Any of those makes the row lookup miss, and ``_assess_one_target``
-    then reports the indistinguishable ``no git metadata available`` card
-    (hotspot_score=0, primary_owner=None, empty co_change_partners) even though
-    the row exists — issue #1279. Normalizing the caller's side closes that gap.
-    """
-    normalized = target.replace("\\", "/")
-    # Make a repo-absolute path (``/abs/repo/src/x.py``) relative to the repo
-    # root when we know it. Uses a prefix check on the normalized forms, so a
-    # path that is already repo-relative is left untouched.
-    if repo_root:
-        root_norm = str(Path(repo_root).resolve()).replace("\\", "/")
-        try:
-            # Resolve against the repo root, not the process cwd: the MCP
-            # server's cwd is not the repo, so a relative path that happens
-            # to exist there could resolve somewhere unrelated.
-            resolved = Path(repo_root, normalized).resolve()
-            if str(resolved).startswith(root_norm.rstrip("/") + "/"):
-                normalized = str(resolved).replace("\\", "/")[len(root_norm.rstrip("/")) + 1 :]
-        except (OSError, ValueError):
-            # resolve() can raise ValueError on a malformed Windows path.
-            pass
-    # Strip a leading cwd-relative prefix and any leading slash left over.
-    # A prefix strip, not lstrip: lstrip takes a character set, so it would
-    # eat every leading dot (``.github/...`` -> ``github/...``).
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = normalized.lstrip("/")
-    # Collapse duplicate slashes and any trailing separator.
-    parts = [p for p in normalized.split("/") if p]
-    return "/".join(parts)
 
 
 def _derive_change_pattern(categories: dict[str, int]) -> str:
@@ -338,13 +300,27 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             text(
                 "SELECT kind, severity, snippet FROM security_findings "
                 "WHERE repository_id = :repo_id AND file_path = :fp "
-                "ORDER BY severity DESC, kind"
+                # Ranked, not alphabetical: text order puts ``high`` last.
+                "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, kind"
             ),
             {"repo_id": repo_id, "fp": target},
         )
         return [{"kind": r[0], "severity": r[1], "snippet": r[2]} for r in rows.all()]
     except Exception:
         return []
+
+
+def _co_change_direction(conf_ab: float | None, conf_ba: float | None) -> str:
+    """Which side of a pair leads, where ``a`` is the target and ``b`` the partner.
+
+    A higher ``conf_ab`` means the target seldom changes without the partner, so
+    the target is the antecedent. Equal confidences, or an index written before
+    the two commit totals were recorded, stay ``undirected`` rather than having
+    a lead broken arbitrarily.
+    """
+    if conf_ab is None or conf_ba is None or conf_ab == conf_ba:
+        return "undirected"
+    return "a_to_b" if conf_ab > conf_ba else "b_to_a"
 
 
 def _build_co_changes(
@@ -358,6 +334,9 @@ def _build_co_changes(
     The strength field is emitted as ``weight``, not ``count``: the stored value
     is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
     is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
+
+    ``conf_ab`` and ``conf_ba`` are the two directional confidences behind
+    ``direction``, omitted when the commit totals are unknown.
     """
     partners_sorted = parse_partners(meta.co_change_partners_json)
     relation_types = structural_related if isinstance(structural_related, dict) else {}
@@ -366,12 +345,14 @@ def _build_co_changes(
     for partner in partners_sorted:
         path = partner.file_path
         types = sorted(relation_types.get(path, ()))
+        conf_ab = confidence_ratio(partner.support, partner.self_commits)
+        conf_ba = confidence_ratio(partner.support, partner.partner_commits)
         row = {
             "file_path": path,
             "weight": partner.weight,
             "last_co_change": partner.last_co_change,
             "relationship_type": "co_change",
-            "direction": "undirected",
+            "direction": _co_change_direction(conf_ab, conf_ba),
             "evidence_kind": "historical",
             "provenance": "git_history",
             "has_structural_link": path in related_paths,
@@ -383,6 +364,10 @@ def _build_co_changes(
             row["structural_relationship_types"] = types
         if partner.support:
             row["support"] = partner.support
+        if conf_ab is not None:
+            row["conf_ab"] = conf_ab
+        if conf_ba is not None:
+            row["conf_ba"] = conf_ba
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
     return population, len(population)
@@ -487,6 +472,28 @@ def _load_commit_categories(meta: Any) -> dict:
     return categories
 
 
+def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
+    """Why *target* names nothing this tool can score, in the caller's terms.
+
+    ``not_indexed`` and ``no_such_path`` are spelled as
+    ``get_health._unresolved_targets`` spells them. The other two are not
+    borrowed: ``get_health``'s ``no_such_module`` means "no module of that
+    name", and it resolves a directory to ``not_indexed`` — both would
+    prescribe a fix that cannot help here.
+    """
+    if target.startswith("module:"):
+        return "unsupported_target_kind"
+    try:
+        on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
+        if on_disk.is_dir():
+            return "directory"
+        if on_disk.exists():
+            return "not_indexed"
+    except (OSError, ValueError):
+        pass
+    return "no_such_path"
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -509,7 +516,10 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dependency_population = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
+    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    dependency_population = _dependency_population(
+        lookup_path, reverse_deps, node_meta, exclude_spec
+    )
     dependents = dependency_population[:_RELATIONSHIP_LIMIT]
     # If both distances exist, protect one transitive row from a large direct
     # fan-in. Otherwise the totals would say transitive reach exists while the
@@ -608,8 +618,6 @@ async def _assess_one_target(
     # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
     # once and key every file-path lookup on it, but keep the response keyed by
     # what the caller asked for.
-    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
-
     # Git metadata
     res = await session.execute(
         select(GitMetadata).where(
@@ -618,6 +626,24 @@ async def _assess_one_target(
         )
     )
     meta = res.scalar_one_or_none()
+
+    symbol_target = "::" in target
+    if meta is None and lookup_path not in node_meta and not symbol_target:
+        # Nothing below measured this target, so every numeric field would be
+        # a structural zero no reader could tell from a measured one. Name the
+        # miss and emit no counts.
+        #
+        # All three conditions are required. A graph node without a git row is
+        # a real target (a new file); a ``path::Symbol`` id is an accepted
+        # input shape here, so rejecting one is a different change.
+        return {
+            "target": target,
+            "resolved": False,
+            "unresolved_reason": _unresolved_reason(target, lookup_path, repository.local_path),
+            "risk_summary": (
+                f"{target} — not resolved to an indexed file; no risk signal was computed"
+            ),
+        }
 
     if meta is None:
         result_data["hotspot_score"] = 0.0
@@ -649,6 +675,7 @@ async def _assess_one_target(
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
+    line_pct = getattr(meta, "primary_owner_line_pct", None)
 
     # --- Risk velocity (trend) ---
     trend = _compute_trend(meta)
@@ -689,6 +716,7 @@ async def _assess_one_target(
     }
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["owner_line_pct"] = line_pct
     result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
     result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
     result_data["bus_factor"] = bus_factor
@@ -734,8 +762,20 @@ async def _assess_one_target(
         f"{target} — {_fix_clause(defect_profile)}"
         f"hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
-        f"{co_changes_total} co-change partners, owned {pct:.0%} by {owner}"
+        f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
         f"{bus_note}{capped_note}"
     )
 
     return result_data
+
+
+def _owner_clause(owner: str, commit_pct: float, line_pct: float | None) -> str:
+    """Name the owner with the share each figure actually measures.
+
+    With blame, the owner is the top author of current lines, which need not
+    be the top committer, so both shares are stated and neither is called the
+    other.
+    """
+    if line_pct is None:
+        return f"primary owner {owner} ({commit_pct:.0%} of commits)"
+    return f"{owner} wrote {line_pct:.0%} of current lines ({commit_pct:.0%} of commits)"

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from repowise.core.analysis.decisions.discovery.spans import ProseSpan
+from repowise.core.analysis.decisions.lifecycle import bundles_decisions
 from repowise.core.analysis.decisions.provenance import verify_quote
 
 __all__ = [
@@ -38,10 +39,6 @@ _GENERIC_CLAIMS = (
 
 #: Below this a "decision" is a fragment, not a rule.
 _MIN_DECISION_CHARS = 20
-
-#: A claim joining independent choices is flagged, never split by machine: a
-#: wrong split files one of them under the other's evidence.
-_SPLIT_MARKERS = ("; ", " and also ", " and, ")
 
 #: Dropped before scoring a claim against its spans. Without this a claim is
 #: carried by its function words: "always deploy to production on fridays"
@@ -257,7 +254,6 @@ def _ground_one(
         else []
     )
 
-    low = decision.lower()
     return GroundedCandidate(
         title=title,
         decision=decision,
@@ -268,5 +264,5 @@ def _ground_one(
         verification=verification,
         spans=spans,
         affected_files=tuple(dict.fromkeys(files)),
-        needs_split=any(marker in low for marker in _SPLIT_MARKERS),
+        needs_split=bundles_decisions(decision),
     )

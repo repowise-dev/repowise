@@ -25,6 +25,7 @@ from repowise.core.generation.overview_tables import (
 )
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.models import PackageInfo, ParsedFile, RepoStructure
+from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
 from .conftest import _make_file_info
@@ -117,6 +118,14 @@ class TestWhatItIsToldToWrite:
     def test_key_concepts_are_ideas_not_directories(self, structure):
         assert "Not a package, not a directory, not a file." in prompt(structure)
 
+    def test_overview_requests_full_orientation_without_machine_paths(self, structure):
+        body = prompt(structure)
+        assert "distinct\nevidence or intelligence views" in body
+        assert "maintenance path" in body
+        assert "650–850 words" in body
+        assert "backticked repository-relative paths" in body
+        assert "worktree name" in body
+
     def test_enumerable_facts_are_no_longer_pushed_into_lists(self, structure):
         """The old contract said to put facts in a table or a list, which is
         the instruction that produced a page of paths."""
@@ -189,3 +198,33 @@ async def test_what_it_does_lands_above_what_it_is_made_of(
         capabilities=capabilities,
     )
     assert page.content.index(CAPABILITY_TABLE_HEADING) < page.content.index(PACKAGE_TABLE_HEADING)
+
+
+async def test_model_overview_repairs_machine_local_file_links(structure, parsed_files) -> None:
+    provider = MockProvider(
+        responses=[
+            GeneratedResponse(
+                content=(
+                    "## Project Summary\n\nRead [the core]"
+                    "(C:\\worktrees\\rw-upper\\packages\\core\\a.py)."
+                ),
+                input_tokens=10,
+                output_tokens=10,
+            )
+        ]
+    )
+    config = GenerationConfig()
+    gen = PageGenerator(provider, ContextAssembler(config), config)
+
+    page = await gen.generate_repo_overview(
+        structure,
+        {},
+        [],
+        {},
+        repo_name="testrepo",
+        parsed_files=parsed_files,
+    )
+
+    assert "C:\\worktrees" not in page.content
+    assert "rw-upper" not in page.content
+    assert "the core (`packages/core/a.py`)" in page.content

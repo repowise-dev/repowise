@@ -7,6 +7,7 @@ the presence of a local .repowise/wiki.db file.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -17,6 +18,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.persistence.crud import upsert_repository
 from repowise.core.persistence.models import GraphNode
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+
+@pytest.mark.asyncio
+async def test_repo_response_exposes_canonical_index_scope(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    repo_dir = Path(tempfile.mkdtemp()) / "scoped-repo"
+    repowise_dir = repo_dir / ".repowise"
+    repowise_dir.mkdir(parents=True)
+    (repowise_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "run_mode": "fast",
+                "git_tier": "essential",
+                "docs_mode": "none",
+                "git_history_coverage": {"eligible_files": 4, "files_with_history": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = await upsert_repository(session, name="scoped-repo", local_path=str(repo_dir))
+    await session.commit()
+
+    response = await client.get("/api/repos")
+
+    scoped = next(row for row in response.json() if row["id"] == repo.id)["index_scope"]
+    assert scoped["run_mode"] == "fast"
+    assert scoped["content_provenance"] == "none"
+    assert scoped["git_history_coverage"]["files_with_history"] == 3
 
 
 @pytest.mark.asyncio

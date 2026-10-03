@@ -108,6 +108,12 @@ Editor integration:
                          --no-editor-setup only .repowise/ is touched. There is
                          one 'repowise' MCP entry per machine-wide config, so a
                          later init from another repo repoints it. See Step 3b.
+  --hook / --no-hook     Install the post-commit hook that runs 'repowise
+                         update' in the background after each commit, so the
+                         index does not go stale between sessions. Default: on.
+                         --no-editor-setup keeps it off too, since a git hook
+                         is a write outside .repowise/. Undo any time with
+                         'repowise hook uninstall'.
 
 Keys:
   --save-key /           Save the provider key this run authenticated with to

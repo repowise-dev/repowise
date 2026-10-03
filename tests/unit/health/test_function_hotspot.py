@@ -56,7 +56,7 @@ def _ctx(
         nloc=20,
         has_test_file=False,
         module=None,
-        function_metrics={fc.name: fc},
+        all_functions=(fc,),
         blame_index=blame,
         repo_function_mod_p80=p80,
     )
@@ -104,3 +104,34 @@ def test_severity_escalates_on_extreme_combined_axes():
     assert len(findings) == 1
     # mod_count >= 3*p80 (15) and ccn >= 20 → CRITICAL
     assert findings[0].severity == Severity.CRITICAL
+
+
+def _changed(n: int) -> BlameIndex:
+    return _blame({(1, 30): [f"sha{i:040d}" for i in range(n)]})
+
+
+def test_a_thin_window_needs_five_changes():
+    # A shallow clone's p80 is 1: two changes used to read as HIGH. A function
+    # changed often inside the window still is a hotspot.
+    fc = _fc("hot", 1, 30, ccn=25, nesting=6)
+    assert FunctionHotspotDetector().detect(_ctx(fc, _changed(2), p80=1)) == []
+    found = FunctionHotspotDetector().detect(_ctx(fc, _changed(20), p80=1))
+    assert [f.severity for f in found] == [Severity.CRITICAL]
+
+
+def test_four_changes_never_make_a_hotspot():
+    fc = _fc("busy", 1, 30, ccn=12, nesting=3)
+    assert FunctionHotspotDetector().detect(_ctx(fc, _changed(4), p80=3)) == []
+    found = FunctionHotspotDetector().detect(_ctx(fc, _changed(5), p80=3))
+    assert [f.severity for f in found] == [Severity.MEDIUM]
+
+
+def test_severity_scales_from_the_floor_not_a_small_p80():
+    # 2 * p80 would be HIGH at 6 changes; the bar is 5, so HIGH needs 10.
+    fc = _fc("busy", 1, 30, ccn=12, nesting=3)
+    assert FunctionHotspotDetector().detect(_ctx(fc, _changed(6), p80=3))[0].severity == (
+        Severity.MEDIUM
+    )
+    assert FunctionHotspotDetector().detect(_ctx(fc, _changed(10), p80=3))[0].severity == (
+        Severity.HIGH
+    )

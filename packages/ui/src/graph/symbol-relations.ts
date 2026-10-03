@@ -41,7 +41,6 @@ const RELATION_LABELS: Record<string, Record<SymbolRelationDirection, string>> =
   // site. Runs consumer -> provider, so a fixture's inbound edges are the
   // tests it is wired into (388 of them for `client` on this repo).
   framework_binds: { in: "Wired into", out: "Wired to" },
-  reads: { in: "Read by", out: "Reads" },
   references: { in: "Referenced by", out: "References" },
 };
 

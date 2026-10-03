@@ -15,9 +15,9 @@ The contract, mirroring that module:
 * ``line_number: None`` — the snippet is gone from the file entirely. The
   finding is stale; a line here would point at unrelated code.
 
-For the pattern scan the snippet is ``line.strip()[:120]`` (``security_scan.py``),
-so it is always a substring of the line it came from and containment is a sound
-gate. The symbol-name scan is the exception: its snippet is a bare identifier,
+A pattern snippet is its trimmed source line, so containment is the gate; one
+with a secret masked as ``****`` falls back to the text before the mask. The
+symbol-name scan is the exception: its snippet is a bare identifier,
 which recurs all over a file, so those kinds are checked in place and never
 relocated or withdrawn — see ``SYMBOL_NAME_KINDS``.
 """
@@ -53,25 +53,47 @@ def check_finding_line(
     if lines is None or not snippet:
         return LineCheck(line_number=line_number, verified=False)
 
-    if (
-        line_number is not None
-        and 1 <= line_number <= len(lines)
-        and snippet in lines[line_number - 1]
-    ):
-        return LineCheck(line_number=line_number, verified=True)
-
     if kind in SYMBOL_NAME_KINDS:
         # A bare identifier is not discriminating enough to relocate on, and
         # its absence from the stored line does not mean the symbol is gone.
-        return LineCheck(line_number=line_number, verified=False)
+        found = _locate(lines, line_number, snippet, relocate=False)
+        return found or LineCheck(line_number=line_number, verified=False)
 
-    matches = [i + 1 for i, text in enumerate(lines) if snippet in text]
+    found = _locate(lines, line_number, snippet)
+    if found is not None:
+        return found
+    # A masked secret leaves only the text before ``****`` verbatim (older rows
+    # may end mid-mask). Too short a prefix would match unrelated lines.
+    prefix = snippet.split("****", 1)[0].rstrip("*")
+    if prefix != snippet and len("".join(prefix.split())) >= _MIN_PREFIX:
+        found = _locate(lines, line_number, prefix)
+        if found is not None:
+            return found
+
+    # Gone from the file: the finding outlived the code it describes.
+    return LineCheck(line_number=None, verified=False)
+
+
+_MIN_PREFIX = 6
+
+
+def _locate(
+    lines: list[str], line_number: int | None, needle: str, *, relocate: bool = True
+) -> LineCheck | None:
+    """The stored line if it holds *needle*, else a relocation; None if absent."""
+    if (
+        line_number is not None
+        and 1 <= line_number <= len(lines)
+        and needle in lines[line_number - 1]
+    ):
+        return LineCheck(line_number=line_number, verified=True)
+    if not relocate:
+        return None
+    matches = [i + 1 for i, text in enumerate(lines) if needle in text]
     if len(matches) == 1:
         return LineCheck(line_number=matches[0], verified=True)
     if matches:
         # Ambiguous: the snippet recurs and the stored line is not one of the
         # hits. Serve the first as a pointer, but never as verified.
         return LineCheck(line_number=matches[0], verified=False)
-
-    # Gone from the file: the finding outlived the code it describes.
-    return LineCheck(line_number=None, verified=False)
+    return None

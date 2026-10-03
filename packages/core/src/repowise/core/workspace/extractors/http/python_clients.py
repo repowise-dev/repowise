@@ -7,7 +7,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import PYTHON
-from .client_calls import PYTHON_SYNTAX, ClientCallMatch, consumer_contracts, matches_in
+from ..strings import PYTHON_SYNTAX
+from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 from .dialect import METHODS
 
 if TYPE_CHECKING:

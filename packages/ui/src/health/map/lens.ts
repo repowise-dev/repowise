@@ -120,6 +120,8 @@ const ACTIONABILITY_STATE: Record<PerformanceActionability, PerformanceNodeState
   plan_ready: "actionable",
   advisory: "advisory",
   investigate: "investigate",
+  // Nothing to change; the server already leaves these out of the count.
+  expected: "clear",
 };
 
 /**
@@ -206,6 +208,27 @@ export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
   unknown: "Not analyzed here",
 };
 
+/**
+ * What the health lenses say for a file with no score: the same words the
+ * performance lens uses for a file no detector covers, because it is the same
+ * situation one pillar over. Grey, never green.
+ */
+export const HEALTH_UNSUPPORTED_LABEL = PERFORMANCE_STATE_LABEL.unsupported;
+
+/** The one line a map shows when not one drawn file has a score. */
+export const HEALTH_UNSUPPORTED_NOTICE =
+  "Code health analysis does not support this language yet, so its files are shown grey.";
+
+/** True when the field has files and none of them carries a score. */
+export function noFileScored(files: CodeHealthMapFile[]): boolean {
+  return files.length > 0 && files.every((f) => f.score == null);
+}
+
+/** A file's score at one decimal, or the unsupported label. */
+export function scoreText(f: CodeHealthMapFile): string {
+  return f.score == null ? HEALTH_UNSUPPORTED_LABEL : f.score.toFixed(1);
+}
+
 /** One sentence a hover card or inspector can print about a file. */
 export function performanceSentence(f: CodeHealthMapFile): string {
   const { state, count, unit } = performanceBurden(f);
@@ -219,9 +242,9 @@ export function performanceSentence(f: CodeHealthMapFile): string {
 export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
     label: "Code health",
-    caption: "galaxy = module · size = lines of code",
-    fill: (f) => healthNodeFill(f.score),
-    legend: BAND_LEGEND,
+    caption: "galaxy = module · size = lines of code · grey = not analysed",
+    fill: (f) => scoreFill(f.score),
+    legend: [...BAND_LEGEND, { fill: NEUTRAL_FILL, label: HEALTH_UNSUPPORTED_LABEL }],
   },
   maintainability: {
     label: "Maintainability",

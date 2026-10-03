@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { configureApiClient } from "@repowise-dev/api-client";
 import { listRepos } from "@repowise-dev/api-client/repos";
 import type { RepoResponse } from "@repowise-dev/api-client/types";
+import { normalizeRepoPath } from "@repowise-dev/types/repos";
 import type { Logger } from "./log";
 
 /** Result of a successful `/health` probe. */
@@ -55,9 +56,7 @@ function canonicalPath(p: string): string {
   } catch {
     // Path may not exist on disk (server-reported path); fall back to resolve.
   }
-  // Windows paths are case-insensitive; normalize separators and case.
-  const normalized = resolved.split(path.sep).join("/").replace(/\/+$/, "");
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return normalizeRepoPath(resolved, process.platform === "win32");
 }
 
 export function createApi(log: Logger): RepowiseApi {

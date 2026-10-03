@@ -270,6 +270,98 @@ def _partition(
     return groups, ungrouped
 
 
+@dataclass(frozen=True)
+class IndependentChangeEvidence:
+    """Everything the partition needs, already collected.
+
+    Splitting this out keeps one grouping algorithm for every caller: the index
+    reads below are one way to gather this, and a caller that gathers it some
+    other way must not end up with a second notion of "independent".
+    """
+
+    #: Every changed path, including ones nothing could group.
+    paths: tuple[str, ...]
+    #: Paths that are indexed source files, so absence of an edge means something.
+    groupable: frozenset[str]
+    #: Unordered file pairs some edge or co-change record connects.
+    pairs: frozenset[tuple[str, str]]
+    #: Files the index has in fact linked to something, ever.
+    linked: frozenset[str]
+    #: Files each commit of the range touched. Empty means none were available,
+    #: which the reported basis says out loud.
+    commit_sets: tuple[tuple[str, ...], ...] = ()
+
+
+def partition_independent_changes(
+    evidence: IndependentChangeEvidence,
+) -> IndependentChanges | None:
+    """Group the changed files. Pure: no session, no index, no IO.
+
+    ``None`` when fewer than two groups survive -- one change gets no report.
+    """
+    if len(evidence.paths) < 2 or len(evidence.groupable) < 2:
+        return None
+
+    groupable = set(evidence.groupable)
+    commit_linked = _commit_pairs(evidence.commit_sets, groupable)
+    pairs = set(evidence.pairs) | commit_linked
+    linked = set(evidence.linked) | {f for pair in commit_linked for f in pair}
+
+    # Only groupable files are graph nodes, so an edge touching a doc or a test
+    # must not survive to bridge two groups through it.
+    pairs = {(a, b) for a, b in pairs if a in groupable and b in groupable}
+
+    groups, ungrouped = _partition(groupable, linked, pairs)
+    if len(groups) < 2:
+        return None
+
+    ungrouped.extend(p for p in evidence.paths if p not in groupable)
+    return IndependentChanges(
+        groups=tuple(groups),
+        ungrouped_files=tuple(sorted(ungrouped)),
+        commits_known=bool(evidence.commit_sets),
+    )
+
+
+async def collect_independent_change_evidence(
+    session: AsyncSession,
+    repo_id: str,
+    changed_files: Iterable[str],
+    *,
+    commit_sets: Iterable[Iterable[str]] = (),
+) -> IndependentChangeEvidence:
+    """Read the index for what :func:`partition_independent_changes` needs."""
+    paths = sorted({p for p in changed_files if p})
+    # Materialised once: the caller may hand over a generator, and the basis
+    # states whether there was anything to check.
+    known_commits = tuple(tuple(touched) for touched in commit_sets)
+    empty = IndependentChangeEvidence(
+        paths=tuple(paths),
+        groupable=frozenset(),
+        pairs=frozenset(),
+        linked=frozenset(),
+        commit_sets=known_commits,
+    )
+    if len(paths) < 2:
+        return empty
+
+    owner, indexed, groupable = await _read_nodes(session, repo_id, paths)
+    if len(groupable) < 2:
+        return empty
+
+    pairs, linked = await _read_pairs(session, repo_id, owner)
+    linked |= await _read_inbound_links(session, repo_id, owner)
+    linked |= {f for pair in pairs for f in pair}
+    co_pairs, partnered = await _read_co_change(session, repo_id, indexed)
+    return IndependentChangeEvidence(
+        paths=tuple(paths),
+        groupable=frozenset(groupable),
+        pairs=frozenset(pairs | co_pairs),
+        linked=frozenset(linked | partnered),
+        commit_sets=known_commits,
+    )
+
+
 async def independent_changes(
     session: AsyncSession,
     repo_id: str,
@@ -282,36 +374,7 @@ async def independent_changes(
     *commit_sets* is the files each commit of the range touched. ``None`` when
     fewer than two groups survive: one change gets no report.
     """
-    paths = sorted({p for p in changed_files if p})
-    if len(paths) < 2:
-        return None
-    # Materialised once: the caller may hand over a generator, and the basis
-    # states whether there was anything to check.
-    known_commits = [list(touched) for touched in commit_sets]
-
-    owner, indexed, groupable = await _read_nodes(session, repo_id, paths)
-    if len(groupable) < 2:
-        return None
-
-    pairs, linked = await _read_pairs(session, repo_id, owner)
-    linked |= await _read_inbound_links(session, repo_id, owner)
-    linked |= {f for pair in pairs for f in pair}
-    co_pairs, partnered = await _read_co_change(session, repo_id, indexed)
-    commit_linked = _commit_pairs(known_commits, groupable)
-    pairs |= co_pairs | commit_linked
-    linked |= partnered | {f for pair in commit_linked for f in pair}
-
-    # Only groupable files are graph nodes, so an edge touching a doc or a test
-    # must not survive to bridge two groups through it.
-    pairs = {(a, b) for a, b in pairs if a in groupable and b in groupable}
-
-    groups, ungrouped = _partition(groupable, linked, pairs)
-    if len(groups) < 2:
-        return None
-
-    ungrouped.extend(p for p in paths if p not in groupable)
-    return IndependentChanges(
-        groups=tuple(groups),
-        ungrouped_files=tuple(sorted(ungrouped)),
-        commits_known=bool(known_commits),
+    evidence = await collect_independent_change_evidence(
+        session, repo_id, changed_files, commit_sets=commit_sets
     )
+    return partition_independent_changes(evidence)

@@ -238,6 +238,39 @@ def test_root_documentation_and_examples_get_no_concept_page():
     assert any(p.startswith("docs_src/") for p in _support_paths())
 
 
+def _with_manifests(inputs: SelectionInputs, *manifests: str) -> SelectionInputs:
+    for path in manifests:
+        fi = FakeFileInfo(path=path, language="json" if path.endswith(".json") else "toml")
+        inputs.parsed_files.append(FakeParsedFile(file_info=fi))
+    return inputs
+
+
+def test_a_docs_directory_with_its_own_manifest_is_an_app_and_keeps_its_pages():
+    """``docs/package.json`` makes the docs site a built app, part of the subject."""
+    app = [f"docs/components/widget{i}.py" for i in range(6)]
+    inputs = _with_manifests(
+        _inputs(paths=_paths() + app + _support_paths()), "docs/package.json"
+    )
+    claimed = {p for _, g in _build_module_groups(inputs).scored for p in g.file_paths}
+
+    assert set(app) <= claimed, f"a docs app was excluded: {set(app) - claimed}"
+    # Only the doc roots: an examples tree stays illustration whatever it ships.
+    assert not any(p.startswith(("docs_src/", "examples/", "samples/")) for p in claimed)
+
+
+def test_a_docs_directory_without_a_root_manifest_stays_excluded():
+    """Prose plus a Sphinx ``conf.py``; a manifest deeper down is not the docs root."""
+    inputs = _with_manifests(
+        _inputs(paths=_paths() + _support_paths()),
+        "docs/examples/demo/package.json",
+        "examples/package.json",
+    )
+    claimed = [p for _, g in _build_module_groups(inputs).scored for p in g.file_paths]
+
+    assert not any(p.startswith("docs/") for p in claimed)
+    assert not any(p.startswith("examples/") for p in claimed)
+
+
 def test_a_docs_directory_inside_a_package_keeps_its_pages():
     """The rule is anchored at the repository root, so a docs *feature* stays.
 

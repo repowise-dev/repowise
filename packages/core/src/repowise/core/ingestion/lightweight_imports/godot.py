@@ -52,11 +52,12 @@ the list is the fix if one of those turns up in a real repo.
 Known ceilings, all recorded as absent edges rather than guesses:
 
 * Godot 4.4 may write ``uid="uid://..."`` with no ``path=``. Resolving one
-  needs the generated ``.uid`` sidecars the spec blocks from indexing. Not
-  observed on the validation corpus. An independent ``grep`` over the four
-  repos counted 1150 ``[ext_resource`` lines and 1150 carrying ``path=``.
-  (This module cannot establish that itself: its pattern only matches lines
-  that have ``path=``, so a path-less header is invisible to it.)
+  needs the generated ``.uid`` sidecars the spec blocks from indexing, and
+  Godot writes none for a scene. Not present on the corpus: a ``grep`` over
+  ``godot-demo-projects`` counted 1555 ``[ext_resource`` lines and 1555
+  carrying ``path=``. (This module cannot establish that itself: its pattern
+  only matches lines that have ``path=``, so a path-less header is invisible
+  to it.)
 * An autoload registered programmatically,
   ``add_autoload_singleton("Foo", "res://foo.gd")`` from an ``EditorPlugin``,
   which is how ``dialogic`` installs itself, appears in no ``[autoload]``

@@ -281,14 +281,21 @@ async def test_the_redirect_names_a_tool_that_fits_the_question(
 
 
 @pytest.mark.asyncio
-async def test_a_record_governing_a_named_target_is_served_without_matching_words(
+async def test_an_unaccepted_record_naming_a_target_is_not_an_answer(
     session, setup_mcp
 ):
-    """Naming a file is a stronger handle than describing it.
+    """Naming a file is a handle on the file, not an answer to the question.
 
-    A caller who passes ``targets`` has pointed at the thing, so a record
-    governing it owes the question no vocabulary and must not be refused for
-    sharing none.
+    This pinned the opposite until the floor bypass was measured: a record
+    governing a named target scored 1.0 outright and entered the ranked lane
+    owing the question no vocabulary. On the real store that served "Move risk
+    scale reference metadata behind opt-in inclusion" as the answer to "why does
+    changed_lines() drop deletion-only files", whose whole claim to the question
+    was sharing a directory with it.
+
+    Nothing is lost, which is the other half of the contract: the record is
+    still reachable through the target's own card, as a candidate, with the call
+    that recovers it in full.
     """
     await _seed(
         session,
@@ -306,7 +313,14 @@ async def test_a_record_governing_a_named_target_is_served_without_matching_word
         targets=["src/app/handler.py"],
     )
 
-    assert "governs" in [d["id"] for d in result["decisions"]]
+    assert "governs" not in [d["id"] for d in result["decisions"]]
+    assert result.get("answer_basis") != "decision"
+    context = result["target_context"]["src/app/handler.py"]
+    assert not context["governing_decisions"]
+    reachable = [d["id"] for d in context.get("candidate_decisions") or []]
+    assert "governs" in reachable or "recover_with" in (
+        context.get("candidate_decisions_omitted") or {}
+    )
 
 
 async def get_why_search(query: str, targets: list[str] | None = None) -> dict:

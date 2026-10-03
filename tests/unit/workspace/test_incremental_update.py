@@ -120,12 +120,14 @@ def stub_full_pipeline(monkeypatch):
         repo_name = "stub"
         file_count = 7
         symbol_count = 9
+        git_summary = object()
+        health_report = object()
 
     async def _fake_pipeline(repo_path, **kwargs):
         calls.append({"repo_path": repo_path, **kwargs})
         return _FakeResult()
 
-    async def _fake_persist(result, session, repo_id):
+    async def _fake_persist(result, session, repo_id, **kwargs):
         return None
 
     monkeypatch.setattr(pipeline_pkg, "run_pipeline", _fake_pipeline)
@@ -340,6 +342,106 @@ def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipelin
     assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
 
 
+def test_full_pipeline_uses_repo_history_settings(tmp_path, stub_full_pipeline):
+    from repowise.core.repo_config import save_repo_config
+
+    repo = _make_git_repo(tmp_path)
+    _mark_indexed(repo, "deadbeef" * 5)
+    save_repo_config(repo, {"commit_limit": 17, "follow_renames": True})
+
+    result = asyncio.run(update_single_repo_index(repo, commit_depth=3))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
+    assert stub_full_pipeline[0]["commit_depth"] == 17
+    assert stub_full_pipeline[0]["follow_renames"] is True
+
+
+def test_config_full_pipeline_requires_changed_phases(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from repowise.core.repo_config import (
+        config_dependency_fingerprints,
+        config_fingerprint,
+        save_repo_config,
+    )
+
+    captured: dict = {}
+
+    async def _fake_full_index(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(file_count=1, symbol_count=1, knowledge_graph_result=None)
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.full_index.index_repo_full", _fake_full_index
+    )
+
+    repo = _make_git_repo(tmp_path)
+    save_repo_config(repo, {"commit_limit": 3})
+    _mark_indexed(
+        repo,
+        get_head_commit(repo),
+        config_fingerprint=config_fingerprint(repo),
+        config_dependency_fingerprints=config_dependency_fingerprints(repo),
+    )
+    save_repo_config(repo, {"commit_limit": 7})
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True
+    assert captured["require_git_success"] is True
+    assert captured["require_health_success"] is True
+
+
+@pytest.mark.parametrize(
+    ("missing_attr", "required_kw", "message"),
+    [
+        ("git_summary", "require_git_success", "Git indexing failed"),
+        ("health_report", "require_health_success", "Health analysis failed"),
+    ],
+)
+def test_required_config_phase_failure_aborts_before_persist(
+    tmp_path, monkeypatch, missing_attr, required_kw, message
+):
+    from types import SimpleNamespace
+
+    import repowise.core.pipeline as pipeline_pkg
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    async def _fake_pipeline(*args, **kwargs):
+        result = SimpleNamespace(git_summary=object(), health_report=object())
+        setattr(result, missing_attr, None)
+        return result
+
+    monkeypatch.setattr(pipeline_pkg, "run_pipeline", _fake_pipeline)
+
+    with pytest.raises(RuntimeError, match=message):
+        asyncio.run(index_repo_full(tmp_path, **{required_kw: True}))
+
+
+def test_generation_only_config_drift_stays_incremental(tmp_path, forbid_full_pipeline):
+    from repowise.core.repo_config import (
+        config_dependency_fingerprints,
+        config_fingerprint,
+        save_repo_config,
+    )
+
+    repo = _make_git_repo(tmp_path)
+    save_repo_config(repo, {"provider": "mock"})
+    base = get_head_commit(repo)
+    _mark_indexed(
+        repo,
+        base,
+        config_fingerprint=config_fingerprint(repo),
+        config_dependency_fingerprints=config_dependency_fingerprints(repo),
+    )
+    save_repo_config(repo, {"provider": "openai"})
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True
+    assert result.error is None
+
+
 # ---------------------------------------------------------------------------
 # Helpers under test
 # ---------------------------------------------------------------------------
@@ -372,3 +474,129 @@ def test_read_repo_state_missing_or_malformed(tmp_path):
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "state.json").write_text("not json{")
     assert read_repo_state(tmp_path) == {}
+
+
+def test_shared_db_indexed_repo_takes_incremental_path(tmp_path, forbid_full_pipeline, monkeypatch):
+    """A repo indexed in the configured shared DB must update incrementally
+    even when no repo-local .repowise/wiki.db exists."""
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+
+    # Use a file-backed SQLite database as a stand-in for the configured
+    # external/shared database. The routing decision must depend on the
+    # configured DB, not on the presence of repo-local wiki.db.
+    shared_db = tmp_path / "shared.db"
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL",
+        f"sqlite+aiosqlite:///{shared_db}",
+    )
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    async def _seed() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{shared_db}")
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session,
+                    name=repo.name,
+                    local_path=str(repo),
+                    head_commit=base,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed())
+
+    # Persist the incremental anchor, but deliberately do NOT create
+    # <repo>/.repowise/wiki.db.
+    state_dir = repo / ".repowise"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "state.json").write_text(
+        json.dumps({"last_sync_commit": base}),
+        encoding="utf-8",
+    )
+    assert not (state_dir / "wiki.db").exists()
+
+    _add_commit(repo, "b.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.error is None
+    assert result.updated is True
+    assert result.file_count >= 2
+    assert result.symbol_count == 2
+
+
+def test_shared_db_config_drift_does_not_crash(tmp_path, stub_full_pipeline, monkeypatch):
+    """Config-fingerprint drift on a shared-DB-indexed repo (no local
+    wiki.db) must still fall back to the full pipeline cleanly.
+
+    Regression test: an earlier version of the shared-DB gate computed
+    ``has_persisted_index`` *after* the config-drift branch already read it,
+    which raised UnboundLocalError the moment config_changed was True for a
+    repo with no local wiki.db (i.e. exactly the shared-DB case). The
+    existing test_config_drift_runs_full_reindex only exercises this branch
+    for the local-SQLite case (wiki.db present via _mark_indexed), so it
+    never caught the ordering bug.
+    """
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+
+    # Use a file-backed SQLite database as a stand-in for the configured
+    # external/shared database, same as test_shared_db_indexed_repo_takes_incremental_path.
+    shared_db = tmp_path / "shared.db"
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL",
+        f"sqlite+aiosqlite:///{shared_db}",
+    )
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    async def _seed() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{shared_db}")
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session,
+                    name=repo.name,
+                    local_path=str(repo),
+                    head_commit=base,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed())
+
+    # A stored config fingerprint that will not match the freshly computed
+    # one — this drives config_changed=True. Deliberately do NOT create
+    # <repo>/.repowise/wiki.db: the shared DB is the source of truth here.
+    state_dir = repo / ".repowise"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "state.json").write_text(
+        json.dumps({"last_sync_commit": base, "config_fingerprint": "0" * 64}),
+        encoding="utf-8",
+    )
+    assert not (state_dir / "wiki.db").exists()
+
+    _add_commit(repo, "b.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)

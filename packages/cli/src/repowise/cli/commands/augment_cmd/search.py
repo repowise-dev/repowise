@@ -21,6 +21,7 @@ and are not billed to the savings ledger; only the *served* digest
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -50,6 +51,14 @@ _RESCUE_TOP_N = 2
 # answer depend on row order; this is small enough to stay one indexed lookup
 # and large enough that the ranking, not the LIMIT, picks the winner.
 _RESCUE_EXACT_FETCH = 8
+# Distinct query tokens (per ``_pattern_terms``) that must appear in an FTS
+# row's title/path/snippet before the zero-result rescue names it (#2092). A
+# multi-token pattern where one common token matches still returns rows, so
+# the fallback needs a quality gate — and it cannot be a score floor: SQLite
+# BM25 is unbounded while PostgreSQL ts_rank is ~0-1, so any constant is
+# wrong on one dialect. Token coverage is dialect- and corpus-independent.
+# Patterns with fewer content tokens require all of them.
+_RESCUE_FTS_MIN_TERMS = 2
 # Files the triage ranker considers. Ranking is over the grep's own matches,
 # so this only bites on floods wider than 200 files, where the tail is taken
 # by match count, the one signal available before any index lookup.
@@ -785,29 +794,67 @@ async def _rescue(
             f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
         )
 
-    # Fall back to FTS on wiki content. Only return if the FTS row actually
-    # points at a code page (file/module/api), not a generic doc page.
+    # Fall back to FTS on wiki content.
     fts = FullTextSearch(engine)
     try:
         fts_rows = await fts.search(pattern, limit=3)
     except Exception:
         fts_rows = []
+    return _rescue_fts_text(pattern, fts_rows)
+
+
+def _rescue_fts_text(pattern: str, fts_rows: list) -> str | None:
+    """The FTS-fallback line, or ``None`` when no row earns it.
+
+    Only a row pointing at a code page (file/module/api), not a generic doc
+    page, qualifies — and it must pass the coverage gate (#2092): a
+    multi-token pattern where only one common token matches ("fallback")
+    still returns rows, and a confident wrong suggestion is worse than
+    silence. The score is unusable as a gate — the two dialects return
+    incompatible scales — so the row itself must carry the query's tokens.
+    Same guard family as the widened path's ``_pattern_terms`` check in
+    ``_handle_search_post``.
+
+    A pattern whose subtokens are all <3 chars has no terms, so ``needed``
+    is 0 and the gate stays open — the pre-gate behaviour, deliberately:
+    there is nothing to measure coverage against.
+    """
+    terms = _pattern_terms(pattern)
+    needed = min(_RESCUE_FTS_MIN_TERMS, len(terms))
     for r in fts_rows:
-        target = getattr(r, "target_path", None) or ""
+        raw_target = getattr(r, "target_path", None) or ""
+        target = raw_target.split("::")[0]
         page_type = getattr(r, "page_type", "") or ""
-        if "::" in target:
-            target = target.split("::")[0]
-        if target and page_type in (
+        if not target or page_type not in (
             "file",
             "file_page",
             "module_page",
             "api_contract",
             "infra_page",
         ):
-            return (
-                f"[repowise] No literal match for `{pattern}`. "
-                f"Wiki suggests `{target}` ({page_type})."
+            continue
+        haystack = " ".join(
+            (
+                getattr(r, "title", "") or "",
+                raw_target,
+                getattr(r, "snippet", "") or "",
             )
+        ).lower()
+        covered = sum(1 for t in terms if t in haystack)
+        if covered < needed:
+            # Not a break: rows are few and a later one may cover.
+            logging.getLogger(__name__).debug(
+                "rescue FTS near-miss: `%s` covers %d/%d terms of `%s`",
+                target,
+                covered,
+                needed,
+                pattern,
+            )
+            continue
+        return (
+            f"[repowise] No literal match for `{pattern}`. "
+            f"Wiki suggests `{target}` ({page_type})."
+        )
     return None
 
 

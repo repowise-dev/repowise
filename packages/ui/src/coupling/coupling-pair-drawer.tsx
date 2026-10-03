@@ -4,8 +4,8 @@ import * as React from "react";
 import { ExternalLink } from "lucide-react";
 import { AdaptivePanel } from "../shared/adaptive-panel";
 import { HealthBadge } from "../health/health-badge";
-import { AiPromptButton } from "../health/ai-prompt-button";
 import { formatDate, formatDateTime } from "../lib/format";
+import { PAIR_MICRO as MICRO, PairAgentSection, PairFactGrid, type PairFact } from "./pair-drawer-parts";
 import {
   couplingClaim,
   dependencyKindPhrase,
@@ -61,8 +61,6 @@ const VERDICT: Record<CouplingSegment, { word: string; dot: string; body: string
   },
 };
 
-const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
-
 function pct(v: number | null | undefined): string | null {
   return typeof v === "number" ? `${Math.round(v * 100)}%` : null;
 }
@@ -102,7 +100,7 @@ export function CouplingPairDrawer({
   const moduleA = edge ? (nodeByPath.get(edge.source)?.module ?? null) : null;
   const moduleB = edge ? (nodeByPath.get(edge.target)?.module ?? null) : null;
 
-  const facts: { label: string; value: React.ReactNode }[] = edge
+  const facts: PairFact[] = edge
     ? [
         {
           label: "Shared commits",
@@ -200,25 +198,7 @@ export function CouplingPairDrawer({
             )}
           </div>
 
-          {/* A hairline ribbon, not tiles: four different kinds of fact, and
-              equal-weight boxes would claim they are one. */}
-          <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)]">
-            {facts.map((f, i) => (
-              <div
-                key={f.label}
-                className={[
-                  "min-w-0 px-3 py-2.5 border-[var(--color-border-default)]",
-                  i % 2 === 1 ? "border-l" : "",
-                  i >= 2 ? "border-t" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-              >
-                <dt className={MICRO}>{f.label}</dt>
-                <dd className="mt-1">{f.value}</dd>
-              </div>
-            ))}
-          </dl>
+          <PairFactGrid facts={facts} />
 
           {/* The asymmetry is the finding, so each direction gets its own bar
               rather than collapsing into a single "up to N%". */}
@@ -309,21 +289,12 @@ export function CouplingPairDrawer({
             </ul>
           </section>
 
-          {/* The one action, named and explained. */}
           {onGeneratePrompt && (
-            <section className="flex flex-col gap-2">
-              <h3 className={MICRO}>Hand this to an agent</h3>
-              <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
-                Builds a prompt carrying the evidence above, so your agent can judge
-                whether the coupling is accidental or legitimate and propose the
-                smallest decoupling that holds.
-              </p>
-              <AiPromptButton
-                label="AI decouple prompt"
-                onClick={() => onGeneratePrompt(edge)}
-                className="w-fit"
-              />
-            </section>
+            <PairAgentSection
+              body="Builds a prompt carrying the evidence above, so your agent can judge whether the coupling is accidental or legitimate and propose the smallest decoupling that holds."
+              label="AI decouple prompt"
+              onClick={() => onGeneratePrompt(edge)}
+            />
           )}
         </div>
       )}

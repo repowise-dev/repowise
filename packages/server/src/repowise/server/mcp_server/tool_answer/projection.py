@@ -7,6 +7,11 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
+from repowise.server.mcp_server.tool_answer.config import (
+    _CANDIDATE_FILES_HIGH,
+    _CANDIDATE_FILES_MAX,
+)
+
 _COLLECTIONS = (
     "citations",
     "retrieval",
@@ -272,14 +277,30 @@ def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
     payload[key] = rows[:limit]
 
 
+def _shape_confidence(payload: dict[str, Any]) -> Any:
+    # A degraded payload keeps the fullest shape whatever it graded: trimming is
+    # keyed on prose replacing evidence, and there the evidence IS the product.
+    return "low" if payload.get("degraded") else payload.get("confidence", "low")
+
+
+def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
+    """Serve the ranked paths the final citations do not already name."""
+    rows = payload.pop("candidate_files", None)
+    if not isinstance(rows, list):
+        return
+    cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
+    paths = [
+        path for path in dict.fromkeys(row for row in rows if isinstance(row, str))
+        if path not in cited
+    ]
+    high = not expanded and _shape_confidence(payload) == "high"
+    paths = paths[: _CANDIDATE_FILES_HIGH if high else _CANDIDATE_FILES_MAX]
+    if paths:
+        payload["candidate_files"] = paths
+
+
 def _default_shape(payload: dict[str, Any], question: str) -> None:
-    # A degraded payload keeps the fullest evidence shape whatever it graded.
-    # The trimming above is keyed on prose REPLACING evidence: a high-confidence
-    # answer makes the ranked list redundant, so it goes. There is no answer on
-    # this path - the evidence IS the product - and its ``confidence`` now rates
-    # that evidence rather than prose, so reading the two on one scale would cut
-    # a body and a hit from exactly the caller who has nothing else to read.
-    confidence = "low" if payload.get("degraded") else payload.get("confidence", "low")
+    confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
         for key in ("retrieval", "best_guesses", "candidates", "fallback_targets"):
@@ -332,11 +353,15 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
 
 
 def _record_reductions(
-    payload: dict[str, Any], totals: dict[str, int], *, question: str, scope: str | None,
-    repo: str | None, expanded: bool
+    payload: dict[str, Any], totals: dict[str, int], *, scope: str | None, repo: str | None,
+    expanded: bool
 ) -> None:
     reduced = False
     for key in _COLLECTIONS:
+        # By default ``candidate_files`` carries these paths, so counting the
+        # hidden rows would only advertise what the reply already serves.
+        if key == "candidates" and not expanded:
+            continue
         total = totals.get(key, 0)
         emitted = len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         if total <= emitted:
@@ -348,12 +373,19 @@ def _record_reductions(
         reduced = True
     if reduced and not expanded:
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
-        arguments: dict[str, Any] = {"question": question, "include": ["evidence"]}
+        # The caller already holds the question; restating a long one costs
+        # tokens on every reduced reply. Short scope and repo stay, so a caller
+        # that rebuilds the call from this block cannot widen it silently.
+        arguments: dict[str, Any] = {"include": ["evidence"]}
         if scope is not None:
             arguments["scope"] = scope
         if repo is not None:
             arguments["repo"] = repo
-        projection["recovery"] = {"tool": "get_answer", "arguments": arguments}
+        projection["recovery"] = {
+            "tool": "get_answer",
+            "same_arguments": True,
+            "arguments": arguments,
+        }
 
 
 def project_answer_payload(
@@ -370,13 +402,12 @@ def project_answer_payload(
     expanded = "evidence" in set(include or [])
     if not expanded:
         _default_shape(payload, question)
+    _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
-    _record_reductions(
-        payload, totals, question=question, scope=scope, repo=repo, expanded=expanded
-    )
+    _record_reductions(payload, totals, scope=scope, repo=repo, expanded=expanded)
     unknown = sorted(set(include or []) - {"evidence"})
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
@@ -415,8 +446,8 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         return
     try:
         from repowise.core.persistence.database import get_session
-        from repowise.server.mcp_server._basis import basis_cache_key
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
         from repowise.server.mcp_server._scope import unrelated_scope_hint
 
@@ -428,7 +459,7 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
                 session,
                 repository.id,
                 [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+                cache_key=f"{repository.id}:{index_state_key(repository)}",
             )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:

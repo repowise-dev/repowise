@@ -49,7 +49,9 @@ log = structlog.get_logger(__name__)
 # dependent values and two installs at the same commit would still disagree.
 # 3 when entries gained the scored edge set and commit, needed to answer "how
 # far has the graph drifted, and which nodes were never in this scoring".
-_CACHE_VERSION = 3
+# 4 when file betweenness moved to the graph without test-to-test edges; a
+# churn-budget hit would otherwise keep serving the old scoring.
+_CACHE_VERSION = 4
 _CACHE_FILENAME = "centrality_cache.pkl"
 
 __all__ = ["BetweennessScoring", "CentralityCache", "subgraph_signature"]

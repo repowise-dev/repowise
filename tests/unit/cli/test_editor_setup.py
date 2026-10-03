@@ -22,6 +22,7 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_integration_overrides,
     get_default_project_file_overrides,
 )
+from repowise.cli.editor_integrations.vscode import VSCodeSetup
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
     refresh_editor_project_files,
@@ -302,9 +303,7 @@ def test_no_editor_setup_turns_off_every_replacing_surface(monkeypatch, tmp_path
 
     (tmp_path / ".repowise").mkdir()
 
-    offer_distill_rewrite_hook(
-        _silent_console(), [tmp_path], False, yes=True, no_editor_setup=True
-    )
+    offer_distill_rewrite_hook(_silent_console(), [tmp_path], False, yes=True, no_editor_setup=True)
 
     assert _all_same(_hook_verdicts(tmp_path), False)
 
@@ -425,9 +424,7 @@ def _select(monkeypatch, tmp_path: Path, answer, **kwargs):
         return answer(choices) if callable(answer) else answer
 
     monkeypatch.setattr(agent_selection, "interactive_agent_select", _fake)
-    options = select_agents_interactively(
-        _silent_console(), tmp_path, EditorSetupOptions(**kwargs)
-    )
+    options = select_agents_interactively(_silent_console(), tmp_path, EditorSetupOptions(**kwargs))
     return options, seen[0]
 
 
@@ -442,9 +439,7 @@ def test_checklist_unticking_an_agent_disables_its_project_file(monkeypatch, tmp
 
 
 def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) -> None:
-    options, _ = _select(
-        monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
-    )
+    options, _ = _select(monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices})
 
     from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
 
@@ -482,9 +477,7 @@ def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tm
     Otherwise accepting the checklist would silently undo the flag the user
     passed on the same command line.
     """
-    _, choices = _select(
-        monkeypatch, tmp_path, set(), integration_overrides={"codex": True}
-    )
+    _, choices = _select(monkeypatch, tmp_path, set(), integration_overrides={"codex": True})
 
     codex = next(choice for choice in choices if choice.id == "codex")
     assert codex.enabled is True
@@ -688,6 +681,131 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     )
 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
+
+
+def test_write_editor_project_files_honors_vscode_config_optout(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The init write path resolves an explicit VS Code opt-out centrally."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  vscode_mcp: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
+    )
+
+    written = write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(VSCodeSetup(),),
+    )
+
+    assert written == []
+    assert not (tmp_path / ".vscode").exists()
+
+
+def test_refresh_editor_project_files_honors_vscode_config_optout(tmp_path: Path) -> None:
+    """The update refresh path applies the same explicit opt-out."""
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  vscode_mcp: false\n",
+        encoding="utf-8",
+    )
+
+    refresh_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(VSCodeSetup(),),
+    )
+
+    assert not (tmp_path / ".vscode").exists()
+
+
+def test_explicit_project_file_override_wins_over_configured_optout(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A per-run override wins even when a disabled set also contains the id."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  agents_md: false\n",
+        encoding="utf-8",
+    )
+    calls: list[bool | None] = []
+    monkeypatch.setattr(
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
+    )
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, _repo_path, *, agents_md=None: calls.append(agents_md),
+    )
+
+    write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(
+            disabled_project_files=frozenset({"agents_md"}),
+            project_file_overrides={"agents_md": True},
+        ),
+        integrations=(CodexSetup(),),
+    )
+
+    assert calls == [True]
+
+
+def test_write_editor_project_files_honors_agents_config_optout_when_codex_enabled(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """An AGENTS.md opt-out must not disable Codex MCP registration."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  agents_md: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda repo_path: calls.append("mcp") or repo_path / ".codex" / "config.toml",
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_hooks_config",
+        lambda repo_path: calls.append("hooks") or repo_path / ".codex" / "hooks.toml",
+    )
+    monkeypatch.setattr(mcp_config, "is_codex_cli_installed", lambda: False)
+    monkeypatch.setattr(codex_integration, "maybe_generate_agents_md", lambda *args, **kwargs: None)
+
+    written = write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(integration_overrides={"codex": True}),
+        integrations=(CodexSetup(),),
+    )
+
+    assert calls == ["mcp", "hooks"]
+    assert written == [tmp_path / ".codex" / "config.toml", tmp_path / ".codex" / "hooks.toml"]
 
 
 def _write_settings(path: Path, entry: dict) -> None:

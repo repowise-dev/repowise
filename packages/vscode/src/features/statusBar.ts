@@ -56,7 +56,14 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
         const lines = ["Connected to the local Repowise server."];
         if (detail?.version) lines.push(`Version ${detail.version}`);
         if (detail?.url) lines.push(detail.url);
-        item.tooltip = lines.join("\n");
+        // One quiet way to the hosted side, inside the tooltip rather than as
+        // another status-bar item.
+        const tooltip = new vscode.MarkdownString(lines.join("  \n"));
+        tooltip.appendMarkdown(
+          `\n\n[Publish / Share on repowise.dev](command:${Commands.publish}) (free for public repos)`,
+        );
+        tooltip.isTrusted = { enabledCommands: [Commands.publish] };
+        item.tooltip = tooltip;
         item.command = Commands.showLog;
         item.backgroundColor = undefined;
         break;

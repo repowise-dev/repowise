@@ -98,7 +98,10 @@ async def test_put_preset_then_source_override_in_one_call(client: AsyncClient):
 
     by_key = {s["key"]: s for s in body["sources"]}
     assert by_key["comment"]["enabled"] is True
-    assert by_key["session"]["enabled"] is True
+    # Untouched members keep the preset's own value, in both directions.
+    assert by_key["inline_marker"]["enabled"] is True
+    assert by_key["session_discovery"]["enabled"] is True
+    assert by_key["conventions"]["enabled"] is False
     assert body["preset"] == "custom"
 
 
