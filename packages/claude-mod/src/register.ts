@@ -29,7 +29,7 @@ import { initialSession, reduce, type SavingsDelta, type SessionAction, type Ses
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
-import { isFileEdit, type ChangeRisk } from "./model/review";
+import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/review";
 import { REVIEW_TIMEOUT_S } from "./views/copy";
 import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
 import { spinnerSuffix } from "./views/spinner";
@@ -231,19 +231,24 @@ async function onTurnComplete(
   next: (e: TurnCompleteEvent) => Promise<unknown>,
 ): Promise<unknown> {
   const b = bind($);
+  noteTurnEnd(b, e);
+  const result = await next(e);
+  return reviewOn && shouldReview(e, editsThisTurn) ? withReview(b, e, result) : result;
+}
+
+function noteTurnEnd(b: Bound, e: TurnCompleteEvent): void {
   try {
     const action = fromTurnComplete(e);
-    if (action !== null) {
-      dispatch(b, action);
-      refresh(b);
-    }
+    if (action === null) return;
+    dispatch(b, action);
+    refresh(b);
   } catch (err) {
     b.debug(`turn.complete failed: ${String(err)}`);
   }
-  const result = await next(e);
-  if (!reviewOn || e.agentId !== undefined || editsThisTurn === 0) return result;
-  // An interrupted or failed turn may have stopped mid-change: no review.
-  if (e.isAborted === true || e.reason === "aborted" || e.reason === "error") return result;
+}
+
+/** The turn's result with the review card beneath the answer, or as it was. */
+async function withReview(b: Bound, e: TurnCompleteEvent, result: unknown): Promise<unknown> {
   try {
     const card = await finishReview(b);
     return card === null ? result : withCard(result, e.answer ?? "", card);
@@ -311,6 +316,22 @@ async function reviewAfterEdit(b: Bound): Promise<void> {
   clearTimeout(timer);
 }
 
+/** The review started this turn, when it covers every edit so far. */
+function coveringReview(): StartedReview | null {
+  const s = started;
+  return s !== null && s.gen === reviewGeneration && s.covers === editsThisTurn ? s : null;
+}
+
+/**
+ * A review started during an edit can fail where one awaited at the turn's
+ * end would not (a call refused for starting late): that one is tried once
+ * more, awaited.
+ */
+async function outcomeOf(b: Bound, review: StartedReview, reused: boolean): Promise<SessionAction> {
+  const action = await review.outcome;
+  return reused && isRetryable(action) ? startReview(b).outcome : action;
+}
+
 /**
  * At the end of the turn: the started review when it covers every edit of the
  * turn (usually already landed), else one more. Null when a new turn started
@@ -318,15 +339,10 @@ async function reviewAfterEdit(b: Bound): Promise<void> {
  */
 async function finishReview(b: Bound): Promise<string | null> {
   const gen = reviewGeneration;
-  const covering = started !== null && started.gen === gen && started.covers === editsThisTurn;
-  const review = covering && started !== null ? started : startReview(b);
+  const reused = coveringReview();
+  const review = reused ?? startReview(b);
   if (!review.settled) dispatch(b, { type: "reviewStarted" });
-  let action = await review.outcome;
-  // A review started during an edit can fail where one awaited here would not
-  // (its call started after that hook returned): try once more, awaited.
-  if (covering && action.type === "reviewFailed" && action.reason === "error" && gen === reviewGeneration) {
-    action = await startReview(b).outcome;
-  }
+  const action = await outcomeOf(b, review, reused !== null);
   if (gen !== reviewGeneration) return null;
   dispatch(b, action);
   return reviewText(state.review.outcome);
@@ -412,28 +428,37 @@ function fetchContext(b: Bound, file: string): void {
 
 async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) => Promise<unknown>): Promise<unknown> {
   const b = bind($);
-  let file: string | null = null;
-  try {
-    file = fileTarget(e, state.repoRoot);
-    if (file !== null) {
-      dispatch(b, { type: "toolStarted", tool: { id: e.tool_use_id, file } });
-      fetchContext(b, file);
-    }
-  } catch (err) {
-    b.debug(`tool.call failed: ${String(err)}`);
-  }
+  const file = fileToolStarted(b, e);
   let result: unknown;
   try {
     result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
+  await editLanded(b, e, result);
+  return result;
+}
+
+/** A file tool starting in the repo: the spinner's file, and its context fetched. */
+function fileToolStarted(b: Bound, e: ToolCallEvent): string | null {
+  try {
+    const file = fileTarget(e, state.repoRoot);
+    if (file === null) return null;
+    dispatch(b, { type: "toolStarted", tool: { id: e.tool_use_id, file } });
+    fetchContext(b, file);
+    return file;
+  } catch (err) {
+    b.debug(`tool.call failed: ${String(err)}`);
+    return null;
+  }
+}
+
+async function editLanded(b: Bound, e: ToolCallEvent, result: unknown): Promise<void> {
   try {
     if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
-  return result;
 }
 
 // The one approval Lens gives: its own read-only lookups. Every other

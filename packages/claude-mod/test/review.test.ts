@@ -3,7 +3,7 @@
 // adds a second local branch editing the same file). Error and timeout are
 // client-side states, so they have no recorded payload.
 import { describe, expect, it } from "vitest";
-import { initialReview, isFileEdit, reduceReview, testsToRun, type ChangeRisk, type ReviewOutcome } from "../src/model/review";
+import { initialReview, isFileEdit, isRetryable, reduceReview, shouldReview, testsToRun, type ChangeRisk, type ReviewOutcome } from "../src/model/review";
 import { initialSession, reduce } from "../src/model/session";
 import { bandView } from "../src/views/band";
 import { box, button, materialize, text, type Node } from "../src/views/elements";
@@ -70,6 +70,22 @@ describe("review model", () => {
     expect(reduce(initialSession, { type: "turnStarted" })).toBe(initialSession);
     // A discovery keeps the review it found.
     expect(reduce(s, { type: "discovered", mode: "no-index", freshness: null }).review).toBe(s.review);
+  });
+
+  it("reviews only a finished main-loop turn that edited files", () => {
+    expect(shouldReview({ reason: "answer" }, 1)).toBe(true);
+    expect(shouldReview({}, 2)).toBe(true);
+    expect(shouldReview({ reason: "answer" }, 0)).toBe(false);
+    expect(shouldReview({ agentId: "sub" }, 1)).toBe(false);
+    expect(shouldReview({ isAborted: true }, 1)).toBe(false);
+    expect(shouldReview({ reason: "aborted" }, 1)).toBe(false);
+    expect(shouldReview({ reason: "error" }, 1)).toBe(false);
+  });
+
+  it("retries a failed review once unless it timed out", () => {
+    expect(isRetryable({ type: "reviewFailed", reason: "error" })).toBe(true);
+    expect(isRetryable({ type: "reviewFailed", reason: "timeout" })).toBe(false);
+    expect(isRetryable({ type: "reviewed" })).toBe(false);
   });
 
   it("reads the tests and their basis as the server sent them", () => {

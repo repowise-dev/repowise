@@ -489,15 +489,24 @@ function reduceReview(state2, action) {
   }
 }
 __name(reduceReview, "reduceReview");
-var EDIT_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+var WRITE_TOOLS = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 function isFileEdit(e, result) {
-  if (typeof e.tool !== "string" || !EDIT_TOOLS2.has(e.tool)) return false;
+  if (typeof e.tool !== "string" || !WRITE_TOOLS.has(e.tool)) return false;
   if (typeof e.tool_use_id === "string" && e.tool_use_id.startsWith("toolu_plugin_")) return false;
   if (typeof result !== "object" || result === null) return false;
   const r = result;
   return r.deny === void 0 && r.isError !== true;
 }
 __name(isFileEdit, "isFileEdit");
+function shouldReview(e, edits) {
+  if (e.agentId !== void 0 || edits === 0) return false;
+  return e.isAborted !== true && e.reason !== "aborted" && e.reason !== "error";
+}
+__name(shouldReview, "shouldReview");
+function isRetryable(action) {
+  return action.type === "reviewFailed" && action.reason !== "timeout";
+}
+__name(isRetryable, "isRetryable");
 function testsToRun(risk) {
   const block = risk.impacted_tests;
   const tests = block?.tests_to_run ?? [];
@@ -774,23 +783,35 @@ function scored(risk) {
 }
 __name(scored, "scored");
 var COMPARED = /* @__PURE__ */ new Set(["available", "partial"]);
+var NOT_REPORTED = { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
+function notComparedWords(hd) {
+  return { words: notCompared(hd.explanation.replace(/\.$/, "")), short: notCompared("") };
+}
+__name(notComparedWords, "notComparedWords");
+function clearWords(hd) {
+  if (hd.resolved === 0) return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
+  return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
+}
+__name(clearWords, "clearWords");
+var FINDINGS_TONE = {
+  review_required: { required: true, color: DARK.error },
+  review_recommended: { required: false, color: DARK.warning }
+};
+function findingsWords(d, hd) {
+  const headline = d.headline.replace(/\.$/, "");
+  const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
+  const tone = FINDINGS_TONE[d.status];
+  if (tone === void 0) return { words, short: PARTLY_COMPARED };
+  return { words, short: newFindings(hd.findings_total, tone.required), color: tone.color };
+}
+__name(findingsWords, "findingsWords");
 function health(risk) {
   const d = risk.directive;
   const hd = risk.health_delta;
-  if (d === void 0 || hd === void 0) return { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
-  if (!COMPARED.has(hd.status)) {
-    const words2 = notCompared(hd.explanation.replace(/\.$/, ""));
-    return { words: words2, short: notCompared("") };
-  }
-  if (d.status === "clear_in_analyzed_scope") {
-    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
-    return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
-  }
-  const headline = d.headline.replace(/\.$/, "");
-  const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
-  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: DARK.error };
-  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: DARK.warning };
-  return { words, short: PARTLY_COMPARED };
+  if (d === void 0 || hd === void 0) return NOT_REPORTED;
+  if (!COMPARED.has(hd.status)) return notComparedWords(hd);
+  if (d.status === "clear_in_analyzed_scope") return clearWords(hd);
+  return findingsWords(d, hd);
 }
 __name(health, "health");
 function overlap(risk) {
@@ -805,29 +826,53 @@ function isClear(risk) {
   return risk.directive?.status === "clear_in_analyzed_scope";
 }
 __name(isClear, "isClear");
-function cardSegments(risk) {
-  const hd = risk.health_delta;
-  const ref = risk.ref ?? "working tree";
-  const workingTree = risk.working_tree !== false;
-  const h = health(risk);
-  const shared = overlap(risk);
-  if (isClear(risk) && shared === null) {
-    return [`Change review (${reviewScope(ref, workingTree, null)})`, `health: ${h.words}`];
-  }
-  const segments = [`Change review (${reviewScope(ref, workingTree, hd?.scope?.changed ?? null)})`, `Health: ${h.words}`];
-  for (const f of hd?.top_findings ?? []) segments.push(findingLine(f));
-  const more = (hd?.findings_total ?? 0) - (hd?.top_findings.length ?? 0);
+function header(risk, changed) {
+  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree !== false, changed)})`;
+}
+__name(header, "header");
+function findingSegments(hd) {
+  const rows = hd?.top_findings ?? [];
+  const segments = rows.map(findingLine);
+  const more = (hd?.findings_total ?? 0) - rows.length;
   if (more > 0) segments.push(moreFindings(more));
-  if (hd?.status === "partial" && hd.scope !== void 0) {
-    segments.push(partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {}));
-  }
-  segments.push(diffShape(risk.risk_percentile));
-  const tests = testsToRun(risk);
-  if (tests !== null) segments.push(testsLine(tests));
-  if (shared !== null) segments.push(`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`);
   return segments;
 }
+__name(findingSegments, "findingSegments");
+function scopeSegments(hd) {
+  if (hd?.status !== "partial" || hd.scope === void 0) return [];
+  return [partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {})];
+}
+__name(scopeSegments, "scopeSegments");
+function testSegments(risk) {
+  const tests = testsToRun(risk);
+  return tests === null ? [] : [testsLine(tests)];
+}
+__name(testSegments, "testSegments");
+function overlapSegments(risk) {
+  const shared = overlap(risk);
+  return shared === null ? [] : [`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`];
+}
+__name(overlapSegments, "overlapSegments");
+function cardSegments(risk) {
+  if (isClear(risk) && overlap(risk) === null) return [header(risk, null), `health: ${health(risk).words}`];
+  const hd = risk.health_delta;
+  return [
+    header(risk, hd?.scope?.changed ?? null),
+    `Health: ${health(risk).words}`,
+    ...findingSegments(hd),
+    ...scopeSegments(hd),
+    diffShape(risk.risk_percentile),
+    ...testSegments(risk),
+    ...overlapSegments(risk)
+  ];
+}
 __name(cardSegments, "cardSegments");
+function doneText(risk) {
+  if (risk.error !== void 0) return reviewFailed(risk.error);
+  if (risk.status === "nothing_to_score") return null;
+  return cardSegments(risk).join(" · ");
+}
+__name(doneText, "doneText");
 function reviewText(outcome) {
   switch (outcome.phase) {
     case "none":
@@ -835,12 +880,8 @@ function reviewText(outcome) {
       return null;
     case "failed":
       return outcome.reason === "timeout" ? REVIEW_TIMED_OUT : reviewFailed(outcome.message);
-    case "done": {
-      const risk = outcome.risk;
-      if (risk.error !== void 0) return reviewFailed(risk.error);
-      if (risk.status === "nothing_to_score") return null;
-      return cardSegments(risk).join(" · ");
-    }
+    case "done":
+      return doneText(outcome.risk);
   }
 }
 __name(reviewText, "reviewText");
@@ -852,28 +893,37 @@ function buttons(risk) {
 }
 __name(buttons, "buttons");
 var GAP = 2;
-function reviewBandRow(outcome, columns) {
-  if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
-  if (outcome.phase !== "done" || !scored(outcome.risk)) return null;
-  const risk = outcome.risk;
-  const shared = overlap(risk);
-  if (isClear(risk) && testsToRun(risk) === null && shared === null) return null;
-  const pressable = buttons(risk);
-  const buttonCells = pressable.reduce(
-    (n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP,
-    0
-  );
-  const room = Math.max(0, columns - buttonCells);
+function buttonCells(pressable) {
+  return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP, 0);
+}
+__name(buttonCells, "buttonCells");
+function quietInBand(risk) {
+  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null;
+}
+__name(quietInBand, "quietInBand");
+function summaryParts(risk, room) {
   const h = health(risk);
   const words = fit(`review · health: ${h.short}`, room);
   const parts = [text(words, h.color === void 0 ? { dimColor: true } : { color: h.color })];
-  const left = room - words.length;
+  const shared = overlap(risk);
   const tail = shared === null ? "" : ` · ${overlapShort(shared.branches.length)}`;
-  if (tail !== "" && left >= tail.length) parts.push(text(tail, { dimColor: true }));
+  if (tail !== "" && room - words.length >= tail.length) parts.push(text(tail, { dimColor: true }));
+  return parts;
+}
+__name(summaryParts, "summaryParts");
+function resultRow(risk, columns) {
+  if (!scored(risk) || quietInBand(risk)) return null;
+  const pressable = buttons(risk);
+  const room = Math.max(0, columns - buttonCells(pressable));
   return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
-    box({ flexDirection: "row" }, parts),
+    box({ flexDirection: "row" }, summaryParts(risk, room)),
     ...pressable
   ]);
+}
+__name(resultRow, "resultRow");
+function reviewBandRow(outcome, columns) {
+  if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
+  return outcome.phase === "done" ? resultRow(outcome.risk, columns) : null;
 }
 __name(reviewBandRow, "reviewBandRow");
 function directiveRows(outcome) {
@@ -1151,18 +1201,23 @@ async function onSessionStart($, e, next) {
 __name(onSessionStart, "onSessionStart");
 async function onTurnComplete($, e, next) {
   const b = bind($);
+  noteTurnEnd(b, e);
+  const result = await next(e);
+  return reviewOn && shouldReview(e, editsThisTurn) ? withReview(b, e, result) : result;
+}
+__name(onTurnComplete, "onTurnComplete");
+function noteTurnEnd(b, e) {
   try {
     const action = fromTurnComplete(e);
-    if (action !== null) {
-      dispatch(b, action);
-      refresh(b);
-    }
+    if (action === null) return;
+    dispatch(b, action);
+    refresh(b);
   } catch (err) {
     b.debug(`turn.complete failed: ${String(err)}`);
   }
-  const result = await next(e);
-  if (!reviewOn || e.agentId !== void 0 || editsThisTurn === 0) return result;
-  if (e.isAborted === true || e.reason === "aborted" || e.reason === "error") return result;
+}
+__name(noteTurnEnd, "noteTurnEnd");
+async function withReview(b, e, result) {
   try {
     const card = await finishReview(b);
     return card === null ? result : withCard(result, e.answer ?? "", card);
@@ -1171,7 +1226,7 @@ async function onTurnComplete($, e, next) {
     return result;
   }
 }
-__name(onTurnComplete, "onTurnComplete");
+__name(withReview, "withReview");
 async function fetchReview(b, host) {
   try {
     const risk = await callTool(host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1e3 });
@@ -1221,15 +1276,22 @@ async function reviewAfterEdit(b) {
   clearTimeout(timer);
 }
 __name(reviewAfterEdit, "reviewAfterEdit");
+function coveringReview() {
+  const s = started;
+  return s !== null && s.gen === reviewGeneration && s.covers === editsThisTurn ? s : null;
+}
+__name(coveringReview, "coveringReview");
+async function outcomeOf(b, review, reused) {
+  const action = await review.outcome;
+  return reused && isRetryable(action) ? startReview(b).outcome : action;
+}
+__name(outcomeOf, "outcomeOf");
 async function finishReview(b) {
   const gen = reviewGeneration;
-  const covering = started !== null && started.gen === gen && started.covers === editsThisTurn;
-  const review = covering && started !== null ? started : startReview(b);
+  const reused = coveringReview();
+  const review = reused ?? startReview(b);
   if (!review.settled) dispatch(b, { type: "reviewStarted" });
-  let action = await review.outcome;
-  if (covering && action.type === "reviewFailed" && action.reason === "error" && gen === reviewGeneration) {
-    action = await startReview(b).outcome;
-  }
+  const action = await outcomeOf(b, review, reused !== null);
   if (gen !== reviewGeneration) return null;
   dispatch(b, action);
   return reviewText(state.review.outcome);
@@ -1299,30 +1361,38 @@ function fetchContext(b, file) {
 __name(fetchContext, "fetchContext");
 async function onToolCall($, e, next) {
   const b = bind($);
-  let file = null;
-  try {
-    file = fileTarget(e, state.repoRoot);
-    if (file !== null) {
-      dispatch(b, { type: "toolStarted", tool: { id: e.tool_use_id, file } });
-      fetchContext(b, file);
-    }
-  } catch (err) {
-    b.debug(`tool.call failed: ${String(err)}`);
-  }
+  const file = fileToolStarted(b, e);
   let result;
   try {
     result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
+  await editLanded(b, e, result);
+  return result;
+}
+__name(onToolCall, "onToolCall");
+function fileToolStarted(b, e) {
+  try {
+    const file = fileTarget(e, state.repoRoot);
+    if (file === null) return null;
+    dispatch(b, { type: "toolStarted", tool: { id: e.tool_use_id, file } });
+    fetchContext(b, file);
+    return file;
+  } catch (err) {
+    b.debug(`tool.call failed: ${String(err)}`);
+    return null;
+  }
+}
+__name(fileToolStarted, "fileToolStarted");
+async function editLanded(b, e, result) {
   try {
     if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
-  return result;
 }
-__name(onToolCall, "onToolCall");
+__name(editLanded, "editLanded");
 async function onToolCheck($, e, next) {
   try {
     if (isOwnLensCall(e, next.origin?.plugin)) {

@@ -53,6 +53,9 @@ interface HealthWords {
   color?: HealthColor;
 }
 
+type Directive = NonNullable<ChangeRisk["directive"]>;
+type Delta = NonNullable<ChangeRisk["health_delta"]>;
+
 /** A result the card can describe: not a server error and not an empty diff. */
 function scored(risk: ChangeRisk): boolean {
   return risk.error === undefined && risk.status !== "nothing_to_score";
@@ -61,23 +64,38 @@ function scored(risk: ChangeRisk): boolean {
 /** Delta statuses where both sides were compared, fully or in part. */
 const COMPARED = new Set(["available", "partial"]);
 
+const NOT_REPORTED: HealthWords = { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
+
+function notComparedWords(hd: Delta): HealthWords {
+  return { words: notCompared(hd.explanation.replace(/\.$/, "")), short: notCompared("") };
+}
+
+function clearWords(hd: Delta): HealthWords {
+  if (hd.resolved === 0) return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
+  return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
+}
+
+/** New findings by the directive's verdict; an unknown verdict is a partial comparison. */
+const FINDINGS_TONE: Record<string, { required: boolean; color: HealthColor } | undefined> = {
+  review_required: { required: true, color: DARK.error },
+  review_recommended: { required: false, color: DARK.warning },
+};
+
+function findingsWords(d: Directive, hd: Delta): HealthWords {
+  const headline = d.headline.replace(/\.$/, "");
+  const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
+  const tone = FINDINGS_TONE[d.status];
+  if (tone === undefined) return { words, short: PARTLY_COMPARED };
+  return { words, short: newFindings(hd.findings_total, tone.required), color: tone.color };
+}
+
 function health(risk: ChangeRisk): HealthWords {
   const d = risk.directive;
   const hd = risk.health_delta;
-  if (d === undefined || hd === undefined) return { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
-  if (!COMPARED.has(hd.status)) {
-    const words = notCompared(hd.explanation.replace(/\.$/, ""));
-    return { words, short: notCompared("") };
-  }
-  if (d.status === "clear_in_analyzed_scope") {
-    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
-    return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
-  }
-  const headline = d.headline.replace(/\.$/, "");
-  const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
-  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: DARK.error };
-  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: DARK.warning };
-  return { words, short: PARTLY_COMPARED };
+  if (d === undefined || hd === undefined) return NOT_REPORTED;
+  if (!COMPARED.has(hd.status)) return notComparedWords(hd);
+  if (d.status === "clear_in_analyzed_scope") return clearWords(hd);
+  return findingsWords(d, hd);
 }
 
 function overlap(risk: ChangeRisk): { branches: string[]; files: string[]; more: boolean } | null {
@@ -92,28 +110,55 @@ function isClear(risk: ChangeRisk): boolean {
   return risk.directive?.status === "clear_in_analyzed_scope";
 }
 
-function cardSegments(risk: ChangeRisk): string[] {
-  const hd = risk.health_delta;
-  const ref = risk.ref ?? "working tree";
-  const workingTree = risk.working_tree !== false;
-  const h = health(risk);
-  const shared = overlap(risk);
-  // Nothing to act on and nobody else in these files: the short form.
-  if (isClear(risk) && shared === null) {
-    return [`Change review (${reviewScope(ref, workingTree, null)})`, `health: ${h.words}`];
-  }
-  const segments = [`Change review (${reviewScope(ref, workingTree, hd?.scope?.changed ?? null)})`, `Health: ${h.words}`];
-  for (const f of hd?.top_findings ?? []) segments.push(findingLine(f));
-  const more = (hd?.findings_total ?? 0) - (hd?.top_findings.length ?? 0);
+function header(risk: ChangeRisk, changed: number | null): string {
+  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree !== false, changed)})`;
+}
+
+/** Each listed finding, then a count of the ones the server left out. */
+function findingSegments(hd: Delta | undefined): string[] {
+  const rows = hd?.top_findings ?? [];
+  const segments = rows.map(findingLine);
+  const more = (hd?.findings_total ?? 0) - rows.length;
   if (more > 0) segments.push(moreFindings(more));
-  if (hd?.status === "partial" && hd.scope !== undefined) {
-    segments.push(partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {}));
-  }
-  segments.push(diffShape(risk.risk_percentile));
-  const tests = testsToRun(risk);
-  if (tests !== null) segments.push(testsLine(tests));
-  if (shared !== null) segments.push(`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`);
   return segments;
+}
+
+/** The scope line, for a partial comparison only. */
+function scopeSegments(hd: Delta | undefined): string[] {
+  if (hd?.status !== "partial" || hd.scope === undefined) return [];
+  return [partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {})];
+}
+
+function testSegments(risk: ChangeRisk): string[] {
+  const tests = testsToRun(risk);
+  return tests === null ? [] : [testsLine(tests)];
+}
+
+function overlapSegments(risk: ChangeRisk): string[] {
+  const shared = overlap(risk);
+  return shared === null ? [] : [`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`];
+}
+
+function cardSegments(risk: ChangeRisk): string[] {
+  // Nothing to act on and nobody else in these files: the short form.
+  if (isClear(risk) && overlap(risk) === null) return [header(risk, null), `health: ${health(risk).words}`];
+  const hd = risk.health_delta;
+  return [
+    header(risk, hd?.scope?.changed ?? null),
+    `Health: ${health(risk).words}`,
+    ...findingSegments(hd),
+    ...scopeSegments(hd),
+    diffShape(risk.risk_percentile),
+    ...testSegments(risk),
+    ...overlapSegments(risk),
+  ];
+}
+
+function doneText(risk: ChangeRisk): string | null {
+  if (risk.error !== undefined) return reviewFailed(risk.error);
+  // An empty diff has nothing to say.
+  if (risk.status === "nothing_to_score") return null;
+  return cardSegments(risk).join(" · ");
 }
 
 /** What shows beneath Claude's answer, as one row; null while there is nothing to say. */
@@ -124,13 +169,8 @@ export function reviewText(outcome: ReviewOutcome): string | null {
       return null;
     case "failed":
       return outcome.reason === "timeout" ? REVIEW_TIMED_OUT : reviewFailed(outcome.message);
-    case "done": {
-      const risk = outcome.risk;
-      if (risk.error !== undefined) return reviewFailed(risk.error);
-      // An empty diff has nothing to say.
-      if (risk.status === "nothing_to_score") return null;
-      return cardSegments(risk).join(" · ");
-    }
+    case "done":
+      return doneText(outcome.risk);
   }
 }
 
@@ -144,31 +184,41 @@ function buttons(risk: ChangeRisk): Node[] {
 
 const GAP = 2;
 
+/** Cells the buttons take: a plain Button draws as `1: label`, then the gap. */
+function buttonCells(pressable: Node[]): number {
+  return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP, 0);
+}
+
+/** A review the band has nothing to add to: clear, no tests to run, nobody else in these files. */
+function quietInBand(risk: ChangeRisk): boolean {
+  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null;
+}
+
+/** The health word in its color, then the overlap words when they fit in `room`. */
+function summaryParts(risk: ChangeRisk, room: number): Node[] {
+  const h = health(risk);
+  const words = fit(`review · health: ${h.short}`, room);
+  const parts = [text(words, h.color === undefined ? { dimColor: true } : { color: h.color })];
+  const shared = overlap(risk);
+  const tail = shared === null ? "" : ` · ${overlapShort(shared.branches.length)}`;
+  if (tail !== "" && room - words.length >= tail.length) parts.push(text(tail, { dimColor: true }));
+  return parts;
+}
+
+function resultRow(risk: ChangeRisk, columns: number): Node | null {
+  if (!scored(risk) || quietInBand(risk)) return null;
+  const pressable = buttons(risk);
+  const room = Math.max(0, columns - buttonCells(pressable));
+  return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
+    box({ flexDirection: "row" }, summaryParts(risk, room)),
+    ...pressable,
+  ]);
+}
+
 /** The band's review row: a placeholder while the review runs, then the health word and the buttons. */
 export function reviewBandRow(outcome: ReviewOutcome, columns: number): Node | null {
   if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
-  if (outcome.phase !== "done" || !scored(outcome.risk)) return null;
-  const risk = outcome.risk;
-  const shared = overlap(risk);
-  // A clear review with no tests to run and nobody else in these files leaves the band quiet.
-  if (isClear(risk) && testsToRun(risk) === null && shared === null) return null;
-  const pressable = buttons(risk);
-  // A plain Button draws as `1: label`.
-  const buttonCells = pressable.reduce(
-    (n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP,
-    0,
-  );
-  const room = Math.max(0, columns - buttonCells);
-  const h = health(risk);
-  const words = fit(`review · health: ${h.short}`, room);
-  const parts: Node[] = [text(words, h.color === undefined ? { dimColor: true } : { color: h.color })];
-  const left = room - words.length;
-  const tail = shared === null ? "" : ` · ${overlapShort(shared.branches.length)}`;
-  if (tail !== "" && left >= tail.length) parts.push(text(tail, { dimColor: true }));
-  return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
-    box({ flexDirection: "row" }, parts),
-    ...pressable,
-  ]);
+  return outcome.phase === "done" ? resultRow(outcome.risk, columns) : null;
 }
 
 /** The full directive, as `Details` prints it, one transcript row per line; null when the result carries none. */
