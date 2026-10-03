@@ -2648,6 +2648,16 @@ export interface PublishRequest {
   repo_id: string;
 }
 
+/** ``repowise publish --format json``: the CLI's ``PublishResult.to_dict()``. */
+export interface PublishResponse {
+  outcome: string;
+  message: string;
+  url?: string | null;
+  details?: string[];
+  open_url?: string | null;
+  repo?: string | null;
+}
+
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
 export interface RefactoringHiddenCounts {
   total?: number;
