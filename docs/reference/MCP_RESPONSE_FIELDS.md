@@ -174,15 +174,15 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 | Field | Meaning |
 |-------|---------|
 | `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `file`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `file`, `title`, `next: "get_context"`. Concept hits: wiki pages with `relevance_score`, `snippet`, `target_path`, `sources` |
-| `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`. Those matches share the row instead of taking slots of their own |
+| `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`, then a `+N more` entry counting the rest. Those matches share the row instead of taking slots of their own |
 | `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
 
-Outside `mode="symbol"`, `limit` counts distinct files: hits are collapsed to one row per file before the cut, best row first. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.
+Outside `mode="symbol"`, `limit` caps distinct files: hits are collapsed to one row per file, best row first, and the freed slots go to the next pages, then the next symbols. This includes concept mode, where a file page and a `symbol_spotlight` page of the same file are one row. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.
 
 Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's `target_path` is a page id (`file.py::Symbol`); open its `file`.
 
-`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. A hybrid query (prose around an identifier) drops pages that name no file (module, onboarding, overview, decision pages) from `results` unless `page_type` or `kind="doc"` asks for pages; concept mode keeps them. Decision records rank below file pages unless the query is why-shaped.
+`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. A hybrid query (prose around an identifier) drops pages that name no file (module, onboarding, overview, decision pages) from `results` without refilling their slots, unless `page_type` or `kind="doc"` asks for pages; concept mode keeps them. Decision records rank below file pages unless the query is why-shaped.
 
 ---
 

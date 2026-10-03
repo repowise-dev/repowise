@@ -1608,6 +1608,67 @@ class TestDistinctFileWindow:
         assert out[0]["symbols"] == ["b:9"]
         assert "symbols" not in out[1]
 
+    def test_a_dominant_file_counts_what_its_cap_left_out(self):
+        from repowise.server.mcp_server.tool_search import _collapse_by_file
+
+        hits = [
+            {"type": "symbol", "name": f"s{i}", "file": "x.py", "start_line": i}
+            for i in range(10)
+        ]
+        (row,) = _collapse_by_file(hits)
+        assert row["symbols"] == ["s1:1", "s2:2", "s3:3", "s4:4", "s5:5", "+4 more"]
+
+    def test_pages_are_dropped_only_for_symbols_the_window_shows(self):
+        from repowise.server.mcp_server.tool_search import _hybrid_window
+
+        def sym(f):
+            return {"type": "symbol", "name": "x", "file": f}
+
+        def page(f):
+            return {"type": "page", "target_path": f, "relevance_score": 0.5}
+
+        # Four symbol files, but limit 4 with three pages shows only two
+        # symbols, so the page for d.py is the only way d.py is served.
+        symbols = [sym("a.py"), sym("b.py"), sym("c.py"), sym("d.py")]
+        out = _hybrid_window(
+            "compare Foo Bar", symbols, [page("d.py"), page("e.py"), page("f.py")], 4, True
+        )
+        assert [r.get("file") or r["target_path"] for r in out] == ["a.py", "b.py", "d.py", "e.py"]
+        # A page whose file a shown symbol covers gives its slot back.
+        out = _hybrid_window(
+            "compare Foo Bar", symbols, [page("b.py"), page("e.py"), page("f.py")], 4, True
+        )
+        assert [r.get("file") or r["target_path"] for r in out] == ["a.py", "b.py", "e.py", "f.py"]
+
+    @pytest.mark.asyncio
+    async def test_the_federated_page_leg_serves_one_row_per_file(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server.tool_search import _search_single_repo
+
+        await _seed_page("file_page:api/client.go", "api/client.go")
+        await _seed_page(
+            "symbol_spotlight:api/client.go::HTTP", "api/client.go::HTTP", "symbol_spotlight"
+        )
+        await _seed_page("file_page:api/server.go", "api/server.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("file_page:api/client.go", "c", "file_page", "api/client.go", 0.9),
+                _mk_result(
+                    "symbol_spotlight:api/client.go::HTTP",
+                    "HTTP",
+                    "symbol_spotlight",
+                    "api/client.go::HTTP",
+                    0.8,
+                ),
+                _mk_result("file_page:api/server.go", "s", "file_page", "api/server.go", 0.7),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        out = await _search_single_repo(await _resolve_repo_context(None), "requests", 2, None)
+        assert [r["target_path"] for r in out] == ["api/client.go", "api/server.go"]
+
     @pytest.mark.asyncio
     async def test_hybrid_limit_buys_distinct_files(self, session, populated_db, setup_mcp):
         from repowise.server.mcp_server import search_codebase
@@ -1620,8 +1681,8 @@ class TestDistinctFileWindow:
         assert len(files) == 3 and len(set(files)) == 3
         # The exact name still leads, carrying its same-file sibling.
         lead = res["results"][0]
-        assert lead["file"] == "src/widget/core.py" and lead["name"] == "widget"
-        assert lead["symbols"] == ["widget:40"] or lead["symbols"] == ["widget:10"]
+        assert lead["symbol_id"] == "src/widget/core.py::Box.widget"
+        assert lead["symbols"] == ["widget:10"]
 
     @pytest.mark.asyncio
     async def test_symbol_mode_still_lists_each_overload(self, session, populated_db, setup_mcp):
@@ -1632,12 +1693,8 @@ class TestDistinctFileWindow:
 
         res = await search_codebase("widget", mode="symbol", limit=3)
         ids = [r["symbol_id"] for r in res["results"]]
-        assert ids[:2] == ["src/widget/core.py::widget", "src/widget/core.py::Box.widget"] or ids[
-            :2
-        ] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
+        assert ids[:2] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
         assert all("symbols" not in r for r in res["results"])
-        # candidates reaches past the window to the files it had no room for.
-        assert len(res["candidates"]) == 3
 
     @pytest.mark.asyncio
     async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
@@ -1723,6 +1780,29 @@ class TestPathlessPagesInCodeLocationModes:
             "onboarding",
             "file_page",
         ]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_window_does_not_repeat_its_grep_hint(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
+
+        await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.9
+                )
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        res = await search_codebase("where is validate_trigger_nonce defined", mode="hybrid")
+        assert res["results"] == []
+        assert "No indexed symbol is named" in res["note"]
+        assert "Any page here" not in res["note"]
+        assert EXHAUSTIVE_SWEEP_HINT not in res["note"]
+        assert EXHAUSTIVE_SWEEP_HINT in res["grep_hint"]
 
     @pytest.mark.asyncio
     async def test_hybrid_keeps_them_when_pages_are_asked_for(self, setup_mcp):

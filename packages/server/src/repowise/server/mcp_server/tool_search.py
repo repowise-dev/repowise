@@ -166,10 +166,12 @@ def _collapse_by_file(hits: list[dict]) -> list[dict]:
 
     The first row of a file wins. A later symbol hit in the same file folds
     into the winner's ``symbols`` as ``name:line`` (capped) instead of taking a
-    slot of its own, so ``limit`` buys distinct files. Precedent:
+    slot of its own, so ``limit`` buys distinct files; past the cap a trailing
+    ``+N more`` entry counts the rest. Precedent:
     ``symbol_backed_pages`` collapses the same way for the concept tail.
     """
     first_of: dict[tuple, dict] = {}
+    extra: dict[int, int] = {}
     out: list[dict] = []
     for hit in hits:
         path = hit_file_path(hit)
@@ -185,7 +187,35 @@ def _collapse_by_file(hits: list[dict]) -> list[dict]:
             merged = first.setdefault("symbols", [])
             if len(merged) < _MERGED_SYMBOL_CAP:
                 merged.append(f"{hit.get('name')}:{hit.get('start_line')}")
+            else:
+                extra[id(first)] = extra.get(id(first), 0) + 1
+    for hit in out:
+        if id(hit) in extra:
+            hit["symbols"].append(f"+{extra[id(hit)]} more")
     return out
+
+
+def _hybrid_window(
+    query: str,
+    symbols: list[dict],
+    concepts: list[dict],
+    limit: int,
+    exact: bool,
+    names: Container[str] | None = None,
+) -> list[dict]:
+    """The hybrid window, with no page for a file a shown symbol row covers.
+
+    Pages are dropped only for symbols the window actually shows, then the
+    window is rebuilt so the freed slots backfill. Concepts only shrink and the
+    symbol share only grows, so this settles in a few passes.
+    """
+    while True:
+        window = _interleave_hybrid(query, symbols, concepts, limit, exact, names)
+        shown = {item.get("file") for item in window if item.get("type") == "symbol"}
+        kept = [c for c in concepts if c.get("target_path") not in shown]
+        if len(kept) == len(concepts):
+            return window
+        concepts = kept
 
 
 def _downweight_decisions(output: list[dict], query: str) -> None:
@@ -911,6 +941,9 @@ async def _structured_search(
     multi = len(contexts) > 1
 
     symbols: list[dict] = []
+    # Symbol rows past each repo's ``limit``: they only backfill slots that
+    # collapsing same-file rows frees, and never steer the exact-match signal.
+    spare: list[dict] = []
     files: list[dict] = []
     concepts: list[dict] = []
 
@@ -929,28 +962,30 @@ async def _structured_search(
         if _idents:
             symbol_query = " ".join(_idents)
 
-    # Path hits are file pages, already one row per file, so only the symbol
-    # and page legs over-fetch.
-    fetch = limit * _FILE_WINDOW_OVERFETCH
+    # Only the hybrid window collapses symbol rows, so only it over-fetches
+    # them; path hits are file pages, already one row per file.
+    fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
             s = await search_symbols_single(
                 ctx, symbol_query, fetch, symbol_kind=symbol_kind, kind=kind
             )
             _tag_repo(s, ctx, multi)
-            symbols.extend(s)
+            symbols.extend(s[:limit])
+            spare.extend(s[limit:])
         if mode == "path":
             f = await search_paths_single(ctx, query, limit)
             _tag_repo(f, ctx, multi)
             files.extend(f)
         if mode == "hybrid":
-            c = await _search_single_repo(ctx, query, fetch, page_type, kind)
+            c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:
                 item["type"] = "page"
             _tag_repo(c, ctx, multi)
             concepts.extend(c)
 
     symbols.sort(key=lambda x: -(x.get("score") or 0.0))
+    spare.sort(key=lambda x: -(x.get("score") or 0.0))
     files.sort(key=lambda x: -(x.get("score") or 0.0))
     candidates = _identifier_candidates(query, mode, names)
     if mode == "symbol":
@@ -967,29 +1002,32 @@ async def _structured_search(
     missing = _missing_named_symbols(candidates, symbols, bool(canonical_symbol), concepts)
     if missing:
         symbols = [s for s in symbols if _has_exact_symbol(candidates, [s])]
+        spare = [s for s in spare if _has_exact_symbol(candidates, [s])]
 
     if mode == "symbol":
         results = symbols[:limit]
     elif mode == "path":
         results = files[:limit]
     else:  # hybrid: interleave symbol matches and concept pages for new files
-        # One row per file, so ``limit`` buys distinct files. Mode "symbol"
-        # stays row-per-symbol: overloads there are the answer.
-        symbols = _collapse_by_file(symbols)
-        # Only files the window can show suppress their page.
-        sym_files = {s.get("file") for s in symbols[:limit]}
-        concepts = [c for c in concepts if c.get("target_path") not in sym_files]
-        # A code-location query wants files to open: a module, onboarding or
-        # decision page would spend a slot on nothing to Read. Runs after the
-        # missing-name check, which still credits a module path naming the
-        # query. Kept when the caller asked for pages by type or kind="doc".
-        if not page_type and kind != "doc":
-            concepts = [c for c in concepts if hit_file_path(c)]
         # Federation appends per-repo concept lists in repo order — re-rank by
         # relevance so a strong page in repo B isn't buried under repo A's weak
         # ones. (Single-repo: already sorted upstream; this is a no-op.)
         concepts.sort(key=lambda x: -(x.get("relevance_score") or 0.0))
-        results = _interleave_hybrid(query, symbols, concepts, limit, exact, names)
+        window = _hybrid_window(query, symbols, concepts, limit, exact, names)
+        # One row per file, so ``limit`` buys distinct files (mode "symbol"
+        # stays row-per-symbol: overloads there are the answer). Collapsing
+        # keeps the window's order and frees the slots same-file rows took;
+        # the next pages, then the next symbols, fill them.
+        served = {id(item) for item in window}
+        rest = [item for item in concepts + symbols + spare if id(item) not in served]
+        results = _collapse_by_file(window + rest)[:limit]
+        # A code-location query wants files to open, so a module, onboarding
+        # or decision page is dropped from the window. Its slot is not
+        # refilled: on the retrieval guard a refill bought +0.01 coverage at
+        # limit 5 for -0.01 precision at limit 10. Kept when the caller asked
+        # for pages by type or kind="doc".
+        if not page_type and kind != "doc":
+            results = [item for item in results if hit_file_path(item)]
 
     repository = None
     if not multi:
@@ -1001,17 +1039,17 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
-    # The served window first, then the pre-cut pool as concept mode does, so
-    # the block can name files the window had no room for (in symbol mode,
-    # several symbols of one file can fill it).
+    # Symbols first, then everything else the window holds: in symbol and
+    # hybrid modes the ranked pool leads with symbol hits, and those are the
+    # entries most likely to collapse onto one another (several symbols of one
+    # file). Deduping them is the point.
     #
     # Bound to its own name, NOT to ``candidates``: that one holds the query's
     # identifiers, which the exact-match note below quotes. Rebinding it here
     # made the note quote file paths as if they were the identifiers asked for,
     # and — worse — made its gate true for any query with results at all, so a
     # prose query that names no identifier was told no symbol matched it.
-    pool = results + symbols + concepts + files
-    if file_cands := file_candidates(pool, limit=limit):
+    if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
@@ -1023,10 +1061,14 @@ async def _structured_search(
         response["exact_match"] = exact and not missing
         if missing:
             shown = ", ".join(repr(c) for c in missing[:3])
+            # An empty window has no page to qualify, and its grep_hint
+            # already carries the sweep advice.
+            pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}." if results else ""
+            sweep = "" if (grep_hint and not results) else " " + EXHAUSTIVE_SWEEP_HINT
             response["note"] = (
                 f"No indexed symbol is named {shown}, so no symbol is returned "
-                f"for it. Any page here is {NOT_THE_NAMED_SYMBOL}. Recheck the "
-                "spelling, or search a shorter part of the name. " + EXHAUSTIVE_SWEEP_HINT
+                f"for it.{pages} Recheck the spelling, or search a shorter part "
+                f"of the name.{sweep}"
             )
         elif not exact:
             shown = ", ".join(repr(c) for c in candidates[:3])
