@@ -59,6 +59,7 @@ def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
             ["git", *args],
             cwd=str(repo_path),
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             # git writes utf-8. ``text=True`` alone decodes with the locale
             # codec, so on a default Windows install a commit subject holding

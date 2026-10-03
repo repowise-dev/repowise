@@ -344,7 +344,9 @@ _CAP_FAMILY: tuple[str, ...] = ("cap", "limit", "max", "bound", "ceiling", "thre
 # Git-grep is bounded so a pathological pattern can't stall a tool response.
 _GREP_TIMEOUT_S = 20
 # A pasted issue body carries 100+ nouns and numbers; an uncapped alternation
-# matches most comment lines in the repo. Longest nouns are the most specific.
+# matches most comment lines in the repo. Longest nouns are the most specific:
+# on sample issue bodies they ranked the target no worse than the uncapped or
+# first-12 sets, and a minimum per-file count added nothing.
 _MAX_GREP_NOUNS = 12
 _MAX_GREP_NUMBERS = 4
 
