@@ -71,7 +71,10 @@ def publish_command(
     mark = "[green]✓[/green] " if ok else ""
     console.print(f"{mark}{escape(result.message)}")
     if result.url:
-        console.print(f"  [cyan][link={result.url}]{escape(result.url)}[/link][/cyan]")
+        # Unhighlighted, so the URL stays one hyperlink instead of one per token.
+        console.print(
+            f"  [cyan][link={result.url}]{escape(result.url)}[/link][/cyan]", highlight=False
+        )
     for line in result.details:
         console.print(f"  [dim]{escape(line)}[/dim]", highlight=False)
     if result.outcome != "not_github":
