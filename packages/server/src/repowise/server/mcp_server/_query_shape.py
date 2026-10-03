@@ -209,7 +209,7 @@ def _one_hump(token: str) -> bool:
     return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
 
 
-_CALLED_RE = re.compile(r"\s*\(|::")
+_CALLED_RE = re.compile(r"\(|::")  # no space: "Add (optional) support" is prose
 _ASKS_AFTER_RE = re.compile(
     r"^\s*(?:where\s+is|where's|where\s+are|what\s+does|how\s+is|how\s+does|how\s+do)\s+(?:the\s+)?$",
     re.IGNORECASE,

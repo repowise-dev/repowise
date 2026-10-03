@@ -171,7 +171,6 @@ _FRAMED = {"Add", "Fixes", "Client", "Session", "Router", "Handler", "Config", "
         ("find Config", ["Config"]),
         ("Client::new", ["Client"]),
         ("Add::new()", ["Add"]),
-        ("calling Add (x) twice", ["Add"]),
         # A digit makes it more than a word, so it is validated as before.
         ("decode with Base64 fails", ["Base64"]),
     ],
@@ -197,6 +196,7 @@ def test_a_one_hump_word_in_a_lookup_frame_is_an_identifier(query, expected) -> 
         "Fix the Client type error",
         "Add the Client class",
         "Show Session timeout in the dashboard",
+        "Add (optional) support for retries",
     ],
 )
 def test_issue_text_with_one_hump_names_stays_concept(query) -> None:
