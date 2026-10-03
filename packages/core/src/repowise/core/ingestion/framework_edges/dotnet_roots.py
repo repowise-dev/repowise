@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..type_names import bare_type_name
 from .base import DetectionContext, FrameworkHandler, read_text
 
 if TYPE_CHECKING:
@@ -86,17 +87,12 @@ def _namespace_of(sym: Any, modules: dict[str, Any]) -> str:
     return ".".join(reversed(parts))
 
 
-def _short_name(dotted: str) -> str:
-    """``A.B.Name<T>`` -> ``Name``."""
-    return dotted.split("<", 1)[0].rsplit(".", 1)[-1].strip()
-
-
 def _is_consumed(sym: Any, modules: dict[str, Any]) -> bool:
     namespace = _namespace_of(sym, modules)
     if f"{namespace}.{sym.name}" in _COMPILER_CONSUMED_TYPES[_LANGUAGE]:
         return True
     markers = _GENERATOR_MARKER_ATTRIBUTES[_LANGUAGE]
-    return any(_short_name(d) in markers for d in sym.decorators)
+    return any(bare_type_name(d) in markers for d in sym.decorators)
 
 
 def _is_generator_input(parsed: Any) -> bool:
