@@ -48,7 +48,7 @@ def build_dashboard(
         "unscored_files": pop.unscored_files,
         # Files in a language health has no dialect for: no score, so in no
         # figure here. Only said when there are some.
-        **({"unanalysed_files": len(pop.unanalysed_paths)} if pop.unanalysed_paths else {}),
+        **({"unanalysed_file_count": len(pop.unanalysed_paths)} if pop.unanalysed_paths else {}),
         "kpis": kpis,
         "distribution": health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
