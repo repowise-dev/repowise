@@ -1315,7 +1315,11 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
     )
     for i in range(0, len(stale), _PRUNE_CHUNK):
         batch = stale[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(
+            delete(PageVersion).where(
+                PageVersion.repository_id == repo_id, PageVersion.page_id.in_(batch)
+            )
+        )
         await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
     if stale:
         logger.info(
@@ -1398,7 +1402,11 @@ async def _sweep_stale_generated_pages(
         stale = [pid for pid in existing if pid not in current]
         for i in range(0, len(stale), _PRUNE_CHUNK):
             batch = stale[i : i + _PRUNE_CHUNK]
-            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+            await session.execute(
+                delete(PageVersion).where(
+                    PageVersion.repository_id == repo_id, PageVersion.page_id.in_(batch)
+                )
+            )
             await session.execute(
                 delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
             )
@@ -1462,7 +1470,11 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     stale = [pid for pid in existing if pid not in valid]
     for i in range(0, len(stale), _PRUNE_CHUNK):
         batch = stale[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(
+            delete(PageVersion).where(
+                PageVersion.repository_id == repo_id, PageVersion.page_id.in_(batch)
+            )
+        )
         await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
     if stale:
         logger.info("absent_cycle_pages_swept", repo_id=repo_id, count=len(stale))
@@ -1555,7 +1567,11 @@ async def sweep_superseded_generated_pages(
                 stale.append(page_id)
         for i in range(0, len(stale), _PRUNE_CHUNK):
             batch = stale[i : i + _PRUNE_CHUNK]
-            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+            await session.execute(
+                delete(PageVersion).where(
+                    PageVersion.repository_id == repo_id, PageVersion.page_id.in_(batch)
+                )
+            )
             await session.execute(
                 delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
             )

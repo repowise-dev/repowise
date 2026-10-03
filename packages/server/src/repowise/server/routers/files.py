@@ -275,15 +275,7 @@ async def file_detail(
     if node is None and git_meta is None and metric is None:
         raise HTTPException(status_code=404, detail=f"File not indexed: {file_path}")
 
-    # --- Wiki page ref ----------------------------------------------------
-    # A primary-key get, not a three-column filter: ``Page.id`` *is*
-    # ``"{page_type}:{target_path}"`` (see the model docstring), so the row this
-    # predicate described was always reachable by key. The repo check stays
-    # because one database can hold several repositories while the page id is
-    # unique across the table.
-    page_row = await session.get(Page, f"file_page:{file_path}")
-    if page_row is not None and page_row.repository_id != repo_id:
-        page_row = None
+    page_row = await session.get(Page, {"id": f"file_page:{file_path}", "repository_id": repo_id})
     wiki_page = (
         {
             "id": page_row.id,
