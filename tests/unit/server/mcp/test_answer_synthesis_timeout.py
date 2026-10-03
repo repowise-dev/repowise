@@ -19,7 +19,10 @@ from repowise.server.mcp_server.tool_answer import synthesis as synthesis_module
 from repowise.server.mcp_server.tool_answer.answer import _degraded_payload
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
+    _SYNTHESIS_MAX_TOKENS_DEFAULT,
+    _SYNTHESIS_MAX_TOKENS_ENV,
     _SYNTHESIS_TEMPERATURE,
+    _synthesis_max_tokens,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _FALLBACK_TIMEOUT_S,
@@ -29,6 +32,50 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _synthesis_timeout,
     synthesize,
 )
+
+# --- synthesis token budget -------------------------------------------------
+#
+# REPOWISE_SYNTHESIS_MAX_TOKENS: the hardcoded 1024 was headroom for a
+# non-reasoning model (answers target ~550 tokens) but is the WHOLE allowance
+# for one that spends the same budget on hidden thinking before any answer
+# token — measured against nanbeige returning nothing at 1024, a correct
+# cited answer at 8192. See _empty_completion_note below for the failure
+# this override exists to escape.
+
+
+@pytest.fixture(autouse=True)
+def _no_max_tokens_override(monkeypatch):
+    monkeypatch.delenv(_SYNTHESIS_MAX_TOKENS_ENV, raising=False)
+
+
+def test_default_max_tokens_matches_the_documented_default():
+    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT == 1024
+    assert _SYNTHESIS_MAX_TOKENS == _SYNTHESIS_MAX_TOKENS_DEFAULT  # process-start default
+
+
+@pytest.mark.parametrize("raw,expected", [("8192", 8192), ("2048", 2048), ("  4096  ", 4096)])
+def test_max_tokens_env_override_is_honoured(monkeypatch, raw, expected):
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, raw)
+    assert _synthesis_max_tokens() == expected
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-5", "3.5", ""])
+def test_unusable_max_tokens_override_keeps_the_default(monkeypatch, bad):
+    """An unparseable value must not zero out synthesis, matching the sibling
+    embed/vector-search timeout overrides."""
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, bad)
+    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT
+
+
+def test_the_degraded_message_advertises_the_override():
+    """The advice a reasoning-model user actually needs, not just "try a
+    different model" — see synthesis._empty_completion_note."""
+    note = synthesis_module._empty_completion_note(
+        _Provider(budget=180.0, name="ollama", model="nanbeige"),
+        SimpleNamespace(stop_reason="max_tokens"),
+    )
+    assert _SYNTHESIS_MAX_TOKENS_ENV in note
+    assert str(_SYNTHESIS_MAX_TOKENS) in note
 
 
 class _Provider:
@@ -413,6 +460,7 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "fallback_targets",
         "retrieval",
         "candidates",
+        "candidate_files",
         "best_guesses",
         "next_action_hint",
         "note",
@@ -433,14 +481,14 @@ async def test_degraded_answer_describes_the_payload_instead_of_being_empty():
     """An empty ``answer`` beside working retrieval reads as a failed call.
 
     The field is the first thing a reader looks at, so leaving it blank while
-    ``retrieval``/``candidates`` are populated invites throwing the whole
+    ``retrieval``/``candidate_files`` are populated invites throwing the whole
     result away. It must name what survived and where to find it.
     """
     payload = await _payload()
     answer = payload["answer"]
     assert answer, "degraded answer must not be empty"
     assert "synthesis-failed" in answer, "the reason belongs in the visible field"
-    for field in ("retrieval", "fallback_targets", "candidates"):
+    for field in ("retrieval", "fallback_targets", "candidate_files"):
         assert field in answer, f"{field} is populated but never mentioned"
 
 

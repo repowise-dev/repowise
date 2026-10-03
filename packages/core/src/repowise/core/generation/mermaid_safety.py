@@ -36,6 +36,7 @@ _MERMAID_FENCE_RE = re.compile(
 
 # Diagram kinds that use ``id[label]`` node syntax we know how to repair.
 _GRAPH_DIRECTIVE_RE = re.compile(r"^\s*(graph|flowchart)\b", re.IGNORECASE)
+_SEQUENCE_DIRECTIVE_RE = re.compile(r"^\s*sequenceDiagram\b")
 
 # Shape bracket pairs, longest opener first so ``([`` wins over ``(``.
 _SHAPE_PAIRS: tuple[tuple[str, str], ...] = (
@@ -333,17 +334,237 @@ def sanitize_mermaid(markdown: str) -> str:
             first_line = body.lstrip().split("\n", 1)[0]
             if _GRAPH_DIRECTIVE_RE.match(first_line):
                 body = _rewrite_graph_block(body)
-            else:
-                # Other diagram kinds (sequenceDiagram, erDiagram, classDiagram)
-                # have different grammars — only quote obviously risky labels is
-                # unsafe there, so leave them untouched.
-                pass
+            elif _SEQUENCE_DIRECTIVE_RE.match(first_line):
+                body = _drop_flowchart_styling(body)
+            # Other diagram kinds (erDiagram, classDiagram) have their own
+            # grammars; quoting labels there is unsafe, so they are left alone.
         except Exception as exc:  # never corrupt a working diagram
             log.debug("mermaid_safety.block_failed", error=str(exc))
             body = match.group("body")
         return open_fence + body + close_fence
 
     return _MERMAID_FENCE_RE.sub(_replace, markdown)
+
+
+# ---------------------------------------------------------------------------
+# Structural validation
+#
+# ``sanitize_mermaid`` repairs what it can recognise. What it cannot repair a
+# renderer rejects, and one rejected block shows the reader an error box where
+# the page promised a picture. These checks are the grammar rules a generated
+# diagram breaks in practice, per diagram type. They are not a parser: a block
+# they pass can still fail to render, and types they have no rules for pass on
+# a known header.
+# ---------------------------------------------------------------------------
+
+_DIAGRAM_TYPES = frozenset(
+    {
+        "graph",
+        "flowchart",
+        "sequencediagram",
+        "classdiagram",
+        "statediagram",
+        "statediagram-v2",
+        "erdiagram",
+        "journey",
+        "gantt",
+        "pie",
+        "mindmap",
+        "timeline",
+        "gitgraph",
+        "quadrantchart",
+        "c4context",
+        "c4container",
+        "c4component",
+        "c4dynamic",
+        "c4deployment",
+    }
+)
+
+# A flowchart node id as mermaid reads it, followed by what may come after one.
+_FLOW_ID_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+# Keywords the flowchart grammar reads before it reads an id: a node named
+# ``end`` closes a subgraph, one named ``graph`` starts a new diagram.
+_FLOW_RESERVED_IDS = frozenset(
+    {"end", "graph", "flowchart", "subgraph", "style", "class", "classDef", "click", "linkStyle"}
+)
+_FLOW_KEYWORDS = ("classDef ", "class ", "style ", "linkStyle ", "click ", "direction ")
+
+# Every statement a sequence diagram accepts, by its leading word.
+_SEQ_STATEMENTS = frozenset(
+    {
+        "participant",
+        "actor",
+        "autonumber",
+        "note",
+        "activate",
+        "deactivate",
+        "title",
+        "create",
+        "destroy",
+        "link",
+        "links",
+        "box",
+        "loop",
+        "alt",
+        "else",
+        "opt",
+        "par",
+        "and",
+        "critical",
+        "option",
+        "break",
+        "rect",
+        "end",
+    }
+)
+_SEQ_BLOCK_OPENERS = frozenset({"loop", "alt", "opt", "par", "critical", "break", "rect", "box"})
+# ``A->>B: text``, with the arrow set sequence diagrams define.
+_SEQ_MESSAGE_RE = re.compile(
+    r"^[^\s:<>\-+][^:<>]*?\s*(?:<<)?(?:-->>|->>|-->|->|--x|-x|--\)|-\))\s*[+-]?[^:]+?\s*:.*$"
+)
+_SEQ_PARTICIPANT_RE = re.compile(
+    r'^(participant|actor)\s+([A-Za-z0-9_]+|"[^"]+")(\s+as\s+.+)?\s*$', re.I
+)
+
+
+_FLOWCHART_STYLING_RE = re.compile(r"^\s*(classDef|class|style|linkStyle)\s")
+
+
+def _drop_flowchart_styling(body: str) -> str:
+    """Remove flowchart styling lines a sequence diagram cannot parse.
+
+    A model that has drawn flowcharts carries ``classDef`` and ``class`` lines
+    over; they add nothing to a sequence and fail the whole block.
+    """
+    return "\n".join(line for line in body.split("\n") if not _FLOWCHART_STYLING_RE.match(line))
+
+
+def _statements(body: str) -> list[str]:
+    """The block's lines that carry syntax: no blanks, comments, directives or front matter."""
+    lines = body.strip().split("\n")
+    if lines and lines[0].strip() == "---":
+        # A ``---``-fenced front matter block (title, config) precedes the header.
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
+        lines = lines[closing + 1 :]
+    return [line.strip() for line in lines if line.strip() and not _is_skippable(line)]
+
+
+def _balanced(line: str) -> bool:
+    """Whether quotes and brackets on *line* close, ignoring quoted text."""
+    if line.count('"') % 2:
+        return False
+    unquoted = re.sub(r'"[^"]*"', "", line)
+    unquoted = _PIPE_LABEL_RE.sub("", unquoted)
+    pairs = {"]": "[", ")": "(", "}": "{"}
+    stack: list[str] = []
+    for char in unquoted:
+        if char in "[({":
+            stack.append(char)
+        elif char in pairs and (not stack or stack.pop() != pairs[char]):
+            return False
+    return not stack
+
+
+def _flowchart_problems(lines: list[str]) -> list[str]:
+    problems: list[str] = []
+    depth = 0
+    for line in lines:
+        word = line.split()[0]
+        if word == "subgraph":
+            depth += 1
+            continue
+        if line == "end":
+            depth -= 1
+            if depth < 0:
+                problems.append("`end` without a matching `subgraph`")
+                depth = 0
+            continue
+        if line.startswith(_FLOW_KEYWORDS):
+            continue
+        if not _balanced(line):
+            problems.append(f"unbalanced quotes or brackets: {line[:60]}")
+            continue
+        # The first token is a node id, before any shape, class or edge.
+        head = re.split(r"[\s\[\(\{>:|&-]|:::", line, maxsplit=1)[0]
+        if head and (not _FLOW_ID_RE.match(head) or head in _FLOW_RESERVED_IDS):
+            problems.append(f"illegal node id {head!r}")
+    if depth:
+        problems.append("`subgraph` without a matching `end`")
+    return problems
+
+
+def _sequence_problems(lines: list[str]) -> list[str]:
+    problems: list[str] = []
+    depth = 0
+    for line in lines:
+        word = line.split()[0].lower().rstrip(":")
+        if word in ("classdef", "class", "style", "linkstyle", "click", "subgraph"):
+            problems.append(f"`{word}` is not sequence diagram syntax")
+            continue
+        if word in _SEQ_BLOCK_OPENERS:
+            depth += 1
+        elif word == "end":
+            depth -= 1
+            if depth < 0:
+                problems.append("`end` without an opening block")
+                depth = 0
+        elif word in ("participant", "actor"):
+            if not _SEQ_PARTICIPANT_RE.match(line):
+                problems.append(f"participant id must be a plain word: {line[:60]}")
+        elif word not in _SEQ_STATEMENTS and not _SEQ_MESSAGE_RE.match(line):
+            problems.append(f"not a sequence diagram statement: {line[:60]}")
+    if depth:
+        problems.append("a block (`loop`, `alt`, `opt`, ...) without its `end`")
+    return problems
+
+
+def mermaid_problems(body: str) -> list[str]:
+    """What would stop the renderer drawing this mermaid block, if anything.
+
+    Empty means no known rule is broken. The checks follow the diagram type the
+    first statement names; types with no checks here pass on a known header.
+    """
+    lines = _statements(body)
+    if not lines:
+        return ["empty diagram"]
+    header = lines[0].split()[0].lower()
+    if header not in _DIAGRAM_TYPES and not header.endswith("-beta"):
+        return [f"unknown diagram type {lines[0].split()[0]!r}"]
+    if header in ("graph", "flowchart"):
+        return _flowchart_problems(lines[1:])
+    if header == "sequencediagram":
+        return _sequence_problems(lines[1:])
+    return []
+
+
+def invalid_mermaid_blocks(markdown: str) -> list[str]:
+    """One problem line per mermaid block in *markdown* that fails validation."""
+    found: list[str] = []
+    for match in _MERMAID_FENCE_RE.finditer(markdown or ""):
+        problems = mermaid_problems(match.group("body"))
+        if problems:
+            found.append(problems[0])
+    return found
+
+
+def renderable_mermaid(markdown: str) -> str:
+    """*markdown* with its mermaid repaired, and any block still failing removed."""
+    return strip_invalid_mermaid(sanitize_mermaid(markdown))
+
+
+def strip_invalid_mermaid(markdown: str) -> str:
+    """*markdown* without the mermaid blocks that fail validation."""
+
+    def _keep(match: re.Match[str]) -> str:
+        return "" if mermaid_problems(match.group("body")) else match.group(0)
+
+    stripped = _MERMAID_FENCE_RE.sub(_keep, markdown)
+    if stripped == markdown:
+        # Nothing removed: leave the page byte-identical, or a template page
+        # with spare blank lines reads as changed and is stored twice.
+        return markdown
+    return re.sub(r"\n{3,}", "\n\n", stripped)
 
 
 _HEADING_LINE_RE = re.compile(r"(?m)^#{1,6}\s")
@@ -368,22 +589,35 @@ def strip_leading_preamble(markdown: str) -> str:
 
 
 def sanitize_pages(pages: list) -> int:
-    """Run :func:`sanitize_mermaid` over a list of ``GeneratedPage``.
+    """Make every page of a run renderable before it is stored.
 
-    Mutates ``page.content`` in place. Returns the number of pages whose
-    content actually changed (for logging).
+    The one pass every page goes through, whatever wrote it: a fresh model
+    response, one reused from a prior run, a diagram embedded after
+    generation (the overview's map) or a template. Repairs what
+    :func:`sanitize_mermaid` can, and removes any block that still fails
+    :func:`mermaid_problems`. Mutates ``page.content`` in place. Returns the
+    number of pages whose content changed (for logging).
     """
     changed = 0
     for page in pages:
         content = getattr(page, "content", None)
         if not content:
             continue
-        fixed = strip_leading_preamble(content)
-        fixed = sanitize_mermaid(fixed)
+        fixed = renderable_mermaid(strip_leading_preamble(content))
+        if invalid_mermaid_blocks(sanitize_mermaid(content)):
+            log.warning("mermaid_safety.block_removed", page_id=getattr(page, "page_id", ""))
         if fixed != content:
             page.content = fixed
             changed += 1
     return changed
 
 
-__all__ = ["sanitize_mermaid", "sanitize_pages", "strip_leading_preamble"]
+__all__ = [
+    "invalid_mermaid_blocks",
+    "mermaid_problems",
+    "renderable_mermaid",
+    "sanitize_mermaid",
+    "sanitize_pages",
+    "strip_invalid_mermaid",
+    "strip_leading_preamble",
+]

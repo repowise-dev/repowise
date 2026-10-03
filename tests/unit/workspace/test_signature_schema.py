@@ -124,9 +124,9 @@ class TestAmbientParameters:
     def test_the_request_and_response_objects_are_dropped(self):
         # Renaming one of these is a no-op on the wire; counting it as a
         # required field reports that rename as a breaking change.
-        assert _fields(
-            "async def h(request: Request, response: Response, q: str)", "python"
-        ) == [("q", "str", True)]
+        assert _fields("async def h(request: Request, response: Response, q: str)", "python") == [
+            ("q", "str", True)
+        ]
         assert _fields("Get(HttpContext ctx, [FromQuery] string q)", "csharp") == [
             ("q", "string", True)
         ]
@@ -252,9 +252,7 @@ def _symbol(name: str, signature: str, *, kind="function", language="python", li
 
 class TestAttachPass:
     async def test_the_route_template_protects_its_own_parameters(self, tmp_path: Path):
-        index = await _index_for(
-            tmp_path, [_symbol("h", "def h(request: Request, repo_id: str)")]
-        )
+        index = await _index_for(tmp_path, [_symbol("h", "def h(request: Request, repo_id: str)")])
         contract = _provider("app/api.py::h")
         contract.symbol_name = "fastapi:GET /repos/{request}"
         try:
@@ -286,9 +284,7 @@ class TestAttachPass:
         # The function making a call says nothing about the request it sends.
         assert consumer.schema is None
 
-    async def test_a_symbol_carrying_several_providers_is_a_registration_site(
-        self, tmp_path: Path
-    ):
+    async def test_a_symbol_carrying_several_providers_is_a_registration_site(self, tmp_path: Path):
         index = await _index_for(
             tmp_path, [_symbol("create_app", "def create_app(settings: Settings) -> FastAPI")]
         )
@@ -330,9 +326,7 @@ class TestAttachPass:
         assert [f.name for f in contract.schema.request_fields] == ["id"]
 
     async def test_a_non_callable_symbol_is_counted_not_read(self, tmp_path: Path):
-        index = await _index_for(
-            tmp_path, [_symbol("Order", "class Order", kind="class", line=6)]
-        )
+        index = await _index_for(tmp_path, [_symbol("Order", "class Order", kind="class", line=6)])
         contracts = [_provider("app/api.py::Order")]
         try:
             counts = attach_signature_schemas(contracts, index)
@@ -369,7 +363,7 @@ class TestFidelityIsNotMixed:
         # The fields differ in both type and requiredness, so a source-blind
         # diff reports two breaking changes for a change of parser.
         assert _diff_schemas(proto, signature)
-        assert _report_kinds(proto, signature) == []
+        assert _report_kinds(proto, signature) == ["schema_comparison_uncertain"]
 
     def test_two_signature_shapes_are_diffed(self):
         before = ContractSchema(source=SCHEMA_SOURCE, request_fields=[SchemaField("a", "str")])

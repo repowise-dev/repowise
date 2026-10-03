@@ -44,6 +44,8 @@ import { formatNumber } from "../lib/format";
 
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { scoreBadgeClass } from "./tokens";
+import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 
 /** Below this, a file nothing reaches is worth leading with. */
 const AT_RISK_SCORE = 6;
@@ -137,7 +139,7 @@ export function InferredTestsView({
     },
     {
       key: "health_score",
-      header: "Health",
+      header: "Code health",
       priority: 2,
       align: "right",
       render: (f) =>
@@ -246,7 +248,7 @@ function AddResolutionSection() {
       description="Everything above is read from the dependency graph and needs no setup. A report adds what the graph structurally cannot see: which lines actually ran."
     >
       <div className="flex max-w-[62ch] flex-col gap-3 border-t border-[var(--color-border-default)] pt-4">
-        <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           Hand us a report and the two columns above become a continuous axis,
           every file moves to its own coverage figure, and the untested-hotspot
           list narrows from &ldquo;nothing calls this&rdquo; to the exact lines no
@@ -257,8 +259,9 @@ function AddResolutionSection() {
           repowise coverage add coverage.lcov
         </pre>
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          LCOV · Cobertura · Clover
+          {COVERAGE_REPORT_FORMATS_LABEL}
         </p>
+        <CiHint command="repowise coverage check" checks="the lines each change touched" />
       </div>
     </OverviewSection>
   );

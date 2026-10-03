@@ -18,7 +18,12 @@ import pytest
 from sqlalchemy.sql import text
 
 from repowise.core.persistence.crud import upsert_page
-from repowise.core.persistence.search import PAGE_FTS_COLUMNS, FullTextSearch
+from repowise.core.persistence.search import (
+    _BM25_COLUMN_WEIGHTS,
+    FILE_VOCABULARY_KEY,
+    PAGE_FTS_COLUMNS,
+    FullTextSearch,
+)
 from tests.unit.persistence.helpers import insert_repo
 
 _OLD_SCHEMA_DDL = "CREATE VIRTUAL TABLE page_fts USING fts5(page_id UNINDEXED, title, content)"
@@ -61,7 +66,7 @@ async def repo(async_session):
 
 
 async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, async_session, repo):
-    """An index written by an older repowise gains both columns, populated.
+    """An index written by an older repowise gains the new columns, populated.
 
     The rebuild reads ``wiki_pages``, which is the only place the two new
     fields exist — the old FTS rows never carried them. A silent no-op here
@@ -78,13 +83,7 @@ async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, asyn
 
     await FullTextSearch(async_engine).ensure_index()
 
-    assert await _fts_columns(async_engine) == [
-        "page_id",
-        "title",
-        "content",
-        "summary",
-        "target_path",
-    ]
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
     async with async_engine.connect() as conn:
         rows = await conn.execute(text("SELECT page_id, summary, target_path FROM page_fts"))
         indexed = rows.fetchall()
@@ -312,3 +311,102 @@ async def test_ensure_index_prunes_orphans_on_a_current_schema(
     await FullTextSearch(async_engine).ensure_index()
 
     assert await _indexed_ids(async_engine) == set()
+
+
+def test_one_bm25_weight_per_indexed_column():
+    """A column added without a weight would be ranked, silently, at 1.0.
+
+    bm25() takes its weights positionally and validates nothing: a sixth
+    column defaults to 1.0 and a surplus weight is dropped, so drift here
+    changes ranking without raising anywhere.
+    """
+    assert len(_BM25_COLUMN_WEIGHTS) == len(PAGE_FTS_COLUMNS)
+
+
+_VOCABULARY_PAGE = {
+    "content": "# Overview\n\nEntry point for the application.",
+    "metadata": {FILE_VOCABULARY_KEY: "localeError customError xylophone"},
+}
+
+
+async def test_a_vocabulary_only_term_finds_the_page_without_an_embedder(
+    async_engine, async_session, repo
+):
+    """The vocabulary is kept off the page, so full-text is its only reach.
+
+    A keyless store has no vectors. When the vocabulary left the rendered page
+    it left the index with it, and a question whose only match was a field
+    name or comment returned nothing.
+    """
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py",
+        "File: src/main.py",
+        _VOCABULARY_PAGE["content"],
+        summary="",
+        target_path="src/main.py",
+    )
+
+    results = await fts.search("xylophone")
+
+    assert [r.page_id for r in results] == ["file_page:src/main.py"]
+    assert "xylophone" not in results[0].snippet
+
+
+async def test_upgrade_refills_the_vocabulary_from_page_metadata(
+    async_engine, async_session, repo
+):
+    """A store indexed before the column existed gains it, populated."""
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    async with async_engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS page_fts"))
+        await conn.execute(
+            text(
+                "CREATE VIRTUAL TABLE page_fts USING "
+                "fts5(page_id UNINDEXED, title, content, summary, target_path)"
+            )
+        )
+
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
+    assert [r.page_id for r in await fts.search("xylophone")] == ["file_page:src/main.py"]
+
+
+async def test_unreadable_page_metadata_indexes_without_a_vocabulary(
+    async_engine, async_session, repo
+):
+    """Bad JSON on one row must not fail the write for the batch."""
+    await _seed_page(async_session, repo.id)
+    async with async_engine.begin() as conn:
+        await conn.execute(text("UPDATE wiki_pages SET metadata_json = '{not json'"))
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py", "File: src/main.py", "Entry point body.", summary="", target_path=""
+    )
+
+    assert [r.page_id for r in await fts.search("entry point")] == ["file_page:src/main.py"]
+
+
+async def test_the_vocabulary_and_the_digest_are_both_searchable(
+    async_engine, async_session, repo
+):
+    """Two columns kept off the rendered body, one per kind of reader-invisible text."""
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py",
+        "File: src/main.py",
+        _VOCABULARY_PAGE["content"],
+        summary="",
+        target_path="src/main.py",
+        digest="## Questions this page answers\n\n- Where does the zeppelin start?",
+    )
+
+    assert [r.page_id for r in await fts.search("xylophone")] == ["file_page:src/main.py"]
+    assert [r.page_id for r in await fts.search("zeppelin")] == ["file_page:src/main.py"]

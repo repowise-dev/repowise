@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..health import HealthFindingData
+from ..health.aggregation import finding_raw_deduction
 from .identity import finding_key, line_distance, normalize_path, severity_rank
 from .models import ChangeKind, FindingKey
 
@@ -120,6 +121,6 @@ def _classify(base: HealthFindingData | None, head: HealthFindingData) -> Change
         return "worsened"
     if severity_rank(head.severity) < severity_rank(base.severity):
         return "unchanged"
-    if (head.health_impact or 0.0) - (base.health_impact or 0.0) > _IMPACT_EPSILON:
+    if finding_raw_deduction(head) - finding_raw_deduction(base) > _IMPACT_EPSILON:
         return "worsened"
     return "unchanged"

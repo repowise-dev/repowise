@@ -29,6 +29,9 @@ export interface ViewTabsProps {
    *  derived from this value so the host can name them without a callback. */
   panelId?: string;
   className?: string;
+  /** Names the row when a page carries more than one, so the two are
+   *  distinguishable to a screen reader announcing "tab list". */
+  "aria-label"?: string;
 }
 
 /**
@@ -43,6 +46,7 @@ export function ViewTabs({
   children,
   panelId: externalPanelId,
   className,
+  "aria-label": ariaLabel,
 }: ViewTabsProps) {
   // Stable id base so each tab can be aria-labelled to the shared panel and
   // the panel can point back at the active tab.
@@ -57,10 +61,18 @@ export function ViewTabs({
   const panelId = ownsPanel ? `${baseId}-panel` : externalPanelId;
   const tabRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 
-  // Keep the active tab in view even though the scrollbar is hidden — it can
-  // otherwise scroll off-screen with no way to reveal it.
+  // Keep the active tab in view, since the row's scrollbar is hidden. Only the
+  // row scrolls: moving the page here would pull a tab row below the fold into
+  // view on load.
   React.useEffect(() => {
-    tabRefs.current[value]?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    const tab = tabRefs.current[value];
+    const row = tab?.parentElement;
+    if (!tab || !row) return;
+    const left = tab.offsetLeft - row.offsetLeft;
+    if (left < row.scrollLeft) row.scrollLeft = left;
+    else if (left + tab.offsetWidth > row.scrollLeft + row.clientWidth) {
+      row.scrollLeft = left + tab.offsetWidth - row.clientWidth;
+    }
   }, [value]);
 
   // Left/right arrow keys move selection (and focus) between tabs; Home/End
@@ -85,6 +97,7 @@ export function ViewTabs({
     <div className={cn("space-y-4", className)}>
       <div
         role="tablist"
+        aria-label={ariaLabel}
         onKeyDown={onKeyDown}
         className="flex items-center gap-4 overflow-x-auto border-b border-[var(--color-border-default)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >

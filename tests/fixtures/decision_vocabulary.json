@@ -5,6 +5,7 @@
     "cli",
     "comment",
     "commit",
+    "conventions",
     "git_archaeology",
     "inline_marker",
     "llm_inferred",
@@ -27,6 +28,7 @@
     "active",
     "needs_review",
     "uncheckable",
+    "stale",
     "superseded",
     "dismissed"
   ],
@@ -51,6 +53,11 @@
     "dismissed",
     "returned_to_review"
   ],
+  "accepter_kinds": [
+    "person",
+    "agent",
+    "import"
+  ],
   "capture_sources": [
     "inline_marker",
     "git_archaeology",
@@ -58,7 +65,8 @@
     "pr",
     "comment",
     "session",
-    "session_discovery"
+    "session_discovery",
+    "conventions"
   ],
   "presets": [
     "default",
@@ -66,6 +74,10 @@
     "local_only",
     "balanced",
     "full"
+  ],
+  "kinds": [
+    "architectural",
+    "agreement"
   ],
   "review_lanes": [
     "active",

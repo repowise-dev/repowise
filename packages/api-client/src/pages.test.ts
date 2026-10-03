@@ -83,4 +83,12 @@ describe("regeneratePage", () => {
       cascade: "dependents",
     });
   });
+
+  it("includes repo_id when given (workspace routing)", async () => {
+    await regeneratePage("file_page:src/main.py", { repoId: "repo1" });
+    expect(apiPost.mock.calls[0]![3]).toEqual({
+      page_id: "file_page:src/main.py",
+      repo_id: "repo1",
+    });
+  });
 });

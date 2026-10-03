@@ -29,6 +29,7 @@ from collections import defaultdict
 import structlog
 
 from .heritage_resolver import heritage_ancestors
+from .symbol_identity import id_segment_name, symbol_id_discriminator
 
 log = structlog.get_logger(__name__)
 
@@ -99,7 +100,14 @@ def _methods_by_name(graph, type_id: str) -> dict[str, list[str]]:
 
 
 def _is_constructor(name: str, type_id: str) -> bool:
-    return name in _CONSTRUCTOR_NAMES or name == type_id.rpartition("::")[2]
+    return name in _CONSTRUCTOR_NAMES or name == id_segment_name(type_id.rpartition("::")[2])
+
+
+def _same_overload(base: str, impl: str) -> bool:
+    """False only when both are overload members of different arities."""
+    base_arity = symbol_id_discriminator(base)
+    impl_arity = symbol_id_discriminator(impl)
+    return base_arity is None or impl_arity is None or base_arity == impl_arity
 
 
 def resolve_override_dispatch(
@@ -149,7 +157,9 @@ def resolve_override_dispatch(
                 if impls is None or _is_constructor(name, ancestor):
                     continue
                 for base in bases:
-                    candidates[base].update(impl for impl in impls if impl != base)
+                    candidates[base].update(
+                        impl for impl in impls if impl != base and _same_overload(base, impl)
+                    )
 
     added = 0
     refused = 0

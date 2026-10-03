@@ -596,6 +596,17 @@ async def test_get_dead_code_repo_all(workspace_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_dead_code_repo_all_summary_says_what_it_counts(workspace_mcp):
+    from repowise.server.mcp_server import get_dead_code
+
+    summary = (await get_dead_code(repo="all", directory="nowhere"))["summary"]
+    assert summary["total_findings"] >= 2
+    assert summary["filtered_findings"] == 0
+    assert "filtered_findings" in summary["scope"]
+    assert summary["filters"] == {"directory": "nowhere"}
+
+
+@pytest.mark.asyncio
 async def test_get_dead_code_specific_repo(workspace_mcp):
     from repowise.server.mcp_server import get_dead_code
 
@@ -637,6 +648,24 @@ async def test_unsupported_repo_all_get_context(workspace_mcp):
     result = await get_context(targets=["src/api/server.py"], repo="all")
     assert "error" in result
     assert "not supported" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("get_health", {}),
+        ("generate_refactoring_code", {"suggestion_id": "any"}),
+        ("set_finding_status", {"suggestion_id": "any", "status": "acknowledged"}),
+    ],
+)
+async def test_unsupported_repo_all_returns_error_dict(workspace_mcp, tool_name, kwargs):
+    import repowise.server.mcp_server as mcp_server
+
+    tool = getattr(mcp_server, tool_name)
+    result = await tool(repo="all", **kwargs)
+
+    assert result["error"].startswith(f"repo='all' is not supported for {tool_name}.")
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +830,61 @@ def test_enricher_get_cross_repo_summary(enricher_data):
     assert len(summary["top_connections"]) >= 1
 
 
+def test_enricher_serves_maven_evidence_and_bounded_diagnostics(tmp_path):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    path = tmp_path / "cross_repo_edges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "package_deps": [
+                    {
+                        "source_repo": "consumer",
+                        "target_repo": "producer",
+                        "source_manifest": "app/pom.xml",
+                        "target_manifest": "shared/pom.xml",
+                        "target_package": "com.acme:shared",
+                        "requested_version": "1.2.0",
+                        "scope": "compile",
+                        "resolution_basis": "unique_workspace_coordinate",
+                        "kind": "maven_coordinate",
+                    }
+                ],
+                "package_diagnostics": [
+                    {
+                        "repo": "consumer",
+                        "source_manifest": "pom.xml",
+                        "code": "external_coordinate",
+                        "detail": "org.example:outside",
+                    }
+                ],
+                "total_package_diagnostics": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    enricher = CrossRepoEnricher(path)
+
+    assert enricher.get_package_deps("consumer") == [
+        {
+            "target_repo": "producer",
+            "source_manifest": "app/pom.xml",
+            "kind": "maven_coordinate",
+            "target_package": "com.acme:shared",
+            "target_manifest": "shared/pom.xml",
+            "requested_version": "1.2.0",
+            "scope": "compile",
+            "resolution_basis": "unique_workspace_coordinate",
+        }
+    ]
+    summary = enricher.get_cross_repo_summary()
+    assert summary["package_diagnostic_count"] == 4
+    assert summary["package_diagnostics_emitted"] == 1
+    assert summary["package_diagnostic_codes"] == ["external_coordinate"]
+
+
 # ---------------------------------------------------------------------------
 # MCP tool enrichment with cross-repo data
 # ---------------------------------------------------------------------------
@@ -899,7 +983,9 @@ async def test_list_repos_discovers_workspace_aliases(workspace_mcp):
             assert probe in json.dumps(answer)
             change = await get_change_risk("HEAD", repo=identity, baseline=0)
             assert change.get("warning") is None
-            assert change["score"] >= 0
+            # The raw score is behind include=["diagnostics"] now; the
+            # percentile is what the default payload ranks with.
+            assert change["risk_percentile"] is None or change["risk_percentile"] >= 0
             expected_head = subprocess.run(
                 ["git", "rev-parse", "--short=12", "HEAD"],
                 cwd=workspace_mcp.workspace_root / emitted["path"],

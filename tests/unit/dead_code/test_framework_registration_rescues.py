@@ -228,3 +228,67 @@ def test_an_annotation_beside_suppresswarnings_does_not_leak_its_argument():
         },
     )
     assert "activate" in _unused_export_names(graph)
+
+
+# ---------------------------------------------------------------------------
+# Any ``recv.attr`` decorator is a registration unless it only wraps.
+# ---------------------------------------------------------------------------
+
+
+def _decorated(decorator: str, visibility: str) -> nx.DiGraph:
+    return _build_graph(
+        nodes={
+            "pkg/handlers.py": {
+                "symbols": [
+                    {
+                        "name": "handle_thing",
+                        "kind": "function",
+                        "visibility": visibility,
+                        "decorators": [decorator],
+                        "start_line": 1,
+                        "end_line": 4,
+                    },
+                ],
+            },
+        },
+    )
+
+
+def _reported(decorator: str) -> tuple[bool, bool]:
+    """(reported as unused export, reported as unused internal)."""
+    export = "handle_thing" in _unused_export_names(_decorated(decorator, "public"))
+    report = DeadCodeAnalyzer(_decorated(decorator, "private"), git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "min_confidence": 0.0}
+    )
+    internal = any(f.kind == DeadCodeKind.UNUSED_INTERNAL for f in report.findings)
+    return export, internal
+
+
+def test_receiver_decorators_are_registrations_in_both_passes():
+    for decorator in ("@nox.session", "@sub.handle('created')", "@mcp.tool()", "@bot.on.message"):
+        assert _reported(decorator) == (False, False), decorator
+
+
+def test_pure_wrapper_decorators_are_not_registrations():
+    for decorator in (
+        "@functools.wraps(fn)",
+        "@functools.lru_cache(maxsize=None)",
+        "@typing.override",
+        "@abc.abstractmethod",
+        "@typing.no_type_check",
+        "@mock.create_autospec(spec)",
+        "@unittest.mock.create_autospec(spec)",
+        "@value.setter",
+    ):
+        assert _reported(decorator) == (True, True), decorator
+
+
+def test_a_deprecation_marker_is_not_a_registration():
+    # An exported deprecated symbol is kept for its own reason, so the internal
+    # pass is where a wrapper-shaped ``deprecated`` shows it registers nothing.
+    assert _reported("@warnings.deprecated('use other')")[1] is True
+
+
+def test_a_qualified_annotation_type_is_not_a_receiver():
+    # ``@java.lang.Deprecated``-style: a capitalised last segment names a type.
+    assert _reported("@org.example.Marker") == (True, True)

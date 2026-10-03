@@ -14,6 +14,7 @@ snapshot. The structural graph stays available for traversal.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import networkx as nx
@@ -36,6 +37,11 @@ _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 # while scoring as churn 1. Tolerable only because the values carry the commit
 # they were scored at.
 _CHURN_BUDGET_FRACTION = 0.002
+
+
+def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
+    """Whether both ends are test material; such edges carry no centrality."""
+    return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
 
 
 class MetricsMixin:
@@ -113,10 +119,12 @@ class MetricsMixin:
                 if d.get("node_type", "file") in ("file", "external")
             ]
             sub = g.subgraph(file_nodes).copy()
+            # A file never depends on itself; a self-loop only feeds PageRank
+            # the node's own rank back to it.
             edges_to_remove = [
                 (u, v)
                 for u, v, d in sub.edges(data=True)
-                if d.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if u == v or d.get("edge_type") in TEMPORAL_EDGE_TYPES
             ]
             sub.remove_edges_from(edges_to_remove)
             self._file_subgraph_cache = sub
@@ -141,18 +149,43 @@ class MetricsMixin:
         repo a second full copy of the file graph is real memory for a graph we
         only ever read. Callers must treat the result as read-only.
         """
-        cached = self._cycle_subgraph_cache
+        return self._file_edge_view(
+            "_cycle_subgraph_cache", lambda base, u, v, d: is_cohesion_edge(d)
+        )
+
+    def centrality_subgraph(self) -> nx.DiGraph:
+        """Return :meth:`file_subgraph` minus test-to-test edges, for PageRank and betweenness.
+
+        A suite's imports of its own fixtures and helpers say nothing about
+        which production files matter, yet they made ``tests/conftest.py`` rank
+        beside core modules. An edge with one production endpoint stays: a test
+        importing a module is a real (weak) vote for it.
+
+        Degrees and dead code keep :meth:`file_subgraph`: a helper only tests
+        import is still reachable. Callers must treat the result as read-only.
+        """
+        return self._file_edge_view(
+            "_centrality_subgraph_cache",
+            lambda base, u, v, d: is_test_to_test_edge(base, u, v),
+        )
+
+    def _file_edge_view(
+        self, cache_attr: str, hide: Callable[[nx.DiGraph, str, str, dict], bool]
+    ) -> nx.DiGraph:
+        """Cache a ``restricted_view`` of :meth:`file_subgraph` hiding edges where *hide* holds."""
+        cached = getattr(self, cache_attr)
         if cached is not None:
             return cached
         # Resolve the base graph BEFORE taking the lock: file_subgraph() takes
         # the same lock, and threading.Lock is not reentrant.
         base = self.file_subgraph()
         with self._subgraph_lock:
-            if self._cycle_subgraph_cache is not None:
-                return self._cycle_subgraph_cache
-            cohesion = [(u, v) for u, v, d in base.edges(data=True) if is_cohesion_edge(d)]
-            sub = nx.restricted_view(base, [], cohesion)
-            self._cycle_subgraph_cache = sub
+            cached = getattr(self, cache_attr)
+            if cached is not None:
+                return cached
+            hidden = [(u, v) for u, v, d in base.edges(data=True) if hide(base, u, v, d)]
+            sub = nx.restricted_view(base, [], hidden)
+            setattr(self, cache_attr, sub)
             return sub
 
     def symbol_subgraph(self) -> nx.DiGraph:
@@ -213,7 +246,7 @@ class MetricsMixin:
         """Return PageRank scores for file nodes only (cached)."""
         if self._pagerank_cache is not None:
             return self._pagerank_cache
-        filtered = self.file_subgraph()
+        filtered = self.centrality_subgraph()
         if filtered.number_of_nodes() == 0:
             self._pagerank_cache = {}
             return self._pagerank_cache
@@ -230,7 +263,7 @@ class MetricsMixin:
         """Return betweenness centrality for file nodes (cached)."""
         if self._betweenness_cache is not None:
             return self._betweenness_cache
-        g = self.file_subgraph()
+        g = self.centrality_subgraph()
         if g.number_of_nodes() == 0:
             self._betweenness_cache = {}
             return self._betweenness_cache
@@ -265,7 +298,10 @@ class MetricsMixin:
         from repowise.core.analysis.communities import detect_file_communities
 
         try:
-            assignment, info, algo = detect_file_communities(self._graph)
+            repo_path = getattr(self, "_repo_path", None)
+            assignment, info, algo = detect_file_communities(
+                self._graph, repo_name=repo_path.name if repo_path else None
+            )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
@@ -322,6 +358,7 @@ class MetricsMixin:
             log.warning("Symbol PageRank did not converge, using uniform scores")
             n = sub.number_of_nodes()
             self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        self._release_symbol_subgraph()
         return self._symbol_pagerank_cache
 
     def symbol_betweenness_centrality(self) -> dict[str, float]:
@@ -333,7 +370,19 @@ class MetricsMixin:
             self._symbol_betweenness_cache = {}
             return self._symbol_betweenness_cache
         self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
+        self._release_symbol_subgraph()
         return self._symbol_betweenness_cache
+
+    def _release_symbol_subgraph(self) -> None:
+        """Drop the cached symbol subgraph once both symbol kernels have scored it.
+
+        It is a full copy of every symbol node and call edge, and these two
+        kernels are its only readers; kept, it sat beside the graph for the
+        rest of the run. A later caller gets it rebuilt on demand.
+        """
+        if self._symbol_pagerank_cache is not None and self._symbol_betweenness_cache is not None:
+            with self._subgraph_lock:
+                self._symbol_subgraph_cache = None
 
     def betweenness_scoring(self, kind: str) -> Any | None:
         """Return the provenance of *kind*'s betweenness, or ``None`` if unscored.

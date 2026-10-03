@@ -44,7 +44,7 @@ def test_explicit_paths_take_priority(tmp_path: Path) -> None:
     report.write_text("SF:src/a.ts\nDA:1,1\nend_of_record\n")
     parsed = [_parsed("src/a.ts")]
 
-    coverage_map, _files, _fmt, _partial = _build_pipeline_coverage(
+    coverage_map, _files, _fmt, _provenance = _build_pipeline_coverage(
         tmp_path, parsed, [report], progress=None
     )
     assert "src/a.ts" in coverage_map
@@ -52,13 +52,13 @@ def test_explicit_paths_take_priority(tmp_path: Path) -> None:
 
 def test_no_report_yields_empty_map(tmp_path: Path) -> None:
     parsed = [_parsed("src/a.ts")]
-    coverage_map, files, fmt, partial = _build_pipeline_coverage(
+    coverage_map, files, fmt, provenance = _build_pipeline_coverage(
         tmp_path, parsed, None, progress=None
     )
     assert coverage_map == {}
     assert files == []
     assert fmt is None
-    assert partial is False
+    assert provenance is None
 
 
 def test_auto_discover_disabled_via_config(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_auto_discover_disabled_via_config(tmp_path: Path) -> None:
     )
     parsed = [_parsed("src/a.ts")]
 
-    coverage_map, _files, _fmt, _partial = _build_pipeline_coverage(
+    coverage_map, _files, _fmt, _provenance = _build_pipeline_coverage(
         tmp_path, parsed, None, progress=None
     )
     assert coverage_map == {}
@@ -88,7 +88,7 @@ def test_strip_prefix_from_config(tmp_path: Path) -> None:
     )
     parsed = [_parsed("web/index.ts"), _parsed("api/index.ts")]
 
-    coverage_map, _files, _fmt, _partial = _build_pipeline_coverage(
+    coverage_map, _files, _fmt, _provenance = _build_pipeline_coverage(
         tmp_path, parsed, None, progress=None
     )
     assert "web/index.ts" in coverage_map

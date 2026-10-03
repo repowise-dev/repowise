@@ -5,11 +5,13 @@ import {
   type PerformanceFacetKey,
   type PerformanceOpportunity,
   type PerformanceOpportunityConfidence,
+  type PerformanceOpportunitySibling,
   type PerformanceWhyRanked,
 } from "@repowise-dev/types/health";
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
+import { CONFIDENCE_LABEL } from "../labels";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -43,19 +45,17 @@ export const ACTIONABILITY_LABEL: Record<PerformanceActionabilityState, string> 
   plan_ready: "Plan ready",
   advisory: "Advisory",
   investigate: "Needs investigation",
+  expected: "Expected",
 };
 
 export const ACTIONABILITY_HINT: Record<PerformanceActionabilityState, string> = {
   plan_ready: "A named intervention the analysis considers safe to apply.",
   advisory: "A coherent intervention, but the analysis cannot prove it is safe.",
   investigate: "Evidence worth reading before any change is proposed.",
+  expected: "The repetition is real and there is no change to make.",
 };
 
-export const CONFIDENCE_LABEL: Record<PerformanceOpportunityConfidence, string> = {
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
+export { CONFIDENCE_LABEL };
 
 export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   context: "Context",
@@ -70,6 +70,81 @@ const PLAN_STATE_LABEL: Record<string, string> = {
   no_safe_plan: "No safe plan",
   not_persisted: "Needs an index refresh",
 };
+
+/**
+ * Where the edit goes. The wire type gains `intervention_kind` with the
+ * one-opportunity-per-intervention model (PR 2817); until that lands it is read
+ * as optional here, and a row without it simply shows no kind.
+ */
+export type InterventionKind = "function" | "shared_helper" | "module";
+
+export const INTERVENTION_KIND_LABEL: Record<InterventionKind, string> = {
+  function: "The loop's own function",
+  shared_helper: "A helper every caller shares",
+  module: "Top-level code",
+};
+
+export function interventionKind(opportunity: PerformanceOpportunity): InterventionKind | null {
+  const kind = (opportunity as { intervention_kind?: string | null }).intervention_kind;
+  return kind && kind in INTERVENTION_KIND_LABEL ? (kind as InterventionKind) : null;
+}
+
+/** How far above a call the excerpt looks for the loop that repeats it. */
+export const LOOP_SEARCH_LINES = 15;
+
+const LOOP_HEADER = /^\s*(?:async\s+for|for|while)\b/;
+
+/**
+ * The loop header above a call, for the excerpt. The evidence stores the
+ * call's line, not the loop's, so this scans upward for the nearest
+ * `for` / `while` / `async for` line and says so when there is none in range.
+ */
+export function loopHeaderAbove(
+  fileLines: string[],
+  callLine: number,
+  maxUp = LOOP_SEARCH_LINES,
+): { start: number; note: string | null } {
+  for (let line = callLine; line >= Math.max(1, callLine - maxUp); line -= 1) {
+    if (LOOP_HEADER.test(fileLines[line - 1] ?? "")) {
+      return { start: line, note: `The loop starts at line ${line}.` };
+    }
+  }
+  return {
+    start: callLine,
+    note: `No for or while line within ${maxUp} lines above the call; the loop is further up or in a caller.`,
+  };
+}
+
+const MODULE_SCOPE = "::__module__";
+
+/**
+ * `path::__module__` names top-level code, which has no function to call it
+ * by. It reads as "module scope of path"; `short` keeps only the file name,
+ * for a title.
+ */
+export function moduleScopeLabel(symbol: string, short = false): string | null {
+  if (!symbol.endsWith(MODULE_SCOPE)) return null;
+  const file = symbol.slice(0, -MODULE_SCOPE.length);
+  return `module scope of ${short ? (file.split("/").pop() ?? file) : file}`;
+}
+
+/**
+ * What each facet means, for the drawer's tooltips. The band edges mirror
+ * `_LEVERAGE_BANDS` and `_CHANGE_RISK_BANDS` in core's `opportunity_rank.py`;
+ * change both together.
+ */
+export const FACET_GLOSSARY = {
+  amplification:
+    "How the cost repeats. Per iteration: once per loop pass. Quadratic: nested loops over the same data. Per call: once each time the function runs.",
+  exposure:
+    "Whether an entry point reaches the loop's function in the call graph. Unknown when the graph could not say either way.",
+  leverage:
+    "How many call sites one fix settles. Isolated is 1, local up to 3, shared up to 9, broad 10 or more.",
+  change_risk:
+    "How many files holding evidence the edit reaches. Contained is 1, moderate up to 4, wide 5 or more.",
+  loop_magnitude:
+    "Whether the loop's trip count grows with the data. A bounded loop runs a fixed number of times.",
+} as const;
 
 /** The facet value used when an opportunity crosses no I/O boundary. */
 const NO_BOUNDARY = "none";
@@ -123,16 +198,35 @@ const CAUSE_BY_MARKER: Record<string, (boundary: C4IoKind | null) => string> = {
     `${b ? boundaryNoun(b) : "Resource"} client constructed on every iteration`,
 };
 
-/**
- * The cause a reader should act on, in words. The terminal sink is deliberately
- * absent: it is machine evidence and belongs in the monospace line beneath.
- */
-export function opportunityTitle(opportunity: PerformanceOpportunity): string {
+/** The cause in words: "Database call inside a loop". */
+export function opportunityCause(opportunity: PerformanceOpportunity): string {
   const cause = CAUSE_BY_MARKER[opportunity.biomarker_type];
   const phrase = cause
     ? cause(opportunity.boundary_kind)
     : biomarkerLabel(opportunity.biomarker_type);
   return phrase[0]!.toUpperCase() + phrase.slice(1);
+}
+
+/**
+ * The short name of the place to change: the intervention symbol without its
+ * path, else the first caller, else the file's name. It is what separates two
+ * rows that share a cause; the full path stays in the evidence line.
+ */
+export function opportunitySubject(opportunity: PerformanceOpportunity): string {
+  const symbol = opportunity.intervention_symbol?.trim();
+  if (symbol) return moduleScopeLabel(symbol, true) ?? symbol.split("::").pop() ?? symbol;
+  const first = opportunity.evidence[0]?.function_name;
+  if (first) return first;
+  return opportunity.file_path.split("/").pop() ?? opportunity.file_path;
+}
+
+/**
+ * The row's title: the cause, then where. Every database loop in a repository
+ * used to share one title ("Database call inside a loop" on 273 rows), so the
+ * part that told rows apart was the mono line nobody reads first.
+ */
+export function opportunityTitle(opportunity: PerformanceOpportunity): string {
+  return `${opportunityCause(opportunity)} in ${opportunitySubject(opportunity)}`;
 }
 
 /**
@@ -143,7 +237,7 @@ export function opportunityEvidenceLine(opportunity: PerformanceOpportunity): st
   const sink = opportunity.terminal_sink?.trim();
   if (sink) return sink;
   const symbol = opportunity.intervention_symbol?.trim();
-  if (symbol) return symbol;
+  if (symbol) return moduleScopeLabel(symbol) ?? symbol;
   const first = opportunity.evidence[0];
   if (first?.function_name) return `${opportunity.file_path}::${first.function_name}`;
   return opportunity.file_path;
@@ -156,6 +250,43 @@ export function affectedSummary(opportunity: PerformanceOpportunity): string {
   const sitePart = `${sites.toLocaleString()} call site${sites === 1 ? "" : "s"}`;
   const filePart = `${files.toLocaleString()} file${files === 1 ? "" : "s"}`;
   return `${sitePart} across ${filePart}`;
+}
+
+const MULTIPLIER_PHRASE: Record<string, string> = {
+  io_in_loop: "runs once per loop iteration",
+  serial_await_in_loop: "awaited one at a time",
+  nested_loop_with_io: "runs inside nested loops",
+};
+
+/**
+ * A rank factor as a reader's reason, without the points: "8 call sites",
+ * "reachable from an entry point". The points stay in `whyRankedLabel`, which
+ * the drawer shows for anyone checking the arithmetic.
+ */
+export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
+  const value = factor.value;
+  switch (factor.factor) {
+    case "affected_call_sites":
+      return typeof value === "number"
+        ? `${value.toLocaleString()} call site${value === 1 ? "" : "s"}`
+        : "several call sites";
+    case "boundary_kind":
+      return !value || value === NO_BOUNDARY
+        ? "in-process work"
+        : `a ${boundaryLabel(String(value)).toLowerCase()} call`;
+    case "multiplier_shape":
+      return MULTIPLIER_PHRASE[String(value)] ?? humanizeToken(String(value));
+    case "execution_context":
+      return `${contextLabel(String(value) as PerformanceExecutionContext).toLowerCase()} code`;
+    case "entry_reachability":
+      return "reachable from an entry point";
+    case "loop_magnitude":
+      return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
+    case "provenance":
+      return value === "call-site" ? "seen at the call site" : humanizeToken(String(value));
+    default:
+      return whyRankedLabel(factor);
+  }
 }
 
 /** `Multiplier shape: serial await in loop (+4)`, capped by the server at three. */
@@ -204,4 +335,9 @@ export function planPresentation(opportunity: PerformanceOpportunity): PlanPrese
  */
 export function agentHandoffCall(opportunityId: string): string {
   return `get_health(opportunity_id="${opportunityId}")`;
+}
+
+/** A sibling's fix, in words, for the drawer's "also flagged" line. */
+export function siblingFixLabel(sibling: PerformanceOpportunitySibling): string {
+  return humanizeToken(sibling.strategy ?? sibling.biomarker_type);
 }

@@ -33,7 +33,7 @@ def _ctx(metrics):
         nloc=10,
         has_test_file=False,
         module=None,
-        function_metrics={fc.name: fc for fc in metrics},
+        all_functions=tuple(metrics),
     )
 
 

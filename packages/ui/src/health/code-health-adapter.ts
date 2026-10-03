@@ -2,18 +2,23 @@ import type { ReactNode } from "react";
 import type {
   HealthCoverageResponse,
   HealthFilesQuery,
+  HealthScope,
   HealthFilesResponse,
   HealthFinding,
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
   PerformanceOpportunityQuery,
+  RelatedWorkResponse,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
 import type { CodeHealthOverlay } from "./map/types";
+import type { RelatedWorkHref } from "./related-work";
 import type {
   RefactoringOpportunity,
   RefactoringPlan,
@@ -24,8 +29,13 @@ export interface CodeHealthFindingsQuery {
   biomarker_type?: string;
   file_path?: string;
   min_severity?: string;
+  /** Exact severities, comma-separated. Overrides `min_severity`. */
+  severity?: string;
   dimension?: string;
+  /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+  status?: string;
   limit?: number;
+  scope?: HealthScope;
 }
 
 export type FindingStatusValue =
@@ -74,10 +84,21 @@ export interface CodeHealthAdapter {
   ): Promise<Paginated<HealthFinding>>;
   /** Fetch one exact canonical plan for the performance drawer. */
   getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
-  listFiles(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
+  /**
+   * @deprecated Unused. The repo's Files page owns the file inventory; the
+   * health views are triage surfaces and list only what carries findings.
+   * Optional so a host can stop binding it without breaking its build.
+   */
+  listFiles?(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
   getHealthWorkQueue?(
     opts?: HealthWorkQueueQuery,
   ): Promise<HealthWorkQueueResponse>;
+  /**
+   * Every file the queue's filters keep, placed by effort and recoverable
+   * health. Optional: a host without it shows no impact / effort graph, since
+   * a graph of one page would contradict the count above it.
+   */
+  getImpactEffort?(opts?: ImpactEffortQuery): Promise<ImpactEffortResponse>;
   /** @deprecated Legacy adapter name; FindingsView accepts it during migration. */
   getRefactoringTargets?(
     opts?: HealthWorkQueueQuery,
@@ -116,10 +137,22 @@ export interface CodeHealthAdapter {
   /** Deep link into the refactoring surface for one opportunity. */
   refactoringOpportunityHref?(opportunityId: string): string;
   /**
+   * What every lens holds for these files. Optional: a host without it shows
+   * no "elsewhere" section rather than an empty one.
+   */
+  getRelatedWork?(filePaths: string[]): Promise<RelatedWorkResponse>;
+  /** Where one related item lives, or null when it has nowhere to go. */
+  relatedWorkHref?: RelatedWorkHref;
+  /**
    * Where this cause lives on the one map. Optional: a host without a galaxy
    * offers no link rather than a second map.
    */
   mapHref?(opportunityId: string, filePath: string): string;
+  /**
+   * The file's text from the checkout, for an inline excerpt. Optional: a host
+   * without it shows the location and no code.
+   */
+  readSource?(path: string): Promise<string>;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 

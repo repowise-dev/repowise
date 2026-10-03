@@ -52,6 +52,9 @@ _PLUGIN_ID_GROOVY_RE = re.compile(r"id\s+['\"]([^'\"]+)['\"]")
 _APPLY_PLUGIN_RE = re.compile(r"apply\s+plugin:\s*['\"]([^'\"]+)['\"]")
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 _ROOT_PROJECT_NAME_RE = re.compile(r'rootProject\s*\.\s*name\s*=\s*"([^"]+)"')
+# A quoted fully-qualified class name: lowercase package segments, then a
+# capitalised type (``'org.elasticsearch.system.indices.SystemIndicesQA'``).
+_QUOTED_FQN_RE = re.compile(r"""['"]((?:[a-z_]\w*\.)+[A-Z]\w*)['"]""")
 
 _DEFAULT_MAIN_SRC_ROOTS = ("src/main/java", "src/main/kotlin")
 _DEFAULT_TEST_SRC_ROOTS = ("src/test/java", "src/test/kotlin")
@@ -396,6 +399,31 @@ def build_jvm_gradle_index(
         projects=len(index.projects),
     )
     return index
+
+
+def build_script_class_names(ctx: ResolverContext) -> set[str]:
+    """Fully-qualified class names quoted in any Gradle build script.
+
+    A build names a class it loads by reflection: a plugin's
+    ``esplugin { classname '...' }``, ``gradlePlugin`` ``implementationClass``,
+    an application ``mainClass``. Every build script in the tree is read,
+    since a settings file that adds projects by walking directories names
+    none of them. A name only counts once it resolves to a class in the repo.
+    """
+    names: set[str] = set()
+    if ctx.repo_path is None:
+        return names
+    for script in glob_via(
+        getattr(ctx, "walk_snapshot", None),
+        ctx.repo_path,
+        ("build.gradle", "build.gradle.kts"),
+        prune_nested_git=ctx.prune_nested_git,
+    ):
+        try:
+            names.update(_QUOTED_FQN_RE.findall(script.read_text(encoding="utf-8", errors="ignore")))
+        except OSError:
+            continue
+    return names
 
 
 def get_or_build_jvm_gradle_index(ctx: ResolverContext) -> JvmGradleIndex:

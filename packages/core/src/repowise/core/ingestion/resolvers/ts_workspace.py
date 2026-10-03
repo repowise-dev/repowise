@@ -33,6 +33,8 @@ import contextlib
 import json
 import posixpath
 import re
+import subprocess
+from collections.abc import Container
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -127,6 +129,30 @@ def _get_repo_scan(ctx: ResolverContext) -> _RepoFileScan:
     )
     ctx._ts_repo_file_scan = scan  # type: ignore[attr-defined]
     return scan
+
+
+def _parsed_package_jsons(ctx: ResolverContext) -> list[tuple[str, dict]]:
+    """``(repo-relative dir, data)`` for every readable ``package.json`` object.
+
+    Memoized per resolver context, so every finder shares one parse. The
+    base is ``ctx.repo_path`` as given, not ``.resolve()``d: the shared scan
+    walks that same path, and a different base would drop every manifest.
+    """
+    cached = getattr(ctx, "_ts_parsed_package_jsons", None)
+    if cached is not None:
+        return cached
+    parsed: list[tuple[str, dict]] = []
+    for pkg_file in _get_repo_scan(ctx).package_jsons:
+        # node_modules manifests are already pruned by the shared scan.
+        try:
+            pkg_dir = pkg_file.parent.relative_to(ctx.repo_path).as_posix()
+            data = json.loads(pkg_file.read_text(encoding="utf-8", errors="ignore"))
+        except (ValueError, OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            parsed.append((pkg_dir, data))
+    ctx._ts_parsed_package_jsons = parsed  # type: ignore[attr-defined]
+    return parsed
 
 
 # Order in which we collapse Node "conditional exports" objects down to
@@ -278,7 +304,7 @@ def _match_export_key(
     return best_targets
 
 
-def _read_workspaces_field(pkg_data: dict) -> list[str]:
+def read_workspaces_field(pkg_data: dict) -> list[str]:
     ws = pkg_data.get("workspaces")
     if isinstance(ws, list):
         return [str(p) for p in ws if isinstance(p, str)]
@@ -338,7 +364,7 @@ def _read_workspace_declaration(repo_path: Path) -> _WorkspaceDeclaration:
     if not isinstance(data, dict):
         return _WorkspaceDeclaration((), (), include_root=False)
     return _WorkspaceDeclaration(
-        tuple(_read_workspaces_field(data)), (), include_root=False
+        tuple(read_workspaces_field(data)), (), include_root=False
     )
 
 
@@ -489,6 +515,73 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
+def _read_sub_package_manifest(repo_path: Path, sub_dir_posix: str) -> dict[str, Any] | None:
+    """Read and parse ``<repo_path>/<sub_dir_posix>/package.json``, or None.
+
+    Same read/parse tolerance as :func:`build_workspace_info`'s manifest
+    read. No ``name`` field is required here: the caller already knows the
+    subpath that names this package, since that subpath is how it got here.
+    """
+    manifest = repo_path / sub_dir_posix / "package.json"
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _resolve_nested_subpackage(dir_posix: str, sub: str, ctx: ResolverContext) -> str | None:
+    """Resolve ``sub`` as a sub-package nested inside a workspace member.
+
+    Some packages ship sub-packages inside their own tree without being
+    separate workspace members (solid's ``packages/solid/web``, ``store``,
+    etc.), each with its own ``package.json`` and entry point, resolved
+    relative to itself rather than under the outer package's ``src``/``lib``/
+    ``dist`` roots. Mirrors the bare-package resolution above (exports
+    field, then ``index``, then ``main``/``module``, then a source-root
+    ``index``), rooted one level deeper at ``<dir_posix>/<sub>``.
+
+    Reached only after every probe on the outer package has already failed,
+    so this can only turn an unresolved import into a real file -- it never
+    competes with a specifier that already resolves.
+    """
+    if ctx.repo_path is None:
+        return None
+    sub_dir = f"{dir_posix}/{sub}"
+    sub_pkg_data = _read_sub_package_manifest(ctx.repo_path, sub_dir)
+    if sub_pkg_data is None:
+        return None
+
+    exports_map = _build_exports_map(sub_pkg_data)
+    targets = _match_export_key("", exports_map) if exports_map else None
+    for target in targets or ():
+        if target.endswith(_DECLARATION_SUFFIXES):
+            continue
+        cand = _probe_path(f"{sub_dir}/{target.lstrip('./')}", ctx.path_set)
+        if cand is not None:
+            return cand
+
+    cand = _probe_path(f"{sub_dir}/index", ctx.path_set)
+    if cand is not None:
+        return cand
+    main = (
+        sub_pkg_data.get("module")
+        if isinstance(sub_pkg_data.get("module"), str)
+        else (sub_pkg_data.get("main") if isinstance(sub_pkg_data.get("main"), str) else None)
+    )
+    if isinstance(main, str):
+        cand = _probe_path(f"{sub_dir}/{main.lstrip('./')}", ctx.path_set)
+        if cand is not None:
+            return cand
+    for source_root in ("src", "lib"):
+        cand = _probe_path(f"{sub_dir}/{source_root}/index", ctx.path_set)
+        if cand is not None:
+            return cand
+    return None
+
+
 def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
@@ -543,6 +636,16 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
                 return resolved
         return None
 
+    def built_export_source() -> str | None:
+        # Last, so it only fills a specifier nothing else bound: every
+        # candidate names build output absent from the checkout.
+        checked_in = get_checked_in_builds(ctx)
+        for target in targets or ():
+            resolved = _built_source(dir_posix, target, ctx.path_set, checked_in)
+            if resolved is not None:
+                return resolved
+        return None
+
     # 1) ``exports`` field — the package's authoritative subpath map.
     if targets:
         resolved = probe_target(targets[0])
@@ -568,7 +671,7 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
             cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
                 return cand
-        return None
+        return built_export_source()
 
     # 3) Subpath fallback — packages without ``exports`` (plain monorepo
     #    layouts): try ``<pkg>/<sub>`` directly, then under common source
@@ -581,7 +684,13 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return spare_export_target()
+    cand = spare_export_target() or built_export_source()
+    if cand is not None:
+        return cand
+
+    # 4) Nested sub-package fallback — ``sub`` may itself be a package with
+    # its own ``package.json``, not a path under the outer package's layout.
+    return _resolve_nested_subpackage(dir_posix, sub, ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +717,9 @@ class TsWorkspaceIndex:
 
     packages: dict[str, dict[str, Any]] = field(default_factory=dict)
     exports_entry_paths: set[str] = field(default_factory=set)
+    # Files any ``package.json`` in the repo (workspace member or not) names as
+    # where the package starts: ``bin``, ``main``/``module``, ``exports["."]``.
+    manifest_entry_paths: set[str] = field(default_factory=set)
 
 
 def _expand_exports_wildcard(
@@ -647,6 +759,182 @@ def _expand_exports_wildcard(
     return matches
 
 
+# Build output a package.json may point at, and the source extensions tsc
+# compiles to it. Only the unambiguous ``X.js``/``X.d.ts`` ← ``X.ts`` shape is
+# mapped. Shortcut: the build dir is the conventional one, not the tsconfig
+# ``outDir``/``rootDir``; reading those means a JSONC ``extends`` walk.
+_BUILD_OUTPUT_JS = re.compile(r"^(?:dist|build|lib|out)/(.+?)(?:\.[mc]?js|\.d\.[mc]?ts)$")
+_BUILD_SOURCE_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".mts", ".js")
+
+
+def _manifest_targets(pkg_data: dict) -> tuple[list[str], tuple[str, ...]]:
+    """``(start targets, exports["."] targets)`` one ``package.json`` names.
+
+    Start targets are every ``bin`` target (string or map), ``main`` and
+    ``module``; the export targets come best first, declaration files skipped.
+    """
+    bin_ = pkg_data.get("bin")
+    bins = bin_.values() if isinstance(bin_, dict) else (bin_,)
+    starts = [
+        t for t in (*bins, pkg_data.get("main"), pkg_data.get("module")) if isinstance(t, str)
+    ]
+    exports = pkg_data.get("exports")
+    # A conditions-only object (``{"import": ..., "require": ...}``) is ``"."``.
+    if isinstance(exports, dict) and any(str(k).startswith(".") for k in exports):
+        exports = exports.get(".")
+    ordered = _ordered_export_targets(exports) if exports is not None else ()
+    return starts, tuple(t for t in ordered if not t.endswith(_DECLARATION_SUFFIXES))
+
+
+def _built_output(pkg_dir: str, target: str) -> tuple[str, re.Match[str]] | None:
+    """``(repo-relative path, match)`` when *target* names build output inside the repo."""
+    rel = target.removeprefix("./")
+    built = _BUILD_OUTPUT_JS.match(rel)
+    if built is None:
+        return None
+    path = _normalize_repo_rel(f"{pkg_dir}/{rel}")
+    # ``..`` in a manifest must not send the on-disk check outside the repo.
+    if path == ".." or path.startswith("../"):
+        return None
+    return path, built
+
+
+def _named_build_outputs(manifests: list[tuple[str, dict]]) -> set[str]:
+    """Every in-repo build-output path the manifests' targets name, subpath exports included."""
+    named: set[str] = set()
+    for pkg_dir, data in manifests:
+        starts, exports = _manifest_targets(data)
+        subpaths = (t for targets in _build_exports_map(data).values() for t in targets)
+        for target in (*starts, *exports, *subpaths):
+            built = _built_output(pkg_dir, target)
+            if built is not None:
+                named.add(built[0])
+    return named
+
+
+def checked_in_builds(
+    repo_path: Path | None, manifests: list[tuple[str, dict]], path_set: set[str]
+) -> frozenset[str]:
+    """Build outputs the manifests name that exist on disk and are not gitignored.
+
+    A committed build is part of the checkout; a gitignored local build is
+    not. One ``git check-ignore --stdin`` call answers for the whole repo, so
+    nested ``.gitignore`` files count; outside a git work tree (or without
+    git) every existing file counts as checked in.
+    """
+    if repo_path is None:
+        return frozenset()
+    return _git_checked_in(repo_path, _named_build_outputs(manifests) - path_set)
+
+
+def _git_checked_in(repo_path: Path, paths: set[str]) -> frozenset[str]:
+    """The *paths* that exist on disk and are not gitignored, in one git call."""
+    on_disk = {path for path in paths if (repo_path / path).is_file()}
+    if not on_disk:
+        return frozenset()
+    try:
+        verdict = subprocess.run(
+            ["git", "-C", str(repo_path), "check-ignore", "-z", "--stdin"],
+            # Bytes, NUL-separated: a text-mode pipe on Windows writes CRLF,
+            # and git would read each path with a trailing CR.
+            input="\0".join(sorted(on_disk)).encode("utf-8") + b"\0",
+            capture_output=True,
+            timeout=30,
+        )
+        # Exit 1 = none ignored; 128 = not a work tree (nothing is ignored).
+        out = verdict.stdout.decode("utf-8", errors="replace") if verdict.returncode == 0 else ""
+        ignored = set(filter(None, out.split("\0")))
+    except (OSError, subprocess.SubprocessError):
+        ignored = set()
+    return frozenset(on_disk - ignored)
+
+
+@dataclass
+class _CheckedInBuilds:
+    """``path in self``: is this build output part of the checkout?
+
+    Seeded with the manifest-named outputs the batched check found checked in;
+    any other path (a wildcard export's concrete output) is asked on first use,
+    which costs a git call only when that file exists on disk.
+    """
+
+    repo_path: Path | None
+    verdict: dict[str, bool]
+
+    def __contains__(self, path: object) -> bool:
+        if not isinstance(path, str):
+            return False
+        if path not in self.verdict:
+            self.verdict[path] = self.repo_path is not None and bool(
+                _git_checked_in(self.repo_path, {path})
+            )
+        return self.verdict[path]
+
+
+def get_checked_in_builds(ctx: ResolverContext) -> _CheckedInBuilds:
+    """Memoized per resolver context, shared by the entry index and the resolver."""
+    cached = getattr(ctx, "_ts_checked_in_builds", None)
+    if cached is not None:
+        return cached
+    checked = checked_in_builds(ctx.repo_path, _parsed_package_jsons(ctx), ctx.path_set)
+    builds = _CheckedInBuilds(ctx.repo_path, dict.fromkeys(checked, True))
+    ctx._ts_checked_in_builds = builds  # type: ignore[attr-defined]
+    return builds
+
+
+def _built_source(
+    pkg_dir: str, target: str, path_set: set[str], checked_in: Container[str]
+) -> str | None:
+    """The source a build-output *target* was compiled from, when that output is not checked in.
+
+    ``dist|build|lib|out/X.(m|c)js`` (or ``X.d.(m|c)ts``) maps to
+    ``src/X.(ts|tsx|mts|js)``. A committed build is the file itself, and
+    remapping it would name a file the package does not run. Exact hits only,
+    so an ambiguous source never stands in for the build.
+    """
+    built = _built_output(pkg_dir, target)
+    if built is None:
+        return None
+    base = _normalize_repo_rel(f"{pkg_dir}/src/{built[1].group(1)}")
+    hit = next((base + ext for ext in _BUILD_SOURCE_EXTENSIONS if base + ext in path_set), None)
+    return hit if hit is not None and built[0] not in checked_in else None
+
+
+def probe_manifest_target(
+    pkg_dir: str, target: str, path_set: set[str], checked_in: Container[str]
+) -> str | None:
+    """The indexed file a ``package.json`` target names, reading built output as its source.
+
+    *checked_in* comes from :func:`checked_in_builds` / :func:`get_checked_in_builds`.
+    """
+    if target.endswith(_DECLARATION_SUFFIXES):
+        return None  # a declaration never starts a package, committed or not
+    hit = _probe_path(f"{pkg_dir}/{target.removeprefix('./')}", path_set)
+    return hit if hit is not None else _built_source(pkg_dir, target, path_set, checked_in)
+
+
+def manifest_entry_paths(
+    pkg_dir: str, pkg_data: dict, path_set: set[str], checked_in: Container[str] = frozenset()
+) -> set[str]:
+    """Files one ``package.json`` declares as where it starts.
+
+    Every ``bin`` target (string or map), ``main`` and ``module``, and the
+    first ``exports["."]`` target that resolves. Declaration files are skipped.
+    """
+    starts, exports = _manifest_targets(pkg_data)
+    found = {
+        hit
+        for t in starts
+        if (hit := probe_manifest_target(pkg_dir, t, path_set, checked_in)) is not None
+    }
+    for target in exports:
+        hit = probe_manifest_target(pkg_dir, target, path_set, checked_in)
+        if hit is not None:
+            found.add(hit)
+            break
+    return found
+
+
 def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Build the workspace index for *ctx*.
 
@@ -676,7 +964,13 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
             resolved = _probe_path(f"{dir_posix}/{main.lstrip('./')}", path_set)
             if resolved is not None:
                 entries.add(resolved)
-    return TsWorkspaceIndex(packages=packages, exports_entry_paths=entries)
+    checked_in = get_checked_in_builds(ctx)
+    declared: set[str] = set()
+    for pkg_dir, data in _parsed_package_jsons(ctx):
+        declared |= manifest_entry_paths(pkg_dir, data, path_set, checked_in)
+    return TsWorkspaceIndex(
+        packages=packages, exports_entry_paths=entries, manifest_entry_paths=declared
+    )
 
 
 def get_or_build_ts_index(ctx: ResolverContext) -> TsWorkspaceIndex:
@@ -902,10 +1196,6 @@ def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
     if ctx.repo_path is None:
         return set()
 
-    # NOTE: not .resolve()d — the shared scan walks ctx.repo_path as given,
-    # so relative_to() below must use the same base or it silently drops
-    # every manifest.
-    repo_root = ctx.repo_path
     path_set = ctx.path_set
     targets: set[str] = set()
 
@@ -921,19 +1211,9 @@ def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
             dirs_in_repo.setdefault(p[:slash], []).append(p)
             idx = slash + 1
 
-    for pkg_file in _get_repo_scan(ctx).package_jsons:
-        # node_modules manifests are already pruned by the shared scan.
-        try:
-            data = json.loads(pkg_file.read_text(encoding="utf-8", errors="ignore"))
-        except Exception:
-            continue
+    for pkg_rel, data in _parsed_package_jsons(ctx):
         scripts = data.get("scripts") or {}
         if not isinstance(scripts, dict):
-            continue
-        pkg_dir = pkg_file.parent
-        try:
-            pkg_rel = pkg_dir.relative_to(repo_root).as_posix()
-        except ValueError:
             continue
         pkg_prefix = "" if pkg_rel in ("", ".") else f"{pkg_rel}/"
 
@@ -946,7 +1226,7 @@ def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
         # maintained script bag" signal — mark every source file under
         # it as an entry. Honour ``"private": true`` *or* the directory
         # name match; the conventional names are the load-bearing signal.
-        pkg_dir_name = pkg_dir.name.lower()
+        pkg_dir_name = posixpath.basename(pkg_rel).lower()
         if pkg_dir_name in _EXPERIMENT_DIR_NAMES:
             dir_files = dirs_in_repo.get(pkg_rel) if pkg_rel else None
             if dir_files:

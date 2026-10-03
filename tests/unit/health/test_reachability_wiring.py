@@ -78,18 +78,24 @@ def test_without_that_edge_the_same_tree_still_fires(tmp_path):
     assert [f.file_path for f in fired if f.file_path == "src/parser.py"] == ["src/parser.py"]
 
 
-@pytest.mark.parametrize("edge_type", ["co_changes", "defines", "imports", "references"])
+@pytest.mark.parametrize("edge_type", ["co_changes", "defines", "references"])
 def test_a_non_execution_edge_does_not_clear_it(tmp_path, edge_type):
-    """Changing together, containment, importing and naming are not executing.
-
-    ``imports`` is the one that changed: it clears the finding no longer. On the
-    dogfooded slice unioning the import graph into this walk bought 0.6 points
-    of recall for 16.8 of precision, and each false clear hides a real gap.
-    """
+    """Changing together, containment and naming are not executing."""
     parsed = _tree(tmp_path)
     graph = _graph(extra=("tests/test_round_trips.py", "src/parser.py", edge_type))
     fired = [f.file_path for f in _findings(parsed, graph) if f.file_path == "src/parser.py"]
     assert fired == ["src/parser.py"]
+
+
+def test_a_test_importing_the_file_pairs_it_and_clears_it(tmp_path):
+    """Importing is not executing, so the reach walk still ignores it (on the
+    dogfooded slice unioning imports into that walk bought 0.6 points of recall
+    for 16.8 of precision). It clears the finding through the other signal: a
+    test that imports the file directly is that file's paired test, which names
+    alone got wrong both ways."""
+    parsed = _tree(tmp_path)
+    graph = _graph(extra=("tests/test_round_trips.py", "src/parser.py", "imports"))
+    assert [f for f in _findings(parsed, graph) if f.file_path == "src/parser.py"] == []
 
 
 def test_no_graph_is_no_signal_not_a_crash(tmp_path):

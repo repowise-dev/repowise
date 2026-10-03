@@ -19,14 +19,21 @@ from repowise.cli.providers.embedders import (
     pin_names_an_embedder,
     resolve_embedder,
     resolve_embedder_for_repo,
+    template_run_embedder,
 )
-from repowise.cli.providers.vector_store import build_vector_store, existing_vector_dim
+from repowise.cli.providers.vector_store import (
+    build_vector_store,
+    embed_failure_message,
+    existing_vector_dim,
+    semantic_search_status,
+)
 
 __all__ = [
     "build_cost_tracker",
     "build_embedder",
     "build_vector_store",
     "cost_tracking_disabled",
+    "embed_failure_message",
     "embedder_was_requested",
     "existing_vector_dim",
     "flush_cost_tracker",
@@ -34,4 +41,6 @@ __all__ = [
     "pin_names_an_embedder",
     "resolve_embedder",
     "resolve_embedder_for_repo",
+    "semantic_search_status",
+    "template_run_embedder",
 ]

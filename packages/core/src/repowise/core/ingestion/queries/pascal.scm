@@ -229,7 +229,7 @@
 ; pascal.scm had no `@param.type` captures (unlike C#/Go/Java/Kotlin/TS).
 ; ``parser.py:_extract_type_refs`` collects these into TypeReference
 ; records generically; ``_pascal_head_type_identifier`` in
-; parser_helpers.py unwraps the `typeref` shape (plain / generic
+; lang_helpers/type_heads.py unwraps the `typeref` shape (plain / generic
 ; `typerefTpl` / qualified `typerefDot`) down to the head identifier.
 ; Verified against MTN2: TConsoleBuffer / TDialogHost read as having zero
 ; importers despite being referenced in 10-18 files, exclusively through

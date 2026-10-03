@@ -156,9 +156,8 @@ describe("GraphCommunityPanel state", () => {
       />,
     );
     expect(screen.getByText("5.2")).toBeTruthy();
-    // Five-band vocabulary, shared with the Code Health lede and the file
-    // health drawer, so one score never gets two sets of words.
-    expect(screen.getByText("Fair")).toBeTruthy();
+    // The shared band vocabulary, so one score never gets two sets of words.
+    expect(screen.getByText("Needs work")).toBeTruthy();
     // The mean is over the scored members, and says so rather than implying it
     // measured all three.
     expect(screen.getByText(/2 of 3 files that are\s+scored/)).toBeTruthy();
@@ -311,5 +310,38 @@ describe("GraphCommunityPanel truthfulness", () => {
     );
     expect(screen.getByText("Cohesion")).toBeTruthy();
     expect(screen.getByText("82.0%")).toBeTruthy();
+  });
+});
+
+describe("GraphCommunityPanel population and shape", () => {
+  it("reads conductance as the share that stays inside, and says what is hidden", () => {
+    render(
+      <GraphCommunityPanel
+        communityId={7}
+        community={{ ...sampleCommunity, conductance: 0.28, hidden_member_count: 393 }}
+        isLoading={false}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Stays inside")).toBeTruthy();
+    expect(screen.getByText("72%")).toBeTruthy();
+    expect(screen.queryByText("Cohesion")).toBeNull();
+    expect(
+      screen.getByText("3 files, grouped automatically · 393 hidden by the file filter"),
+    ).toBeTruthy();
+  });
+
+  it("falls back to cohesion on an index without conductance", () => {
+    render(
+      <GraphCommunityPanel
+        communityId={7}
+        community={sampleCommunity}
+        isLoading={false}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Cohesion")).toBeTruthy();
+    expect(screen.getByText("82.0%")).toBeTruthy();
+    expect(screen.queryByText("Stays inside")).toBeNull();
   });
 });

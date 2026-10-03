@@ -73,7 +73,13 @@ async def _insert_page(session: AsyncSession, repo_id: str, page_id: str) -> Non
 
 
 async def _insert_decision(session: AsyncSession, repo_id: str, title: str) -> str:
-    rec = DecisionRecord(repository_id=repo_id, title=title, decision="because")
+    # The body has to vary with the title. Identity v2 keys a record on its
+    # body, file set and quote and deliberately *not* on the generated title,
+    # so two fixtures sharing one ``decision`` string are one record and the
+    # second insert trips ``UNIQUE constraint failed: decision_records.id``.
+    rec = DecisionRecord(
+        repository_id=repo_id, title=title, decision=f"because we {title.lower()}"
+    )
     session.add(rec)
     await session.commit()
     return rec.id

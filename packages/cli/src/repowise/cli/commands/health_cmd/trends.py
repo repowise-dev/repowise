@@ -9,6 +9,14 @@ from rich.table import Table
 
 from repowise.cli.helpers import console, run_async
 
+# Rich style, mark and label per alert kind. ``history_drag`` is a fall the
+# code shape did not cause, so it reads as information rather than a warning.
+_ALERT_STYLE = {
+    "declining": ("red", "⚠", "declining"),
+    "predicted_decline": ("yellow", "⚠", "predicted decline"),
+    "history_drag": ("dim", "ℹ", "change history"),
+}
+
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:
     """Print the last 10 health snapshots straight from SQLite history.
@@ -39,7 +47,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
             if repo is None:
                 return [], None
             snaps = await list_health_snapshots(session, repo.id)
-            return recent_kpis(snaps, limit=10), diff_snapshots(snaps)
+            return recent_kpis(snaps, limit=10, doc_drift=True), diff_snapshots(snaps)
 
     rows, summary = run_async(_fetch())
     if not rows:
@@ -62,6 +70,9 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
                             "baseline": a.baseline,
                             "delta": a.delta,
                             "message": a.message,
+                            "driver": a.driver,
+                            "structure_delta": a.structure_delta,
+                            "history_delta": a.history_delta,
                         }
                         for a in (summary.alerts if summary else [])
                     ],
@@ -77,6 +88,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     table.add_column("Average", justify="right")
     table.add_column("Worst", justify="right")
     table.add_column("Worst file", style="dim")
+    table.add_column("Doc drift", justify="right")
     for r in rows:
         table.add_row(
             (r["taken_at"] or "—")[:19],
@@ -84,11 +96,12 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
             f"{r['average_health']:.2f}",
             f"{r['worst_performer_score']:.2f}" if r["worst_performer_score"] is not None else "—",
             r["worst_performer_path"] or "—",
+            str(r["doc_drift_count"]) if r["doc_drift_count"] is not None else "—",
         )
     console.print(table)
 
     if summary and summary.alerts:
         console.print()
         for a in summary.alerts:
-            color = "red" if a.kind == "declining" else "yellow"
-            console.print(f"[{color}]⚠ {a.kind}[/{color}]: {a.message}")
+            style, mark, label = _ALERT_STYLE.get(a.kind, ("yellow", "⚠", a.kind))
+            console.print(f"[{style}]{mark} {label}[/{style}]: {a.message}")

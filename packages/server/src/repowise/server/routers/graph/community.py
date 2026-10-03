@@ -3,6 +3,9 @@
 The architecture and slice endpoints are thin wrappers over
 :mod:`repowise.server.services.graph_views` so non-HTTP consumers can build
 the same payloads without FastAPI.
+
+Every endpoint takes the same three population flags (all off), so the map,
+the list, the panel and the drill-down count the same files.
 """
 
 from __future__ import annotations
@@ -11,9 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GraphNode
 from repowise.server.deps import get_db_session
-from repowise.server.mcp_server._graph_utils import community_cohesion, community_label
+from repowise.server.mcp_server._graph_utils import (
+    community_cohesion,
+    community_conductance,
+    community_label,
+)
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     ArchitectureGraphResponse,
@@ -24,25 +30,37 @@ from repowise.server.schemas import (
     NeighboringCommunity,
 )
 from repowise.server.services.graph_views import (
+    MEMBER_READ_CAP,
     SLICE_MEMBER_CAP,
+    Population,
+    bucket_by_community,
     build_architecture_graph,
     build_community_slice,
+    neighbour_edge_counts,
+    split_population,
 )
 from repowise.server.services.node_signals import EMPTY_SIGNALS, collect_node_signals
 
-# How many members the detail endpoint reads to compute the community's shape
-# and state. It used to be 200, which silently disagreed with the community
-# *list* — a 587-file community reported 587 there and 200 here, and every
-# rollup below covered a third of it.
-#
-# Ceiling: a community larger than this still reports this number, and its
-# counts still cover only the top slice by PageRank. The largest community in
-# any repo indexed so far is under 600, so nothing reaches it. If one does, the
-# upgrade is a `SELECT COUNT(*)` for the true `member_count` plus an explicit
-# "counted over the top N" field, not a bigger constant.
-_MEMBER_READ_CAP = 2000
-
 router = APIRouter()
+
+
+def population_params(
+    include_tests: bool = Query(
+        False, description="Count test files as members. Off: production only."
+    ),
+    include_examples: bool = Query(
+        False, description="Count example, demo and benchmark files as members."
+    ),
+    include_docs: bool = Query(
+        False, description="Count documentation and configuration files as members."
+    ),
+) -> Population:
+    """The population flags, shared by every community endpoint."""
+    return Population(
+        include_tests=include_tests,
+        include_examples=include_examples,
+        include_docs=include_docs,
+    )
 
 
 @router.get("/{repo_id}/architecture", response_model=ArchitectureGraphResponse)
@@ -51,11 +69,14 @@ async def architecture_graph(
     min_members: int = Query(
         2, ge=1, description="Drop communities smaller than this from the view."
     ),
+    population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> ArchitectureGraphResponse:
     """High-level architecture view: one node per detected community."""
-    return await build_architecture_graph(session, repo_id, min_members=min_members)
+    return await build_architecture_graph(
+        session, repo_id, min_members=min_members, population=population
+    )
 
 
 @router.get(
@@ -66,12 +87,13 @@ async def community_slice(
     repo_id: str,
     community_id: int,
     member_limit: int = Query(SLICE_MEMBER_CAP, ge=1, le=600),
+    population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CommunitySliceResponse:
-    """Return a single community's sub-graph for the constellation blossom."""
+    """Return a single community's sub-graph for the drill-down."""
     return await build_community_slice(
-        session, repo_id, community_id, member_limit=member_limit
+        session, repo_id, community_id, member_limit=member_limit, population=population
     )
 
 
@@ -79,20 +101,17 @@ async def community_slice(
 async def list_communities(
     repo_id: str,
     limit: int = Query(20, ge=1, le=100),
+    population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> list[CommunitySummaryItem]:
-    """Return top communities by member count with labels and cohesion scores."""
+    """Return top communities by visible member count with labels and shape scores."""
     all_nodes = await crud.get_all_file_metrics(session, repo_id)
-
-    # Group by community_id
-    buckets: dict[int, list[GraphNode]] = {}
-    for n in all_nodes:
-        cid = n.community_id if n.community_id is not None else 0
-        buckets.setdefault(cid, []).append(n)
+    visible, _counts = split_population(all_nodes, population)
+    buckets, hidden = bucket_by_community(all_nodes, visible)
 
     items: list[CommunitySummaryItem] = []
-    for cid, members in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+    for cid, members in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         # Pick top-pagerank member for label/cohesion extraction
         top = max(members, key=lambda m: m.pagerank or 0.0)
         items.append(
@@ -100,7 +119,9 @@ async def list_communities(
                 community_id=cid,
                 label=community_label(top),
                 cohesion=community_cohesion(top),
+                conductance=community_conductance(top),
                 member_count=len(members),
+                hidden_member_count=hidden[cid],
                 top_file=top.node_id,
             )
         )
@@ -119,25 +140,32 @@ async def get_community_detail(
     community_id: int,
     include_members: bool = Query(True),
     member_limit: int = Query(30, ge=1, le=200),
+    population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CommunityDetailResponse:
     """Return detailed info for a single community."""
     all_members = await crud.get_community_members(
-        session, repo_id, community_id, node_type="file", limit=_MEMBER_READ_CAP
+        session, repo_id, community_id, node_type="file", limit=MEMBER_READ_CAP
     )
     if not all_members:
         raise HTTPException(status_code=404, detail="Community not found or empty")
 
+    # Label and shape are stored on every member; the counts below are over the
+    # visible members only. An all-hidden group reports zero, not 404.
     top = max(all_members, key=lambda m: m.pagerank or 0.0)
     label = community_label(top)
     cohesion = community_cohesion(top)
+    conductance = community_conductance(top)
+
+    members, counts = split_population(all_members, population)
+    hidden_member_count = sum(counts.values()) - len(members)
 
     # State of the area, in two path-scoped reads over the same member list the
     # shape figures above are computed from. `collect_node_signals` is the same
     # join `build_architecture_graph` uses for the hub discs, so a community's
     # hot/dead counts here and its disc on the canvas can never disagree.
-    member_paths = [m.node_id for m in all_members]
+    member_paths = [m.node_id for m in members]
     signals = await collect_node_signals(session, repo_id, member_paths)
     hot_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_hotspot)
     dead_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_dead)
@@ -164,8 +192,10 @@ async def get_community_detail(
     # `rollup_health`: effective score prefers the split defect_score and falls
     # back to the overall score, weight is max(nloc, 1), and a community where
     # nothing is scored gets None rather than a zero it never measured.
-    health_metrics = await crud.get_health_metrics(
-        session, repo_id, file_paths=member_paths
+    health_metrics = (
+        await crud.get_health_metrics(session, repo_id, file_paths=member_paths)
+        if member_paths
+        else []
     )
     weighted_sum = 0.0
     weight = 0.0
@@ -182,7 +212,7 @@ async def get_community_detail(
 
     members_out: list[CommunityMember] = []
     if include_members:
-        for m in all_members[:member_limit]:
+        for m in members[:member_limit]:
             sig = signals.get(m.node_id, EMPTY_SIGNALS)
             members_out.append(
                 CommunityMember(
@@ -194,15 +224,15 @@ async def get_community_detail(
                 )
             )
 
-    # Neighboring communities. `get_cross_community_edges` orders by edge count
-    # descending, so the top slice is taken *before* the label loop: it used to
-    # resolve a label for every neighbour in the repo and then keep ten.
-    cross_edges = (await crud.get_cross_community_edges(session, repo_id, community_id))[
-        :10
-    ]
-    neighbor_cids = [ce["target_community_id"] for ce in cross_edges]
+    # Same population on both ends as the map's cross edges; sliced before the
+    # label loop.
+    cross_edges = (
+        await neighbour_edge_counts(
+            session, repo_id, community_id, member_paths, population=population
+        )
+    )[:10]
     neighbor_labels: dict[int, str] = {}
-    for ncid in neighbor_cids:
+    for ncid, _count in cross_edges:
         nbr_members = await crud.get_community_members(
             session, repo_id, ncid, node_type="file", limit=1
         )
@@ -213,20 +243,22 @@ async def get_community_detail(
 
     neighbors = [
         NeighboringCommunity(
-            community_id=ce["target_community_id"],
-            label=neighbor_labels.get(ce["target_community_id"], ""),
-            cross_edge_count=ce["edge_count"],
+            community_id=ncid,
+            label=neighbor_labels.get(ncid, ""),
+            cross_edge_count=count,
         )
-        for ce in cross_edges
+        for ncid, count in cross_edges
     ]
 
     return CommunityDetailResponse(
         community_id=community_id,
         label=label,
         cohesion=cohesion,
-        member_count=len(all_members),
+        conductance=conductance,
+        member_count=len(members),
+        hidden_member_count=hidden_member_count,
         members=members_out,
-        truncated=len(all_members) > member_limit,
+        truncated=len(members) > member_limit,
         neighboring_communities=neighbors,
         health_score=health_score,
         scored_member_count=scored_member_count,

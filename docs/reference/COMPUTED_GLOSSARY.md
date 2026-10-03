@@ -13,7 +13,7 @@ workspace overlays, MCP responses, and CLI output.
 | --- | --- | --- |
 | Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser.py`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
 | Graph construction | `packages/core/src/repowise/core/ingestion/graph.py`, `call_resolver.py`, `heritage_resolver.py`, `framework_edges.py`, `dynamic_hints/` | File and symbol nodes, import/call/heritage/framework/dynamic/co-change edges, centrality, SCCs, communities, execution flows |
-| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer.py` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
+| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer/` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
 | Analysis | `packages/core/src/repowise/core/analysis/` | Dead-code findings, decision records, decision staleness, security findings, PR blast radius, execution flows, communities |
 | Generation | `packages/core/src/repowise/core/generation/` | Wiki page contexts, page types, source hashes, summaries, freshness, confidence decay, RAG context, job checkpoints, reports, costs |
 | Workspace intelligence | `packages/core/src/repowise/core/workspace/` | Workspace repo scan, cross-repo co-changes, package dependencies, API contracts, contract links, workspace CLAUDE.md data |
@@ -50,7 +50,7 @@ workspace overlays, MCP responses, and CLI output.
 | Signature | Compact declaration text. | `build_signature()` via parser extractors | `def create_app(config: Config) -> FastAPI` |
 | Symbol docstring | Human text attached to a symbol, when extractable. | `extract_symbol_docstring()` | `"Create and configure the API app."` |
 | Module docstring | File-level docstring. | `extract_module_docstring()` | `"Command-line entry points."` |
-| Visibility | Public/private/protected/internal classification. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
+| Visibility | Public/private/protected/internal classification. A Python name listed in a literal module-level `__all__` reads public even when underscore-prefixed; a name the list omits keeps its name-based visibility. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
 | Async flag | Whether a symbol is async. | `_is_async_node()` | `async def fetch() -> is_async=true` |
 | Complexity estimate | Symbol complexity field, persisted to symbols. | Parser/model pipeline; defaults to `1` unless language extraction enriches it | `complexity_estimate: 3` |
 | Decorators | Decorator/modifier strings captured with a symbol. | `ASTParser._extract_symbols()` | `["@router.get('/users')"]` |
@@ -131,7 +131,7 @@ workspace overlays, MCP responses, and CLI output.
 | Lines added/deleted 90d | Recent churn by numstat. | `_index_file()` | `{lines_added_90d: 340, lines_deleted_90d: 87}` |
 | Average commit size | `(lines_added_90d + lines_deleted_90d) / commit_count_90d`. | `_index_file()` | `35.6` |
 | Merge commit count 90d | Number of merge commits touching the file recently. | `_index_file()` | `merge_commit_count_90d: 2` |
-| Original path | Earliest path found through rename-follow history. | `_detect_original_path()` | `legacy/auth/session.py` |
+| Original path | Earliest path found through rename-follow history. | `detect_original_path()` | `legacy/auth/session.py` |
 | Temporal hotspot score | Exponentially decayed churn score with 180-day half-life. | `_index_file()` | `2.43` |
 | Churn percentile | Rank percentile among indexed files by temporal hotspot score, with 90-day commits as tiebreak. | `_compute_percentiles()` | `0.88` |
 | Hotspot flag | Top churn file: percentile >= 0.75 and has recent commits. | `_compute_percentiles()` | `is_hotspot: true` |
@@ -171,11 +171,8 @@ workspace overlays, MCP responses, and CLI output.
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
 | SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
-| Architecture diagram context | Top PageRank nodes, selected edges, communities, SCC groups. | `assemble_architecture_diagram()` | Mermaid graph inputs for 50 nodes and 200 edges |
 | API contract context | Raw API contract plus endpoint/schema hints. | `assemble_api_contract()` | `endpoints: ["GET /users"]`, `schemas: ["User"]` |
 | Infra page context | Raw infra file plus target names. | `assemble_infra_page()` | `Dockerfile`, `Makefile`, `terraform` files |
-| Diff summary context | Changed files, symbol diffs, affected pages, trigger commit/diff. | `assemble_diff_summary()` | `{added_files: ["src/new.py"], affected_page_ids: [...]}` |
-| Cross-package context | Monorepo boundary summary between packages. | `assemble_cross_package()` | `{source_package: "cli", target_package: "core", coupling_strength: 5}` |
 | Dependency summaries | Summaries of already-generated dependency pages. | `assemble_file_page()` with `page_summaries` | `{ "src/db.py": "Database access layer..." }` |
 | RAG context | Snippets from vector search for related generated pages. | `_generate_file_page_from_ctx()` | `["[file_page:src/schema.py]\nDefines API schema..."]` |
 | Token estimate | `len(text) // 4` heuristic. | `ContextAssembler._estimate_tokens()` | `3200` |
@@ -206,8 +203,7 @@ workspace overlays, MCP responses, and CLI output.
 | Decision record | ADR-like row from code comments, git, docs, or CLI/manual entry. | `DecisionExtractor`, CRUD, CLI | `{title: "Use Redis for sessions", status: "active"}` |
 | Inline marker decision | Decision extracted from comments such as `WHY:`, `DECISION:`, `TRADEOFF:`, `ADR:`. | `scan_inline_markers()` | `# DECISION: cache auth sessions in Redis` |
 | Git archaeology decision | LLM-structured decision inferred from significant commit messages with decision keywords. | `mine_git_archaeology()` | `migrate from REST client to generated OpenAPI client` |
-| README-mined decision | Decision extracted from docs such as README, CLAUDE, ARCHITECTURE, DESIGN. | `mine_readme_docs()` | `"We use SQLite by default because setup should be local-first."` |
-| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `readme_mining`, `cli` |
+| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `adr`, `cli` |
 | Decision confidence | Source-specific extraction confidence. | `DecisionExtractor` | `0.95` inline LLM, `0.70` git signal, `0.60` README mining, `1.0` manual |
 | Affected files | Files linked to a decision from graph neighbors, commit files, or manual input. | `DecisionExtractor` | `["src/auth.py", "src/session.py"]` |
 | Affected modules | Directories the affected files live in, deduped and capped; for records that name no file, the deepest directories mentioned in the decision text. | `resolve_module_nodes()` and `_infer_modules_from_text()` | `["packages/core/src/repowise/core/pipeline", "tests/unit/pipeline"]` |
@@ -303,7 +299,7 @@ workspace overlays, MCP responses, and CLI output.
 | Session cost | Cumulative USD for one tracker instance. | `CostTracker.session_cost` | `2.37` |
 | Session tokens | Cumulative input plus output tokens. | `CostTracker.session_tokens` | `845000` |
 | Cost totals | DB aggregate grouped by operation, model, or day. | `CostTracker.totals()` | `{group: "file_page", calls: 42, cost_usd: 1.12}` |
-| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator.py` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
+| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator/` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
 
 ## Workspace Intelligence
 

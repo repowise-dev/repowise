@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .features import (
     extract_commit_features,
     extract_range_features,
     extract_worktree_features,
+    split_revspec,
     working_tree_is_dirty,
 )
 from .fix_history import (
@@ -116,6 +118,26 @@ def range_anchor(repo_path: str, base: str, head: str) -> str:
     return merge_base or base
 
 
+def history_ref(repo_path: str, revspec: str | None, *, working_tree: bool = False) -> str:
+    """The ref a change's fix history is read at: strictly before the change.
+
+    Uncommitted work reads at ``HEAD``; a range at its merge-base, not at
+    ``base``'s tip (with three dots the diff starts there, so base's later
+    commits are not this change's ground); a commit at its parent, so it is
+    never credited with fixes that only landed because of it. A root commit's
+    parent does not resolve, which yields an empty record: the honest answer
+    for the first commit in a repository.
+    """
+    if working_tree:
+        return "HEAD"
+    target = revspec or "HEAD"
+    parts = split_revspec(target)
+    if parts is not None:
+        base, _, head = parts
+        return range_anchor(repo_path, base, head)
+    return f"{target}^"
+
+
 def normalize_extensions(extensions: tuple[str, ...]) -> tuple[str, ...]:
     """Add a leading dot to requested suffixes, matching the CLI contract."""
     return tuple(ext if ext.startswith(".") else f".{ext}" for ext in extensions)
@@ -154,46 +176,35 @@ def score_live_change(
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
     working_tree = uncommitted is not None and uncommitted.nf > 0
-    # Ref whose history the fix record is read from. Strictly *before* the
-    # change being scored, so a commit is never credited with fixes that only
-    # landed because of it.
-    history_ref = "HEAD"
+    # Ref whose history the fix record is read from (see ``history_ref``).
+    history = history_ref(repo_path, target, working_tree=working_tree)
     if working_tree:
         features = uncommitted
         anchor, excluded_ref = "HEAD", ""
-    elif ".." in target:
-        base, _, head = target.partition("..")
-        # Strip leading dot(s) so three-dot syntax (main...HEAD) gives a valid anchor ref.
-        head = head.lstrip(".") or "HEAD"
+    elif (parts := split_revspec(target)) is not None:
+        base, sep, head = parts
         features = extract_range_features(
-            repo_path, base, head, extensions=extensions, exclude_patterns=effective_excludes
+            repo_path,
+            base,
+            head,
+            extensions=extensions,
+            exclude_patterns=effective_excludes,
+            sep=sep,
         )
-        # Fix history is read at the fork point, not at ``base``'s tip: with
-        # three-dot syntax the diff starts at the merge-base, so base's later
-        # commits are not part of this change's ground.
-        anchor = range_anchor(repo_path, base, head)
+        # The baseline shares the fix history's anchor: the range's merge-base.
+        anchor = history
         excluded_ref = ""
-        history_ref = anchor
     else:
         features = extract_commit_features(
             repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
         )
         anchor, excluded_ref = _commit_anchor(repo_path, target)
-        # A root commit has no parent; its own ref then yields an empty record,
-        # which is the honest answer for the first commit in a repository.
-        history_ref = f"{target}^"
 
-    risk = score_change(features)
     try:
-        pressure = fix_pressure(repo_path, history_ref)
-        fix_history_available = True
+        pressure: dict[str, float] | None = fix_pressure(repo_path, history)
     except FixHistoryUnavailableError:
-        pressure, fix_history_available = {}, False
-    density = change_fix_density(pressure, features.file_churn)
-    fix_bearing = hot_files(pressure, features.file_churn)
-    percentile: float | None = None
-    priority: str | None = None
-    baseline_sample_size = 0
+        pressure = None
+
     samples: list[BaselineSample] = []
     if baseline:
         samples = baseline_samples_cached(
@@ -203,29 +214,75 @@ def score_live_change(
             extensions,
             exclude_patterns=effective_excludes,
         )
-        scores = scores_excluding(samples, excluded_ref)
-        baseline_sample_size = len(scores)
-        if len(scores) >= _MIN_BASELINE:
-            normalizer = RiskNormalizer.from_scores(scores)
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
+
+    return assess_change(
+        features,
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, excluded_ref),
+        baseline_fix_densities=densities_excluding(samples, excluded_ref, pressure or {}),
+        working_tree=working_tree,
+        riskignore_excludes=from_riskignore,
+        request_excludes=exclude_patterns,
+    )
+
+
+def assess_change(
+    features: ChangeFeatures,
+    *,
+    fix_pressure: Mapping[str, float] | None = None,
+    baseline_scores: Sequence[float] = (),
+    baseline_fix_densities: Sequence[float] = (),
+    min_baseline: int = _MIN_BASELINE,
+    working_tree: bool = False,
+    riskignore_excludes: tuple[str, ...] = (),
+    request_excludes: tuple[str, ...] = (),
+) -> ChangeRiskResult:
+    """Score an already-extracted change. The whole risk composition, no IO.
+
+    This is the pure tail of :func:`score_live_change`: model scoring, the
+    fix-history load the change stands on, and the repo-relative ranking.
+    Everything upstream of it -- resolving a revspec, walking git for features,
+    walking git for fix pressure, sampling a baseline -- is IO, and stays with
+    the caller. A consumer holding file stats from an API rather than a
+    checkout reaches this directly and gets the same numbers, because they come
+    from the same composition rather than a second copy of it.
+
+    ``fix_pressure`` of ``None`` means the history walk could not run, which is
+    reported as ``fix_history_available=False``. An empty mapping is different:
+    the walk ran and found no fixes.
+
+    ``baseline_scores`` ranks this change against its cohort. Fewer than
+    *min_baseline* of them leaves ``percentile`` and ``priority`` as ``None`` --
+    an honest "no cohort to rank against" rather than a percentile computed from
+    too little to mean anything.
+    """
+    risk = score_change(features)
+    pressure = dict(fix_pressure or {})
+    density = change_fix_density(pressure, features.file_churn)
+
+    percentile: float | None = None
+    priority: str | None = None
+    if len(baseline_scores) >= min_baseline:
+        normalizer = RiskNormalizer.from_scores(list(baseline_scores))
+        # Author experience is a property of the author, not of the change, so
+        # it is excluded from the score this change is *ranked* by.
+        rank_score = score_change(replace(features, exp=None)).score
+        percentile = normalizer.percentile(rank_score)
+        priority = normalizer.priority(rank_score)
 
     return ChangeRiskResult(
         features=features,
         risk=risk,
         percentile=percentile,
         priority=priority,
-        baseline_sample_size=baseline_sample_size,
-        riskignore_excludes=from_riskignore,
-        request_excludes=exclude_patterns,
+        baseline_sample_size=len(baseline_scores),
+        riskignore_excludes=riskignore_excludes,
+        request_excludes=request_excludes,
         working_tree=working_tree,
         fix_density=round(density, 3),
-        fix_percentile=fix_density_percentile(
-            densities_excluding(samples, excluded_ref, pressure), density
-        ),
-        hot_files=fix_bearing,
-        fix_history_available=fix_history_available,
+        fix_percentile=fix_density_percentile(list(baseline_fix_densities), density),
+        hot_files=hot_files(pressure, features.file_churn),
+        fix_history_available=fix_pressure is not None,
     )
 
 

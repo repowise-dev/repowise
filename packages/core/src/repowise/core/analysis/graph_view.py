@@ -16,8 +16,13 @@ from typing import Any, Protocol
 
 from ..ingestion.languages import REGISTRY
 from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from .dead_code.file_reachability import BARREL_FILENAMES
 
-__all__ = ["HasEdge", "ImportEdgeView"]
+__all__ = ["BARREL_DEPENDENCY", "HasEdge", "ImportEdgeView", "can_carry_dependency"]
+
+#: ``dependency_kind`` for a pair joined through a re-export barrel rather than
+#: by a direct edge: ``a -> index.ts -> b``.
+BARREL_DEPENDENCY = "barrel"
 
 
 def _language_of(path: str) -> str:
@@ -26,6 +31,24 @@ def _language_of(path: str) -> str:
     return REGISTRY.from_filename(name) or REGISTRY.from_extension(
         PurePosixPath(name).suffix.lower()
     )
+
+
+def can_carry_dependency(path: str, language: str | None = None) -> bool:
+    """Whether an absent edge at *path* would mean anything.
+
+    ``pyproject.toml`` and ``README.md`` are both ingested and both become
+    nodes, yet no resolver can ever emit an edge for them, so "no edge found"
+    is a fact about the language rather than about the repository. The registry
+    grades this per language as ``import_support``; ``"none"`` is the generic
+    stem-lookup fallback, which is not a mechanism a finding can rest on.
+
+    *language* is optional because it is not always recorded: a node
+    synthesised for a dynamic edge target carries none and persistence drops
+    null columns on rehydrate. The path answers the same question.
+    """
+    if not isinstance(language, str) or not language:
+        language = _language_of(path)
+    return REGISTRY.import_support_for(language) != "none"
 
 
 class HasEdge(Protocol):
@@ -47,10 +70,11 @@ class ImportEdgeView:
     a caller pass ``None`` instead of branching.
     """
 
-    __slots__ = ("_graph",)
+    __slots__ = ("_barrels", "_graph")
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
+        self._barrels: dict[str, tuple[str, ...]] = {}
 
     def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
         g = self._graph
@@ -73,8 +97,41 @@ class ImportEdgeView:
         framework binding are different claims about why two files move
         together. Direction is not reported: the pair is undirected, and
         ``a -> b`` is tried first only to make the answer deterministic.
+
+        A consumer importing a package's barrel (``index.ts``, ``__init__.py``)
+        that re-exports the other file depends on it as surely as a direct
+        import, so a two-hop path whose middle node is a barrel answers
+        :data:`BARREL_DEPENDENCY`. Only a chain through the barrel counts: two
+        files a barrel merely re-exports side by side, or two consumers of one
+        barrel, share a neighbour and nothing more.
         """
-        return self._typed(a, b) or self._typed(b, a)
+        return self._typed(a, b) or self._typed(b, a) or self._via_barrel(a, b)
+
+    def _via_barrel(self, a: str, b: str) -> str | None:
+        for src, dst in ((a, b), (b, a)):
+            for barrel in self._barrels_of(src):
+                if self._typed(barrel, dst):
+                    return BARREL_DEPENDENCY
+        return None
+
+    def _barrels_of(self, path: str) -> tuple[str, ...]:
+        """The barrels *path* depends on directly, cached per file."""
+        cached = self._barrels.get(path)
+        if cached is not None:
+            return cached
+        found: tuple[str, ...] = ()
+        g = self._graph
+        if g is not None:
+            try:
+                found = tuple(
+                    mid
+                    for mid in g.successors(path)
+                    if PurePosixPath(mid).name in BARREL_FILENAMES and self._typed(path, mid)
+                )
+            except Exception:
+                found = ()
+        self._barrels[path] = found
+        return found
 
     def _typed(self, src: str, dst: str) -> str | None:
         g = self._graph
@@ -90,17 +147,10 @@ class ImportEdgeView:
         return kind if kind in FILE_DEPENDENCY_EDGE_TYPES else None
 
     def can_carry_dependency(self, path: str) -> bool:
-        """Whether an absent edge at *path* would mean anything.
+        """Whether an absent edge at *path* would mean anything, per the graph.
 
-        Being a node is not enough. ``pyproject.toml`` and ``README.md`` are
-        both ingested and both become nodes, yet no resolver can ever emit an
-        edge for them, so "no edge found" is a fact about the language rather
-        than about the repository. The registry already grades this per
-        language as ``import_support``; ``"none"`` is the generic stem-lookup
-        fallback, which is not a mechanism a finding can rest on.
-
-        A file the parser never saw fails here too: a lockfile in a blocked
-        directory has no edge to look for either.
+        Being a node is not enough, and a file the parser never saw fails here
+        too: a lockfile in a blocked directory has no edge to look for either.
         """
         g = self._graph
         if g is None:
@@ -109,10 +159,4 @@ class ImportEdgeView:
             attrs = g.nodes[path]
         except Exception:
             return False
-        language = attrs.get("language")
-        if not isinstance(language, str):
-            # Not every node carries the attribute: a node synthesised for a
-            # dynamic edge target has none, and persistence drops null
-            # columns on rehydrate. The path answers the same question.
-            language = _language_of(path)
-        return REGISTRY.import_support_for(language) != "none"
+        return can_carry_dependency(path, attrs.get("language"))

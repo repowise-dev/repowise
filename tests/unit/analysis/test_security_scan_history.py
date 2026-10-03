@@ -163,6 +163,54 @@ def test_migration_0041_upgrades_sqlite() -> None:
         asyncio.run(engine.dispose())
 
 
+def test_migration_0077_clears_credential_snippets_only() -> None:
+    """Rows written before full-line masking lose their snippet; others keep it."""
+    import sqlite3
+    from contextlib import closing
+
+    core_root = Path("packages/core")
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        url = f"sqlite+aiosqlite:///{db_path}"
+        prev_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = url
+        prev_cwd = Path.cwd()
+        try:
+            os.chdir(core_root)
+            alembic_cfg = Config("alembic.ini")
+            alembic_cfg.set_main_option("sqlalchemy.url", url)
+            with patch("logging.config.fileConfig"):
+                command.upgrade(alembic_cfg, "0076")
+                with closing(sqlite3.connect(db_path)) as conn, conn:
+                    conn.executemany(
+                        "INSERT INTO security_findings (repository_id, file_path, kind, "
+                        "severity, snippet, line_number, commit_sha, detected_at) "
+                        "VALUES ('r', 'a.ts', ?, 'high', ?, ?, ?, '2026-09-01')",
+                        [
+                            ("public_env_secret", "NEXT_PUBLIC_API_KEY=sk_live_raw", 1, ""),
+                            ("hardcoded_secret", 'API_KEY = "rawrawrawraw', 2, "abc123"),
+                            ("github_token", 'GH = "ghp_rawrawrawraw', 4, ""),
+                            ("eval_call", "eval(x)", 3, ""),
+                        ],
+                    )
+                command.upgrade(alembic_cfg, "0077")
+        finally:
+            os.chdir(prev_cwd)
+            if prev_url is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = prev_url
+
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = dict(conn.execute("SELECT kind, snippet FROM security_findings").fetchall())
+        assert rows == {
+            "public_env_secret": "",
+            "hardcoded_secret": "",
+            "github_token": "",
+            "eval_call": "eval(x)",
+        }
+
+
 async def test_history_gate_excludes_code_smells_by_default(session: AsyncSession) -> None:
     """History mode keeps only secret kinds when secrets_only (default) is set."""
     assert HistorySecurityScanner._passes_gate("hardcoded_password", secrets_only=True)
@@ -174,7 +222,7 @@ async def test_history_gate_excludes_code_smells_by_default(session: AsyncSessio
 
 async def test_history_secrets_only_scan_skips_non_secret_patterns(session: AsyncSession) -> None:
     """scan_history with defaults only persists secret findings."""
-    content = "password = 'hunter2'\neval(open('x'))\nos.system('ls')\n"
+    content = "password = 'super_secret_password_123'\neval(open('x'))\nos.system('ls')\n"
     scanner = HistorySecurityScanner(session, "repo-1")
     scanner._list_commits = lambda *a, **k: [("abc123", "2026-01-01T00:00:00+00:00")]  # type: ignore[assignment]
     scanner._unique_blobs = lambda *a, **k: {"blob1": "src/secret.py"}  # type: ignore[assignment]
@@ -197,7 +245,7 @@ async def test_history_secrets_only_scan_skips_non_secret_patterns(session: Asyn
 
 async def test_history_unique_blob_scanned_once(session: AsyncSession) -> None:
     """Identical content across two commits is scanned once, attributed to first."""
-    content = "api_key = 'LEAKED'\n"
+    content = "api_key = 'LEAKED_SECRET_KEY_12345'\n"
     scanner = HistorySecurityScanner(session, "repo-1")
     reads = {"n": 0}
 
@@ -246,9 +294,24 @@ async def test_history_progress_fires_for_clean_repo(session: AsyncSession) -> N
     assert summary.files_scanned == 1
 
 
-def test_secret_kinds_are_the_two_secret_patterns() -> None:
-    """Guard against the registry drifting away from the history gate."""
-    assert {"hardcoded_password", "hardcoded_secret"} == SECRET_KINDS
+def test_secret_kinds_are_the_genuine_credential_patterns() -> None:
+    """Guard against the registry drifting away from the history gate.
+
+    #2117 added value-shape patterns for vendor credential formats (AWS,
+    GitHub, Slack, Google, Stripe) and a PEM private-key pattern; all are
+    genuine leaked-credential kinds, so history mode's default gate covers
+    them the same as the two keyword-based kinds.
+    """
+    assert {
+        "hardcoded_password",
+        "hardcoded_secret",
+        "aws_access_key",
+        "github_token",
+        "slack_token",
+        "google_api_key",
+        "stripe_key",
+        "private_key_pem",
+    } == SECRET_KINDS
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +407,29 @@ async def test_history_default_skips_test_fixtures_and_placeholders(
     assert "docs.py" not in paths, "elided placeholder reported as a credential"
 
 
+async def test_history_keeps_a_real_secret_beside_an_elided_comment(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """Placeholder filtering reads the captured value, not the rest of the line."""
+    (secret_repo / "cfg.py").write_text('password = "a9f3kQ2mZx7LpW1v"  # rotate ...\n')
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add cfg")
+
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+
+    paths = {
+        r._mapping["file_path"]
+        for r in (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    }
+    assert "cfg.py" in paths
+
+
 async def test_all_patterns_lifts_the_noise_gate(session: AsyncSession, secret_repo: Path) -> None:
     """The filtering is the default's promise, not a hard exclusion."""
     (secret_repo / "tests").mkdir(exist_ok=True)
-    (secret_repo / "tests" / "test_client.py").write_text('password = "fixture-value"\n')
+    (secret_repo / "tests" / "test_client.py").write_text(
+        'password = "super_secret_real_password_99"\n'
+    )
     _git(secret_repo, "add", ".")
     _git(secret_repo, "commit", "-m", "add fixture")
 

@@ -9,10 +9,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from repowise.server.mcp_server.tool_health import (
-    _attach_coverage_decay,
-    _serialize_coverage_row,
-)
+from repowise.core.persistence.crud import coverage_row_dict
+from repowise.server.mcp_server.tool_health import _attach_coverage_decay
 
 
 def _git(cwd, *args: str) -> str:
@@ -52,7 +50,7 @@ def test_decay_marks_the_lines_that_moved_since_the_report(repo) -> None:
     _git(repo, "commit", "-qm", "edit")
 
     rows = [_row("mod.py", [1, 2, 3], sha=base)]
-    payload = [_serialize_coverage_row(r) for r in rows]
+    payload = [coverage_row_dict(r, include_covered_lines=True) for r in rows]
     _attach_coverage_decay(payload, rows, str(repo))
 
     decay = payload[0]["decay"]
@@ -75,7 +73,7 @@ def test_the_stored_percentage_is_never_rewritten(repo) -> None:
     _git(repo, "commit", "-qm", "edit")
 
     rows = [_row("mod.py", [1, 2, 3], sha=base, pct=75.0)]
-    payload = [_serialize_coverage_row(r) for r in rows]
+    payload = [coverage_row_dict(r, include_covered_lines=True) for r in rows]
     _attach_coverage_decay(payload, rows, str(repo))
 
     assert payload[0]["line_coverage_pct"] == 75.0
@@ -86,7 +84,7 @@ def test_no_decay_block_when_the_measurement_cannot_be_placed(repo) -> None:
     """Absent, not zero. A zero drift block would read as a freshness claim."""
     rows = [_row("mod.py", [1, 2, 3], sha=None)]
     rows[0].ingested_at = None
-    payload = [_serialize_coverage_row(r) for r in rows]
+    payload = [coverage_row_dict(r, include_covered_lines=True) for r in rows]
     _attach_coverage_decay(payload, rows, str(repo))
 
     assert "decay" not in payload[0]
@@ -95,7 +93,7 @@ def test_no_decay_block_when_the_measurement_cannot_be_placed(repo) -> None:
 def test_a_row_with_no_covered_lines_gets_no_decay_block(repo) -> None:
     head = _git(repo, "rev-parse", "HEAD").strip()
     rows = [_row("mod.py", [], sha=head)]
-    payload = [_serialize_coverage_row(r) for r in rows]
+    payload = [coverage_row_dict(r, include_covered_lines=True) for r in rows]
     _attach_coverage_decay(payload, rows, str(repo))
 
     assert "decay" not in payload[0]
@@ -104,11 +102,11 @@ def test_a_row_with_no_covered_lines_gets_no_decay_block(repo) -> None:
 def test_untouched_file_reports_a_confirmed_measurement(repo) -> None:
     head = _git(repo, "rev-parse", "HEAD").strip()
     rows = [_row("mod.py", [1, 2, 3], sha=head)]
-    payload = [_serialize_coverage_row(r) for r in rows]
+    payload = [coverage_row_dict(r, include_covered_lines=True) for r in rows]
     _attach_coverage_decay(payload, rows, str(repo))
 
     assert payload[0]["decay"]["invalidated_lines"] == 0
-    assert payload[0]["decay"]["stale"] is False
+    assert payload[0]["decay"]["drifted"] is False
 
 
 def test_empty_row_list_is_a_no_op(repo) -> None:

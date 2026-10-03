@@ -10,7 +10,8 @@ import { InfoTip } from "../shared/info-tip";
 import { truncatePath } from "../lib/format";
 // Shared band function, never a local threshold: two surfaces disagreeing
 // about where "Good" starts is worse than the import.
-import { healthBand } from "../overview/health-lede";
+import { bandForScore, formatScore, type HealthBand } from "@repowise-dev/types/health";
+import { healthBand } from "../health/tokens";
 import type { CommunityDetail } from "@repowise-dev/types/graph";
 
 /**
@@ -27,16 +28,16 @@ import type { CommunityDetail } from "@repowise-dev/types/graph";
  * bad file inside a healthy group is exactly the file such a sentence would
  * tell the reader to skip.
  *
- * Keyed on `healthBand`'s label, the same five bands the Code Health lede and
- * the file health drawer show, so one score never gets two vocabularies.
+ * Keyed on the band itself rather than its label, so a wording change to the
+ * band cannot silently drop a reading.
  */
-const HEALTH_READING: Record<string, string> = {
-  Excellent:
+const HEALTH_READING: Record<HealthBand, string> = {
+  excellent:
     "On average this area scores well. A mean hides its worst file, so check the flags below.",
-  Good: "On average this area scores well. A mean hides its worst file, so check the flags below.",
-  Fair: "This area averages into the middle; some files here carry real defect risk.",
-  "Needs work": "This area averages low. Read it before you change it.",
-  Critical: "This area averages into the worst band. Read it before you change it.",
+  good: "On average this area scores well. A mean hides its worst file, so check the flags below.",
+  fair: "This area averages into the middle; some files here carry real defect risk.",
+  needs_work: "This area averages low. Read it before you change it.",
+  at_risk: "This area averages into the worst band. Read it before you change it.",
 };
 
 export interface GraphCommunityPanelProps {
@@ -96,6 +97,8 @@ export function GraphCommunityPanel({
             // read as a summary.
             <p className="text-[11px] text-[var(--color-text-secondary)]">
               {community.member_count} files, grouped automatically
+              {(community.hidden_member_count ?? 0) > 0 &&
+                ` · ${community.hidden_member_count} hidden by the file filter`}
             </p>
           )}
         </div>
@@ -253,7 +256,7 @@ function HealthLede({
           className="text-[32px] font-semibold leading-none tracking-tight tabular-nums"
           style={{ color: band.color }}
         >
-          {score.toFixed(1)}
+          {formatScore(score)}
         </span>
         <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
         <span
@@ -268,7 +271,7 @@ function HealthLede({
         </span>
       </div>
       <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-text-secondary)]">
-        {HEALTH_READING[band.label]}{" "}
+        {HEALTH_READING[bandForScore(score)]}{" "}
         {/* The mean is over the files that have a score, which is rarely all of
             them. Saying how many stops the figure from claiming more coverage
             than it has. */}
@@ -352,13 +355,21 @@ function FactGrid({
       ),
       tip: "Members named by a recorded architectural decision.",
     },
-    {
-      label: "Cohesion",
-      value: <FactValue>{(community.cohesion * 100).toFixed(1)}%</FactValue>,
-      // "depend on", not "import": the edge set behind this is every file
-      // dependency kind, so "import" would understate what counted.
-      tip: "The share of possible file pairs in this group that actually depend on each other. It drops as a group grows, so it compares groups of similar size rather than a group against the repo.",
-    },
+    // Conductance where the index has it; the old density is the fallback for
+    // an index that predates it, since it decays with size.
+    community.conductance != null
+      ? {
+          label: "Stays inside",
+          value: (
+            <FactValue>{Math.round((1 - community.conductance) * 100)}%</FactValue>
+          ),
+          tip: "The share of this group's file dependencies that stay inside it rather than reaching another group. Higher is tighter, and it does not fall as a group grows.",
+        }
+      : {
+          label: "Cohesion",
+          value: <FactValue>{(community.cohesion * 100).toFixed(1)}%</FactValue>,
+          tip: "The share of possible file pairs in this group that actually depend on each other. It drops as a group grows, so it compares groups of similar size rather than a group against the repo.",
+        },
   ];
 
   if (owner) {
@@ -376,10 +387,11 @@ function FactGrid({
     });
   }
 
-  // Cohesion is 1.0 for a single-file community by definition, so a one-file
-  // group would show a perfect score beside a tooltip about pairs.
+  // A one-file group has no pairs and nothing inside to stay in.
   const visible =
-    community.member_count <= 1 ? cells.filter((c) => c.label !== "Cohesion") : cells;
+    community.member_count <= 1
+      ? cells.filter((c) => c.label !== "Cohesion" && c.label !== "Stays inside")
+      : cells;
 
   return (
     <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)]">

@@ -7,8 +7,21 @@ import {
   Minus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import type {
+  ChatArtifact,
+  ChatHandoff,
+  ChatSuggestion,
+  ChatUIMessage,
+} from "@repowise-dev/types/chat";
 import { BrandMark } from "../shared/brand-mark";
 import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
@@ -18,6 +31,9 @@ import { ChatComposer } from "./chat-composer";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import { getChatContextPresentation, type ChatContext } from "./chat-context";
 import { ChatInterface } from "./chat-interface";
+import { buildHandoffDraft } from "./chat-handoff";
+import { ChatSuggestions } from "./chat-suggestions";
+import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 
 export type ChatDockMode = "minimized" | "compact" | "expanded";
 
@@ -100,8 +116,11 @@ function usePersistentDockState(storageKey: string) {
   };
 }
 
+// Starts desktop, corrected on mount. It cannot read `matchMedia` during
+// render without making the server and the first client render disagree, and
+// defaulting to mobile flashed the full-width sheet on every desktop load.
 function useMobileDock() {
-  const [isMobile, setIsMobile] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -115,6 +134,14 @@ function useMobileDock() {
   return isMobile;
 }
 
+/** One imperative request from the host: a keyboard toggle, or a page handing
+ *  the reader's question over. `id` lets the same request repeat. */
+export interface ChatDockCommand {
+  id: number;
+  type: "toggle" | "open" | "handoff";
+  handoff?: ChatHandoff;
+}
+
 export interface ChatDockProps {
   storageKey: string;
   repoId: string;
@@ -125,6 +152,17 @@ export interface ChatDockProps {
   error?: string | null;
   onSend: (text: string, context?: ChatContext) => void | Promise<void>;
   onCancel: () => void;
+  /** Suggestions derived from the live page. Omit to use the static tier the
+   *  page kind already carries. */
+  suggestions?: readonly ChatSuggestion[];
+  /** Applied once, then handed back through `onCommandHandled` so remounting
+   *  the dock does not replay it. */
+  command?: ChatDockCommand | null;
+  onCommandHandled?: () => void;
+  /** Shown once beside the minimized label, then reported back so the host can
+   *  remember it and never show it again. Never a modal, never persistent. */
+  firstVisitHint?: string;
+  onFirstVisitHintShown?: () => void;
   suppressed?: boolean;
   /** Hide the dock entirely. The host owns the preference and where it is
    *  stored: this component's own persisted state is keyed per conversation,
@@ -163,6 +201,11 @@ export function ChatDock({
   error,
   onSend,
   onCancel,
+  suggestions,
+  command,
+  onCommandHandled,
+  firstVisitHint,
+  onFirstVisitHintShown,
   suppressed = false,
   onDismiss,
   modelSelectorSlot,
@@ -183,6 +226,7 @@ export function ChatDock({
   const { mode, draft, setMode, setDraft } = usePersistentDockState(storageKey);
   const [dismissedContext, setDismissedContext] = useState<string | null>(null);
   const [answerReady, setAnswerReady] = useState(false);
+  const [hintVisible, setHintVisible] = useState(false);
   const previousStreaming = useRef(isStreaming);
   const compactTextareaRef = useRef<HTMLTextAreaElement>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -219,9 +263,88 @@ export function ChatDock({
     if (mode !== "minimized") setAnswerReady(false);
   }, [mode]);
 
+  useEffect(() => {
+    if (!firstVisitHint || mode !== "minimized") return undefined;
+    setHintVisible(true);
+    onFirstVisitHintShown?.();
+    const timeout = window.setTimeout(() => setHintVisible(false), 7000);
+    // Clears the flag as well as the timer: a host that stops passing the hint
+    // once it has been seen would otherwise leave an empty label behind.
+    return () => {
+      window.clearTimeout(timeout);
+      setHintVisible(false);
+    };
+  // One introduction per host decision, not one per mode change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstVisitHint]);
+
+  useEffect(() => {
+    // Suppressed means nothing is rendered, so applying the command here would
+    // consume it against a dock nobody can see. Leave it pending instead.
+    if (!command || suppressed) return;
+    onCommandHandled?.();
+    const focusCompact = () =>
+      window.requestAnimationFrame(() => compactTextareaRef.current?.focus());
+
+    if (command.type === "toggle" || command.type === "open") {
+      // "open" rather than "toggle" when the host has just revealed a dock the
+      // reader had hidden: the stored mode is from before it was hidden, so
+      // toggling it could minimize the thing the keystroke asked to open.
+      if (command.type === "open" || mode === "minimized") {
+        setMode("compact");
+        focusCompact();
+      } else {
+        setMode("minimized");
+        window.requestAnimationFrame(() => minimizedButtonRef.current?.focus());
+      }
+      return;
+    }
+
+    const handoff = command.handoff;
+    if (!handoff) return;
+    const seeded = buildHandoffDraft(handoff);
+    setMode("compact");
+    if (handoff.autoSend && seeded) {
+      setDraft("");
+      void onSend(seeded, handoff.context);
+      focusCompact();
+      return;
+    }
+    setDraft(seeded);
+    window.requestAnimationFrame(() => {
+      const textarea = compactTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  // Applied once per command id; the host clears it immediately after, so a
+  // remount cannot replay it. `suppressed` is listed so a command that arrived
+  // while nothing was rendered is applied as soon as the dock comes back.
+  // `mode` is not: it is read from the render that produced the command, which
+  // is exactly the state a toggle must act on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command, suppressed]);
+
   const activeContext = dismissedContext === identity ? undefined : context;
   const presentation = getChatContextPresentation(activeContext);
-  const suggestion = presentation.suggestions[0];
+
+  // Openers before the first question, the last answer's next steps after, so
+  // the slot is never spent on a stale opener.
+  const chips = useMemo<readonly ChatSuggestion[]>(() => {
+    if (messages.length === 0) return suggestions ?? presentation.suggestions;
+    const last = messages[messages.length - 1];
+    return last?.role === "assistant" && !last.isStreaming
+      ? last.followUps ?? []
+      : [];
+  }, [messages, presentation.suggestions, suggestions]);
+
+  const seedDraft = useCallback(
+    (suggestion: ChatSuggestion) => {
+      setDraft(suggestion.text);
+      compactTextareaRef.current?.focus();
+    },
+    [setDraft],
+  );
 
   if (suppressed) return null;
 
@@ -241,6 +364,10 @@ export function ChatDock({
   const collapse = () => {
     setMode("compact");
     window.requestAnimationFrame(() => compactTextareaRef.current?.focus());
+  };
+  const expand = () => {
+    setMode("expanded");
+    window.requestAnimationFrame(() => expandedTextareaRef.current?.focus());
   };
   const statusText = isStreaming
     ? "Working"
@@ -280,6 +407,11 @@ export function ChatDock({
           <span className="text-[13px] font-medium text-[var(--color-text-primary)]">
             {statusText ?? "Ask Repowise"}
           </span>
+          {hintVisible && !statusText && (
+            <span className="hidden border-l border-[var(--color-border-default)] pl-2 text-[13px] text-[var(--color-text-tertiary)] sm:inline">
+              {firstVisitHint}
+            </span>
+          )}
           {statusText && (
             <span aria-hidden>
               {isStreaming ? (
@@ -335,7 +467,7 @@ export function ChatDock({
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => setMode("expanded")}
+            onClick={expand}
             aria-label="Expand repository chat"
           >
             <Expand className="h-4 w-4" />
@@ -382,18 +514,16 @@ export function ChatDock({
           autoFocus
           textareaRef={compactTextareaRef}
         />
-        {messages.length === 0 && draft.length === 0 && suggestion && (
-          <button
-            type="button"
-            onClick={() => {
-              setDraft(suggestion);
-              compactTextareaRef.current?.focus();
-            }}
-            className="mt-2 block max-w-full truncate rounded-md px-1 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-          >
-            <span className="mr-1.5 text-[var(--color-text-tertiary)]">Try</span>
-            {suggestion}
-          </button>
+        {draft.length === 0 && (
+          <ChatSuggestions
+            suggestions={chips}
+            onSelect={seedDraft}
+            layout="chips"
+            ariaLabel={
+              messages.length === 0 ? "Suggested questions" : "Next steps"
+            }
+            className="mt-2"
+          />
         )}
         {sendDisabled && sendDisabledReason && (
           <div className="mt-2 text-xs text-[var(--color-text-secondary)]">
@@ -482,10 +612,12 @@ export function ChatDock({
               {...(error !== undefined ? { error } : {})}
               onSend={send}
               onCancel={onCancel}
+              {...(suggestions ? { suggestions } : {})}
               draft={draft}
               onDraftChange={setDraft}
               onContextRemove={removeExpandedContext}
               composerRef={expandedTextareaRef}
+              autoFocus
               modelSelectorSlot={modelSelectorSlot}
               historySlot={historySlot}
               sendDisabled={sendDisabled}

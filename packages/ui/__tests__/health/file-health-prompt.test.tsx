@@ -12,6 +12,7 @@ import {
   buildFileHealthAiPrompt,
   type FileHealthPromptFinding,
 } from "../../src/health/ai-prompt-builder.js";
+import { FLAVOR_PREAMBLE } from "../../src/health/ai-prompts/shared.js";
 import {
   HealthFileDrawer,
   type HealthDrawerMetric,
@@ -49,7 +50,7 @@ describe("buildFileHealthAiPrompt", () => {
   it("leads with the file and all three scored dimensions", () => {
     const out = buildFileHealthAiPrompt({ file, findings: [finding()] });
     expect(out).toContain("packages/cli/doctor_cmd.py");
-    expect(out).toContain("Defect risk: **1.0/10**");
+    expect(out).toContain("Code health: **1.0/10**");
     expect(out).toContain("Maintainability: **4.2/10**");
     expect(out).toContain("Performance: **8.1/10**");
   });
@@ -58,7 +59,7 @@ describe("buildFileHealthAiPrompt", () => {
     // The whole point of handing over a static report. A prompt that reads as
     // a work order gets a file edited to satisfy an analyzer.
     const out = buildFileHealthAiPrompt({ file, findings: [finding()] });
-    expect(out).toMatch(/leads/i);
+    expect(out).toMatch(/as a lead, not ground truth/i);
     expect(out).toMatch(/false positive/i);
     expect(out).toMatch(/which findings share a root cause/i);
   });
@@ -140,6 +141,14 @@ describe("buildFileHealthAiPrompt", () => {
     expect(mcp).toContain("get_health(['packages/cli/doctor_cmd.py'])");
     expect(mcp).toContain("get_risk(['packages/cli/doctor_cmd.py'])");
     expect(generic).not.toContain("get_health(");
+  });
+});
+
+// Every single-file prompt opens on this text, so pin each flavor of it.
+describe("FLAVOR_PREAMBLE", () => {
+  it("keeps every flavor's opening", () => {
+    expect(FLAVOR_PREAMBLE).toMatchSnapshot();
+    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to Read / Grep / Glob only");
   });
 });
 

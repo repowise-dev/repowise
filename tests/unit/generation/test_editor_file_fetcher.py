@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
 from repowise.core.generation.editor_files.fetcher import EditorFileDataFetcher
 from repowise.core.persistence.crud import upsert_repository
 from repowise.core.persistence.database import init_db
@@ -99,6 +101,13 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
     return page
 
 
+def _touch(root: Path, *paths: str) -> None:
+    """The hotspot list only names files that exist in the checkout."""
+    for path in paths:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("", encoding="utf-8")
+
+
 async def _add_git_meta(
     session,
     repo_id,
@@ -129,7 +138,9 @@ async def _add_git_meta(
     return gm
 
 
-async def _add_decision(session, repo_id, title, status="active", rationale="Some reason"):
+async def _add_decision(
+    session, repo_id, title, status="active", rationale="Some reason", **accept
+):
     """Add a record, accepting it when the caller wants one that governs.
 
     The generated block serves accepted decisions, so a fixture that only sets
@@ -140,7 +151,9 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
         title=title,
         status=status,
         rationale=rationale,
-        decision="Decided to use X",
+        # Varies with the title: identity is the evidence, so two titles
+        # over one body and one file are one decision.
+        decision=f"Decided to use X, for {title}",
         context="Context here",
         source="inline_marker",
         affected_files_json='["src/app.py"]',
@@ -152,7 +165,8 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
     if status == "active":
         from repowise.core.persistence.crud.authority import accept_decision
 
-        await accept_decision(session, dr, accepter="tester")
+        accept.setdefault("accepter", "tester")
+        await accept_decision(session, dr, **accept)
     return dr
 
 
@@ -270,6 +284,7 @@ async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
 
 
 async def test_fetch_hotspots(session, repo, tmp_path):
+    _touch(tmp_path, "src/billing.py", "src/utils.py")
     await _add_git_meta(
         session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice"
     )
@@ -288,6 +303,7 @@ async def test_fetch_hotspots(session, repo, tmp_path):
 async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
     session, repo, tmp_path
 ):
+    _touch(tmp_path, "src/busy.py", "src/broken.py")
     # The filter used to be is_hotspot-only, so a file fixed four times last
     # month that simply is not busy could never appear no matter how it ranked.
     await _add_git_meta(session, repo.id, "src/busy.py", is_hotspot=True, churn_pct=0.99)
@@ -314,6 +330,7 @@ async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
 
 
 async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
+    _touch(tmp_path, "src/low.py", "src/high.py")
     # A repo with no fix convention has zero fix mass everywhere; the ordering
     # must degrade to exactly the churn ranking it had before, not to nothing.
     await _add_git_meta(session, repo.id, "src/low.py", is_hotspot=True, churn_pct=0.20)
@@ -329,6 +346,7 @@ async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session
 async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     session, repo, tmp_path
 ):
+    _touch(tmp_path, "src/a.py")
     # bug_magnet with a NULL last_fix_at would render an unanchored accusation.
     await _add_git_meta(
         session,
@@ -375,6 +393,91 @@ async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [d.title for d in data.decisions] == []
+
+
+async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path):
+    """The ordinary case, and the one that must stay free.
+
+    These files are read into every session, so the signature costs tokens
+    only where it changes what the line means.
+    """
+    await _add_decision(session, repo.id, "Use JWT", accepter="Raghav", kind="person")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.signed_by for d in data.decisions] == [""]
+
+
+async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_path):
+    """Otherwise an agent reads its own acceptance back as a standing rule."""
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    mark = data.decisions[0].signed_by
+    assert "claude_code" in mark and "not a person" in mark
+
+
+async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path):
+    """The template carries it, not only the summary."""
+    from repowise.core.generation.editor_files import AgentsMdGenerator, ClaudeMdGenerator
+
+    await _add_decision(
+        session,
+        repo.id,
+        "Use JWT",
+        accepter="claude_code",
+        kind="agent",
+        agent_acceptance=True,
+    )
+    await session.commit()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    for gen in (ClaudeMdGenerator(), AgentsMdGenerator()):
+        assert "not a person" in gen.render_full(tmp_path, data), type(gen).__name__
+
+
+async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, tmp_path):
+    """A working agreement rides the instructions file unchanged.
+
+    The query filters on ``status = 'active'`` and acceptance and nothing else,
+    and since the entity split an agreement can be both: its acceptance row
+    records the repository as its scope. The exclusion sweep keeps a record
+    with no affected files rather than dropping it, so nothing here has to know
+    about the noun. Pinned because that is a claim about the delivery half, not
+    an accident of this query's current shape.
+    """
+    agreement = DecisionRecord(
+        repository_id=repo.id,
+        title="Never use em dashes",
+        status="active",
+        kind=AGREEMENT_KIND,
+        rationale="they read as machine-written",
+        decision="never use em dashes in any output",
+        source="session",
+        affected_files_json="[]",
+        evidence_file="agreement",
+        staleness_score=0.0,
+    )
+    session.add(agreement)
+    await session.flush()
+    from repowise.core.persistence.crud.authority import accept_decision
+
+    await accept_decision(session, agreement, accepter="tester")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert "Never use em dashes" in [d.title for d in data.decisions]
 
 
 async def test_fetch_avg_confidence(session, repo, tmp_path):
@@ -442,3 +545,99 @@ async def test_fetch_indexed_commit_falls_back_to_live_head_when_stored_is_empty
 
     # tmp_path is not a git checkout, so the fallback resolves to "".
     assert data.indexed_commit == ""
+
+
+async def test_fetch_hotspots_skips_files_no_longer_in_the_checkout(session, repo, tmp_path):
+    """A git_metadata row outlives its file when the prune refuses a run; the
+    deleted file used to rank first in "files that need care" forever (#1929)."""
+    _touch(tmp_path, "src/alive.py")
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/deleted.py",
+        is_hotspot=True,
+        churn_pct=0.99,
+        fix_mass=9.0,
+        bug_magnet=True,
+        last_fix_at=_now() - timedelta(days=3),
+    )
+    await _add_git_meta(session, repo.id, "src/alive.py", is_hotspot=True, churn_pct=0.50)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [h.path for h in data.hotspots] == ["src/alive.py"]
+
+
+async def _add_metric(session, repo_id, path, score):
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(HealthFileMetric(repository_id=repo_id, file_path=path, score=score, nloc=10))
+    await session.flush()
+
+
+async def test_code_health_trend_is_absent_without_history(session, repo, tmp_path):
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health is not None
+    assert data.code_health.hotspot_trend is None
+
+
+async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_path):
+    from repowise.core.persistence.crud import save_health_snapshot
+
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+    for day, value in enumerate((8.0, 6.5)):
+        await save_health_snapshot(
+            session,
+            repo.id,
+            hotspot_health=value,
+            average_health=value,
+            worst_performer_path="src/a.py",
+            worst_performer_score=value,
+            per_file_scores={"src/a.py": value},
+            per_file_deductions={},
+            taken_at=_now() + timedelta(days=day),
+        )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.hotspot_trend == "declining"
+
+
+async def test_code_health_names_production_files_only(session, repo, tmp_path):
+    """The worst file and Fix first are a worklist: tests stay out."""
+    from repowise.core.persistence.crud import save_health_findings
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(
+        HealthFileMetric(
+            repository_id=repo.id, file_path="tests/test_a.py", score=1.0, nloc=10, is_test=True
+        )
+    )
+    await _add_metric(session, repo.id, "src/a.py", 4.0)
+    await save_health_findings(
+        session,
+        repo.id,
+        [
+            {
+                "file_path": path,
+                "biomarker_type": "brain_method",
+                "severity": "high",
+                "function_name": "f",
+                "line_start": 1,
+                "line_end": 130,
+                "details": {"ccn": 30, "nloc": 120, "max_nesting": 4, "deepest_block": {"start": 40, "end": 52}},
+                "health_impact": 2.0,
+                "reason": "brain method",
+            }
+            for path in ("tests/test_a.py", "src/a.py")
+        ],
+    )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.worst_path == "src/a.py"
+    assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
+    assert data.code_health.fix_first[0]["title"] == "Split f into smaller functions"

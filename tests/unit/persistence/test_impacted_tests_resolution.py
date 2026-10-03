@@ -166,3 +166,150 @@ async def test_a_changed_test_file_is_its_own_candidate(async_session) -> None:
         }
     ]
     assert out["unknown"] == []
+
+
+async def _graph(session, repo_id, tests: set[str], files: set[str], imports: list[tuple]):
+    """File nodes (tests flagged) and ``imports`` edges ``(importer, imported)``."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    for path in sorted(tests | files):
+        session.add(
+            GraphNode(repository_id=repo_id, node_id=path, node_type="file", is_test=path in tests)
+        )
+    for source, target in imports:
+        session.add(
+            GraphEdge(
+                repository_id=repo_id,
+                source_node_id=source,
+                target_node_id=target,
+                edge_type="imports",
+            )
+        )
+    await session.commit()
+
+
+def _pairs(out: dict, source: str) -> dict[str, str]:
+    return {g["test_file"]: g["via"] for g in out["inferred"] if g["source_file"] == source}
+
+
+async def test_the_import_graph_reaches_tests_through_modules_and_other_tests(
+    async_session,
+) -> None:
+    """A test two imports away, and one importing a test that reaches it, still run it."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_api.py", "tests/base.py", "tests/test_child.py"},
+        files={"src/api.py", "src/core.py"},
+        imports=[
+            ("src/api.py", "src/core.py"),
+            ("tests/test_api.py", "src/api.py"),
+            ("tests/base.py", "src/core.py"),
+            ("tests/test_child.py", "tests/base.py"),
+        ],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/core.py": {1}}, set(), out)
+
+    assert _pairs(out, "src/core.py") == {
+        "tests/base.py": "import-graph",
+        "tests/test_api.py": "import-graph",
+        "tests/test_child.py": "import-graph",
+    }
+    assert out["unknown"] == []
+
+
+async def test_graph_candidates_are_not_capped(async_session) -> None:
+    from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+
+    repo = await insert_repo(async_session)
+    tests = {f"tests/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 5)}
+    await _graph(
+        async_session, repo.id, tests, {"src/hub.py"}, [(t, "src/hub.py") for t in tests]
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/hub.py": {1}}, set(), out)
+    assert set(_pairs(out, "src/hub.py")) == tests
+
+
+async def test_a_file_level_lookup_also_asks_the_graph(async_session) -> None:
+    """Matched by file (a deleted file, a stale map), coverage alone is not enough."""
+    repo = await _seed(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_other.py"},
+        files={"src/foo.py"},
+        imports=[("tests/test_other.py", "src/foo.py")],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/foo.py": None}, _REPO_KEYS, out)
+
+    assert set(out["covered"]) == {
+        "tests/test_foo.py::test_a|run",
+        "tests/test_foo.py::test_b|run",
+    }
+    assert _pairs(out, "src/foo.py") == {"tests/test_other.py": "import-graph"}
+    assert out["unknown"] == []
+
+
+async def test_coverage_adds_to_the_graph_and_never_replaces_it(async_session) -> None:
+    """A test the coverage run missed still runs when the graph shows it reaching the file."""
+    repo = await _seed(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_other.py"},
+        files={"src/foo.py"},
+        imports=[("tests/test_other.py", "src/foo.py")],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/foo.py": {2}}, _REPO_KEYS, out)
+
+    assert set(out["covered"]) == {"tests/test_foo.py::test_a|run"}
+    assert _pairs(out, "src/foo.py") == {"tests/test_other.py": "import-graph"}
+
+
+async def test_a_graph_read_failure_is_reported_not_swallowed(async_session, monkeypatch) -> None:
+    from repowise.cli.commands import impacted_tests_cmd
+
+    async def _broken(*_a, **_k):
+        raise RuntimeError("edge table locked")
+
+    monkeypatch.setattr(impacted_tests_cmd, "_graph_candidates", _broken)
+    repo = await insert_repo(async_session)
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/a.py": {1}}, set(), out)
+    assert out["graph_error"] == "RuntimeError: edge table locked"
+
+
+async def test_data_files_are_not_routes_and_helper_importers_are_reported(
+    async_session,
+) -> None:
+    """A JSON file flagged as test material is data; a helper's importers are listed."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/golden/out.json", "tests/helpers.py", "tests/test_a.py"},
+        files={"src/a.py"},
+        imports=[
+            ("tests/golden/out.json", "src/a.py"),
+            ("tests/helpers.py", "src/a.py"),
+            ("tests/test_a.py", "tests/helpers.py"),
+        ],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/a.py": {1}}, set(), out)
+
+    assert _pairs(out, "src/a.py") == {
+        "tests/helpers.py": "import-graph",
+        "tests/test_a.py": "import-graph",
+    }
+    assert out["helper_importers"]["tests/helpers.py"] == ["tests/test_a.py"]

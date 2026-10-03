@@ -1,6 +1,7 @@
 "use client";
 
 import type { DirectRiskEntry } from "@repowise-dev/types/blast-radius";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 
 interface DirectRisksTableProps {
@@ -28,7 +29,7 @@ function MiniBar({
           style={{ width: `${pct}%`, background: color }}
         />
       </div>
-      <span className="w-10 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
+      <span className="w-12 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
         {display}
       </span>
     </div>
@@ -40,11 +41,24 @@ const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
     key: "path",
     header: "File",
     render: (r) => (
-      <span
-        className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
-        title={r.path}
-      >
-        {r.path}
+      <span className="flex min-w-0 items-center gap-1">
+        <span
+          className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
+          title={r.path}
+        >
+          {r.path}
+        </span>
+        <AskAboutThis
+          context={{
+            kind: "blast-radius",
+            label: r.path,
+            target: r.path,
+            targetKind: "path",
+          }}
+          question={`What breaks if I change ${r.path}, and which dependents deserve the closest review?`}
+          label={`Ask about ${r.path}`}
+          className="h-6 w-6"
+        />
       </span>
     ),
   },
@@ -63,17 +77,22 @@ const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
   },
   {
     key: "temporal_hotspot",
-    header: "Temporal hotspot",
+    header: "Temporal hotspot (bar: rank)",
     headerClassName: "w-[24%]",
     priority: 2,
+    // The bar reads churn_percentile: temporal_hotspot is an unbounded churn
+    // sum whose median is already above 1.0, so a [0,1] bar pinned most rows
+    // full. The raw sum stays as the printed figure, without the *10 that
+    // made it look like a 0-10 score when it can exceed 40. The ?? 0 is for a
+    // server predating the field, where undefined would render width: NaN%.
     render: (r) => (
       <MiniBar
-        value01={r.temporal_hotspot}
+        value01={r.churn_percentile ?? 0}
         color="var(--color-accent-secondary)"
-        display={(r.temporal_hotspot * 10).toFixed(1)}
+        display={r.temporal_hotspot.toFixed(1)}
       />
     ),
-    mobileRender: (r) => (r.temporal_hotspot * 10).toFixed(1),
+    mobileRender: (r) => r.temporal_hotspot.toFixed(1),
   },
   {
     key: "centrality",

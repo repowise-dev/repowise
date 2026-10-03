@@ -95,8 +95,10 @@ def test_safe_to_delete_conservative():
     )
 
     by_path = {f.file_path: f for f in report.findings}
-    # High confidence + no dynamic pattern -> safe
-    assert by_path["pkg/old_unused.py"].safe_to_delete is True
+    # High confidence + no dynamic pattern -> still a review candidate: a whole
+    # file is never deletion-ready (REVIEW_ONLY_KINDS).
+    assert by_path["pkg/old_unused.py"].confidence >= 0.9
+    assert by_path["pkg/old_unused.py"].safe_to_delete is False
     # High confidence but matches *Handler -> not safe
     assert by_path["pkg/RequestHandler.py"].safe_to_delete is False
     # Low confidence (0.4) -> not safe
@@ -111,21 +113,21 @@ def test_report_deletable_lines_sum():
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 10,  # lines = 10 * 10 = 100
+                "symbol_count": 10,
                 "symbols": [],
             },
             "pkg/dead2.py": {
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 20,  # lines = 20 * 10 = 200
+                "symbol_count": 20,
                 "symbols": [],
             },
             "pkg/alive.py": {
                 "is_entry_point": False,
                 "is_test": False,
                 "is_api_contract": False,
-                "symbol_count": 15,  # lines = 15 * 10 = 150, but NOT safe
+                "symbol_count": 15,  # NOT safe
                 "symbols": [],
             },
         },
@@ -150,7 +152,13 @@ def test_report_deletable_lines_sum():
         },
     }
 
-    analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
+    # Line counts come from the source, not from symbol_count.
+    source_map = {
+        "pkg/dead1.py": b"x = 1\n" * 100,
+        "pkg/dead2.py": b"x = 1\n" * 200,
+        "pkg/alive.py": b"x = 1\n" * 150,
+    }
+    analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta, source_map=source_map)
     report = analyzer.analyze(
         {
             "detect_unused_exports": False,
@@ -162,10 +170,7 @@ def test_report_deletable_lines_sum():
     safe_findings = [f for f in report.findings if f.safe_to_delete]
     expected_lines = sum(f.lines for f in safe_findings)
     assert report.deletable_lines == expected_lines
-    # Verify that the safe findings include the two stale files
-    safe_paths = {f.file_path for f in safe_findings}
-    assert "pkg/dead1.py" in safe_paths
-    assert "pkg/dead2.py" in safe_paths
-    assert "pkg/alive.py" not in safe_paths
-    # Verify the actual sum
-    assert report.deletable_lines == 100 + 200
+    # Whole files are review-only (REVIEW_ONLY_KINDS), so none is counted as
+    # deletable, however stale.
+    assert safe_findings == []
+    assert report.deletable_lines == 0

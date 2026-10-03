@@ -1,21 +1,10 @@
 /**
- * Canonical chat types — conversation, messages, and the discriminated-union
- * `ChatArtifact` type that lets the chat UI render tool results as
- * mini-visualizations instead of `<pre>{JSON}</pre>`.
+ * Canonical chat types: conversation, messages, the SSE event union, and the
+ * discriminated-union `ChatArtifact` the transcript renders tool results as.
  *
- * The variants below mirror the artifact shapes actually emitted by the
- * hosted-backend chat router (`backend/app/routers/chat.py:_tool_*`). They are
- * convenience-shaped (denormalised, not strict `DecisionRecord[]` /
- * `DeadCodeFinding[]` / `GraphExport`) because the backend currently passes
- * raw tool result dicts through the SSE wrapper.
- *
- * KNOWN FOLLOWUP — Phase 2D candidate: normalise backend tool results to use
- * strict typed contracts (`DecisionRecord[]`, `DeadCodeFinding[]`, etc.) so
- * renderers stop reaching for ad-hoc fields like `mode` or
- * `high_confidence`/`medium_confidence`. Out of scope for Phase 2B because it
- * would touch all eight `_tool_*` functions in `backend/app/routers/chat.py`,
- * rewrite `tests/unit/server/test_mcp.py`, and risk LLM tool-call quality
- * regressions if information density shrinks.
+ * Artifact `data` shapes are the raw MCP tool results passed through the
+ * server envelope, so they stay convenience-shaped rather than strict engine
+ * records. Mirrored by `packages/server/src/repowise/server/schemas/chat.py`.
  */
 
 import type { GraphExport } from "./graph.js";
@@ -42,6 +31,8 @@ export type ChatContextKind =
   | "contributor"
   | "decision"
   | "risk"
+  | "dead-code"
+  | "blast-radius"
   | "security"
   | "usage"
   | "settings"
@@ -65,6 +56,33 @@ export interface ChatContext {
   targetKind?: ChatContextTargetKind;
 }
 
+/** A passage the reader highlighted on the page, carried into the composer. */
+export interface ChatSelection {
+  text: string;
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** What a page hands to chat when the reader asks about the thing in front of
+ *  them. `autoSend` skips the composer and asks immediately. */
+export interface ChatHandoff {
+  context: ChatContext;
+  question?: string;
+  selection?: ChatSelection;
+  autoSend?: boolean;
+}
+
+/** Where a composer chip came from, so ranking and telemetry can tell the
+ *  static fallback tier apart from one derived from live page data. */
+export type ChatSuggestionSource = "static" | "page" | "followup";
+
+export interface ChatSuggestion {
+  text: string;
+  source: ChatSuggestionSource;
+  toolHint?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Conversations + messages
 // ---------------------------------------------------------------------------
@@ -79,6 +97,9 @@ export interface Conversation {
   updated_at: string;
 }
 
+/** Who made a tool call: the model, or the server reading for the page. */
+export type ChatToolCallOrigin = "grounding";
+
 export interface ChatToolCall {
   id: string;
   name: string;
@@ -87,6 +108,7 @@ export interface ChatToolCall {
   summary?: string;
   artifact_type?: string;
   artifact?: ChatArtifact;
+  origin?: ChatToolCallOrigin;
 }
 
 export interface ChatMessage {
@@ -98,6 +120,10 @@ export interface ChatMessage {
     tool_calls?: ChatToolCall[];
     provider?: string;
     model?: string;
+    /** The step ceiling was reached before a final answer. */
+    truncated?: boolean;
+    /** Next steps derived from the artifacts this turn produced. */
+    follow_ups?: ChatSuggestion[];
   };
   created_at: string;
 }
@@ -114,6 +140,7 @@ export interface ChatUIToolCall {
   summary?: string;
   artifact?: ChatArtifact;
   status: "running" | "done" | "error";
+  origin?: ChatToolCallOrigin;
 }
 
 export interface ChatUIMessage {
@@ -126,6 +153,10 @@ export interface ChatUIMessage {
   /** Provenance recorded on assistant responses. */
   provider?: string;
   model?: string;
+  /** The step ceiling was reached before a final answer. */
+  truncated?: boolean;
+  /** Next steps this turn earned. Absent on a turn that called no tool. */
+  followUps?: ChatSuggestion[];
 }
 
 // ---------------------------------------------------------------------------
@@ -238,17 +269,58 @@ export interface RiskReportArtifactData {
   classification?: string;
   warning?: string;
   error?: string;
+  /** `nothing_to_score` when the change has no counted files. */
+  status?: string;
+  /** True when uncommitted work was scored; false when a clean tree fell back to `HEAD`. */
+  working_tree?: boolean;
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
-  change_shape?: Record<string, unknown>;
-  impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
+  /** One line on diff size and spread; never a danger verdict. */
+  diff_shape?: string;
+  independent_changes?: {
+    count?: number;
+    summary?: string;
+    basis?: string;
+    ungrouped_files?: string[];
+    groups?: Array<{ files: string[]; bridging_files?: string[] }>;
+    [k: string]: unknown;
+  };
+  impacted_tests?: {
+    tests_to_run?: string[];
+    status?: string;
+    summary?: string;
+    /** `measured` from stored coverage, `inferred` from the dependency graph. */
+    basis?: "measured" | "inferred" | "none";
+    /** Test ids, or whole test files when inferred. */
+    tests_to_run_kind?: "test_id" | "test_file" | null;
+    total?: number;
+    truncated?: boolean;
+  };
   /** Bug-fix record of the touched files: the "historically fragile" signal. */
   fix_history?: {
     available?: boolean;
     files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+    overlap?: { files_with_fixes?: number; total_fixes?: number };
   };
-  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
+  /** Other open branches editing the files this change edits. */
+  branch_overlap?: {
+    base?: string;
+    current?: string;
+    scanned?: number;
+    total?: number;
+    truncated?: boolean;
+    summary?: string;
+    branches?: Array<{
+      branch: string;
+      ahead?: number;
+      behind?: number;
+      last_commit?: string;
+      files?: Array<{ file: string; basis: string; partner?: string }>;
+      [k: string]: unknown;
+    }>;
+    [k: string]: unknown;
+  };
   [k: string]: unknown;
 }
 
@@ -330,6 +402,9 @@ export interface SearchResultsArtifactData {
     title: string;
     page_type: string;
     page_id?: string;
+    /** Openable repo-relative file; absent when the hit names no file. */
+    path?: string;
+    /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
     relevance_score?: number;
@@ -430,27 +505,46 @@ export interface DecisionsArtifact extends ArtifactEnvelopeIdentity {
   data: DecisionsArtifactData;
 }
 
-/** `get_dead_code` — confidence-tiered dead-code findings. */
-export interface DeadCodeArtifactData {
-  total_findings: number;
-  deletable_lines: number;
-  high_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-    lines: number;
-    safe_to_delete: boolean;
-  }>;
-  medium_confidence: Array<{
-    file_path: string;
-    symbol_name?: string | null;
-    kind: string;
-    confidence: number;
-    reason: string;
-  }>;
+/** One finding inside a `get_dead_code` tier. */
+export interface DeadCodeArtifactFinding {
+  file_path: string;
+  symbol_name?: string | null;
+  kind: string;
+  confidence: number;
+  reason: string;
+  lines: number | null;
+  safe_to_delete: boolean;
 }
+
+/** One confidence tier of a `get_dead_code` result. */
+export interface DeadCodeArtifactTier {
+  count: number;
+  findings: DeadCodeArtifactFinding[];
+  truncated: boolean;
+}
+
+/**
+ * `get_dead_code`: confidence-tiered dead-code findings. Totals sit in
+ * `summary`; a `tier` argument drops the tiers it did not ask for.
+ */
+export interface DeadCodeArtifactTiers {
+  mode?: undefined;
+  summary: {
+    total_findings: number;
+    deletable_lines: number;
+  };
+  tiers: Partial<Record<"high" | "medium" | "low", DeadCodeArtifactTier>>;
+}
+
+/** `get_dead_code(finding_id=...)`: one finding, or none when the id is unknown. */
+export interface DeadCodeArtifactLookup {
+  mode: "finding";
+  finding_id: string;
+  finding: DeadCodeArtifactFinding | null;
+  resolved: boolean;
+}
+
+export type DeadCodeArtifactData = DeadCodeArtifactTiers | DeadCodeArtifactLookup;
 export interface DeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code";
   data: DeadCodeArtifactData;
@@ -563,6 +657,15 @@ export function isKnownChatArtifact(
 
 export type ChatSSEEvent =
   | { type: "text_delta"; text: string }
+  /** The server read for the page before the first model turn. */
+  | {
+      type: "grounding";
+      tool_id: string;
+      tool_name: string;
+      input: Record<string, unknown>;
+      summary: string;
+      artifact: ChatArtifact;
+    }
   | {
       type: "tool_start";
       tool_id: string;
@@ -577,5 +680,10 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
+  /** Every turn ended in a tool call; `done` still follows. */
+  | { type: "truncated"; loops: number }
+  /** Next steps for the turn that just finished, sent just before `done`.
+   *  A turn that failed or called no tool sends none. */
+  | { type: "suggestions"; suggestions: ChatSuggestion[] }
   | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

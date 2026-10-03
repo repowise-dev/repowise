@@ -16,7 +16,7 @@ const STATUS_COLOR: Record<DecisionStatus, string> = {
 /**
  * The status colour, for a bare dot in a list too narrow to carry the word.
  *
- * Exported for the same reason `healthBandInk` is: a second surface that keeps
+ * Exported for the same reason `healthBandColor` is: a second surface that keeps
  * its own copy of this table is a surface that can drift from it, and this one
  * already had — a local map in the VS Code decisions panel painted `proposed`
  * `--color-info` while this one painted it accent, so one status word had two

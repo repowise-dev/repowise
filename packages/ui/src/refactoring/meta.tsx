@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { ArrowRightLeft, CopyMinus, FileStack, Gauge, Scissors, Split, Unlink } from "lucide-react";
-import type { Confidence, EffortBucket, RefactoringType } from "@repowise-dev/types/refactoring";
+import type { Confidence, RefactoringType } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringTypeMeta {
   label: string;
@@ -77,18 +77,7 @@ export function typeAccent(type: RefactoringType | string): string {
   return `var(${typeMeta(type).accentVar})`;
 }
 
-export const EFFORT_LABEL: Record<EffortBucket, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
-
-export const CONFIDENCE_LABEL: Record<Confidence, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-};
+export { CONFIDENCE_LABEL, EFFORT_LABEL } from "../health/labels";
 
 export const CONFIDENCE_DOT: Record<Confidence, string> = {
   high: "bg-[var(--color-success)]",

@@ -1,9 +1,10 @@
 "use client";
 
+import { useCallback, useMemo } from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { HealthFileDrawer } from "@repowise-dev/ui/health";
+import { HealthFileDrawer, useRelatedWork } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getPerformanceOpportunities,
@@ -13,7 +14,9 @@ import {
   getFileOpportunity,
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 import { useFileBreakdown } from "./use-file-breakdown";
+import type { HealthCounts } from "@repowise-dev/types/health";
 
 /** Causes listed for one file. A file with more than this is its own queue. */
 const FILE_CAUSE_LIMIT = 10;
@@ -23,15 +26,18 @@ export function HealthFileDrawerHost({
   filePath,
   onClose,
   lens,
+  counts,
 }: {
   repoId: string;
   filePath: string | null;
   onClose: () => void;
+  /** The reading the row that opened this drawer was scored under. */
+  counts?: HealthCounts;
   /** The surface the file was opened from; drives what the drawer leads with. */
   lens?: string;
 }) {
   const router = useRouter();
-  const { data, isLoading } = useFileBreakdown(repoId, filePath);
+  const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
   const prefix = `/repos/${repoId}`;
   const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
 
@@ -61,16 +67,27 @@ export function HealthFileDrawerHost({
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
+  // What the other lenses hold for this file. One request, one read per lens.
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
+  );
+  const related = useRelatedWork(fetchRelated, [filePath]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
+
   return (
     <HealthFileDrawer
       open={filePath !== null}
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
+      related={related?.files?.[0]}
+      relatedWorkHref={toRelated}
+      onNavigate={(href) => router.push(href)}
       onClose={onClose}
       loading={isLoading}
       metric={data?.metric ?? null}
       breakdown={
-        data
+        data?.breakdown
           ? {
               score: data.breakdown.score,
               total_deduction: data.breakdown.total_deduction,
@@ -92,15 +109,6 @@ export function HealthFileDrawerHost({
       }
       permalinkHref={filePageHref ? `${filePageHref}?tab=health` : undefined}
       fileViewHref={filePageHref}
-      fileViewHrefFor={
-        // Carry the line through. This used to discard its argument, which was
-        // survivable while the link only appeared next to a function name; now
-        // that file-level markers render their own line, dropping it would make
-        // 34 visually distinct "line N" links resolve to one identical URL.
-        filePageHref
-          ? (lineStart) => `${filePageHref}?tab=health#L${lineStart}`
-          : undefined
-      }
       onPartnerHref={(path) => fileEntityPath(prefix, path)}
       onFindingStatusChange={async (findingId, status) => {
         try {

@@ -22,7 +22,7 @@
 ) @symbol.def
 
 (method_definition
-  name: (property_identifier) @symbol.name
+  name: [(property_identifier) (private_property_identifier)] @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
@@ -68,6 +68,7 @@
         (new_expression) (member_expression)
         (call_expression) (function_expression) (class)
         (await_expression) (parenthesized_expression)
+        (regex) (ternary_expression)
       ]
     ) @symbol.def
   )
@@ -84,6 +85,7 @@
           (new_expression) (member_expression)
           (call_expression) (function_expression) (class)
           (await_expression) (parenthesized_expression)
+          (regex) (ternary_expression)
         ]
       ) @symbol.def
     )

@@ -56,6 +56,9 @@ class DecisionSummary:
     status: str  # active | deprecated | superseded | proposed
     rationale: str  # first ~100 chars of decision.rationale
     decision: str = ""  # what was chosen (first ~120 chars)
+    #: Pre-rendered mark for a line a person did not sign, else "". Empty in
+    #: the ordinary case, so the common line costs no extra tokens.
+    signed_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,12 @@ class CodeHealthBlock:
     average_health: float
     worst_score: float
     worst_path: str
-    hotspot_trend: str = "stable"
+    # The band word for ``average_health``, so the line reads the same
+    # direction as every other surface: a bare "6.9/10" beside a risk-shaped
+    # label is the one reading that inverts.
+    band: str = ""
+    # ``None`` until two snapshots exist; the section then omits the label.
+    hotspot_trend: str | None = None
     # Maintainability pillar headline (NLOC-weighted average over the per-file
     # maintainability scores). ``None`` until the split populates the column, so
     # the section omits it rather than printing a misleading 10.0.
@@ -86,7 +94,9 @@ class CodeHealthBlock:
     performance_coverage_pct: float | None = None
     performance_skipped_files: int = 0
     performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
-    critical_biomarkers: list[dict] = field(default_factory=list)
+    # The lead of the shared Fix-first queue: ``title``, ``where``
+    # (``path:line``) and ``why`` per item, at most three.
+    fix_first: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -123,6 +133,7 @@ class EditorFileData:
     # Rendered MCP tool table (single source: tool_table.py). A data field
     # rather than a Jinja global so any environment can render the template.
     tool_table_md: str = field(default_factory=lambda: _render_tool_table())
+    index_scope: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

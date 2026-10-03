@@ -29,6 +29,7 @@ from repowise.core.workspace.extractors.base import (
 from repowise.core.workspace.extractors.data import DataExtractor
 from repowise.core.workspace.extractors.data.sql_strings import SqlStringsDialect
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
+from repowise.core.workspace.extractors.http.jaxrs import JaxRsDialect
 
 
 def _ctx(content: str, rel_path: str = "app/routers/chat.py") -> ScanContext:
@@ -99,7 +100,7 @@ class TestExtractorSelfExclusion:
     SELF_PATHS = (
         "packages/core/src/repowise/core/workspace/extractors/http/fastapi.py",
         "packages/core/src/repowise/core/workspace/extractors/http/mounts.py",
-        "packages/core/src/repowise/core/workspace/extractors/topic_extractor.py",
+        "packages/core/src/repowise/core/workspace/extractors/topic/rabbitmq.py",
         "packages/core/src/repowise/core/workspace/extractors/grpc/python.py",
         "packages/core/src/repowise/core/workspace/extractors/data/sql_strings.py",
     )
@@ -123,6 +124,29 @@ class TestExtractorSelfExclusion:
         skip = make_exclude_predicate(("vendor/*",))
         assert skip("vendor/thing.py")
         assert not skip("app/thing.py")
+
+    def test_dotnet_test_projects_are_skipped(self) -> None:
+        # A .NET test project is a sibling directory named after the project
+        # it tests, not a `tests/` tree. Its HTTP calls and published messages
+        # became producers and consumers linked across repos (#2808).
+        skip = make_exclude_predicate()
+        assert skip("Foo.Worker.Tests/OrderPlacedTests.cs")
+        assert skip("src/Billing.Tests/Consumers/InvoiceConsumerTests.vb")
+
+    def test_a_dotnet_specs_project_is_still_scanned(self) -> None:
+        # Left in for the reason a `spec/` directory is: it can hold real
+        # OpenAPI or proto contracts.
+        skip = make_exclude_predicate()
+        assert not skip("Foo.Specs/openapi.yaml")
+
+    def test_a_name_that_only_ends_like_a_test_project_is_still_scanned(self) -> None:
+        skip = make_exclude_predicate()
+        assert not skip("LoadTests/Runner.cs")
+        assert not skip("src/Foo.Testing/Clients/OrdersClient.cs")
+
+    def test_dotnet_test_projects_are_scanned_when_tests_are_included(self) -> None:
+        skip = make_exclude_predicate(exclude_tests=False)
+        assert not skip("Foo.Worker.Tests/OrderPlacedTests.cs")
 
 
 class TestSqlCteAlias:
@@ -247,3 +271,50 @@ class TestDataExtractorEndToEnd:
         assert "data::git_metadata" in ids
         for fabricated in ("data::ranked", "data::path", "data::would"):
             assert fabricated not in ids
+
+
+class TestQuarkusIsJaxRs:
+    """A Quarkus REST resource is a JAX-RS resource and needs no dialect of its own.
+
+    The JAX-RS dialect gates on ``@Path`` in the file, not on the stack, so the
+    ``jakarta.ws.rs`` annotations Quarkus uses yield contracts as they are.
+    """
+
+    RESOURCE = """package org.acme;
+
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import io.quarkus.runtime.annotations.RegisterForReflection;
+
+@Path("/fruits")
+public class FruitResource {
+
+    @GET
+    public List<Fruit> list() { return Fruit.listAll(); }
+
+    @GET
+    @Path("/{id}")
+    public Fruit get(@PathParam("id") Long id) { return Fruit.findById(id); }
+
+    @POST
+    public Response add(Fruit fruit) { fruit.persist(); return Response.ok(fruit).build(); }
+}
+"""
+
+    def test_quarkus_resource_yields_jaxrs_contracts(self) -> None:
+        ctx = ScanContext(
+            repo_alias="api",
+            rel_path="src/main/java/org/acme/FruitResource.java",
+            suffix=".java",
+            content=self.RESOURCE,
+        )
+        contracts = JaxRsDialect().extract(ctx)
+        assert _ids(contracts) == {
+            "http::GET::/fruits",
+            "http::GET::/fruits/{param}",
+            "http::POST::/fruits",
+        }
+        assert {c.meta["framework"] for c in contracts} == {"jaxrs"}
+

@@ -23,6 +23,9 @@ class _DummyEngine:
 
 
 class _Page:
+    metadata_json = "{}"  # non-nullable on the real model
+    digest = ""  # non-nullable on the real model
+
     def __init__(self, **kw: Any) -> None:
         self.__dict__.update(kw)
 
@@ -136,6 +139,22 @@ async def test_reindex_embeds_the_shared_recipe(run_reindex) -> None:
         )
     ]
 
+
+async def test_reindex_embeds_the_stored_file_vocabulary(run_reindex) -> None:
+    """The vocabulary is in ``metadata_json``, not the content, on a stored row."""
+    page = _Page(
+        id="file_page:pkg/list.go",
+        title="File: pkg/list.go",
+        page_type="file_page",
+        target_path="pkg/list.go",
+        summary="",
+        content="## Overview\n\nLists releases.",
+        metadata_json='{"file_vocabulary": "Order of releases returned"}',
+    )
+
+    store = await run_reindex([page])
+
+    assert "Order of releases returned" in store.items[0][1]
 
 async def test_reindex_carries_the_path_and_summary_into_the_text(run_reindex) -> None:
     """The two fields it never used to pass, named directly.

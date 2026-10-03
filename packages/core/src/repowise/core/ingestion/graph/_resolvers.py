@@ -27,6 +27,11 @@ _MIN_REFERENCE_CONFIDENCE = 0.85
 _BARE_REFERENCE_KINDS = frozenset({"function"})
 _QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
 
+#: Languages that share the MSBuild project graph, so the namespace and
+#: partial-class passes below serve both. Call resolution and receiver typing
+#: stay per-language and are deliberately not gated on this.
+_DOTNET_LANGUAGES = frozenset({"csharp", "vbnet"})
+
 
 class ResolveMixin:
     """Symbol-level edge resolution passes run during ``build()``."""
@@ -158,25 +163,33 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
-        """Emit same-namespace / global-using ``imports`` edges for C# files.
+    def _resolve_dotnet_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for C# and VB.NET files.
 
-        C# references same-namespace types with no using directive, and
-        ``global using`` / csproj ``<Using>`` items make namespaces visible
-        project-wide — both leave cohesive code (and whole test suites)
-        looking like zero-edge orphans. Conservative text-level scan, same
-        shape as the JVM same-package pass.
+        Both languages reference same-namespace types with no import
+        directive, and project-wide ``global using`` / ``<Using>`` /
+        ``<Import>`` items widen that further, so cohesive code (and whole
+        test suites) otherwise read as zero-edge orphans. VB.NET adds the
+        harder case: most .vb files declare no namespace at all and sit in
+        the project's ``<RootNamespace>``. Conservative text-level scan,
+        same shape as the JVM same-package pass.
         """
         from ..languages.csharp_member_reads import collect_csharp_source_texts
         from ..languages.csharp_same_namespace import (
             resolve_csharp_same_namespace_refs,
         )
+        from ..languages.scope_scan import collect_source_texts
+        from ..languages.vbnet_same_namespace import (
+            resolve_vbnet_same_namespace_refs,
+        )
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
-        )
-        if not has_csharp:
+        languages = {
+            pf.file_info.language
+            for pf in self._parsed_files.values()
+            if pf.file_info.language in _DOTNET_LANGUAGES
+        }
+        if not languages:
             return
 
         phase = "graph.same_namespace"
@@ -184,14 +197,25 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             index = get_or_build_index(ctx)
-            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             repo = getattr(index, "repo_path", None) if index is not None else None
-            added = resolve_csharp_same_namespace_refs(
-                self._graph, index, cs_texts, repo
-            )
-            log.info("same_namespace_edges", language="csharp", added=added)
+            if "csharp" in languages:
+                cs_texts = collect_csharp_source_texts(
+                    self._parsed_files, self._source_map
+                )
+                added = resolve_csharp_same_namespace_refs(
+                    self._graph, index, cs_texts, repo
+                )
+                log.info("same_namespace_edges", language="csharp", added=added)
+            if "vbnet" in languages:
+                vb_texts = collect_source_texts(
+                    self._parsed_files, ("vbnet",), self._source_map
+                )
+                added = resolve_vbnet_same_namespace_refs(
+                    self._graph, index, vb_texts, repo
+                )
+                log.info("same_namespace_edges", language="vbnet", added=added)
         except Exception as exc:
-            log.warning("csharp_same_namespace_failed", error=str(exc))
+            log.warning("dotnet_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -257,7 +281,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -277,13 +302,19 @@ class ResolveMixin:
             ".cpp",
             ".cxx",
             ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
             *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
         )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -335,19 +366,22 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_partials(self, ctx: Any, progress: Any | None = None) -> None:
-        """Link C# ``partial`` co-fragments of one type bidirectionally.
+    def _resolve_dotnet_partials(self, ctx: Any, progress: Any | None = None) -> None:
+        """Link ``partial`` co-fragments of one type bidirectionally.
 
         Fragments of a partial class across files are literally one
         class — without these edges the secondary fragment files read as
-        disconnected from their own type.
+        disconnected from their own type. VB.NET leans on this far harder
+        than C#: every WinForms designer splits ``Form.vb`` from
+        ``Form.Designer.vb`` as a ``Partial Class``.
         """
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
+        has_dotnet = any(
+            pf.file_info.language in _DOTNET_LANGUAGES
+            for pf in self._parsed_files.values()
         )
-        if not has_csharp:
+        if not has_dotnet:
             return
 
         phase = "graph.partials"
@@ -367,9 +401,21 @@ class ResolveMixin:
                             continue
                         if self._graph.has_node(rel):
                             rels.append(rel)
+                    # ``Policy`1`` is the generic ``Policy<T>``; symbol ids and
+                    # imported names spell it ``Policy``.
+                    local_name = fqn.rsplit(".", 1)[-1].split("`", 1)[0]
+                    fragments = tuple(sorted(rels))
+                    for rel in rels:
+                        # Two partial types sharing a bare name in one file
+                        # (``Policy`` and ``Policy<T>``, or two namespaces) are
+                        # told apart by nothing the call resolver sees, so
+                        # neither lends that file its fragments.
+                        key = (rel, local_name)
+                        self._partial_fragments[key] = (
+                            () if key in self._partial_fragments else fragments
+                        )
                     if len(rels) < 2:
                         continue
-                    local_name = fqn.rsplit(".", 1)[-1]
                     for a in rels:
                         for b in rels:
                             if a == b or self._graph.has_edge(a, b):
@@ -382,9 +428,9 @@ class ResolveMixin:
                                 hint_source="partial_class",
                             )
                             added += 1
-            log.info("partial_class_edges", language="csharp", added=added)
+            log.info("partial_class_edges", added=added)
         except Exception as exc:
-            log.warning("csharp_partials_failed", error=str(exc))
+            log.warning("dotnet_partials_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -421,6 +467,34 @@ class ResolveMixin:
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -547,6 +621,7 @@ class ResolveMixin:
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
             heritage_parents=self._heritage_parents(),
+            partial_fragments=self._partial_fragments,
         )
 
         # Record which C/C++ declarations were paired with a definition. The

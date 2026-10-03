@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.generation.models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -103,6 +104,108 @@ async def mark_tombstone_pages(
             candidate_count=len(candidates),
             sample=[p for p, _ in candidates[:3]],
         )
+    return marked
+
+
+async def tombstone_file_pages_outside_scope(
+    session: Any, repo_id: str, current_file_paths: set[str]
+) -> list[str]:
+    """Tombstone active source-backed pages outside a full traversal's scope.
+
+    Files removed by ``exclude_patterns`` still exist on disk, so the ordinary
+    deleted-file tombstone path cannot identify them.  A successful full
+    traversal can: any active file page outside its parsed-file set is no longer
+    part of this index.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    pages = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(("file_page", "api_contract", "infra_page", "symbol_spotlight")),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).scalars()
+    marked: list[str] = []
+    for page in pages:
+        target = page.target_path or ""
+        source_path = target.split("::", 1)[0] if page.page_type == "symbol_spotlight" else target
+        if source_path in current_file_paths:
+            continue
+        page.freshness_status = "tombstone"
+        try:
+            metadata = json.loads(page.metadata_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        metadata["successor_paths"] = []
+        page.metadata_json = json.dumps(metadata)
+        marked.append(page.id)
+    return marked
+
+
+async def reconcile_full_index_scope(
+    session: Any,
+    repo_id: str,
+    current_graph_paths: set[str],
+    current_git_paths: set[str],
+) -> list[str]:
+    """Reconcile every source-backed store against one successful traversal."""
+    tombstoned = await tombstone_file_pages_outside_scope(session, repo_id, current_graph_paths)
+    await _prune_stale_file_rows(
+        session,
+        repo_id,
+        current_graph_paths,
+        current_git_paths,
+        authoritative_empty=True,
+    )
+    from repowise.core.persistence.crud.decisions import (
+        purge_proposed_decisions_outside_files,
+    )
+
+    await purge_proposed_decisions_outside_files(session, repo_id, current_graph_paths)
+    return tombstoned
+
+
+async def tombstone_pages_outside_generation(
+    session: Any, repo_id: str, current_page_ids: set[str]
+) -> list[str]:
+    """Retire generated pages absent from an authoritative full generation.
+
+    This is used only when generation configuration changed and the update ran
+    the complete generation ladder. It covers selection changes such as page
+    caps, spotlight ranking, and disabling onboarding, none of which imply that
+    the backing source file disappeared.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.generation.models import GENERATION_LEVELS
+    from repowise.core.persistence.models import Page
+
+    pages = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(tuple(GENERATION_LEVELS)),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).scalars()
+    marked: list[str] = []
+    for page in pages:
+        if page.id in current_page_ids:
+            continue
+        page.freshness_status = "tombstone"
+        try:
+            metadata = json.loads(page.metadata_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        metadata["successor_paths"] = []
+        page.metadata_json = json.dumps(metadata)
+        marked.append(page.id)
     return marked
 
 
@@ -304,6 +407,8 @@ async def persist_graph_nodes(
     repo_id: str,
     graph_builder: Any,
     ep_scores: dict[str, float] | None = None,
+    *,
+    timings: Any | None = None,
 ) -> None:
     """Persist file- and symbol-level graph nodes with full centrality metrics.
 
@@ -316,25 +421,30 @@ async def persist_graph_nodes(
         batch_upsert_graph_node_membership,
         batch_upsert_graph_nodes,
     )
+    from repowise.core.pipeline.phase_timing import timed
 
     graph = graph_builder.graph()
-    pr = graph_builder.pagerank()
-    bc = graph_builder.betweenness_centrality()
-    sym_pr = graph_builder.symbol_pagerank()
-    sym_bc = graph_builder.symbol_betweenness_centrality()
-    cd = graph_builder.community_detection()
-    sc = graph_builder.symbol_communities()
-    ci = graph_builder.community_info()
+    with timed(timings, "persist.graph_nodes.metrics"):
+        pr = graph_builder.pagerank()
+        bc = graph_builder.betweenness_centrality()
+        sym_pr = graph_builder.symbol_pagerank()
+        sym_bc = graph_builder.symbol_betweenness_centrality()
+        cd = graph_builder.community_detection()
+        sc = graph_builder.symbol_communities()
+        ci = graph_builder.community_info()
     # ``None`` means "derive scores from the graph" (the incremental update
     # path passes nothing). An explicit ``{}`` means "no scores" and is left
     # untouched. Without this, every ``update`` re-upserted symbol nodes with
     # empty community_meta and wiped the entry_point_scores written at init,
     # leaving get_execution_flows / the dashboard panel permanently empty.
     if ep_scores is None:
-        ep_scores = _derive_entry_point_scores(graph_builder)
+        with timed(timings, "persist.graph_nodes.entry_points"):
+            ep_scores = _derive_entry_point_scores(graph_builder)
 
     bt_commits = _betweenness_commits(graph_builder)
 
+    timings_rows = timed(timings, "persist.graph_nodes.rows")
+    timings_rows.__enter__()
     nodes = []
     for node_id in graph.nodes:
         data = graph.nodes[node_id]
@@ -348,6 +458,7 @@ async def persist_graph_nodes(
             "has_error": data.get("has_error", False),
             "is_test": data.get("is_test", False),
             "is_entry_point": data.get("is_entry_point", False),
+            "is_reachability_root": is_reachability_root(data),
             # Files draw from the file-level metric tables; symbols fall
             # back to the symbol subgraph (calls + heritage) so that the
             # per-symbol UI panel shows real centrality instead of 0.
@@ -375,6 +486,7 @@ async def persist_graph_nodes(
                 community_meta = {
                     "label": comm_info.label,
                     "cohesion": comm_info.cohesion,
+                    "conductance": comm_info.conductance,
                 }
         elif node_type == "symbol":
             sym_cid = sc.get(node_id)
@@ -399,15 +511,20 @@ async def persist_graph_nodes(
                 }
             )
         nodes.append(node_dict)
+    timings_rows.__exit__(None, None, None)
 
     if nodes:
-        await batch_upsert_graph_nodes(session, repo_id, nodes)
+        with timed(timings, "persist.graph_nodes.upsert"):
+            await batch_upsert_graph_nodes(session, repo_id, nodes)
 
     # Materialize the file-level metrics snapshot (graph_metrics) so large
     # repos can serve metric reads from SQL without recomputing the NetworkX
     # centrality kernels. Additive to graph_nodes; never changes node rows.
     try:
-        await batch_upsert_graph_metrics(session, repo_id, graph_builder.file_metrics_snapshot())
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_metrics(
+                session, repo_id, graph_builder.file_metrics_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
@@ -415,9 +532,10 @@ async def persist_graph_nodes(
     # queryable rows (graph_node_membership). Feeds the break-cycle /
     # move-method refactoring surfaces; non-load-bearing like graph_metrics.
     try:
-        await batch_upsert_graph_node_membership(
-            session, repo_id, graph_builder.node_membership_snapshot()
-        )
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_node_membership(
+                session, repo_id, graph_builder.node_membership_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 
@@ -465,12 +583,46 @@ async def persist_incremental_symbols(
     """
     if not parsed_files:
         return
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_symbols_for_files
 
+    # An extraction change can re-key symbols in files git did not touch (an
+    # overload gaining its own id), so it widens to the whole parsed set on the
+    # same check that widens edges. The stamp is written once, by
+    # :func:`persist_incremental_edges`, which runs after this.
+    if await _stored_edges_parser_fingerprint(session, repo_id) != parser_fingerprint():
+        changed_paths = [pf.file_info.path for pf in parsed_files]
     reconcile_paths, symbols = _changed_file_symbols(parsed_files, changed_paths)
     if not reconcile_paths:
         return
     await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
+
+
+async def persist_symbol_analysis(
+    session: Any,
+    repo_id: str,
+    parsed_files: list[Any] | None,
+) -> None:
+    """Reconcile symbol rows after analysis mutates their derived fields.
+
+    Health analysis computes ``complexity_estimate`` on the in-memory symbols
+    after the resumable INDEX checkpoint has already persisted the parser
+    defaults.  Re-upsert just those symbol records before ANALYSIS is marked
+    complete; graph construction, Git analysis, and the rest of ingestion stay
+    untouched.  The upsert preserves each persisted row's database identity.
+    """
+    if not parsed_files:
+        return
+    from repowise.core.persistence.crud import batch_upsert_symbols
+
+    symbols: list[Any] = []
+    for pf in parsed_files:
+        for sym in pf.symbols:
+            if not getattr(sym, "file_path", None):
+                sym.file_path = pf.file_info.path
+            symbols.append(sym)
+    if symbols:
+        await batch_upsert_symbols(session, repo_id, symbols)
 
 
 def _changed_file_edges(
@@ -531,14 +683,14 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     The signal is the store's own content rather than a version marker: a
     routine update deliberately clamps ``store_format_version`` below the first
     reindex gate, so a version comparison would refire on every run. Here, a
-    repo whose graph now has cohesion edges but whose table has no
+    repo whose graph now has cohesion edges but whose table has no cohesion
     ``hint_source`` anywhere is exactly a pre-cohesion store. Rewriting it
     stamps those rows, so this answers False from then on and the full
     reconcile happens once.
     """
     from sqlalchemy import select
 
-    from repowise.core.ingestion.cohesion import is_cohesion_edge
+    from repowise.core.ingestion.cohesion import COHESION_HINTS, is_cohesion_edge
     from repowise.core.persistence.models import GraphEdge
 
     try:
@@ -551,7 +703,12 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     row = (
         await session.execute(
             select(GraphEdge.id)
-            .where(GraphEdge.repository_id == repo_id, GraphEdge.hint_source.is_not(None))
+            .where(
+                GraphEdge.repository_id == repo_id,
+                # Cohesion hints only: other passes (pytest conftest) stamp a
+                # hint too, and one of theirs is not a cohesion stamp.
+                GraphEdge.hint_source.in_(COHESION_HINTS),
+            )
             .limit(1)
         )
     ).first()
@@ -654,7 +811,51 @@ async def persist_incremental_edges(
     # caller before the commit) leaves the old stamp, so the next update retries
     # rather than stranding the files it never reached.
     if parser_changed:
+        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, parsed_files)
         await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _prune_vanished_symbol_nodes(
+    session: Any, repo_id: str, graph_builder: Any, parsed_files: list[Any]
+) -> None:
+    """Delete symbol ``graph_nodes`` a re-extraction no longer produces.
+
+    ``persist_graph_nodes`` upserts the current graph and never deletes, so a
+    symbol whose id changed under a new parser (an overload gaining its own id)
+    would otherwise keep its old row beside the new ones. Scoped to files this
+    run parsed; a file that is gone is :func:`_prune_stale_file_rows`'s job.
+    Membership rows prune themselves on their next write, and ``graph_metrics``
+    holds files only.
+    """
+    from sqlalchemy import delete, or_, select
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    graph = graph_builder.graph()
+    paths = [pf.file_info.path for pf in parsed_files]
+    stale: list[str] = []
+    for i in range(0, len(paths), _PRUNE_CHUNK):
+        rows = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type != "file",
+                GraphNode.file_path.in_(paths[i : i + _PRUNE_CHUNK]),
+            )
+        )
+        stale.extend(node_id for node_id in rows.scalars() if node_id not in graph)
+    for i in range(0, len(stale), _PRUNE_CHUNK):
+        batch = stale[i : i + _PRUNE_CHUNK]
+        await session.execute(
+            delete(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                or_(GraphEdge.source_node_id.in_(batch), GraphEdge.target_node_id.in_(batch)),
+            )
+        )
+        await session.execute(
+            delete(GraphNode).where(GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch))
+        )
+    if stale:
+        logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
 
 
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
@@ -666,6 +867,8 @@ async def _prune_stale_file_rows(
     repo_id: str,
     current_graph_file_paths: set[str],
     current_git_file_paths: set[str],
+    *,
+    authoritative_empty: bool = False,
 ) -> None:
     """Delete file-scoped rows for files absent from the latest full pipeline run.
 
@@ -675,7 +878,8 @@ async def _prune_stale_file_rows(
     *current_graph_file_paths* (from ``parsed_files``) governs graph/analysis
     tables; *current_git_file_paths* (from ``git_metadata_list``) governs
     ``git_metadata`` only. Each set independently no-ops when empty to avoid
-    wiping rows on a broken run.
+    wiping rows on a broken run, unless ``authoritative_empty`` confirms that a
+    successful full traversal really produced an empty scope.
 
     Full runs only. The authority here is "absent from this run's output",
     which is only safe because a full run rebuilds every table it prunes from
@@ -686,7 +890,9 @@ async def _prune_stale_file_rows(
     from sqlalchemy import delete, or_, select
 
     from repowise.core.persistence.models import (
+        CoverageFile,
         DeadCodeFinding,
+        GitFunctionBlame,
         GitMetadata,
         GraphEdge,
         GraphMetric,
@@ -697,10 +903,17 @@ async def _prune_stale_file_rows(
         WikiSymbol,
     )
 
-    async def _delete_stale_by_paths(model: Any, column: Any, current: set[str]) -> None:
+    async def _delete_stale_by_paths(
+        model: Any,
+        column: Any,
+        current: set[str],
+        *,
+        allow_empty: bool | None = None,
+    ) -> None:
         # Diff persisted paths against *current* in Python so the IN (...) is
         # bounded by the stale set, not the whole repo (SQLite param limit).
-        if not current:
+        empty_is_authoritative = authoritative_empty if allow_empty is None else allow_empty
+        if not current and not empty_is_authoritative:
             return
         existing = set(
             (await session.execute(select(column).where(model.repository_id == repo_id).distinct()))
@@ -719,7 +932,7 @@ async def _prune_stale_file_rows(
     # ---- Graph nodes + edges -------------------------------------------------
     # File nodes key on node_id; symbol nodes on file_path. Delete edges before
     # nodes (no FK cascade between the tables).
-    if current_graph_file_paths:
+    if current_graph_file_paths or authoritative_empty:
         node_rows = (
             await session.execute(
                 select(GraphNode.node_id, GraphNode.node_type, GraphNode.file_path).where(
@@ -768,7 +981,18 @@ async def _prune_stale_file_rows(
         HealthFileMetric, HealthFileMetric.file_path, current_graph_file_paths
     )
     await _delete_stale_by_paths(HealthFinding, HealthFinding.file_path, current_graph_file_paths)
-    await _delete_stale_by_paths(GitMetadata, GitMetadata.file_path, current_git_file_paths)
+    await _delete_stale_by_paths(CoverageFile, CoverageFile.file_path, current_graph_file_paths)
+    await _delete_stale_by_paths(
+        GitFunctionBlame, GitFunctionBlame.file_path, current_graph_file_paths
+    )
+    await _delete_stale_by_paths(
+        GitMetadata,
+        GitMetadata.file_path,
+        current_git_file_paths,
+        # An empty Git result is authoritative only when the successful source
+        # traversal is empty too. Otherwise it may be a degraded Git walk.
+        allow_empty=authoritative_empty and not current_graph_file_paths,
+    )
 
 
 # A prune that would take more than this share of a table is read as a broken
@@ -792,18 +1016,9 @@ def _git_tracked_paths(root: Path) -> frozenset[str]:
     witness has nothing to say, and the caller treats silence as "no opinion"
     rather than as "nothing is tracked".
     """
-    import subprocess
+    from repowise.core.git_refs import tracked_paths
 
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True,
-            timeout=60,
-            check=True,
-        ).stdout
-    except Exception:
-        return frozenset()
-    return frozenset(p for p in out.decode("utf-8", "replace").split("\0") if p)
+    return tracked_paths(str(root))
 
 
 class _FileLiveness:
@@ -902,6 +1117,8 @@ async def prune_deleted_file_rows(
     from repowise.core.analysis.dead_code.analyzer import _is_synthetic_node
     from repowise.core.persistence.models import (
         DeadCodeFinding,
+        DocDriftFinding,
+        DocDriftReference,
         GitMetadata,
         GraphEdge,
         GraphMetric,
@@ -995,6 +1212,20 @@ async def prune_deleted_file_rows(
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
+    # Keyed on the DOCUMENT. The incremental drift pass scopes its write to the
+    # documents it read, so a deleted one is never in scope and its rows would
+    # outlive the file without this. ``_FileLiveness`` asks disk and
+    # ``git ls-files`` rather than the parse, so a ``.md`` path is judged
+    # correctly here. Note the LLM-regenerating update path never reaches this
+    # function, so drift rows for a document deleted there wait for a reindex,
+    # as dead-code and health rows already do.
+    await _prune_table(DocDriftFinding, DocDriftFinding.file_path, "doc_drift_findings")
+    # On the document only. A reference to a deleted *target* is drift, not a
+    # dead row: the next pass re-resolves it into a finding, and pruning by
+    # target here would delete the evidence before anything reported it.
+    await _prune_table(
+        DocDriftReference, DocDriftReference.document_path, "doc_drift_references"
+    )
     await _prune_table(HealthFileMetric, HealthFileMetric.file_path, "health_file_metrics")
     await _prune_table(HealthFinding, HealthFinding.file_path, "health_findings")
     # git_metadata is keyed off the git indexer on a full run, but an
@@ -1076,9 +1307,7 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
     stale = (
         (
             await session.execute(
-                select(Page.id).where(
-                    Page.repository_id == repo_id, or_(*match_clauses)
-                )
+                select(Page.id).where(Page.repository_id == repo_id, or_(*match_clauses))
             )
         )
         .scalars()
@@ -1087,9 +1316,7 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
     for i in range(0, len(stale), _PRUNE_CHUNK):
         batch = stale[i : i + _PRUNE_CHUNK]
         await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(
-            delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
-        )
+        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
     if stale:
         logger.info(
             "retired_pages_swept",
@@ -1226,9 +1453,7 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     existing = (
         (
             await session.execute(
-                select(Page.id).where(
-                    Page.repository_id == repo_id, Page.page_type == "scc_page"
-                )
+                select(Page.id).where(Page.repository_id == repo_id, Page.page_type == "scc_page")
             )
         )
         .scalars()
@@ -1238,9 +1463,7 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     for i in range(0, len(stale), _PRUNE_CHUNK):
         batch = stale[i : i + _PRUNE_CHUNK]
         await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(
-            delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
-        )
+        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
     if stale:
         logger.info("absent_cycle_pages_swept", repo_id=repo_id, count=len(stale))
     return stale
@@ -1439,24 +1662,11 @@ async def persist_security_findings(result: Any, session: Any, repo_id: str) -> 
     it off ``file_info`` yields empty text and a scan that can never fire.
     Resume views without a ``source_map`` degrade to the symbol-name scan.
     """
-    from repowise.core.analysis.security_scan import SecurityScanner
+    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
 
-    scanner = SecurityScanner(session, repo_id)
     source_map = getattr(result, "source_map", None) or {}
-    findings_by_file: dict[str, list[dict]] = {}
-    scanned_paths: list[str] = []
-    for pf in result.parsed_files:
-        path = pf.file_info.path
-        raw = source_map.get(path, b"")
-        if isinstance(raw, (bytes, bytearray)):
-            source_text = raw.decode("utf-8", errors="replace")
-        else:
-            source_text = raw or ""
-        scanned_paths.append(path)
-        findings = await scanner.scan_file(path, source_text, pf.symbols)
-        if findings:
-            findings_by_file[path] = findings
-    await scanner.replace_findings(findings_by_file, scanned_paths)
+    findings_by_file, scanned_paths = scan_source_map(result.parsed_files, source_map)
+    await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)
 
 
 async def persist_git(result: Any, session: Any, repo_id: str) -> None:
@@ -1469,6 +1679,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
         prune_fix_events_before,
         update_repo_git_totals,
         upsert_fix_events_bulk,
+        upsert_git_commit_files_bulk,
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
@@ -1482,6 +1693,10 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+
+    commit_file_rows = getattr(summary, "commit_file_rows", None)
+    if commit_file_rows:
+        await upsert_git_commit_files_bulk(session, repo_id, commit_file_rows)
 
     # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
     # re-index of an already-indexed repo from leaving behind events that have
@@ -1514,6 +1729,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
             session,
             repo_id,
             total_commit_count=totals.total_commit_count,
+            total_merge_commit_count=getattr(totals, "total_merge_commit_count", None),
             first_commit_at=totals.first_commit_at,
             total_contributor_count=totals.total_contributor_count,
             first_commit_author=totals.first_commit_author,
@@ -1522,6 +1738,88 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
             total_lines_deleted=totals.total_lines_deleted,
             churn_anchor_sha=getattr(totals, "churn_anchor_sha", None),
         )
+
+
+async def replace_git_history(
+    session: Any,
+    repo_id: str,
+    git_meta_map: dict[str, dict],
+    git_summary: Any,
+) -> None:
+    """Replace every history-derived row from one authoritative Git walk."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete
+
+    from repowise.core.persistence.models import (
+        FixEvent,
+        GitCommit,
+        GitCommitFile,
+        GitCommitHealthDelta,
+        GitCommitHealthFinding,
+        GitMetadata,
+    )
+
+    # Function blame describes the current source tree and is produced by the
+    # health pass, not by persist_git. Preserve it across a history-window
+    # replacement; scope reconciliation prunes entries for excluded files.
+    for model in (
+        FixEvent,
+        GitCommit,
+        GitCommitFile,
+        GitCommitHealthDelta,
+        GitCommitHealthFinding,
+        GitMetadata,
+    ):
+        await session.execute(delete(model).where(model.repository_id == repo_id))
+    await persist_git(
+        SimpleNamespace(
+            git_metadata_list=list(git_meta_map.values()),
+            git_summary=git_summary,
+        ),
+        session,
+        repo_id,
+    )
+
+
+async def persist_git_refresh(
+    session: Any,
+    repo_id: str,
+    git_meta_map: dict[str, dict],
+    git_decay_map: dict[str, dict] | None,
+    full_git_summary: Any | None,
+) -> None:
+    """Persist either a full history replacement or an incremental refresh."""
+    if full_git_summary is not None:
+        await replace_git_history(session, repo_id, git_meta_map, full_git_summary)
+        return
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import (
+        recompute_git_percentiles,
+        upsert_git_metadata_bulk,
+    )
+    from repowise.core.persistence.models import GitMetadata
+
+    decay_rows = list((git_decay_map or {}).values())
+    if decay_rows:
+        stored = set(
+            (
+                await session.execute(
+                    select(GitMetadata.file_path).where(GitMetadata.repository_id == repo_id)
+                )
+            ).scalars()
+        )
+        # A decay row is partial, so it only refreshes a stored row: inserted,
+        # it is a fragment with no totals or owner. History-tier rows are
+        # complete and upsert whole, which also fills the non-code rows an
+        # index built before that tier never wrote.
+        decay_rows = [
+            row for row in decay_rows if row.get("history_only") or row["file_path"] in stored
+        ]
+    await upsert_git_metadata_bulk(session, repo_id, [*git_meta_map.values(), *decay_rows])
+    await recompute_git_percentiles(session, repo_id)
 
 
 async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
@@ -1543,6 +1841,56 @@ async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
         return get_head_commit(Path(local_path)) if local_path else None
     except Exception:
         return None
+
+
+async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
+    """Append a ``HealthSnapshot`` built from the repository's stored rows.
+
+    One writer for the full index and the incremental update. A partial report
+    cannot be snapshotted directly, because it holds only the changed files and
+    a snapshot has to describe the whole repository; the store after the write
+    holds exactly that, on both paths.
+
+    Best-effort: a snapshot that fails to write is logged and never fails the
+    run that produced the rows it describes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.scoring import compute_kpis
+    from repowise.core.analysis.health.trends import snapshot_fields
+    from repowise.core.persistence.crud import get_hotspot_file_paths, save_health_snapshot
+    from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+
+    try:
+        metrics = list(
+            (
+                await session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not metrics:
+            return
+        findings = list(
+            (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        kpis = compute_kpis(metrics, await get_hotspot_file_paths(session, repo_id))
+        fields = snapshot_fields(kpis, metrics, findings)
+        if fields is not None:
+            await save_health_snapshot(session, repo_id, **fields)
+    except Exception as exc:
+        logger.warning("health_snapshot_skipped", error=str(exc))
 
 
 async def save_full_health_report(
@@ -1582,9 +1930,7 @@ async def save_full_health_report(
         # open plan a person has triaged, and empty both queues on the strength
         # of a parse failure or an exclude pattern that matched everything.
         return
-    await save_health_metrics(
-        session, repo_id, metrics, analyzed_commit=analyzed_commit
-    )
+    await save_health_metrics(session, repo_id, metrics, analyzed_commit=analyzed_commit)
     # One savepoint over the findings and everything derived from them, so a
     # rebuild that failed halfway cannot leave the queue describing findings
     # that were never stored. It runs on an empty finding set too: the queue
@@ -1618,32 +1964,99 @@ async def save_full_health_report(
         # Fold the plans just written into per-file opportunities. Last in the
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
-        await finalize_refactoring_opportunities(
-            session, repo_id, analyzed_commit=analyzed_commit
+        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+
+
+async def refresh_governance_findings(
+    session: Any, repo_id: str, *, recompose_queue: bool = True
+) -> int:
+    """Rebuild the governance findings from the stored decisions and health rows.
+
+    Every writer that runs the governance pass comes through here: the index
+    after its decisions are stored, the update after its decision steps, and
+    the full health re-score, whose findings replace deletes these rows along
+    with every other open finding. Returns the number of findings written.
+
+    ``recompose_queue`` re-folds the refactoring queue when findings were
+    written, since it is composed over the stored findings and may have been
+    built before these rows existed. Only that queue: the performance
+    finalizer reads ``performance`` findings, and every governance biomarker
+    is ``organizational``. A caller that finalizes the queue next anyway
+    passes ``False``.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.governance import build_governance_findings
+    from repowise.core.persistence.crud import (
+        finalize_refactoring_opportunities,
+        get_decision_health_summary,
+        get_scored_file_paths,
+        replace_governance_findings,
+    )
+    from repowise.core.persistence.models import DecisionRecord
+
+    # One savepoint: the replace deletes before it inserts, and the queue
+    # reconciles as a whole, so a failure must leave neither half-written.
+    async with session.begin_nested():
+        decisions = list(
+            (
+                await session.execute(
+                    select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
         )
+        findings = build_governance_findings(
+            health_summary=await get_decision_health_summary(session, repo_id),
+            decisions=decisions,
+            scored_paths=await get_scored_file_paths(session, repo_id),
+        )
+        await replace_governance_findings(session, repo_id, findings)
+        if findings and recompose_queue:
+            await finalize_refactoring_opportunities(
+                session, repo_id, analyzed_commit=await _analyzed_commit(session, repo_id)
+            )
+    if findings:
+        logger.info("governance_findings_persisted", repo_id=repo_id, count=len(findings))
+    return len(findings)
 
 
 async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
-    """Persist analysis-phase outputs: dead code, health, decisions, governance.
+    """Persist analysis-phase outputs: dead code, health, decisions, drift.
 
-    Dead-code and health writes are repo-wide DELETE-THEN-INSERT (so they
-    converge on re-run but don't support partial-within-phase resume);
+    Dead-code, health and doc-drift writes are repo-wide DELETE-THEN-INSERT (so
+    they converge on re-run but don't support partial-within-phase resume);
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
-    from repowise.core.analysis.health.trends import snapshot_file_maps
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
+        replace_doc_drift_guarded,
         save_coverage_files,
         save_dead_code_findings,
-        save_health_snapshot,
+        set_repo_function_mod_p80,
         upsert_git_function_blame_bulk,
     )
 
     # ---- Dead code findings --------------------------------------------------
     if result.dead_code_report and result.dead_code_report.findings:
         await save_dead_code_findings(session, repo_id, result.dead_code_report.findings)
+
+    # ---- Documentation drift: findings and resolved references --------------
+    # Both tables, one savepoint, one run. Written even when the finding list
+    # is empty, unlike dead code above: a run that fixed the last drifted
+    # reference must clear the rows, and a guard on ``.findings`` would leave
+    # the old ones standing as though the documents were still wrong.
+    # ``authoritative_paths`` is None on a full run, so the replace is
+    # repo-wide.
+    drift = getattr(result, "doc_drift_report", None)
+    if drift is not None:
+        try:
+            await replace_doc_drift_guarded(session, repo_id, drift)
+        except Exception as exc:
+            logger.warning("doc_drift_persist_skipped", error=str(exc))
 
     # ---- Health findings + per-file metrics ---------------------------------
     if getattr(result, "health_report", None):
@@ -1662,30 +2075,22 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 coverage_files,
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
                 ingested_commit_sha=head_sha,
-                mapping_partial=bool(getattr(hr, "coverage_mapping_partial", False)),
+                provenance=getattr(hr, "coverage_provenance", None),
             )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:
             await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
-        # Snapshot the run for trend tracking (rolling delete inside).
-        kpis = hr.kpis or {}
-        try:
-            scores_map, deductions_map = snapshot_file_maps(
-                hr.metrics or [], hr.findings or []
-            )
-            await save_health_snapshot(
-                session,
-                repo_id,
-                hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-                average_health=float(kpis.get("average_health", 10.0)),
-                worst_performer_path=kpis.get("worst_performer_path"),
-                worst_performer_score=kpis.get("worst_performer_score"),
-                per_file_scores=scores_map,
-                per_file_deductions=deductions_map,
-            )
-        except Exception as _snap_err:
-            logger.warning("health_snapshot_skipped", error=str(_snap_err))
+        # The hotspot gate an incremental update will score against. Written
+        # only by a run that walked the whole repo (the analyzer leaves it None
+        # otherwise), so an incremental run cannot publish its changed-files
+        # subset as the repo-wide percentile.
+        fn_mod_p80 = getattr(hr, "repo_function_mod_p80", None)
+        if fn_mod_p80:
+            await set_repo_function_mod_p80(session, repo_id, fn_mod_p80)
+        # Snapshot the run for trend tracking (rolling delete inside). From
+        # the rows just written, by the same writer the update path uses.
+        await snapshot_health_from_store(session, repo_id)
 
     # ---- Decision records ----------------------------------------------------
     # One contributor: the multi-source extractor. A second read used to fold
@@ -1739,6 +2144,16 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     except Exception as _rank_err:
         logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
 
+    # The same repair for the scoring formula, which leaves every input valid
+    # and every stored score stale, so no filter can find it. Its own try, so
+    # a failure here is not logged as the rank repair's.
+    try:
+        from repowise.core.persistence.crud import reconcile_decision_confidence
+
+        await reconcile_decision_confidence(session)
+    except Exception as _conf_err:
+        logger.debug("decision_confidence_reconcile_skipped", error=str(_conf_err))
+
     # Move legacy records onto ids derived from their own identity, before
     # anything else reads or writes one. A random id is re-minted whenever a
     # store is rebuilt rather than updated, which strands every reference held
@@ -1759,9 +2174,22 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     # with half the surfaces reading each. Idempotent, and it never reopens a
     # review action somebody already performed.
     try:
-        from repowise.core.persistence.decision_migration import apply_migration
+        from repowise.core.persistence.decision_migration import (
+            apply_migration,
+            backfill_decision_node_links,
+            backfill_scope_basis,
+            backfill_session_scope_basis,
+            prune_unindexed_scope_files,
+        )
 
         await apply_migration(session, repo_id)
+        # Beside it, and for the same reason: these repair rows written before
+        # the rule existed, and nothing re-extracts them. The prune runs first
+        # so the two basis repairs judge the file list they will leave behind.
+        await prune_unindexed_scope_files(session, repo_id)
+        await backfill_scope_basis(session, repo_id)
+        await backfill_session_scope_basis(session, repo_id)
+        await backfill_decision_node_links(session, repo_id)
     except Exception as _migrate_err:
         logger.debug("decision_entity_migration_skipped", error=str(_migrate_err))
 
@@ -1811,53 +2239,26 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             except Exception as _stale_err:
                 logger.debug("staleness_scoring_skipped", error=str(_stale_err))
 
+    # Retire records whose commits were reverted. Outside the block above: a
+    # new revert retires a decision stored by an earlier run just as well.
+    try:
+        from repowise.core.analysis.decisions.reverts import apply_revert_supersession
+
+        await apply_revert_supersession(session, repo_id, getattr(result, "repo_path", None))
+    except Exception as _revert_err:
+        logger.debug("revert_supersession_skipped", error=str(_revert_err))
+    try:
+        from repowise.core.analysis.decisions.head_artifacts import apply_head_artifact_check
+
+        await apply_head_artifact_check(session, repo_id, getattr(result, "repo_path", None))
+    except Exception as _artifact_err:
+        logger.debug("head_artifact_check_skipped", error=str(_artifact_err))
+
     # ---- Governance findings (additive pass, after decisions are persisted) ----
     # Runs after bulk_upsert_decisions + detect_supersessions_and_conflicts so
-    # the decision graph is complete. Best-effort — never breaks persist.
+    # the decision graph is complete. Best-effort: never breaks persist.
     try:
-        from sqlalchemy import select as _select
-
-        from repowise.core.analysis.health.governance import build_governance_findings
-        from repowise.core.persistence.crud import (
-            get_decision_health_summary,
-            replace_governance_findings,
-        )
-        from repowise.core.persistence.models import DecisionRecord
-
-        _dr_result = await session.execute(
-            _select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
-        )
-        _decisions = list(_dr_result.scalars().all())
-        _health_summary = await get_decision_health_summary(session, repo_id)
-        _gov_findings = build_governance_findings(
-            health_summary=_health_summary,
-            decisions=_decisions,
-        )
-        await replace_governance_findings(session, repo_id, _gov_findings)
-        if _gov_findings:
-            logger.info(
-                "governance_findings_persisted",
-                repo_id=repo_id,
-                count=len(_gov_findings),
-            )
-            # The refactoring queue is a fold over the stored findings and was
-            # composed above, before these rows existed, so without a second
-            # pass a fresh index ranks every opportunity against a finding set
-            # holding none of its governance causes. Only this queue: the
-            # performance finalizer reads ``performance`` findings, and every
-            # governance biomarker is ``organizational``.
-            from repowise.core.persistence.crud import (
-                finalize_refactoring_opportunities,
-            )
-
-            # Savepointed like the first composition: this writer reconciles
-            # the whole queue, so a half-failed one would leave it half-described.
-            async with session.begin_nested():
-                await finalize_refactoring_opportunities(
-                    session,
-                    repo_id,
-                    analyzed_commit=await _analyzed_commit(session, repo_id),
-                )
+        await refresh_governance_findings(session, repo_id)
     except Exception as _gov_err:
         logger.debug("governance_findings_skipped", error=str(_gov_err))
 
@@ -1922,10 +2323,28 @@ async def persist_kg(kg: Any, session: Any, repo_id: str) -> None:
         await upsert_kg_node_meta(session, repo_id, file_node_meta)
 
 
+async def _refresh_commit_health(result: Any, session: Any, repo_id: str) -> None:
+    """Seed the per-commit health rows for the commits this run wrote."""
+    repo_path = getattr(result, "repo_path", "")
+    summary = getattr(result, "git_summary", None)
+    if not repo_path or summary is None:
+        return
+    from .commit_health import recent_shas, refresh_commit_health
+
+    await refresh_commit_health(
+        session,
+        repo_id,
+        repo_path,
+        recent_shas(getattr(summary, "commit_rows", None)),
+    )
+
+
 async def persist_pipeline_result(
     result: Any,
     session: Any,
     repo_id: str,
+    *,
+    replace_full_git_history: bool = False,
 ) -> list[str]:
     """Persist all outputs from a :class:`PipelineResult` into the database.
 
@@ -1961,24 +2380,50 @@ async def persist_pipeline_result(
     # persisters re-upsert. graph/analysis tables key off parsed_files;
     # git_metadata keys off the git indexer's set (a file can be git-tracked
     # but unparsed). Runs only here, never in the reusable phase persisters.
-    current_graph_file_paths = {pf.file_info.path for pf in result.parsed_files}
+    # ``file_infos`` is the successful traversal set and survives individual
+    # read/parse failures. Using parsed_files here would misclassify a locked
+    # or temporarily unparsable file as excluded and erase its prior rows.
+    current_graph_file_paths = {file_info.path for file_info in result.file_infos}
     current_git_file_paths = {
         (gm if isinstance(gm, dict) else dataclasses.asdict(gm)).get("file_path", "")
         for gm in result.git_metadata_list
     }
     current_git_file_paths.discard("")
-    await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, current_git_file_paths)
+    swept_page_ids = await reconcile_full_index_scope(
+        session, repo_id, current_graph_file_paths, current_git_file_paths
+    )
 
     symbol_count = await persist_ingestion(result, session, repo_id)
-    await persist_git(result, session, repo_id)
+    if replace_full_git_history:
+        from repowise.core.persistence.crud import purge_proposed_decisions_by_source
+
+        await purge_proposed_decisions_by_source(session, repo_id, "git_archaeology")
+        await replace_git_history(
+            session,
+            repo_id,
+            {
+                (gm if isinstance(gm, dict) else dataclasses.asdict(gm))["file_path"]: (
+                    gm if isinstance(gm, dict) else dataclasses.asdict(gm)
+                )
+                for gm in result.git_metadata_list
+            },
+            result.git_summary,
+        )
+    else:
+        await persist_git(result, session, repo_id)
     await persist_analysis(result, session, repo_id)
     await persist_generation(result, session, repo_id)
+
+    # What each recent commit did to health. Needs the working tree, so it
+    # runs here rather than on the read path, and it is bounded: older commits
+    # keep no row until a later update reaches them.
+    await _refresh_commit_health(result, session, repo_id)
 
     # Sweep structurally-keyed generated pages (module/layer/scc) that this
     # run did not reproduce — their ids drift between runs, so without the
     # sweep every re-index strands the previous set as duplicates. Full runs
     # only, same rule as _prune_stale_file_rows.
-    swept_page_ids = await _sweep_stale_generated_pages(
+    swept_page_ids += await _sweep_stale_generated_pages(
         session,
         repo_id,
         result.generated_pages,

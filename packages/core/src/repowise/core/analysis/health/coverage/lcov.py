@@ -21,7 +21,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from .model import CoverageReport, FileCoverage
+from .model import CoverageReport, FileCoverage, file_coverage
 
 
 def parse_lcov(text: str) -> CoverageReport:
@@ -32,30 +32,26 @@ def parse_lcov(text: str) -> CoverageReport:
     total_lines: set[int] = set()
     branches_found = 0
     branches_hit = 0
-    has_branches = False
     explicit_lf: int | None = None
     explicit_lh: int | None = None
+    # line -> (taken, total) from BRDA records; ``-`` (never evaluated) is not taken.
+    branch_lines: dict[int, tuple[int, int]] = {}
 
     def flush() -> None:
         nonlocal current_path, covered_lines, total_lines
-        nonlocal branches_found, branches_hit, has_branches, explicit_lf, explicit_lh
+        nonlocal branches_found, branches_hit, explicit_lf, explicit_lh, branch_lines
         if current_path is None:
             return
-        total = explicit_lf if explicit_lf is not None else len(total_lines)
-        hit = explicit_lh if explicit_lh is not None else len(covered_lines)
-        line_pct = (hit / total * 100.0) if total else 0.0
-        branch_pct: float | None
-        if has_branches and branches_found:
-            branch_pct = branches_hit / branches_found * 100.0
-        else:
-            branch_pct = None
         files.append(
-            FileCoverage(
-                file_path=current_path,
-                line_coverage_pct=round(line_pct, 2),
-                branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
-                covered_lines=sorted(covered_lines),
-                total_coverable_lines=total,
+            file_coverage(
+                current_path,
+                covered_lines,
+                total_lines,
+                branches_found=branches_found,
+                branches_hit=branches_hit,
+                total=explicit_lf,
+                hit=explicit_lh,
+                branch_lines=branch_lines,
             )
         )
         current_path = None
@@ -63,9 +59,9 @@ def parse_lcov(text: str) -> CoverageReport:
         total_lines = set()
         branches_found = 0
         branches_hit = 0
-        has_branches = False
         explicit_lf = None
         explicit_lh = None
+        branch_lines = {}
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -93,10 +89,13 @@ def parse_lcov(text: str) -> CoverageReport:
         elif tag == "BRDA":
             parts = rest.split(",")
             if len(parts) == 4:
-                has_branches = True
+                taken = parts[3] not in ("-", "0")
                 branches_found += 1
-                if parts[3] not in ("-", "0"):
-                    branches_hit += 1
+                branches_hit += taken
+                with contextlib.suppress(ValueError):
+                    line_no = int(parts[0])
+                    prev_taken, prev_total = branch_lines.get(line_no, (0, 0))
+                    branch_lines[line_no] = (prev_taken + taken, prev_total + 1)
         elif tag == "LF":
             with contextlib.suppress(ValueError):
                 explicit_lf = int(rest)
@@ -104,17 +103,11 @@ def parse_lcov(text: str) -> CoverageReport:
             with contextlib.suppress(ValueError):
                 explicit_lh = int(rest)
         elif tag == "BRF":
-            try:
+            with contextlib.suppress(ValueError):
                 branches_found = max(branches_found, int(rest))
-                has_branches = True
-            except ValueError:
-                pass
         elif tag == "BRH":
-            try:
+            with contextlib.suppress(ValueError):
                 branches_hit = max(branches_hit, int(rest))
-                has_branches = True
-            except ValueError:
-                pass
 
     # Some reports omit the final end_of_record.
     flush()

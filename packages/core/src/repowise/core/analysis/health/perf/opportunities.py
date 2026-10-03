@@ -32,13 +32,13 @@ from .actionability import (
 from .causal import (
     PERFORMANCE_MODEL_VERSION,
     ExecutionContext,
+    InterventionKind,
     execution_context,
     group_observations,
     key_boundary,
     key_context,
+    key_intervention_kind,
     key_intervention_symbol,
-    key_is_cross_function,
-    key_terminal_sink,
     link_performance_findings,
     model_state,
     opportunity_id_for_finding,
@@ -53,11 +53,14 @@ from .opportunity_rank import (
     dominant_marker,
     exposure,
     leverage,
+    loop_magnitude,
+    may_lead,
     rank_factors,
     rank_sort_key,
     weakest_provenance,
     why_ranked,
 )
+from .siblings import link_siblings
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +79,13 @@ class PerformanceOpportunity:
     biomarker_types: tuple[str, ...]
     boundary_kind: str | None
     execution_context: ExecutionContext
+    # The one sink every member reaches, else ``None``; all of them are in
+    # ``terminal_sinks``, because one loop can reach several.
     terminal_sink: str | None
     shared_path_suffix: tuple[str, ...]
-    intervention_symbol: str | None
+    intervention_symbol: str
+    intervention_kind: InterventionKind
+    terminal_sinks: tuple[str, ...]
     resource_fingerprints: tuple[str, ...]
     affected_call_sites_total: int
     affected_files_total: int
@@ -96,6 +103,10 @@ class PerformanceOpportunity:
     rank_factors: dict[str, int]
     why_ranked: tuple[dict[str, Any], ...]
     fix: PerformanceFix | None
+    # Whether this group may lead the directive; see ``opportunity_rank.may_lead``.
+    may_lead: bool
+    # Other causes observed on the same lines; see :mod:`.siblings`.
+    siblings: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +119,8 @@ class PerformanceOpportunity:
             "terminal_sink": self.terminal_sink,
             "shared_path_suffix": list(self.shared_path_suffix),
             "intervention_symbol": self.intervention_symbol,
+            "intervention_kind": self.intervention_kind,
+            "terminal_sinks": list(self.terminal_sinks),
             "resource_fingerprints": list(self.resource_fingerprints),
             "affected_call_sites_total": self.affected_call_sites_total,
             "affected_files_total": self.affected_files_total,
@@ -125,6 +138,8 @@ class PerformanceOpportunity:
             "rank_factors": dict(self.rank_factors),
             "why_ranked": [dict(entry) for entry in self.why_ranked],
             "fix": self.fix.as_dict() if self.fix else None,
+            "may_lead": self.may_lead,
+            "siblings": [dict(entry) for entry in self.siblings],
         }
 
 
@@ -138,10 +153,10 @@ def _reachability(values: set[Any]) -> bool | None:
 def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
-    Context, boundary, intervention symbol, and terminal sink are kernel
-    inputs, so the group already agrees on them by construction. Taking them
-    off the key keeps one owner for each instead of reclassifying a
-    representative row.
+    Context, boundary, and intervention are kernel inputs, so the group
+    already agrees on them by construction. Taking them off the key keeps one
+    owner for each instead of reclassifying a representative row. Sinks are
+    members' facts, so they are listed rather than assumed shared.
     """
     context = key_context(key)
     boundary = key_boundary(key)
@@ -152,14 +167,16 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     provenance = weakest_provenance({facts.provenance for facts in members})
     evidence_confidence = provenance_confidence(provenance)
     reachable = _reachability({facts.reliable_entry_reachability for facts in members})
+    sinks = tuple(sorted({facts.terminal_sink for facts in members if facts.terminal_sink}))
     assessment = assess_fix(
         marker,
         markers,
         boundary,
         [facts.details for facts in members],
-        cross_function=key_is_cross_function(key),
+        cross_function=any(facts.cross_function for facts in members),
     )
     acted = actionability(assessment, evidence_confidence)
+    magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
         marker=marker,
         boundary=boundary,
@@ -167,6 +184,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         reachable=reachable,
         site_count=len(sites),
         provenance=provenance,
+        magnitude=magnitude,
     )
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
@@ -175,9 +193,11 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         biomarker_types=markers,
         boundary_kind=boundary,
         execution_context=context,
-        terminal_sink=key_terminal_sink(key),
+        terminal_sink=sinks[0] if len(sinks) == 1 else None,
         shared_path_suffix=shared_path_suffix([facts.path for facts in members if facts.path]),
         intervention_symbol=key_intervention_symbol(key),
+        intervention_kind=key_intervention_kind(key),
+        terminal_sinks=sinks,
         resource_fingerprints=tuple(
             sorted({facts.resource_fingerprint for facts in members if facts.resource_fingerprint})
         ),
@@ -195,6 +215,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             "amplification": amplification(marker),
             "leverage": leverage(len(sites)),
             "change_risk": change_risk(len(files)),
+            "loop_magnitude": magnitude,
         },
         actionability_state=acted.state,
         actionability_reason=acted.reason,
@@ -210,22 +231,26 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
                 "entry_reachability": reachable,
                 "affected_call_sites": len(sites),
                 "provenance": provenance,
+                "loop_magnitude": magnitude,
             },
         ),
         fix=acted.fix,
+        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}),
     )
 
 
 def build_performance_opportunities(
     findings: list[Any], *, evidence_limit: int = 8
 ) -> list[PerformanceOpportunity]:
-    """Group and rank performance rows in one deterministic pass."""
+    """Group, link, and rank performance rows in one deterministic pass."""
     cap = max(0, evidence_limit)
-    opportunities = [
-        _assemble(key, members, cap) for key, members in group_observations(findings).items()
-    ]
-    opportunities.sort(key=rank_sort_key)
-    return opportunities
+    opportunities: list[PerformanceOpportunity] = []
+    sites: dict[str, set[Any]] = {}
+    for key, members in group_observations(findings).items():
+        opportunity = _assemble(key, members, cap)
+        opportunities.append(opportunity)
+        sites[opportunity.opportunity_id] = {facts.site for facts in members}
+    return link_siblings(opportunities, sites, rank_sort_key)
 
 
 __all__ = [

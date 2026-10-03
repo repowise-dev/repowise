@@ -29,7 +29,7 @@ function makeArchFileNode(id: string, nodeType: string, overrides?: Partial<Node
   };
 }
 
-function makeLayerClusterNode(id: string): Node {
+function makeLayerClusterNode(id: string, healthScore = 85): Node {
   return {
     id,
     type: "layerCluster",
@@ -39,7 +39,7 @@ function makeLayerClusterNode(id: string): Node {
         name: "API Layer",
         description: "Handles requests",
         file_count: 10,
-        health_score: 85,
+        health_score: healthScore,
       },
     },
   };
@@ -193,6 +193,15 @@ describe("SVG export - new node types", () => {
     expect(svg).toContain("#f4eae1"); // warm paper canvas
     expect(svg).toContain("kg-grid"); // graph-paper pattern
     expect(svg).toContain('stroke-dasharray="8 5"'); // dashed ghost boundary
+  });
+
+  it("paints a layer's health on the same bands the canvas does", () => {
+    // The exporter used to collapse everything between At risk and Good onto
+    // one amber, so a Fair layer left the screen gold and arrived amber in the
+    // SVG of that screen. 62 is Fair; 88 and 30 bracket it.
+    expect(buildC4Svg([makeLayerClusterNode("fair", 62)], [])).toContain("#a8821f");
+    expect(buildC4Svg([makeLayerClusterNode("good", 88)], [])).toContain("#1d8155");
+    expect(buildC4Svg([makeLayerClusterNode("bad", 30)], [])).toContain("#b23a2e");
   });
 
   it("test_svg_export_entry_accent: entry points render the ember gradient", () => {

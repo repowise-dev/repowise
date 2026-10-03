@@ -3,13 +3,22 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
-import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
+import {
+  biomarkerInfo,
+  biomarkerLabel,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isWatchOnlyBiomarker,
+} from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { type Severity } from "./tokens";
+import { EFFORT_TINT, type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
+import { LowerPriorityTag } from "./lower-priority-tag";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -24,6 +33,9 @@ export interface HealthWorkItemFinding {
   reason: string;
   status?: string;
   details?: BiomarkerDetailsRecord | null;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -31,6 +43,8 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  /** A test file; labelled on the card. */
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: Severity;
   primary_reason: string;
@@ -41,6 +55,7 @@ export interface HealthWorkItem {
   primary_finding_id?: string;
   total_impact: number;
   finding_count: number;
+  open_finding_count?: number;
   biomarkers: string[];
   effort_bucket: EffortBucket;
   impact_per_effort: number;
@@ -78,6 +93,13 @@ export interface HealthWorkItemCardProps {
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
   highlighted?: boolean;
+  /** Bulk triage: whether this row is in the selection. */
+  selected?: boolean;
+  /**
+   * Toggle this row in the bulk selection. The row stands for the finding it
+   * names (`primary_finding_id`), so a row without one offers no checkbox.
+   */
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
 
 const effortLabel: Record<EffortBucket, string> = {
@@ -85,13 +107,6 @@ const effortLabel: Record<EffortBucket, string> = {
   M: "Medium",
   L: "Large",
   XL: "Extra large",
-};
-
-const effortColor: Record<EffortBucket, string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 export function HealthWorkItemCard({
@@ -105,6 +120,8 @@ export function HealthWorkItemCard({
   onLoadFindings,
   expandable = true,
   highlighted = false,
+  selected = false,
+  onToggleSelect,
 }: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
@@ -118,6 +135,9 @@ export function HealthWorkItemCard({
   // label no longer depend on shipping the findings themselves.
   const findings = target.all_findings ?? loaded;
   const hasFindings = target.finding_count > 0;
+  // Led by a history marker: context for a reviewer, not something an edit
+  // clears, so the card neither rates it as a defect nor offers a fix prompt.
+  const watch = isWatchOnlyBiomarker(target.primary_biomarker);
 
   const toggle = async () => {
     const next = !expanded;
@@ -150,7 +170,22 @@ export function HealthWorkItemCard({
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <SeverityMark severity={target.primary_severity} />
+          {onToggleSelect && target.primary_finding_id ? (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggleSelect(target)}
+              aria-label={`Select the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path}`}
+              className="h-3.5 w-3.5 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
+            />
+          ) : null}
+          {watch ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              {HISTORY_LABEL}
+            </span>
+          ) : (
+            <SeverityMark severity={target.primary_severity} />
+          )}
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
             {biomarkerInfo(target.primary_biomarker).description ? (
@@ -165,8 +200,13 @@ export function HealthWorkItemCard({
               {target.module}
             </span>
           ) : null}
+          {target.is_test ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              test
+            </span>
+          ) : null}
           <span
-            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${effortColor[target.effort_bucket]}`}
+            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${EFFORT_TINT[target.effort_bucket]}`}
             title={`Effort: ${effortLabel[target.effort_bucket]} (NLOC ${target.nloc})`}
           >
             {target.effort_bucket}
@@ -174,9 +214,25 @@ export function HealthWorkItemCard({
           <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]" title="Total health impact across this file's findings">
             −{target.total_impact.toFixed(2)}
           </span>
+          <AskAboutThis
+            context={{
+              kind: "health",
+              label: target.file_path,
+              target: target.file_path,
+              targetKind: "path",
+            }}
+            question={
+              watch
+                ? `What does the ${biomarkerLabel(target.primary_biomarker)} signal say about ${target.file_path}, and what should a reviewer watch for when it changes?`
+                : `Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`
+            }
+            label={`Ask about the finding in ${target.file_path}`}
+            className="-my-1 h-6 w-6"
+          />
         </div>
         <button
           type="button"
+          data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
           className="group/file flex w-full items-center gap-1.5 text-left rounded-md -mx-1 px-1 py-0.5 hover:bg-[var(--color-bg-elevated)] disabled:cursor-default disabled:hover:bg-transparent"
           disabled={!onSelect}
@@ -196,8 +252,12 @@ export function HealthWorkItemCard({
           ) : null}
         </button>
         <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">{target.primary_reason}</p>
+        {/* The action comes from core, per marker; the card never writes one. */}
         {target.primary_suggestion ? (
-          <p className="text-xs text-[var(--color-text-tertiary)] italic line-clamp-3">
+          <p className="text-xs text-[var(--color-text-primary)] line-clamp-3">
+            <span className="mr-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Action
+            </span>
             {target.primary_suggestion}
           </p>
         ) : null}
@@ -205,10 +265,19 @@ export function HealthWorkItemCard({
           <span>Score {target.score.toFixed(1)}/10</span>
           <span>· {target.nloc} NLOC</span>
           <span>· {effortLabel[target.effort_bucket]} effort</span>
-          <span>· {target.finding_count} findings</span>
+          <span>
+            {"· "}
+            {target.open_finding_count != null &&
+            target.open_finding_count !== target.finding_count
+              ? `${target.open_finding_count} open of ${target.finding_count} findings`
+              : `${target.finding_count} findings`}
+          </span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
-        {onGeneratePrompt ? (
+        {watch ? (
+          <p className="text-xs text-[var(--color-text-tertiary)]">{HISTORY_EXPLAINER}</p>
+        ) : null}
+        {onGeneratePrompt && !watch ? (
           <div className="pt-2">
             <button
               type="button"
@@ -250,9 +319,12 @@ export function HealthWorkItemCard({
                     <span className="text-xs font-medium text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
+                    <LowerPriorityTag reason={f.lower_priority} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
+                    <FindingLine lineStart={f.line_start} />
                     <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
@@ -283,6 +355,20 @@ export type RefactoringTarget = HealthWorkItem;
 export type RefactoringTargetFinding = HealthWorkItemFinding;
 export type RefactoringCardProps = HealthWorkItemCardProps;
 export const RefactoringCard = HealthWorkItemCard;
+
+/**
+ * Where a finding sits. Not a link: no file view renders a line anchor, so a
+ * "line 412" href would land at the top of the page every time. Silent
+ * without a line, because a marker describing the whole file has none.
+ */
+function FindingLine({ lineStart }: { lineStart: number | null | undefined }) {
+  if (lineStart == null) return null;
+  return (
+    <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+      line {lineStart}
+    </span>
+  );
+}
 
 function StatusButton({
   current,

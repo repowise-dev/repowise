@@ -7,6 +7,11 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
+from repowise.server.mcp_server.tool_answer.config import (
+    _CANDIDATE_FILES_HIGH,
+    _CANDIDATE_FILES_MAX,
+)
+
 _COLLECTIONS = (
     "citations",
     "retrieval",
@@ -60,6 +65,65 @@ def _contained(text: str, slabs: list[str]) -> bool:
     return bool(compact) and any(compact in " ".join(slab.split()) for slab in slabs)
 
 
+_SYMBOL_TEXT_KEYS = ("source_excerpt", "docstring")
+
+
+def _body_spans(bodies: list[Any]) -> list[tuple[str, int, int]]:
+    """The file and line range of every body this response already serves."""
+    spans: list[tuple[str, int, int]] = []
+    for row in bodies:
+        if not isinstance(row, dict):
+            continue
+        path = _nav_path(row)
+        lines = row.get("lines")
+        if not path or not isinstance(lines, list | tuple) or len(lines) != 2:
+            continue
+        start, end = lines
+        if isinstance(start, int) and isinstance(end, int):
+            spans.append((path, start, end))
+    return spans
+
+
+def _inside_served_body(
+    entry: dict[str, Any], path: str | None, spans: list[tuple[str, int, int]]
+) -> bool:
+    """True when this symbol's lines sit inside a body served for the same file."""
+    start = entry.get("start_line")
+    end = entry.get("end_line")
+    if not path or not isinstance(start, int) or not isinstance(end, int):
+        return False
+    return any(
+        span_path == path and span_start <= start and end <= span_end
+        for span_path, span_start, span_end in spans
+    )
+
+
+def _trim_key_symbols(
+    row: dict[str, Any], spans: list[tuple[str, int, int]], served_text: list[str]
+) -> None:
+    """Drop a key symbol's source and docstring when those bytes are served elsewhere.
+
+    The symbol still names and locates itself, so nothing is lost for navigation.
+    """
+    symbols = row.get("key_symbols")
+    if not isinstance(symbols, list):
+        return
+    row_path = _nav_path(row)
+    trimmed: list[Any] = []
+    for original in symbols:
+        if not isinstance(original, dict):
+            trimmed.append(original)
+            continue
+        entry = dict(original)
+        inside = _inside_served_body(entry, _nav_path(entry) or row_path, spans)
+        for key in _SYMBOL_TEXT_KEYS:
+            text = _text(entry, key)
+            if text and (inside or _contained(text, served_text)):
+                entry.pop(key, None)
+        trimmed.append(entry)
+    row["key_symbols"] = trimmed
+
+
 def _deduplicate(payload: dict[str, Any]) -> None:
     """Keep each source fragment once, then keep paths only where they add navigation."""
     bodies = _unique(
@@ -68,6 +132,7 @@ def _deduplicate(payload: dict[str, Any]) -> None:
     )
     payload["symbol_bodies"] = bodies
     body_text = [_text(row, "source") for row in bodies]
+    body_spans = _body_spans(bodies)
 
     quotes = _unique(
         [
@@ -135,6 +200,8 @@ def _deduplicate(payload: dict[str, Any]) -> None:
         ):
             row.pop("excerpt", None)
             row.pop("snippet", None)
+        if isinstance(row, dict):
+            _trim_key_symbols(row, body_spans, [*body_text, *quote_text])
         retrieval.append(row)
     payload["retrieval"] = retrieval
 
@@ -210,14 +277,30 @@ def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
     payload[key] = rows[:limit]
 
 
+def _shape_confidence(payload: dict[str, Any]) -> Any:
+    # A degraded payload keeps the fullest shape whatever it graded: trimming is
+    # keyed on prose replacing evidence, and there the evidence IS the product.
+    return "low" if payload.get("degraded") else payload.get("confidence", "low")
+
+
+def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
+    """Serve the ranked paths the final citations do not already name."""
+    rows = payload.pop("candidate_files", None)
+    if not isinstance(rows, list):
+        return
+    cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
+    paths = [
+        path for path in dict.fromkeys(row for row in rows if isinstance(row, str))
+        if path not in cited
+    ]
+    high = not expanded and _shape_confidence(payload) == "high"
+    paths = paths[: _CANDIDATE_FILES_HIGH if high else _CANDIDATE_FILES_MAX]
+    if paths:
+        payload["candidate_files"] = paths
+
+
 def _default_shape(payload: dict[str, Any], question: str) -> None:
-    # A degraded payload keeps the fullest evidence shape whatever it graded.
-    # The trimming above is keyed on prose REPLACING evidence: a high-confidence
-    # answer makes the ranked list redundant, so it goes. There is no answer on
-    # this path - the evidence IS the product - and its ``confidence`` now rates
-    # that evidence rather than prose, so reading the two on one scale would cut
-    # a body and a hit from exactly the caller who has nothing else to read.
-    confidence = "low" if payload.get("degraded") else payload.get("confidence", "low")
+    confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
         for key in ("retrieval", "best_guesses", "candidates", "fallback_targets"):
@@ -270,11 +353,15 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
 
 
 def _record_reductions(
-    payload: dict[str, Any], totals: dict[str, int], *, question: str, scope: str | None,
-    repo: str | None, expanded: bool
+    payload: dict[str, Any], totals: dict[str, int], *, scope: str | None, repo: str | None,
+    expanded: bool
 ) -> None:
     reduced = False
     for key in _COLLECTIONS:
+        # By default ``candidate_files`` carries these paths, so counting the
+        # hidden rows would only advertise what the reply already serves.
+        if key == "candidates" and not expanded:
+            continue
         total = totals.get(key, 0)
         emitted = len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         if total <= emitted:
@@ -286,12 +373,19 @@ def _record_reductions(
         reduced = True
     if reduced and not expanded:
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
-        arguments: dict[str, Any] = {"question": question, "include": ["evidence"]}
+        # The caller already holds the question; restating a long one costs
+        # tokens on every reduced reply. Short scope and repo stay, so a caller
+        # that rebuilds the call from this block cannot widen it silently.
+        arguments: dict[str, Any] = {"include": ["evidence"]}
         if scope is not None:
             arguments["scope"] = scope
         if repo is not None:
             arguments["repo"] = repo
-        projection["recovery"] = {"tool": "get_answer", "arguments": arguments}
+        projection["recovery"] = {
+            "tool": "get_answer",
+            "same_arguments": True,
+            "arguments": arguments,
+        }
 
 
 def project_answer_payload(
@@ -308,13 +402,12 @@ def project_answer_payload(
     expanded = "evidence" in set(include or [])
     if not expanded:
         _default_shape(payload, question)
+    _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
-    _record_reductions(
-        payload, totals, question=question, scope=scope, repo=repo, expanded=expanded
-    )
+    _record_reductions(payload, totals, scope=scope, repo=repo, expanded=expanded)
     unknown = sorted(set(include or []) - {"evidence"})
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
@@ -330,6 +423,23 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def _hint_with_update_pointer(
+    hint: Any, confidence: Any, freshness: dict[str, Any]
+) -> Any:
+    """Add the update pointer to a low-confidence hint served off a behind index."""
+    if freshness.get("index_behind") is not True or confidence != "low":
+        return hint
+    # A stale_warning already names the command, so don't say it twice.
+    if freshness.get("stale_warning"):
+        return hint
+    from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
+
+    existing = hint.strip() if isinstance(hint, str) else ""
+    if not existing:
+        return INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    return f"{existing} {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
+
+
 async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     """Scope trust metadata to evidence in the final fresh/cache projection."""
     if repo == "all":
@@ -337,12 +447,21 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     try:
         from repowise.core.persistence.database import get_session
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
+        from repowise.server.mcp_server._scope import unrelated_scope_hint
 
+        served = _served_paths(payload)
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-        freshness = freshness_from_repo(repository, targets=_served_paths(payload))
+            scope_hint = await unrelated_scope_hint(
+                session,
+                repository.id,
+                [path.split("::", 1)[0] for path in served],
+                cache_key=f"{repository.id}:{index_state_key(repository)}",
+            )
+        freshness = freshness_from_repo(repository, targets=served)
     except Exception:
         return
     meta = payload.setdefault("_meta", {})
@@ -352,9 +471,56 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "live_head",
         "index_behind",
         "stale_warning",
+        "scope_hint",
     ):
         meta.pop(key, None)
     meta.update(freshness)
+    if scope_hint:
+        meta["scope_hint"] = scope_hint
+    # An error reply carries confidence "low" too, and its fault is not the
+    # index, so the pointer would only misdirect there.
+    try:
+        hint = _hint_with_update_pointer(
+            meta.get("hint"),
+            None if payload.get("error") else payload.get("confidence"),
+            freshness,
+        )
+    except Exception:
+        return
+    if hint:
+        meta["hint"] = hint
+
+
+def _whole_bodies(payload: dict[str, Any]) -> int:
+    """Count symbol bodies that survived the projection intact.
+
+    A body that was cut, or that carries a continuation to fetch the rest, is
+    not a whole unit and must never be claimed as one.
+    """
+    return sum(
+        1
+        for row in payload.get("symbol_bodies") or []
+        if isinstance(row, dict)
+        and row.get("verified") is True
+        and not row.get("truncated")
+        and "continuation" not in row
+    )
+
+
+def _stamp_completeness(payload: dict[str, Any]) -> None:
+    """Set or clear ``_meta.complete`` for what this projection actually served."""
+    from repowise.server.mcp_server._meta import completeness_line
+
+    line = completeness_line(bodies=_whole_bodies(payload))
+    meta = payload.get("_meta")
+    if line:
+        if not isinstance(meta, dict):
+            meta = payload.setdefault("_meta", {})
+        meta["complete"] = line
+    elif isinstance(meta, dict):
+        # A cached payload can carry a claim the current projection no longer
+        # serves, so drop it rather than let it stand.
+        meta.pop("complete", None)
 
 
 def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -372,6 +538,7 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include
         )
         await _refresh_freshness(payload, repo)
+        _stamp_completeness(payload)
         return payload
 
     return _wrapped

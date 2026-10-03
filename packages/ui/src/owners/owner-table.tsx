@@ -185,7 +185,7 @@ function Num({
   marker,
   markerTitle,
 }: {
-  value: number;
+  value: number | null;
   emphasis?: boolean;
   marker?: boolean;
   markerTitle?: string;
@@ -196,7 +196,7 @@ function Num({
         emphasis ? "font-semibold text-[var(--color-text-primary)]" : ""
       }`}
     >
-      {value > 0 ? value.toLocaleString() : <span className="text-[var(--color-text-tertiary)]">—</span>}
+      {value != null && value > 0 ? value.toLocaleString() : <span className="text-[var(--color-text-tertiary)]">—</span>}
       {marker && (
         <span
           title={markerTitle}

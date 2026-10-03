@@ -3,11 +3,12 @@
 import { GraphCommunityPanel as GraphCommunityPanelShell } from "@repowise-dev/ui/graph/graph-community-panel";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
-import type { CommunityDetail } from "@repowise-dev/types/graph";
+import type { CommunityDetail, GraphPopulation } from "@repowise-dev/types/graph";
 
 interface GraphCommunityPanelWrapperProps {
   repoId: string;
   communityId: number;
+  population?: GraphPopulation | undefined;
   onClose: () => void;
   onEnterCommunity?: (() => void) | undefined;
   onNeighborSelect?: ((communityId: number) => void) | undefined;
@@ -16,11 +17,12 @@ interface GraphCommunityPanelWrapperProps {
 export function GraphCommunityPanel({
   repoId,
   communityId,
+  population,
   onClose,
   onEnterCommunity,
   onNeighborSelect,
 }: GraphCommunityPanelWrapperProps) {
-  const { community, isLoading } = useCommunityDetail(repoId, communityId);
+  const { community, isLoading } = useCommunityDetail(repoId, communityId, population);
 
   return (
     <GraphCommunityPanelShell

@@ -8,6 +8,7 @@ import type { DocPage } from "@repowise-dev/types/docs";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { listAllPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 
 export const metadata: Metadata = { title: "Doc freshness" };
 
@@ -97,6 +98,7 @@ export default async function CoveragePage({
       )}
 
       <DriftBanner pages={pages as DocPage[]} />
+      <HostedNudgeSlot candidates={[stale + outdated > 0 && "stale"]} repoId={id} />
 
       {pages.length > 0 && (
         <ConfidenceVsFreshnessMatrix pages={pages as DocPage[]} />

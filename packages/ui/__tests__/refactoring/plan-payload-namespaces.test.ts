@@ -113,7 +113,7 @@ describe("extract_method suggested_name reaches the rendered prompt", () => {
       },
     };
     const prompt = buildRefactoringPlanPrompt({ plan });
-    expect(prompt).toContain("## Validation plan");
+    expect(prompt).toContain("## Verify");
     expect(prompt).toContain("guarding test via coverage");
     expect(prompt).toContain("tests/test_pipeline.py::test_average");
     expect(prompt).toContain("pytest tests/test_pipeline.py::test_average");

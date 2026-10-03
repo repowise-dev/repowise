@@ -49,7 +49,7 @@ async def list_dead_code(
         findings = [
             f
             for f in findings
-            if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+            if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
         ]
     return [DeadCodeFindingResponse.from_orm(f) for f in findings[:limit]]
 

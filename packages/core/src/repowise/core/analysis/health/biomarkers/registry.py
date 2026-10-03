@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .array_spread_in_reduce import ArraySpreadInReduceDetector
+from .assertion_free_test import AssertionFreeTestDetector
 from .base import Biomarker, BiomarkerResult, FileContext
 from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
@@ -40,10 +41,12 @@ from .json_parse_in_loop import JsonParseInLoopDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_assertion_block import LargeAssertionBlockDetector
 from .large_method import LargeMethodDetector
+from .lazy_load_in_loop import LazyLoadInLoopDetector
 from .list_insert_zero_in_loop import ListInsertZeroInLoopDetector
 from .lock_in_loop import LockInLoopDetector
 from .low_cohesion import LowCohesionDetector
 from .membership_test_against_list_in_loop import MembershipTestAgainstListInLoopDetector
+from .mock_saturated_test import MockSaturatedTestDetector
 from .nested_complexity import NestedComplexityDetector
 from .nested_loop_quadratic import NestedLoopQuadraticDetector
 from .nested_loop_with_io import NestedLoopWithIoDetector
@@ -60,6 +63,7 @@ from .sql_high_complexity import SqlHighComplexityDetector
 from .sql_select_star import SqlSelectStarDetector
 from .sql_update_delete_without_where import SqlUpdateDeleteWithoutWhereDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
+from .unbounded_read_reduced_in_memory import UnboundedReadReducedInMemoryDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -89,6 +93,9 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LargeAssertionBlockDetector,  # type: ignore[list-item]
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
     ErrorHandlingDetector,  # type: ignore[list-item]
+    # Advisory dimension - measured, never deducts (scoring.ADVISORY_DIMENSION).
+    AssertionFreeTestDetector,  # type: ignore[list-item]
+    MockSaturatedTestDetector,  # type: ignore[list-item]
     # Performance dimension (advisory weight; bounded by the perf cap).
     IoInLoopDetector,  # type: ignore[list-item]
     StringConcatInLoopDetector,  # type: ignore[list-item]
@@ -102,6 +109,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LockInLoopDetector,  # type: ignore[list-item]
     SerialAwaitInLoopDetector,  # type: ignore[list-item]
     MembershipTestAgainstListInLoopDetector,  # type: ignore[list-item]
+    UnboundedReadReducedInMemoryDetector,  # type: ignore[list-item]
+    LazyLoadInLoopDetector,  # type: ignore[list-item]
     # Phase 7b — centrality-gated moat markers.
     NestedLoopWithIoDetector,  # type: ignore[list-item]
     NestedLoopQuadraticDetector,  # type: ignore[list-item]

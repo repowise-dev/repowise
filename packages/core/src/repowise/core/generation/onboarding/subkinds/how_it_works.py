@@ -23,7 +23,7 @@ import structlog
 
 from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
-from ..signals import OnboardingSignals
+from ..signals import OnboardingSignals, file_layer_map
 from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
 
 log = structlog.get_logger(__name__)
@@ -32,6 +32,7 @@ Archetype = Literal["service", "cli", "library", "pipeline", "module"]
 
 _MIN_TRACE_HOPS = 3
 _TOP_FLOWS = 3
+_FLOW_CANDIDATE_LIMIT = 24
 _TRACE_DISPLAY_HOPS = 8
 
 # Framework hints by ecosystem — anything matching tilts the archetype.
@@ -92,6 +93,7 @@ class FlowTrace:
     entry_point: str
     hops: list[str] = field(default_factory=list)
     score: float = 0.0
+    lifecycle_breadth: int = 0
 
 
 @dataclass
@@ -166,23 +168,62 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     if not report or not hasattr(report, "flows"):
         return []
 
-    flows: list[FlowTrace] = []
+    flows: list[tuple[int, int, int, float, str, FlowTrace]] = []
+    layers = file_layer_map(signals)
+    repo_structure = getattr(signals, "repo_structure", None)
+    declared_entry_points = (
+        set(orientation_entry_points(repo_structure, limit=12))
+        if repo_structure is not None
+        else set()
+    )
     # ``ExecutionFlow`` names these ``entry_point_id`` and
     # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
     # defaults applied instead of raising, so every page ever generated
     # carried an empty entry point and a zero score on every flow.
-    for flow in getattr(report, "flows", [])[:_TOP_FLOWS]:
+    for flow in getattr(report, "flows", [])[:_FLOW_CANDIDATE_LIMIT]:
         trace = list(getattr(flow, "trace", []) or [])
         if len(trace) < _MIN_TRACE_HOPS:
             continue
+        entry_point = str(getattr(flow, "entry_point_id", ""))
+        entry_path = entry_point.split("::", 1)[0]
+        paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+        lifecycle_regions = {
+            layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
+            for path in paths
+            if path
+        }
+        candidate = FlowTrace(
+            entry_point=entry_point,
+            hops=trace[:_TRACE_DISPLAY_HOPS],
+            score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+            lifecycle_breadth=len(lifecycle_regions),
+        )
         flows.append(
-            FlowTrace(
-                entry_point=str(getattr(flow, "entry_point_id", "")),
-                hops=trace[:_TRACE_DISPLAY_HOPS],
-                score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+            (
+                1 if entry_path in declared_entry_points else 0,
+                candidate.lifecycle_breadth,
+                len(trace),
+                candidate.score,
+                candidate.entry_point,
+                candidate,
             )
         )
-    return flows
+    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+    selected = [item[-1] for item in flows[:_TOP_FLOWS]]
+    if selected:
+        log.info(
+            "onboarding.how_it_works_flows_ranked",
+            candidates=len(flows),
+            chosen=[
+                {
+                    "entry_point": flow.entry_point,
+                    "lifecycle_breadth": flow.lifecycle_breadth,
+                    "score": flow.score,
+                }
+                for flow in selected
+            ],
+        )
+    return selected
 
 
 def _normalize_tour_step(step: dict) -> dict:

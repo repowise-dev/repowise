@@ -144,6 +144,7 @@ def test_the_range_scoped_set_is_exactly_these_steps():
         "Graph edges persist",
         "External systems refresh",
         "Tombstone full-text removal",
+        "Tombstone vector-store open",
     }
 
 
@@ -162,3 +163,49 @@ async def test_clean_run_marks_nothing(repo):
         failed_steps=failed_steps,
     )
     assert failed_steps == []
+
+
+async def test_vector_cleanup_open_failure_keeps_debt_for_retry(repo, monkeypatch):
+    import repowise.core.persistence.vector_store as vector_store_mod
+    from repowise.core.pipeline.cleanup_debt import (
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+
+    orphan = "file_page:removed.py"
+    (repo / ".repowise" / "lancedb").mkdir()
+    record_cleanup_debt(repo, "vectors", {orphan})
+    opened = 0
+    deleted: list[str] = []
+
+    class _Store:
+        async def delete_many(self, page_ids):
+            deleted.extend(page_ids)
+
+    def _open(*args, **kwargs):
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            raise RuntimeError("lance unavailable")
+        return _Store()
+
+    monkeypatch.setattr(vector_store_mod, "LanceDBVectorStore", _open)
+
+    async def _persist_once() -> None:
+        await persist_incremental_index(
+            repo,
+            object(),
+            {},
+            None,
+            None,
+            [],
+            log=lambda _msg: None,
+            degraded=[],
+            failed_steps=[],
+        )
+
+    await _persist_once()
+    assert load_cleanup_debt(repo)["vectors"] == {orphan}
+    await _persist_once()
+    assert deleted == [orphan]
+    assert load_cleanup_debt(repo)["vectors"] == set()

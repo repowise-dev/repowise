@@ -1,406 +1,236 @@
 # Quickstart
 
-Index your repo and get your agent answering questions from it. The first three
-steps need no API key and no configuration.
+Index your repository and have your coding agent answer from that index. The
+default setup needs no API key, makes no LLM calls and sends nothing off your
+machine.
 
-> Already indexed and looking for a specific command? See the
-> [CLI Reference](../reference/CLI_REFERENCE.md). For everything else, the
-> [User Guide](USER_GUIDE.md).
+> Looking for one command's flags? See the
+> [CLI Reference](../reference/CLI_REFERENCE.md). For everyday workflows, see
+> the [User Guide](USER_GUIDE.md).
 
----
+## Fastest path: let your agent do it
 
-## 1. Install
+Open your coding agent (Claude Code, Codex, Cursor, VS Code Copilot, OpenCode,
+Hermes or any MCP client) in the repository and paste this line:
 
-```bash
-pip install repowise
+```text
+Read https://docs.repowise.dev/setup.md and set up Repowise in this repository.
 ```
 
-That is the whole install. Every LLM provider SDK (Anthropic, OpenAI, Gemini,
-LiteLLM) ships in the base package, so there is nothing to pick at install time
-and no extras to remember. You choose a provider later, at index time, and you
-can change it whenever you want.
+That page is a runbook written for agents. Following it, the agent will:
 
-**Requirements:** Python 3.11+ and Git. On Windows use `python -m pip install repowise`.
+1. Install repowise with the first installer it finds: `uv tool install`, then
+   `pipx`, then `pip`.
+2. Index the repository keyless (`repowise init --yes --no-prose`).
+3. Wire the MCP server into the host it is running in.
+4. Ask you one question: build the documentation from the index for free, or
+   have an LLM write it. If you pick an LLM, it asks which provider, tells you
+   which key variable to set in `.repowise/.env`, and shows you a cost estimate.
+   Nothing is spent until you approve that estimate.
+5. Ask you to restart the host, then call `get_overview` to confirm the tools
+   work.
 
-Check it landed:
+The agent never asks you to paste a key into the chat. The rest of this page
+does the same steps by hand.
 
-```bash
-repowise --version
-```
+## By hand
 
-## 2. Index your repo
+### 1. Install
 
-```bash
-cd /path/to/your-repo
-repowise init
-```
-
-Bare `init` scans the repo and asks how to index it: everything (the wiki written
-by a model), no prose (the same wiki rendered from your code's structure, no key
-and no spend), or advanced, which walks through the indexing and generation knobs.
-Nothing is spent before you see an estimate and confirm it, so it is safe to run
-and read.
-
-If you would rather not answer questions, name the mode and add `--yes`. This is
-the form to use in a script, in CI, or when an agent is setting repowise up:
+Python 3.11+ and Git are required. Use the first one you have:
 
 ```bash
-repowise init --yes --no-prose   # free, no key, no questions
-repowise init --yes --prose      # model-written subsystem pages, cost pre-approved
+uv tool install repowise          # uv brings its own Python
+pipx install repowise
+python3 -m pip install repowise   # Windows: python -m pip install repowise
 ```
 
-Bare `repowise init --yes` needs no API key either: without a resolvable provider
-it renders the whole wiki from structure.
+Check it with `repowise --version`. Every LLM provider SDK ships in the base
+package, so there is nothing extra to pick at install time.
 
-The keyless run is the one worth doing first, because it costs nothing and answers
-the question "is this useful on my codebase". It parses every file to an AST, builds
-the dependency graph, reads your git history, scores every file for code health,
-and finds dead code. It also renders a complete wiki from that structure: file,
-symbol, layer and cycle pages, the architecture diagram, the repo overview, API
-and infra pages, and the onboarding collection. Without a key the subsystem
-(concept) pages, the repo overview, the architecture diagram and the onboarding
-collection are structural stubs until you point a model at them. No LLM calls,
-no key, no network.
+If the shell says `command not found`, the install directory is not on `PATH`:
+run `uv tool update-shell` or `pipx ensurepath` and open a new shell.
 
-Those pages are honest about where they came from. Each one ends with a footer
-saying it was derived from structure, and the repo overview covers composition,
-entry points, clusters and dependencies rather than what the project does end to
-end, because no template can derive that.
+### 2. Index
 
-When it finishes you have a working index. Try it:
+From the repository root:
 
 ```bash
-repowise health          # the lowest-scoring files, and why
-repowise dead-code       # what nothing references any more
-repowise risk HEAD~5..HEAD   # how risky your recent work looks
+repowise init                     # interactive
+repowise init --yes --no-prose    # scripted: no questions, no key, no spend
 ```
 
-`repowise health` ends with a self-check against your own git history, something
-like *"16 of the 20 lowest-health files had a bug fix in the last 6 months, 3.3x
-the 24% baseline"*. That number is computed on your repo, not ours. If it looks
-bad, the score is not working for your codebase and you should say so.
+Bare `repowise init` scans the repo and asks how to index it: **Everything**
+(model-written docs), **No prose** (docs rendered from the code's structure, no
+key) or **Advanced** (every indexing and generation option). It shows a cost
+estimate and waits for your confirmation before any model call.
 
-## 3. Connect your agent
+`--yes` never prompts. Pair it with `--no-prose` in scripts, CI and agent
+setups: `--no-prose` keeps the run keyless even when an API key happens to be
+set in the environment. Without it, `--yes` writes model prose whenever a key
+is available, with the cost pre-approved.
 
-This is the payoff: your agent reads the index instead of your codebase.
+The keyless run is the one to start with. It parses every file, builds the
+dependency graph, reads git history, scores code health, finds dead code, and
+renders a complete wiki from that structure. A large repository takes a few
+minutes.
 
-<details open><summary><b>Claude Code</b></summary>
+### 3. Connect your agent
 
-**`repowise init` already did this.** It writes a repo-root `.mcp.json`
-unconditionally, and unless you passed `--no-editor-setup` or set
-`REPOWISE_SKIP_EDITOR_SETUP=1`, it also registers repowise with
-`~/.claude/settings.json`. A Claude Code session opened in this repo already
-sees the MCP server. Check with `repowise agents` (Claude Code should show as
-wired) or `repowise doctor`.
+Unless you pass `--no-editor-setup` (or set `REPOWISE_SKIP_EDITOR_SETUP=1`),
+`init` wires these up for you, with or without `--yes`:
 
-Skipped editor setup, or setting up a machine where you did? Wire it up now:
+| What | Where |
+|---|---|
+| MCP server for Claude Code and other clients that read it | `.mcp.json` at the repo root |
+| Claude Code context file | `.claude/CLAUDE.md` |
+| VS Code MCP entry | `.vscode/mcp.json` |
+| Claude Code and Claude Desktop MCP registration | `~/.claude/settings.json` and the Claude Desktop config |
+| Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` |
+| Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook |
 
-```bash
-repowise agents add --target=claude-code
-```
+`--no-editor-setup` skips every row: only `.repowise/` is written.
+`--no-hook` skips just the post-commit hook. The command-rewrite hook for
+[Distill](../agent/DISTILL.md) is offered as a question in an interactive run
+and is left off under `--yes` unless you pass `--distill-hook`.
 
-**The plugin** additionally installs hooks and slash commands, which `init`
-never writes because the plugin route is host-managed and only the plugin can
-install it:
+Other hosts need one more command, run after `init`:
+
+| Host | Command |
+|---|---|
+| Claude Code | nothing more |
+| VS Code (Copilot) | nothing more; the [extension](../agent/VSCODE.md) adds editor features |
+| Codex | `repowise agents add --target=codex --yes`, or add `--codex` to `init` (writes `.codex/config.toml`, `.codex/hooks.json` and `AGENTS.md`) |
+| Cursor | `repowise agents add --target=cursor --yes` |
+| OpenCode | `repowise agents add --target=opencode --yes` |
+| Hermes | `repowise agents add --target=hermes --yes` |
+| Any other MCP client | `repowise agents print-config claude-code`, then paste the entry into the client's MCP config |
+
+`repowise agents` lists every supported host and whether it is wired.
+`--scope=project` or `--scope=user` limits `agents add` to repo-local or
+per-machine config. Per-host details: [Agent integrations](../agent/INTEGRATIONS.md),
+[Codex](../agent/CODEX.md), [OpenCode](../agent/OPENCODE.md),
+[Hermes](../agent/HERMES.md).
+
+On Claude Code, the plugin adds slash commands and skills on top:
 
 ```text
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
 ```
 
-**A different MCP client, or wiring the server by hand:**
+**Restart the host.** Most agents read MCP config only at startup. Claude Code
+may ask once to approve the project's `repowise` server; `/mcp` shows its
+status. Then ask the agent to call `get_overview`. An architecture summary back
+means the setup works.
+
+## First questions to ask
+
+Ask in plain language. The agent picks the tool.
+
+| Ask | Tool it reaches for |
+|---|---|
+| "Give me a tour of this codebase." | `get_overview` |
+| "What breaks if I change `src/auth.py`?" | `get_context` with callers, `get_risk` |
+| "What code is dead here?" | `get_dead_code` |
+| "What should we fix first?" | `get_health` |
+| "Which tests should I run for my branch against `main`?" | `get_change_risk`, `get_risk` |
+
+Every one of these works without an API key. What each tool returns:
+[MCP Tools](../agent/MCP_TOOLS.md).
+
+The same answers are on the command line:
 
 ```bash
-claude mcp add repowise -- repowise mcp
+repowise health            # lowest-scoring files, and why
+repowise dead-code         # what nothing references
+repowise risk main..HEAD   # review priority for your branch
+repowise impacted-tests main..HEAD   # tests your branch's changes exercise
 ```
 
-Or edit the project `.mcp.json` `init` already wrote (commit it if your team
-should share it):
-
-```json
-{ "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
-```
-</details>
-
-<details><summary><b>Codex CLI</b></summary>
-
-```bash
-codex mcp add repowise -- repowise mcp
-```
-
-Or add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.repowise]
-command = "repowise"
-args = ["mcp"]
-```
-
-`repowise init --codex` writes project-local `.codex/config.toml`,
-`.codex/hooks.json` and a managed `AGENTS.md`. See
-[Codex integration](../agent/CODEX.md).
-</details>
-
-<details><summary><b>Cursor</b></summary>
-
-```bash
-repowise agents add --target=cursor
-```
-
-Writes project-local `.cursor/mcp.json` and a managed `.cursor/rules/repowise.mdc`.
-Cursor does not read `.vscode/mcp.json`, so this is separate from the VS Code
-setup below. See [Agent integrations](../agent/INTEGRATIONS.md).
-</details>
-
-<details><summary><b>OpenCode</b></summary>
-
-```bash
-repowise agents add --target=opencode                  # this repo and this machine
-repowise agents add --target=opencode --scope=project  # this repo only
-```
-
-Writes `opencode.jsonc` (or an existing `opencode.json`) and a managed section in
-`AGENTS.md`, in both scopes by default. The repo-local pair sits at the repo root;
-the per-machine pair goes to `$XDG_CONFIG_HOME/opencode`, falling back to
-`~/.config/opencode`. That path is the same on Windows: OpenCode does not read
-`%APPDATA%`. The repo-local entry names its repo outright, while the per-machine one
-resolves whichever repo OpenCode was launched in.
-
-OpenCode accepts comments in its config. Repowise does not rewrite a file it cannot
-parse as strict JSON, so if yours has comments it prints the entry to paste instead:
-`repowise agents print-config opencode`. See
-[Agent integrations](../agent/INTEGRATIONS.md).
-</details>
-
-<details><summary><b>Hermes</b></summary>
-
-```bash
-repowise agents add --target=hermes                  # this repo and this machine
-repowise agents add --target=hermes --scope=user     # the MCP server only
-```
-
-Hermes reads one `config.yaml` per machine, so the MCP server is registered there
-and serves every repo: `%LOCALAPPDATA%\hermes\config.yaml` on Windows,
-`~/.hermes/config.yaml` elsewhere, or `$HERMES_HOME/config.yaml` when that is set.
-Project scope writes a managed section in `AGENTS.md`, which Hermes loads per repo.
-
-Repowise edits that config in place rather than rewriting it, so your comments, key
-order and any anchors survive. If it cannot parse the file it leaves it alone and
-prints the entry to paste instead: `repowise agents print-config hermes`.
-
-`platform_toolsets.cli` is deliberately left alone. Hermes exposes every enabled MCP
-server to the CLI by default, and that list only becomes an allowlist once it already
-names one. So repowise adds itself there **only** when the list is already an
-allowlist, and never converts a permissive config into a restrictive one. See
-[Hermes](../agent/HERMES.md).
-</details>
-
-<details><summary><b>Cline, Windsurf, and other MCP clients</b></summary>
-
-Print the server entry and paste it into whatever config the host reads:
-
-```bash
-repowise agents print-config claude-code
-```
-
-Or point the client at `repowise mcp`, run from the repo directory, over stdio.
-</details>
-
-<details><summary><b>VS Code</b></summary>
-
-Install the **Repowise** extension from the Marketplace or Open VSX, then run
-**Repowise: Set Up This Repository**. It registers the MCP server with VS Code
-too, so the same index serves you and your agent. See [VS Code](../agent/VSCODE.md).
-</details>
-
-**Now ask your agent something it would normally grep for:**
-
-> *"Use repowise `get_overview` to summarize this repo."*
->
-> *"What's the blast radius if I change `src/auth.py`? Use `get_context` with
-> `include: ["callers"]`."*
->
-> *"Review my branch with `get_change_risk` for `main..HEAD`."*
-
-You should get a graph-grounded answer immediately, instead of a run of greps and
-file reads. That is the whole point.
-
-> **What works without a key:** `get_overview`, `get_context`, `get_symbol`,
-> `get_risk`, `get_change_risk`, `get_dead_code` and `get_health` all synthesize
-> from the graph, git and health layers. `search_codebase` and `get_answer` read
-> the wiki, which step 2 already built, so they answer from pages rendered from
-> structure. `search_codebase` is full-text only until you configure an embedder.
-
-## 4. Optional: write the subsystem pages as model prose
-
-Every file page was already deterministic, and stays that way. The one layer a
-model adds is the subsystem (concept) tree: the numbered pages that describe how
-the codebase fits together above the file level. Without a key they are
-structural stubs; `repowise generate` fills them with prose (and unlocks
-architectural decision mining and chat). You do not have to redo anything: it
-reuses the index you already built, so the graph is not re-parsed.
-
-Set a key, preview the cost, then write:
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY
-
-repowise generate                  # shows the wiki state, then writes the unwritten subsystem pages
-```
-
-Bare `generate` prints the wiki's state and writes every unwritten subsystem
-page behind a single cost estimate. On Windows PowerShell:
-`$env:ANTHROPIC_API_KEY = "sk-ant-..."`
-
-You do not have to write them all at once. Restrict to an area, a single page, or
-refresh what is stale, each run behind its own cost estimate:
-
-```bash
-repowise generate --path src/api                    # just the subsystem pages under one area
-repowise generate --page module_page:src/api        # or a single subsystem page
-repowise generate --stale                            # refresh pages the last update marked stale
-repowise generate --all                              # or rewrite every page, structural ones included
-```
-
-Semantic search is a separate step: configure an embedder and run `repowise
-reindex` to build the vector store.
-
-Prefer to write the whole wiki as part of a fresh index instead? `repowise init`
-on its own is interactive: it asks which provider to use, shows a cost estimate,
-and waits for you to confirm before spending anything.
-
-Three ways to avoid paying a provider at all:
-
-- **Codex subscription:** `repowise init --provider codex_cli` uses your existing
-  Codex CLI login, no API key. Run `codex login` first.
-- **Fully local:** point it at Ollama with a local embedding model for zero
-  external calls. See [Config](../reference/CONFIG.md).
-- **Stay in index-only mode.** The graph, git, health, risk and dead-code layers
-  never needed a provider, and the wiki you already have was rendered without
-  one. Full-text search works on it; semantic search is the part that needs an
-  embedder, and Ollama is the keyless one.
-
-## 5. Keep it in sync
-
-An index that drifts is worse than no index, because your agent will not know it
-is stale. Every response carries the indexed commit and warns when it diverges
-from your live `HEAD`, but the fix is cheap:
-
-```bash
-repowise update          # incremental, seconds
-```
-
-Better, make it automatic:
-
-```bash
-repowise hook install    # re-index on every commit
-repowise watch           # or run a file watcher while you work
-```
-
-Working with `git worktree`? A new worktree seeds its index from your main
-checkout on the first `init` or `update`, so there is no second full index and
-nothing to configure. See [Worktrees](../scale/WORKTREES.md).
-
-All the sync options (hooks, watcher, GitHub/GitLab webhooks, polling):
-[Auto-Sync](../scale/AUTO_SYNC.md).
-
----
-
-## See it
+## Open the dashboard
 
 ```bash
 repowise serve
 ```
 
-Starts the API on `http://localhost:7337` and the web dashboard on
-`http://localhost:3000`, alongside the MCP server. If Node.js 20+ is installed
-the dashboard starts automatically; the frontend downloads once (~50 MB) and
-caches in `~/.repowise/web/`. Use `repowise serve --no-ui` for the API alone, or
-run the [Docker image](../../docker/README.md) if you would rather not install Node.
+The API starts on `http://localhost:7337` and the dashboard on
+`http://localhost:3000`. The dashboard needs Node.js 20+; it downloads once
+(about 50 MB) and is cached in `~/.repowise/web/`. `--no-ui` starts the API
+alone, and the [Docker image](../../docker/README.md) avoids installing Node.
+View by view: [Dashboard](DASHBOARD.md).
 
-Every view and what it answers: [Dashboard](DASHBOARD.md).
+## Optional upgrades
 
-## Spend fewer tokens on command output
-
-```bash
-repowise distill pytest -x   # errors first, raw output recoverable via `repowise expand`
-repowise saved               # tokens and dollars saved so far
-```
-
-Distill compresses noisy command output before your agent reads it, 60-90% fewer
-tokens on noisy commands with no error lines dropped. Opt into the rewrite hook
-during `init` (or `repowise hook rewrite install`) to have it applied
-automatically. Rewrites run without a prompt and only ever wrap a recognized
-command; set `permission: ask` to review each one.
-See [Distill](../agent/DISTILL.md).
-
-## More than one repo
-
-If your project spans several repositories, index the parent directory instead:
+**Model-written docs.** A keyless index renders the subsystem pages from
+structure. `repowise generate` rewrites them as prose that explains how the
+code fits together, reusing the index you already have. Put the key in
+`.repowise/.env` (gitignored; loaded by `generate`, `update` and the MCP
+server), preview, then write:
 
 ```bash
-cd my-workspace/         # contains backend/, frontend/, shared-libs/
-repowise init .
+repowise generate --provider anthropic --dry-run   # cost estimate only
+repowise generate --provider anthropic             # asks before spending
 ```
 
-repowise finds the git repos, asks which to index, and then runs the analysis that
-only makes sense across repos: co-change pairs, API contracts between a producer
-and its consumers, and package dependencies. One MCP server serves all of them.
+`--path <dir>` or `--page <id>` writes a subset. Providers that need no key:
+`ollama` (local), `claude_cli` and `codex_cli` (your subscription login),
+`opencode`. Full list and key variables: [Config](../reference/CONFIG.md).
+
+**Semantic search.** Full-text search works on any index. For semantic search,
+configure an embedder (`REPOWISE_EMBEDDER`, or `--embedder` on `init`) and run
+`repowise reindex`.
+
+**Resuming.** If a run was interrupted, or a provider outage left some pages
+missing, `repowise init --resume` writes only the pages that are absent.
+
+## Keeping it fresh
+
+The post-commit hook `init` installed runs `repowise update` after every
+commit, so there is usually nothing to do. Other options:
 
 ```bash
-repowise workspace list              # repos and their status
-repowise workspace add ../new-svc    # add one
-repowise update --workspace          # update every stale repo
+repowise update     # incremental catch-up, by hand
+repowise watch      # update continuously while you edit
+repowise status     # what is indexed and how far behind HEAD
 ```
 
-Full guide: [Workspaces](../scale/WORKSPACES.md).
-
----
-
-## If something looks wrong
-
-```bash
-repowise doctor          # checks install, API keys, index drift, store health
-repowise doctor --repair # fixes what it safely can
-repowise status          # what is indexed, and how stale it is
-```
-
-## Taking it back out
-
-```bash
-repowise uninstall             # list what repowise wrote, then ask what to remove
-repowise uninstall --all       # everything: wiring, index, and machine-wide state
-repowise uninstall --dry-run   # the same list, changing nothing
-```
-
-It reports every path it removed and every path it left, with the reason on the
-row. The index is not selected by default, because rebuilding it is the one
-expensive thing here. Full flags in the
-[CLI Reference](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
-
-## Environment variables
-
-None of these are required. Every one of them is only needed for a model-written
-wiki.
-
-| Variable | When needed | Description |
-|----------|-------------|-------------|
-| `REPOWISE_PROVIDER` | Optional | Provider name. An empty value is treated as unset. |
-| `ANTHROPIC_API_KEY` | Using Anthropic | Anthropic API key |
-| `OPENAI_API_KEY` | Using OpenAI | OpenAI API key |
-| `GEMINI_API_KEY` | Using Gemini | Google Gemini API key |
-| `REPOWISE_EMBEDDER` | Semantic search | Embedder: `gemini`, `openai`, or `mock` (default) |
-| `REPOWISE_DB_URL` | Custom database | SQLite/PostgreSQL connection string (default: `.repowise/wiki.db`) |
-| `REPOWISE_API_URL` | Frontend only | Backend URL for the web UI (default: `http://localhost:7337`) |
-
-Full list, plus `.repowise/config.yaml`: [Config](../reference/CONFIG.md).
-
----
+`repowise hook uninstall` removes the post-commit hook. Webhooks, polling and
+workspace-wide sync: [Auto-Sync](../scale/AUTO_SYNC.md). A new `git worktree`
+seeds its index from the main checkout: [Worktrees](../scale/WORKTREES.md).
 
 ## Where to go next
 
-- **[User Guide](USER_GUIDE.md)** for the everyday workflows
-- **[MCP Tools](../agent/MCP_TOOLS.md)** for what each tool answers, with worked examples
-- **[Hooks](../agent/HOOKS.md)** to have context arrive without the agent asking for it
-- **[Code Health](../layers/CODE_HEALTH.md)** for what the score measures and how it is validated
-- **[Dashboard](DASHBOARD.md)** for the web UI, view by view
+| Goal | Read |
+|---|---|
+| Everyday workflows: before a PR, in CI, changing provider | [User Guide](USER_GUIDE.md) |
+| What each MCP tool answers | [MCP Tools](../agent/MCP_TOOLS.md) |
+| Context that arrives without the agent asking | [Hooks](../agent/HOOKS.md) |
+| Fewer tokens on test and build output | [Distill](../agent/DISTILL.md) |
+| What the health score measures | [Code Health](../layers/CODE_HEALTH.md) |
+| Unused files and exports | [Dead Code](../layers/DEAD_CODE.md) |
+| Review priority for a change | [Change Risk](../layers/CHANGE_RISK.md) |
+| Gates and annotations on pull requests | [CI](CI.md) |
+| Several repositories as one | [Workspaces](../scale/WORKSPACES.md) |
+| Every setting and environment variable | [Config](../reference/CONFIG.md) |
+| Something is not working | [Troubleshooting](TROUBLESHOOTING.md) |
+
+## Troubleshooting
+
+Start with `repowise doctor`. It checks the install, API keys, index drift,
+store health and each wired agent's MCP entry.
+
+**`repowise: command not found` after install.** Run `uv tool update-shell`
+(uv) or `pipx ensurepath` (pipx), open a new shell, and restart the agent
+host, which starts `repowise` by name.
+
+**The agent does not see the repowise tools.** Restart the host first. If they
+are still missing, run `repowise doctor --repair`, which re-registers a stuck
+Claude Code MCP entry and refreshes every wired agent's config. Failing that,
+re-run `repowise agents add --target=<id> --yes`.
+
+**The agent answers from old code.** `repowise status` shows drift and
+`repowise update` catches up.
+
+More, including large repositories, Windows encoding, empty results and
+removing repowise: [Troubleshooting](TROUBLESHOOTING.md).

@@ -64,6 +64,24 @@ describe("Repowise extension", () => {
     }
   });
 
+  it("ends the walkthrough on publishing, linked with its source", () => {
+    const manifest = getExtension().packageJSON as {
+      contributes: {
+        walkthroughs: Array<{ steps: Array<{ id: string; description: string }> }>;
+        viewsWelcome: Array<{ when: string; contents: string }>;
+      };
+    };
+    const steps = manifest.contributes.walkthroughs[0]?.steps ?? [];
+    const last = steps[steps.length - 1];
+    assert.ok(last);
+    assert.strictEqual(last.id, "shareTeam");
+    assert.ok(last.description.includes(`command:${Commands.publish}`));
+    const notInstalled = manifest.contributes.viewsWelcome.find((v) =>
+      v.when.includes("not-installed"),
+    );
+    assert.ok(notInstalled?.contents.includes("src=vscode_no_python"));
+  });
+
   it("runs Show Log without throwing", async () => {
     const ext = getExtension();
     await ext.activate();

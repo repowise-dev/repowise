@@ -136,8 +136,12 @@ describe("CodeHealthMap", () => {
 
   it("shows the on-canvas health legend", () => {
     const { getByText } = render(<CodeHealthMap files={[f("a.py", 30, "core")]} />);
-    expect(getByText("Health")).toBeInTheDocument();
+    expect(getByText("Code health")).toBeInTheDocument();
     expect(getByText(/galaxy = module/i)).toBeInTheDocument();
+    // The legend names the band and the range it covers, on the same
+    // vocabulary every other mark on the page uses.
+    expect(getByText("Excellent · 8.5+")).toBeInTheDocument();
+    expect(getByText("Needs work · 4.0 to 5.5")).toBeInTheDocument();
   });
 
   it("renders the coverage legend under the coverage lens", () => {
@@ -179,7 +183,7 @@ describe("CodeHealthMap", () => {
     const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
     const fillOf = (p: string) =>
       container.querySelector(`circle[data-path="${p}"]`)?.getAttribute("fill");
-    expect(fillOf("core/planned.py")).toBe("var(--color-node-critical)");
+    expect(fillOf("core/planned.py")).toBe("var(--color-node-at-risk)");
     expect(fillOf("core/one.py")).toBe("var(--color-node-fair)");
     expect(fillOf("core/clean.py")).toBe(NEUTRAL_FILL);
     // Stored plan earns no mark of its own. It is said in words instead.
@@ -264,7 +268,7 @@ describe("map chrome, off canvas", () => {
       <MapLensSwitcher overlay="health" onOverlayChange={onOverlayChange} />,
     );
     expect(getByRole("radiogroup", { name: "Map lens" })).toBeInTheDocument();
-    expect(getByRole("radio", { name: "Health" })).toBeChecked();
+    expect(getByRole("radio", { name: "Code health" })).toBeChecked();
     fireEvent.click(getByRole("radio", { name: "Performance" }));
     expect(onOverlayChange).toHaveBeenCalledWith("performance");
   });

@@ -86,7 +86,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?, include?)",
+        "get_risk(targets?, changed_files?, include?)",
         "File history and structural reach. PR mode leads with `directive`; its "
         "0-10 structural heuristic is uncalibrated, not a probability. Read typed "
         "test recommendations and coverage state first.",
@@ -99,8 +99,9 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_health": (
         "get_health(targets?, include?)",
-        "Defect / maintainability / performance scores and findings. Self-check the "
-        "files you touched before finishing.",
+        "Defect / maintainability / performance scores and findings, plus "
+        "documentation the code no longer supports. Self-check the files you "
+        "touched before finishing.",
     ),
     "get_dead_code": (
         "get_dead_code(tier?, min_confidence?, safe_only?)",

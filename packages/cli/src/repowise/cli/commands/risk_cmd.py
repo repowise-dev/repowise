@@ -15,29 +15,50 @@ is the ``get_risk`` MCP tool, and this command is a thin adapter over it — the
 same seam ``ask`` / ``context`` / ``symbol`` / ``why`` use. It reads the index
 rather than git, so the repo must be indexed.
 
+``--fail-above-percentile P`` makes the REVSPEC path a CI gate on the
+repo-relative percentile (never the 0-10 score), with the shared CI exit codes
+(:mod:`repowise.cli.ci`): 1 above the gate, 2 when the change cannot be read
+or ranked.
+
 Examples:
     repowise risk                       # score uncommitted work, else HEAD
     repowise risk HEAD                  # score the last commit
     repowise risk abc123                # score a single commit
     repowise risk main..HEAD            # score a branch / PR range as one change
+    repowise risk --fail-above-percentile 95 --format github  # gate the CI change
     repowise risk --target a.py -t b.py # what history says about those files
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from pathlib import Path
 
 import click
 from rich.table import Table
 
+from repowise.cli.ci import (
+    CI_FORMATS,
+    EXIT_GATE_FAILED,
+    CannotEvaluateError,
+    append_step_summary,
+    cannot_evaluate,
+    ci_notices,
+    ci_revspec,
+    repo_root,
+)
 from repowise.cli.commands import _tool_adapters as _ta
-from repowise.cli.helpers import console, err_console
+from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option, full_option
 from repowise.core.analysis.change_risk import (
+    ChangeRiskResult,
     change_risk_payload,
     review_priority_classification,
     score_live_change,
 )
+from repowise.core.analysis.change_risk.render import ordinal as _ordinal
+from repowise.core.analysis.change_risk.render import percentile_text
 
 _PRIORITY_LEAD = {
     "low": "Smaller or more focused than a typical commit in this repo",
@@ -163,6 +184,8 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
                 key,
                 truncated=directive.get(f"{key}_truncated") or 0,
             )
+        calls = directive.get("next_calls") or []
+        _print_list("Then run", [c["cli"] for c in calls if c.get("cli")])
 
     targets = projected.get("targets") or {}
     for name in requested:
@@ -212,6 +235,12 @@ def _render_card(name: str, card: dict) -> None:
     summary = card.get("risk_summary")
     if summary:
         console.print(f"  {escape(str(summary))}")
+    if card.get("resolved") is False:
+        # The line below defaults its missing fields to numbers rather than
+        # gating on them, so stop here rather than print "0 direct dependents".
+        reason = escape(str(card.get("unresolved_reason") or "unknown"))
+        console.print(f"  [dim]unresolved: {reason}[/dim]")
+        return
     trend = card.get("trend") or "unknown"
     console.print(
         f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "
@@ -224,7 +253,7 @@ def _render_card(name: str, card: dict) -> None:
     # payload that no renderer prints is the second silent failure mode of a
     # trim, and the one a projection test cannot see.
     health = card.get("health_score")
-    coverage = card.get("coverage_pct")
+    coverage = card.get("line_coverage_pct")
     if health is not None or coverage is not None:
         parts = []
         if health is not None:
@@ -384,10 +413,63 @@ def _print_records(label: str, values: list, key: str, truncated: int = 0) -> No
         console.print(f"    [dim]... and {truncated} more[/dim]")
 
 
-def _ordinal(n: int) -> str:
-    """1 -> '1st', 2 -> '2nd', 93 -> '93rd', 11 -> '11th'."""
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+def _independent_changes_for(repo_path: str, result, revspec: str | None) -> dict | None:
+    """How this diff splits, per the index, or ``None`` when it cannot be read."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.independent_changes import independent_changes
+
+    paths = [path for path, _ in result.features.file_churn]
+    if len(paths) < 2:
+        return None
+    # A diff names paths from the repository root, so a command run in a
+    # subdirectory has to score against that root, not against the given path.
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+    # One commit touching two files links them harder than any edge does. Read
+    # git before the store opens: no subprocess while a connection is held.
+    sets = git_refs.commit_file_sets(str(root), revspec)
+
+    async def read() -> dict | None:
+        found = None
+        async with repo_index_session(root) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                try:
+                    found = await independent_changes(session, repo_id, paths, commit_sets=sets)
+                except (SQLAlchemyError, OSError, LookupError):
+                    # An index written by an older version can fail the query itself.
+                    return None
+        return found.to_dict() if found else None
+
+    return run_async(read())
+
+
+#: How many ungrouped names the table prints. The summary already states the
+#: count, so a docs-heavy diff need not spell out hundreds of paths.
+_UNGROUPED_SHOWN = 10
+
+
+def _print_independent_changes(block: dict) -> None:
+    """The groups, plainly: no score, no percentage, no adjective."""
+    from rich.markup import escape
+
+    console.print(f"\n[bold]{escape(str(block.get('summary') or ''))}[/bold]")
+    for number, group in enumerate(block.get("groups") or [], start=1):
+        files = [str(f) for f in group.get("files") or []]
+        plural = "" if len(files) == 1 else "s"
+        console.print(f"  {number}. {len(files)} file{plural}: {escape(', '.join(files))}")
+        bridging = [str(f) for f in group.get("bridging_files") or []]
+        if bridging:
+            # Naming these files says where the group would split if one moved out.
+            console.print(f"     [dim]held together by: {escape(', '.join(bridging))}[/dim]")
+    ungrouped = [str(f) for f in block.get("ungrouped_files") or []]
+    if ungrouped:
+        shown = escape(", ".join(ungrouped[:_UNGROUPED_SHOWN]))
+        cut = len(ungrouped) - _UNGROUPED_SHOWN
+        more = f" and {cut} more" if cut > 0 else ""
+        console.print(f"  Left out of the grouping: {shown}{more}")
+    console.print(f"  [dim]Basis: {escape(str(block.get('basis') or ''))}.[/dim]")
 
 
 @click.command("risk")
@@ -439,7 +521,22 @@ def _ordinal(n: int) -> str:
     help="With --target: PR mode. The response leads with a directive naming "
     "structural review candidates, missing co-changes/tests, and what to run.",
 )
-@format_option()
+@click.option(
+    "--fail-above-percentile",
+    "fail_above",
+    type=click.FloatRange(0, 100),
+    default=None,
+    help="CI gate: exit 1 when the change ranks above this percentile of recent "
+    "commits (risk_percentile, never the 0-10 score); exit 2 when it cannot be "
+    "ranked. Without REVSPEC it scores the CI change against its target branch.",
+)
+@format_option(
+    choices=CI_FORMATS,
+    help="Output format. ``markdown`` and ``github`` are not for --target, and "
+    "without REVSPEC they score the CI change against its target branch; "
+    "``github`` writes annotations to stdout and the markdown summary to "
+    "$GITHUB_STEP_SUMMARY when set.",
+)
 @full_option()
 def risk_command(
     revspec: str | None,
@@ -449,6 +546,7 @@ def risk_command(
     exclude: tuple[str, ...],
     targets: tuple[str, ...],
     changed_files: tuple[str, ...],
+    fail_above: float | None,
     fmt: str,
     full: bool,
 ) -> None:
@@ -456,10 +554,17 @@ def risk_command(
 
     With no --target this scores REVSPEC (a commit, or a ``base..head``
     range) from its diff. Omit REVSPEC to score your uncommitted work, or
-    HEAD when the tree is clean. With --target it reports what the repo's
-    history says about the named files, the same as the get_risk MCP tool.
+    HEAD when the tree is clean; with --fail-above-percentile, or a
+    markdown or github format, it scores the CI change instead (the pull
+    request's target branch...HEAD). With
+    --target it reports what the repo's history says about the named files,
+    the same as the get_risk MCP tool.
     """
     if targets:
+        if fmt not in ("table", "json"):
+            raise click.UsageError("--target supports --format table or json.")
+        if fail_above is not None:
+            raise click.UsageError("--fail-above-percentile gates a change, not --target files.")
         _target_risk(repo_path, targets, changed_files, fmt, full)
         return
     if changed_files:
@@ -469,50 +574,104 @@ def risk_command(
     # payload, and silently ignoring the flag would hand a script that asked for
     # JSON a rich table and exit 0.
     fmt = _ta.resolve_format_for(fmt, full)
+    subject = _resolve_subject(repo_path, revspec, fmt, fail_above)
     extensions = tuple(e.strip() for e in ext.split(",")) if ext else ()
-    status = err_console if fmt != "table" else console
+    result = _score(subject, extensions, exclude, baseline)
+    failed = fail_above is not None and result.percentile > fail_above
+    if fmt == "table":
+        _print_change(subject, result, failed)
+    else:
+        _emit_machine(subject, result)
+    if failed:
+        raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
-    if baseline and fmt == "table":
+
+@dataclass(frozen=True)
+class _Subject:
+    """The change a REVSPEC run scores, and how it reports it."""
+
+    repo_path: str
+    revspec: str | None
+    fmt: str
+    fail_above: float | None
+
+
+def _resolve_subject(
+    repo_path: str, revspec: str | None, fmt: str, fail_above: float | None
+) -> _Subject:
+    """The change to score: *revspec*, else the CI change for a gate or CI format."""
+    if revspec is None and (fail_above is not None or fmt in ("markdown", "github")):
+        # A CI checkout of a pull request is a merge commit, so HEAD alone is
+        # the wrong subject: the change is what the branch did since the target.
+        try:
+            revspec = ci_revspec(str(repo_root(repo_path)), None)
+        except CannotEvaluateError as exc:
+            cannot_evaluate(fmt, exc.code, str(exc))
+    return _Subject(repo_path, revspec, fmt, fail_above)
+
+
+def _score(
+    subject: _Subject, extensions: tuple[str, ...], exclude: tuple[str, ...], baseline: int
+) -> ChangeRiskResult:
+    """Score the change, or exit 2 when it cannot be read or, gated, ranked."""
+    status = ci_notices(subject.fmt)
+    if baseline and subject.fmt == "table":
         status.print(f"[dim]Sampling up to {baseline} recent commits…[/dim]")
     try:
         result = score_live_change(
-            repo_path,
-            revspec,
+            subject.repo_path,
+            subject.revspec,
             extensions=extensions,
             exclude_patterns=exclude,
             baseline=baseline,
         )
     except Exception as exc:
-        # Surface git errors (bad revspec, not a repo) as a clean CLI message.
-        raise click.ClickException(
-            f"Could not read change {revspec or 'HEAD'!r} in {repo_path}: {exc}"
-        ) from exc
+        # Git errors (bad revspec, not a repo, missing history) cannot be scored.
+        cannot_evaluate(
+            subject.fmt,
+            "change_unreadable",
+            f"Could not read change {subject.revspec or 'HEAD'!r} in {subject.repo_path}: {exc}",
+        )
+    if subject.fail_above is not None and result.percentile is None:
+        from repowise.core.analysis.change_risk.render import unranked_reason
 
-    features = result.features
-    risk = result.risk
-    percentile = result.percentile
-    priority = result.priority
-    request_excludes = result.request_excludes
-
-    if features.nf == 0:
+        cannot_evaluate(subject.fmt, "no_baseline", unranked_reason(result, baseline))
+    if result.features.nf == 0:
         status.print(
-            f"[yellow]No counted file changes in {features.ref!r} "
+            f"[yellow]No counted file changes in {result.features.ref!r} "
             f"(check the revspec, --ext, or exclusion filters).[/yellow]"
         )
+    return result
 
-    if fmt == "json":
-        click.echo(json.dumps(change_risk_payload(result, scales=True), indent=2))
-        return
 
-    # Lead with the benchmarked population-relative authority. Without a usable
-    # baseline, label the offline absolute band explicitly as the fallback.
-    if percentile is not None and priority is not None:
+def _print_change(subject: _Subject, result: ChangeRiskResult, failed: bool) -> None:
+    """The table rendering of a scored change."""
+    _print_priority(result, subject.fail_above, failed)
+    _print_fix_history_and_shape(result)
+    groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
+    if groups:
+        _print_independent_changes(groups)
+
+
+def _print_priority(result: ChangeRiskResult, fail_above: float | None, failed: bool) -> None:
+    """Lead with the benchmarked population-relative authority.
+
+    Without a usable baseline, label the offline absolute band explicitly as
+    the fallback.
+    """
+    risk, priority = result.risk, result.priority
+    if result.percentile is not None and priority is not None:
         console.print(
             f"\n[bold]Benchmarked review priority[/bold]: "
             f"{review_priority_classification(priority)} · "
-            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
+            f"{percentile_text(result, fail_above)} percentile of recent commits by size and spread"
         )
         console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
+        if fail_above is not None:
+            from repowise.core.analysis.change_risk.render import gate_text
+
+            color = "red" if failed else "green"
+            console.print(f"  [{color}]Gate: {gate_text(result, fail_above)}.[/{color}]")
     else:
         color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
         console.print(
@@ -520,7 +679,18 @@ def risk_command(
             "(absolute per-commit band — no repo baseline to rank against)"
         )
 
-    # Fix history remains separate evidence about where the change lands.
+
+def _print_fix_history_and_shape(result: ChangeRiskResult) -> None:
+    """Where the change lands (its fix record), then the shape of its diff."""
+    _print_fix_headline(result)
+    _print_change_facts(result)
+    _print_hot_files(result)
+    _print_diff_shape(result)
+
+
+def _print_fix_headline(result: ChangeRiskResult) -> None:
+    """Fix history remains separate evidence about where the change lands."""
+    features = result.features
     if not result.fix_history_available:
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
@@ -541,6 +711,11 @@ def risk_command(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
             "[green]no bug-fix history in the files it touches[/green]"
         )
+
+
+def _print_change_facts(result: ChangeRiskResult) -> None:
+    """What was scored: the tree, the subject, the filters and the diff's features."""
+    features, request_excludes = result.features, result.request_excludes
     if result.working_tree:
         console.print("  [dim]Scoring your uncommitted changes, not the last commit.[/dim]")
     if features.subject:
@@ -554,7 +729,10 @@ def risk_command(
         f"{'unknown' if features.exp is None else features.exp}"
         + ("  [magenta](fix)[/magenta]" if features.is_fix else "")
     )
-    # The fix record, named in the headline above and itemized here.
+
+
+def _print_hot_files(result: ChangeRiskResult) -> None:
+    """The fix record, named in the headline above and itemized here."""
     if result.hot_files:
         hot = Table(show_header=True)
         hot.add_column("File")
@@ -568,6 +746,10 @@ def risk_command(
             "one from a year earlier counts a half.[/dim]"
         )
 
+
+def _print_diff_shape(result: ChangeRiskResult) -> None:
+    """The supporting 0-10 diff-size score and its drivers."""
+    risk = result.risk
     console.print(
         f"  [dim]Diff-size score: {risk.score:.1f}/10 — how big and spread out the change is, "
         f"not where it lands. Corpus-anchored to a single commit.[/dim]"
@@ -586,3 +768,31 @@ def risk_command(
             f"[{push_color}]{sign}{d.contribution:.2f}[/{push_color}]",
         )
     console.print(table)
+
+
+def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
+    """The json, markdown and github renderings of a scored change."""
+    from repowise.core.analysis.change_risk import render
+
+    fmt, fail_above = subject.fmt, subject.fail_above
+    if fmt == "json":
+        payload = change_risk_payload(result, scales=True)
+        groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
+        if groups:
+            payload["independent_changes"] = groups
+        if fail_above is not None:
+            payload["gate"] = {
+                "fail_above_percentile": fail_above,
+                # Unrounded, as the gate compares it: ``risk_percentile`` is
+                # rounded to one decimal and can read as equal to the gate.
+                "percentile": result.percentile,
+                "status": render.percentile_gate(result, fail_above),
+            }
+        click.echo(json.dumps(payload, indent=2))
+    elif fmt == "markdown":
+        click.echo(render.render_markdown(result, fail_above), nl=False)
+    else:
+        for line in render.github_annotations(result, fail_above):
+            click.echo(line)
+        append_step_summary(render.render_markdown(result, fail_above))
+        console.print(render.headline(result, fail_above, markdown=False), markup=False)

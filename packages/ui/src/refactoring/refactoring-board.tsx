@@ -21,6 +21,12 @@
  * it, so it stays available here as a named order rather than becoming the
  * default and quietly making this a second, worse copy of that page.
  *
+ * **The list defaults to what Fix first would take.** Every per-file
+ * opportunity is a lot of rows (702 on this repository), most of them below
+ * the worth floor or in tests. Core's Fix-first rules decide which are worth
+ * doing; the scope control switches to the full inventory, and the count line
+ * says how many the default leaves out and why.
+ *
  * Filters are server-owned and single-valued, which is what the queue endpoint
  * admits: one effort, one confidence. Chips toggle rather than accumulate, and
  * the confidence row is built from the confidences actually present, so it
@@ -33,29 +39,28 @@ import { Search } from "lucide-react";
 import { Input } from "../ui/input";
 import { FilterSelect } from "../health/code-health-controls";
 import { PaginationControls } from "../shared/pagination-controls";
+import { Segmented } from "../shared/segmented";
+import { exclusionPhrase } from "../health/fix-first/scope";
+import { formatNumber } from "../lib/format";
 import { OpportunityRows } from "./opportunity-rows";
 import { RefactoringLede } from "./refactoring-lede";
 import { StartHere } from "./start-here";
-import { CONFIDENCE_LABEL } from "./meta";
+import { CONFIDENCE_LABEL, EFFORT_LABEL } from "./meta";
 import { STATUS_LABEL, TRIAGE_STATUSES } from "./opportunity";
 import type {
   Confidence,
   EffortBucket,
   OpportunityStatus,
   RefactoringOpportunity,
+  RefactoringHiddenCounts,
   RefactoringOpportunityRollup,
   RefactoringOrder,
+  RefactoringScope,
 } from "@repowise-dev/types/refactoring";
 
 const PAGE_SIZE = 60;
 
 const EFFORTS: EffortBucket[] = ["S", "M", "L", "XL"];
-const EFFORT_LABEL_LONG: Record<EffortBucket, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 const CONFIDENCE_ORDER: Confidence[] = ["high", "medium", "low"];
 
 const SORT_OPTIONS: { value: RefactoringOrder; label: string }[] = [
@@ -74,6 +79,12 @@ export interface RefactoringBoardServerState {
   effort: EffortBucket | null;
   confidence: Confidence | null;
   mechanicalOnly: boolean;
+  /** The scope asked for: what Fix first would take, or the full inventory. */
+  scope: RefactoringScope;
+  /** The scope the server applied, which `total` counts. */
+  appliedScope: RefactoringScope;
+  /** Under `fix_first`, what the filtered set leaves out, by reason. */
+  hidden: RefactoringHiddenCounts | null;
   total: number;
   offset: number;
   nextOffset: number | null;
@@ -136,7 +147,9 @@ export function RefactoringBoard({
 
   const rollupTotal =
     summary && summary.status === "available" ? summary.opportunities_total : null;
-  if ((rollupTotal ?? opportunities.length) === 0 && serverState.status === "open") {
+  // Empty only when the inventory is: the default scope can list none of it.
+  const inventory = rollupTotal ?? serverState.total + (serverState.hidden?.total ?? 0);
+  if (inventory === 0 && serverState.status === "open") {
     return (
       <div className="border-t border-[var(--color-border-default)] pt-10 text-center">
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{emptyTitle}</h3>
@@ -154,6 +167,9 @@ export function RefactoringBoard({
     serverState.mechanicalOnly ||
     serverState.status !== "open";
   const resultTotal = serverState.total;
+  const worthOnly = serverState.appliedScope === "fix_first";
+  const hiddenTotal = serverState.hidden?.total ?? 0;
+  const hiddenWhy = serverState.hidden ? exclusionPhrase(serverState.hidden.by_reason) : "";
 
   return (
     <div className="space-y-10">
@@ -172,13 +188,34 @@ export function RefactoringBoard({
       ) : null}
 
       <section className="space-y-4 border-t border-[var(--color-border-default)] pt-8">
-        <div>
-          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">{sectionTitle}</h2>
-          <p className="mt-1 max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
-            One row is one file&apos;s work, with its steps in dependency-safe order. The
-            recommended order rotates cause and area so the head is a set of choices; every row
-            opens the same inspector with the full explanation.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
+              {sectionTitle}
+            </h2>
+            <p className="mt-1 max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
+              One row is one file&apos;s work, with its steps in dependency-safe order. The
+              recommended order rotates cause and area so the head is a set of choices; every row
+              opens the same inspector with the full explanation.
+            </p>
+          </div>
+          <Segmented<RefactoringScope>
+            label="Scope"
+            value={serverState.appliedScope}
+            onChange={(scope) => onServerStateChange({ scope, offset: 0 })}
+            options={[
+              {
+                value: "fix_first",
+                label: "Worth doing",
+                hint: "Only what Fix first would take",
+                disabledReason:
+                  serverState.status === "open"
+                    ? undefined
+                    : "Fix first ranks open opportunities only.",
+              },
+              { value: "all", label: "Full inventory", hint: "Every open opportunity" },
+            ]}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -239,7 +276,7 @@ export function RefactoringBoard({
             }
             options={[
               { value: "", label: "Any" },
-              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL_LONG[e] })),
+              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL[e] })),
             ]}
           />
           {confidencesPresent.length > 1 ? (
@@ -264,14 +301,31 @@ export function RefactoringBoard({
           />
         </div>
 
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
-            {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
-            opportunit{resultTotal === 1 ? "y" : "ies"}
-            {filtersActive ? (
-              <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>
-            ) : null}
-          </h3>
+        <div className="flex items-start justify-between gap-4">
+          {worthOnly ? (
+            <div>
+              <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
+                Showing {formatNumber(resultTotal)} worth doing
+                {filtersActive ? (
+                  <span className="font-normal text-[var(--color-text-tertiary)]"> that match</span>
+                ) : null}
+                ; {formatNumber(hiddenTotal)} more in the full inventory
+              </h3>
+              {hiddenWhy ? (
+                <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">
+                  Left out: {hiddenWhy}.
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
+              {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
+              opportunit{resultTotal === 1 ? "y" : "ies"}
+              {filtersActive ? (
+                <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>
+              ) : null}
+            </h3>
+          )}
           {filtersActive ? (
             <button
               type="button"
@@ -294,8 +348,10 @@ export function RefactoringBoard({
 
         {opportunities.length === 0 ? (
           <p className="border-t border-[var(--color-border-default)] py-10 text-center text-sm text-[var(--color-text-tertiary)]">
-            {serverState.status === "open"
-              ? "No opportunities match these filters."
+            {worthOnly && hiddenTotal > 0
+              ? `None of these is worth doing first. ${formatNumber(hiddenTotal)} more are in the full inventory.`
+              : serverState.status === "open"
+                ? "No opportunities match these filters."
               : `Nothing has been marked ${STATUS_LABEL[serverState.status].toLowerCase()} yet.`}
           </p>
         ) : (

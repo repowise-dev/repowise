@@ -158,5 +158,5 @@ def _check_mcp_registered(ws_root: _DoctorPath) -> None:
     else:
         console.print(
             "  [dim]MCP: no claude_desktop_config.json entry found — run "
-            "`repowise hook install` to register.[/dim]"
+            "`repowise init` to register.[/dim]"
         )

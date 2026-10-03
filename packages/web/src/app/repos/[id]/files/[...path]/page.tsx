@@ -20,6 +20,7 @@ import {
 import { FilePageHost } from "@/components/files/file-page-host";
 import { FileTestsPanel } from "@/components/files/file-tests-panel";
 import { FileHealthPanel } from "@/components/files/file-health-panel";
+import { FileDocReferencesPanel } from "@/components/files/file-doc-references-panel";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 
 /** Matches the sibling routes (`decisions`, the repo root, the four workspace
@@ -95,6 +96,8 @@ async function renderCoverageCode(
         {
           line(node, line) {
             if (covered.has(line)) node.properties["data-covered"] = "y";
+            // Real file lines, so a selection here can name a real range.
+            node.properties["data-line"] = String(line);
           },
         },
       ],
@@ -190,6 +193,9 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
       />
     ),
     testsPanel: <FileTestsPanel repoId={id} filePath={detail.file_path} />,
+    docReferencesPanel: (
+      <FileDocReferencesPanel repoId={id} filePath={detail.file_path} />
+    ),
     LinkComponent: Link,
   });
 

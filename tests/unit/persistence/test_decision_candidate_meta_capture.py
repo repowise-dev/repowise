@@ -115,6 +115,37 @@ async def test_an_unscoped_candidate_is_flagged_and_sorts_last(async_session):
     assert [rec.title for rec in page] == ["Ready to accept", "No scope"]
 
 
+async def test_the_decision_body_is_not_a_reason(async_session):
+    """A record that says only what was chosen has not said why.
+
+    ``context`` answers "what forced this decision?" and stands in for a blank
+    rationale; ``decision`` is the choice itself and must not. Reading it as a
+    reason is what kept 54 records of the dev store acceptable whose rationale
+    and context are both blank.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [
+            _decision("Only the what", rationale="", context=""),
+            _decision("Context carries it", rationale="", context="restarts dropped sessions"),
+        ],
+    )
+
+    bare = await _record(async_session, "Only the what")
+    assert bare.decision
+    assert record_blockers(bare) == ["no rationale or explicit constraint reason"]
+    meta = await async_session.get(DecisionCandidateMeta, bare.id)
+    assert meta is not None and meta.review_priority == 0.0
+
+    carried = await _record(async_session, "Context carries it")
+    assert record_blockers(carried) == []
+
+    rows = await list_candidates(async_session, repo.id)
+    assert [rec.title for rec, _ in rows] == ["Context carries it", "Only the what"]
+
+
 async def test_re_extraction_refreshes_priority_without_reopening_review(async_session):
     repo = await insert_repo(async_session)
     await bulk_upsert_decisions(
@@ -169,6 +200,28 @@ async def test_needs_split_survives_a_capture_that_does_not_claim_it(async_sessi
     await bulk_upsert_decisions(async_session, repo.id, [_decision("Two choices")])
     await async_session.refresh(meta)
     assert meta.needs_split is True
+
+
+async def test_a_split_flag_from_any_contributor_reaches_the_record(async_session):
+    """The headline is the highest-ranked source; the flag is rarely on it.
+
+    ``cli`` outranks ``session``, so a manually authored record sharing a
+    title with a session-mined bundled one is the headline, and reading the
+    flag off the headline alone drops what the mining lane noticed.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [
+            _decision("Two choices", source="cli", confidence=0.9),
+            _decision("Two choices", source="session", needs_split=True),
+        ],
+    )
+
+    rec = await _record(async_session, "Two choices")
+    meta = await async_session.get(DecisionCandidateMeta, rec.id)
+    assert meta is not None and meta.needs_split is True
 
 
 async def test_the_scope_flag_agrees_with_the_contract_on_blank_entries(async_session):

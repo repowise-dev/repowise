@@ -14,7 +14,7 @@ def weighted_deficit_contract() -> dict[str, Any]:
         "scale": {"minimum": 0, "maximum": None, "normalized": False},
         "direction": (
             "higher means the file contributes more to the eligible population's "
-            "gross deficit from the Healthy threshold"
+            "gross deficit from the refactoring target score"
         ),
         "interpretation": (
             "a deterministic triage weight, not a probability, percentage, "

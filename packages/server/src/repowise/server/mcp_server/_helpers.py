@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import os.path
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
@@ -13,24 +12,27 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
-from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
+from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.models import (
     Repository,
 )
 
 # Re-exported: MCP tools import their helpers from here, but the definition
 # lives in core because the CRUD layer needs the same escaping.
-from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like  # noqa: F401
+from repowise.core.persistence.sql import (  # noqa: F401
+    LIKE_ESCAPE,
+    escape_like,
+    is_missing_table,
+)
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._query_shape import _is_path  # noqa: F401
 
 _log = logging.getLogger("repowise.mcp")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_CODE_EXTS = _LANG_REGISTRY.all_code_extensions()
 
 # Ceiling on one vector-store query, seconds. The first query in a process pays
 # for the store open, the first embed and the first ANN probe; #1678 measured
@@ -66,28 +68,40 @@ def vector_search_timeout_s() -> float:
         return _VECTOR_TIMEOUT_DEFAULT_S
     return min(seconds, _VECTOR_TIMEOUT_MAX_S)
 
-# Words that mark a string as a natural-language question rather than a path.
-# Keep this small — false positives here send genuine paths to the NL branch,
-# which is harmless (path lookup also runs as a fallback) but slower.
-_NL_QUESTION_TOKENS = frozenset(
-    {
-        "why",
-        "how",
-        "what",
-        "when",
-        "where",
-        "who",
-        "which",
-        "should",
-        "can",
-        "does",
-        "do",
-        "is",
-        "are",
-        "was",
-        "were",
-    }
-)
+
+# Budget for embedding a get_answer question before question_vector() gives up
+# and falls back to a lexical-only answer. 8s suits a warm hosted endpoint; a
+# locally served model that has just been swapped in pays a cold load first
+# and blows it — the run still succeeds (question_vector logs a warning and
+# returns None), so nothing an operator isn't already tailing structlog for
+# marks the semantic leg as lost. Raise it with REPOWISE_EMBED_TIMEOUT_S to
+# buy a cold local model the time a warm hosted one never needed.
+_EMBED_TIMEOUT_ENV = "REPOWISE_EMBED_TIMEOUT_S"
+_EMBED_TIMEOUT_DEFAULT_S = 8.0
+# Same client-side constraint as _VECTOR_TIMEOUT_MAX_S above: past this the
+# MCP client's own tool-call timeout fires first, so a larger value here
+# cannot produce results anyone still accepts.
+_EMBED_TIMEOUT_MAX_S = 120.0
+
+
+def embed_timeout_s() -> float:
+    """Seconds one question-embedding call may take, from env or the default.
+
+    An unparseable or non-positive value warns and keeps the default instead of
+    silently disabling the leg, matching :func:`vector_search_timeout_s` and
+    REPOWISE_EMBEDDING_TIMEOUT.
+    """
+    raw = (os.environ.get(_EMBED_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return _EMBED_TIMEOUT_DEFAULT_S
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    if not seconds > 0:
+        _log.warning("Ignoring unusable %s=%r", _EMBED_TIMEOUT_ENV, raw)
+        return _EMBED_TIMEOUT_DEFAULT_S
+    return min(seconds, _EMBED_TIMEOUT_MAX_S)
 
 
 # ---------------------------------------------------------------------------
@@ -125,43 +139,6 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
 # ---------------------------------------------------------------------------
 # Path detection
 # ---------------------------------------------------------------------------
-
-
-def _is_path(query: str) -> bool:
-    """Heuristic: does this string look like a file or module path?
-
-    Natural-language questions take precedence over the slash heuristic
-    because phrases like "two-phase plan/apply flow" or "client/server
-    boundary" contain a slash without being paths. We treat anything with
-    a question mark, that starts with a question word, or that has 4+
-    whitespace-separated tokens including a question word, as NL.
-    """
-    stripped = query.strip()
-    if not stripped:
-        return False
-
-    # Trailing "?" is an unambiguous NL signal.
-    if stripped.endswith("?"):
-        return False
-
-    tokens = stripped.split()
-
-    # First token is a question word → NL.
-    if tokens and tokens[0].lower().rstrip(",.;:") in _NL_QUESTION_TOKENS:
-        return False
-
-    # Sentence-shaped input (multiple words including a question word) → NL.
-    if len(tokens) >= 4 and any(t.lower().rstrip(",.;:") in _NL_QUESTION_TOKENS for t in tokens):
-        return False
-
-    # A path can't contain whitespace.
-    if any(ch.isspace() for ch in stripped):
-        return False
-
-    if "/" in stripped or "\\" in stripped:
-        return True
-    _, ext = os.path.splitext(stripped)
-    return ext in _CODE_EXTS
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +429,7 @@ def _build_origin_story(
         "available": True,
         "primary_author": primary,
         "author_commit_pct": git_meta.primary_owner_commit_pct,
+        "author_line_pct": getattr(git_meta, "primary_owner_line_pct", None),
         "contributors": authors,
         "total_commits": total,
         "first_commit": first_date,
@@ -481,6 +459,10 @@ def _sibling_coverage(
 
     for d in all_decisions:
         if getattr(d, "id", None) not in accepted_ids:
+            continue
+        # An accepted footprint would count as a covered sibling in every
+        # directory it touched.
+        if not binds_to_paths(getattr(d, "scope_basis", "")):
             continue
         affected = json.loads(d.affected_files_json)
         for af in affected:
@@ -538,7 +520,8 @@ def _alignment_score(
             else ""
         )
         return "low", (
-            "Every accepted decision here is deprecated/superseded. "
+            "Every accepted decision here is deprecated/superseded, or names only "
+            "files that no longer exist. "
             "This file likely contains technical debt that should be migrated." + trailer
         )
     if candidates:
@@ -588,7 +571,7 @@ def _compute_alignment(
     deprecated = [
         d
         for d in governing
-        if currencies.get(d["id"]) in ("superseded", "dismissed")
+        if currencies.get(d["id"]) in HISTORY_CURRENCIES
     ]
     # Repository-wide, not scoped to the matched records: the sibling
     # denominator is drawn from decisions naming *other* files in the same
@@ -627,7 +610,8 @@ def _compute_alignment(
         "governing_count": len(governing),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
-        # Accepted once and withdrawn since, whether superseded or dismissed.
+        # Accepted once and now history: superseded, dismissed, or naming only
+        # files gone at HEAD.
         "deprecated_count": len(deprecated),
         "uncheckable_count": len(uncheckable),
         "stale_count": len(stale),
@@ -730,3 +714,19 @@ def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     if not spec:
         return ids
     return [i for i in ids if not is_excluded(i.split("::", 1)[0], spec)]
+
+
+def drop_echoed_target(targets: Any) -> None:
+    """Stop paying for a map key a second time inside its own value.
+
+    ``get_risk`` and ``get_context`` both build ``{r["target"]: r for r in
+    results}``, so the inner ``target`` is the key by construction. Every
+    internal consumer reads it off the card while the response is still being
+    assembled; this runs last, and the equality guard means a card that somehow
+    disagrees with its key keeps the field rather than losing it silently.
+    """
+    if not isinstance(targets, dict):
+        return
+    for key, card in targets.items():
+        if isinstance(card, dict) and card.get("target") == key:
+            card.pop("target", None)

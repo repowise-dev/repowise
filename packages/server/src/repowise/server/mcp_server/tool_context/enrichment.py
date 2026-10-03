@@ -9,39 +9,74 @@ dispatch rather than one long body.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.doc_drift.constants import (
+    REFERENCE_BASIS,
+    UNAVAILABLE_NO_TABLE,
+    UNAVAILABLE_NOT_COMPUTED,
+    UNAVAILABLE_READ_FAILED,
+)
+from repowise.core.analysis.doc_drift.serialize import (
+    collapse_reference_sites,
+    documents_with_drift,
+)
+from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import id_segment_name
 from repowise.core.persistence.crud import (
+    coverage_row_dict,
+    doc_drift_references_stored,
     get_all_file_metrics,
     get_community_members,
     get_cross_community_edges,
+    get_doc_drift_findings,
+    get_doc_drift_references,
     get_git_metadata,
     get_graph_edges_for_node,
     get_graph_node,
     get_graph_nodes_by_ids,
     get_node_degree_counts,
+    load_coverage_for_repo,
+    serialize_doc_drift_reference_row,
 )
 from repowise.core.persistence.models import (
-    CoverageFile,
     GraphEdge,
     GraphNode,
     HealthFileMetric,
     HealthFinding,
     Repository,
 )
+from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
-from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
+from repowise.server.mcp_server._helpers import (
+    filter_dicts_by_key,
+    filter_path_list,
+    filter_rows_by_attr,
+    is_missing_table,
+)
+from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
+
+#: Where a resolved target path waits between its card being built and the
+#: batched doc-drift read. Popped by that pass, so it never reaches a response.
+_DOC_DRIFT_PATH = "_doc_drift_path"
+
+#: Reference rows per target before the cap takes over. The same figure as
+#: ``targets._MAX_USED_BY``, for the same "who points at this" question.
+_MAX_DOC_REFERENCES = 20
 
 # Minimum confidence for call edges to filter false positives.
 #
@@ -83,6 +118,11 @@ _SYMBOL_USE_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
 #: widening it again would serve base-class and framework-wiring *source* as
 #: callees for three hops. Keep it meaning what it is named.
 _CALL_EDGE_TYPES = ["calls"]
+
+#: Maximum caller/callee rows returned for one symbol. Kept as a named seam so
+#: contract tests can force an omission without depending on response size or
+#: platform-specific serialization details.
+_SYMBOL_NEIGHBOR_LIMIT = 50
 
 #: Rows carried per relation kind. Deliberately far below the call cap: the
 #: agent question these answer is "what else reaches this, and how", which the
@@ -152,13 +192,13 @@ async def _resolve_call_graph(
     repo_id = repository.id
     # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
     # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
-    limit = 50
+    limit = _SYMBOL_NEIGHBOR_LIMIT
 
     # Resolve to a graph node (symbol)
     node = await get_graph_node(session, repo_id, target)
     if node is None and "::" in target:
         # Fuzzy: try bare name
-        bare_name = target.split("::")[-1]
+        bare_name = id_segment_name(target.split("::")[-1])
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -177,10 +217,13 @@ async def _resolve_call_graph(
         # pass for no reason; the graph has the answer at file granularity.
         if node is not None and node.node_type == "file" and want_callers:
             await _resolve_file_level_callers(
-                session, repo_id, node, result_data, exclude_spec, collector
+                session, repo_id, node, result_data, exclude_spec, collector, repository=repository
             )
             if want_callees:
                 result_data["callees"] = []
+                result_data["callees_basis"] = await call_resolution_basis(
+                    session, repo_id, node.language, cache_key=index_state_key(repository)
+                )
             return
         if want_callers:
             result_data["callers"] = []
@@ -356,6 +399,13 @@ async def _resolve_call_graph(
         result_data.setdefault("callers", [])
     if want_callees:
         result_data.setdefault("callees", [])
+    # A zero only earns a basis. A populated list is already its own evidence,
+    # and the basis would just repeat what the rows show.
+    for key in ("callers", "callees"):
+        if key in result_data and not result_data[key]:
+            result_data[f"{key}_basis"] = await call_resolution_basis(
+                session, repo_id, node.language, cache_key=index_state_key(repository)
+            )
 
     if relations:
         relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
@@ -384,6 +434,8 @@ async def _resolve_file_level_callers(
     result_data: dict[str, Any],
     exclude_spec: Any = None,
     collector: OmissionCollector | None = None,
+    *,
+    repository: Repository | None = None,
 ) -> None:
     """File-target callers: importing files + inbound symbol-call rollup.
 
@@ -468,6 +520,10 @@ async def _resolve_file_level_callers(
         "File-level rollup: importing files plus inbound cross-file call "
         "counts. For symbol-precise callers pass 'file.py::Symbol'."
     )
+    if repository is not None and not result_data.get("callers"):
+        result_data["callers_basis"] = await call_resolution_basis(
+            session, repo_id, node.language, cache_key=index_state_key(repository)
+        )
 
 
 async def _resolve_metrics(
@@ -643,6 +699,7 @@ async def _resolve_health(
             HealthFinding.repository_id == repo_id,
             HealthFinding.file_path == file_path,
             HealthFinding.status == "open",
+            HealthFinding.biomarker_type.not_in(excluded_types()),
         )
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)
@@ -653,24 +710,23 @@ async def _resolve_health(
         {
             "biomarker_type": f.biomarker_type,
             "severity": f.severity,
-            "function_name": f.function_name,
+            # Absent rather than null on a file-level biomarker, same as the
+            # identical field on get_risk's cards.
+            **({"function_name": f.function_name} if f.function_name else {}),
             "impact": round(f.health_impact, 2),
             "suggestion": suggestion_for(f.biomarker_type),
         }
         for f in findings_res.scalars().all()
     ]
 
-    coverage_row = (
-        await session.execute(
-            select(CoverageFile).where(
-                CoverageFile.repository_id == repo_id,
-                CoverageFile.file_path == file_path,
-            )
-        )
-    ).scalar_one_or_none()
+    coverage_rows = await load_coverage_for_repo(
+        session, repo_id, file_paths=[file_path], include_covered_lines=False
+    )
 
     health: dict[str, Any] = {
-        "score": round(metric.score, 2),
+        "score": round(metric.score, 2) if metric.score is not None else None,
+        # Said in words, so a missing score is not read as a missing index.
+        **({"analysis_status": NO_DIALECT_STATUS} if metric.score is None else {}),
         "max_ccn": metric.max_ccn,
         "max_nesting": metric.max_nesting,
         "nloc": metric.nloc,
@@ -679,13 +735,8 @@ async def _resolve_health(
         "duplication_pct": metric.duplication_pct,
         "top_biomarkers": top_biomarkers,
     }
-    if coverage_row is not None:
-        health["coverage"] = {
-            "source_format": coverage_row.source_format,
-            "line_coverage_pct": coverage_row.line_coverage_pct,
-            "branch_coverage_pct": coverage_row.branch_coverage_pct,
-            "total_coverable_lines": coverage_row.total_coverable_lines,
-        }
+    if coverage_rows:
+        health["coverage"] = coverage_row_dict(coverage_rows[0], include_covered_lines=False)
     elif metric.line_coverage_pct is not None:
         health["coverage"] = {
             "line_coverage_pct": metric.line_coverage_pct,
@@ -710,6 +761,140 @@ async def _resolve_health(
         health["signals"] = signals
 
     result_data["health"] = health
+
+
+async def attach_doc_references(
+    session: AsyncSession,
+    repository: Repository,
+    cards: dict[str, dict[str, Any]],
+    *,
+    exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
+) -> None:
+    """Attach, to every card, the documents that name its file.
+
+    The drift pass files a finding against the document, so these stored rows
+    are the only thing that can answer a question asked about a code file.
+    Served rather than recomputed: see :class:`DocDriftReference`.
+
+    Runs once for the whole call, after the targets resolve. Savepoints opened
+    per target nest on the session they share, and the first to exit closes
+    the others.
+
+    Two claims, kept apart: ``references`` says a document names this file,
+    ``documents_with_drift`` says a listed document has some assertion that no
+    longer holds -- anywhere in it, not necessarily about this file.
+    """
+    wanted = {
+        name: card.pop(_DOC_DRIFT_PATH, None)
+        for name, card in cards.items()
+        if _DOC_DRIFT_PATH in card
+    }
+    if not wanted:
+        return
+
+    paths = {path for path in wanted.values() if path}
+    rows: list[Any] = []
+    finding_rows: list[Any] = []
+    stored = True
+    if paths:
+        try:
+            # Not decoration: this read raises on an index older than the
+            # table, and on Postgres a failed statement poisons the whole
+            # transaction.
+            async with session.begin_nested():
+                rows = await get_doc_drift_references(
+                    session, repository.id, target_paths=sorted(paths)
+                )
+                # An empty answer is the strong claim "no document
+                # mentions this file", and an empty store cannot support it.
+                # Asked only when the answer would otherwise be empty.
+                stored = bool(rows) or await doc_drift_references_stored(
+                    session, repository.id
+                )
+                # Read whole: the findings table is the defect list and is
+                # bounded by design. Ceiling for a repo with thousands of
+                # them: a plural filter on ``get_doc_drift_findings``.
+                if rows:
+                    finding_rows = await get_doc_drift_findings(session, repository.id)
+        except (SQLAlchemyError, OSError, LookupError) as exc:
+            # Refuse rather than serve an empty list, which reads as a
+            # clean bill that was never taken -- and name which failure, since
+            # "your index is old" is wrong advice for a transient one.
+            reason = (
+                UNAVAILABLE_NO_TABLE
+                if is_missing_table(exc)
+                else UNAVAILABLE_READ_FAILED
+            )
+            for name in wanted:
+                cards[name]["doc_drift"] = {"unavailable": reason}
+            return
+
+    kept = filter_rows_by_attr(rows, "document_path", exclude_spec)
+    excluded_by_target = Counter(r.target_path for r in rows) - Counter(
+        r.target_path for r in kept
+    )
+    by_target: dict[str, list[Any]] = {}
+    for row in kept:
+        by_target.setdefault(row.target_path, []).append(row)
+
+    drift_by_document = Counter(f.file_path for f in finding_rows)
+
+    for name, path in wanted.items():
+        if not path:
+            # A module target resolves to a directory, and a reference does
+            # not resolve to one.
+            cards[name]["doc_drift"] = None
+        elif not stored:
+            cards[name]["doc_drift"] = {"unavailable": UNAVAILABLE_NOT_COMPUTED}
+        else:
+            cards[name]["doc_drift"] = _doc_reference_block(
+                by_target.get(path, []),
+                drift_by_document,
+                excluded=excluded_by_target.get(path, 0),
+                target=path,
+                collector=collector,
+            )
+
+
+def _doc_reference_block(
+    rows: list[Any],
+    drift_by_document: Counter[str],
+    *,
+    excluded: int,
+    target: str,
+    collector: OmissionCollector | None,
+) -> dict[str, Any]:
+    """One target's reverse-view block, built from its own rows."""
+    block: dict[str, Any] = {}
+    emitted = collapse_reference_sites(
+        [serialize_doc_drift_reference_row(row) for row in rows]
+    )
+    cap_collection(
+        block,
+        "references",
+        emitted,
+        _MAX_DOC_REFERENCES,
+        collector,
+        label=f"documents naming {target}",
+    )
+    block["documents"] = len({r.document_path for r in rows})
+    if excluded:
+        # Otherwise a tree whose naming documents are all excluded reads as a
+        # file nothing mentions.
+        block["references_excluded"] = excluded
+
+    # Only the documents this answer matched; the repo-wide total is what
+    # ``get_health(include=["doc_drift"])`` is for. Read off the uncapped list,
+    # or a document past the display cap reports as clean.
+    drifted = documents_with_drift(emitted, drift_by_document)
+    if drifted:
+        block["documents_with_drift"] = drifted
+
+    # Emitted on an empty answer too: that is the one most likely to be
+    # read as proof that nothing documents this file.
+    block["references_basis"] = REFERENCE_BASIS
+    return block
 
 
 async def _resolve_skeleton(

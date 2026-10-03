@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -41,8 +43,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "claude-code"
-DISPLAY_NAME = "Claude Code"
+IDENTITY = identity.CLAUDE_CODE
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://docs.claude.com/en/docs/claude-code"
 
 #: Name the plugin registers itself under in the host's plugin manifest.
@@ -115,28 +118,46 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     Repo-shared and frequently committed, so it keeps the bare ``repowise``
     command: one contributor's absolute path would break every other checkout.
     Other servers the user configured are preserved.
+
+    The merge is a *minimal edit* (``merge_json_object_member``): only the
+    ``mcpServers.repowise`` value is touched, so unrelated servers and the
+    file's own formatting stay byte-identical. Re-rendering the whole document
+    from a dict would reformat pre-existing entries (issue #1603).
     """
     from repowise.cli.mcp_config import generate_mcp_config
 
     from ..formats.json_merge import (
-        load_json_object,
-        merge_server_entries,
+        merge_json_object_member,
         write_json_config,
     )
 
     config_path = project_mcp_config_path(repo_path)
-    new_entry = generate_mcp_config(repo_path)["mcpServers"]
+    new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
 
     if config_path.exists():
-        existing = load_json_object(config_path)
-        servers = dict(existing.get("mcpServers", {}))
-        merge_server_entries(servers, new_entry)
-        existing["mcpServers"] = servers
-        merged = existing
+        # Surgical, minimal-edit write. ``KEPT`` means the file's shape is one we
+        # cannot edit safely (``mcpServers`` present but not an object, or the
+        # insertion point unresolvable), and it is not a licence to re-render.
+        # Re-rendering from a dict would replace the whole document, dropping
+        # every other server the user configured: a ``.mcp.json`` holding
+        # ``"mcpServers": null`` or ``[]`` is exactly the case ``KEPT`` exists
+        # for, and the old fallback here destroyed it instead of reporting it.
+        action = merge_json_object_member(config_path, "mcpServers", "repowise", new_entry)
     else:
-        merged = {"mcpServers": new_entry}
+        action = write_json_config(config_path, {"mcpServers": {"repowise": new_entry}})
 
-    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
+    if action is FileAction.KEPT:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.KEPT,
+            reason=(
+                "the existing mcpServers entry is not an object, so adding "
+                "repowise would rewrite the file and drop the other servers in "
+                "it; make mcpServers an object or add the repowise entry by hand"
+            ),
+        )
+
+    return FileWrite(path=config_path, action=action)
 
 
 def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
@@ -341,8 +362,8 @@ class ClaudeCodeTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = "claude-code"
-    session_adapter = "claude_code"
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -390,7 +411,7 @@ class ClaudeCodeTarget:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
             written = write_project_mcp_config(repo_path)
-            result.record(written.path, written.action)
+            result.record(written.path, written.action, written.reason)
             return result
 
         if repo_path is None:
@@ -437,6 +458,7 @@ class ClaudeCodeTarget:
             claude_code_leftover_reason,
             claude_desktop_leftover_reason,
             uninstall_claude_code_augment_hooks,
+            uninstall_claude_code_distill_allow_rules,
             uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
             uninstall_claude_desktop_mcp_entry,
@@ -447,6 +469,14 @@ class ClaudeCodeTarget:
             if repo_path is None:
                 raise ValueError("project-scope uninstall needs a repo_path")
             result.record(*_remove_project_mcp_entry(project_mcp_config_path(repo_path)))
+            from repowise.cli.editor_integrations.claude_config import (
+                claude_code_local_settings_path,
+                set_repo_coverage_hook,
+            )
+
+            # The coverage re-ingest entries `coverage add` / init / update wrote.
+            if set_repo_coverage_hook(repo_path, False) is not None:
+                result.record(claude_code_local_settings_path(repo_path), FileAction.REMOVED)
             return result
 
         settings = settings_path()
@@ -455,6 +485,7 @@ class ClaudeCodeTarget:
         # `or` would skip the later removals whenever an earlier one succeeded.
         removed = uninstall_claude_code_rewrite_hook()
         removed = uninstall_claude_code_augment_hooks() or removed
+        removed = uninstall_claude_code_distill_allow_rules() or removed
         removed = uninstall_claude_code_mcp_entry() or removed
         # The Desktop config too, because `install` writes it and `detect` reads
         # it. Leaving it made a removed Claude Code still look wired, so the
@@ -495,7 +526,15 @@ class ClaudeCodeTarget:
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         if scope is Scope.PROJECT:
-            return [str(project_mcp_config_path(repo_path or Path.cwd()))]
+            from repowise.cli.editor_integrations.claude_config import (
+                claude_code_local_settings_path,
+            )
+
+            root = repo_path or Path.cwd()
+            return [
+                str(project_mcp_config_path(root)),
+                str(claude_code_local_settings_path(root)),
+            ]
         paths = [str(settings_path())]
         desktop = desktop_config_path()
         if desktop is not None:

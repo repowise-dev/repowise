@@ -20,7 +20,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
+from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
 from repowise.core.persistence import crud
 
 __all__ = [
@@ -57,9 +61,14 @@ class HealthMapFeed:
     recovery: dict[str, Any]
     modules: list[dict[str, Any]] = field(default_factory=list)
     performance: dict[str, Any] | None = None
+    #: Which half of the repository the field describes.
+    scope: str = DEFAULT_SCOPE
+    counts: str = DEFAULT_COUNTS
 
     def payload(self) -> dict[str, Any]:
         return {
+            "scope": self.scope,
+            "counts": self.counts,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -99,7 +108,12 @@ class HealthMapService:
         self._repository_id = repository_id
 
     async def feed(
-        self, *, cap: int = DEFAULT_MAP_CAP, active: tuple[str, ...] = ()
+        self,
+        *,
+        cap: int = DEFAULT_MAP_CAP,
+        active: tuple[str, ...] = (),
+        scope: str = DEFAULT_SCOPE,
+        counts: str = DEFAULT_COUNTS,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
@@ -107,6 +121,24 @@ class HealthMapService:
         languages = await crud.get_file_language_map(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
+
+        scope_narrowed = parse_scope(scope) == "production"
+        if scope_narrowed:
+            metrics = [m for m in metrics if not m.is_test]
+            kept = {m.file_path for m in metrics}
+            rollups = [r for r in rollups if r.file_path in kept]
+
+        # Re-marks the same field: every node keeps its size and its module,
+        # and only the colour moves. A file with no recorded split cannot be
+        # coloured on this basis, so it leaves the field rather than sitting
+        # there in whatever colour it last had.
+        #
+        # ``rollups`` is deliberately left whole. The page says performance is
+        # scored separately and never blended into health, so its totals must
+        # not move when the health reading does; only the per-node join below
+        # narrows, and a node that is not drawn simply never looks one up.
+        counted = len(metrics)
+        metrics, _ = project_counts(counts, metrics)
 
         by_path = {m.file_path: m for m in metrics}
         # A zero-NLOC file cannot be sized, and the map drops it on arrival.
@@ -127,7 +159,9 @@ class HealthMapService:
 
         active_shown = [path for path in active if admit(path)]
 
-        performance_eligible = [r.file_path for r in rollups if r.file_path in eligible_paths]
+        # A file whose only causes are ``expected`` has nothing to do; it earns no priority slot.
+        open_rollups = [r for r in rollups if r.opportunities > r.expected]
+        performance_eligible = [r.file_path for r in open_rollups if r.file_path in eligible_paths]
         performance_shown = sum(1 for path in performance_eligible if admit(path))
 
         nloc_before = len(chosen)
@@ -147,12 +181,12 @@ class HealthMapService:
         # on a file with no lines can never be drawn at any cap, and counting
         # it here would promise a recovery that pinning the path cannot give.
         undrawn_perf = [
-            r for r in rollups if r.file_path in eligible_paths and r.file_path not in taken
+            r for r in open_rollups if r.file_path in eligible_paths and r.file_path not in taken
         ]
         omitted = {
             "files": len(eligible) - len(chosen),
             "performance_files": len(undrawn_perf),
-            "opportunities": sum(r.opportunities for r in undrawn_perf),
+            "opportunities": sum(r.opportunities - r.expected for r in undrawn_perf),
             "observations": sum(r.observations for r in undrawn_perf),
         }
 
@@ -161,7 +195,7 @@ class HealthMapService:
             cap=cap,
             shown=len(chosen),
             eligible_total=len(eligible),
-            repository_total=len(metrics),
+            repository_total=counted,
             selection={
                 "basis": "active_then_performance_then_nloc",
                 "active_requested": list(active),
@@ -185,7 +219,16 @@ class HealthMapService:
                 "raise_cap": f"cap accepts up to {MAX_MAP_CAP}.",
             },
             modules=self._modules(drawn, burden),
-            performance=self._performance_block(rollups, summary, len(performance_eligible)),
+            # The stored performance summary is a repo-wide aggregate and there
+            # is no narrowed copy of it, so a narrowed field omits the block
+            # rather than serving repo-wide totals beside production-only rows.
+            performance=(
+                None
+                if scope_narrowed
+                else self._performance_block(rollups, summary, len(performance_eligible))
+            ),
+            scope=DEFAULT_SCOPE if not scope_narrowed else "production",
+            counts=counts,
         )
 
     def _row(
@@ -212,7 +255,8 @@ class HealthMapService:
             "has_test_file": metric.has_test_file,
             "maintainability_score": metric.maintainability_score,
             "performance_analyzed": languages.get(metric.file_path) in perf_languages,
-            "performance_opportunities": rollup.opportunities if rollup else 0,
+            # What the default queue shows: ``expected`` causes have nothing to do.
+            "performance_opportunities": rollup.opportunities - rollup.expected if rollup else 0,
             "performance_observations": rollup.observations if rollup else 0,
         }
         actionability = _leading_actionability(rollup)
@@ -282,6 +326,7 @@ class HealthMapService:
                 "plan_ready": sum(r.plan_ready for r in rollups),
                 "advisory": sum(r.advisory for r in rollups),
                 "investigate": sum(r.investigate for r in rollups),
+                "expected": sum(r.expected for r in rollups),
             },
             "model_version": getattr(summary, "performance_model_version", None),
             "analyzed_commit": getattr(summary, "analyzed_commit", None),
@@ -294,10 +339,7 @@ def _leading_actionability(rollup: Any) -> str | None:
     Best rather than most common: a file with one stored plan and nine
     investigations is a file with a stored plan.
     """
-    if rollup is None or rollup.opportunities == 0:
+    if rollup is None:
         return None
-    if rollup.plan_ready:
-        return "plan_ready"
-    if rollup.advisory:
-        return "advisory"
-    return "investigate"
+    # ``expected`` is never a lead: it has nothing to do.
+    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and getattr(rollup, s)), None)

@@ -20,7 +20,9 @@ import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { SyncButton } from "./sync-buttons";
+import { getWorkspaceActions } from "@/lib/api/actions";
+import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
+import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
 
 export const metadata: Metadata = { title: "Workspace" };
 
@@ -52,13 +54,16 @@ export default async function WorkspaceDashboardPage() {
   // One wave, both on the server. The graph section that used to sit here was
   // a client component fetching after mount, which waterfalled a second
   // per-repo sqlite sweep in behind the paint.
-  const [ws, cc] = await Promise.allSettled([
+  const [ws, cc, wa] = await Promise.allSettled([
     getWorkspace(),
     getWorkspaceCoChanges({ limit: COCHANGE_PREVIEW }),
+    getWorkspaceActions(),
   ]);
 
   const workspace = ws.status === "fulfilled" ? ws.value : null;
   const coChanges = cc.status === "fulfilled" ? cc.value : null;
+  // A server that predates actions 404s here; the page then reads as before.
+  const actions = wa.status === "fulfilled" ? wa.value : null;
   const repos = workspace?.repos ?? [];
   const crossRepo = workspace?.cross_repo_summary ?? null;
   const contracts = workspace?.contract_summary ?? null;
@@ -168,6 +173,8 @@ export default async function WorkspaceDashboardPage() {
 
       <StatRibbon stats={ribbon} LinkComponent={Link} />
 
+      {actions && <WorkspaceNextActionsPanel data={actions} />}
+
       <OverviewSection
         title="Repositories"
         description="Ordered by what needs attention first — never indexed, then missing on disk, then by health score — rather than by name."
@@ -176,7 +183,9 @@ export default async function WorkspaceDashboardPage() {
           repos={repos.slice().sort(byAttention).map(toRow)}
           LinkComponent={Link}
           actionsFor={(repo) =>
-            repo.status === "missing_dir" ? null : (
+            repo.status === "missing_dir" ? (
+              <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
+            ) : (
               <SyncButton
                 alias={repo.id}
                 label={repo.status === "indexed" ? "Sync" : "Index now"}

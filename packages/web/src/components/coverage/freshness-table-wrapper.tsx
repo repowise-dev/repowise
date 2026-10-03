@@ -29,7 +29,7 @@ export function FreshnessTableWithRegenerate({
         return;
       }
       try {
-        const res = await regeneratePage(pageId, { cascade: "none" });
+        const res = await regeneratePage(pageId, { cascade: "none", repoId });
         setActiveJobId(res.job_id);
         toast.info("Regeneration started");
       } catch (e) {

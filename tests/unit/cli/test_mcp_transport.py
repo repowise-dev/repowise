@@ -32,6 +32,7 @@ def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["tools"] == "+get_execution_flows,-get_dead_code"
     assert captured["host"] == "127.0.0.1"
+    assert captured["workspace_mode"] is True
 
 
 def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
@@ -46,6 +47,51 @@ def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["tools"] == "all"
     assert captured["host"] == "127.0.0.1"
+    assert captured["workspace_mode"] is True
+
+
+def test_mcp_cli_no_workspace_flag_forces_single_repo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--no-workspace"])
+
+    assert result.exit_code == 0
+    assert captured["workspace_mode"] is False
+
+
+def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    nested = workspace / "vendor" / "microdot"
+    nested.mkdir(parents=True)
+    (workspace / ".repowise-workspace.yaml").write_text(
+        "version: 1\n"
+        "default_repo: repowise\n"
+        "repos:\n"
+        "- path: .\n"
+        "  alias: repowise\n"
+        "  is_primary: true\n",
+        encoding="utf-8",
+    )
+    (nested / ".repowise").mkdir()
+    (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(nested), "--no-workspace"])
+
+    assert result.exit_code == 0
+    assert captured["workspace_mode"] is False
 
 
 def test_mcp_cli_accepts_streamable_http_transport(
@@ -80,6 +126,7 @@ def test_mcp_cli_accepts_streamable_http_transport(
         "host": "127.0.0.1",
         "port": 7339,
         "tools": None,
+        "workspace_mode": True,
     }
 
 
@@ -132,6 +179,7 @@ def test_mcp_cli_streamable_http_prints_workspace_summary(
         "host": "127.0.0.1",
         "port": 7341,
         "tools": None,
+        "workspace_mode": True,
     }
 
 
@@ -436,3 +484,42 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
 
     assert "error_leaves" not in recorded
 
+
+def test_the_way_a_session_ended_reaches_the_invocation_outcome(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A clean end is recorded, not inferred from the absence of an error."""
+    from repowise.cli.platform import telemetry
+
+    (tmp_path / ".repowise").mkdir()
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed"
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert recorded["transport_outcome"] == "client_closed"
+    assert recorded["transport"] == "stdio"
+
+
+def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -> None:
+    """A broken pipe used to leave a traceback the host respawns on."""
+    from repowise.server.mcp_server import _server
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
+    )
+    monkeypatch.setattr(
+        _server.mcp,
+        "run",
+        lambda **_kw: (_ for _ in ()).throw(BrokenPipeError("hung up")),
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Traceback" not in result.output

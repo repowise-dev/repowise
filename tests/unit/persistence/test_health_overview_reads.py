@@ -308,3 +308,33 @@ async def test_snapshot_file_counts_on_a_repo_with_no_history(
     repo = await upsert_repository(async_session, name="repo", local_path=str(tmp_path))
 
     assert await get_health_snapshot_file_counts(async_session, repo.id) == []
+
+
+async def test_summary_names_the_worst_test_file_apart(async_session, tmp_path) -> None:
+    """The headline names the worst production file; the worst test is its own pair."""
+    repo = await _seed(
+        async_session,
+        tmp_path,
+        [
+            _metric("src/a.py", 4.0),
+            _metric("src/b.py", 6.0),
+            {**_metric("tests/test_a.py", 2.0), "is_test": True},
+            {**_metric("tests/test_b.py", 5.0), "is_test": True},
+        ],
+        [],
+    )
+
+    summary = await get_health_summary(async_session, repo.id)
+
+    assert summary["worst_performer_path"] == "src/a.py"
+    assert summary["worst_test_path"] == "tests/test_a.py"
+    assert summary["worst_test_score"] == 2.0
+
+
+async def test_summary_worst_test_is_null_without_test_files(async_session, tmp_path) -> None:
+    repo = await _seed(async_session, tmp_path, [_metric("src/a.py", 4.0)], [])
+
+    summary = await get_health_summary(async_session, repo.id)
+
+    assert summary["worst_test_path"] is None
+    assert summary["worst_test_score"] is None

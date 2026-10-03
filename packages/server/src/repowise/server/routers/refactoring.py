@@ -22,8 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.refactoring.recommendations import (
     apply_view,
     blast_size,
+    detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_ORDERS,
+    CANONICAL_VIEWS,
+    DEFAULT_VIEW,
+    parse_query,
+)
+from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
@@ -34,13 +42,7 @@ from repowise.server.schemas import (
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
 )
-from repowise.server.services.refactoring_health import (
-    CANONICAL_ORDERS,
-    CANONICAL_VIEWS,
-    DEFAULT_VIEW,
-    RefactoringHealthService,
-    parse_query,
-)
+from repowise.server.services.refactoring_health import RefactoringHealthService
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
@@ -140,34 +142,12 @@ def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(**data)
 
 
-_STRUCTURAL_TYPES = {"split_file", "break_cycle", "extract_class", "move_method"}
+_STRUCTURAL_TYPES = STRUCTURAL_TYPES
 _EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
 
 
 def _summary(recommendations: list[Any]) -> RefactoringSummary:
-    by_type: dict[str, int] = {}
-    for recommendation in recommendations:
-        suggestion = recommendation.suggestion
-        by_type[suggestion.refactoring_type] = by_type.get(suggestion.refactoring_type, 0) + 1
-    return RefactoringSummary(
-        total=len(recommendations),
-        by_type=[
-            RefactoringTypeCount(type=kind, count=count)
-            for kind, count in sorted(by_type.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        files_total=len({item.suggestion.file_path for item in recommendations}),
-        structural_total=sum(
-            item.suggestion.refactoring_type in _STRUCTURAL_TYPES for item in recommendations
-        ),
-        performance_total=by_type.get("performance_fix", 0),
-        small_effort_total=sum(item.suggestion.effort_bucket == "S" for item in recommendations),
-        health_recovery_total=sum(item.suggestion.impact_delta >= 0.1 for item in recommendations),
-        negligible_health_total=sum(item.suggestion.impact_delta < 0.5 for item in recommendations),
-        best_health_gain=round(
-            max((float(item.suggestion.impact_delta) for item in recommendations), default=0.0),
-            3,
-        ),
-    )
+    return RefactoringSummary(**summarize_plans(item.suggestion for item in recommendations))
 
 
 def _csv_values(value: str | None) -> set[str]:
@@ -297,12 +277,15 @@ async def get_refactoring_plan_page(
 ) -> RefactoringPlanPageResponse:
     """Bounded list with server-owned filters and deterministic ordering.
 
-    Hydration remains one batched pass over the repository plans so validation
-    and priority have exactly the Phase 3 semantics and a constant SQL shape.
-    Only the requested page crosses the wire.
+    Ranking is one batched pass over the repository plans, so priority keeps its
+    validation-basis input and a constant SQL shape. The symbol-level evidence
+    that orders each plan's tests is read only for the rows this response
+    returns.
     """
     rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
-    canonical = await hydrate_recommendations(session, repo_id, rows, view="canonical")
+    canonical = await hydrate_recommendations(
+        session, repo_id, rows, view="canonical", rank_only=True
+    )
     summary = _summary(canonical)
     structural_leads = [
         item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
@@ -331,6 +314,13 @@ async def get_refactoring_plan_page(
     total = len(ordered)
     page = ordered[offset : offset + limit]
     next_offset = offset + len(page) if offset + len(page) < total else None
+    shown = list({id(item): item for item in [*page, *structural_leads]}.values())
+    detailed = {
+        id(item.suggestion): item
+        for item in await detail_recommendations(session, repo_id, shown)
+    }
+    page = [detailed[id(item.suggestion)] for item in page]
+    structural_leads = [detailed[id(item.suggestion)] for item in structural_leads]
     return RefactoringPlanPageResponse(
         items=[_to_response(item.as_dict()) for item in page],
         total=total,
@@ -419,6 +409,13 @@ async def get_refactoring_opportunities(
     file_path: str | None = Query(None, description="One repo-relative file path"),
     search: str | None = Query(None, description="Substring of the file path"),
     mechanical: bool = Query(False, description="Only opportunities with a mechanical step"),
+    scope: str | None = Query(
+        None,
+        description=(
+            "fix_first (default for the open queue with no file_path): only what Fix first "
+            "would take, the rest counted in `hidden` | all: the full inventory"
+        ),
+    ),
     view: str = Query(DEFAULT_VIEW, description=" | ".join(CANONICAL_VIEWS)),
     order: str | None = Query(None, description=" | ".join(CANONICAL_ORDERS)),
     step_preview: int = Query(
@@ -450,6 +447,7 @@ async def get_refactoring_opportunities(
         order=order,
         limit=limit,
         offset=offset,
+        scope=scope,
     )
     page = await _service(session, repo_id).page(
         query,
@@ -465,7 +463,10 @@ async def get_refactoring_opportunities(
         "next_offset": page.next_offset,
         "facets": page.facets,
         "summary": page.summary,
+        "scope": page.scope,
     }
+    if page.hidden is not None:
+        body["hidden"] = page.hidden
     if ignored:
         body["ignored_arguments"] = ignored
     return body
@@ -503,7 +504,7 @@ async def get_refactoring_opportunity_detail(
         evidence_limit=evidence_limit,
         evidence_offset=evidence_offset,
     )
-    if not detail.get("resolved"):
+    if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
     return detail
 

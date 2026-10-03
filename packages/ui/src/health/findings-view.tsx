@@ -1,33 +1,33 @@
 "use client";
 
 /**
- * Findings view — the engineer's workbench. The ranked fix-next queue
- * (health work items + file inventory) and the function-level /
- * hidden-coupling panels. Performance has its own causal-opportunity view.
+ * Findings — the triage list. One view at three levels: files ranked by
+ * leverage, expandable to their findings, each finding naming its line and
+ * linking to a plan where one exists. The function-level and hidden-coupling
+ * panels sit below it; performance has its own causal-opportunity view.
  *
- * Split out of {@link TriageView} so the landing surface stays an airy
- * proof + map overview and the dense drill-down lives behind its own tab.
  * Presentation + orchestration only: the host injects data, links, and the
  * file-detail drawer through a {@link CodeHealthAdapter}.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Search } from "lucide-react";
 import type {
+  HealthDimension,
   HealthFinding,
-  HealthFilesResponse,
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
 } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
 import { Button } from "../ui/button";
 import { EmptyState } from "../shared/empty-state";
 
-import { AiPromptModal } from "./ai-prompt-modal";
-import { HealthFileTable, type FileSortField } from "./file-table";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { HotFunctionsPanel } from "./hot-functions-panel";
 import { HiddenCouplingList } from "./hidden-coupling-list";
 import {
@@ -36,22 +36,39 @@ import {
   type HealthWorkItem,
 } from "./refactoring-target-list";
 import type { HealthWorkItemFinding } from "./refactoring-card";
-import { FilterSelect, FilterChip, ViewToggle } from "./code-health-controls";
+import { FilterSelect, FilterChip } from "./code-health-controls";
 import { ImpactEffortQuadrant } from "./impact-effort-quadrant";
-import { biomarkerLabel } from "./biomarker-glossary";
+import { BulkTriageBar } from "./bulk-triage-bar";
+import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion";
+import {
+  biomarkerLabel,
+  DIMENSION_LABEL,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isWatchOnlyBiomarker,
+} from "./biomarker-glossary";
 import { buildAiPrompt } from "./ai-prompt-builder";
-import { type Severity } from "./tokens";
+import { SEVERITY_LABEL, type Severity } from "./tokens";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 const PAGE_SIZE = 50;
-const QUEUE_PAGE = 200;
-const QUEUE_MAX = 500;
+const SEARCH_DEBOUNCE_MS = 300;
 
 type GroupBy = "none" | "biomarker" | "module" | "effort";
-type QueueView = "queue" | "files";
 
 /** Function-level biomarker types fed to the Hot functions panel. */
 const HOT_FN_TYPES = ["function_hotspot", "code_age_volatility", "complex_conditional"];
+
+/** Worst first, matching how the list is read. */
+const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
+
+/**
+ * The floor of an exact selection, sent beside it so a host whose backend
+ * knows only the threshold still narrows rather than showing everything.
+ */
+function lowestSeverity(picked: Severity[]): Severity {
+  return SEVERITIES.filter((s) => picked.includes(s)).pop() ?? "low";
+}
 
 const EFFORT_LABEL: Record<string, string> = {
   S: "Small (≤40 NLOC)",
@@ -65,7 +82,8 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
 
   // Shares the page-level overview key, so this dedupes onto the one request
   // the landing view already fired — no extra round-trip. Used to gate the
-  // queue fetch and seed the biomarker filter options.
+  // queue fetch and to seed the marker filter with the repo's whole
+  // vocabulary rather than only the markers the current page happens to hold.
   const { data: overview } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${cacheKey}`,
     () => adapter.getOverview(25),
@@ -96,16 +114,79 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     [panelFindings],
   );
 
-  // ---- Queue filters ----
-  const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
+  // ---- Filters ----
+  // Every one of these narrows the same server-side query, so the counts and
+  // the ranking beside the list always describe the rows in it. The page-level
+  // Counts control owns the code-shape / everything reading; repeating it here
+  // would put a second answer beside the first.
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [dimension, setDimension] = useState<HealthDimension | "all">("all");
+  const [severities, setSeverities] = useState<Severity[]>([]);
   const [biomarker, setBiomarker] = useState<string>("all");
   const [maxEffort, setMaxEffort] = useState<string>("all");
+  const [onlyHotspots, setOnlyHotspots] = useState(false);
+  const [onlyUntested, setOnlyUntested] = useState(false);
+  const [onlyFailing, setOnlyFailing] = useState(false);
   const [sort, setSort] = useState<HealthWorkQueueQuery["sort"]>("impact_per_effort");
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
-  const [queueLimit, setQueueLimit] = useState(QUEUE_PAGE);
-  const [view, setView] = useState<QueueView>("queue");
+  const [offset, setOffset] = useState(0);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [promptTarget, setPromptTarget] = useState<HealthWorkItem | null>(null);
+  // History-only files are context, not work: out of the queue by default,
+  // counted beside it, one toggle away.
+  const [history, setHistory] = useState<"exclude" | "include">("exclude");
+  // The file picked on the graph: highlighted in the list and scrolled to.
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
+  // Bulk triage: file path to the id of the finding the row names.
+  const [selection, setSelection] = useState<ReadonlyMap<string, string>>(new Map());
+  const reducedMotion = usePrefersReducedMotion();
+
+  // Typing a path should not mint a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchInput);
+      setOffset(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  /** Any narrowing beyond the defaults, which is what "clear" would undo. */
+  const filtered =
+    search !== "" ||
+    dimension !== "all" ||
+    severities.length > 0 ||
+    biomarker !== "all" ||
+    maxEffort !== "all" ||
+    onlyHotspots ||
+    onlyUntested ||
+    onlyFailing;
+
+  const clearFilters = () => {
+    setSearchInput("");
+    setSearch("");
+    setDimension("all");
+    setSeverities([]);
+    setBiomarker("all");
+    setMaxEffort("all");
+    setOnlyHotspots(false);
+    setOnlyUntested(false);
+    setOnlyFailing(false);
+    setOffset(0);
+  };
+
+  /** A filter change is a new question; page 1 is where it gets answered. */
+  const onFilterChange =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      set(v);
+      setOffset(0);
+    };
+
+  const toggleSeverity = (s: Severity) => {
+    setSeverities((cur) => (cur.includes(s) ? cur.filter((v) => v !== s) : [...cur, s]));
+    setOffset(0);
+  };
 
   // The targets list no longer ships `all_findings` — it cost 1.8 MB per
   // request to serve two click-gated consumers. Both fetch here instead.
@@ -115,6 +196,14 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     (await adapter.listFindings({
       file_path: filePath,
       limit: 1000,
+      // The same narrowing the row's own count was computed under. Without it
+      // "Show all 2 findings" opens onto fourteen.
+      ...(dimension !== "all" && { dimension }),
+      ...(biomarker !== "all" && { biomarker_type: biomarker }),
+      ...(severities.length > 0 && {
+        severity: severities.join(","),
+        min_severity: lowestSeverity(severities),
+      }),
     })) as HealthWorkItemFinding[];
 
   // Undefined when this host cannot answer, so the card stays silent rather
@@ -135,18 +224,41 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     }
   };
 
-  const queueKey = useMemo(
-    () =>
-      JSON.stringify({
-        cacheKey,
-        biomarker,
-        minSeverity,
-        maxEffort,
-        sort,
-        queueLimit,
+  const query: HealthWorkQueueQuery = useMemo(
+    () => ({
+      limit: PAGE_SIZE,
+      offset,
+      ...(search && { search }),
+      ...(dimension !== "all" && { dimension }),
+      ...(severities.length > 0 && {
+        severity: severities.join(","),
+        // A host whose backend predates the exact filter still narrows,
+        // rather than showing an unfiltered list under an active chip.
+        min_severity: lowestSeverity(severities),
       }),
-    [cacheKey, biomarker, minSeverity, maxEffort, sort, queueLimit],
+      ...(biomarker !== "all" && { biomarker }),
+      ...(maxEffort !== "all" && { max_effort: maxEffort }),
+      ...(onlyHotspots && { only_hotspots: true }),
+      ...(onlyUntested && { only_untested: true }),
+      ...(onlyFailing && { only_failing: true }),
+      ...(sort && { sort }),
+      ...(history === "include" && { history }),
+    }),
+    [
+      offset,
+      history,
+      search,
+      dimension,
+      severities,
+      biomarker,
+      maxEffort,
+      onlyHotspots,
+      onlyUntested,
+      onlyFailing,
+      sort,
+    ],
   );
+
   const loadHealthWorkQueue = (opts: HealthWorkQueueQuery) => {
     const load = adapter.getHealthWorkQueue ?? adapter.getRefactoringTargets;
     return load ? load(opts) : Promise.resolve({ targets: [], total: 0 });
@@ -154,90 +266,117 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   const {
     data: queue,
     isLoading: queueLoading,
+    isValidating: queueValidating,
     mutate: mutateQueue,
   } = useSWR<HealthWorkQueueResponse>(
-    overview ? `code-health-queue:${queueKey}` : null,
-    () =>
-      loadHealthWorkQueue({
-        limit: queueLimit,
-        ...(biomarker !== "all" && { biomarker }),
-        ...(minSeverity !== "all" && { min_severity: minSeverity }),
-        ...(maxEffort !== "all" && { max_effort: maxEffort }),
-        ...(sort && { sort }),
-      }),
+    overview ? `code-health-queue:${cacheKey}:${JSON.stringify(query)}` : null,
+    () => loadHealthWorkQueue(query),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
 
-  // ---- All-files inventory view ----
-  const [sortField, setSortField] = useState<FileSortField>("score");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-  const [search, setSearch] = useState("");
-  const [onlyHotspots, setOnlyHotspots] = useState(false);
-  const [onlyUntested, setOnlyUntested] = useState(false);
-  const [onlyFailing, setOnlyFailing] = useState(false);
-  const [offset, setOffset] = useState(0);
-
-  const filesKey = useMemo(
-    () =>
-      JSON.stringify({
-        cacheKey,
-        sortField,
-        sortOrder,
-        search,
-        onlyHotspots,
-        onlyUntested,
-        onlyFailing,
-        offset,
-      }),
-    [cacheKey, sortField, sortOrder, search, onlyHotspots, onlyUntested, onlyFailing, offset],
-  );
-
-  const { data: files, isLoading: filesLoading } = useSWR<HealthFilesResponse>(
-    overview && view === "files" ? `code-health-files:${filesKey}` : null,
-    () =>
-      adapter.listFiles({
-        sort: sortField,
-        order: sortOrder,
-        ...(search && { search }),
-        ...(onlyHotspots && { only_hotspots: true }),
-        ...(onlyUntested && { only_untested: true }),
-        ...(onlyFailing && { only_failing: true }),
-        offset,
-        limit: PAGE_SIZE,
-      }),
+  // The graph takes the queue's filters without its paging, order or history
+  // switch: it is the whole filtered set, and history-only files never plot.
+  const planeQuery: ImpactEffortQuery = useMemo(() => {
+    const { limit: _l, offset: _o, sort: _s, history: _h, ...rest } = query;
+    return rest;
+  }, [query]);
+  const planeKey = JSON.stringify(planeQuery);
+  const { data: plane, mutate: mutatePlane } = useSWR<ImpactEffortResponse>(
+    overview && adapter.getImpactEffort ? `code-health-plane:${cacheKey}:${planeKey}` : null,
+    () => adapter.getImpactEffort!(planeQuery),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
 
-  const handleSort = (field: FileSortField) => {
-    if (field === sortField) {
-      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      // Score: asc (worst first). Counts: desc. Path: asc.
-      setSortOrder(["score", "line_coverage_pct", "file_path"].includes(field) ? "asc" : "desc");
-    }
-    setOffset(0);
-  };
+  // A new question clears what was picked under the old one.
+  useEffect(() => {
+    setHighlightedPath(null);
+  }, [planeKey]);
+  const queueKey = JSON.stringify(query);
+  useEffect(() => {
+    setSelection(new Map());
+  }, [queueKey]);
 
-  const handleStatus = async (findingId: string, status: FindingStatus) => {
-    await adapter.updateFindingStatus(findingId, status);
+  const handleStatus = async (findingId: string, next: FindingStatus) => {
+    await adapter.updateFindingStatus(findingId, next);
     mutateQueue();
+    void mutatePlane();
   };
 
-  const biomarkerOptions = useMemo(() => {
-    const set = new Set<string>();
-    (overview?.biomarkers ?? []).forEach((b) => set.add(b.biomarker_type));
-    (queue?.targets ?? []).forEach((t) => t.biomarkers.forEach((b) => set.add(b)));
-    return [...set].sort();
-  }, [overview, queue]);
+  // A picked file off this page is fetched on its own and shown above the
+  // list, so a click on any point lands on a row.
+  const onPage = (queue?.targets ?? []).some((t) => t.file_path === highlightedPath);
+  const { data: pinnedQueue } = useSWR<HealthWorkQueueResponse>(
+    highlightedPath && queue && !onPage
+      ? `code-health-pin:${cacheKey}:${queueKey}:${highlightedPath}`
+      : null,
+    () => loadHealthWorkQueue({ ...query, offset: 0, limit: 50, search: highlightedPath! }),
+    { revalidateOnFocus: false },
+  );
+  const pinned =
+    highlightedPath && !onPage
+      ? pinnedQueue?.targets.find((t) => t.file_path === highlightedPath)
+      : undefined;
+
+  const onPickPoint = useCallback((path: string) => setHighlightedPath(path), []);
+
+  // Scroll once per pick, after the row exists.
+  const scrolledFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightedPath) {
+      scrolledFor.current = null;
+      return;
+    }
+    if (scrolledFor.current === highlightedPath) return;
+    const el = document.querySelector(
+      `[data-health-work-item="${CSS.escape(highlightedPath)}"]`,
+    );
+    if (!el) return;
+    scrolledFor.current = highlightedPath;
+    el.scrollIntoView?.({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+  }, [highlightedPath, pinned, queue, reducedMotion]);
+
+  const toggleSelect = useCallback((t: HealthWorkItem) => {
+    const id = t.primary_finding_id;
+    if (!id) return;
+    setSelection((cur) => {
+      const next = new Map(cur);
+      if (next.has(t.file_path)) next.delete(t.file_path);
+      else next.set(t.file_path, id);
+      return next;
+    });
+  }, []);
+  const selectable = useMemo(
+    () =>
+      (queue?.targets ?? []).flatMap((t) =>
+        t.primary_finding_id ? [{ path: t.file_path, findingId: t.primary_finding_id }] : [],
+      ),
+    [queue],
+  );
+  const selectedPaths = useMemo(() => new Set(selection.keys()), [selection]);
+
+  // The repo's whole marker vocabulary, not the loaded rows': a filter must
+  // not erase the option that would have widened it.
+  const biomarkerOptions = useMemo(
+    () => [...new Set((overview?.biomarkers ?? []).map((b) => b.biomarker_type))].sort(),
+    [overview],
+  );
 
   // Grouped queue — group order follows the user's sort (first occurrence),
   // not group size, so "Leverage" sorted stays leverage-led inside and out.
   const grouped = useMemo(() => {
     const targets = queue?.targets ?? [];
-    if (groupBy === "none") return [{ key: "All", targets }];
+    // A file led by a history marker has nothing in its code to change, so it
+    // reads under Watch, after the files an edit can improve, in every
+    // grouping. The lead is a history marker only when the file has no
+    // code-shape finding at all.
+    const fix = targets.filter((t) => !isWatchOnlyBiomarker(t.primary_biomarker));
+    const watch = targets.filter((t) => isWatchOnlyBiomarker(t.primary_biomarker));
+    const watchGroup = watch.length ? [{ key: HISTORY_LABEL, targets: watch }] : [];
+    if (groupBy === "none") {
+      return [...(fix.length ? [{ key: "All", targets: fix }] : []), ...watchGroup];
+    }
     const groups = new Map<string, typeof targets>();
-    for (const t of targets) {
+    for (const t of fix) {
       let key = "—";
       if (groupBy === "biomarker") key = biomarkerLabel(t.primary_biomarker);
       else if (groupBy === "module") key = t.module ?? "(no module)";
@@ -245,231 +384,325 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(t);
     }
-    return [...groups.entries()].map(([key, targets]) => ({ key, targets }));
+    return [...[...groups.entries()].map(([key, targets]) => ({ key, targets })), ...watchGroup];
   }, [queue, groupBy]);
+
+  const total = queue?.total ?? 0;
+  const findingTotal = queue?.finding_total;
+  const shownFrom = total === 0 ? 0 : offset + 1;
+  const shownTo = Math.min(offset + PAGE_SIZE, total);
+  const historyHidden = queue?.history_only_excluded ?? 0;
 
   return (
     <div className="space-y-6">
-      {/* The full ranked queue + file inventory. */}
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <h3 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Fix next
-            {queue?.total != null ? (
-              <span className="ml-2 normal-case tracking-normal text-[var(--color-text-secondary)]">
-                {queue.total} candidates
-              </span>
-            ) : null}
           </h3>
-          <ViewToggle
-            value={view}
-            onChange={setView}
+          {queue && !queueValidating ? (
+            <span className="text-xs text-[var(--color-text-secondary)]">
+              {total.toLocaleString()} {total === 1 ? "file" : "files"}
+              {findingTotal != null
+                ? ` · ${findingTotal.toLocaleString()} ${
+                    findingTotal === 1 ? "finding" : "findings"
+                  }`
+                : ""}
+              {history === "exclude" && historyHidden > 0
+                ? ` · ${historyHidden.toLocaleString()} ${
+                    historyHidden === 1 ? "file" : "files"
+                  } with only history signals hidden`
+                : ""}
+            </span>
+          ) : null}
+          {history === "include" || historyHidden > 0 ? (
+            <button
+              type="button"
+              aria-pressed={history === "include"}
+              onClick={() => {
+                setHistory((h) => (h === "include" ? "exclude" : "include"));
+                setOffset(0);
+              }}
+              className="text-xs text-[var(--color-text-secondary)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-text-primary)]"
+            >
+              {history === "include" ? "Hide history signals" : "Show history signals"}
+            </button>
+          ) : null}
+          {filtered ? (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="ml-auto text-xs text-[var(--color-text-tertiary)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-text-primary)]"
+            >
+              Clear filters
+            </button>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Filter path…"
+              aria-label="Filter by file path"
+              className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-hover)]"
+            />
+          </div>
+          <FilterSelect
+            label="Dimension"
+            value={dimension}
+            onChange={onFilterChange((v: string) =>
+              setDimension(v as HealthDimension | "all"),
+            )}
             options={[
-              { value: "queue", label: "Queue" },
-              { value: "files", label: "All files" },
+              { value: "all", label: "All dimensions" },
+              // One name per dimension, shared with every other health surface.
+              ...(["defect", "maintainability", "performance", "advisory"] as const).map(
+                (d) => ({ value: d, label: DIMENSION_LABEL[d] }),
+              ),
+            ]}
+          />
+          <FilterSelect
+            label="Marker"
+            value={biomarker}
+            onChange={onFilterChange(setBiomarker)}
+            options={[
+              { value: "all", label: "All markers" },
+              ...biomarkerOptions.map((b) => ({ value: b, label: biomarkerLabel(b) })),
+            ]}
+          />
+          <FilterSelect
+            label="Max effort"
+            value={maxEffort}
+            onChange={onFilterChange(setMaxEffort)}
+            options={[
+              { value: "all", label: "Any effort" },
+              { value: "S", label: "Small only" },
+              { value: "M", label: "Medium and under" },
+              { value: "L", label: "Large and under" },
+              { value: "XL", label: "Extra large and under" },
+            ]}
+          />
+          <FilterSelect
+            label="Sort"
+            value={sort ?? "impact_per_effort"}
+            onChange={onFilterChange((v: string) =>
+              setSort(v as HealthWorkQueueQuery["sort"]),
+            )}
+            options={[
+              { value: "impact_per_effort", label: "Leverage (impact ÷ effort)" },
+              { value: "total_impact", label: "Total impact" },
+              { value: "score", label: "Worst score" },
+              { value: "finding_count", label: "Finding count" },
+            ]}
+          />
+          <FilterSelect
+            label="Group"
+            value={groupBy}
+            onChange={(v) => setGroupBy(v as GroupBy)}
+            options={[
+              { value: "none", label: "Flat list" },
+              { value: "biomarker", label: "By marker" },
+              { value: "module", label: "By module" },
+              { value: "effort", label: "By effort" },
             ]}
           />
         </div>
 
-        {view === "queue" ? (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <FilterSelect
-                label="Marker"
-                value={biomarker}
-                onChange={setBiomarker}
-                options={[
-                  { value: "all", label: "All markers" },
-                  ...biomarkerOptions.map((b) => ({
-                    value: b,
-                    label: biomarkerLabel(b),
-                  })),
-                ]}
-              />
-              <FilterSelect
-                label="Severity"
-                value={minSeverity}
-                onChange={(v) => setMinSeverity(v as Severity | "all")}
-                options={[
-                  { value: "all", label: "All severities" },
-                  { value: "low", label: "Low+" },
-                  { value: "medium", label: "Medium+" },
-                  { value: "high", label: "High+" },
-                  { value: "critical", label: "Critical" },
-                ]}
-              />
-              <FilterSelect
-                label="Max effort"
-                value={maxEffort}
-                onChange={setMaxEffort}
-                options={[
-                  { value: "all", label: "Any effort" },
-                  { value: "S", label: "Small only" },
-                  { value: "M", label: "Medium+" },
-                  { value: "L", label: "Large+" },
-                ]}
-              />
-              <FilterSelect
-                label="Sort"
-                value={sort ?? "impact_per_effort"}
-                onChange={(v) => setSort(v as HealthWorkQueueQuery["sort"])}
-                options={[
-                  {
-                    value: "impact_per_effort",
-                    label: "Leverage (impact ÷ effort)",
-                  },
-                  { value: "total_impact", label: "Total impact" },
-                  { value: "score", label: "Worst score" },
-                  { value: "finding_count", label: "Finding count" },
-                ]}
-              />
-              <FilterSelect
-                label="Group"
-                value={groupBy}
-                onChange={(v) => setGroupBy(v as GroupBy)}
-                options={[
-                  { value: "none", label: "Flat list" },
-                  { value: "biomarker", label: "By marker" },
-                  { value: "module", label: "By module" },
-                  { value: "effort", label: "By effort" },
-                ]}
-              />
-            </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div
+            className="flex flex-wrap items-center gap-2"
+            role="group"
+            aria-label="Severity"
+          >
+            <span className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              Severity
+            </span>
+            {SEVERITIES.map((s) => (
+              <FilterChip
+                key={s}
+                active={severities.includes(s)}
+                onClick={() => toggleSeverity(s)}
+              >
+                {SEVERITY_LABEL[s]}
+              </FilterChip>
+            ))}
+          </div>
+          <div
+            className="flex flex-wrap items-center gap-2"
+            role="group"
+            aria-label="File"
+          >
+            <span className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              File
+            </span>
+            <FilterChip
+              active={onlyHotspots}
+              onClick={() => {
+                setOnlyHotspots((v) => !v);
+                setOffset(0);
+              }}
+            >
+              Hotspots
+            </FilterChip>
+            <FilterChip
+              active={onlyUntested}
+              onClick={() => {
+                setOnlyUntested((v) => !v);
+                setOffset(0);
+              }}
+            >
+              Untested
+            </FilterChip>
+            <FilterChip
+              active={onlyFailing}
+              onClick={() => {
+                setOnlyFailing((v) => !v);
+                setOffset(0);
+              }}
+            >
+              Below green
+            </FilterChip>
+          </div>
+        </div>
 
-            {queueLoading && !queue ? (
-              <div className="grid gap-3">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-28 w-full" />
-                ))}
-              </div>
-            ) : !queue || queue.targets.length === 0 ? (
-              <EmptyState
-                title="No findings match the current filters"
-                description="Try widening the severity or effort filters, or sync the repo to refresh findings."
-              />
-            ) : (
-              <>
-                {/* Leverage at a glance — impact vs effort, click a dot to open
-                    the file. Replaces the text-dense ranking as the first read. */}
-                <ImpactEffortQuadrant
-                  points={(queue?.targets ?? []).map((t) => ({
-                    file_path: t.file_path,
-                    total_impact: t.total_impact,
-                    effort_bucket: t.effort_bucket,
-                    nloc: t.nloc,
-                    score: t.score,
-                  }))}
-                  onSelect={(p) => setSelectedFile(p.file_path)}
-                />
-                <div className="space-y-6">
-                  {grouped.map((g) => (
-                    <section key={g.key} className="space-y-2">
-                      {groupBy !== "none" ? (
-                        <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                          {g.key}{" "}
-                          <span className="text-[var(--color-text-secondary)]">
-                            ({g.targets.length})
-                          </span>
-                        </h3>
-                      ) : null}
-                      <HealthWorkQueueList
-                        targets={g.targets}
-                        onSelect={(t) => setSelectedFile(t.file_path)}
-                        onStatusChange={handleStatus}
-                        onGeneratePrompt={(t) => void openPrompt(t)}
-                        onLoadFindings={loadFindings}
-                        onLoadOpportunity={loadOpportunity}
-                        refactoringOpportunityHref={adapter.refactoringOpportunityHref}
-                      />
-                    </section>
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
-                  <span>
-                    Showing {queue.targets.length} of {queue.total} candidates
-                  </span>
-                  {queue.total > queue.targets.length && queueLimit < QUEUE_MAX ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setQueueLimit(QUEUE_MAX)}
-                    >
-                      Load more
-                    </Button>
-                  ) : null}
-                </div>
-              </>
-            )}
-          </>
+        {queueLoading && !queue ? (
+          <div className="grid gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 w-full" />
+            ))}
+          </div>
+        ) : total === 0 ? (
+          <EmptyState
+            title={filtered ? "Nothing matches these filters" : "No open findings"}
+            description={
+              filtered
+                ? "This view lists files carrying findings, ranked by leverage. Widen a filter to see more."
+                : "Files carrying findings appear here, ranked by leverage. Sync the repo to pick up new work."
+            }
+            {...(filtered
+              ? { action: { label: "Clear filters", onClick: clearFilters } }
+              : {})}
+          />
         ) : (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-                <input
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setOffset(0);
-                  }}
-                  placeholder="Filter path…"
-                  className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-hover)]"
+          <div
+            className={
+              queueValidating
+                ? "space-y-6 opacity-60 transition-opacity"
+                : "space-y-6 transition-opacity"
+            }
+            aria-busy={queueValidating}
+          >
+            {/* The whole filtered set, from one aggregate call. A click finds
+                the file in the list below; the row opens the drawer. */}
+            {plane && plane.total > 0 ? (
+              <ImpactEffortQuadrant
+                data={plane}
+                selectedPath={highlightedPath}
+                onSelect={onPickPoint}
+              />
+            ) : null}
+            {pinned ? (
+              <section className="space-y-2" aria-label="Selected in the graph">
+                <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  Selected in the graph{" "}
+                  <span className="normal-case tracking-normal text-[var(--color-text-secondary)]">
+                    (not on this page)
+                  </span>
+                </h3>
+                <HealthWorkQueueList
+                  targets={[pinned]}
+                  onSelect={(t) => setSelectedFile(t.file_path)}
+                  onStatusChange={handleStatus}
+                  onGeneratePrompt={(t) => void openPrompt(t)}
+                  onLoadFindings={loadFindings}
+                  onLoadOpportunity={loadOpportunity}
+                  refactoringOpportunityHref={adapter.refactoringOpportunityHref}
+                  highlightedPath={highlightedPath}
                 />
-              </div>
-              <FilterChip active={onlyHotspots} onClick={() => { setOnlyHotspots((v) => !v); setOffset(0); }}>
-                Hotspots
-              </FilterChip>
-              <FilterChip active={onlyUntested} onClick={() => { setOnlyUntested((v) => !v); setOffset(0); }}>
-                Untested
-              </FilterChip>
-              <FilterChip active={onlyFailing} onClick={() => { setOnlyFailing((v) => !v); setOffset(0); }}>
-                Failing
-              </FilterChip>
-              <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">
-                {files?.total != null ? `${files.total.toLocaleString()} files` : ""}
-              </span>
+              </section>
+            ) : null}
+            <div className="space-y-6">
+              {grouped.map((g) => (
+                <section key={g.key} className="space-y-2">
+                  {groupBy !== "none" || g.key === HISTORY_LABEL ? (
+                    <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                      {g.key}{" "}
+                      <span className="text-[var(--color-text-secondary)]">
+                        ({g.targets.length}
+                        {groupBy === "none" ? " on this page" : ""})
+                      </span>
+                    </h3>
+                  ) : null}
+                  {g.key === HISTORY_LABEL ? (
+                    <p className="max-w-[72ch] text-xs text-[var(--color-text-tertiary)]">
+                      {HISTORY_EXPLAINER}
+                    </p>
+                  ) : null}
+                  <HealthWorkQueueList
+                    targets={g.targets}
+                    onSelect={(t) => setSelectedFile(t.file_path)}
+                    onStatusChange={handleStatus}
+                    onGeneratePrompt={(t) => void openPrompt(t)}
+                    onLoadFindings={loadFindings}
+                    onLoadOpportunity={loadOpportunity}
+                    refactoringOpportunityHref={adapter.refactoringOpportunityHref}
+                    highlightedPath={highlightedPath}
+                    selectedPaths={selectedPaths}
+                    onToggleSelect={toggleSelect}
+                  />
+                </section>
+              ))}
             </div>
 
-            {filesLoading && !files ? (
-              <Skeleton className="h-64 w-full rounded-lg" />
-            ) : (
-              <HealthFileTable
-                files={files?.files ?? []}
-                sortField={sortField}
-                sortOrder={sortOrder}
-                onSort={handleSort}
-                onSelect={(f) => setSelectedFile(f.file_path)}
-                selectedPath={selectedFile}
-              />
-            )}
-
-            {files && files.total > PAGE_SIZE ? (
-              <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
-                <span>
-                  Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, files.total)} of {files.total}
-                </span>
-                <div className="flex gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={offset === 0}
-                    onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={offset + PAGE_SIZE >= files.total}
-                    onClick={() => setOffset(offset + PAGE_SIZE)}
-                  >
-                    Next
-                  </Button>
-                </div>
+            <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
+              <span>
+                Showing {shownFrom.toLocaleString()}–{shownTo.toLocaleString()} of{" "}
+                {total.toLocaleString()} files
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={offset === 0}
+                  onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={offset + PAGE_SIZE >= total}
+                  onClick={() => setOffset(offset + PAGE_SIZE)}
+                >
+                  Next
+                </Button>
               </div>
-            ) : null}
-          </>
+            </div>
+            <BulkTriageBar
+              selection={selection}
+              selectablePaths={selectable}
+              onSelectAll={() =>
+                setSelection((cur) => {
+                  const next = new Map(cur);
+                  for (const r of selectable) next.set(r.path, r.findingId);
+                  return next;
+                })
+              }
+              onClear={() => setSelection(new Map())}
+              updateStatus={(id, status) => adapter.updateFindingStatus(id, status)}
+              onDone={(failed) => {
+                setSelection((cur) => {
+                  const keep = new Set(failed);
+                  return new Map([...cur].filter(([path]) => keep.has(path)));
+                });
+                mutateQueue();
+                void mutatePlane();
+              }}
+            />
+          </div>
         )}
       </div>
 
@@ -501,12 +734,11 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           if (!open) setPromptTarget(null);
         }}
         filePath={promptTarget?.file_path ?? null}
+        chatContext={fileChatContext(promptTarget?.file_path)}
         title="AI fix prompt"
         description="A ready-to-paste prompt that gives your AI coding agent every marker, line range, score deduction, and constraint needed to refactor this file in one focused pass."
         getPrompt={
-          promptTarget
-            ? (flavor) => buildAiPrompt({ target: promptTarget, flavor })
-            : null
+          promptTarget ? (flavor) => buildAiPrompt({ target: promptTarget, flavor }) : null
         }
       />
     </div>

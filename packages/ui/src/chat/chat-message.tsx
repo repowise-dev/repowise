@@ -139,9 +139,18 @@ function ChatMessageImpl({
             />
           )}
 
+          {message.truncated && !message.isStreaming && (
+            <p
+              data-chat-truncated="true"
+              className="border-y border-[var(--color-border-default)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]"
+            >
+              Stopped at the step limit before a final answer. Ask again to continue.
+            </p>
+          )}
+
           {message.isStreaming &&
             !message.text &&
-            message.toolCalls.length === 0 && (
+            !message.toolCalls.some((tc) => tc.status === "running") && (
               <div className="flex items-center gap-2 py-2 text-xs text-[var(--color-text-tertiary)]">
                 <WorkingOrb />
                 <span>Reading context</span>

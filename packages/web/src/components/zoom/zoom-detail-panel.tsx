@@ -28,7 +28,7 @@ import {
   nodeRoles,
   summarizeRelations,
 } from "@repowise-dev/ui/zoom";
-import { bandForScore } from "@repowise-dev/types/health";
+import { bandForScore, formatScore } from "@repowise-dev/types/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { pageHref } from "@/lib/utils/page-href";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
@@ -100,9 +100,7 @@ export function ZoomDetailPanel({
 }: ZoomDetailPanelProps) {
   const m = node.metrics;
   const isFile = node.kind === "file";
-  // The canonical 3-band scale, so the panel agrees with the dot on the card
-  // beside it. The 5-step Excellent/Good ladder the scan surfaces use would
-  // call a 6.9 "Good" while the card paints it amber.
+  // The shared bands, so the panel agrees with the dot on the card beside it.
   const band = healthBandLabel(node.health_score);
   const bandClass =
     node.health_score === null ? "" : healthBandTextColor(bandForScore(node.health_score));
@@ -161,7 +159,7 @@ export function ZoomDetailPanel({
           <div className="border-t border-[var(--color-border-default)] pt-3">
             <div className={`flex items-baseline gap-2 ${bandClass}`}>
               <span className="text-[32px] font-bold leading-none tabular-nums">
-                {node.health_score.toFixed(1)}
+                {formatScore(node.health_score)}
               </span>
               <span className="text-[15px] font-medium">{band}</span>
             </div>

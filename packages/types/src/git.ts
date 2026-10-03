@@ -38,7 +38,10 @@ export interface GitMetadata {
   last_commit_at: string | null;
   primary_owner_name: string | null;
   primary_owner_email: string | null;
+  /** The primary owner's own share of the file's commits, 0–1. */
   primary_owner_commit_pct: number | null;
+  /** The primary (blame) owner's share of current lines, 0–1. Null without blame. */
+  primary_owner_line_pct?: number | null;
   recent_owner_name: string | null;
   recent_owner_commit_pct: number | null;
   top_authors: FileAuthor[];
@@ -170,11 +173,62 @@ export interface RiskDriver {
   label: string;
 }
 
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFile {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  /** Bug-fix commits recorded against this path; null when untracked. */
+  prior_fixes?: number | null;
+}
+
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFinding {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  /** Only set on `worsened`: what the severity was before the commit. */
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  /** How directly the commit is responsible, from `added_lines` down to
+   *  `unknown`. Separates what a change wrote from what it merely touched. */
+  attribution_basis: string;
+  reason: string;
+}
+
+/** What a commit did to code health, computed at index time.
+ *
+ *  Absent rather than empty when the commit was never scanned: the scan is
+ *  bounded, so older commits routinely have none, and that is not the same
+ *  claim as "changed nothing". */
+export interface CommitHealth {
+  /** `available` when every changed file was compared, `partial` when some
+   *  were skipped (unsupported language, binary, unreadable). */
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  /** Worst first, capped. `introduced_count + worsened_count` is the true
+   *  total, so a shorter list means the rest was not stored. */
+  findings: CommitHealthFinding[];
+}
+
 export interface CommitDetail extends Commit {
   /** Per-feature breakdown, strongest contribution first. */
   drivers: RiskDriver[];
   /** Which attribution channel identified the agent (e.g. git footer). */
   agent_channel?: string | null;
+  /** Files this commit touched, biggest churn first. Empty on an index written
+   *  before per-commit files were captured — re-index to fill it. */
+  files?: CommitFile[];
+  /** What the commit did to health; null when it was never scanned. */
+  health?: CommitHealth | null;
 }
 
 /** One month of agent-vs-human commit volume. */

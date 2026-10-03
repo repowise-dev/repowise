@@ -102,6 +102,23 @@ class TestRemixConvention:
         add_framework_edges(graph, parsed, ctx, tech_stack=["remix"])
         assert graph.has_edge("app/routes/_index.tsx", "utils/auth.ts")
 
+    def test_a_test_beside_a_route_is_not_a_convention_route(self, tmp_path: Path) -> None:
+        # A test file publishes no endpoint, so it is not loaded by convention
+        # and gets no edge of its own.
+        (tmp_path / "utils").mkdir()
+        (tmp_path / "utils" / "auth.ts").write_text("export const auth = {};\n")
+        (tmp_path / "app" / "routes").mkdir(parents=True)
+        (tmp_path / "app" / "routes" / "foo.test.tsx").write_text(
+            "import { auth } from '../../utils/auth';\nexport function loader() { return auth; }\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["remix"])
+        assert not graph.has_edge("app/routes/foo.test.tsx", "utils/auth.ts")
+
 
 class TestTrpc:
     def test_procedure_query_links_handler(self, tmp_path: Path) -> None:

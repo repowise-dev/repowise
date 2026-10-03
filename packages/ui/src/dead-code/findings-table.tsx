@@ -64,7 +64,7 @@ function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
     case "owner":
       return f.primary_owner ?? "";
     case "lines":
-      return f.lines;
+      return f.lines ?? 0;
     case "confidence":
       return f.confidence;
     case "last_commit_at":
@@ -360,7 +360,7 @@ export function FindingsTable({
         align: "right",
         headerClassName: "w-16",
         render: (f) => (
-          <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{f.lines}</span>
+          <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{f.lines ?? "—"}</span>
         ),
       },
       {

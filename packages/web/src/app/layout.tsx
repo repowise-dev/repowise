@@ -22,6 +22,13 @@ import "@/styles/globals.css";
 // Serif display face for the docs/wiki reading surfaces (--font-serif token).
 const lora = Lora({ subsets: ["latin"], variable: "--font-lora", display: "swap" });
 
+// The layout asks the API for the repo list at request time. Without this,
+// Next prerenders the static routes (`/settings`, `not-found`) at build time —
+// where no API answers — and serves that frozen `reposUnavailable: true`
+// forever: visiting Settings flips the sidebar to "Can't reach the API" on a
+// healthy server, and it sticks until a hard reload (#2260).
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: {
     default: "repowise",

@@ -147,6 +147,9 @@ def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
         "reason": facts.reason,
         "path": list(facts.details.get("path", ())),
         "provenance": facts.resolution_basis,
+        # The loop around the call, where a reader starts; absent when the
+        # walk stored none, so older evidence reads unchanged.
+        **({"loop_line": loop} if (loop := facts.details.get("loop_line")) else {}),
     }
 
 

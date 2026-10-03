@@ -12,6 +12,8 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { truncatePath } from "../lib/format";
+import { healthBand } from "../health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
@@ -70,16 +72,6 @@ interface HealthOverviewCardProps {
    */
   defectAccuracy?: HealthOverviewAccuracy | null;
   className?: string;
-}
-
-/* 1–10 health bands — the moat metric, distinct from the 0–100 composite
-   shown in the header badge. */
-function band(v: number): { color: string; label: string } {
-  if (v >= 8) return { color: "var(--color-success)", label: "Excellent" };
-  if (v >= 6.5) return { color: "var(--color-success)", label: "Good" };
-  if (v >= 5) return { color: "var(--color-caution)", label: "Fair" };
-  if (v >= 3.5) return { color: "var(--color-warning)", label: "Needs work" };
-  return { color: "var(--color-error)", label: "Critical" };
 }
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
@@ -180,7 +172,7 @@ function MetricTile({
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-              {value.toFixed(1)}
+              {formatScore(value)}
             </span>
             <span className="text-sm text-[var(--color-text-tertiary)]">/10</span>
             <TrendChip delta={delta} />
@@ -314,7 +306,7 @@ export function HealthOverviewCard({
                 label="Average health"
                 value={avg}
                 delta={averageDelta}
-                band={avg != null ? band(avg) : null}
+                band={avg != null ? healthBand(avg) : null}
                 sparkline={avgSeries}
               />
               <MetricTile
@@ -322,7 +314,7 @@ export function HealthOverviewCard({
                 label="Hotspot health"
                 value={hot}
                 delta={hotspotDelta}
-                band={hot != null ? band(hot) : null}
+                band={hot != null ? healthBand(hot) : null}
                 sparkline={hotSeries}
               />
             </div>
@@ -367,9 +359,9 @@ export function HealthOverviewCard({
                   </span>
                   <span
                     className="shrink-0 text-xs font-bold tabular-nums"
-                    style={{ color: band(data.worst_performer_score).color }}
+                    style={{ color: healthBand(data.worst_performer_score).color }}
                   >
-                    {data.worst_performer_score.toFixed(1)}/10
+                    {formatScore(data.worst_performer_score)}/10
                   </span>
                 </a>
               )}
@@ -412,7 +404,7 @@ function PillarStat({
   label: string;
   score: number | null;
 }) {
-  const b = score != null ? band(score) : null;
+  const b = score != null ? healthBand(score) : null;
   return (
     <a
       href={href}
@@ -427,7 +419,7 @@ function PillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-            {score.toFixed(1)}
+            {formatScore(score)}
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">/10</span>
           {b ? (
@@ -482,7 +474,7 @@ function PerformancePillarStat({
             {findings === 1 ? "risk" : "risks"}
           </span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            · {score.toFixed(1)}/10
+            · {formatScore(score)}/10
           </span>
         </span>
       )}

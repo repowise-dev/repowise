@@ -59,6 +59,7 @@ _NODE_FIELDS = (
     "has_error",
     "is_test",
     "is_entry_point",
+    "is_reachability_root",
     "pagerank",
     "betweenness",
     "betweenness_commit",
@@ -102,6 +103,22 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
         if confidence > (existing.confidence or 0.0):
             existing.resolution_origin = edge_data.get("resolution_origin")
         existing.confidence = max(existing.confidence or 0.0, confidence)
+
+
+def _edge_values(repository_id: str, e: dict) -> dict:
+    """Column values for a new ``graph_edges`` row built from an edge payload."""
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        "source_node_id": e.get("source_node_id", ""),
+        "target_node_id": e.get("target_node_id", ""),
+        "imported_names_json": e.get("imported_names_json", "[]"),
+        "edge_type": e.get("edge_type", "imports"),
+        "confidence": e.get("confidence", 1.0),
+        "hint_source": e.get("hint_source"),
+        "resolution_origin": e.get("resolution_origin"),
+        "call_lines_json": e.get("call_lines_json", "[]"),
+    }
 
 
 def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
@@ -154,11 +171,11 @@ async def batch_upsert_graph_nodes(
             float_columns=_CENTRALITY_COLUMNS,
             float_atol=_CENTRALITY_ATOL,
         ),
-        insert_fn=lambda n: GraphNode(
-            id=_new_uuid(),
-            repository_id=repository_id,
+        insert_fn=lambda n: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
             **{k: v for k, v in n.items() if k not in ("id", "repository_id")},
-        ),
+        },
     )
 
 
@@ -188,18 +205,7 @@ async def batch_upsert_graph_edges(
         ),
         row_key_fn=lambda row: (row.source_node_id, row.target_node_id, row.edge_type),
         update_fn=_update_graph_edge,
-        insert_fn=lambda e: GraphEdge(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            source_node_id=e.get("source_node_id", ""),
-            target_node_id=e.get("target_node_id", ""),
-            imported_names_json=e.get("imported_names_json", "[]"),
-            edge_type=e.get("edge_type", "imports"),
-            confidence=e.get("confidence", 1.0),
-            hint_source=e.get("hint_source"),
-            resolution_origin=e.get("resolution_origin"),
-            call_lines_json=e.get("call_lines_json", "[]"),
-        ),
+        insert_fn=lambda e: _edge_values(repository_id, e),
     )
 
 
@@ -282,20 +288,7 @@ async def reconcile_edges_for_files(
     # Every fresh edge's source was just cleared, so these are all plain inserts
     # — no need for the repo-wide upsert (which reloads every edge row).
     for e in edges:
-        session.add(
-            GraphEdge(
-                id=_new_uuid(),
-                repository_id=repository_id,
-                source_node_id=e.get("source_node_id", ""),
-                target_node_id=e.get("target_node_id", ""),
-                imported_names_json=e.get("imported_names_json", "[]"),
-                edge_type=e.get("edge_type", "imports"),
-                confidence=e.get("confidence", 1.0),
-                hint_source=e.get("hint_source"),
-                resolution_origin=e.get("resolution_origin"),
-                call_lines_json=e.get("call_lines_json", "[]"),
-            )
-        )
+        session.add(GraphEdge(**_edge_values(repository_id, e)))
     await session.flush()
     return deleted
 
@@ -328,16 +321,16 @@ async def batch_upsert_graph_metrics(
             float_columns=_CENTRALITY_COLUMNS,
             float_atol=_CENTRALITY_ATOL,
         ),
-        insert_fn=lambda kv: GraphMetric(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            node_id=kv[0],
-            pagerank=float(kv[1].get("pagerank", 0.0)),
-            betweenness=float(kv[1].get("betweenness", 0.0)),
-            community_id=int(kv[1].get("community_id", 0)),
-            in_degree=int(kv[1].get("in_degree", 0)),
-            out_degree=int(kv[1].get("out_degree", 0)),
-        ),
+        insert_fn=lambda kv: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
+            "node_id": kv[0],
+            "pagerank": float(kv[1].get("pagerank", 0.0)),
+            "betweenness": float(kv[1].get("betweenness", 0.0)),
+            "community_id": int(kv[1].get("community_id", 0)),
+            "in_degree": int(kv[1].get("in_degree", 0)),
+            "out_degree": int(kv[1].get("out_degree", 0)),
+        },
     )
 
 
@@ -403,19 +396,19 @@ async def batch_upsert_graph_node_membership(
                 row[0]: row[1:] for row in existing_rows if row[0] in current
             },
         ),
-        insert_fn=lambda kv: GraphNodeMembership(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            node_id=kv[0],
-            node_type=str(kv[1].get("node_type", "file")),
-            scc_id=(None if kv[1].get("scc_id") is None else int(kv[1]["scc_id"])),
-            scc_size=int(kv[1].get("scc_size", 0)),
-            symbol_community_id=(
+        insert_fn=lambda kv: {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
+            "node_id": kv[0],
+            "node_type": str(kv[1].get("node_type", "file")),
+            "scc_id": (None if kv[1].get("scc_id") is None else int(kv[1]["scc_id"])),
+            "scc_size": int(kv[1].get("scc_size", 0)),
+            "symbol_community_id": (
                 None
                 if kv[1].get("symbol_community_id") is None
                 else int(kv[1]["symbol_community_id"])
             ),
-        ),
+        },
     )
 
 
@@ -486,6 +479,7 @@ async def get_all_graph_nodes(
             "has_error": row.has_error,
             "is_test": row.is_test,
             "is_entry_point": row.is_entry_point,
+            "is_reachability_root": row.is_reachability_root,
             "kind": row.kind,
             "name": row.name,
             "qualified_name": row.qualified_name,

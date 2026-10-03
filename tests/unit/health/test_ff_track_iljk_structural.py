@@ -95,7 +95,7 @@ def _fn_ctx(functions) -> FileContext:
         nloc=200,
         has_test_file=False,
         module=None,
-        function_metrics={f.name: f for f in functions},
+        all_functions=tuple(functions),
     )
 
 
@@ -209,7 +209,6 @@ def test_detector_caps_small_sample_pair_at_medium():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": 5,
             "co_change_partners_json": json.dumps(

@@ -46,10 +46,10 @@ async def test_get_overview(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_overview_with_repo_path(setup_mcp):
+async def test_get_overview_with_repo_path(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview(repo="/tmp/test-repo")
+    result = await get_overview(repo=str(tmp_path))
     assert result["title"] == "Test Repo Overview"
 
 

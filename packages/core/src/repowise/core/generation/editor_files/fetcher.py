@@ -15,11 +15,17 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+from repowise.core.analysis.health.rows import scored_rows, split_tests
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
+from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
 from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
@@ -45,6 +51,25 @@ _MAX_MODULES = 10
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 8
+_MAX_FIX_FIRST = 3
+
+
+def _signed_by(signature) -> str:
+    """The mark for a decision a person did not sign, else ``""``.
+
+    An agent reads this block as standing rules, so one it accepted itself has
+    to be legible as that rather than as the team's. A person's acceptance is
+    the ordinary case and is left unmarked, which is also what keeps the line
+    cheap: these files are read into every session.
+    """
+    if signature is None or signature.kind == "person":
+        return ""
+    if signature.kind == "agent":
+        who = signature.accepter or "an agent"
+        return f" [accepted by {who}, not a person]"
+    if signature.kind == "import":
+        return " [accepted by a tracked file]"
+    return " [signer not recorded]"
 
 
 class EditorFileDataFetcher:
@@ -90,7 +115,11 @@ class EditorFileDataFetcher:
             code_health=await self._get_code_health(),
             kg_layers=kg_layers,
             kg_tour=kg_tour,
+            index_scope=self._get_index_scope(),
         )
+
+    def _get_index_scope(self) -> dict:
+        return load_index_scope(self._repo_path) or resolve_index_scope({})
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -212,6 +241,12 @@ class EditorFileDataFetcher:
 
         The fix columns come from the same row the churn columns already did, so
         this is the same single query it was.
+
+        Filtered to files that exist in the checkout. A ``git_metadata`` row
+        outlives its file when the deleted-file prune refuses a run that looks
+        like a broken checkout, and a fix-heavy file that was deleted would
+        otherwise rank first in "files that need care" forever. The limit is
+        applied after the filter, so a dropped row cannot leave the list short.
         """
         result = await self._session.execute(
             select(
@@ -234,11 +269,14 @@ class EditorFileDataFetcher:
                 GitMetadata.churn_percentile.desc(),
                 GitMetadata.file_path.asc(),  # deterministic tie-break
             )
-            .limit(_MAX_HOTSPOTS)
         )
         now = datetime.now(UTC)
         hotspots: list[HotspotFile] = []
         for row in result.all():
+            if len(hotspots) >= _MAX_HOTSPOTS:
+                break
+            if not (self._repo_path / row[0]).exists():
+                continue
             last_fix_at = row[6]
             age: str | None = None
             if isinstance(last_fix_at, datetime):
@@ -266,9 +304,15 @@ class EditorFileDataFetcher:
         An agent reads this block as instructions, so it is the surface where
         the candidate/decision distinction matters most: acceptance, not a
         status string a recurrence check wrote, is what earns a line here.
+
+        It is also where an agent can read back its own acceptance as the
+        team's rule, so a line a person did not sign says so.
         """
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
-        from repowise.core.persistence.crud.authority import accepted_predicate
+        from repowise.core.persistence.crud.authority import (
+            accepted_predicate,
+            decision_signatures,
+        )
 
         result = await self._session.execute(
             select(DecisionRecord)
@@ -286,18 +330,16 @@ class EditorFileDataFetcher:
         records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
             :_MAX_DECISIONS
         ]
+        signatures = await decision_signatures(self._session, self._repo_id, records)
         summaries: list[DecisionSummary] = []
         for rec in records:
-            rationale = (rec.rationale or "").strip()
-            rationale = rationale[:100].rstrip(".,;") if rationale else ""
-            decision_text = (rec.decision or "").strip()
-            decision_text = decision_text[:120].rstrip(".,;") if decision_text else ""
             summaries.append(
                 DecisionSummary(
                     title=rec.title,
                     status=rec.status,
-                    rationale=rationale,
-                    decision=decision_text,
+                    rationale=_truncate_at_word(rec.rationale or "", 100),
+                    decision=_truncate_at_word(rec.decision or "", 120),
+                    signed_by=_signed_by(signatures.get(rec.id)),
                 )
             )
         return summaries
@@ -315,10 +357,12 @@ class EditorFileDataFetcher:
     async def _get_code_health(self) -> CodeHealthBlock | None:
         """Build the compact code-health block for CLAUDE.md.
 
-        Filters per plan §9: critical biomarkers in hotspot files, plus
-        any Brain Method finding. Empty list when no health data yet.
+        KPIs, then the lead of the Fix-first queue every other surface renders.
+        ``None`` when no health data yet.
         """
-        metric_rows = list(
+        # Scored rows only: a file in a language health has no dialect for
+        # carries no score, and a repository of nothing else has no block.
+        metric_rows = scored_rows(
             (
                 await self._session.execute(
                     select(HealthFileMetric).where(
@@ -337,7 +381,10 @@ class EditorFileDataFetcher:
         # zero-total-weight fallback to a plain mean. The empty case cannot
         # reach it — ``metric_rows`` is checked above.
         avg = nloc_weighted_score(metric_rows)
-        worst = min(metric_rows, key=lambda m: m.score)
+        # The worst file names a production file: a test is not the file an
+        # agent should be told to handle with care.
+        production, tests = split_tests(metric_rows)
+        worst = min(production or tests, key=lambda m: m.score)
 
         # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
         # the shared owners now; this file used to re-derive the same weighted
@@ -390,53 +437,38 @@ class EditorFileDataFetcher:
         lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
         perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
 
-        # Critical biomarkers: brain methods, or critical-severity findings
-        # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
-        f_res = await self._session.execute(
-            select(HealthFinding)
-            .where(
-                HealthFinding.repository_id == self._repo_id,
-                HealthFinding.status == "open",
-            )
-            .order_by(HealthFinding.health_impact.desc())
-        )
-        all_findings = list(f_res.scalars().all())
-
         # Open performance-finding count + density over covered LOC (the honest
         # headline the diluted /10 hides).
-        performance_findings = sum(
-            1 for f in all_findings if (f.dimension or "defect") == "performance"
-        )
+        performance_findings = (
+            await self._session.execute(
+                select(func.count()).where(
+                    HealthFinding.repository_id == self._repo_id,
+                    HealthFinding.status == "open",
+                    HealthFinding.dimension == "performance",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
+                )
+            )
+        ).scalar_one()
         performance_findings_density: float | None = None
         if perf_coverage.covered_nloc > 0:
             performance_findings_density = round(
                 10000.0 * performance_findings / perf_coverage.covered_nloc, 2
             )
 
-        critical = []
-        for f in all_findings:
-            if len(critical) >= 5:
-                break
-            if f.biomarker_type == "brain_method" or (
-                f.severity == "critical" and f.file_path in hotspot_paths
-            ):
-                critical.append(
-                    {
-                        "path": f.file_path,
-                        "summary": (
-                            f"{f.biomarker_type.replace('_', ' ')}"
-                            + (f" ({f.function_name})" if f.function_name else "")
-                            + f" — impact −{f.health_impact:.1f}"
-                        ),
-                    }
-                )
+
+        # The trend the snapshots record, or nothing: a repository indexed once
+        # has no trend, and the section used to print "stable" for it anyway.
+        history = await crud.list_health_snapshots(
+            self._session, self._repo_id, limit=DECLINE_LOOKBACK + 1
+        )
 
         return CodeHealthBlock(
             hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
+            band=BAND_LABEL[band_for(round(avg, 2))],
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
-            hotspot_trend="stable",
+            hotspot_trend=hotspot_trend(history),
             maintainability_average=(
                 round(maintainability_average, 2) if maintainability_average is not None else None
             ),
@@ -450,8 +482,25 @@ class EditorFileDataFetcher:
             ),
             performance_skipped_files=perf_coverage.skipped_files,
             performance_unsupported_languages=perf_coverage.unsupported_languages,
-            critical_biomarkers=critical,
+            fix_first=await self._get_fix_first(),
         )
+
+    async def _get_fix_first(self) -> list[dict]:
+        """The queue's top items, or nothing on a store that cannot build it."""
+        try:
+            async with self._session.begin_nested():
+                queue = await load_fix_first(self._session, self._repo_id, limit=_MAX_FIX_FIRST)
+        except Exception:  # an index from before the refactoring or perf tables
+            return []
+        return [
+            {
+                "title": item.title,
+                "where": item.target.file_path
+                + (f":{item.target.line_start}" if item.target.line_start else ""),
+                "why": item.why,
+            }
+            for item in queue.items
+        ]
 
     async def _get_kg_data(
         self,

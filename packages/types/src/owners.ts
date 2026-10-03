@@ -13,7 +13,8 @@ export interface OwnerListEntry {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  /** Distinct commits in the 90 days before HEAD; null when the indexed commits do not cover the window. */
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   bus_factor_risk_files: number;
 }
@@ -54,7 +55,8 @@ export interface OwnerProfile {
   silo_modules: number;
   dead_code_files_owned: number;
   dead_code_lines_owned: number;
-  commit_count_90d: number;
+  /** Distinct commits in the 90 days before HEAD; null when the indexed commits do not cover the window. */
+  commit_count_90d: number | null;
   last_commit_at: string | null;
   first_commit_at: string | null;
   bus_factor_risk_files: number;

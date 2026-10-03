@@ -19,8 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import networkx as nx
 from structlog.testing import capture_logs
 
+from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.page_generator.levels import (
     build_level6_coros,
     build_level8_coros,
@@ -53,7 +55,15 @@ class BlastRadius:
 
 #: What the structural side independently arrived at. "Blast radius" is named
 #: by both; "Change risk" is in the documents only.
-MODULE_GROUPS = [SimpleNamespace(display="Blast Radius Evaluation", label="", key="src")]
+MODULE_GROUPS = [
+    SimpleNamespace(
+        display="Blast Radius Evaluation",
+        label="",
+        key="src",
+        file_paths=("src/blast_radius.py",),
+        context_paths=(),
+    )
+]
 
 
 class _Store:
@@ -162,6 +172,7 @@ def _run(
         graph_builder=SimpleNamespace(
             community_info=lambda: {},
             execution_flows=lambda: SimpleNamespace(flows=[]),
+            graph=nx.DiGraph,
         ),
         pagerank={},
         betweenness={},
@@ -176,7 +187,7 @@ def _run(
         vector_store=store,
         tour_stops=(),
         layer_order=(),
-        kg_ctx=None,
+        kg_ctx=KnowledgeGraphContext(None),
         on_subphase=None,
         _emit=lambda page_id: True,
     )
@@ -216,6 +227,8 @@ async def test_a_community_label_does_not_corroborate(tmp_path):
                 display="Ledger Postings",
                 label="Change Risk and Ingestion Engine",
                 key="src/change_risk",
+                file_paths=(),
+                context_paths=(),
             )
         ],
     )

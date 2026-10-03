@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw } from "lucide-react";
-import { syncWorkspace } from "@/lib/api/workspace";
+import { RefreshCw, Trash2 } from "lucide-react";
+import { removeWorkspaceRepo, syncWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceSyncResult } from "@/lib/api/types";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
@@ -101,3 +101,55 @@ function summarizeResults(results: WorkspaceSyncResult[]): string {
   if (errored) parts.push(`${errored} error`);
   return parts.join(", ");
 }
+
+interface RemoveWorkspaceRepoButtonProps {
+  alias: string;
+  repoName?: string;
+}
+
+export function RemoveWorkspaceRepoButton({
+  alias,
+  repoName,
+}: RemoveWorkspaceRepoButtonProps) {
+  const [removing, setRemoving] = useState(false);
+  const [, startTransition] = useTransition();
+  const router = useRouter();
+
+  const handleRemove = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Remove '${repoName || alias}' from .repowise-workspace.yaml?`,
+      )
+    ) {
+      return;
+    }
+    setRemoving(true);
+    try {
+      await removeWorkspaceRepo(alias);
+      startTransition(() => router.refresh());
+    } catch (e) {
+      if (typeof window !== "undefined") {
+        window.alert(`Failed to remove: ${toFriendlyMessage(e)}`);
+      }
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleRemove}
+      disabled={removing}
+      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs font-medium text-[var(--color-error)] hover:bg-[var(--color-bg-elevated)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      aria-label={`Remove ${alias} from workspace`}
+    >
+      <Trash2 className="h-3 w-3" />
+      {removing ? "Removing…" : "Remove"}
+    </button>
+  );
+}
+

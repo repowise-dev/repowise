@@ -1,9 +1,11 @@
-"""Parse MSBuild project files (.csproj, Directory.Build.props/targets).
+"""Parse MSBuild project files (.csproj, .vbproj, Directory.Build.props/targets).
 
 Only the fields repowise actually uses are extracted: ProjectReference,
 PackageReference, RootNamespace, AssemblyName, ImplicitUsings, and
-project-level <Using Include=...> items. The parser tolerates both
-SDK-style and legacy XML (``<Project ToolsVersion="...">``).
+project-level <Using Include=...> / <Import Include=...> items. The parser
+tolerates both SDK-style and legacy XML (``<Project ToolsVersion="...">``).
+
+.vbproj carries the same MSBuild schema as .csproj, so one parser serves both.
 """
 
 from __future__ import annotations
@@ -56,6 +58,11 @@ class MSBuildProject:
     project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
     project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    #: Explicit ``<Compile Include>`` items, ``/``-separated and unevaluated. A
+    #: file linked in from outside the project directory (``..\Shared\X.cs``,
+    #: ``$(CommonPath)X.cs``) belongs to this project too, which the directory
+    #: walk cannot see.
+    compile_includes: list[str] = field(default_factory=list)
     package_id: str | None = None  # <PackageId>, the id this project publishes under
     #: Tri-state on purpose: None = the project says nothing, which is not the
     #: same as an explicit <IsPackable>false</IsPackable>.
@@ -66,6 +73,20 @@ class MSBuildProject:
     def name(self) -> str:
         """Display name — the .csproj filename without extension."""
         return self.path.stem
+
+    @property
+    def published_id(self) -> str | None:
+        """The id this project publishes a package under, or None when it does not.
+
+        Packability is opt-in, never assumed: an SDK-style project is packable
+        by default, so treating silence as yes would make every internal
+        project in a solution a published library.
+        """
+        if self.is_packable is False:
+            return None
+        if not (self.is_packable or self.generate_package_on_build or self.package_id is not None):
+            return None
+        return self.package_id or self.assembly_name or self.path.stem
 
 
 # Strip XML namespace prefix from a tag — MSBuild docs say the namespace
@@ -90,6 +111,12 @@ def _tristate(value: str | None) -> bool | None:
     if text in ("true", "enable", "1"):
         return True
     return False if text in ("false", "disable", "0") else None
+
+
+def _compile_items(include: str | None) -> list[str]:
+    """The ``;``-separated items of a ``<Compile Include>``, wildcards dropped."""
+    items = (item.strip().replace("\\", "/") for item in (include or "").split(";"))
+    return [item for item in items if item and "*" not in item]
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -129,11 +156,15 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
                 rel = include.replace("\\", "/")
                 target = (project.project_dir / rel).resolve()
                 project.project_references.append(target)
+        elif tag == "Compile":
+            project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag == "PackageReference":
             pkg = elem.get("Include")
             if pkg:
                 project.package_references.add(pkg.strip())
-        elif tag == "Using":
+        elif tag in ("Using", "Import"):
+            # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
+            # one; MSBuild's own <Import Project="..."/> carries no Include.
             ns = elem.get("Include")
             if ns:
                 project.project_usings.add(ns.strip())
@@ -141,18 +172,37 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     return project
 
 
+def _find_project_files(
+    repo_path: Path,
+    pattern: str,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
+) -> list[Path]:
+    out: list[Path] = []
+    for proj in glob_via(snapshot, repo_path, pattern, prune_nested_git=prune_nested_git):
+        if path_has_dotnet_scan_skip_dir(proj, repo_path):
+            continue
+        out.append(proj)
+    return out
+
+
 def find_csproj_files(
     repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
 ) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
-    out: list[Path] = []
-    for csproj in glob_via(
-        snapshot, repo_path, "*.csproj", prune_nested_git=prune_nested_git
-    ):
-        if path_has_dotnet_scan_skip_dir(csproj, repo_path):
-            continue
-        out.append(csproj)
-    return out
+    return _find_project_files(
+        repo_path, "*.csproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
+
+
+def find_vbproj_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
+    """Return all .vbproj files under *repo_path*, skipping bin/obj output."""
+    return _find_project_files(
+        repo_path, "*.vbproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
 
 
 def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:

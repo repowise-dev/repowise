@@ -15,6 +15,7 @@ import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
 import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
+import { PRODUCTION_ONLY, type GraphPopulation } from "@repowise-dev/types/graph";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
@@ -23,6 +24,25 @@ type Scope = "communities" | "files";
 // `?colorMode=risk` links predate the removal of that lens; an unlisted value
 // falls through to the "community" default rather than erroring.
 const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community"]);
+
+/** `?show=tests,docs` ↔ the population flags. Absent or empty = production only.
+ *  `external` rides in the same list: it is the same question ("which files
+ *  that are not this repo's own code are drawn"), asked of the Files view. */
+const POPULATION_KEYS = ["tests", "examples", "docs"] as const;
+function parseShow(raw: string | null): GraphPopulation & { external: boolean } {
+  const on = new Set((raw ?? "").split(",").map((s) => s.trim()));
+  return {
+    tests: on.has("tests"),
+    examples: on.has("examples"),
+    docs: on.has("docs"),
+    external: on.has("external"),
+  };
+}
+function serializeShow(p: GraphPopulation, external: boolean): string | null {
+  const on: string[] = POPULATION_KEYS.filter((k) => p[k]);
+  if (external) on.push("external");
+  return on.length ? on.join(",") : null;
+}
 
 /** Scope + signal → the canvas's internal ViewMode. The overlay wins, because
  *  dead/hot are only ever drawn on the file graph. */
@@ -60,6 +80,27 @@ export function GraphView({
   // every other param on this page, so Back leaves the page rather than
   // stepping out of the community — the breadcrumb and Escape are the way up.
   const [communityParam, setCommunityParam] = useQueryState("community");
+  const [showParam, setShowParam] = useQueryState("show");
+  const show = useMemo(() => parseShow(showParam), [showParam]);
+  const population = useMemo<GraphPopulation>(
+    () =>
+      showParam
+        ? { tests: show.tests, examples: show.examples, docs: show.docs }
+        : PRODUCTION_ONLY,
+    [showParam, show],
+  );
+  const handlePopulationChange = useCallback(
+    (next: GraphPopulation) => {
+      void setShowParam(serializeShow(next, show.external));
+    },
+    [setShowParam, show.external],
+  );
+  const handleShowExternalChange = useCallback(
+    (next: boolean) => {
+      void setShowParam(serializeShow(population, next));
+    },
+    [setShowParam, population],
+  );
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
   const [moduleGroups, setModuleGroups] = useState<ModuleGroup[]>([]);
@@ -78,7 +119,12 @@ export function GraphView({
       ? Number(communityParam)
       : null;
 
-  const { communities } = useCommunities(repoId);
+  // The whole-repo file graph is not population-filtered, so its labels and
+  // narrowing list are not either.
+  const { communities } = useCommunities(
+    repoId,
+    effectiveScope === "communities" || activeCommunity !== null ? population : undefined,
+  );
 
   // Only the unfiltered file scope renders the capped `/api/graph` payload.
   // The constellation, and each of the dead/hot signals, has its own endpoint —
@@ -245,7 +291,7 @@ export function GraphView({
       description={
         isCommunities
           ? "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on."
-          : "Every file and how it depends on the others. Pick two files to trace a path between them."
+          : "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
       }
       headerActions={headerControls}
       banner={
@@ -275,6 +321,10 @@ export function GraphView({
       activeModule={activeModule}
       activeCommunity={activeCommunity}
       onActiveCommunityChange={handleActiveCommunityChange}
+      population={population}
+      onPopulationChange={handlePopulationChange}
+      showExternal={show.external}
+      onShowExternalChange={handleShowExternalChange}
       // Same value the banner reports, so the caption and the canvas can
       // never disagree about how many files are drawn.
       graphLimit={graphLimit}

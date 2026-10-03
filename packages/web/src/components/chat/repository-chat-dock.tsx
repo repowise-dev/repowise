@@ -3,7 +3,8 @@
 import useSWR from "swr";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
+import { useEffect, useState } from "react";
+import { CHAT_SHORTCUT_HINT, ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
 import { getProviders } from "@/lib/api/providers";
 import { setConversationArtifactPinned } from "@/lib/api/chat";
 import { pageHref } from "@/lib/utils/page-href";
@@ -11,7 +12,7 @@ import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
 import { useChatDockHidden } from "./use-chat-dock-hidden";
-import { setChatDockHidden } from "@/lib/config";
+import { config, setChatDockHidden } from "@/lib/config";
 
 // Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
 // five controls and spacing). Keep a small measured clearance above it.
@@ -64,6 +65,9 @@ type RepositoryChatValue = ReturnType<typeof useRepositoryChat>;
 function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Read after mount so SSR and the first client render agree.
+  const [introduce, setIntroduce] = useState(false);
+  useEffect(() => setIntroduce(!config.getChatHintSeen()), []);
   const { data: providers } = useSWR(
     `providers:${chat.repoId}`,
     () => getProviders(chat.repoId),
@@ -91,6 +95,11 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
         ...(chat.selectedModel ? { model: chat.selectedModel } : {}),
       })}
       onCancel={chat.cancel}
+      {...(chat.suggestions ? { suggestions: chat.suggestions } : {})}
+      command={chat.dockCommand}
+      onCommandHandled={chat.clearDockCommand}
+      {...(introduce ? { firstVisitHint: CHAT_SHORTCUT_HINT } : {})}
+      onFirstVisitHintShown={() => config.setChatHintSeen()}
       buildCitationHref={(source) => pageHref(chat.repoId, source.pageId)}
       onArtifactPin={async (artifact, pinned) => {
         if (!chat.conversationId) return;

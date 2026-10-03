@@ -123,3 +123,41 @@ class TestOpening:
             assert workspace.get("beta") is None
         finally:
             await workspace.close()
+
+
+class TestFromSymbols:
+    def _indexed(self, name: str, start: int, end: int, path: str = "a.py"):
+        from repowise.core.workspace.repo_index import IndexedSymbol
+
+        return IndexedSymbol(
+            symbol_id=f"{path}::{name}",
+            name=name,
+            qualified_name=name,
+            kind="function",
+            signature=f"def {name}()",
+            file_path=path,
+            start_line=start,
+            end_line=end,
+            visibility="public",
+        )
+
+    def test_rows_answer_the_same_lookups_a_database_load_does(self) -> None:
+        from repowise.core.workspace.repo_index import RepoIndex
+
+        inner, outer = self._indexed("inner", 5, 9), self._indexed("Outer", 1, 20)
+        index = RepoIndex.from_symbols("web", [inner, outer], repo_id="r1")
+        assert [s.name for s in index.symbols_for_file("a.py")] == ["Outer", "inner"]
+        assert index.symbol_at("a.py", 7) is inner
+        assert index.symbol_named("inner") is inner
+        assert index.repo_id == "r1"
+        assert index.session is None
+
+    def test_a_name_lookup_can_reach_past_the_loaded_files(self) -> None:
+        from repowise.core.workspace.repo_index import RepoIndex
+
+        elsewhere = self._indexed("handler", 1, 3, path="b.py")
+        index = RepoIndex.from_symbols(
+            "web", [self._indexed("f", 1, 2)], repo_id="r1", names={"handler": [elsewhere]}
+        )
+        assert index.symbol_named("handler") is elsewhere
+        assert index.symbols_for_file("b.py") == []

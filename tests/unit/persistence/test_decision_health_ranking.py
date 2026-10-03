@@ -50,6 +50,7 @@ async def _add_decision(
         repository_id=repo_id,
         title=title,
         decision=f"{title} because reasons",
+        rationale=f"the alternative to {title} was measured worse",
         status=status,
         staleness_score=staleness,
         confidence=confidence,
@@ -172,6 +173,17 @@ async def test_a_governed_hotspot_is_still_excluded(async_session):
     health = await get_decision_health_summary(async_session, repo.id)
 
     assert health["ungoverned_hotspots"] == ["src/ungoverned.py"]
+
+
+async def test_a_test_file_is_never_an_ungoverned_hotspot(async_session):
+    repo = await insert_repo(async_session)
+    await _add_hotspot(async_session, repo.id, "tests/test_hot.py", 0.99)
+    await _add_hotspot(async_session, repo.id, "src/conftest.py", 0.95)
+    await _add_hotspot(async_session, repo.id, "src/warm.py", 0.10)
+
+    health = await get_decision_health_summary(async_session, repo.id)
+
+    assert health["ungoverned_hotspots"] == ["src/warm.py"]
 
 
 async def test_ranking_does_not_drop_or_duplicate_a_record(async_session):

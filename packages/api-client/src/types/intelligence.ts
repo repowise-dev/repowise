@@ -63,7 +63,9 @@ export interface CommunityDetailResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
@@ -91,7 +93,9 @@ export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 

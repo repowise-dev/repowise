@@ -76,6 +76,7 @@ class AffectedPages:
     regenerate: list[str]  # page IDs to fully regenerate
     rename_patch: list[str]  # pages that only need a symbol rename text patch
     decay_only: list[str]  # pages to mark stale without immediate regeneration
+    stale_due_to_budget: int = 0  # pages skipped due to cascade budget cap
 
 
 def compute_adaptive_budget(file_diffs: list[FileDiff], total_files: int) -> int:
@@ -382,6 +383,7 @@ class ChangeDetector:
         graph: object,  # nx.DiGraph
         cascade_budget: int = 30,
         pagerank: dict[str, float] | None = None,
+        stale_pages: dict[str, float] | None = None,
     ) -> AffectedPages:
         """Compute which wiki pages need action after a set of file changes.
 
@@ -393,6 +395,14 @@ class ChangeDetector:
                 passes GraphBuilder's cached file pagerank so this function
                 does not recompute a full-graph pass). Falls back to an
                 internal computation when omitted.
+            stale_pages: ``{file_path: staleness_age_seconds}`` for pages whose
+                prose is already stale, oldest-stale mapping to the largest
+                value. When the cascade budget is constrained, these bubble to
+                the top of the regenerate slice so the run spends its LLM calls
+                on the pages that actually lag the code rather than the
+                highest-importance pages that may already be current (issues
+                #847 / #851). Pages with no entry count as fresh and sort last.
+                Absent (or empty) keeps the historical pure-importance order.
         """
         import networkx as nx
 
@@ -456,7 +466,16 @@ class ChangeDetector:
 
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,
-            key=lambda p: pr.get(p, 0.0),
+            key=lambda p: (
+                # Staleness-first: an already-stale page (larger age) outranks a
+                # fresh page no matter how central the fresh one is, so a
+                # constrained budget spends its LLM calls on the pages that
+                # actually lag the code (issues #847 / #851). Fresh pages sort
+                # below every stale page, importance then breaking the tie
+                # within each staleness class.
+                0.0 if not stale_pages else float(stale_pages.get(p, -1.0)),
+                pr.get(p, 0.0),
+            ),
             reverse=True,
         )
 
@@ -464,12 +483,14 @@ class ChangeDetector:
         decay_only = (
             all_pages_needing_regen[cascade_budget:] + sorted(two_hop) + sorted(co_change_decay)
         )
+        stale_due_to_budget = max(0, len(all_pages_needing_regen) - cascade_budget)
         rename_patch = [p for p in rename_candidates if p in regenerate]
 
         return AffectedPages(
             regenerate=regenerate,
             rename_patch=rename_patch,
             decay_only=decay_only,
+            stale_due_to_budget=stale_due_to_budget,
         )
 
     # ------------------------------------------------------------------
@@ -496,7 +517,7 @@ class ChangeDetector:
         """Parse a git blob (old file version from git history)."""
         try:
             source = blob.data_stream.read()
-            return self._parse_bytes(source, path)
+            return self.parse_bytes(source, path)
         except Exception as exc:
             log.warning("Failed to parse blob", path=path, error=str(exc))
             return None
@@ -504,12 +525,13 @@ class ChangeDetector:
     def _parse_path(self, abs_path: Path, rel_path: str) -> ParsedFile | None:
         """Parse a file from the working tree."""
         try:
-            return self._parse_bytes(abs_path.read_bytes(), rel_path)
+            return self.parse_bytes(abs_path.read_bytes(), rel_path)
         except Exception as exc:
             log.warning("Failed to parse file", path=rel_path, error=str(exc))
             return None
 
-    def _parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+    def parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+        """Parse one file's *source* as *path* with the repository's parser, or ``None``."""
         from datetime import datetime
 
         from .parser import parse_file

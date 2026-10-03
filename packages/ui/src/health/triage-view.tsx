@@ -88,6 +88,7 @@ export function TriageView({
   highlightPaths,
   hotspotsSlot,
   trendSlot,
+  leadSlot,
 }: {
   adapter: CodeHealthAdapter;
   /** Trend fetched once by the host. Consumed by `trendSlot`; accepted here so
@@ -118,6 +119,11 @@ export function TriageView({
    */
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
+  /**
+   * Fix first, under the score. The score leads the page; the host renders
+   * this collapsed so the headline keeps the first screen.
+   */
+  leadSlot?: ReactNode;
 }) {
   const { cacheKey } = adapter;
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
@@ -164,6 +170,8 @@ export function TriageView({
         <Skeleton className="h-12 w-40 rounded-lg" />
         <Skeleton className="h-20 w-full max-w-[54ch] rounded-lg" />
         <Skeleton className="h-[74px] w-full" />
+        {/* Fix first has its own request, so it never waits on this one. */}
+        {leadSlot}
         <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
       </div>
     );
@@ -171,11 +179,14 @@ export function TriageView({
 
   if (error) {
     return (
-      <ApiError
-        title="Couldn't load health data"
-        message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
-        onRetry={() => void mutate()}
-      />
+      <div className="flex flex-col gap-6">
+        {leadSlot}
+        <ApiError
+          title="Couldn't load health data"
+          message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
+          onRetry={() => void mutate()}
+        />
+      </div>
     );
   }
 
@@ -187,7 +198,9 @@ export function TriageView({
         summary={overview.summary}
         accuracy={overview.defect_accuracy ?? null}
         distribution={overview.distribution ?? null}
+        pillar={overlay === "maintainability" ? "maintainability" : "health"}
       />
+      {leadSlot}
 
       <OverviewSection
         title="Code health map"

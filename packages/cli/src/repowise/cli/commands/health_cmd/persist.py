@@ -7,7 +7,6 @@ per-test map. A ``repowise health`` run must not overwrite that data.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
-        load_coverage_for_repo,
+        load_coverage_map,
     )
 
     async def _do() -> dict[str, dict]:
@@ -44,26 +43,40 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return {}
-            rows = await load_coverage_for_repo(session, repo.id)
-            out: dict[str, dict] = {}
-            for r in rows:
-                try:
-                    covered = list(json.loads(r.covered_lines_json))
-                except (ValueError, TypeError):
-                    covered = []
-                out[r.file_path] = {
-                    "line_coverage_pct": r.line_coverage_pct,
-                    "branch_coverage_pct": r.branch_coverage_pct,
-                    "covered_lines": covered,
-                    "total_coverable_lines": r.total_coverable_lines,
-                    "source_format": r.source_format,
-                }
-            return out
+            return await load_coverage_map(session, repo.id)
 
     try:
         return run_async(_do())
     except Exception:
         return {}
+
+
+def _load_fix_first(repo_path: object, *, limit: int) -> Any:
+    """The stored Fix-first queue, or ``None`` when the store cannot answer.
+
+    Best-effort like the coverage read: a missing repo row or an older store
+    leaves the report without the section; the report itself still prints.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+
+    async def _do() -> Any:
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            return await load_fix_first(session, repo.id, limit=limit)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
 
 
 def _load_recommendations(
@@ -114,10 +127,10 @@ def _persist_health(repo_path: object, *, report: object) -> None:
     overwrite the health tables for this repo with the freshly computed
     values. Coverage tables are left untouched (owned by ``coverage add``).
     Best-effort — a missing repo row or a DB error logs to stderr and
-    returns rather than crashing the CLI.
+    returns; the CLI does not crash.
     """
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
-    from repowise.core.analysis.health.trends import snapshot_file_maps
+    from repowise.core.analysis.health.trends import snapshot_fields
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -159,17 +172,9 @@ def _persist_health(repo_path: object, *, report: object) -> None:
             kpis = getattr(report, "kpis", {}) or {}
             metrics = getattr(report, "metrics", []) or []
             try:
-                scores_map, deductions_map = snapshot_file_maps(metrics, findings)
-                await save_health_snapshot(
-                    session,
-                    repo_id,
-                    hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-                    average_health=float(kpis.get("average_health", 10.0)),
-                    worst_performer_path=kpis.get("worst_performer_path"),
-                    worst_performer_score=kpis.get("worst_performer_score"),
-                    per_file_scores=scores_map,
-                    per_file_deductions=deductions_map,
-                )
+                fields = snapshot_fields(kpis, metrics, findings)
+                if fields is not None:
+                    await save_health_snapshot(session, repo_id, **fields)
             except Exception as exc:
                 console.print(f"[yellow]Snapshot write skipped: {exc}[/yellow]")
 

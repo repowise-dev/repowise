@@ -133,7 +133,9 @@ class EdgesMixin:
     def add_dynamic_edges(self, edges: list) -> None:
         """Add dynamic-hint edges to the graph. Each edge is a DynamicEdge."""
         for e in edges:
-            if e.source not in self._graph:
+            # A hint naming its own file (a package.json exporting
+            # "./package.json") is not a dependency.
+            if e.source not in self._graph or e.source == e.target:
                 continue
             if e.target not in self._graph:
                 if self._exclude.patterns and self._exclude.match_file(e.target):
@@ -148,12 +150,14 @@ class EdgesMixin:
             # a real `dynamic_*` edge.
             sub_type = e.edge_type
             graph_edge_type = sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
+            names = {"imported_names": list(e.imported_names)} if e.imported_names else {}
             self._graph.add_edge(
                 e.source,
                 e.target,
                 edge_type=graph_edge_type,
                 hint_source=e.hint_source,
                 weight=e.weight,
+                **names,
             )
             # A ``:test`` hint used to set ``is_test`` on the source node. Only
             # the Rust hinter emits one, for `#[test]` / `#[cfg(test)]` markers,
@@ -161,9 +165,9 @@ class EdgesMixin:
             # every `src/lib.rs` with an inline `mod tests` was marked a test
             # file wholesale and dropped from dead-code analysis, the knowledge
             # graph and key-concept selection (#1103). The marker means "contains
-            # tests", not "is a test": it stays recorded on this edge's
-            # ``hint_source``, where it says that and nothing more. Health
-            # computes the file-level version itself, from the source, as
+            # tests", not "is a test", and as a file → same-file hint it is now
+            # dropped by the self-loop guard above. Health computes the
+            # file-level version itself, from the source, as
             # ``FileContext.has_inline_tests``.
         if edges:
             self._invalidate_subgraph_caches()
@@ -189,8 +193,17 @@ class EdgesMixin:
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             parsed_files=self._parsed_files,
+            # Same reason ``build()`` passes it: a handler that scans file text
+            # (the Godot ``class_name`` one covers every ``.gd`` in the repo)
+            # reads the bytes ingestion already has instead of a second pass
+            # over the tree. Empty unless ``set_source_map`` was called.
+            source_map=self._source_map,
         )
 
+        # The .NET project index ``build()`` already made; handlers that scope
+        # by project read it instead of walking the tree for every .csproj again.
+        if getattr(self, "dotnet_index", None) is not None:
+            ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
         if count:
             log.info("Framework edges added", count=count)

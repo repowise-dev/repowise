@@ -48,7 +48,29 @@ STORE_FORMAT_VERSION: int = 2
 #: a Rust macro invocation stopped being extracted as a call. A cache written
 #: before that carries neither field, so the scoped-call, chained-call and
 #: macro fixes would resolve against stale rows instead of firing.
-PARSER_SCHEMA_VERSION: int = 2
+#:
+#: v3: a Python import that resolves to no repo file now becomes an
+#: ``external:`` node and edge instead of resolving to nothing. The fingerprint
+#: change makes ``persist_incremental_edges`` reconcile every file's edges once
+#: on the next update, so an existing index does not keep half its Python files
+#: without external edges.
+#:
+#: v4: Python absolute imports resolve only by their full dotted path (no stem
+#: guess, no sibling lookup inside a package, never the importer itself), and
+#: ``from pkg import a, b`` over submodules no longer edges into
+#: ``pkg/__init__.py``. Reconciling once drops the stale edges from old stores.
+#:
+#: v5: an overload signature (Python ``@overload``, TypeScript function / method
+#: overload) is marked ``is_declaration`` so lookups serve the implementation.
+#:
+#: v6: a member call a bare-call pattern also matched (Java ``obj.m()``, Ruby
+#: ``obj.m(x)``) is kept once, with its receiver and ``bare_name_fallback``, so
+#: a cached receiver-less copy no longer resolves by bare name beside it. Also,
+#: Java, C# and C++ overloads of different arity get their own ids (``notNull#1``,
+#: ``notNull#2``) and a C# generic type beside a same-named one gets its arity
+#: (``IFoo`1``); the first update re-keys symbols and graph nodes repo-wide. A
+#: C++ template function is one ``function`` symbol, no longer also a ``class``.
+PARSER_SCHEMA_VERSION: int = 6
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

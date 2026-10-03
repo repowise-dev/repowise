@@ -51,6 +51,11 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "receiver_framework_same_package",
   "receiver_framework_import",
   "receiver_framework_global",
+  "receiver_extension_same_file",
+  "receiver_extension_import",
+  "receiver_extension_global",
+  "receiver_chain_same_file",
+  "receiver_chain_import",
   "return_type_same_file",
   "return_type_same_package",
   "return_type_import",
@@ -108,6 +113,7 @@ describe("isNameMatch", () => {
     expect(marked.sort()).toEqual(
       [
         "global_unique",
+        "receiver_extension_global",
         "receiver_field_global",
         "receiver_framework_global",
         "receiver_global",

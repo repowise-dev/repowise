@@ -141,16 +141,16 @@ off switches.
 |---|---|---|---|
 | Where source is read | your machine | your VPC | the hosted indexer |
 | Where the index lives | `.repowise/` on your machine | Postgres + LanceDB/pgvector in your network | Repowise-operated infrastructure |
-| Who calls the LLM | you, with your key | you, with your key | the platform, or your key |
+| Who calls the LLM | you, with your key | you, with your key | the platform |
 | Outbound from your network | anonymous telemetry (disableable), your LLM provider | same, plus configured integrations | n/a, you are sending code to the platform |
-| Commercial security features (CVE triage, SBOM/VEX, hosted secret detection, compliance reports, audit trail) | not included (local pattern + full-history scan via `repowise security scan --history` is OSS) | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities--in-detail) | GA today |
+| Commercial security features (CVE triage, SBOM/VEX, hosted secret detection, compliance reports, audit trail) | not included (local pattern + full-history scan via `repowise security scan --history` is OSS) | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities-in-detail) | GA today |
 
 The honest framing: **several commercial security capabilities are GA on the
 hosted platform first.** If your requirement is on-prem *and* CVE-aware
 dependency analysis, SBOM/VEX, or compliance reporting, that sequencing is a
 scoping conversation, not a checkbox. The status of each capability (GA / in
 development / planned) is listed unvarnished in
-[COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities--at-a-glance).
+[COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance).
 
 **Secrets handling on the hosted secret-detection feature:** only a fingerprint
 and a redacted preview are stored, never the secret value.
@@ -245,7 +245,7 @@ own product and adds the layer above.
 | Can telemetry be tied back to a user or a repo? | No. `anon_id` is a random UUID in `~/.repowise/platform.json`, not derived from any machine or user identifier, and no repo-identifying field is sent. |
 | Are you SOC 2 or ISO 27001 certified? | No. We publish PCI-DSS 4.0 and SOC 2 **control-coverage reports** on the hosted platform, explicitly labeled as coverage signals rather than an audit or certification. ISO 27001 Annex A mapping is roadmap. |
 | Can we deploy on-prem or air-gapped? | Yes. Containerized API, indexer workers, and dashboard, backed by Postgres and LanceDB/pgvector, with optional Ollama. No outbound connectivity is required in air-gapped mode. A single packaged air-gapped bundle is planned, not shipped. |
-| Do you support SSO and SCIM? | SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0) and SCIM provisioning are rolling out commercially. RBAC and multi-tenant are planned. Confirm current status against [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities--at-a-glance). |
+| Do you support SSO and SCIM? | SAML / OIDC SSO (Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0) and SCIM provisioning are rolling out commercially. RBAC and multi-tenant are planned. Confirm current status against [COMMERCIAL.md §4](COMMERCIAL.md#4-commercial-capabilities-at-a-glance). |
 | Is there an audit log? | On the hosted platform, insert-only, covering the security surface, with user, IP, and timestamp, JSON/CSV export, and an opt-in signed-webhook stream. Broader coverage is in development. |
 | Do you store secrets you find? | Only a fingerprint and a redacted preview. Never the secret value. |
 | What does the MCP server expose to an AI agent? | Read-only query tools over the local index. The lean MCP container exposes no ports and speaks stdio only. |

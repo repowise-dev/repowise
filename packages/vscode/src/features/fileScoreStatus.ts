@@ -51,7 +51,7 @@ export function registerFileScoreStatus(ctx: RepowiseContext): vscode.Disposable
     const tooltip = new vscode.MarkdownString();
     tooltip.appendMarkdown("**Repowise health**\n\n");
     tooltip.appendMarkdown(
-      `Defect ${fmt(defect)} · Maintainability ${fmt(
+      `Code health ${fmt(defect)} · Maintainability ${fmt(
         entry.maintainabilityScore,
       )} · Performance ${fmt(entry.performanceScore)}\n\n`,
     );

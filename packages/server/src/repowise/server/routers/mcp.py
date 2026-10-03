@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.server import mcp_server as _mcp_server
-from repowise.server.deps import resolve_request_session_factory, verify_api_key
+from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.mcp_server._tool_selection import (
     describe_tool_surface,
     set_tool_override,
@@ -41,7 +41,7 @@ async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
     if not repo_id:
         return None
     try:
-        factory = resolve_request_session_factory(request)
+        factory = resolve_session_factory(request.app.state, repo_id)
         async with get_session(factory) as session:
             repo = await crud.get_repository(session, repo_id)
             return repo.local_path if repo else None
@@ -55,9 +55,7 @@ def _surface(repo_id: str | None, repo_path: str | None) -> McpToolSurfaceRespon
 
 
 @router.get("/tools", response_model=McpToolSurfaceResponse)
-async def get_tool_surface(
-    request: Request, repo_id: str | None = None
-) -> McpToolSurfaceResponse:
+async def get_tool_surface(request: Request, repo_id: str | None = None) -> McpToolSurfaceResponse:
     """Return the configurable tool surface for a repo.
 
     Pass ``?repo_id=`` so the response reflects that repo's workspace mode and

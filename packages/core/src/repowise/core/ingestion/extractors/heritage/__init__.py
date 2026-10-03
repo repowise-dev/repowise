@@ -24,9 +24,12 @@ from ..helpers import node_text
 from .cpp import _extract_cpp_heritage
 from .csharp import _extract_csharp_heritage
 from .dart import _extract_dart_heritage
+from .fsharp import _extract_fsharp_heritage
+from .gdscript import _extract_gdscript_heritage
 from .go import _extract_go_heritage
 from .java import _extract_java_heritage
 from .kotlin import _extract_kotlin_heritage
+from .objectivec import _extract_objectivec_heritage
 from .pascal import _extract_pascal_heritage
 from .php import _extract_php_heritage
 from .python import _extract_python_heritage
@@ -35,6 +38,7 @@ from .rust import _extract_rust_heritage
 from .scala import _extract_scala_heritage
 from .swift import _extract_swift_heritage
 from .ts_js import _extract_ts_js_heritage
+from .vbnet import _extract_vbnet_heritage
 
 
 def heritage_node_types_for(lang: str) -> frozenset[str]:
@@ -61,7 +65,11 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "swift": _extract_swift_heritage,
     "scala": _extract_scala_heritage,
     "php": _extract_php_heritage,
+    "objectivec": _extract_objectivec_heritage,
     "pascal": _extract_pascal_heritage,
+    "gdscript": _extract_gdscript_heritage,
+    "vbnet": _extract_vbnet_heritage,
+    "fsharp": _extract_fsharp_heritage,
 }
 
 

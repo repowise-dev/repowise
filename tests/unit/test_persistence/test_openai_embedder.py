@@ -82,6 +82,61 @@ def test_malformed_env_raises_the_same_message(monkeypatch):
         OpenAIEmbedder(api_key="k", model="local-embedder")
 
 
+# ---------------------------------------------------------------------------
+# declared_dimensions / REPOWISE_EMBEDDING_DECLARED_DIMS — declare a width
+# without ever sending it, for a model that rejects the 'dimensions' param.
+# ---------------------------------------------------------------------------
+
+
+def test_declared_dimensions_sets_width_without_a_dimensions_override():
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=2048)
+    assert emb.dimensions == 2048
+    assert emb._request_dimensions is None
+
+
+def test_declared_dimensions_from_env(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "2048")
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b")
+    assert emb.dimensions == 2048
+    assert emb._request_dimensions is None
+
+
+def test_dimensions_arg_beats_declared_dimensions_arg():
+    # A model that DOES accept the parameter still takes the send-it path when
+    # both are given — declared_dimensions is the fallback for one that can't.
+    emb = OpenAIEmbedder(
+        api_key="k", model="local-embedder", dimensions=1024, declared_dimensions=2048
+    )
+    assert emb.dimensions == 1024
+    assert emb._request_dimensions == 1024
+
+
+def test_embedding_dims_env_beats_declared_dimensions_env(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "1024")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "2048")
+    emb = OpenAIEmbedder(api_key="k", model="local-embedder")
+    assert emb.dimensions == 1024
+    assert emb._request_dimensions == 1024
+
+
+def test_declared_dimensions_arg_beats_declared_dimensions_env(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "4096")
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=2048)
+    assert emb.dimensions == 2048
+
+
+@pytest.mark.parametrize("bad", [0, -5, True])
+def test_invalid_declared_dimensions_raises(bad):
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=bad)
+
+
+def test_malformed_declared_dimensions_env_raises_the_same_message(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "abc")
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenAIEmbedder(api_key="k", model="nemotron-embed-1b")
+
+
 def test_timeout_from_shared_env(monkeypatch):
     monkeypatch.setenv("REPOWISE_EMBEDDING_TIMEOUT", "180")
     assert OpenAIEmbedder(api_key="k", model="local-embedder")._timeout == 180.0
@@ -230,6 +285,37 @@ async def test_default_request_omits_dimensions():
     assert "dimensions" not in kwargs
 
 
+async def test_declared_only_width_is_never_sent():
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=2048)
+    kwargs = await _capture_create_kwargs(emb)
+    assert "dimensions" not in kwargs
+
+
+async def test_declared_only_width_is_never_sent_even_to_a_strict_endpoint():
+    # nvidia/Nemotron-3-Embed-1B's own behaviour, reproduced: a fake endpoint
+    # that 400s the instant 'dimensions' shows up in the request at all, since
+    # the model isn't Matryoshka-capable and has no default width to fall back
+    # to. This is the case _DIMS/REPOWISE_EMBEDDING_DIMS cannot serve — sending
+    # the override at all breaks the request, so the only usable path is one
+    # that declares the width without ever asking the API to produce it.
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=2048)
+
+    def fake_create(**kwargs):
+        if "dimensions" in kwargs:
+            raise ValueError(
+                "Model 'nemotron-embed-1b' does not support Matryoshka embeddings; "
+                "dimensions must be unset"
+            )
+        return _make_mock_response([[1.0] + [0.0] * 2047])
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.side_effect = fake_create
+        result = await emb.embed(["hello"])
+
+    assert len(result) == 1
+    assert len(result[0]) == 2048
+
+
 # ---------------------------------------------------------------------------
 # Width verification — the check added in fix/embedder-width-verification
 # ---------------------------------------------------------------------------
@@ -271,6 +357,26 @@ async def test_embed_raises_when_api_returns_wrong_width_with_user_override(monk
     msg = str(exc_info.value)
     assert "3" in msg
     assert "REPOWISE_EMBEDDING_DIMS" in msg
+
+
+async def test_embed_raises_when_api_returns_wrong_width_with_declared_only_override(monkeypatch):
+    # Declared via declared_dimensions= (never sent). The error message should
+    # reference REPOWISE_EMBEDDING_DECLARED_DIMS, not _DIMS or the sent-width
+    # hint — neither would tell this user what to change.
+    emb = OpenAIEmbedder(api_key="k", model="nemotron-embed-1b", declared_dimensions=2048)
+    assert emb.dimensions == 2048
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response(
+            [[1.0, 0.0, 0.0]]
+        )
+        with pytest.raises(ValueError, match="2048") as exc_info:
+            await emb.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg
+    assert "REPOWISE_EMBEDDING_DECLARED_DIMS" in msg
+    assert "_DIMS table" not in msg
 
 
 async def test_embed_width_check_is_skipped_for_empty_response():

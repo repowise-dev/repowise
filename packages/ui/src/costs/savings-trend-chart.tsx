@@ -5,10 +5,10 @@ import { CHART_HEIGHT } from "./chart-height";
 import { formatTokens } from "../lib/format";
 
 export interface SavingsTrendChartProps {
-  /** Day-grouped savings rows ({ group: "YYYY-MM-DD", saved_tokens }). The
-   *  `per_day` series from /distill-savings — total agent tokens saved per day
-   *  (distill + MCP counterfactual). Caller fetches. */
-  groups: Array<{ group: string; saved_tokens: number }>;
+  /** Day-grouped savings rows ({ group: "YYYY-MM-DD", saved_input_tokens }).
+   *  The `per_day` series from the savings report — input tokens agents did
+   *  not have to read, per UTC day. Caller fetches. */
+  groups: Array<{ group: string | null; saved_input_tokens: number }>;
   height?: number;
 }
 
@@ -19,7 +19,9 @@ export interface SavingsTrendChartProps {
  */
 export function SavingsTrendChart({ groups, height = CHART_HEIGHT }: SavingsTrendChartProps) {
   const data = [...groups]
-    .filter((g) => g.saved_tokens > 0)
+    .filter((g): g is { group: string; saved_input_tokens: number } =>
+      g.group !== null && g.saved_input_tokens > 0,
+    )
     .sort((a, b) => a.group.localeCompare(b.group));
 
   if (data.length === 0) {
@@ -72,7 +74,7 @@ export function SavingsTrendChart({ groups, height = CHART_HEIGHT }: SavingsTren
             labelFormatter={(label) => `Date: ${String(label)}`}
           />
           <Bar
-            dataKey="saved_tokens"
+            dataKey="saved_input_tokens"
             fill="var(--color-savings-distill)"
             radius={[4, 4, 0, 0]}
           />

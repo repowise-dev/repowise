@@ -19,7 +19,7 @@ from repowise.core.analysis.health.duplication import (
 from repowise.core.analysis.health.duplication.detector import (
     ClonePair,
     _aggregate,
-    _union_line_count,
+    union_line_count,
 )
 from repowise.core.analysis.health.duplication.rabin_karp import (
     index_by_hash,
@@ -70,7 +70,27 @@ def test_tokenize_file_drops_comments_and_normalizes_identifiers():
     assert not any("comment" in k for k in kinds)
 
 
+def test_tokenize_file_reads_tsx_with_the_jsx_grammar():
+    # A .tsx file is tagged ``typescript``, and the grammar that cannot read
+    # JSX recovers from every element into ERROR nodes, so the token stream the
+    # clone detector hashes is partly invented. The path settles it.
+    source = b"export const C = () => <div className=\"x\">{label}</div>;\n"
+    as_tsx = [t.kind for t in tokenize_file("typescript", source, "src/C.tsx")]
+    as_ts = [t.kind for t in tokenize_file("typescript", source, "src/C.ts")]
+    assert as_tsx == [t.kind for t in tokenize_file("tsx", source, "src/C.tsx")]
+    assert as_tsx != as_ts
+    # Nothing else moves: the path only settles the grammar for .tsx.
+    plain = b"export const add = (a: number, b: number): number => a + b;\n"
+    assert [t.kind for t in tokenize_file("typescript", plain, "src/a.ts")] == [
+        t.kind for t in tokenize_file("typescript", plain, "src/a.other")
+    ]
+
+
 def test_tokenize_file_pascal_normalizes_identifiers_and_literals():
+    # Calls tokenize_file() directly with an inline byte literal, so it
+    # needs its own best-effort guard rather than inheriting one from a
+    # fixture-driven helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
     source = (
         b"unit U;\n interface\n implementation\n"
         b" procedure Foo;\n begin\n   WriteLn('hello', 42);\n end;\n end.\n"
@@ -315,8 +335,8 @@ def _pair(
         ([(1, 10), (1, 10), (1, 10)], 10),  # identical repeats
     ],
 )
-def test_union_line_count(ranges: list[tuple[int, int]], expected: int):
-    assert _union_line_count(ranges) == expected
+def testunion_line_count(ranges: list[tuple[int, int]], expected: int):
+    assert union_line_count(ranges) == expected
 
 
 def test_aggregate_overlapping_pairs_do_not_double_count():
@@ -359,3 +379,129 @@ def test_aggregate_skips_files_without_nloc():
     pairs = [_pair("a.py", 1, 10, "b.py", 1, 10)]
     _, pct = _aggregate(pairs, {"a.py": 50})
     assert "b.py" not in pct
+
+
+# ---- identifier-level verification ----------------------------------------
+
+_LOOP_BODY = "\n".join(
+    [
+        "def {fn}({a}, {b}, {c}):",
+        "    {t} = 0",
+        "    for {i} in range({a}):",
+        "        if {i} > {b}:",
+        "            {t} = {t} + {i} * {c}",
+        "        else:",
+        "            {t} = {t} - {b}",
+        "    return {t} + {a} + {b} + {c}",
+        "",
+    ]
+)
+
+
+def _loop(**names: str) -> str:
+    return _LOOP_BODY.format(**names)
+
+
+def test_tokenize_file_drops_python_imports():
+    toks = tokenize_file("python", b"import os\nfrom a.b import c, d\nx = 1\n")
+    assert [t.kind for t in toks] == ["ID", "=", "LIT"]
+
+
+def test_tokenize_file_drops_the_java_package_declaration():
+    toks = tokenize_file("java", b"package a.b;\nimport x.Y;\nclass C {}\n", "C.java")
+    assert "package" not in [t.kind for t in toks]
+    assert toks[0].kind == "class"
+    assert toks[0].start_line == 3
+
+
+def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():
+    source = (
+        b'import { a, b } from "./x";\n'
+        b'export { c } from "./y";\n'
+        b'export * from "./z";\n'
+        b"export const n = 1;\n"
+    )
+    toks = tokenize_file("typescript", source, "src/i.ts")
+    assert [t.kind for t in toks] == ["export", "const", "ID", "=", "LIT", ";"]
+
+
+@pytest.mark.parametrize("language", ["ruby", "elixir", "shell", "luau", "gdscript"])
+def test_import_node_kinds_never_skip_calls_or_superclass_clauses(language: str):
+    from repowise.core.analysis.health.duplication.tokenizer import import_node_kinds
+
+    assert import_node_kinds(language) == frozenset()
+
+
+def test_tokenize_file_keeps_raw_identifier_names():
+    toks = tokenize_file("python", b"total = count + 1\n")
+    assert [t.name for t in toks] == ["total", "", "count", "", ""]
+
+
+def test_tokenize_file_lines_match_tree_sitter_points():
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    source = b'x = 1\r\n\r\ns = """a\r\nb\n"""\nif x:\n    y = (s,\n         x)\n'
+    tree = Parser(_get_language("python")).parse(source)
+    leaves = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.child_count == 0 and source[node.start_byte : node.end_byte].strip():
+            leaves.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        stack.extend(reversed(node.children))
+
+    toks = tokenize_file("python", source)
+    assert [(t.start_line, t.end_line) for t in toks] == leaves
+    assert (3, 5) in [(t.start_line, t.end_line) for t in toks]  # the multi-line string
+
+
+def test_detect_clones_ignores_identical_import_blocks(tmp_path: Path):
+    imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(12))
+    a = _write(tmp_path, "a.py", imports + "def f():\n    return 1\n")
+    b = _write(tmp_path, "b.py", imports + "def g(x):\n    return x * 2\n")
+    report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
+    assert report.pairs == []
+
+
+def test_a_java_clone_starts_at_the_shared_code_not_the_package_line(tmp_path: Path):
+    header = "/* License header */\npackage com.acme.core.util;\n\n" + "".join(
+        f"import com.acme.core.mod{i}.Thing{i};\n" for i in range(12)
+    ) + "\n"
+    method = (
+        "    int total(int a, int b) {\n        int sum = a + b;\n        if (sum > 10) {\n"
+        "            return sum * 2;\n        }\n        for (int i = 0; i < b; i++) {\n"
+        "            sum += i;\n        }\n        return sum;\n    }\n"
+    )
+    a = _write(tmp_path, "A.java", header + "public class Alpha {\n" + method + "}\n")
+    b = _write(tmp_path, "B.java", header + "public class Beta {\n" + method + "}\n")
+    report = detect_clones(
+        [_pf("A.java", str(a), language="java"), _pf("B.java", str(b), language="java")]
+    )
+    # The pair is still found, from the class line (17) on: the package line
+    # is line 2 and the shared method is lines 18-27.
+    assert len(report.pairs) == 1
+    pair = report.pairs[0]
+    assert pair.a_start_line >= 17 and pair.b_start_line >= 17
+    assert pair.a_end_line >= 27 and pair.b_end_line >= 27
+
+
+def test_detect_clones_ignores_matching_data_literals(tmp_path: Path):
+    table = "TABLE = [\n" + "".join(f"    ({i}, '{i}', {i}.5),\n" for i in range(20)) + "]\n"
+    a = _write(tmp_path, "a.py", table)
+    b = _write(tmp_path, "b.py", table.replace("TABLE", "OTHER"))
+    report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
+    assert report.pairs == []
+
+
+def test_detect_clones_needs_shared_identifier_names(tmp_path: Path):
+    same = dict(fn="f", a="a", b="b", c="c", t="total", i="i")
+    renamed = dict(fn="g", a="rows", b="limit", c="scale", t="acc", i="k")
+    a = _write(tmp_path, "a.py", _loop(**same))
+    b = _write(tmp_path, "b.py", _loop(**renamed))
+    c = _write(tmp_path, "c.py", _loop(**{**same, "fn": "f_copy"}))
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b)), _pf("c.py", str(c))]
+    report = detect_clones(parsed, window_tokens=20, min_lines=4)
+    # Same shape with every name changed is not a copy; a real copy still is.
+    assert {(p.file_a, p.file_b) for p in report.pairs} == {("a.py", "c.py")}

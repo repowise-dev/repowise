@@ -12,8 +12,22 @@ so callers meaning "written to illustrate the subject" want the former.
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+from typing import Literal
 
-__all__ = ["is_example_path", "is_support_path"]
+from .test_paths import is_test_related_path
+
+__all__ = [
+    "CONFIG_EXTENSIONS",
+    "DOC_EXTENSIONS",
+    "FilePopulation",
+    "classification_token",
+    "file_population",
+    "is_config_path",
+    "is_doc_or_config_path",
+    "is_example_path",
+    "is_support_path",
+    "is_test_or_example_path",
+]
 
 
 # Example/demo/benchmark directories: documentation-by-code and support
@@ -60,6 +74,68 @@ def is_example_path(path: str) -> bool:
     example tree can dominate a community's label.
     """
     return _has_dir_token(path, EXAMPLE_DIR_TOKENS)
+
+
+def is_test_or_example_path(path: str) -> bool:
+    """Whether *path* sits in test material or example/benchmark code.
+
+    A manifest here marks a fixture or sample project, not one of the repo's
+    packages.
+    """
+    return is_test_related_path(path) or is_example_path(path)
+
+
+# Shared with the knowledge graph's node classifier.
+CONFIG_EXTENSIONS = frozenset(
+    {
+        ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
+        ".properties", ".xml",
+    }
+)
+DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
+
+
+def classification_token(path: str) -> str:
+    """The lowercased token *path* is classified by.
+
+    The extension in almost every case.  Pathlib reports **no** suffix for a
+    dotfile whose only dot is the leading one — ``PurePosixPath(".env").suffix
+    == ""`` — and the sets above name exactly such files (``".env"`` is an
+    entry of ``CONFIG_EXTENSIONS``).  The whole name is the token there, so
+    falling back to it keeps entries that name a file rather than an extension
+    working (#2379).
+    """
+    parsed = PurePosixPath(path)
+    return (parsed.suffix or parsed.name).lower()
+
+
+def is_config_path(path: str) -> bool:
+    """Whether *path* is a configuration file."""
+    return classification_token(path) in CONFIG_EXTENSIONS
+
+
+def is_doc_or_config_path(path: str) -> bool:
+    """Whether *path* is documentation or configuration rather than code."""
+    token = classification_token(path)
+    return token in CONFIG_EXTENSIONS or token in DOC_EXTENSIONS
+
+
+FilePopulation = Literal["production", "test", "example", "doc"]
+
+
+def file_population(path: str, *, is_test: bool) -> FilePopulation:
+    """Which population a file belongs to, for surfaces that hide non-production.
+
+    Disjoint, in precedence order: ``tests/data/x.json`` is a test, not a doc.
+    *is_test* is the flag ingestion stored; the path rules cover the other two.
+    """
+    if is_test:
+        return "test"
+    if is_example_path(path):
+        return "example"
+    if is_doc_or_config_path(path):
+        return "doc"
+    return "production"
 
 
 def is_support_path(path: str) -> bool:

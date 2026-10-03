@@ -36,6 +36,9 @@ export interface FileHealthFinding {
    * `defect` when an older payload omits it.
    */
   dimension?: HealthDimension;
+  /** `"unverified"` for a provisional finding type; null for a validated one. */
+  verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface FileHealthMetric {
@@ -117,6 +120,9 @@ export interface FileDetailGit extends Hotspot {
   co_change_partners: CoChangePartner[];
   agent: FileAgentProvenance;
   first_commit_at: string | null;
+  /** The primary (blame) owner's share of current lines, 0-1. Null without
+   *  blame; `primary_owner_commit_pct` is the same person's share of commits. */
+  primary_owner_line_pct?: number | null;
   /** `symbol_id` -> counted fixes that landed in it, over the same window as
    *  `prior_defect_count`. Approximate: symbol spans are current-tree while
    *  each fix's line ranges are numbered on its own parent commit. A symbol
@@ -204,7 +210,7 @@ export interface FileDeadCodeFinding {
   symbol_name: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   safe_to_delete: boolean;
 }
 
@@ -217,6 +223,7 @@ export interface FileDeadCodeFinding {
 export interface FileRow {
   file_path: string;
   language: string;
+  /** NLOC, not raw lines; null where health measured none (see `loc_null_reason`). */
   loc: number | null;
   symbol_count: number;
   pagerank_pct: number;
@@ -228,6 +235,9 @@ export interface FileRow {
   churn_pct: number | null;
   commit_count: number | null;
   last_commit_at: string | null;
+  /** Measured line coverage, 0-100, from the stored report. Optional so older servers parse. */
+  line_coverage_pct?: number | null;
+  /** @deprecated The same figure as `line_coverage_pct`; read that. */
   coverage_pct: number | null;
   is_test: boolean;
   is_entry_point: boolean;
@@ -243,6 +253,10 @@ export interface FilesIndexResponse {
   files: FileRow[];
   total: number;
   languages: FileLanguageCount[];
+  /** What `loc` counts. Optional so older servers parse. */
+  loc_unit?: "nloc";
+  /** Why a row's `loc` is null. */
+  loc_null_reason?: string;
 }
 
 export interface FileDetailResponse {

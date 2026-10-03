@@ -71,7 +71,10 @@ class TestSingleBlamePassOwnership:
         )
         assert meta["primary_owner_name"] == "Alice"
         assert meta["primary_owner_email"] == "alice@example.com"
-        assert meta["primary_owner_commit_pct"] == pytest.approx(0.75)
+        # Blame picks the owner by lines (3 of 4); the commit share stays
+        # Alice's own share of the file's commits (1 of 2).
+        assert meta["primary_owner_line_pct"] == pytest.approx(0.75)
+        assert meta["primary_owner_commit_pct"] == pytest.approx(0.5)
         assert "blame_index" not in meta
 
     def test_hot_file_retains_blame_index(self, repo) -> None:

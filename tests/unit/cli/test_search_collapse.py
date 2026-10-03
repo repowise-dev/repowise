@@ -144,7 +144,7 @@ RISK_PAYLOAD = {
                                "top_symbols": {"_prune_stale_file_rows": 9,
                                                "mark_tombstone_pages": 4}},
             "health_score": 3.2,
-            "coverage_pct": 61.0,
+            "line_coverage_pct": 61.0,
             "top_biomarkers": [
                 {"biomarker_type": "nested_complexity", "severity": "high",
                  "function_name": "persist_analysis", "impact": 0.71},
@@ -291,6 +291,21 @@ def test_a_symbol_spotlight_hit_carries_the_openable_file_beside_its_page_id():
 
     assert row["path"].endswith("::resolve_console_width"), "the payload changed shape"
     assert row["file"] == "packages/cli/src/repowise/cli/output.py"
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [
+        {**SYMBOL_HIT, "path": "served/sym.py", "file": "old/sym.py"},
+        {**FILE_HIT, "path": "served/file.py", "file": "old/file.py"},
+        {**PAGE_HIT, "path": "served/page.py", "target_path": "old/page.py"},
+    ],
+    ids=["symbol", "file", "page"],
+)
+def test_every_row_kind_prefers_the_served_path(hit):
+    """``file`` and ``target_path`` are transition aliases of ``path``."""
+    row = project({"results": [hit]}, "q", multi=False)["results"][0]
+    assert row["path"].startswith("served/")
 
 
 def test_a_plain_file_hit_does_not_carry_a_redundant_file_key():
@@ -818,6 +833,7 @@ class _FakeFeatures:
     entropy = 0.5
     exp = 40
     is_fix = False
+    file_churn = ()
 
 
 class _FakeChangeResult:

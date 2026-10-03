@@ -94,10 +94,12 @@ export function GraphDocPanel({
             status={page.freshness_status}
             showScore
           />
-          <Badge variant="outline" className="font-mono text-[10px]">
-            <Cpu className="h-2.5 w-2.5 mr-0.5" />
-            {page.model_name}
-          </Badge>
+          {page.model_name && (
+            <Badge variant="outline" className="font-mono text-[10px]">
+              <Cpu className="h-2.5 w-2.5 mr-0.5" />
+              {page.model_name}
+            </Badge>
+          )}
           <span className="text-[10px] text-[var(--color-text-tertiary)] flex items-center gap-1 ml-auto">
             <Clock className="h-2.5 w-2.5" />
             {formatRelativeTime(page.updated_at)}

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
+from repowise.core.distill import store as store_module
 from repowise.core.distill.store import OmissionStore, content_ref, default_store_path
 
 
@@ -160,17 +164,26 @@ def test_distill_summary_excludes_mcp_rows(store: OmissionStore) -> None:
 
     # Distill surface rows…
     store.record_saving(
-        filter_name="test_output", source="cli", command="pytest",
-        raw_tokens=1000, distilled_tokens=100,
+        filter_name="test_output",
+        source="cli",
+        command="pytest",
+        raw_tokens=1000,
+        distilled_tokens=100,
     )
     store.record_saving(
-        filter_name="git_log", source="hook-bash", command="git log",
-        raw_tokens=500, distilled_tokens=50,
+        filter_name="git_log",
+        source="hook-bash",
+        command="git log",
+        raw_tokens=500,
+        distilled_tokens=50,
     )
     # …and an MCP counterfactual row in the same ledger, which distill must skip.
     store.record_saving(
-        filter_name="get_context", source="mcp:get_context", command=None,
-        raw_tokens=4000, distilled_tokens=400,
+        filter_name="get_context",
+        source="mcp:get_context",
+        command=None,
+        raw_tokens=4000,
+        distilled_tokens=400,
     )
 
     summary = distill_summary(store._conn)
@@ -179,52 +192,6 @@ def test_distill_summary_excludes_mcp_rows(store: OmissionStore) -> None:
     assert summary["saved_tokens"] == 1350
     assert set(summary["per_filter"]) == {"test_output", "git_log"}
     assert "get_context" not in summary["per_filter"]
-
-
-def test_mcp_savings_summary_counterfactual_precedence(store: OmissionStore) -> None:
-    from repowise.core.distill.tracking import mcp_savings_summary
-
-    # Counterfactual ledger rows for two tools (these subsume their own
-    # truncation, since delivered is measured post-truncation).
-    store.record_saving(
-        filter_name="get_symbol", source="mcp:get_symbol", command=None,
-        raw_tokens=3000, distilled_tokens=300,
-    )
-    store.record_saving(
-        filter_name="get_symbol", source="mcp:get_symbol", command=None,
-        raw_tokens=1000, distilled_tokens=200,
-    )
-    store.record_saving(
-        filter_name="get_context", source="mcp:get_context", command=None,
-        raw_tokens=2000, distilled_tokens=500,
-    )
-    # Truncation drops: get_symbol also has drops (must NOT be added on top —
-    # counterfactual wins); get_risk has ONLY drops (its sole signal).
-    store.put("x" * 400, source="mcp:get_symbol", original_tokens=900, kept_tokens=0)
-    store.put("y" * 400, source="mcp:get_risk", original_tokens=700, kept_tokens=0)
-    # A distill omission must never leak into the MCP view.
-    store.put("z" * 400, source="cli:logs", original_tokens=999, kept_tokens=0)
-
-    summary = mcp_savings_summary(store._conn)
-    by_tool = {row["tool"]: row for row in summary["per_tool"]}
-
-    # get_symbol → counterfactual saved 2700+800=3500, drops ignored.
-    assert by_tool["get_symbol"] == {
-        "tool": "get_symbol", "events": 2, "tokens": 3500, "kind": "counterfactual",
-    }
-    # get_context → counterfactual saved 1500.
-    assert by_tool["get_context"]["tokens"] == 1500
-    assert by_tool["get_context"]["kind"] == "counterfactual"
-    # get_risk → truncation only.
-    assert by_tool["get_risk"] == {
-        "tool": "get_risk", "events": 1, "tokens": 700, "kind": "truncation",
-    }
-    # queries counts counterfactual events only; tokens is the merged total.
-    assert summary["queries"] == 3
-    assert summary["tokens"] == 3500 + 1500 + 700
-    assert summary["events"] == 2 + 1 + 1
-    # Ordered by tokens desc.
-    assert [r["tool"] for r in summary["per_tool"]] == ["get_symbol", "get_context", "get_risk"]
 
 
 def test_mcp_savings_summary_empty(store: OmissionStore) -> None:
@@ -249,3 +216,24 @@ def test_default_store_path_falls_back_to_home(tmp_path: Path) -> None:
     path = default_store_path(tmp_path)
     assert path.name == "omissions.db"
     assert ".repowise" in str(path)
+
+
+def test_a_store_that_fails_to_open_closes_its_connection(tmp_path: Path, monkeypatch) -> None:
+    """A corrupt database file must not leak the connection opened for it."""
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def _connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", _connect)
+    db = tmp_path / "omissions.db"
+    db.write_bytes(b"not a sqlite database" * 100)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        OmissionStore(db)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")

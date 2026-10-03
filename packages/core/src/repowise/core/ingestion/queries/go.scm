@@ -85,7 +85,7 @@
 ; Chained call: obj.Method1().Method2(args)
 (call_expression
   function: (selector_expression
-    operand: (call_expression)
+    operand: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments
@@ -100,6 +100,42 @@
     (selector_expression
       operand: (_) @reference.receiver
       field: (field_identifier) @reference.name
+    )
+  )
+)
+
+; Function value in composite literal (keyed map/struct or slice/array element):
+; template.FuncMap{"greet": greet, "handler": pkg.Handler}, Config{fn: greet}, []func(){greet}
+(keyed_element
+  value: (literal_element
+    (identifier) @reference.name
+  )
+)
+
+(keyed_element
+  value: (literal_element
+    (selector_expression
+      operand: (_) @reference.receiver
+      field: (field_identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (selector_expression
+        operand: (_) @reference.receiver
+        field: (field_identifier) @reference.name
+      )
     )
   )
 )

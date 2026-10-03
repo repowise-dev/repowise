@@ -193,12 +193,48 @@ class TestScanSubmodules:
         sub = next(r for r in result.repos if r.name == "sub-repo")
         assert sub.is_submodule is True
 
-    def test_submodule_at_root_excluded(self, tmp_path: Path) -> None:
-        """Root itself is a submodule and include_submodules=False."""
+    def test_root_submodule_is_scannable_on_its_own(self, tmp_path: Path) -> None:
+        """`include_submodules` filters discovery, never the path you named.
+
+        Pointing repowise at a directory is the decision to index it. Returning
+        nothing here left `repowise init` inside any submodule with no repo to
+        work on.
+        """
         (tmp_path / ".git").write_text("gitdir: ../.git/modules/x")
 
         result = scan_for_repos(tmp_path, include_submodules=False)
-        assert len(result.repos) == 0
+        assert [r.path for r in result.repos] == [tmp_path.resolve()]
+        assert result.repos[0].is_submodule is True
+
+    def test_root_submodule_leads_its_own_workspace(self, tmp_path: Path) -> None:
+        """A submodule holding ordinary clones must head the workspace list.
+
+        The real topology this comes from: `silo` is a submodule of a parent
+        checkout and carries two plain nested clones. The clones are not
+        submodules, so they are discovered whatever the flag says, which used to
+        flip the run into workspace mode and then drop the one repo the user was
+        standing in -- unselectable, unindexed, and with no hint why.
+        """
+        (tmp_path / ".git").write_text("gitdir: ../.git/modules/silo")
+        _make_repo(tmp_path, "server_bases/Exorth-rsps")
+        _make_repo(tmp_path, "tools/osrs-world-map-object-dumper")
+
+        result = scan_for_repos(tmp_path, include_submodules=False)
+
+        assert result.repos[0].path == tmp_path.resolve()
+        assert result.repos[0].is_submodule is True
+        assert [r.name for r in result.repos[1:]] == [
+            "Exorth-rsps",
+            "osrs-world-map-object-dumper",
+        ]
+
+    def test_discovered_submodule_still_respects_the_flag(self, tmp_path: Path) -> None:
+        """The root rule must not leak into discovery: a submodule *found* under
+        a plain root stays excluded by default."""
+        _make_repo(tmp_path, "main-repo")
+        _make_submodule(tmp_path, "sub-repo")
+
+        assert [r.name for r in scan_for_repos(tmp_path).repos] == ["main-repo"]
 
 
 # ---------------------------------------------------------------------------

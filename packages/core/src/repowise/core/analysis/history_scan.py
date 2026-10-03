@@ -22,7 +22,8 @@ Design notes (in response to review)
   patterns are code smells (``eval``/``os.system``/``weak_hash``) rather than
   leaked credentials; running those across all of history produces mostly noise
   ("os.system in a two-year-old commit") with little to act on. The
-  history-relevant subset is ``hardcoded_password`` / ``hardcoded_secret``. This
+  history-relevant subset is ``SECRET_KINDS`` (``hardcoded_password`` /
+  ``hardcoded_secret`` and the vendor value-shape kinds). This
   positions history scanning as complementary to a real secret scanner
   (gitleaks / trufflehog) rather than a noisy replacement. ``--all-patterns``
   opts back into the full registry when desired.
@@ -44,7 +45,6 @@ from repowise.core.analysis.security_scan import (
     SecurityScanner,
 )
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
-from repowise.core.test_paths import is_test_related_path
 
 
 def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
@@ -59,6 +59,7 @@ def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
             ["git", *args],
             cwd=str(repo_path),
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             # git writes utf-8. ``text=True`` alone decodes with the locale
             # codec, so on a default Windows install a commit subject holding
@@ -297,16 +298,6 @@ class HistorySecurityScanner:
             return kind in SECRET_KINDS
         return True
 
-    @staticmethod
-    def _is_placeholder(snippet: str | None) -> bool:
-        """True when the matched line is documentation, not a credential.
-
-        ``api_key="sk-..."`` in a docstring or README is the shape every
-        provider example uses. An elided value is never a live secret, and on
-        this repo it accounted for every non-test history hit.
-        """
-        return "..." in (snippet or "")
-
     # ------------------------------------------------------------------
     # Scan driver
     # ------------------------------------------------------------------
@@ -331,9 +322,10 @@ class HistorySecurityScanner:
             reachable history.
         secrets_only:
             When True (default), only the secret-oriented patterns
-            (hardcoded_password / hardcoded_secret) are reported, to avoid the
-            code-smell noise of scanning all of history. Pass False to scan the
-            full pattern registry.
+            (``SECRET_KINDS``: hardcoded credentials and known vendor
+            key/token/PEM shapes) are reported, to avoid the code-smell noise
+            of scanning all of history. Pass False to scan the full pattern
+            registry.
         progress:
             Optional callable ``progress(message)`` for CLI feedback.
         """
@@ -348,17 +340,12 @@ class HistorySecurityScanner:
         summary.blobs_scanned = len(blobs)
         blob_introduced_at, commit_dates = self._blob_introductions(repo_path, since, to)
 
-        # Test material is excluded from history mode, not merely down-ranked.
-        # A committed secret matters because it leaked a live credential, and a
-        # fixture is not one: on this repo 730 of 832 history hits (88%) were
-        # `api_key="sk-test"` in provider unit tests. That ratio makes the whole
-        # report untrustworthy, which is worse than reporting nothing.
-        # `--all-patterns` lifts this along with the kind gate.
+        # Test material findings are downgraded to low severity by scan_file
+        # so real keys in test files are still recorded without polluting high-severity reports.
         source_items = [
             (blob_sha, path)
             for blob_sha, path in blobs.items()
-            if (not path or self._is_source(path))
-            and not (secrets_only and path and is_test_related_path(path))
+            if not path or self._is_source(path)
         ]
         contents_map = self._read_blobs_batch(
             repo_path, [blob_sha for blob_sha, _ in source_items]
@@ -374,12 +361,9 @@ class HistorySecurityScanner:
             if not findings:
                 continue
 
-            kept = [
-                f
-                for f in findings
-                if self._passes_gate(f["kind"], secrets_only=secrets_only)
-                and not (secrets_only and self._is_placeholder(f.get("snippet")))
-            ]
+            # Elided values ("sk-...") never get here: the scan's credential
+            # check rejects them on the captured value, not the snippet.
+            kept = [f for f in findings if self._passes_gate(f["kind"], secrets_only=secrets_only)]
             if not kept:
                 continue
 

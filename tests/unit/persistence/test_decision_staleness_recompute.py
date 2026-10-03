@@ -26,6 +26,11 @@ from repowise.core.persistence.models import (
 _REPO_ID = "repo1"
 
 
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes for a tz-aware column."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 @pytest.fixture
 async def session():
     engine = create_async_engine(
@@ -171,3 +176,65 @@ async def test_a_record_naming_no_file_keeps_its_scope_rather_than_inventing_one
 
     rec = await session.get(DecisionRecord, "d1")
     assert json.loads(rec.affected_modules_json) == ["packages"]
+
+
+# --- last_code_change rides the same pass ----------------------------------
+
+
+async def test_the_date_is_the_latest_commit_across_the_files_it_governs(session):
+    await _add_decision(session, files=["src/a.py", "src/b.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=60, commits=1)
+    await _add_git_metadata(session, "src/b.py", days_ago=5, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    expected = datetime.now(UTC) - timedelta(days=5)
+    assert rec.last_code_change is not None
+    assert abs(_aware(rec.last_code_change) - expected) < timedelta(minutes=1)
+
+
+async def test_a_record_naming_nothing_tracked_keeps_no_date(session):
+    """It scores 1.00 stale on the same evidence, so a date would be invented."""
+    await _add_decision(session, files=["src/untracked.py"], staleness=0.0)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    assert rec.last_code_change is None
+    assert rec.staleness_score == pytest.approx(1.0)
+
+
+async def test_the_date_does_not_churn_updated_at_on_a_second_pass(session):
+    """SQLite drops tzinfo, so a naive round trip would differ from the aware
+    value that wrote it and re-stamp every record on every run."""
+    await _add_decision(session, files=["src/a.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=60, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    rec = await session.get(DecisionRecord, "d1")
+    first_date, first_stamp = rec.last_code_change, rec.updated_at
+
+    # Force the round trip the guard exists for: the second pass has to read
+    # the naive value back out of SQLite, not the aware one still in memory.
+    session.expire_all()
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    await session.refresh(rec)
+
+    assert rec.last_code_change == first_date
+    assert rec.updated_at == first_stamp
+
+
+async def test_a_conventions_record_still_gets_a_date(session):
+    """The conventions skip protects its own staleness, which is a score. A
+    date is a fact about the code and is filled for every scoped record."""
+    rec = await _add_decision(session, files=["src/a.py"], staleness=0.42)
+    rec.source = "conventions"
+    await session.flush()
+    await _add_git_metadata(session, "src/a.py", days_ago=3, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    await session.refresh(rec)
+
+    assert rec.last_code_change is not None
+    assert rec.staleness_score == pytest.approx(0.42), "its own score is untouched"

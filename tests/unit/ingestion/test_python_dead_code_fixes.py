@@ -363,6 +363,21 @@ def test_name_only_in_all_string_is_not_rescued() -> None:
     assert "orphan" in _unused_export_names(graph)
 
 
+def test_all_promoted_name_is_not_rescued_by_the_promotion() -> None:
+    """``__all__`` raises a name to public; it does not mark it reachable.
+
+    ``_bar`` is underscore-prefixed, so the literal ``__all__`` is the only
+    reason it reads public, and nothing imports it. If membership were a
+    rescue the name would vanish from the report; the visibility change alone
+    must leave the unused-export finding standing."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": ('__all__ = ["_bar"]\n\n\ndef _bar():\n    return 1\n'),
+    }
+    graph = _graph_from_sources(sources)
+    assert "_bar" in _unused_export_names(graph)
+
+
 def test_dynamic_use_edge_marks_target_file_live() -> None:
     """An incoming ``dynamic_uses`` edge keeps every public export of the
     target file out of the unused-export results (analyzer contract that the

@@ -168,6 +168,19 @@ def test_intra_file_clone():
     assert s.blast_radius["files"] == []
 
 
+def test_intra_file_clone_recovers_nothing_even_beside_a_cross_file_finding():
+    # dry_violation grades cross-file duplication only, so an intra-file block
+    # that overlaps its line range must not borrow its impact.
+    intra = _pair("pkg/a.py", "pkg/a.py", 100, 115, 160, 175)
+    cross = _pair("pkg/a.py", "pkg/b.py", 12, 27, 40, 55)
+    findings = [_DryFinding(10, 120, 2.0)]
+    sugs = detect_refactorings(_ctx("pkg/a.py", [intra, cross], findings=findings))
+    intra_sug = next(
+        s for s in sugs if s.refactoring_type == "extract_helper" and s.evidence["is_intra_file"]
+    )
+    assert intra_sug.impact_delta == 0.0
+
+
 def test_overlapping_windows_collapse_to_one_site():
     # The clone detector emits a block as several offset windows; they must
     # coalesce into one occurrence per file, not read as many sites.
@@ -303,6 +316,18 @@ def test_impact_from_overlapping_dry_violation():
     sugs = detect_refactorings(_ctx("pkg/a.py", [pair], findings=findings))
     s = next(s for s in sugs if s.refactoring_type == "extract_helper")
     assert s.impact_delta == 1.8
+
+
+def test_impact_share_counts_cross_file_lines_only():
+    # a.py has 32 cross-file duplicated lines and this block removes 16 of
+    # them; the intra-file clone beside them does not dilute the share.
+    block = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    other = _pair("pkg/a.py", "pkg/c.py", 100, 115, 1, 16)
+    intra = _pair("pkg/a.py", "pkg/a.py", 200, 230, 300, 330)
+    findings = [_DryFinding(10, 25, 2.0)]
+    sugs = detect_refactorings(_ctx("pkg/a.py", [block, other, intra], findings=findings))
+    s = next(s for s in sugs if s.target_symbol == "a.py:10-25")
+    assert s.impact_delta == 1.0
 
 
 def test_no_impact_when_finding_disjoint():

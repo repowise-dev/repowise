@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import (
     accept_decision,
     is_accepted,
@@ -210,3 +211,59 @@ async def test_the_report_accounts_for_every_row(async_session):
     assert sum(plan.counts().values()) == len(plan.rows) == 3
     assert "Total legacy records" in report
     assert all(row.reason for row in plan.rows)
+
+
+async def test_the_migration_classifies_the_noun_it_can_and_leaves_the_rest(
+    async_session,
+):
+    """A session row that names an act of conducting work is an agreement; one
+    that names the code is not; and a row somebody already ruled on is left
+    alone, because changing its noun would change what it governs behind them."""
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [
+            {
+                "title": "Never commit to main",
+                "decision": "Do not commit to the main branch.",
+                "rationale": "the branch is protected",
+                "source": "session",
+                "status": "proposed",
+            },
+            {
+                "title": "Keep why free of LLM calls",
+                "decision": "Do not add an LLM call to the why flow.",
+                "rationale": "it must stay cheap",
+                "source": "session",
+                "status": "proposed",
+                "affected_files": ["src/why.py"],
+            },
+        ],
+    )
+    plan = await plan_migration(async_session, repo.id)
+    by_title = {r.title: r for r in plan.rows}
+    assert by_title["Never commit to main"].kind == "agreement"
+    assert by_title["Keep why free of LLM calls"].kind == "architectural"
+
+    await apply_migration(async_session, repo.id, plan=plan)
+    rows = {
+        r.title: r
+        for r in (
+            (
+                await async_session.execute(
+                    select(DecisionRecord).where(
+                        DecisionRecord.repository_id == repo.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
+    assert rows["Never commit to main"].kind == "agreement"
+    assert rows["Keep why free of LLM calls"].kind == "architectural"
+
+    # Idempotent: a second run reclassifies nothing and grants no authority.
+    second = await apply_migration(async_session, repo.id)
+    assert second.counts().get("decision", 0) == 0

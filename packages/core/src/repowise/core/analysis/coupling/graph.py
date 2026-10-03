@@ -35,9 +35,9 @@ Honesty rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-from ...co_change import canonical_pair, parse_partners
+from ...co_change import canonical_pair, confidence_ratio, parse_partners
 
 
 class MetricLike(Protocol):
@@ -131,13 +131,6 @@ class _Pair:
         )
 
 
-def _ratio(support: int, commits: int) -> float | None:
-    """Share of *commits* that also touched the partner, or ``None`` if unknown."""
-    if support <= 0 or commits <= 0:
-        return None
-    return round(min(support / commits, 1.0), 3)
-
-
 @dataclass
 class CouplingGraph:
     """The assembled graph: nodes referenced by the (possibly capped) edges."""
@@ -151,6 +144,12 @@ class CouplingGraph:
     #: repositories.
     coupled_files: int = 0
     total_files: int = 0
+
+
+def _node_score(metric: Any) -> float | None:
+    """A node's health score; ``None`` without a row or without a score."""
+    score = getattr(metric, "score", None)
+    return round(score, 2) if score is not None else None
 
 
 def coupling_graph(
@@ -206,8 +205,8 @@ def coupling_graph(
             strength=round(pair.strength, 4),
             last_co_change=pair.last,
             support=pair.support,
-            confidence_ab=_ratio(pair.support, pair.commits_a),
-            confidence_ba=_ratio(pair.support, pair.commits_b),
+            confidence_ab=confidence_ratio(pair.support, pair.commits_a),
+            confidence_ba=confidence_ratio(pair.support, pair.commits_b),
             structural=pair.structural,
             dependency_kind=pair.dependency_kind,
         )
@@ -231,7 +230,7 @@ def coupling_graph(
         CouplingNode(
             file_path=path,
             module=(metric_by_path[path].module if path in metric_by_path else None),
-            score=(round(metric_by_path[path].score, 2) if path in metric_by_path else None),
+            score=_node_score(metric_by_path.get(path)),
             nloc=(metric_by_path[path].nloc or 0 if path in metric_by_path else 0),
         )
         for path in sorted(referenced)

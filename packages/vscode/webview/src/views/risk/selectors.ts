@@ -6,11 +6,21 @@
 import type { ChangeImpactReport } from "../../../../src/shared/webviewMessages";
 
 /**
- * Temporal-hotspot fraction above which a file earns the quiet hotspot marker.
+ * Churn percentile above which a file earns the marker when the server is too
+ * old to send `is_hotspot`.
+ *
+ * The marker read `temporal_hotspot >= 0.6`, calling that field a fraction. It
+ * is an unbounded churn sum whose median is above 1.0 and whose maximum
+ * exceeds 40, so the marker fired on most of a fast repo's tree and on none of
+ * a slow one's. The index's own `is_hotspot` is the answer, and this quartile
+ * is only its churn conjunct: it lacks the absolute activity floors, so on a
+ * dormant repository it degenerates to "any file touched recently". Fall back
+ * to it, do not prefer it.
+ *
  * The per-file structural weight is centrality-weighted and unbounded, so rows
- * carry a share relative to the riskiest file instead of an absolute scale.
+ * still carry a share relative to the riskiest file.
  */
-export const HOTSPOT_FLOOR = 0.6;
+export const HOTSPOT_FLOOR = 0.75;
 
 /** One changed file ranked by its raw blast-radius structural weight. */
 export interface RankedDirectRisk {
@@ -30,7 +40,7 @@ export function selectDirectRisks(report: ChangeImpactReport): RankedDirectRisk[
     .map((d) => ({
       path: d.path,
       share: max > 0 ? d.structural_score / max : 0,
-      hotspot: d.temporal_hotspot >= HOTSPOT_FLOOR,
+      hotspot: d.is_hotspot ?? (d.churn_percentile ?? 0) >= HOTSPOT_FLOOR,
     }))
     .sort((a, b) => b.share - a.share);
 }

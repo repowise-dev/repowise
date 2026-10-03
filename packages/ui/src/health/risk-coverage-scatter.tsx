@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CoverageBasis } from "@repowise-dev/types/health";
+import { GOOD_MIN, bandForScore, formatScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface RiskCoveragePoint {
   file_path: string;
@@ -144,7 +145,7 @@ export function RiskCoverageScatter({
       // 60% coverage and a 7.0 score are the quadrant thresholds. On the
       // inferred basis the vertical one is the column divider instead.
       midX: inferred ? padL + plotW * 0.5 : xScale(60),
-      midY: yScale(7),
+      midY: yScale(GOOD_MIN),
     };
   }, [width, height, data, inferred]);
 
@@ -309,7 +310,7 @@ export function RiskCoverageScatter({
               {active.file_path}
             </span>
             <span className="tabular-nums text-[var(--color-text-tertiary)]">
-              {active.health_score.toFixed(1)} health ·{" "}
+              {formatScore(active.health_score)} health ·{" "}
               {inferred
                 ? active.reached
                   ? "a test reaches it"
@@ -348,12 +349,9 @@ function reachedFill(reached: boolean | undefined): string {
   return reached ? "var(--color-accent-fill)" : "var(--color-accent-secondary)";
 }
 
-/** Fill by health band. The bands are the same ones the rest of health uses. */
+/** Fill by health band. */
 function bandFill(score: number): string {
-  if (score < 4) return "fill-[var(--color-error)]";
-  if (score < 6) return "fill-[var(--color-warning)]";
-  if (score < 8) return "fill-[var(--color-caution)]";
-  return "fill-[var(--color-success)]";
+  return HEALTH_BAND_FILL[bandForScore(score)];
 }
 
 /**

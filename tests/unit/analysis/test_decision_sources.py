@@ -98,6 +98,27 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
 
 
 
+def test_conventional_adrs_win_the_cap_over_earlier_loose_matches(tmp_path, monkeypatch):
+    """Loose name matches walked first must not fill the cap before an ADR dir."""
+    from repowise.core.analysis.decisions import adr
+
+    monkeypatch.setattr(adr, "_MAX_ADR_FILES", 3)
+    for i in range(3):
+        (tmp_path / f"adr-note-{i}.md").write_text("# note\n", encoding="utf-8")
+    adr_dir = tmp_path / "docs" / "adr"
+    adr_dir.mkdir(parents=True)
+    for i in range(3):
+        (adr_dir / f"000{i}-choice.md").write_text("# choice\n", encoding="utf-8")
+
+    found = adr.find_adr_files(tmp_path)
+
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in found) == [
+        "docs/adr/0000-choice.md",
+        "docs/adr/0001-choice.md",
+        "docs/adr/0002-choice.md",
+    ]
+
+
 class TestAdrDiscoveryHonorsIgnoreFiles:
     """A path git cannot see must not become a decision record.
 
@@ -201,9 +222,11 @@ async def test_extract_all_honors_enabled_sources(tmp_path):
 
 
 def test_enabled_source_names_defaults_and_overrides():
-    # No config → everything on.
-    assert enabled_source_names(None) == SOURCE_NAMES
-    assert enabled_source_names({}) == SOURCE_NAMES
+    # No config → every source that shipped on. Conventions ships off until
+    # it has been validated on external repositories.
+    default_on = tuple(name for name in SOURCE_NAMES if name != "conventions")
+    assert enabled_source_names(None) == default_on
+    assert enabled_source_names({}) == default_on
 
     cfg = {"decisions": {"sources": {"comment": False, "pr": False}}}
     enabled = enabled_source_names(cfg)
@@ -214,7 +237,7 @@ def test_enabled_source_names_defaults_and_overrides():
     # Stale keys naming a retired source are ignored rather than breaking a
     # config written before the removal.
     for retired in RETIRED_SOURCES:
-        assert enabled_source_names({"decisions": {"sources": {retired: False}}}) == SOURCE_NAMES
+        assert enabled_source_names({"decisions": {"sources": {retired: False}}}) == default_on
     # Malformed sections never break extraction.
-    assert enabled_source_names({"decisions": "nope"}) == SOURCE_NAMES
-    assert enabled_source_names({"decisions": {"sources": "nope"}}) == SOURCE_NAMES
+    assert enabled_source_names({"decisions": "nope"}) == default_on
+    assert enabled_source_names({"decisions": {"sources": "nope"}}) == default_on

@@ -129,11 +129,25 @@ def _read_head_commit(local_path: str) -> str | None:
     return head or None
 
 
+async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
+    """Store the repo-wide function-mod p80 a full index measured.
+
+    Deliberately not folded into :func:`update_repo_git_totals`: that one
+    carries whole-history git totals (#730), and this is a health quantity that
+    happens to live on the same row. No-ops on a missing repo.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    repo.function_mod_p80 = int(value)
+
+
 async def update_repo_git_totals(
     session: AsyncSession,
     repo_id: str,
     *,
     total_commit_count: int | None = None,
+    total_merge_commit_count: int | None = None,
     first_commit_at: datetime | None = None,
     total_contributor_count: int | None = None,
     first_commit_author: str | None = None,
@@ -152,6 +166,7 @@ async def update_repo_git_totals(
     """
     updates = {
         "total_commit_count": total_commit_count,
+        "total_merge_commit_count": total_merge_commit_count,
         "first_commit_at": first_commit_at,
         "total_contributor_count": total_contributor_count,
         "first_commit_author": first_commit_author,

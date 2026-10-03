@@ -74,7 +74,8 @@ class TestGoogleTestFixtureEdges:
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=["gtest"])
         assert graph.has_edge("brew_test.cc", "fixture.h")
-        assert graph.nodes["brew_test.cc"].get("is_entry_point") is True
+        assert graph.nodes["brew_test.cc"].get("is_reachability_root") is True
+        assert not graph.nodes["brew_test.cc"].get("is_entry_point")
 
     def test_typed_test_fixture_edge(self, tmp_path: Path) -> None:
         (tmp_path / "ty_fix.h").write_text(
@@ -101,7 +102,8 @@ class TestGoogleTestFixtureEdges:
         graph = _graph_with_nodes(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=["gtest"])
-        assert graph.nodes["plain_test.cc"].get("is_entry_point") is True
+        assert graph.nodes["plain_test.cc"].get("is_reachability_root") is True
+        assert not graph.nodes["plain_test.cc"].get("is_entry_point")
 
 
 class TestBoostAndCatch2Fixtures:
@@ -150,7 +152,8 @@ class TestBenchmarkAndFuzzer:
         graph = _graph_with_nodes(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=["benchmark"])
-        assert graph.nodes["bench.cc"].get("is_entry_point") is True
+        assert graph.nodes["bench.cc"].get("is_reachability_root") is True
+        assert not graph.nodes["bench.cc"].get("is_entry_point")
 
     def test_libfuzzer_entry(self, tmp_path: Path) -> None:
         (tmp_path / "fuzz.cc").write_text(
@@ -161,7 +164,8 @@ class TestBenchmarkAndFuzzer:
         graph = _graph_with_nodes(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx)
-        assert graph.nodes["fuzz.cc"].get("is_entry_point") is True
+        assert graph.nodes["fuzz.cc"].get("is_reachability_root") is True
+        assert not graph.nodes["fuzz.cc"].get("is_entry_point")
 
 
 class TestNonTestFilesUnaffected:
@@ -174,3 +178,4 @@ class TestNonTestFilesUnaffected:
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx)
         assert graph.nodes["lib.cc"].get("is_entry_point") is None
+        assert graph.nodes["lib.cc"].get("is_reachability_root") is None

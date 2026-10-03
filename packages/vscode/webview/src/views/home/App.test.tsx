@@ -10,7 +10,7 @@ const SUMMARY: HomeSummary = {
     average: 7.4,
     fileCount: 1280,
     openFindings: 42,
-    band: "warning",
+    band: "good",
     hotspotDelta: 0.3,
     history: [4.8, 4.9, 5.0, 5.1],
   },

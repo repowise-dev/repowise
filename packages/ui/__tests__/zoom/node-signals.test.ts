@@ -80,13 +80,11 @@ describe("healthBandLabel", () => {
     expect(healthBandLabel(null)).toBeNull();
   });
 
-  it("uses the canonical 3-band scale the card's dot paints on", () => {
-    expect(healthBandLabel(8.0)).toBe("Healthy");
-    expect(healthBandLabel(4.0)).toBe("Warning");
-    expect(healthBandLabel(3.9)).toBe("Alert");
-  });
-
-  it("does not report a 6.9 as 'Good' while the dot beside it paints amber", () => {
-    expect(healthBandLabel(6.9)).toBe("Warning");
+  it("uses the one band scale the card's dot paints on", () => {
+    expect(healthBandLabel(9.0)).toBe("Excellent");
+    expect(healthBandLabel(7.4)).toBe("Good");
+    expect(healthBandLabel(6.0)).toBe("Fair");
+    expect(healthBandLabel(4.0)).toBe("Needs work");
+    expect(healthBandLabel(3.9)).toBe("At risk");
   });
 });

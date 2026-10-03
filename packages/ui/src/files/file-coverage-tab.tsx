@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { PageLede } from "../shared/page-lede";
 import { coverageBand } from "../health/tokens";
+import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
@@ -13,6 +14,8 @@ interface FileCoverageTabProps {
    * When absent we fall back to a summary-only view.
    */
   coverageCodeHtml?: string | undefined;
+  /** Names the file a selection inside the source came from. */
+  filePath?: string;
   /**
    * The graph-inferred "which tests reach this file" block, supplied by the host
    * already wrapped. A node rather than a fetcher because the tab bodies are
@@ -24,6 +27,7 @@ interface FileCoverageTabProps {
 export function FileCoverageTab({
   coverage,
   coverageCodeHtml,
+  filePath,
   testsPanel,
 }: FileCoverageTabProps) {
   // Rendered on both bases. Without a report it is the whole answer; with one it
@@ -41,12 +45,12 @@ export function FileCoverageTab({
           title="Line-level coverage"
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
-          <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
             Run your suite with coverage on and hand us the report with{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
               repowise coverage add &lt;report&gt;
             </span>
-            . LCOV, Cobertura and coverage.py output all work.
+            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>
@@ -136,7 +140,11 @@ export function FileCoverageTab({
         }
       >
         {coverageCodeHtml ? (
-          <div className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed">
+          <div
+            data-chat-selection=""
+            {...(filePath ? { "data-chat-selection-path": filePath } : {})}
+            className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed"
+          >
             {/* Highlighted by the host through the shared shiki path; the
                 data-covered line attributes drive the gutter tint below. */}
             <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml }} />

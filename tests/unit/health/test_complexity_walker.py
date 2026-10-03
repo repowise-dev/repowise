@@ -156,6 +156,30 @@ def test_pascal_complex_method_ccn():
     assert many.param_count == 5
 
 
+def test_pascal_foreach_counts_as_a_loop():
+    # Regression: ``for x in collection do`` parses as a distinct `foreach`
+    # node (not a `for` variant), which was absent from loop_kinds -- the
+    # walker skipped it entirely, undercounting both CCN and nesting for any
+    # for-in loop (common over TList/TStringList/generics in real Delphi
+    # code).
+    src = (
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure Bar(Lst: TList);\nvar X: Integer;\nbegin\n"
+        b"  for X in Lst do\n"
+        b"  begin\n"
+        b"    if X > 0 then\n"
+        b"    begin\n"
+        b"      WriteLn(X);\n"
+        b"    end;\n"
+        b"  end;\n"
+        b"end;\nend.\n"
+    )
+    fn = _find(walk_file("u.pas", "pascal", src).functions, "Bar")
+    assert fn is not None
+    assert fn.ccn == 3, f"expected CCN 3 (base + foreach + if), got {fn.ccn}"
+    assert fn.max_nesting == 2, f"expected the if nested inside the foreach, got {fn.max_nesting}"
+
+
 def test_pascal_else_if_chain_is_flat_not_nested():
     # Regression: found on a real ~40-arm `else if` VK-code dispatch chain
     # (StringToVK in a real Delphi codebase) — every arm nests the grammar's
@@ -184,7 +208,11 @@ def test_pascal_no_class_metrics():
     # Pascal method bodies live in a top-level ``defProc`` outside the
     # ``declClass`` node (see languages.py's ``_PASCAL`` comment) -- class
     # metrics are deliberately unmapped rather than emitting a misleading
-    # zero-method class, same posture as Go.
+    # zero-method class, same posture as Go. Calls walk_file() directly
+    # (rather than through _walk_classes(), which skips on ``not
+    # fcx.classes`` -- exactly what this test asserts), so it needs its own
+    # best-effort guard rather than inheriting one from a helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
     fcx = walk_file(
         "unsupported.pas",
         "pascal",
@@ -322,6 +350,65 @@ def test_python_class_cohesion():
     assert splintered.field_count == 2
 
 
+def _formatter_overload_class(overload_decorator: str) -> bytes:
+    return (
+        f"{overload_decorator}\n\n"
+        "class Formatter:\n"
+        "    def __init__(self):\n"
+        "        self.value = 0\n"
+        "        self.other = 1\n\n"
+        "    @overload\n"
+        "    def format(self, x: int) -> str: ...\n"
+        "    @overload\n"
+        "    def format(self, x: str) -> str: ...\n"
+        "    @overload\n"
+        "    def format(self, x: float) -> str: ...\n"
+        "    def format(self, x):\n"
+        "        return str(self.value) + str(x)\n\n"
+        "    def reset(self):\n"
+        "        self.other = 0\n"
+    ).encode()
+
+
+def _formatter_class_metrics(source: bytes):
+    _require_language("python")
+    classes = walk_file("formatter.py", "python", source).classes
+    if not classes:
+        pytest.skip("tree-sitter language pack missing for python")
+    fmt = next((c for c in classes if c.name == "Formatter"), None)
+    assert fmt is not None
+    return fmt
+
+
+def test_python_class_cohesion_ignores_overload_stubs():
+    fmt = _formatter_class_metrics(_formatter_overload_class("from typing import overload"))
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+    assert len(fmt.methods) == 3
+
+
+def test_python_class_cohesion_ignores_typing_overload_decorator():
+    src = (
+        _formatter_overload_class("import typing")
+        .decode()
+        .replace("@overload\n", "@typing.overload\n")
+    )
+    fmt = _formatter_class_metrics(src.encode())
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+
+
+def test_python_class_cohesion_ignores_aliased_overload_decorator():
+    src = (
+        _formatter_overload_class("import typing as t")
+        .decode()
+        .replace("@overload\n", "@t.overload\n")
+    )
+    fmt = _formatter_class_metrics(src.encode())
+    assert fmt.method_count == 3
+    assert fmt.lcom4 == 1
+
+
 def test_typescript_class_cohesion():
     classes = _walk_classes("typescript/classes.ts", "typescript")
     cohesive = classes.get("Cohesive")
@@ -417,7 +504,9 @@ def test_kotlin_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 
@@ -447,9 +536,114 @@ def test_cpp_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
+
+
+_CPP_MACRO_SCOPES = b"""namespace absl {
+ABSL_NAMESPACE_BEGIN
+namespace base_internal {
+int GetCpuType(int x) { if (x) { return 1; } return 0; }
+}  // namespace base_internal
+ABSL_NAMESPACE_END
+}  // namespace absl
+FMT_END_EXPORT
+namespace detail {
+int helper() { return 3; }
+}
+template <typename T>
+class ABSL_ATTRIBUTE_WARN_UNUSED FixedArray {
+  int size() const { return n_; }
+  int n_;
+};
+EXPORT_MACRO class Queue {
+  int pop() { return 0; }
+};
+struct foo *make_foo(void) { return 0; }
+FMT_BEGIN_NAMESPACE
+FMT_EXPORT template <typename Context> class Store {
+  int put() { return 1; }
+};
+"""
+
+
+def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
+    # A macro line before ``namespace x {`` / ``class X {`` makes tree-sitter
+    # read the scope as a function: it must be walked, never scored.
+    p = tmp_path / "scopes.h"
+    p.write_bytes(_CPP_MACRO_SCOPES)
+    results = walk_file_complexity(str(p), "cpp", _CPP_MACRO_SCOPES)
+    if not results:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {r.name for r in results}
+    assert {"GetCpuType", "helper", "size", "put", "pop", "make_foo"} <= names
+    assert not names & {"namespace", "base_internal", "FixedArray", "Store", "Queue"}
+    assert _find(results, "GetCpuType").ccn == 2
+
+
+@pytest.mark.parametrize("language", ["cpp", "c"])
+def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(
+    tmp_path, language
+):
+    # The stray ``struct S`` lands in the head as it does for a misread scope,
+    # but the declarator is a real function_declarator.
+    source = b"""int plain(void) { return 0; }
+MYAPI struct S fn1(void) { return s; }
+MYAPI enum E fn2(void) { return A; }
+MYAPI union U fn4(void) { return u; }
+EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
+"""
+    if language == "cpp":
+        source += b"MYAPI class C fn3() { return C(); }\n"
+    p = tmp_path / ("api.h" if language == "cpp" else "api.c")
+    p.write_bytes(source)
+    results = walk_file_complexity(str(p), language, source)
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    expected = {"fn1", "fn2", "fn4", "fn5"} | ({"fn3"} if language == "cpp" else set())
+    assert "plain" in {r.name for r in results}
+    assert expected <= {r.name for r in results}
+
+
+def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
+    source = b"""class Outer {
+ public:
+  int get() { return x_; }
+  EXPORT_MACRO class Inner { int a() { return 1; } int b() { return 2; } };
+  int x_;
+};
+"""
+    p = tmp_path / "outer.h"
+    p.write_bytes(source)
+    classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
+    if "Outer" not in classes:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    assert classes["Outer"].method_count == 1
+
+
+def test_cpp_class_fused_into_a_misread_head_is_not_a_cohesion_unit(tmp_path):
+    # When the grammar loses the ``;`` after a class (a macro or recovery
+    # upstream), ``class Fused {...} MACRO class Next {`` reads as one function
+    # whose return type is ``Fused``; its extent and members are not its own.
+    source = b"""class Fused {
+  int push() { return 1; }
+}
+FMT_EXPORT class Next {
+  int get() { return 2; }
+};
+class Plain { int get() { return x_; } int x_; };
+"""
+    p = tmp_path / "fused.h"
+    p.write_bytes(source)
+    fcx = walk_file(str(p), "cpp", source)
+    if not fcx.functions:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    names = {c.name for c in fcx.classes}
+    assert "Plain" in names
+    assert "Fused" not in names
 
 
 def test_cpp_assertion_blocks():
@@ -477,7 +671,9 @@ def test_csharp_class_cohesion():
     splintered = classes.get("Splintered")
     assert cohesive is not None and splintered is not None
     assert cohesive.lcom4 == 1
-    assert splintered.lcom4 == 3
+    # Each cluster is an accessor pair over one field and the loner touches
+    # none: no component spans two fields, so there is no cohesion signal.
+    assert splintered.lcom4 == 1
     assert splintered.method_count == 5
     assert splintered.field_count == 2
 

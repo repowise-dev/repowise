@@ -40,7 +40,7 @@ Bailouts — commands never rewritten:
   - the ignore-list of trivial or interactive commands (cd, echo, vim, …);
   - anything already invoking ``repowise``.
 
-Compound commands, on POSIX hosts, are rewritten when every top-level
+Compound commands, in the POSIX dialect, are rewritten when every top-level
 segment is separately safe — see ``_chain_families``. ``a && b``,
 ``a; b``, and ``a | b`` are wrapped whole, as one single-quoted token, so
 the operators bind inside distill's own shell and the exit code and
@@ -59,7 +59,12 @@ import tempfile
 # Stdlib-only module by design (see hot-path discipline above) — safe to
 # import at module scope. (No pathlib: it costs double-digit milliseconds
 # of interpreter startup, which this hook pays on every Bash call.)
-from repowise.cli.agent_adapters.base import RewriteResult
+from repowise.cli.agent_adapters.base import (
+    SHELL_POSIX,
+    SHELL_POWERSHELL,
+    RewriteResult,
+    hook_source_for,
+)
 
 # Free at module scope, and it has to be here rather than lazy: this module's
 # import is where the ledger's clock starts, so a firing's recorded cost covers
@@ -67,9 +72,12 @@ from repowise.cli.agent_adapters.base import RewriteResult
 # deferred into the writer, so a command that bails never opens a database.
 from repowise.cli.hook_ledger import BAILED, REWRITTEN
 from repowise.cli.shell_lexer import (
+    READONLY_SEGMENT_TOOLS,
     SAFE_FINAL_TOOLS,
     analyze_pipeline,
     is_plain_stdin_filter,
+    is_read_only_segment,
+    parse_redirect,
     tokenize,
 )
 
@@ -259,28 +267,31 @@ _INERT_SEGMENT_TOKENS = frozenset({"cd", "echo", "printf", "pwd", "true", ":"})
 #: purpose: distill would capture the output of a job that has not run yet.
 _CHAIN_OPS = frozenset({"&&", "||", ";"})
 
-# distill executes via the system shell (cmd.exe on Windows, where
-# head/tail/grep don't exist), so the safe-pipeline rewrite is
-# POSIX-hosts-only. Module constant so tests can pin both platforms.
-_POSIX_HOST = os.name == "posix"
-
-# Windows keeps the blunt character bail, quoted or not. Two reasons:
+# The PowerShell dialect keeps the blunt character bail, quoted or not. Two
+# reasons, and both belong to the dialect rather than to the host:
 #
 #   - PowerShell has no backslash escape, so a Windows path ending in ``\``
 #     does not extend a quoted run the way the POSIX rules here assume, and
 #     the lexer would split the command in a place PowerShell would not.
-#   - Defense in depth on the renderer. ``distill_cmd._render_command`` now
-#     caret-escapes what it hands cmd.exe, but it still has to refuse a
-#     couple of shapes outright (a ``%NAME%`` cmd would expand, an embedded
-#     newline). A rewrite is auto-allowed, so this side stays conservative
-#     rather than depending on the far side getting every case right.
+#   - Defense in depth on the renderer. A PowerShell-dialect command is still
+#     handed to the system shell by ``distill``, and
+#     ``distill_cmd._render_command`` caret-escapes what it gives cmd.exe but
+#     still has to refuse a couple of shapes outright (a ``%NAME%`` cmd would
+#     expand, an embedded newline). A rewrite is auto-allowed, so this side
+#     stays conservative rather than depending on the far side getting every
+#     case right.
 #
-# So the lexer's false-bail win is a POSIX win. On Windows it still buys the
-# structural bailouts, just not the widening.
-_WIN_SHELL_METACHAR_RE = re.compile(r"[|&;<>`^\n]|\$\(")
+# This used to key on ``os.name`` instead, which declined every compound
+# command on a Windows host — including the ones the agent's Bash tool wrote
+# for bash, 2,203 commands worth 738,123 tokens over 30 days, 97.5% of them
+# for this one reason. The premise was real: ``distill`` ran everything
+# through cmd.exe. What removes it is ``distill`` reading the dialect back
+# out of the ``--source`` label and running a POSIX-dialect command in the
+# POSIX shell it was written for.
+_PS_SHELL_METACHAR_RE = re.compile(r"[|&;<>`^\n]|\$\(")
 
 
-def _split_safe_tail(command: str) -> tuple[str, bool] | None:
+def _split_safe_tail(command: str, shell: str = SHELL_POSIX) -> tuple[str, bool] | None:
     """Split *command* into (classifiable head, needs_inner_shell).
 
     Returns None when the command carries shell syntax the wrapper can't
@@ -292,11 +303,11 @@ def _split_safe_tail(command: str) -> tuple[str, bool] | None:
     The structural decisions (chaining, substitution, redirects, how many
     stages, which tool ends the pipeline) come from ``shell_lexer``; what is
     left here is the policy the lexer deliberately does not own — the
-    stderr-merge carve-out, the POSIX-host gate, and the quoting rules for
-    the one shape that gets re-quoted.
+    stderr-merge carve-out, the PowerShell-dialect gate, and the quoting
+    rules for the one shape that gets re-quoted.
     """
     declawed = _STDERR_MERGE_RE.sub("", command.strip())
-    if not _POSIX_HOST and _WIN_SHELL_METACHAR_RE.search(declawed):
+    if shell == SHELL_POWERSHELL and _PS_SHELL_METACHAR_RE.search(declawed):
         return None
     pipeline = analyze_pipeline(declawed)
     if pipeline is None or pipeline.redirects:
@@ -307,7 +318,7 @@ def _split_safe_tail(command: str) -> tuple[str, bool] | None:
         return pipeline.producer, False
     # A pipeline is re-quoted as one token. `_single_quote` makes the quoting
     # itself airtight, so only re-expansion is left to bail on.
-    if not _POSIX_HOST or _EXPANSION_CHAR in command:
+    if shell == SHELL_POWERSHELL or _EXPANSION_CHAR in command:
         return None
     return pipeline.producer, True
 
@@ -338,6 +349,9 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
       - a command ``_classify_head`` recognizes (the same closed set a lone
         command must be in),
       - an inert builtin (``_INERT_SEGMENT_TOKENS``),
+      - a read-only invocation of ``sed``/``cat``/``wc``/``sort``
+        (``is_read_only_segment`` -- the *form* is checked, not the name,
+        because ``sed -i`` and ``sort -o`` write),
       - a bare stdin filter on the right of a pipe (``SAFE_FINAL_TOOLS``),
 
     and at least one segment is recognized. That rule is the whole safety
@@ -347,14 +361,15 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
     command passes through, because wrapping it would auto-allow the part
     nobody vetted.
 
+    A chain is POSIX shell syntax by construction, so callers check the
+    dialect before asking and there is no host test here — the host never
+    decided it. ``distill`` reads the same dialect back off the ``--source``
+    label and runs the wrapped token through that shell, so the operators
+    mean on the far side what they mean here.
+
     Returns None when the chain is not admissible; otherwise the recognized
     families in order, whose first element names the rewrite.
     """
-    if not _POSIX_HOST:
-        # Same reason ``_split_safe_tail`` gates the pipeline shape: distill
-        # re-runs the wrapped token through the system shell, which is
-        # cmd.exe here, and these are POSIX command lines.
-        return None
     declawed = _STDERR_MERGE_RE.sub("", command.strip())
     if _EXPANSION_CHAR in declawed:
         return None
@@ -382,9 +397,17 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
             # see. A stderr redirect only decides whether distill's
             # errors-first rendering has errors to lead with, which is the
             # caller's business either way.
-            if not token.text.startswith("2"):
+            #
+            # Both halves are asked of the parsed token rather than its text.
+            # `startswith("2")` called `21>` a stderr redirect, so
+            # `git diff 21>f` truncated `f` inside a command classified as a
+            # git diff; and skipping the next word unconditionally swallowed
+            # a real argument whenever the redirect carried its own target,
+            # which reached across the `&&` into the following segment.
+            descriptor, takes_target = parse_redirect(token.text)
+            if descriptor != "2":
                 return None
-            skip_next_arg = True
+            skip_next_arg = takes_target
     if skip_next_arg:
         return None  # trailing redirect with no target: malformed, bail
 
@@ -400,6 +423,16 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
             return None
         first = normalized.split(None, 1)[0]
         if first in _INERT_SEGMENT_TOKENS:
+            continue
+        if first in READONLY_SEGMENT_TOOLS:
+            # Read-only `sed`/`cat`/`wc`/`sort`. Inert for the same reason the
+            # builtins above are: the agent could already run them, so
+            # wrapping a chain containing one grants nothing. Unlike those,
+            # the tool is only inert in *some* invocations -- `sed -i` and
+            # `sort -o` write -- so the form is checked rather than the name,
+            # and an unlisted flag declines the whole chain.
+            if not is_read_only_segment(segment):
+                return None
             continue
         if index in piped_from and first in SAFE_FINAL_TOOLS:
             # grep/tail are both producer families and stdin filters, and on
@@ -449,13 +482,20 @@ _ACTION_FLAG_RES = (
 )
 
 
-def classify(command: str) -> str | None:
-    """Return the distill family for *command*, or None to pass through."""
+def classify(command: str, shell: str = SHELL_POSIX) -> str | None:
+    """Return the distill family for *command*, or None to pass through.
+
+    *shell* is the dialect the command was written for — the same value
+    :func:`decide` takes, and for the same reason: a chain is POSIX syntax,
+    so it is only ever offered to the POSIX dialect.
+    """
     if not command:
         return None
-    split = _split_safe_tail(command)
+    split = _split_safe_tail(command, shell)
     if split is not None:
         return _classify_head(split[0])
+    if shell == SHELL_POWERSHELL:
+        return None
     families = _chain_families(command)
     return families[0] if families else None
 
@@ -607,18 +647,18 @@ def _decide(
     ``decide`` contract is a result or None. On a rewrite the reason is the
     distill family, so one column carries both distributions.
     """
-    split = _split_safe_tail(command) if command else None
+    split = _split_safe_tail(command, shell) if command else None
     chain: tuple[str, ...] = ()
     if split is not None:
         head_command, needs_inner_shell = split
         family = _classify_head(head_command)
         if family is None:
             return None, BAIL_UNRECOGNIZED, _find_repo_root(cwd)
-        if shell == "powershell":
+        if shell == SHELL_POWERSHELL:
             first = _normalize(head_command).split(None, 1)[0]
             if first in _PS_ALIAS_TOKENS:
                 return None, BAIL_PS_ALIAS, _find_repo_root(cwd)
-    elif command and shell != "powershell":
+    elif command and shell != SHELL_POWERSHELL:
         # A chain is POSIX shell syntax by construction (`&&`, `;`, `|`), so
         # it is only ever offered to the POSIX dialect.
         chain = _chain_families(command) or ()
@@ -648,14 +688,18 @@ def _decide(
         permission = family_setting
 
     # The --source tag lands in the savings ledger so `repowise saved
-    # --by source` can tell hook surfaces apart from direct CLI use.
+    # --by source` can tell hook surfaces apart from direct CLI use — and,
+    # for the two labels derived from the dialect, it is also how `distill`
+    # knows which shell to run the command in. Derived through the shared
+    # helper rather than spelled here, so the writer and the reader cannot
+    # drift apart.
     if source is None:
-        source = "hook-powershell" if shell == "powershell" else "hook-bash"
+        source = hook_source_for(shell)
     # A pipeline or chain is passed as ONE quoted token so its operators bind
-    # inside distill's shell (distill re-runs a single token verbatim via
-    # shell=True) instead of binding to the wrapper. Single quotes, so the
-    # inner shell reads the token back byte for byte; `$` already bailed, so
-    # nothing in it re-expands.
+    # inside distill's shell (distill re-runs a single token verbatim, through
+    # the shell the `--source` label names) instead of binding to the wrapper.
+    # Single quotes, so the inner shell reads the token back byte for byte;
+    # `$` already bailed, so nothing in it re-expands.
     wrapped = _single_quote(command.strip()) if needs_inner_shell else command.strip()
     # The reason on a rewrite is the family: one ledger column then carries
     # both distributions, what we rewrite and what we decline.

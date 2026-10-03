@@ -182,7 +182,7 @@ async def list_owners(
     sort_key = {
         "files_owned": lambda e: e.files_owned,
         "hotspots_owned": lambda e: e.hotspots_owned,
-        "commit_count_90d": lambda e: e.commit_count_90d,
+        "commit_count_90d": lambda e: e.commit_count_90d or 0,
         "dead_code_lines_owned": lambda e: e.dead_code_lines_owned,
         "bus_factor_risk_files": lambda e: e.bus_factor_risk_files,
     }.get(sort, lambda e: e.files_owned)

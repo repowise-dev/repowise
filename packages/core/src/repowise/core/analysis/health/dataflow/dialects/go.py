@@ -119,7 +119,9 @@ class GoDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t == _SHORT_VAR:  # ``a, b := ...``
+            start = len(defs)
             self._targets(node.child_by_field_name("left"), defs, uses)
+            self._declare(defs, start, node)
             self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t in _VAR_DECL_KINDS:  # ``var x int = ...`` / ``const c = ...``
@@ -146,9 +148,11 @@ class GoDefUseDialect(BaseDefUseDialect):
     def _var_spec(self, spec: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         """A ``var_spec`` / ``const_spec``: its direct ``identifier`` children are
         the bound names (defs); its ``value`` is a read."""
+        start = len(defs)
         for child in spec.named_children:
             if child.type in self.identifier_kinds and child.text != b"_":
                 defs.append(self._occ(child))
+        self._declare(defs, start, spec)
         self._process(spec.child_by_field_name("value"), defs, uses)
 
     # -- write-target extraction ----------------------------------------------

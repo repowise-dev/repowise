@@ -1,0 +1,50 @@
+268 matches in 16 files:
+  src/requests/cookies.py  (52 matches)
+    L45: def __init__(self, request: PreparedRequest) -> None:
+    L604: def merge_cookies(
+  src/requests/models.py  (52 matches)
+    L112: def path_url(self) -> str:
+    L1173: def close(self) -> None:
+  src/requests/utils.py  (47 matches)
+    L99: def proxy_bypass_registry(host: str) -> bool:
+    L1139: def rewind_body(prepared_request: PreparedRequest) -> None:
+  src/requests/sessions.py  (29 matches)
+    L76: def merge_setting(
+    L908: def session() -> Session:
+  src/requests/auth.py  (24 matches)
+    L34: def _basic_auth_str(username: bytes | str, password: bytes | str) -> str:
+    L353: def __ne__(self, other: Any) -> bool:
+  src/requests/adapters.py  (20 matches)
+    L66: def SOCKSProxyManager(*args: Any, **kwargs: Any) -> None:
+    L634: def send(
+  src/requests/structures.py  (17 matches)
+    L49: def __init__(
+    L129: def get(self, key: str, default: _D | None = None) -> _VT | _D | None:
+  src/requests/api.py  (8 matches)
+    L24: def request(
+    L171: def delete(url: _t.UriType, **kwargs: Unpack[_t.RequestKwargs]) -> Response:
+  src/requests/_types.py  (4 matches)
+    L29: def read(self, length: int = ..., /) -> _T_co: ...
+    L47: def is_prepared(request: PreparedRequest) -> TypeIs[_ValidatedRequest]:
+  src/requests/exceptions.py  (3 matches)
+    L28: def __init__(self, *args: Any, **kwargs: Any) -> None:
+    L55: def __reduce__(self) -> tuple[Any, ...] | str:
+  src/requests/help.py  (3 matches)
+    L35: def _implementation():
+    L126: def main():
+  src/requests/hooks.py  (2 matches)
+    L25: def default_hooks() -> dict[str, list[_t.HookType]]:
+    L32: def dispatch_hook(
+  src/requests/status_codes.py  (2 matches)
+    L109: def _init():
+    L116: def doc(code: int) -> str:
+  src/requests/_internal_utils.py  (2 matches)
+    L26: def to_native_string(string: str | bytes, encoding: str = "ascii") -> str:
+    L39: def unicode_is_ascii(u_string: str) -> bool:
+  src/requests/__init__.py  (2 matches)
+    L60: def check_compatibility(
+    L99: def _check_cryptography(cryptography_version: str) -> None:
+  ... (1 more files, 1 matches)
+
+[repowise#4d5207d9f4ad: 221 lines omitted (~4304 tokens); restore: repowise expand 4d5207d9f4ad]
+

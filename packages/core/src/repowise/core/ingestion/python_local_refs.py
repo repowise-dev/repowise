@@ -45,6 +45,8 @@ annotations — reliably.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from collections.abc import Set as AbstractSet
 
 __all__ = ["extract_python_local_refs"]
 
@@ -52,6 +54,7 @@ __all__ = ["extract_python_local_refs"]
 def extract_python_local_refs(
     source: str,
     defined_names: frozenset[str] | set[str],
+    nested_classes: AbstractSet[tuple[str, str]] = frozenset(),
 ) -> frozenset[str]:
     """Return the subset of *defined_names* referenced elsewhere in *source*.
 
@@ -65,6 +68,10 @@ def extract_python_local_refs(
     excluded — they are reached through their class, never imported by
     name). Restricting to defined names keeps the result a small rescue set
     and bounds the walk's bookkeeping.
+
+    *nested_classes* holds the ``(outer, inner)`` pairs of classes declared in
+    another class's body. Each one the module reaches is returned as
+    ``"outer.inner"`` (see ``_nested_class_refs``).
 
     Returns an empty set when there are no candidate names or the source is
     not parseable as Python 3 (Python 2 source, syntax tree-sitter
@@ -87,6 +94,8 @@ def extract_python_local_refs(
     for stmt in tree.body:
         owner = _bound_name(stmt)
         _collect_refs(stmt, defined_names, owner, referenced)
+    if nested_classes:
+        referenced |= _nested_class_refs(tree, nested_classes)
 
     return frozenset(referenced)
 
@@ -150,6 +159,13 @@ def _collect_forward_refs(
     a self-referential annotation (``class Node: next: "Node"``) does not
     rescue an otherwise-dead class.
     """
+    for ref, _ in _forward_ref_nodes(annotation):
+        if isinstance(ref, ast.Name) and ref.id != owner and ref.id in defined_names:
+            out.add(ref.id)
+
+
+def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
+    """Each node of each quoted forward ref in *annotation*, with the quote's line."""
     for sub in ast.walk(annotation):
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
             continue
@@ -158,5 +174,60 @@ def _collect_forward_refs(
         except (SyntaxError, ValueError):
             continue
         for ref in ast.walk(inner):
-            if isinstance(ref, ast.Name) and ref.id != owner and ref.id in defined_names:
-                out.add(ref.id)
+            yield ref, sub.lineno
+
+
+def _nested_class_refs(tree: ast.Module, nested: AbstractSet[tuple[str, str]]) -> set[str]:
+    """``"Outer.Inner"`` for each nested class the module uses outside its own body.
+
+    A use is ``Outer.Inner`` (or ``pkg.Outer.Inner``) anywhere in the module,
+    or ``Inner`` / ``self.Inner`` / ``cls.Inner`` inside ``Outer``, in code or
+    in a quoted annotation. Another module's ``Outer.Inner`` carries only
+    ``Outer`` on its import edge and is not seen here; that ceiling would need
+    attribute chains on import edges.
+    """
+    spans = [
+        (outer.name, inner.name, _lines(outer), _lines(inner))
+        for outer in ast.walk(tree)
+        if isinstance(outer, ast.ClassDef)
+        for inner in outer.body
+        if isinstance(inner, ast.ClassDef) and (outer.name, inner.name) in nested
+    ]
+    found: set[str] = set()
+    for ref, line in _loaded_refs(tree):
+        found.update(
+            f"{outer}.{inner}"
+            for outer, inner, outer_lines, inner_lines in spans
+            if not _within(line, inner_lines)
+            and _names_nested(ref, outer, inner, _within(line, outer_lines))
+        )
+    return found
+
+
+def _lines(node: ast.stmt) -> tuple[int, int]:
+    return node.lineno, node.end_lineno or node.lineno
+
+
+def _within(line: int, lines: tuple[int, int]) -> bool:
+    return lines[0] <= line <= lines[1]
+
+
+def _loaded_refs(tree: ast.Module) -> Iterator[tuple[ast.AST, int]]:
+    """Each loaded name or attribute with its line, quoted annotations included."""
+    for sub in ast.walk(tree):
+        if isinstance(sub, (ast.Name, ast.Attribute)) and isinstance(sub.ctx, ast.Load):
+            yield sub, sub.lineno
+        annotation = _annotation_of(sub)
+        if annotation is not None:
+            yield from _forward_ref_nodes(annotation)
+
+
+def _names_nested(ref: ast.AST, outer: str, inner: str, in_outer: bool) -> bool:
+    """Whether *ref* names the class *inner* nested in *outer*."""
+    if isinstance(ref, ast.Name):
+        return in_outer and ref.id == inner
+    if not isinstance(ref, ast.Attribute) or ref.attr != inner:
+        return False
+    head = ref.value
+    head_name = head.id if isinstance(head, ast.Name) else getattr(head, "attr", None)
+    return head_name == outer or (in_outer and head_name in ("self", "cls"))

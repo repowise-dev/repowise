@@ -2,9 +2,11 @@
  * Single source of truth for app navigation. Both the desktop sidebar and
  * the mobile nav consume these — the two surfaces must never diverge again.
  *
- * Repo IA (6 groups + Settings pinned last):
- *   Overview · Docs · Architecture · Knowledge Graph · Code Health ·
- *   People & History · Chat
+ * Repo IA (3 groups + Settings pinned last):
+ *   Overview · Chat · Docs · Architecture · Knowledge Graph · Code Health ·
+ *   Refactoring · Files, then People & History, then Settings.
+ * Chat sits second because it is the fastest route to an answer about
+ * anything below it, not because it is the second most visited page.
  */
 
 import {
@@ -62,6 +64,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
     {
       items: [
         { label: "Overview", href: `${base}/overview`, icon: Activity },
+        { label: "Chat", href: `${base}/chat`, icon: MessageSquare },
         { label: "Docs", href: `${base}/docs`, icon: BookOpen },
         { label: "Architecture", href: `${base}/architecture`, icon: Boxes },
         { label: "Knowledge Graph", href: `${base}/knowledge-graph`, icon: ScanSearch },
@@ -77,9 +80,6 @@ export function repoNavGroups(repoId: string): NavGroup[] {
         { label: "Contributors", href: `${base}/owners`, icon: Users },
         { label: "Decisions", href: `${base}/decisions`, icon: Lightbulb },
       ],
-    },
-    {
-      items: [{ label: "Chat", href: `${base}/chat`, icon: MessageSquare }],
     },
     {
       label: "Settings",

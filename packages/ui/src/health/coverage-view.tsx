@@ -21,6 +21,7 @@
 import { useMemo, useState } from "react";
 import { ArrowUpRight, Sparkles } from "lucide-react";
 import useSWR from "swr";
+import { GOOD_MIN } from "@repowise-dev/types/health";
 import type {
   CoverageFileRow,
   HealthCoverageResponse,
@@ -35,7 +36,7 @@ import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-tab
 import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
-import { AiPromptModal } from "./ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "./ai-prompt-modal";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
@@ -50,6 +51,8 @@ import {
   type CoverageFilePromptInput,
 } from "./ai-prompt-builder";
 import { scoreBadgeClass } from "./tokens";
+import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
@@ -116,6 +119,7 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
           if (!open) setPromptRow(null);
         }}
         filePath={promptRow?.file_path ?? null}
+        chatContext={fileChatContext(promptRow?.file_path)}
         title="AI test prompt"
         description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
         getPrompt={
@@ -190,7 +194,7 @@ function CoverageBody({
           f.total_coverable_lines > 0 &&
           f.line_coverage_pct != null &&
           f.line_coverage_pct < 30 &&
-          (f.health_score == null || f.health_score < 6),
+          (f.health_score == null || f.health_score < GOOD_MIN),
       )
       .slice(0, 10)
       .map((f) => {
@@ -328,7 +332,7 @@ function CoverageBody({
     },
     {
       key: "health_score",
-      header: "Health",
+      header: "Code health",
       priority: 2,
       align: "right",
       sortable: true,
@@ -380,7 +384,12 @@ function CoverageBody({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <CoverageLede summary={summary} files={files} moduleCount={moduleCount} />
+      <CoverageLede
+        summary={summary}
+        files={files}
+        moduleCount={moduleCount}
+        history={data.history}
+      />
 
       <OverviewSection
         title="Health against coverage"
@@ -490,6 +499,8 @@ function CoverageGap({
   const map = data.inferred as InferredTestMap;
   const measured = map.measured_file_count ?? 0;
   const unreached = map.files.filter((f) => !f.reached);
+  const paths = data.summary.report_paths;
+  const missed = paths ? paths.unmatched + paths.ambiguous : 0;
 
   return (
     <OverviewSection
@@ -500,6 +511,31 @@ function CoverageGap({
           : "The dependency graph could not answer for the files the coverage report left out."
       }
     >
+      {/* Why a file can be missing here: the report named it under a path
+          that did not map to this repository. */}
+      {paths && paths.total > 0 ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          <span className="tabular-nums">
+            {paths.matched.toLocaleString()} of {paths.total.toLocaleString()}
+          </span>{" "}
+          report paths matched a file in this repository
+          {missed > 0 ? (
+            <>
+              ; {missed.toLocaleString()} did not
+              {paths.unmatched_sample[0] ? (
+                <>
+                  {" "}(for example{" "}
+                  <span className="font-mono">{paths.unmatched_sample[0]}</span>). Set{" "}
+                  <span className="font-mono">coverage.strip_prefix</span> or{" "}
+                  <span className="font-mono">coverage.path_prefix</span> if the
+                  paths are off
+                </>
+              ) : null}
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
       <div className="border-t border-[var(--color-border-default)]">
         <ResponsiveTable
           columns={gapColumns}
@@ -557,7 +593,7 @@ const gapColumns: ResponsiveColumn<ReachedFileRow>[] = [
   },
   {
     key: "health_score",
-    header: "Health",
+    header: "Code health",
     priority: 2,
     align: "right",
     render: (f) =>
@@ -590,7 +626,7 @@ function NoCoverageState() {
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
         Nothing here can say whether your code is tested
       </h2>
-      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+      <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
         No coverage report has been ingested, and the dependency graph found no
         test files to trace either. Either would fill this tab: a report gives the
         lines your tests executed, and the graph alone can name which tests reach
@@ -602,8 +638,9 @@ function NoCoverageState() {
         repowise coverage add coverage.lcov
       </pre>
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        LCOV · Cobertura · Clover
+        {COVERAGE_REPORT_FORMATS_LABEL}
       </p>
+      <CiHint command="repowise coverage check" checks="the lines each change touched" />
     </div>
   );
 }

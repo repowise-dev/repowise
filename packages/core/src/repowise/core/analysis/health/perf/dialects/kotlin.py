@@ -45,18 +45,19 @@ from typing import TYPE_CHECKING
 
 from .base import BasePerfDialect
 from .java import (
-    _SPRING_DERIVED,
     AMBIGUOUS_DB,
     FILES_METHODS,
     FS_CONSTRUCTORS,
+    JAVA_LOCK_ACQUIRE_FUNCTIONS,
     JAVA_LOCK_METHODS,
     JAVA_RESOURCE_CTORS,
     JAVA_RESOURCE_METHODS,
-    JDBC_METHODS,
-    JPA_METHODS,
+    JAVA_SPIN_LOOP_HEADER,
     NET_CONSTRUCTORS,
+    RECEIVER_DB_METHODS,
     REST_TEMPLATE_METHODS,
-    SPRING_REPO_METHODS,
+    ambiguous_db_verbs,
+    is_repository_call,
 )
 
 if TYPE_CHECKING:
@@ -201,6 +202,8 @@ def _callee(call_node: Node) -> Node | None:
 
 class KotlinPerfDialect(BasePerfDialect):
     language = "kotlin"
+    lock_acquire_functions = JAVA_LOCK_ACQUIRE_FUNCTIONS
+    spin_loop_header = JAVA_SPIN_LOOP_HEADER
     markers = frozenset(
         {
             "io_in_loop",
@@ -265,7 +268,6 @@ class KotlinPerfDialect(BasePerfDialect):
         has_db_import: bool,
     ) -> str | None:
         root_kind = io_names.get(root)
-        db_ev = has_db_import or root_kind == "db"
         net_ev = root_kind == "network" or "network" in io_names.values()
 
         # JVM interop — verbatim from the Java lexicon.
@@ -273,13 +275,13 @@ class KotlinPerfDialect(BasePerfDialect):
             return "filesystem"
         if method in NET_CONSTRUCTORS:
             return "network"
-        if method in JDBC_METHODS or method in JPA_METHODS or method in SPRING_REPO_METHODS:
+        # No receiver requirement here, unlike Java: a Kotlin extension or
+        # scope function calls ``executeUpdate()`` on an implicit receiver.
+        if method in RECEIVER_DB_METHODS:
             return "db"
-        # A Spring-Data derived query is called on a repository INSTANCE, so the
-        # receiver is lower-cased. Requiring that excludes the static-factory
-        # collisions the bare ``…By[A-Z]`` pattern otherwise picks up —
-        # ``InetAddress.getByName(host)`` matched it in ktor.
-        if _SPRING_DERIVED.match(method) and is_attribute and root[:1].islower():
+        # A Spring-Data derived query is called on a repository INSTANCE, never
+        # a static factory such as ``InetAddress.getByName(host)`` (ktor).
+        if is_attribute and is_repository_call(method, root, io_names):
             return "db"
         if method in REST_TEMPLATE_METHODS:
             return "network"
@@ -295,7 +297,11 @@ class KotlinPerfDialect(BasePerfDialect):
             return "db"
         if is_attribute and net_ev and method in KOTLIN_NET_METHODS:
             return "network"
-        if is_attribute and db_ev and method in KOTLIN_AMBIGUOUS_DB:
+        if (
+            is_attribute
+            and method in KOTLIN_AMBIGUOUS_DB
+            and method in ambiguous_db_verbs(io_names)
+        ):
             return "db"
         return None
 

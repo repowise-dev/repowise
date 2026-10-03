@@ -5,31 +5,19 @@
  * cannot drift: both call the same spec.
  */
 
-import { scoreBand, type ScoreBand } from "../tokens";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
+} from "@repowise-dev/types/health";
+import { healthBandNodeFill, healthNodeFill } from "../tokens";
 import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
 
-/**
- * Band -> SVG fill var().
- *
- * The canvas ramp, not the semantic ink the score pills use. Those are tuned
- * to be read as small coloured type against the page; this field is thousands
- * of overlapping filled discs, which is a different job in both themes. The
- * two ramps are the same four severity steps in the same hue family and are
- * deliberately not the same values. See `--color-node-*` in globals.css.
- */
-const BAND_FILL: Record<ScoreBand, string> = {
-  critical: "var(--color-node-critical)",
-  poor: "var(--color-node-poor)",
-  fair: "var(--color-node-fair)",
-  good: "var(--color-node-good)",
-};
-
-const BAND_LABEL: { band: ScoreBand; label: string }[] = [
-  { band: "critical", label: "Alert" },
-  { band: "poor", label: "Warning" },
-  { band: "fair", label: "Fair" },
-  { band: "good", label: "Healthy" },
-];
+/** Worst-first legend rows, each naming its band and the range it covers. */
+const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
+  fill: healthBandNodeFill(band),
+  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
+}));
 
 /**
  * Neutral fill for nodes a lens has no signal for.
@@ -64,7 +52,7 @@ export interface OverlaySpec {
 /** Score band: the health ramp, quiet grey when the pillar is unscored. */
 function scoreFill(score: number | null | undefined): string {
   if (score == null) return NEUTRAL_FILL;
-  return BAND_FILL[scoreBand(score)];
+  return healthNodeFill(score);
 }
 
 /** Coverage band: green = well covered, red = uncovered, grey = no data. */
@@ -91,10 +79,10 @@ function churnFill(pctile: number | null | undefined): string {
  * The health ramp with its top step removed.
  *
  * This lens is a sibling of the health lens, not a different chart, so it
- * paints with the same four-band ramp, at the same flat opacity, over the same
- * geometry. It uses three of the four bands. A file a detector cleared is a
+ * paints with the same band ramp, at the same flat opacity, over the same
+ * geometry. It uses only the bands below green. A file a detector cleared is a
  * file with no supported pattern in it, not a file measured to be fast, and on
- * this map green means healthy; so performance has no green, and that single
+ * this map green means the code is fine; so performance has no green, and that
  * rule is the whole difference between the two lenses.
  *
  * An earlier cut said the same thing with its own palette and its own opacity
@@ -132,6 +120,8 @@ const ACTIONABILITY_STATE: Record<PerformanceActionability, PerformanceNodeState
   plan_ready: "actionable",
   advisory: "advisory",
   investigate: "investigate",
+  // Nothing to change; the server already leaves these out of the count.
+  expected: "clear",
 };
 
 /**
@@ -197,16 +187,16 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
 }
 
 /**
- * The three steps, borrowed whole from the health ramp.
+ * The three steps, borrowed from the health ramp.
  *
  * Same tokens the score pills and the health lens use, so a colour means the
- * same severity wherever it appears on this surface. `BAND_FILL.good` is
- * deliberately absent: it is the only band that would claim a file is fine.
+ * same severity wherever it appears on this surface. The two greens are
+ * deliberately absent: they are the bands that would claim a file is fine.
  */
 const BURDEN_FILL: Record<1 | 2 | 3, string> = {
-  1: BAND_FILL.fair,
-  2: BAND_FILL.poor,
-  3: BAND_FILL.critical,
+  1: healthBandNodeFill("fair"),
+  2: healthBandNodeFill("needs_work"),
+  3: healthBandNodeFill("at_risk"),
 };
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -217,6 +207,27 @@ export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
   unsupported: "No detector for this language",
   unknown: "Not analyzed here",
 };
+
+/**
+ * What the health lenses say for a file with no score: the same words the
+ * performance lens uses for a file no detector covers, because it is the same
+ * situation one pillar over. Grey, never green.
+ */
+export const HEALTH_UNSUPPORTED_LABEL = PERFORMANCE_STATE_LABEL.unsupported;
+
+/** The one line a map shows when not one drawn file has a score. */
+export const HEALTH_UNSUPPORTED_NOTICE =
+  "Code health analysis does not support this language yet, so its files are shown grey.";
+
+/** True when the field has files and none of them carries a score. */
+export function noFileScored(files: CodeHealthMapFile[]): boolean {
+  return files.length > 0 && files.every((f) => f.score == null);
+}
+
+/** A file's score at one decimal, or the unsupported label. */
+export function scoreText(f: CodeHealthMapFile): string {
+  return f.score == null ? HEALTH_UNSUPPORTED_LABEL : f.score.toFixed(1);
+}
 
 /** One sentence a hover card or inspector can print about a file. */
 export function performanceSentence(f: CodeHealthMapFile): string {
@@ -230,17 +241,17 @@ export function performanceSentence(f: CodeHealthMapFile): string {
 
 export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
-    label: "Health",
-    caption: "galaxy = module · size = lines of code",
-    fill: (f) => BAND_FILL[scoreBand(f.score)],
-    legend: BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+    label: "Code health",
+    caption: "galaxy = module · size = lines of code · grey = not analysed",
+    fill: (f) => scoreFill(f.score),
+    legend: [...BAND_LEGEND, { fill: NEUTRAL_FILL, label: HEALTH_UNSUPPORTED_LABEL }],
   },
   maintainability: {
     label: "Maintainability",
     caption: "color = maintainability score · grey = not measured",
     fill: (f) => scoreFill(f.maintainability_score),
     legend: [
-      ...BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+      ...BAND_LEGEND,
       { fill: NEUTRAL_FILL, label: "not measured" },
     ],
   },

@@ -10,16 +10,24 @@ The split keeps the cached prompt prefix small on multi-turn agent sessions:
 ``get_context`` stays under ~2k tokens for common targets.
 
 Optional ``include`` parameter widens the response:
-  - include=["full_doc"]  → full wiki markdown content
+  - include=["full_doc"]  -> full wiki markdown content, plus the page's agent
+                            digest (questions, identifiers, git signals)
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
   - include=["ownership"] → primary owner, bus factor, contributor count
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
+  - include=["doc_drift"] → documents that name this file, and their drift
+  - include=["symbols"]   → every symbol in a file card, not the ranked top 15
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -47,19 +55,20 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._meta import context_hint as _context_hint
+from repowise.server.mcp_server._meta import completeness_line as _completeness_line
+from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
 
 # Every value ``include_set`` is tested against downstream, in ``targets.py``.
 # ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
-# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
-# branches there return None, so accepting it would promise a block that does
-# nothing.
+# ``source`` is omitted: get_context serves triage cards and structural metadata,
+# not raw source bodies (which are served via include=["skeleton"] or the Read tool).
 _INCLUDE_BLOCKS = frozenset(
     {
         "docs",
@@ -74,6 +83,8 @@ _INCLUDE_BLOCKS = frozenset(
         "decisions",
         "skeleton",
         "health",
+        "doc_drift",
+        "symbols",
     }
 )
 
@@ -99,8 +110,9 @@ async def get_context(
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
     Returns title, summary, signatures with line numbers, hotspot bit, and
-    decision_record titles. fix_history appears only on files with counted bug
-    fixes (count, age, bug_magnet); hotspot is churn. Either one is a cue to
+    decision_record titles. A symbol row without symbol_id is path::name.
+    fix_history appears only on files with counted bug fixes (count, age,
+    bug_magnet); hotspot is churn. Either one is a cue to
     call get_risk. episodes counts the dated records bound to a target — what
     happened here and why — and appears only when there is at least one;
     get_why serves the bodies. A symbol target is counted as its file, and a
@@ -117,7 +129,10 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health.
+            | callees | metrics | community | decisions | skeleton | health
+            | doc_drift (documents naming this file) | symbols (all of a
+            file's symbols; the default lists the top 15, classes and
+            functions first).
             An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
@@ -176,6 +191,19 @@ async def get_context(
             return_exceptions=True,
         )
 
+        # One batched read for every target that asked for it, on the session
+        # they share, and a no-op for every call that did not. Deliberately
+        # not per-target inside the gather above: savepoints opened
+        # concurrently on one session close each other, and
+        # ``attach_doc_references`` carries the account of that.
+        await attach_doc_references(
+            session,
+            repository,
+            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            exclude_spec=exclude_spec,
+            collector=collector,
+        )
+
     results: list[dict[str, Any]] = []
     for t, r in zip(targets, raw_results, strict=True):
         if isinstance(r, BaseException) and not isinstance(r, Exception):
@@ -203,11 +231,19 @@ async def get_context(
         "targets": {r["target"]: r for r in results},
         "_meta": _build_meta(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
-            hint=_context_hint(targets, compact, include_set),
             repository=repository,
             targets=targets,
         ),
     }
+    # A "raw" skeleton is the file's own source served untouched; the
+    # signatures and smart modes elide bodies, so they are not whole files.
+    whole_files = sum(
+        1
+        for r in results
+        if isinstance(r.get("skeleton"), dict) and r["skeleton"].get("mode") == "raw"
+    )
+    if whole_files:
+        response["_meta"]["complete"] = _completeness_line(files=whole_files)
 
     # Cross-repo enrichment (Phase 3 + 4)
     from repowise.server.mcp_server._helpers import _is_workspace_mode
@@ -253,6 +289,7 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
+    drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

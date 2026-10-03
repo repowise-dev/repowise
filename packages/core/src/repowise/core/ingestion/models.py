@@ -31,6 +31,8 @@ LanguageTag = Literal[
     "cpp",
     "c",
     "csharp",
+    # Razor / Blazor markup, projected to C# via sfc_source (byte-scan).
+    "razor",
     "ruby",
     "php",
     "swift",
@@ -39,6 +41,9 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "cobol",
+    "gdscript",
+    "vbnet",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -74,6 +79,12 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Lightweight: qmldir-declared module imports and quoted references.
+    "qml",
+    # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
+    # [ext_resource path=...] and [autoload] are how a Godot project reaches
+    # its scripts at all.
+    "godot_resource",
     "unknown",
 ]
 
@@ -146,6 +157,13 @@ class FileInfo:
     is_config: bool
     is_api_contract: bool
     is_entry_point: bool
+    # Named by a package manifest (package.json bin/main/exports["."],
+    # pyproject scripts, a distribution's package ``__init__``): the strongest
+    # entry evidence, ranked above every filename guess.
+    is_manifest_entry: bool = False
+    # Reached from outside the import graph (a runner or loader starts it), so
+    # dead-code analysis never flags it. Read through ``is_reachability_root``.
+    is_reachability_root: bool = False
 
 
 @dataclass
@@ -157,6 +175,8 @@ class PackageInfo:
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
+    # A member of a root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work).
+    declared: bool = False
 
 
 @dataclass
@@ -175,7 +195,9 @@ class RepoStructure:
 class Symbol:
     """A code symbol (function, class, method, …) extracted from a file."""
 
-    id: str  # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
+    # "<rel_path>::<name>" or "<rel_path>::<class>::<method>", plus a
+    # discriminator when a scope declares the name twice (see symbol_identity).
+    id: str
     name: str
     qualified_name: str  # dotted full name, e.g. "myapp.calc.Calculator.add"
     kind: SymbolKind
@@ -197,8 +219,18 @@ class Symbol:
     # declaration in a header. The definition carrying the same name lives in
     # a .cpp and is the symbol a call should attach to; the call resolver
     # redirects onto it, and the dead-code pass never reports a declaration,
-    # since a declaration is not independently deletable.
+    # since a declaration is not independently deletable. Python ``@overload``
+    # stubs and TypeScript overload signatures are declarations too: they share
+    # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
+    # C# type declarations only: how many type parameters it declares, which is
+    # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
+    type_parameter_count: int | None = None
+    # Keyword modifiers the declaration writes, lowercased (``override``,
+    # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
+    # names its modifier nodes. Access keywords land here too; ``visibility``
+    # stays the field to read for those.
+    modifiers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -228,6 +260,8 @@ class Import:
     resolved_file: str | None  # absolute path if successfully resolved
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
+    # Rust ``mod child;``: declares the child module, uses nothing from it.
+    is_module_declaration: bool = False
 
     @property
     def local_names(self) -> list[str]:
@@ -288,9 +322,17 @@ class CallSite:
     scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
+    # The grammar's bare-call pattern also matched this member call (Java
+    # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
+    # when no receiver strategy answers, never beside one.
+    bare_name_fallback: bool = False
 
 
-HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+# Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
+# test_wire_vocabulary_parity pins the difference.
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin", "derive"]
+
+HERITAGE_KIND_VALUES: frozenset[str] = frozenset(get_args(HeritageKind))
 
 
 @dataclass
@@ -442,6 +484,19 @@ ResolutionOrigin = Literal[
     "receiver_framework_same_package",  # 0.90
     "receiver_framework_import",  # 0.88
     "receiver_framework_global",  # 0.75
+    # A C# extension method, reached through the type its ``this`` parameter
+    # names rather than the static class holding it. One family, not a fourth
+    # set of four: no same-package tier reaches the extension index. Separable
+    # because the holder class is a file no call site names.
+    "receiver_extension_same_file",  # 0.93
+    "receiver_extension_import",  # 0.88 — the holder class's file is imported
+    "receiver_extension_global",  # 0.75 — declared somewhere; a name match
+    # A dotted receiver (`this.a.b.m()`) typed hop by hop through each class's
+    # declared fields. No global tier: every hop's type must be bound by an
+    # import or declared in the file that wrote it, and the tier is the
+    # weakest hop's.
+    "receiver_chain_same_file",  # 0.93
+    "receiver_chain_import",  # 0.88
     # Chained receiver typed from the inner callee's declared return type.
     "return_type_same_file",  # 0.93
     "return_type_same_package",  # 0.90 (JVM)
@@ -451,7 +506,7 @@ ResolutionOrigin = Literal[
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method
     # the language would not actually dispatch to.
-    "self_inherited",  # 0.90 — explicit self/this receiver
+    "self_inherited",  # 0.90 — explicit self/this receiver, or Python super()
     "enclosing_inherited",  # 0.90 — implicit receiver, bare call
 ]
 
@@ -519,20 +574,13 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference. See the
-        # note on SYMBOL_USE_EDGE_TYPES: `reads` is emitted at both layers.
+        # declaring the type, so this is a real file-level reference.
         "reads",
     }
 )
 
 # Symbol → symbol references. "Something reaches this symbol", so containment
 # is excluded: a class containing a method is not the method being used.
-#
-# `reads` is a member here for a reason that no longer holds: its symbol-level
-# producer moved to `framework_binds`, so `csharp_member_reads` is the only one
-# left and it emits file → file. A file node can never be a symbol node's
-# predecessor, so membership is inert rather than wrong. Retiring it moves the
-# vocabulary and belongs to a diff that can measure that.
 SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
     {
         "calls",
@@ -546,7 +594,6 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         # A fixture nobody calls and a collaborator nobody constructs are both
         # used — by the container, which no parser sees.
         "framework_binds",
-        "reads",
         # Naming a function is using it. A handler sitting in a dispatch table
         # is never called anywhere a parser can see, and treating that as "no
         # use" reported entire registration layers as safe to delete (#1602).
@@ -557,13 +604,12 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
 
 # Symbol → symbol edges along which control can actually reach the target, for
 # the question "would running this test execute that code?". The reachability
-# view minus the two that record a mention rather than a transfer of control:
-# `references` is a name sitting in a dispatch table and `reads` is a field
-# access, and neither runs the thing it names. Narrower than
-# SYMBOL_USE_EDGE_TYPES on purpose — dead code asks "is this used", which a
-# mention answers, and the inferred test map asks "is this run", which it does
-# not.
-EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references", "reads"}
+# view minus the one that records a mention rather than a transfer of control:
+# `references` is a name sitting in a dispatch table and does not run the thing
+# it names. Narrower than SYMBOL_USE_EDGE_TYPES on purpose — dead code asks
+# "is this used", which a mention answers, and the inferred test map asks "is
+# this run", which it does not.
+EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references"}
 
 
 # "Does anything use this symbol at all?" — the reachability view. Adds

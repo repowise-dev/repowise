@@ -59,6 +59,38 @@ def refine_kotlin_class_kind(class_node: Node) -> str:
     return "class"
 
 
+# Elixir definition keyword -> SymbolKind. Every definition is a `call` node,
+# so the node type says nothing; the keyword in the call's target says all.
+_ELIXIR_DEFINITION_KINDS = {
+    "defmodule": "module",
+    "defprotocol": "interface",
+    "defimpl": "impl",
+    "def": "function",
+    "defp": "function",
+    "defdelegate": "function",
+    "defmacro": "macro",
+    "defmacrop": "macro",
+    "defguard": "macro",
+    "defguardp": "macro",
+}
+
+
+def refine_elixir_call_kind(call_node: Node, src: str) -> str:
+    """Refine the placeholder ``module`` kind for an Elixir ``call`` node.
+
+    ``LANGUAGE_CONFIGS["elixir"]`` maps the one node type Elixir has to
+    ``module`` rather than to a callable kind on purpose: a ``def`` nested in
+    a ``defmodule`` has a ``call`` ancestor, so a callable mapping would make
+    ``_has_callable_ancestor`` drop every function in every module. The real
+    kind is read back here, after that filter has run.
+    """
+    target = call_node.child_by_field_name("target")
+    if target is None:
+        return "module"
+    keyword = node_text(target, src).strip()
+    return _ELIXIR_DEFINITION_KINDS.get(keyword, "module")
+
+
 def refine_pascal_type_kind(decl_type_node: Node) -> str:
     """Refine the generic ``class`` kind for Pascal ``declType`` nodes.
 
@@ -104,6 +136,55 @@ def refine_pascal_type_kind(decl_type_node: Node) -> str:
     return "class"
 
 
+def fsharp_type_name(simple_type_node: Node, src: str) -> str | None:
+    """The bare name of an F# ``simple_type``, qualifier dropped.
+
+    ``inherit System.Exception()`` names the same type as ``inherit
+    Exception()`` and F# writes the type name last, so the last segment of
+    the dotted path is the name the symbol index is keyed by. Shared by the
+    heritage extractor and the type-reference head walk, which ask the same
+    question of the same node.
+    """
+    head = simple_type_node
+    if head.type == "simple_type":
+        head = next(iter(head.named_children), None)
+        if head is None:
+            return None
+    if head.type == "long_identifier":
+        idents = [c for c in head.named_children if c.type == "identifier"]
+        if not idents:
+            return None
+        head = idents[-1]
+    if head.type != "identifier":
+        return None
+    return node_text(head, src).strip() or None
+
+
+def refine_fsharp_type_kind(anon_type_defn_node: Node) -> str:
+    """Tell an F# interface apart from a class inside ``anon_type_defn``.
+
+    The grammar gives classes, structs and interfaces the same node: an
+    interface is written ``type IFoo = abstract member Bar: ...`` with no
+    constructor and nothing but abstract members. Those two facts together
+    are what F# itself compiles to an interface, so both are required; a
+    class with one abstract member and a constructor stays a class.
+    """
+    members = [
+        node
+        for child in anon_type_defn_node.named_children
+        for node in ([child] if child.type == "member_defn" else child.named_children)
+        if node.type == "member_defn"
+    ]
+    if not members:
+        return "class"
+    if any(child.type == "primary_constr_args" for child in anon_type_defn_node.named_children):
+        return "class"
+    for member in members:
+        if not any(child.type == "abstract" for child in member.children):
+            return "class"
+    return "interface"
+
+
 def clean_string_literal(text: str) -> str:
     """Strip quote characters from a Python string literal."""
     text = text.strip()
@@ -116,20 +197,52 @@ def clean_string_literal(text: str) -> str:
     return text
 
 
+# Statements a declaration sits inside when its JSDoc is written above the
+# whole statement: ``/** doc */ export const f = () => {}`` puts the comment
+# beside the export_statement, not beside the declarator. ``declare`` wraps a
+# declaration in an ambient_declaration the same way.
+_JSDOC_WRAPPER_TYPES = frozenset(
+    {
+        "export_statement",
+        "ambient_declaration",
+        "lexical_declaration",
+        "variable_declaration",
+        "variable_declarator",
+    }
+)
+
+
+def _leads_statement(node: Node, parent: Node) -> bool:
+    """Whether *node* is *parent*'s first named child other than comments and decorators."""
+    first = next((c for c in parent.named_children if c.type not in ("comment", "decorator")), None)
+    return first is not None and first.id == node.id
+
+
 def find_preceding_jsdoc(node: Node, src: str) -> str | None:
-    """Return the JSDoc comment immediately before *node*, if any."""
+    """Return the JSDoc comment written directly above *node*, if any.
+
+    Climbs out of the export / declaration wrappers *node* leads (never past
+    them, so never past ``program``), steps over the node's own decorators,
+    and requires the comment to touch the declaration with no blank line, so a
+    file-header comment never documents the first export.
+    """
     parent = node.parent
-    if parent is None:
+    while (
+        parent is not None
+        and parent.type in _JSDOC_WRAPPER_TYPES
+        and _leads_statement(node, parent)
+    ):
+        node, parent = parent, parent.parent
+    prev = node.prev_sibling
+    while prev is not None and prev.type == "decorator":
+        node, prev = prev, prev.prev_sibling
+    if prev is None or prev.type != "comment":
         return None
-    siblings = list(parent.children)
-    idx = next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-    if idx <= 0:
+    if node.start_point[0] - prev.end_point[0] > 1:
         return None
-    prev = siblings[idx - 1]
-    if prev.type == "comment":
-        text = node_text(prev, src).strip()
-        if text.startswith("/**"):
-            return clean_jsdoc(text)
+    text = node_text(prev, src).strip()
+    if text.startswith("/**"):
+        return clean_jsdoc(text)
     return None
 
 
@@ -156,6 +269,8 @@ def clean_jsdoc(text: str) -> str:
     cleaned: list[str] = []
     for line in lines:
         line = line.strip().lstrip("/*").lstrip()
+        # A one-line ``/** doc */`` ends on the closing delimiter too.
+        line = line.removesuffix("*/").rstrip()
         if line:
             cleaned.append(line)
     return "\n".join(cleaned).strip()

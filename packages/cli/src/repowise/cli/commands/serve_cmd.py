@@ -23,6 +23,41 @@ _GLOBAL_CONFIG_DIR = Path.home() / ".repowise"
 _SERVE_LOCK_NAME = "serve.lock.json"
 
 
+#: How often a running ``serve`` re-reads release currency. The PyPI fetch is
+#: TTL-cached on disk for a day, so this bounds the print, not the network.
+_UPDATE_ADVISORY_INTERVAL_S = 6 * 3600
+
+
+def _update_advisory_tick(announced: set[str]) -> bool:
+    """Print the advisory for a release not yet announced. Never raises."""
+    try:
+        from repowise.cli.update_check import get_cli_update_check_cached
+        from repowise.cli.whats_new import render_update_advisory
+
+        check = get_cli_update_check_cached()
+        if not check.update_available or check.latest_version in announced:
+            return False
+        if render_update_advisory(console, check):
+            announced.add(check.latest_version)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _start_update_advisory_loop(announced: set[str]) -> None:
+    """Re-run the advisory tick on a daemon thread; it dies with the process."""
+    import threading
+    import time
+
+    def _loop() -> None:
+        while True:
+            time.sleep(_UPDATE_ADVISORY_INTERVAL_S)
+            _update_advisory_tick(announced)
+
+    threading.Thread(target=_loop, name="update-advisory", daemon=True).start()
+
+
 def _serve_lock_path(cwd: Path | None = None) -> Path | None:
     """Return where the serve lockfile belongs for this directory, if anywhere.
 
@@ -570,17 +605,14 @@ def serve_command(
         console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
         raise SystemExit(1) from None
 
-    # One-line, non-blocking "newer release available" advisory at startup.
-    # Best-effort and interactive-only; the cached check keeps it off the network
-    # on most launches.
+    # One-line, non-blocking "newer release available" advisory at startup and
+    # then once per interval for as long as the server runs. Best-effort and
+    # interactive-only; the cached check keeps it off the network on most
+    # passes.
     if console.is_terminal:
-        try:
-            from repowise.cli.update_check import get_cli_update_check_cached
-            from repowise.cli.whats_new import render_update_advisory
-
-            render_update_advisory(console, get_cli_update_check_cached())
-        except Exception:
-            pass
+        announced: set[str] = set()
+        _update_advisory_tick(announced)
+        _start_update_advisory_loop(announced)
 
     # Load the local .repowise/.env (API keys written by `repowise init`) and
     # seed the chat/search provider + embedder from .repowise/config.yaml. This
@@ -595,7 +627,20 @@ def serve_command(
     # Auto-detect local .repowise/ directory if REPOWISE_DB_URL is not set.
     # repowise init writes to <repo>/.repowise/wiki.db, so honour it when
     # the user runs `repowise serve` from the same directory.
-    if not os.environ.get("REPOWISE_DB_URL"):
+    #
+    # Skip this when cwd is inside a workspace (has an upstream
+    # .repowise-workspace.yaml). Setting REPOWISE_DB_URL here is read back
+    # by the workspace-detection code in app.py as "the user explicitly
+    # configured one shared database for the whole workspace" (the real,
+    # separate shared-DB/Postgres feature), which then routes every repo
+    # lookup through the workspace root's own near-empty coordinator
+    # wiki.db instead of each repo's own <repo>/.repowise/wiki.db. Every
+    # repo in the workspace then reports needs_index with zeroed stats,
+    # and the UI can't open any of them even though each repo's own index
+    # is complete and correct on disk.
+    from repowise.core.workspace.config import find_workspace_root
+
+    if not os.environ.get("REPOWISE_DB_URL") and find_workspace_root() is None:
         local_repowise = Path.cwd() / ".repowise"
         if local_repowise.exists():
             local_db = local_repowise / "wiki.db"

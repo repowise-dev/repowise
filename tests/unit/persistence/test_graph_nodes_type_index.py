@@ -12,6 +12,10 @@ model half, which is what ``init_db`` builds from.
 
 Also covers the ``paths=`` scoping ``get_test_file_paths`` grew for it, since
 that read is the reason the index was measured in the first place.
+
+``ix_graph_nodes_repo_file`` is pinned here for the same reason: nothing
+covered ``file_path``, so reading the symbols a few named files own walked the
+table rather than seeking.
 """
 
 from __future__ import annotations
@@ -23,12 +27,35 @@ from repowise.core.persistence.models import GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
 _INDEX_NAME = "ix_graph_nodes_repo_type"
+_FILE_INDEX_NAME = "ix_graph_nodes_repo_file"
 
 
 def test_index_is_declared_on_the_model() -> None:
     by_name = {ix.name: ix for ix in GraphNode.__table__.indexes}
     assert _INDEX_NAME in by_name, "init_db-created stores would lack the index"
     assert [c.name for c in by_name[_INDEX_NAME].columns] == ["repository_id", "node_type"]
+
+
+def test_file_path_index_is_declared_on_the_model() -> None:
+    by_name = {ix.name: ix for ix in GraphNode.__table__.indexes}
+    assert _FILE_INDEX_NAME in by_name, "init_db-created stores would lack the index"
+    assert [c.name for c in by_name[_FILE_INDEX_NAME].columns] == ["repository_id", "file_path"]
+
+
+async def test_the_symbols_a_file_owns_are_seeked_instead_of_scanned(async_session) -> None:
+    """"The symbols these few files own" is what a changed-file read asks."""
+    plan = (
+        await async_session.execute(
+            text(
+                "EXPLAIN QUERY PLAN SELECT node_id FROM graph_nodes "
+                "WHERE repository_id = :r AND file_path IN ('a.py', 'b.py')"
+            ),
+            {"r": "repo"},
+        )
+    ).all()
+
+    detail = " ".join(str(row[-1]) for row in plan)
+    assert _FILE_INDEX_NAME in detail, f"expected a seek on {_FILE_INDEX_NAME}, got: {detail}"
 
 
 async def test_a_file_node_read_seeks_instead_of_scanning(async_session) -> None:

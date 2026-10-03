@@ -162,10 +162,12 @@ export function DecisionsTable({
       render: (d) => decisionSourceLabel(d.source),
     },
     // Scope, Confidence and Trust all left this row. Scope is `cross-module`
-    // on three quarters of a live index and confidence is source rank times
-    // verification, so every record from one source carries one number: all
+    // on three quarters of a live index, and confidence was source rank times
+    // verification, so every record from one source carried one number: all
     // twelve session records read 84%. A column whose value you can predict
-    // from the column beside it spends width repeating itself.
+    // from the column beside it spends width repeating itself. Confidence now
+    // also reads how much of its body an extracted record fills, so it varies
+    // within a source.
     //
     // Trust went for a different reason. 91% of a live index verifies
     // `exact`, so the mark belongs on the exception rather than on every row

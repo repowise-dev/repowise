@@ -76,10 +76,11 @@ def _answer_only(result: dict) -> dict:
     """The tool's own payload, minus the budget envelope the bridge stamps.
 
     A bridged call is budgeted the way the MCP middleware budgets an MCP call,
-    so every response gains ``_meta.response_budget``. What must not change is
-    the answer the tool returned.
+    so every response gains ``_meta.response_budget`` and ``_meta.completeness``.
+    What must not change is the answer the tool returned.
     """
-    meta = {k: v for k, v in (result.get("_meta") or {}).items() if k != "response_budget"}
+    stamped = {"response_budget", "completeness"}
+    meta = {k: v for k, v in (result.get("_meta") or {}).items() if k not in stamped}
     answer = {k: v for k, v in result.items() if k != "_meta"}
     if meta:
         answer["_meta"] = meta
@@ -133,6 +134,19 @@ def test_an_unindexed_repo_gets_the_shields_run_init_advice(wired):
     result = tool_bridge.call_tool(repo, _tool, "get_context")
     assert "no repowise index yet" in result["error"].lower()
     assert "repowise init" in result["remedy"]
+
+
+def test_a_failed_repowise_import_points_at_the_install_not_a_server(wired):
+    """The CLI imports fresh each run, so no older server is holding stale code."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        from repowise.core.ingestion.type_names import name_missing_from_install  # noqa: F401
+
+    result = tool_bridge.call_tool(repo, _tool, "get_change_risk")
+    assert "install is incomplete" in result["error"]
+    assert "Reinstall repowise" in result["remedy"]
+    assert "MCP server" not in repr(result)
 
 
 def test_a_store_that_fails_to_open_still_disposes_the_engine(wired, monkeypatch):

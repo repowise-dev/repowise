@@ -30,7 +30,12 @@
 
 import { FilterChip } from "@repowise-dev/ui/health";
 import { type VerbCount, toggleVerb } from "@repowise-dev/ui/zoom";
-import { HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import {
+  FAIR_MIN,
+  GOOD_MIN,
+  HEALTH_BAND_LABEL,
+  NEEDS_WORK_MIN,
+} from "@repowise-dev/types/health";
 
 interface ZoomMapKeyProps {
   /** Every verb present in the loaded map, descending by count. */
@@ -126,12 +131,15 @@ export function ZoomMapKey({
         </div>
         <div className="flex items-center gap-1.5">
           <Dot className="bg-[var(--color-success)]" />
+          <Dot className="bg-[var(--color-caution)]" />
           <Dot className="bg-[var(--color-warning)]" />
           <Dot className="bg-[var(--color-error)]" />
           <dt className="sr-only">Footer dot</dt>
           <dd>
-            Code health: {HEALTH_BAND_LABEL.healthy} 8+, {HEALTH_BAND_LABEL.warning} 4 to 8,{" "}
-            {HEALTH_BAND_LABEL.alert} under 4.
+            Code health: {HEALTH_BAND_LABEL.good} from {GOOD_MIN.toFixed(1)},{" "}
+            {HEALTH_BAND_LABEL.fair} from {FAIR_MIN.toFixed(1)},{" "}
+            {HEALTH_BAND_LABEL.needs_work} from {NEEDS_WORK_MIN.toFixed(1)},{" "}
+            {HEALTH_BAND_LABEL.at_risk} below that.
           </dd>
         </div>
       </dl>

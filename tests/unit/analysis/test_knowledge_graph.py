@@ -311,6 +311,11 @@ class TestFileTypeClassification:
     def test_config_by_extension(self):
         assert _classify_file_type("config.yaml", "yaml", False) == "config"
 
+    def test_config_by_dotfile_name(self):
+        """#2379: `.env` has no suffix, but its whole name is the set's entry."""
+        assert _classify_file_type(".env", "", False) == "config"
+        assert _classify_file_type("proj/.env", "", False) == "config"
+
     def test_config_by_flag(self):
         assert _classify_file_type("settings.py", "python", True) == "config"
 

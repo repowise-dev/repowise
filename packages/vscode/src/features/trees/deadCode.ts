@@ -57,7 +57,7 @@ export class DeadCodeTreeProvider extends RepowiseTreeProvider {
     return {
       key: `dead:${row.id}`,
       label: row.symbol_name ?? baseName(row.file_path),
-      description: `${row.kind} · ${row.lines} lines`,
+      description: row.lines === null ? row.kind : `${row.kind} · ${row.lines} lines`,
       tooltip,
       collapsibleState: vscode.TreeItemCollapsibleState.None,
       command: openFileCommand(this.ctx, row.file_path, row.start_line),

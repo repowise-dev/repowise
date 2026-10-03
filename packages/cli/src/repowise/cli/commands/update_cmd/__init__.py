@@ -14,11 +14,11 @@ from .incremental import (
     _build_repo_graph,
     _build_update_vector_store,
     _rebuild_graph_and_git,
+    _run_doc_drift_partial,
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
 from .persistence import (
-    _git_metadata_to_dict,
     _persist_incremental_commits,
     _persist_index_only_update,
     _persist_partial_health,
@@ -31,7 +31,6 @@ __all__ = [
     "_build_filtered_changed_paths",
     "_build_repo_graph",
     "_build_update_vector_store",
-    "_git_metadata_to_dict",
     "_persist_incremental_commits",
     "_persist_index_only_update",
     "_persist_partial_health",
@@ -39,6 +38,7 @@ __all__ = [
     "_refresh_workspace_editor_project_files",
     "_render_update_report",
     "_resolve_index_only_mode",
+    "_run_doc_drift_partial",
     "_run_full_health_rescore",
     "_run_partial_analysis",
     "_workspace_update",
