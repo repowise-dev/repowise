@@ -16,6 +16,7 @@ import asyncio
 import gc
 import json
 import threading
+import weakref
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -233,10 +234,12 @@ def test_a_dropped_provider_is_not_kept_alive_to_be_closed() -> None:
 
     provider = AnthropicProvider(api_key="k")
     assert provider in base._LIVE_PROVIDERS
-    before = len(base._LIVE_PROVIDERS)
+    dropped = weakref.ref(provider)
     del provider
     gc.collect()
-    assert len(base._LIVE_PROVIDERS) == before - 1
+    # Not a count of the registry: the collection also frees providers that
+    # earlier tests dropped in a reference cycle.
+    assert dropped() is None
 
 
 def test_every_provider_is_known_to_the_close_by_default() -> None:
