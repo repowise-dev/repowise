@@ -202,3 +202,14 @@ def test_a_config_comment_does_not_load_a_file():
     config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
     assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
     assert _dropped("src/index.ts", {"tsup.config.ts": config})
+
+
+def test_a_bundler_config_that_is_also_a_runner_still_needs_a_load_key(monkeypatch):
+    # A bundler config may count as a runner by name (a build file); a path it
+    # only mentions in a comment must still not be read as loaded.
+    from repowise.core.analysis.dead_code import name_occurrences
+
+    monkeypatch.setattr(name_occurrences, "is_runner_file", lambda path: True)
+    config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
+    assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
+    assert _dropped("src/index.ts", {"tsup.config.ts": config})

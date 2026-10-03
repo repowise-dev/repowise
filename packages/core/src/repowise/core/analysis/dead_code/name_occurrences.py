@@ -528,11 +528,18 @@ def clamp_path_mentions(
 def _loaded(
     finding: DeadCodeFindingData, namers: Iterable[str], source_map: dict[str, bytes]
 ) -> bool:
-    """Whether *namers* load the file of *finding* in the way the finding denies."""
+    """Whether *namers* load the file of *finding* in the way the finding denies.
+
+    A tool config is read only through its load keys, even when it is also a
+    runner by name (a bundler config is a build file): a path it mentions in a
+    comment or an ignore list is not loaded.
+    """
     path = finding.file_path
-    loaders = [n for n in namers if is_tool_config(n) and _config_loads(n, path, source_map)]
+    configs = [n for n in namers if is_tool_config(n)]
+    loaders = [n for n in configs if _config_loads(n, path, source_map)]
     if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
-        return bool(loaders) or any(map(is_runner_file, namers))
+        others = (n for n in namers if n not in configs)
+        return bool(loaders) or any(map(is_runner_file, others))
     return bool(loaders) and "default" in export_shape(path, frozenset(), source_map.get(path))
 
 
