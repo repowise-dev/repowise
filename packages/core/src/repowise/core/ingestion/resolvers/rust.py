@@ -372,6 +372,8 @@ def add_macro_rules_mod_imports(ctx: ResolverContext) -> int:
             crate_root = _find_rust_crate_root(path, ctx)
             for name, bodies in _mod_declaring_macros(parser.parse(src).root_node):
                 templates.setdefault((crate_root, name), []).extend(bodies)
+    if not templates:
+        return 0
     return sum(
         _add_called_macro_mods(ctx, path, src, templates, parser) for path, src in sources.items()
     )
@@ -395,7 +397,11 @@ def _mod_declaring_macros(root: Node) -> list[tuple[str, list[Node]]]:
     for node in root.children:
         if node.type != "macro_definition":
             continue
-        rules = (rule.child_by_field_name("right") for rule in node.children if rule.type == "macro_rule")
+        rules = (
+            rule.child_by_field_name("right")
+            for rule in node.children
+            if rule.type == "macro_rule"
+        )
         bodies = [body for body in rules if body is not None]
         if any(macro_body_mod_names(body) for body in bodies):
             found.append((_node_name(node.child_by_field_name("name")), bodies))

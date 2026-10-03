@@ -24,6 +24,8 @@ import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -322,8 +324,10 @@ def _warmup_rust(ctx: ResolverContext) -> None:
     from .resolvers.rust import add_macro_rules_mod_imports
     from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
 
-    with contextlib.suppress(Exception):
+    try:
         add_macro_rules_mod_imports(ctx)
+    except Exception as exc:  # the pass must not abort the build
+        structlog.get_logger(__name__).debug("rust_macro_mods_failed", error=str(exc))
     index = get_or_build_cargo_workspace_index(ctx)
     if index is None:
         return

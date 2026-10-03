@@ -987,7 +987,8 @@ def _statement_imports(
     if language == "rust" and stmt_node.type == "macro_invocation":
         from .extractors.bindings.rust import macro_mod_imports
 
-        return macro_mod_imports(module_node, raw)
+        # Most top-level calls (``s! { struct ... }``) declare no module.
+        return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
         # wildcard, which keeps the target's exports live.

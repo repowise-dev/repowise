@@ -220,6 +220,7 @@ class TestImportedNamesInScope:
         caller = "use crate::a::*;\npub fn go() { other(); }\n"
         assert "src/a.rs::other" in self._callees(tmp_path, caller)
 
+
 class TestModInMacroBody:
     """``mod foo;`` written in macro tokens declares ``foo`` where the macro runs."""
 
@@ -275,3 +276,33 @@ class TestModInMacroBody:
         )
         assert not graph.has_edge("src/lib.rs", "src/ghost.rs")
         assert "src/ghost.rs" in TestIntraCrateDeadCode()._unused(graph)
+
+    def test_macro_rules_mod_called_from_a_submodule_resolves_under_it(
+        self, tmp_path: Path
+    ) -> None:
+        graph = self._build(
+            tmp_path,
+            {
+                "src/lib.rs": "#[macro_use]\nmod macros;\nmod sub;\n",
+                "src/macros.rs": "macro_rules! declare {\n    () => { mod x; };\n}\n",
+                "src/sub.rs": "declare!();\n",
+                "src/sub/x.rs": "pub struct X;\n",
+                "src/x.rs": "pub struct Decoy;\n",
+            },
+        )
+        assert graph.has_edge("src/sub.rs", "src/sub/x.rs")
+        assert not graph.has_edge("src/sub.rs", "src/x.rs")
+
+    def test_same_macro_name_in_another_crate_is_not_paired(self, tmp_path: Path) -> None:
+        template = "macro_rules! declare {\n    () => { mod x; };\n}\n"
+        graph = self._build(
+            tmp_path,
+            {
+                "a/src/lib.rs": template + "declare!();\n",
+                "a/src/x.rs": "pub struct A;\n",
+                "b/src/lib.rs": template,
+                "b/src/x.rs": "pub struct B;\n",
+            },
+        )
+        assert graph.has_edge("a/src/lib.rs", "a/src/x.rs")
+        assert not graph.has_edge("b/src/lib.rs", "b/src/x.rs")
