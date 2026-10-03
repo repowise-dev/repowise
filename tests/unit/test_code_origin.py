@@ -463,7 +463,7 @@ def test_build_rs_under_src_is_a_dead_code_root_but_keeps_its_origin() -> None:
         ("internal/deps/resolver/resolve.go", "production"),
         ("src/deps/graph/mod.rs", "production"),
         ("lib/deps/tree/walk.js", "production"),
-        ("deps/Makefile.am", "production"),
+        ("deps/wslay.c", "production"),  # directly in deps/, no library directory
         ("src/deps.py", "production"),
         # Benchmarks beside the code they measure are tooling.
         ("absl/synchronization/mutex_benchmark.cc", "tooling"),
