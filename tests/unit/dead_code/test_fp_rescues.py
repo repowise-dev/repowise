@@ -149,6 +149,14 @@ def test_a_default_export_by_name_is_used_through_default(tmp_path: Path):
     assert "unusedHelper" in names
 
 
+def test_a_default_export_by_name_is_recorded_in_a_crlf_file():
+    from repowise.core.ingestion.extractors.visibility import ts_export_aliases
+
+    CRLF = chr(13) + chr(10)  # a Windows checkout's line ending
+    src = "const cssQuery = 1" + CRLF + CRLF + "export default cssQuery" + CRLF
+    assert ts_export_aliases(src) == {"default": "cssQuery"}
+
+
 def test_bundler_alias_shim_rescued(tmp_path: Path):
     # Both alias shapes seen in the wild: a plain relative string and a
     # bare segment fed through ``path.resolve(here, ...)``.

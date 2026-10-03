@@ -200,7 +200,7 @@ _TS_EXPORT_LIST_SOURCE_RE = re.compile(r"\bexport\s*\{([^}]*)\}\s*(from\b)?")
 # ``export { name as default }``. A declaration (``export default function f``)
 # or an expression (``export default f()``) does not match.
 _TS_EXPORT_DEFAULT_NAME_RE = re.compile(
-    r"^[ \t]*export[ \t]+default[ \t]+([A-Za-z_$][\w$]*)[ \t]*;?[ \t]*$", re.MULTILINE
+    r"^[ \t]*export[ \t]+default[ \t]+([A-Za-z_$][\w$]*)[ \t]*;?[ \t]*\r?$", re.MULTILINE
 )
 
 # Dropped outright rather than blanked: nothing downstream of the alias scan
