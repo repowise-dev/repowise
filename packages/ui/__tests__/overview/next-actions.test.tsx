@@ -261,3 +261,48 @@ describe("the fix_first rule", () => {
   });
 });
 
+describe("host-configurable hints", () => {
+  const unavailable = (): ActionsResponse => ({
+    ...response([], [action()]),
+    unavailable: { coverage: "no report" },
+  });
+  const withCli = () =>
+    action({
+      commands: [
+        { purpose: "See the file", cli: "repowise get-risk src/a.py", mcp: "get_risk(src/a.py)" },
+      ],
+    } as Partial<NextAction>);
+
+  it("shows the repowise update hint by default", () => {
+    render(<NextActions data={unavailable()} hrefFor={() => null} />);
+    expect(screen.getByText("repowise update").tagName).toBe("CODE");
+    expect(screen.getByText(/to include them\./)).toBeInTheDocument();
+  });
+
+  it("hides the hint sentence when unavailableHint is null", () => {
+    render(<NextActions data={unavailable()} hrefFor={() => null} unavailableHint={null} />);
+    expect(screen.getByText(/Not checked: coverage\./)).toBeInTheDocument();
+    expect(screen.queryByText("repowise update")).toBeNull();
+  });
+
+  it("renders a custom hint in place of the default", () => {
+    render(
+      <NextActions data={unavailable()} hrefFor={() => null} unavailableHint="Ask your admin." />,
+    );
+    expect(screen.getByText(/Ask your admin\./)).toBeInTheDocument();
+    expect(screen.queryByText("repowise update")).toBeNull();
+  });
+
+  it("shows CLI command lines by default and hides them with showCliCommands=false", async () => {
+    const data = response([], [withCli()]);
+    const { unmount } = render(<NextActions data={data} hrefFor={() => null} />);
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Raise test coverage/ }));
+    expect(await screen.findByText("repowise get-risk src/a.py")).toBeInTheDocument();
+    unmount();
+    render(<NextActions data={data} hrefFor={() => null} showCliCommands={false} />);
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText("repowise get-risk src/a.py")).toBeNull();
+    expect(within(dialog).getByText(/get_risk\(src\/a\.py\)/)).toBeInTheDocument();
+  });
+});

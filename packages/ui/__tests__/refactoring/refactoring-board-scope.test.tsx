@@ -105,3 +105,12 @@ describe("RefactoringBoard scope", () => {
     ).toBeTruthy();
   });
 });
+
+describe("RefactoringBoard without a host scope", () => {
+  it("shows no Scope control and no hidden-counts note", () => {
+    board({ scope: undefined, appliedScope: undefined, hidden: undefined, total: 1 });
+    expect(screen.queryByRole("radio", { name: "Worth doing" })).toBeNull();
+    expect(screen.queryByRole("radio", { name: "Full inventory" })).toBeNull();
+    expect(screen.queryByText(/more in the full inventory/)).toBeNull();
+  });
+});

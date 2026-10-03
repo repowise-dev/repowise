@@ -38,6 +38,13 @@ export interface NextActionsProps {
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
   /** An action's agent prompt as core renders it. Omit to hide the prompt. */
   loadPrompt?: ActionDrawerProps["loadPrompt"];
+  /**
+   * Replaces the sentence after the "Not checked" list. Omit for the default
+   * `repowise update` hint; pass `null` to show only the list.
+   */
+  unavailableHint?: ReactNode | null;
+  /** Show each command's CLI line in the drawer. Set false for a host with no CLI. */
+  showCliCommands?: boolean;
   LinkComponent?: ElementType | undefined;
 }
 
@@ -108,6 +115,8 @@ export function NextActions({
   fileHref,
   onSetState,
   loadPrompt,
+  unavailableHint,
+  showCliCommands,
   LinkComponent,
 }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
@@ -237,9 +246,16 @@ export function NextActions({
         )}
         {unavailable.length > 0 && (
           <span>
-            {`Not checked: ${unavailable.join(", ").replace(/_/g, " ")}. Run `}
-            <code className="font-mono text-[0.85em]">repowise update</code>
-            {" to include them."}
+            {`Not checked: ${unavailable.join(", ").replace(/_/g, " ")}.`}
+            {unavailableHint === undefined ? (
+              <>
+                {" Run "}
+                <code className="font-mono text-[0.85em]">repowise update</code>
+                {" to include them."}
+              </>
+            ) : unavailableHint === null ? null : (
+              <> {unavailableHint}</>
+            )}
           </span>
         )}
       </div>
@@ -255,6 +271,7 @@ export function NextActions({
             : undefined
         }
         loadPrompt={loadPrompt}
+        showCliCommands={showCliCommands}
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
