@@ -215,7 +215,8 @@ repowise init . --no-workspace                        # force single-repo, even 
 LanceDB install is broken, still saves its pages and full-text index but
 exits `1`, records `search.semantic: unavailable` in the index scope, and names
 the fix: reinstall the dependency, then `repowise reindex`. `update` follows the
-same rule. The keyless `mock` embedder never fails a run this way.
+same rule, and a workspace `init` exits `1` after saving every repo, naming the
+repos whose embed failed. The keyless `mock` embedder never fails a run this way.
 
 **Documentation output limit.** Set `max_tokens` in
 `.repowise/config.yaml` to bound each model-written page. It is persistent, not
@@ -2104,7 +2105,9 @@ Run health checks on the wiki setup. Auto-detects workspace mode; in workspace m
 
 A `Vector store` row fails when `.repowise/lancedb` exists but cannot be
 opened, and names the error. A store that opens but holds none of the indexable
-pages reports them all missing rather than in sync.
+pages reports them all missing rather than in sync. `--repair` does not re-embed
+such a store with a paid embedder: it prints the page count and points to
+`repowise reindex`.
 
 ```bash
 repowise doctor                          # auto-detects

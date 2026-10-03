@@ -74,6 +74,8 @@ async def _acall_tool(
         engine = create_engine(db_url)
         session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         store = await _open_vector_store(repo_path)
+        if tool_name in _VECTOR_TOOLS:
+            store = await _connect_or_degrade(store)
         init_tool_state(
             session_factory,
             FullTextSearch(engine),
@@ -122,6 +124,33 @@ def _budgeted(tool_name: str, result: dict) -> dict:
     )
 
 
+#: Tools whose answer reads the vector store. Only these open it up front:
+#: importing lancedb costs about a second, which every other tool skips.
+_VECTOR_TOOLS = frozenset({"search_codebase", "get_answer"})
+
+
+async def _connect_or_degrade(store: Any) -> Any:
+    """Open a LanceDB store now, or fall back and say so in ``_meta``.
+
+    The store imports lancedb lazily, so a missing or broken install only
+    fails on first use. A vector tool makes that use, so it is made here,
+    where a failure can still be reported instead of passing for healthy.
+    """
+    from repowise.core.persistence.vector_store import InMemoryVectorStore, LanceDBVectorStore
+
+    if not isinstance(store, LanceDBVectorStore):
+        return store
+    try:
+        await store._ensure_connected()
+        return store
+    except Exception as exc:
+        # The tool still answers from full-text search.
+        from repowise.server.mcp_server._server import _mark_vector_store_unreadable
+
+        _mark_vector_store_unreadable(exc)
+        return InMemoryVectorStore(embedder=store._embedder)
+
+
 async def _open_vector_store(repo_path: Path) -> Any:
     """The repo's LanceDB store, or an in-memory one when there is none.
 
@@ -142,23 +171,15 @@ async def _open_vector_store(repo_path: Path) -> Any:
     requested = resolve_embedder_for_repo(repo_path)
     embedder = build_embedder(requested, repo_path)
     _publish_embedder_status(requested, embedder)
+    from repowise.server.mcp_server import _state
+
+    _state._vector_store_errors.pop("", None)
     lance_dir = repo_path / REPOWISE_DIR / "lancedb"
     if lance_dir.is_dir():
         from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-        store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-        try:
-            # Connected here, as the server does: the store imports lancedb
-            # lazily, so a missing or broken install only fails on first use.
-            await store._ensure_connected()
-            return store
-        except Exception as exc:
-            # The tools that do not need vector search still work off the
-            # session factory and FTS, so degrade rather than refuse to run,
-            # but say so in ``_meta`` instead of passing for healthy.
-            from repowise.server.mcp_server._server import _mark_vector_store_unreadable
-
-            _mark_vector_store_unreadable(exc)
+        # Not opened here: see ``_connect_or_degrade``.
+        return LanceDBVectorStore(str(lance_dir), embedder=embedder)
     return InMemoryVectorStore(embedder=embedder)
 
 

@@ -530,7 +530,7 @@ def semantic_search_state() -> bool | None:
     status = getattr(_state, "_embedder_status", None)
     if not status:
         return None
-    if status.get("degraded"):
+    if status.get("degraded") or getattr(_state, "_vector_store_errors", None):
         return False
     return status.get("active") != "mock"
 
@@ -569,7 +569,8 @@ def _embedder_meta() -> dict[str, Any]:
         # Embedder never initialised, so there is nothing to report either way.
         # Absence means "not evaluated", distinct from an explicit ``false``.
         return {}
-    if not status.get("degraded"):
+    store_errors = getattr(_state, "_vector_store_errors", None) or {}
+    if not status.get("degraded") and not store_errors:
         if status.get("active") == "mock":
             return {"embedder": "mock", "embedder_degraded": False, "semantic_search": False}
         return {"embedder_degraded": False}
@@ -578,7 +579,7 @@ def _embedder_meta() -> dict[str, Any]:
         "embedder_degraded": True,
         "semantic_search": False,
     }
-    reason = status.get("reason")
+    reason = status.get("reason") or " ".join(store_errors.values())
     if reason:
         out["embedder_warning"] = reason
     return out

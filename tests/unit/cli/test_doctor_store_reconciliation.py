@@ -178,3 +178,46 @@ def test_an_empty_vector_store_is_not_in_sync(tmp_path: Path) -> None:
 
     assert ok is False
     assert detail == "2 missing, 0 orphaned"
+
+
+def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path, monkeypatch) -> None:
+    """An empty store is a whole reindex; doctor points there instead of spending."""
+    import shutil
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    lance_dir = repo_path / ".repowise" / "lancedb"
+    shutil.rmtree(lance_dir)
+    lance_dir.mkdir()
+
+    async def _empty_table():
+        store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+        await store._ensure_connected()
+        await store.close()
+
+    asyncio.run(_empty_table())
+    embedded: list[str] = []
+
+    async def _record(self, page_id, *_a, **_k):
+        embedded.append(page_id)
+
+    monkeypatch.setattr(LanceDBVectorStore, "embed_and_upsert", _record)
+    monkeypatch.setattr(
+        "repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "openai"
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.build_embedder", lambda _n, _p=None: MockEmbedder()
+    )
+    printed: list[str] = []
+    monkeypatch.setattr(
+        repo_checks.console, "print", lambda *a, **k: printed.append(" ".join(map(str, a)))
+    )
+
+    repo_checks._run_repo_checks(repo_path, repair=True)
+
+    assert embedded == []
+    out = " ".join(" ".join(printed).split())
+    assert "2 page(s) need embedding with openai" in out
+    assert "repowise reindex" in out

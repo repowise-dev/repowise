@@ -391,22 +391,23 @@ async def _warm_lancedb() -> None:
 def _mark_vector_store_unreadable(exc: BaseException, alias: str | None = None) -> None:
     """Flag semantic search degraded: the index exists but cannot be opened.
 
-    Reuses the embedder status ``build_meta`` already reads, so
-    ``embedder_degraded`` and ``embedder_warning`` carry it. Without this a
-    broken LanceDB install served an empty in-memory store with
+    Recorded in ``_state._vector_store_errors``, which ``build_meta`` reads
+    beside the embedder status, so ``embedder_degraded`` and
+    ``embedder_warning`` carry it and a later embedder resolve cannot erase it.
+    Without this a broken LanceDB install served an empty in-memory store with
     ``embedder_degraded: false``.
     """
+    from repowise.core.persistence.vector_store.lancedb_store import store_open_fix_hint
+
     where = f" for '{alias}'" if alias else ""
     reason = (
         f"The semantic index{where} exists but could not be opened "
         f"({type(exc).__name__}: {exc}). Semantic search (search_codebase, "
         "get_answer) is off; full-text search still works. To fix: "
-        "pip install --force-reinstall lancedb, then restart the MCP server."
+        f"{store_open_fix_hint(exc)}, then restart the MCP server."
     )
     _log.error(reason)
-    status = dict(_state._embedder_status or {"active": "mock", "requested": None})
-    status.update(degraded=True, reason=reason)
-    _state._embedder_status = status
+    _state._vector_store_errors[alias or ""] = reason
 
 
 async def _load_vector_stores(repo_path: str | None) -> None:
@@ -447,6 +448,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
                 # Step 2: pre-connect so first search() is instant.
                 await vs._ensure_connected()
                 vector_store = vs
+                _state._vector_store_errors.pop("", None)
         except Exception as exc:
             # ImportError included: with an index on disk, a missing lancedb
             # is as broken as an unreadable one. No index is a keyless repo.

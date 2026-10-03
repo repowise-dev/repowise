@@ -379,3 +379,95 @@ def test_reindex_clears_the_unavailable_stamp(tmp_path, monkeypatch):
     state = json.loads((repowise_dir / "state.json").read_text(encoding="utf-8"))
     assert state["index_scope"]["search"]["semantic"] == "available"
     assert state["index_scope"]["search"]["next_command"] is None
+
+
+def test_workspace_init_persists_every_repo_then_exits_nonzero(tmp_path, monkeypatch):
+    import git as gitpython
+
+    from repowise.cli.main import cli
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:9")
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    _broken_store(monkeypatch)
+    for name in ("api", "web"):
+        repo = tmp_path / name
+        repo.mkdir()
+        (repo / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        g = gitpython.Repo.init(repo)
+        g.index.add(["app.py"])
+        g.index.commit("init")
+
+    result = CliRunner().invoke(
+        cli,
+        ["init", str(tmp_path), "--index-only", "--embedder", "ollama", "--yes", "--all"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Embedding failed for" in " ".join(result.output.split())
+    for name in ("api", "web"):
+        state = json.loads((tmp_path / name / ".repowise" / "state.json").read_text("utf-8"))
+        assert state["index_scope"]["search"]["semantic"] == "unavailable"
+        assert state["index_scope"]["search"]["full_text"] == "available"
+
+
+def _indexed_repo_with_broken_store(tmp_path, monkeypatch) -> Path:
+    """An index-only repo pinned to a real embedder, with a store that fails.
+
+    Init itself exits 1 here (its embed fails too); the stamp is reset to
+    available so the update test proves the update is what marks it.
+    """
+    import subprocess
+
+    from repowise.cli.helpers import load_state, save_state
+    from repowise.cli.main import cli
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:9")
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    _broken_store(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+
+    git("init")
+    git("config", "user.email", "t@t.test")
+    git("config", "user.name", "T")
+    (repo / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "initial")
+    init = CliRunner().invoke(
+        cli, ["init", str(repo), "--index-only", "--embedder", "ollama", "--yes", "--no-workspace"]
+    )
+    assert init.exit_code == 1, init.output
+    state = load_state(repo)
+    state["index_scope"]["search"]["semantic"] = "available"
+    save_state(repo, state)
+
+    (repo / "a.py").write_text("def alpha():\n    return 2\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "change")
+    return repo
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param([], id="index-only render"),
+        pytest.param(["--docs", "--provider", "mock"], id="model generation"),
+    ],
+)
+def test_update_with_a_failing_store_exits_nonzero(tmp_path, monkeypatch, extra_args):
+    from repowise.cli.main import cli
+
+    repo = _indexed_repo_with_broken_store(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace", *extra_args])
+
+    assert result.exit_code == 1, result.output
+    assert "Embedding failed for" in " ".join(result.output.split())
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["index_scope"]["search"]["semantic"] == "unavailable"
+    assert state["index_scope"]["search"]["next_command"] == "repowise reindex"
