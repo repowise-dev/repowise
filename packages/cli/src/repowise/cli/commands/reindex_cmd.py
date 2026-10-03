@@ -293,6 +293,21 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         save_config_partial(Path(repo_path), embedder=embedder_name)
 
+    # The run that clears a failed embed must say so: init and update mark the
+    # semantic leg unavailable and point here, and nothing else flips it back.
+    if indexed and not failed and embedder_name != "mock":
+        from repowise.cli.helpers import load_config, load_state, save_state
+        from repowise.core.index_scope import stamp_index_scope
+
+        state = load_state(Path(repo_path))
+        if "index_scope" in state:
+            stamp_index_scope(
+                state,
+                load_config(Path(repo_path)),
+                search={"semantic": "available", "next_command": None},
+            )
+            save_state(Path(repo_path), state)
+
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
         + (f" ({failed} failed)" if failed else "")

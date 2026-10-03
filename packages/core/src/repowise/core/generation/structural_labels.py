@@ -40,42 +40,32 @@ ENGLISH_LABELS: dict[str, str] = {
     "file_plural": "files",
     "symbol": "Symbol",
     "kind": "Kind",
-    "signature": "Signature",
     "questions_heading": "Questions this page answers",
     # -- file page ---------------------------------------------------------
-    # The overview sentence is assembled from fragments rather than stored
-    # whole: four independent optional clauses would need sixteen variants as
-    # one string. A translation that needs a different order pays for it here.
-    "is_a": "is a",
-    "entry_point": "entry-point",
-    "test": "test",
-    "source_file": "source file",
-    "in_layer": "in the {layer} layer",
-    "part_of_module_cluster_intro": "part of the {community} module cluster",
-    "exposes_symbols": "It exposes {symbol_count} {symbol_word}.",
-    "exposes_symbols_and_depends": (
-        "It exposes {symbol_count} {symbol_word} and depends on {file_count} {file_word}."
-    ),
-    "public_symbol_singular": "public symbol",
-    "public_symbol_plural": "public symbols",
-    "other_file_singular": "other file",
-    "other_file_plural": "other files",
+    # The opening sentences carry a ``{subject}`` slot the template fills with
+    # the file's name for the page's first sentence and ``it_subject`` after.
+    "and_word": "and",
+    "and_count_more": "{count} more",
+    "it_subject": "It",
+    "file_defines": "{subject} defines {names}.",
+    "file_imported_by": "{subject} is imported by {names}.",
+    "file_imported_by_count": "{subject} is imported by {count} files{tests}.",
+    "of_them_tests": " ({count} of them tests)",
+    "largest_share": "{count} of them are in {directory}.",
+    "largest_share_code": "Of the others, {count} are in {directory}.",
+    "all_in_directory": "All of them are in {directory}.",
+    "file_imports": "{subject} imports {names}.",
+    "file_imports_count": "{subject} imports {count} files from this repository.",
+    "file_layer": "{subject} belongs to the {layer} layer.",
+    "file_layer_boundary": "{subject} belongs to the {layer} layer, and other layers import it.",
+    "file_layer_entry": "{subject} belongs to the {layer} layer and is an entry point into it.",
+    "file_entry_point": "{subject} is an entry point.",
+    "file_fallback": "{subject} is {article} {language} file.",
     "public_api": "Public API",
     "depends_on": "Depends on",
     "used_by": "Used by",
-    "imported_by_files": "Imported by {count} {file_word} in this repository.",
-    "usage_notes": "Usage Notes",
-    "part_of_module_cluster": "Part of the **{community}** module cluster.",
-    "layer": "Layer",
-    "role": "Role",
-    # The knowledge graph's three roles, spelled for a reader. The stored
-    # values are enum members and one of them, ``edge_connector``, says
-    # nothing at all outside the code that computes it.
-    "role_entry_point": "entry point into its layer",
-    "role_internal": "internal to its layer",
-    "role_boundary": "boundary — imported from other layers",
-    # Symbols the API table leaves out, named so the identifier stays on the
-    # page even though the row does not.
+    # Symbols the API list leaves out, named so the identifier stays on the
+    # page even though the entry does not.
     "also_defined": "Also defined: {names}.",
     # -- file page: history ------------------------------------------------
     "history": "History",
@@ -195,34 +185,31 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "file_plural": "Dateien",
         "symbol": "Symbol",
         "kind": "Art",
-        "signature": "Signatur",
         "questions_heading": "Fragen, die diese Seite beantwortet",
-        "is_a": "ist eine",
-        "entry_point": "Einstiegspunkt",
-        "test": "Test",
-        "source_file": "Quelldatei",
-        "in_layer": "in der Schicht {layer}",
-        "part_of_module_cluster_intro": "Teil des Modulclusters {community}",
-        "exposes_symbols": "Sie stellt {symbol_count} {symbol_word} bereit.",
-        "exposes_symbols_and_depends": (
-            "Sie stellt {symbol_count} {symbol_word} bereit und hängt von {file_count} "
-            "{file_word} ab."
+        "and_word": "und",
+        "and_count_more": "{count} weitere",
+        "it_subject": "Die Datei",
+        "file_defines": "{subject} definiert {names}.",
+        "file_imported_by": "{subject} wird von {names} importiert.",
+        "file_imported_by_count": "{subject} wird von {count} Dateien{tests} importiert.",
+        "of_them_tests": " (davon {count} Tests)",
+        "largest_share": "{count} davon liegen in {directory}.",
+        "largest_share_code": "Von den übrigen liegen {count} in {directory}.",
+        "all_in_directory": "Alle liegen in {directory}.",
+        "file_imports": "{subject} importiert {names}.",
+        "file_imports_count": "{subject} importiert {count} Dateien aus diesem Repository.",
+        "file_layer": "{subject} gehört zur Schicht {layer}.",
+        "file_layer_boundary": (
+            "{subject} gehört zur Schicht {layer} und wird aus anderen Schichten importiert."
         ),
-        "public_symbol_singular": "öffentliches Symbol",
-        "public_symbol_plural": "öffentliche Symbole",
-        "other_file_singular": "weiteren Datei",
-        "other_file_plural": "weiteren Dateien",
+        "file_layer_entry": (
+            "{subject} gehört zur Schicht {layer} und ist ein Einstiegspunkt in sie."
+        ),
+        "file_entry_point": "{subject} ist ein Einstiegspunkt.",
+        "file_fallback": "{subject} ist eine {language}-Datei.",
         "public_api": "Öffentliche API",
         "depends_on": "Abhängigkeiten",
         "used_by": "Wird verwendet von",
-        "imported_by_files": "Importiert von {count} {file_word} in diesem Repository.",
-        "usage_notes": "Nutzungshinweise",
-        "part_of_module_cluster": "Teil des Modulclusters **{community}**.",
-        "layer": "Schicht",
-        "role": "Rolle",
-        "role_entry_point": "Einstiegspunkt in ihre Schicht",
-        "role_internal": "innerhalb ihrer Schicht",
-        "role_boundary": "Randstelle — wird aus anderen Schichten importiert",
         "also_defined": "Ebenfalls definiert: {names}.",
         "history": "Historie",
         "history_commits": (

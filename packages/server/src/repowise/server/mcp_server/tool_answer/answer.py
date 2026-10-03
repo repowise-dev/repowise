@@ -171,9 +171,6 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _intersection_boost,
     _rerank_by_coverage,
 )
-from repowise.server.mcp_server.tool_answer.retrieval import (
-    serialize_candidates as _serialize_candidates,
-)
 from repowise.server.mcp_server.tool_answer.symbols import (
     _anchor_symbol_hits,
     _concept_anchor_hits,
@@ -349,7 +346,7 @@ async def get_answer(
 
     Responses fit 24,000 serialized chars. Pass ``include=["evidence"]`` for
     the deduplicated expanded evidence projection (32,000 chars). Reductions
-    carry counts and an exact recovery call.
+    carry counts and a recovery: repeat the call with that include.
 
     Args:
         question: developer question.
@@ -441,7 +438,7 @@ async def get_answer(
                 "symbol from another file, to avoid a confidently-wrong answer. "
                 'Re-check the qualifier, or call search_codebase mode="symbol" '
                 "on the base name to see every definition. The files retrieval "
-                "ranked for this question are in candidates.",
+                "ranked for this question are in candidate_files.",
                 repository=repository,
                 t0=t0,
             ),
@@ -600,7 +597,7 @@ async def get_answer(
         return await _degrade("synthesis-failed", failure_note)
 
     citations = [
-        h["target_path"] for h in hits if h["target_path"] and h["target_path"] in answer_text
+        h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
     ]
     if not citations:
         # Fall back to top-2 retrieval paths so the agent always has something to verify.
@@ -650,9 +647,7 @@ async def get_answer(
 
     # Where to look next, always: navigation, not evidence, so it survives the
     # shrinking of ``retrieval`` on high-confidence answers.
-    candidates = _serialize_candidates(resolved_pool)
-    if candidates:
-        payload["candidates"] = candidates
+    _with_candidates(payload, resolved_pool)
 
     # Persist only the trust-relevant retrieval state. The cache read rebuilds
     # timing/freshness metadata for the current request, then restores this
@@ -724,13 +719,14 @@ async def get_answer(
 
     High confidence is content-grounded and may be used directly. Medium
     confidence keeps the smallest verification evidence; low confidence leads
-    with an actionable local conclusion and ranked evidence. Provider keys and
+    with an actionable local conclusion and ranked evidence. ``candidate_files``
+    ranks the files worth opening that the citations do not name. Provider keys and
     network access are optional: local source, symbols, FTS, rationale, and
     data-shape evidence remain usable when embeddings or synthesis fail.
 
     Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
     for the deduplicated expanded projection, capped at 32,000. Reductions carry
-    totals, emitted counts, reasons, and an exact one-call recovery.
+    totals, emitted counts, reasons, and a recovery: the same call with that include.
 
     Args:
         question: Developer question.

@@ -116,7 +116,9 @@ describe("FixFirstSection", () => {
     getFixFirst.mockResolvedValue(queue([item({})]));
     updateFindingStatus.mockResolvedValue({});
     renderSection();
-    fireEvent.click(await screen.findByRole("button", { name: "Resolved" }));
+    // Rows start closed; the actions open with the row.
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
     await waitFor(() => expect(updateFindingStatus).toHaveBeenCalledTimes(2));
     expect(updateFindingStatus).toHaveBeenCalledWith("r1", "finding_1", "resolved");
     expect(updateFindingStatus).toHaveBeenCalledWith("r1", "finding_2", "resolved");
@@ -126,7 +128,8 @@ describe("FixFirstSection", () => {
     getFixFirst.mockResolvedValue(queue([item({})]));
     getFixFirstItemPrompt.mockResolvedValue({ flavor: "generic", text: "Core prompt text" });
     renderSection();
-    fireEvent.click((await screen.findAllByRole("button", { name: "Copy prompt for an agent" }))[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for an agent" })[0]!);
     expect(await screen.findByText("Core prompt text")).toBeTruthy();
     expect(getFixFirstItemPrompt).toHaveBeenCalledWith("r1", "fix1_a", {
       flavor: expect.any(String),

@@ -70,6 +70,7 @@ def tracked_files(repo_path: Path) -> set[Path] | None:
         proc = subprocess.run(
             ["git", "-C", str(repo_path), "ls-files", "-z"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             timeout=30,
             check=False,
         )

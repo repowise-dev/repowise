@@ -120,9 +120,8 @@ export function TriageView({
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
   /**
-   * What the page leads with, above the score. When set, the score drops to
-   * one secondary line with the rest behind "More": a ranked list of what to
-   * fix answers "what do I do?" and the score only answers "how bad is it?".
+   * Fix first, under the score. The score leads the page; the host renders
+   * this collapsed so the headline keeps the first screen.
    */
   leadSlot?: ReactNode;
 }) {
@@ -165,14 +164,14 @@ export function TriageView({
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        {/* The lead has its own request, so it never waits on this one. */}
-        {leadSlot}
         {/* Shapes and widths match the real layout. A skeleton that does not
             causes a reflow when content lands, which reads as slower than
             showing nothing. */}
         <Skeleton className="h-12 w-40 rounded-lg" />
         <Skeleton className="h-20 w-full max-w-[54ch] rounded-lg" />
         <Skeleton className="h-[74px] w-full" />
+        {/* Fix first has its own request, so it never waits on this one. */}
+        {leadSlot}
         <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
       </div>
     );
@@ -195,14 +194,13 @@ export function TriageView({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      {leadSlot}
       <CodeHealthLede
         summary={overview.summary}
         accuracy={overview.defect_accuracy ?? null}
         distribution={overview.distribution ?? null}
         pillar={overlay === "maintainability" ? "maintainability" : "health"}
-        variant={leadSlot ? "secondary" : "lead"}
       />
+      {leadSlot}
 
       <OverviewSection
         title="Code health map"

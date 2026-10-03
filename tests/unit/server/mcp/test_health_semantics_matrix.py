@@ -14,6 +14,9 @@ from typing import Any, Literal
 
 import pytest
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 PlanReason = Literal[
     "no_applicable_findings",
     "plan_analysis_indeterminate",

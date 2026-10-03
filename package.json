@@ -8,7 +8,8 @@
     "packages/ui",
     "packages/api-client",
     "packages/web",
-    "packages/vscode"
+    "packages/vscode",
+    "packages/claude-mod"
   ],
   "scripts": {
     "dev": "cd packages/web && npm run dev",

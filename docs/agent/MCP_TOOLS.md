@@ -92,9 +92,9 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 | `complete` | Symbol bodies or whole files served verified against the live file. Do not re-read them. |
 | `state` | `degraded`, `partial` or `truncated` when something fired, with reasons. A degraded empty result is a failed read, not an empty repository. |
 | `omitted` | Refs to content cut for size. Restore with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. |
-| `response_budget` | The character ceiling that applied and the size delivered. |
+| `response_budget` | The character ceiling that applied and the size delivered. Present when the budget cut something. |
 
-`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
+`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
 
 ### Reversible truncation: `_meta.omitted`
 
@@ -147,9 +147,9 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 | `include` | list[string] | none | `["evidence"]` returns the full evidence projection with a larger budget |
 
-**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
+**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
-A `high` answer can be cited directly. On `low`, read the rows the reply names before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
+A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
 
 ```
 get_answer(question="How does the authentication flow work?")
@@ -162,11 +162,13 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | File paths, module paths, or `"path::Symbol"` ids |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
+
+A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
 `skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
 
@@ -198,19 +200,19 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ### `search_codebase`
 
-Hybrid search that routes by the shape of the query: identifiers search the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both. Use it when you want ranked hits themselves: enumerating matches, resolving an identifier to a `symbol_id`, scoping a later `get_context`. For a question, call `get_answer`; it runs this retrieval internally.
+Hybrid search that routes by the shape of the query: identifiers search the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it when you want ranked hits themselves: enumerating matches, resolving an identifier to a `symbol_id`, scoping a later `get_context`. For a question, call `get_answer`; it runs this retrieval internally.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `query` | string | required | Identifier, path or natural-language text |
-| `limit` | int | `5` | Max results |
+| `limit` | int | `5` | Max results. Outside `symbol` mode, at most this many distinct files: same-file hits share one row |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path` or `hybrid`. An unknown mode runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Filter symbol hits, e.g. `function`, `class`, `method` |
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` to search every repo |
 
-**Key return fields:** `results` (symbol hits carry `symbol_id`, `file`, line bounds and `signature`; file hits carry `file`; concept hits carry `relevance_score`, `snippet` and `sources`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+**Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
 
 ```
 search_codebase(query="GitIndexer index_repo")

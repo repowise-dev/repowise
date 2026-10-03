@@ -861,8 +861,10 @@ async def test_get_context_meta_envelope(setup_mcp):
     result = await get_context(["src/payments/charge.py"])
     assert "_meta" in result
     meta = result["_meta"]
-    assert "contract_version" in meta
-    assert "timing_ms" in meta
+    assert "index_age_days" in meta
+    # Diagnostics stay off a routine response.
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
     # hint was dead/always None and has been removed; no empty or spurious hint field
     assert "hint" not in meta
 

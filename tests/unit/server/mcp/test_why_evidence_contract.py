@@ -16,6 +16,9 @@ from repowise.server.mcp_server._why_evidence import (
 )
 from repowise.server.mcp_server.tool_why import _rank_keyword_matches
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _row_by_id(result: dict, decision_id: str) -> dict:
     """The row for *decision_id*, from whichever lane the response put it in.

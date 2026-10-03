@@ -173,20 +173,69 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     (``_looks_like_code_name``) counts even unindexed, so a search can say it
     does not exist. ``names`` is tested for the token, then for its lowered
     form, so a container that also answers for each name's lowered spelling
-    gets the case-insensitive leg.
+    gets the case-insensitive leg. A one-hump word (``Add``, ``API``) is also
+    an English word, so it counts only in code context (``_in_code_context``);
+    all-caps constants (``DEBUG``, ``TIMEOUT``) included.
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
     return [
-        token
-        for token in _name_tokens(query)
-        if _names_symbol(token, names) or _looks_like_code_name(token)
+        m.group()
+        for m in _name_token_matches(query)
+        if _looks_like_code_name(m.group())
+        or (
+            _names_symbol(m.group(), names)
+            and (not _one_hump(m.group()) or _in_code_context(query, m))
+        )
+    ]
+
+
+def _name_token_matches(query: str) -> list[re.Match[str]]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [
+        m
+        for m in _WORD_CHAIN_RE.finditer(query)
+        if "." in m.group() or _identifier_shaped(m.group())
     ]
 
 
 def _name_tokens(query: str) -> list[str]:
-    """Words that could name a symbol: identifier-shaped, or dotted chains."""
-    return [t for t in _WORD_CHAIN_RE.findall(query) if "." in t or _identifier_shaped(t)]
+    return [m.group() for m in _name_token_matches(query)]
+
+
+def _one_hump(token: str) -> bool:
+    """``Add``, ``Client``, ``API``: letters only, one capitalised hump. Go
+    exports plain English words, so prose (``Add support for``) names them."""
+    return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
+
+
+_CALLED_RE = re.compile(r"\(|::")  # no space: "Add (optional) support" is prose
+_ASKS_AFTER_RE = re.compile(
+    r"^\s*(?:where\s+is|where's|where\s+are|what\s+does|how\s+is|how\s+does|how\s+do)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_LOOKUP_VERB_RE = re.compile(r"\b(?:find|show|open|locate)\s+$", re.IGNORECASE)
+_BARE_LEAD_RE = re.compile(r"^\s*(?:the\s+)?$", re.IGNORECASE)
+_KIND_TAIL_RE = re.compile(
+    r"\s+(?:class|struct|interface|trait|function|method|type|enum)\W*$", re.IGNORECASE
+)
+
+
+def _in_code_context(query: str, m: re.Match[str]) -> bool:
+    """Code syntax around the word (backtick span, ``Add(``, ``Client::new``),
+    or a short lookup frame (``where is Session``, ``find Config``,
+    ``the Router struct``). Issue prose ("Add support for", "Add type
+    annotations") fits none. Dotted chains never get here."""
+    before, after = query[: m.start()], query[m.end() :]
+    if before.count("`") % 2 or before.endswith("::") or _CALLED_RE.match(after):
+        return True
+    if _ASKS_AFTER_RE.match(before):
+        return True
+    if len(query.split()) > 3:
+        return False
+    return bool(
+        _LOOKUP_VERB_RE.search(before) or (_BARE_LEAD_RE.match(before) and _KIND_TAIL_RE.match(after))
+    )
 
 
 def _name_lookup_keys(query: str) -> set[str]:

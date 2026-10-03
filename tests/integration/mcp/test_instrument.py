@@ -61,11 +61,8 @@ async def test_wrapped_tool_records_and_preserves_output(repo: Path) -> None:
     wrapped = instrument(get_context)
     out = await wrapped(["a.py"])
 
-    # User-facing payload unchanged; only additive _meta savings fields appear.
-    assert out["targets"] == expected["targets"]
-    assert out["_meta"]["timing_ms"] == 1.0
-    assert out["_meta"]["replaced_tokens"] == 4000
-    assert out["_meta"]["tokens_saved"] > 0
+    # User-facing payload unchanged; the saving is recorded, not served.
+    assert out == expected
 
     row = _ledger(repo)["mcp:get_context"]
     assert row["raw_tokens"] == 4000
@@ -73,10 +70,25 @@ async def test_wrapped_tool_records_and_preserves_output(repo: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_debug_meta_serves_the_savings_fields(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+    out = await instrument(get_context)(["a.py"])
+
+    assert out["_meta"]["timing_ms"] == 1.0
+    assert out["_meta"]["replaced_tokens"] == 4000
+    assert out["_meta"]["tokens_saved"] > 0
+
+
+@pytest.mark.asyncio
 async def test_declared_counterfactual_wins(repo: Path) -> None:
     wrapped = instrument(get_symbol)
     out = await wrapped("a.py::f")
-    assert out["_meta"]["replaced_tokens"] == 5000
+    # Read by the wrapper, then removed so it never reaches the agent.
+    assert "replaced_tokens" not in out["_meta"]
     assert _ledger(repo)["mcp:get_symbol"]["raw_tokens"] == 5000
 
 

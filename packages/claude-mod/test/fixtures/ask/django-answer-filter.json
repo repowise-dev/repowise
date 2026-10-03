@@ -1,0 +1,10 @@
+{
+  "answer": "Synthesis is unavailable (no-llm-provider). Source rationale in django/utils/tree.py: A class for storing a tree graph. Primarily used for filter constructs in the ORM.",
+  "citations": [
+    "django/utils/tree.py",
+    "django/db/models/sql/constants.py"
+  ],
+  "confidence": "low",
+  "retrieval_quality": "weak",
+  "degraded": "no-llm-provider"
+}

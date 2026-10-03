@@ -10,6 +10,44 @@
   "homepage": "https://repowise.dev",
   "repository": "https://github.com/repowise-dev/repowise",
   "license": "AGPL-3.0",
+  "userConfig": {
+    "lens_margin": {
+      "type": "boolean",
+      "title": "Lens margin notes",
+      "description": "Under an Edit or Write, show the governing decision or recent fix history the Repowise hook flagged for that file.",
+      "default": true
+    },
+    "lens_squeeze": {
+      "type": "boolean",
+      "title": "Lens squeeze rows",
+      "description": "Under a Bash result that repowise distill shortened, show the lines before and after and the command that restores the rest.",
+      "default": true
+    },
+    "lens_review": {
+      "type": "boolean",
+      "title": "Lens change review",
+      "description": "After a turn that edits files, review the working tree with get_change_risk and show the result beneath Claude's answer.",
+      "default": true
+    },
+    "lens_flow": {
+      "type": "boolean",
+      "title": "Lens Flow tab",
+      "description": "Show a dashboard of each turn in the /lens pane's Flow tab: what an edit reaches that Claude did not look at, the files it worked from, what filled its context, and what Repowise answered.",
+      "default": true
+    },
+    "lens_pane_autoopen": {
+      "type": "boolean",
+      "title": "Open the Lens map on the first read",
+      "description": "Opens the Lens map pane when Claude first reads a file, if the terminal is wide enough to place it without asking. /lens opens it at any time.",
+      "default": false
+    },
+    "lens_map_health": {
+      "type": "boolean",
+      "title": "Lens map health colours",
+      "description": "Colours the Lens map's tiles by code health from the start. Off, the map is quiet tiles that light up with the files Claude touches; the Health colours button in the map turns the bands on at any time.",
+      "default": false
+    }
+  },
   "keywords": [
     "codebase",
     "code-intelligence",

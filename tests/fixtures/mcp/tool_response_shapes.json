@@ -11,18 +11,18 @@
           "arguments": {
             "include": [
               null
-            ],
-            "question": null
+            ]
           },
+          "same_arguments": null,
           "tool": null
         }
       },
       "timing_ms": null
     },
     "answer": null,
-    "candidates_emitted": null,
-    "candidates_reduced_reason": null,
-    "candidates_total": null,
+    "candidate_files": [
+      null
+    ],
     "citations": [
       null
     ],
@@ -2035,13 +2035,14 @@
     "results": [
       {
         "confidence_score": null,
+        "page_id": null,
         "page_type": null,
+        "path": null,
         "relevance_score": null,
         "snippet": null,
         "sources": [
           null
         ],
-        "target_path": null,
         "title": null
       }
     ]

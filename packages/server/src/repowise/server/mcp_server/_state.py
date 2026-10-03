@@ -58,6 +58,12 @@ _test_impact_lock: tuple[Any, asyncio.Lock] | None = None
 # "degraded": bool, "reason": str (only when degraded)}.
 _embedder_status: dict[str, Any] | None = None
 
+# Semantic indexes that exist on disk but would not open, keyed by repo alias
+# ("" for the single-repo server), valued with the reason. Kept apart from
+# ``_embedder_status`` because resolving the embedder again (every workspace
+# repo load) rewrites that, and must not clear a store failure.
+_vector_store_errors: dict[str, str] = {}
+
 # Release currency. The stdio server is the longest-lived process the product
 # runs and was the one path that never checked PyPI, so a client could sit on
 # an old release for weeks with no signal. ``_release_check`` is the latest

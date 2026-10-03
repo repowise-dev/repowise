@@ -205,7 +205,9 @@ the optional `query` parameter searches within the stored content. See
 
 MCP calls also record a counterfactual saving (the raw file exploration the
 answer replaced) as `mcp:<tool>` rows in the same ledger. Truncation is folded
-into that figure, so it is never counted twice.
+into that figure, so it is never counted twice. The saving is recorded, not
+served: `_meta.tokens_saved` and `_meta.replaced_tokens` appear on a response
+only with `REPOWISE_MCP_DEBUG_META=1` (and on `get_overview`).
 
 ---
 

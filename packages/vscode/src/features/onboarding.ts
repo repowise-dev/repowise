@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { Commands } from "../constants";
+import { Commands, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 
 /** Grace period before the one deferred CLI-presence probe runs. */
@@ -120,6 +120,8 @@ export function registerOnboarding(ctx: RepowiseContext): vscode.Disposable {
         if (choice === "Start Server") {
           void vscode.commands.executeCommand(Commands.startServer);
         }
+        // Then, once ever, what repowise.dev adds (owned by the hosted feature).
+        void vscode.commands.executeCommand(InternalCommands.offerPublish);
       })();
     };
     watcher.onDidCreate(onCreated);

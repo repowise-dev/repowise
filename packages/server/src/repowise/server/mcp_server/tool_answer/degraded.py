@@ -50,7 +50,7 @@ def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> st
             f"`symbol_bodies` carries the live source of {names}, read from the "
             "current checkout"
             + (", cut at the line cap where noted; see `continuation`. " if cut else " in full. ")
-            + "Answer from that; `retrieval`, `fallback_targets` and `candidates` "
+            + "Answer from that; `retrieval`, `fallback_targets` and `candidate_files` "
             "cover the wider question."
         )
     if served:
@@ -58,7 +58,7 @@ def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> st
             f"No synthesized prose ({reason}), but retrieval succeeded and this "
             f"payload is usable: {served} ranked "
             f"{'hit' if served == 1 else 'hits'} in `retrieval`, the files to open "
-            "in `fallback_targets`, and the wider ranked shortlist in `candidates`. "
+            "in `fallback_targets`, and the wider ranked shortlist in `candidate_files`. "
             "Read those rather than starting a fresh search."
         )
     return (

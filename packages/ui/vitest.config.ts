@@ -63,6 +63,7 @@ export default defineConfig({
         "../types/src/risk-semantics.ts",
       ),
       "@repowise-dev/types/repos": path.resolve(__dirname, "../types/src/repos.ts"),
+      "@repowise-dev/types/serve-lock": path.resolve(__dirname, "../types/src/serve-lock.ts"),
       "@repowise-dev/types/generated/http": path.resolve(
         __dirname,
         "../types/src/generated/http.ts",

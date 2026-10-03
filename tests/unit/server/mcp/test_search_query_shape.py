@@ -123,6 +123,87 @@ def test_resolve_mode_routes_on_validated_identifiers() -> None:
     assert _resolve_mode("how does the TypeScript client work", None, _NAMES) == "concept"
 
 
+# Go exports plain English words as methods and types.
+_ONE_HUMP = {"Add", "Fixes", "Client", "Do", "API", "HTTPClient", "TypeScript"}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Add support for retries in the transport",
+        "Fixes a panic when the pool is closed twice",
+        "Client should retry when the API returns 503",
+    ],
+)
+def test_a_one_hump_word_in_prose_is_not_an_identifier(query) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == []
+    assert _resolve_mode(query, None, _ONE_HUMP) == "concept"
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("support for `Add` in the transport", ["Add"]),
+        ("why does `the API` reject retries", ["API"]),
+        ("calling Add() twice panics", ["Add"]),
+        ("retries in Client.Do are lost", ["Client.Do"]),
+        ("the transport calls x.Add on close", ["x.Add"]),
+        # Multi-hump names are validated as before, in prose too.
+        ("HTTPClient should retry on TypeScript errors", ["HTTPClient", "TypeScript"]),
+    ],
+)
+def test_a_one_hump_word_in_code_context_is_an_identifier(query, expected) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == expected
+    assert _resolve_mode(query, None, _ONE_HUMP) == "hybrid"
+
+
+_FRAMED = {"Add", "Fixes", "Client", "Session", "Router", "Handler", "Config", "Base64"}
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("where is Session defined", ["Session"]),
+        ("what does Client do", ["Client"]),
+        ("Session class", ["Session"]),
+        ("the Router struct", ["Router"]),
+        ("how is Handler implemented", ["Handler"]),
+        ("find Config", ["Config"]),
+        ("Client::new", ["Client"]),
+        ("Add::new()", ["Add"]),
+        # A digit makes it more than a word, so it is validated as before.
+        ("decode with Base64 fails", ["Base64"]),
+    ],
+)
+def test_a_one_hump_word_in_a_lookup_frame_is_an_identifier(query, expected) -> None:
+    assert _embedded_identifiers(query, _FRAMED) == expected
+    assert _resolve_mode(query, None, _FRAMED) == "hybrid"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Add support for custom headers",
+        "Fixes a panic when the pool is closed",
+        "Client should retry on 503",
+        "Add function to retry",
+        "Add type annotations",
+        "Add class for Config",
+        "Find Client retry bug",
+        "Show Client errors in the UI",
+        "Open Config file fails",
+        "The Client type is wrong",
+        "Fix the Client type error",
+        "Add the Client class",
+        "Show Session timeout in the dashboard",
+        "Add (optional) support for retries",
+    ],
+)
+def test_issue_text_with_one_hump_names_stays_concept(query) -> None:
+    assert _embedded_identifiers(query, _FRAMED) == []
+    assert _resolve_mode(query, None, _FRAMED) == "concept"
+
+
 @pytest.mark.parametrize(
     "token",
     [

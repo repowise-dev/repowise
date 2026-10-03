@@ -36,6 +36,47 @@ def test_claude_plugin_manifest_paths() -> None:
     assert "[TODO" not in manifest_path.read_text(encoding="utf-8")
 
 
+def test_claude_plugin_lens_module() -> None:
+    hooks = _load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
+
+    # The engine takes exactly one module, relative to hooks.json.
+    assert hooks["modules"] == ["./lens/lens.js"]
+    bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
+    assert bundle.is_file()
+    assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("field", "default", "read_as"),
+    [
+        # On by default: the bundle treats only `false` as off.
+        ("lens_margin", True, "!== false"),
+        ("lens_squeeze", True, "!== false"),
+        ("lens_review", True, "!== false"),
+        ("lens_flow", True, "!== false"),
+        # Off by default: the map opens unasked only for someone who turned this on.
+        ("lens_pane_autoopen", False, "=== true"),
+        # Off by default: the map is quiet tiles; health colours are a button away.
+        ("lens_map_health", False, "=== true"),
+    ],
+)
+def test_claude_plugin_lens_toggles(field: str, default: bool, read_as: str) -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+
+    assert set(config[field]) == {"type", "title", "description", "default"}
+    assert config[field]["type"] == "boolean"
+    assert config[field]["default"] is default
+    assert "—" not in config[field]["description"]
+    bundle = (PLUGIN_ROOT / "hooks" / "lens" / "lens.js").read_text(encoding="utf-8")
+    assert f'options["{field}"] {read_as}' in bundle
+
+
+def test_claude_plugin_lens_toggles_are_all_tested() -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+
+    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_flow", "lens_pane_autoopen", "lens_map_health"}
+
+
 def test_claude_plugin_mcp_uses_repowise() -> None:
     config = _load_json(PLUGIN_ROOT / ".mcp.json")
 

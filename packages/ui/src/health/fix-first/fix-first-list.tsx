@@ -35,6 +35,11 @@ export interface FixFirstListProps {
   LinkComponent?: ElementType | undefined;
   /** Drop the section's top hairline when it opens the page. */
   flush?: boolean | undefined;
+  /**
+   * Closed by default: the score leads Code Health, and Fix first sits under
+   * it as one line with its count until the reader opens it.
+   */
+  defaultOpen?: boolean | undefined;
 }
 
 export function FixFirstList({
@@ -49,16 +54,16 @@ export function FixFirstList({
   onTriage,
   loadPrompt,
   LinkComponent,
-  flush = true,
+  flush = false,
+  defaultOpen = false,
 }: FixFirstListProps) {
-  // The lead opens expanded: it is the one thing this section says to do.
-  const [open, setOpen] = useState<ReadonlySet<string> | null>(null);
-  const expanded = open ?? new Set(queue?.lead ? [queue.lead.id] : []);
+  // Every row starts as its one or two scan lines; the detail opens per row.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const toggle = (id: string) => {
     const next = new Set(expanded);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setOpen(next);
+    setExpanded(next);
   };
   const [promptFor, setPromptFor] = useState<FixItem | null>(null);
   // Only fetched while the modal is open on an item; stable per item.
@@ -83,13 +88,20 @@ export function FixFirstList({
     ? `${fixFirstScopeSentence(queue)}${scope === "all" ? " Test files are included." : ""}`
     : undefined;
 
+  const count = queue ? queue.items.length : null;
+
   return (
     <OverviewSection
       title="Fix first"
       flush={flush}
-      action={toggleTests}
+      collapsible
+      defaultOpen={defaultOpen}
+      {...(count !== null ? { hint: `${count} ${count === 1 ? "item" : "items"}` } : {})}
       {...(description ? { description } : {})}
     >
+      {/* A collapsible section has no header action slot, so the toggle
+          leads the body. */}
+      {toggleTests ? <div>{toggleTests}</div> : null}
       {error ? (
         <ApiError
           title="Couldn't load Fix first"

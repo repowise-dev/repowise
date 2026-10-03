@@ -252,6 +252,12 @@
         "title": "Open Settings",
         "category": "Repowise",
         "icon": "$(gear)"
+      },
+      {
+        "command": "repowise.publish",
+        "title": "Publish to repowise.dev",
+        "category": "Repowise",
+        "icon": "$(cloud-upload)"
       }
     ],
     "menus": {
@@ -320,7 +326,7 @@
       {
         "view": "repowise.home",
         "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
-        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings."
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
       },
       {
         "view": "repowise.home",
@@ -523,6 +529,15 @@
               "markdown": "media/walkthrough/connect-mcp.md"
             },
             "completionEvents": ["onCommand:repowise.configureMcp"]
+          },
+          {
+            "id": "shareTeam",
+            "title": "Share with your team and connect Claude.ai",
+            "description": "Publish this repo to repowise.dev: one link your team can open, and an MCP address for Claude.ai and ChatGPT. Free for public repos.\n[Publish It Free](command:repowise.publish)",
+            "media": {
+              "markdown": "media/walkthrough/share-team.md"
+            },
+            "completionEvents": ["onCommand:repowise.publish"]
           }
         ]
       }
