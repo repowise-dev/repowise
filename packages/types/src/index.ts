@@ -36,3 +36,4 @@ export * from "./stats.js";
 export * from "./refactoring.js";
 export * from "./fix-first.js";
 export * from "./agent-prompts.js";
+export * from "./serve-lock.js";
