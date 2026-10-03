@@ -14,6 +14,7 @@
     "./types": "./src/types.ts",
     "./blast-radius": "./src/blast-radius.ts",
     "./c4": "./src/c4.ts",
+    "./cache": "./src/cache.ts",
     "./chat": "./src/chat.ts",
     "./code-health": "./src/code-health.ts",
     "./costs": "./src/costs.ts",
