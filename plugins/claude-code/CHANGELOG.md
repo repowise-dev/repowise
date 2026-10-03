@@ -2,6 +2,31 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
+  registered through the `modules` entry in `hooks.json`). It shows the index
+  to the person at the keyboard: setup, freshness and savings rows above the
+  prompt, the file's caller and contributor counts in the spinner, margin notes
+  under Edit and Write repeating what the augment hook flagged, a row under
+  Bash output `repowise distill` shortened, a `get_change_risk` review beneath
+  Claude's answer after a turn that edits files (with `Run tests`, `Why` and
+  `Details` buttons), and a `/lens` pane with a health map, an Ask tab
+  (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  a `Brief Claude` button. In the desktop app the map draws as SVG.
+- Four `userConfig` toggles: `lens_margin`, `lens_squeeze` and `lens_review`
+  (on by default) and `lens_pane_autoopen` (off).
+- Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
+  mods are switched off, load the rest of the plugin unchanged. Lens never
+  denies, holds or rewrites Claude's tool calls. It approves only its own
+  read-only calls to this plugin's MCP server (`get_context`,
+  `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
+  without a button press. Ask questions that do not start with "why" go to
+  `get_answer`, which may use the model your repo configures. See
+  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
+  [footprint](../../docs/agent/LENS.md#footprint).
+
 ## 0.54.0
 
 ### Changed

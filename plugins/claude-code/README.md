@@ -125,6 +125,26 @@ No LLM, no network. (`repowise init` installs the same hooks in
 `~/.claude/settings.json`; running both is safe — duplicate enrichment is
 de-duplicated.)
 
+## Lens
+
+Lens is the part of the plugin you see, a Claude Code mod that ships in
+`hooks/lens/`. It adds the file's reach to the spinner, margin notes under
+edits, a row under output `repowise distill` shortened, a change review under
+Claude's answer after a turn that edits files, and a `/lens` pane with a health
+map, an Ask tab and a session recap. Lens never blocks or rewrites Claude's
+tool calls, makes no model calls of its own, and sends Claude nothing unless you
+press a button. Ask questions that do not start with "why" go to `get_answer`,
+which may use the model your repo configures. See
+[the footprint](../../docs/agent/LENS.md#footprint) for the full list.
+
+It needs Claude Code 2.1.287 or later and an indexed repo. The map and the
+savings row also need `repowise serve --no-ui`. Four `userConfig` toggles
+control it: `lens_margin`, `lens_squeeze` and `lens_review` (on by default) and
+`lens_pane_autoopen` (off). On an older Claude Code, or where mods are switched
+off, the rest of the plugin works as before.
+
+Guide: [docs/agent/LENS.md](../../docs/agent/LENS.md)
+
 ## Requirements
 
 - Python 3.11+

@@ -558,6 +558,15 @@ hover, and refactoring plans as CodeLens. One install also registers the MCP ser
 so the same index serves you and your agent. Install from the Marketplace or Open VSX
 and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
 
+**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
+knows while Claude works: the file it is on and how many files depend on it, a change
+review after a turn that edits files (code health, tests to run, other branches on the
+same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
+a map of the repo lit by what Claude searched, opened and edited and what its edits
+reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
+Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
+map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
+
 ---
 
 ## The ten MCP tools
