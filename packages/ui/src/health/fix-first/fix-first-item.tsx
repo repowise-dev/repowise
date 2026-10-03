@@ -39,6 +39,10 @@ const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--col
 const LINK =
   "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
 
+/** File paths are reference text: muted at rest, readable on hover, never accent. */
+const PATH_LINK =
+  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+
 export interface FixFirstItemProps {
   item: FixItem;
   expanded: boolean;
@@ -90,14 +94,14 @@ export function FixFirstItem({
             onClick={onToggle}
             aria-expanded={expanded}
             aria-controls={panelId}
-            className="group flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="group/row flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
-            <span className="min-w-0 text-[13px] font-medium leading-5 text-[var(--color-text-primary)] [overflow-wrap:anywhere] group-hover:text-[var(--color-accent-primary)]">
+            <span className="min-w-0 text-[13px] font-medium leading-5 text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
               {item.title}
             </span>
             <ChevronDown
               aria-hidden
-              className={`mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform ${
+              className={`mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-[transform,color] group-hover/row:text-[var(--color-text-primary)] ${
                 expanded ? "rotate-180" : ""
               }`}
             />
@@ -105,7 +109,7 @@ export function FixFirstItem({
 
           <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 text-xs leading-4">
             {href ? (
-              <Link href={href} className={`font-mono [overflow-wrap:anywhere] ${LINK}`}>
+              <Link href={href} className={`font-mono [overflow-wrap:anywhere] ${PATH_LINK}`}>
                 {location}
               </Link>
             ) : (
@@ -212,7 +216,7 @@ function Steps({
                 </p>
                 <p className="mt-0.5 font-mono text-xs [overflow-wrap:anywhere]">
                   {href ? (
-                    <Link href={href} className={LINK}>
+                    <Link href={href} className={PATH_LINK}>
                       {where}
                     </Link>
                   ) : (
