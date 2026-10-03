@@ -16,9 +16,9 @@ def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, o
         return None
     # Deferred so ``--no-workspace`` and ``--help`` skip the config module and
     # its yaml import entirely.
-    from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+    from repowise.core.workspace.config import WorkspaceConfig, workspace_root_for_path
 
-    workspace_root = find_workspace_root(path)
+    workspace_root = workspace_root_for_path(path)
     if workspace_root is None:
         return None
 

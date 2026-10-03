@@ -33,6 +33,7 @@ _EXPORTS: dict[str, str] = {
     "WorkspaceConfig": "config",
     "ensure_workspace_data_dir": "config",
     "find_workspace_root": "config",
+    "workspace_root_for_path": "config",
     "CONTRACTS_FILENAME": "contracts",
     "Contract": "contracts",
     "ContractLink": "contracts",
