@@ -44,15 +44,11 @@ Works, Active Landscape and Glossary. Project Overview is not generated
 separately, the repository overview is tagged into that slot, and Glossary is
 rendered from mined terms with no model in every run, keyed or not.
 
-`architecture_diagram` was retired. Its diagram became the overview's system
-map, a tiered diagram of who uses the system, the ways in, the server, the
-engine and the data store. Structure picks its boxes and arrows; a configured
-model only names them, inside the overview call. An inbound link to a retired
-diagram page lands on the repository overview.
-
-`layer_page` was retired. Layers stopped being pages and became grouping rows in
-the docs tree, built from provenance stamped on their members. An inbound link
-to a retired layer page lands on the repository overview.
+Layers are grouping rows in the docs tree, built from provenance stamped on
+their members, not pages of their own. The repository overview carries the
+system map, a tiered diagram of who uses the system, the ways in, the server,
+the engine and the data store. Structure picks its boxes and arrows; a
+configured model only names them.
 
 ## Which pages exist
 
