@@ -47,6 +47,19 @@ class PublishRequest(BaseModel):
     repo_id: str = Field(..., min_length=1)
 
 
+class PublishResponse(BaseModel):
+    """``repowise publish --format json``, passed through unchanged."""
+
+    #: ``published | curated | needs_app | needs_plan | cap | too_big |
+    #: rate_limited | not_github | signed_out | offline | error``.
+    outcome: str
+    message: str
+    url: str | None = None
+    details: list[str] = Field(default_factory=list)
+    open_url: str | None = None
+    repo: str | None = None
+
+
 @router.get("/identity", response_model=IdentityResponse)
 async def get_identity() -> IdentityResponse:
     """Sign-in state and the tips switch, read from ``~/.repowise``."""
@@ -92,7 +105,7 @@ def _run_publish(local_path: str) -> dict:
     }
 
 
-@router.post("/publish")
+@router.post("/publish", response_model=PublishResponse)
 async def publish(body: PublishRequest, request: Request) -> dict:
     """Publish one indexed repo on repowise.dev, answering with the CLI's result."""
     factory = resolve_session_factory(request.app.state, body.repo_id)
