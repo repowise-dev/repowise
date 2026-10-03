@@ -10,7 +10,7 @@ import { bandView } from "../src/views/band";
 import { BRIEF_PRESS, briefBandRow, briefText, listWithin } from "../src/views/brief";
 import { ASK_CHARS, BRIEF_CHARS, savingsLine } from "../src/views/copy";
 import type { Node } from "../src/views/elements";
-import { ASK_KEY, askView, paneView, recapRows, recapView, tabsView, type RecapRow } from "../src/views/pane";
+import { ASK_KEY, askView, paneView, recapRows, recapView, tabBar, tabsView, type RecapRow } from "../src/views/pane";
 import { health } from "../src/views/review";
 import { fixture } from "./fake-host";
 
@@ -37,13 +37,18 @@ describe("routing", () => {
     expect(askRoute("how does filter() build SQL?")).toEqual({ tool: "get_answer", args: { question: "how does filter() build SQL?" } });
   });
 
-  it("/lens arguments: a tab, or ask with its question", () => {
+  it("/lens arguments: a tab, or a question that opens the Ask field", () => {
     expect(lensCommand("")).toEqual({ tab: null, question: null });
     expect(lensCommand("recap")).toEqual({ tab: "recap", question: null });
     expect(lensCommand(" MAP ")).toEqual({ tab: "map", question: null });
+    expect(lensCommand("flow")).toEqual({ tab: "flow", question: null });
     expect(lensCommand("ask")).toEqual({ tab: "ask", question: null });
     expect(lensCommand("ask why is QuerySet lazy?")).toEqual({ tab: "ask", question: "why is QuerySet lazy?" });
     expect(lensCommand("frobnicate")).toEqual({ tab: null, question: null });
+    // A tab not on the bar is not a tab.
+    expect(lensCommand("trail")).toEqual({ tab: null, question: null });
+    expect(lensCommand("flow", ["map", "recap"])).toEqual({ tab: null, question: null });
+    expect(lensCommand("ask how?", ["map", "recap"])).toEqual({ tab: "ask", question: "how?" });
   });
 
   it("only an answer that says it had no provider is known to have used no model", () => {
@@ -120,11 +125,16 @@ describe("Ask replies as Markdown", () => {
 });
 
 describe("tabs and the Ask tab", () => {
-  it("draws three tabs with the shown one at full strength", () => {
-    const tabs = tabsView("ask");
-    expect(texts(tabs)).toEqual(["1: Map", "2: Ask", "3: Recap"]);
+  it("draws the tab bar with the shown one at full strength; the Ask field is off the bar", () => {
+    const tabs = tabsView("map");
+    expect(texts(tabs)).toEqual(["1: Flow", "2: Map", "3: Recap"]);
     if (tabs.type !== "Box") throw new Error("expected a Box");
     expect(tabs.children.map((c) => (c.type === "Button" ? c.props.dimColor === true : null))).toEqual([true, false, true]);
+    const asking = tabsView("ask");
+    if (asking.type !== "Box") throw new Error("expected a Box");
+    expect(asking.children.every((c) => c.type === "Button" && c.props.dimColor === true)).toBe(true);
+    expect(texts(tabsView("map", tabBar(false)))).toEqual(["1: Map", "2: Recap"]);
+    expect(tabBar(true)).toEqual(["flow", "map", "recap"]);
   });
 
   it("the field takes the keyboard when the pane does, pre-filled only by Why", () => {
@@ -148,7 +158,7 @@ describe("tabs and the Ask tab", () => {
   });
 
   it("paneView puts the tabs over the body", () => {
-    expect(texts(paneView("recap", { type: "Text", props: {}, children: ["body"] }))).toEqual(["1: Map", "2: Ask", "3: Recap", "body"]);
+    expect(texts(paneView("recap", { type: "Text", props: {}, children: ["body"] }))).toEqual(["1: Flow", "2: Map", "3: Recap", "body"]);
   });
 });
 

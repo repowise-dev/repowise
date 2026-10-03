@@ -5,7 +5,11 @@
 
 import type { DecisionsArtifactData } from "@repowise-dev/types";
 
-export type PaneTab = "map" | "ask" | "recap";
+/** The pane's tab bar, in order; each tab's hotkey is its position. */
+export const TAB_BAR = ["flow", "map", "recap"] as const;
+export type BarTab = (typeof TAB_BAR)[number];
+/** `ask`: the Ask field, off the bar, opened by `/lens ask` and the review's Why. */
+export type PaneTab = BarTab | "ask";
 
 export type AskTool = "get_why" | "get_answer";
 
@@ -88,19 +92,19 @@ export function mayHaveUsedModel(a: AskReply): boolean {
   return a.tool === "get_answer" && a.reply.degraded !== "no-llm-provider";
 }
 
-/** What `/lens <args>` asks for: a tab to show, and a question to ask. */
-export function lensCommand(args: string): { tab: PaneTab | null; question: string | null } {
+/**
+ * What `/lens <args>` asks for: a tab to show, and a question to ask. A
+ * question opens the Ask field, where its answer lands; `ask` alone opens
+ * the field. `tabs` is the
+ * bar as shown (Flow leaves it when its toggle is off).
+ */
+export function lensCommand(args: string, tabs: readonly BarTab[] = TAB_BAR): { tab: PaneTab | null; question: string | null } {
   const [word = "", ...rest] = args.trim().split(/\s+/);
   const question = rest.join(" ");
-  switch (word.toLowerCase()) {
-    case "map":
-    case "recap":
-      return { tab: word.toLowerCase() as PaneTab, question: null };
-    case "ask":
-      return { tab: "ask", question: question === "" ? null : question };
-    default:
-      return { tab: null, question: null };
-  }
+  const named = word.toLowerCase();
+  if (named === "ask") return { tab: "ask", question: question === "" ? null : question };
+  const tab = tabs.find((t) => t === named);
+  return { tab: tab ?? null, question: null };
 }
 
 /** The Ask field's text after `Why` on a review: the decision that governs the edit. */

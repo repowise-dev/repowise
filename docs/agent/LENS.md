@@ -5,7 +5,9 @@ hooks and MCP tools already feed the index to Claude. Lens draws what that index
 knows into the Claude Code interface itself: which file Claude is working on and
 how much depends on it, the decision or fix history behind a file it edits, how
 much a distilled command output was cut, what the change did to code health,
-and a map of the repository with Claude's reads and edits marked on it.
+a dashboard of each turn (what an edit reaches, where Claude's context came
+from, what Repowise answered), and a map of the repository
+with Claude's reads and edits marked on it.
 
 Lens ships inside the plugin as a Claude Code mod. There is nothing separate to
 install. It is quiet at rest: each surface draws only when it has something to
@@ -116,7 +118,7 @@ with up to three buttons, each pressed with the number shown beside it:
 | Button | When it shows | What a press does |
 |---|---|---|
 | `1: Run tests` | The review names tests to run | Submits a visible prompt to Claude: `Run the tests Repowise names for this change, <basis>: <tests>` |
-| `2: Why` | The Repowise hook flagged a decision on a file edited this turn | Opens the `/lens` pane on the Ask tab with `why <decision>` in the field. Nothing is asked until you press Enter |
+| `2: Why` | The Repowise hook flagged a decision on a file edited this turn | Opens the `/lens` pane on the Ask field with `why <decision>` in it. Nothing is asked until you press Enter |
 | `3: Details` | The review returned its full verdict | Prints the review's status, headline, reasons and next actions into the transcript for you to read |
 
 The band row stays quiet for a clean review with no tests, no overlapping
@@ -124,7 +126,92 @@ branch and no decision. A new turn retires it.
 
 ### The /lens pane
 
-`/lens` opens a pane with three tabs, `1: Map  2: Ask  3: Recap`.
+`/lens` opens a pane with three tabs, `1: Flow  2: Map  3: Recap`. A session
+starts on Flow; after that `/lens` reopens the tab shown last.
+
+**Flow** is a dashboard of the turn, built from what only Lens sees: the chat
+already shows each step, so Flow shows what those steps add up to. Each
+section draws only when it has something to say.
+
+The header is the Repowise owl on one line, `{◉,◉}`, beside the status. The
+owl's eyes carry its state: `{─,─}` at rest, a slow blink while Claude works,
+eyes to the side `{◐,◐}` while a Repowise call is in flight, `{^,^}` for a
+moment after a turn that ended with an answer, and a neutral `{•,•}` after a
+turn that stopped. With `prefersReducedMotion` on it does not blink. The
+status is `Working · <m:ss>` while Claude works, then how the turn ended, kept
+until your next prompt: `Done · <time>` (with a thistle), `Stopped · <time>`
+when you interrupted it, or `Did not finish · <time>` after a refusal or an
+error, with `edited <N> files` when it edited. A prompt sent while a turn is
+still open marks that turn stopped. Under it, at full strength:
+`Repowise <N> calls · Claude opened <N> files, <N> named by Repowise first`,
+plus `edit landed in a file Repowise named` when one did (or
+`No Repowise calls`). A file counts as named by Repowise first when a Repowise
+reply earlier in the session named that exact repo-relative path. Then your
+own words, dim: text the session puts before a prompt (agent hand-backs,
+system reminders, task notifications, command wrappers) is left out, and when
+nothing you typed remains the line is not drawn.
+
+**BEFORE YOU ACCEPT** lists, per file this turn edited, only what the change
+reaches that Claude did not look at, from the index (the facts say
+`as of the last index`):
+
+- `<N> direct importers; Claude opened <N>`: files that import it directly
+  (the map's depth-1 blast radius, the same request, never a second one).
+- `not opened, usually changes with it (co-change score): <file> 0.80, ...`:
+  the two strongest co-change partners Claude did not open, with the server's
+  0 to 1 score.
+- `<N> test files reach query.py (inferred); none run`: tests that reach the
+  file, measured or inferred as the server says, and how many a test command
+  this session named (by path, file name or folder, as a whole word).
+- The turn's health from the change review's own result, never a second call:
+  `this turn introduced 1 finding: complex method in query.py`, or
+  `health compared in part only; no new findings in the part compared`. A turn
+  that introduced nothing draws nothing.
+
+**WORKING SET** lists the files this turn edited, then the ones it read, at most
+six (`+<N> more`): the file, `edited` or `read`, how Claude came to it (the
+Repowise tool that named it first, `search` when a search returned it, or
+`direct`), and what the index knows of it: `hotspot`, `<N> files use it`
+(importers and callers together, not only direct importers), and
+`recent owner <name> <share> %`. These come from the file card Lens already
+fetches for the spinner. Below 80 columns the index facts are left out.
+
+**CONTEXT** is one bar of the bytes of tool results Claude received this turn,
+by kind, each kind its own shade so it reads without color:
+`█ Repowise <size>  ▓ file reads <size>  ▒ search <size>  ░ shell <size>  · other <size>`,
+then `first edit after <time>`. Lens counts each result's size; it keeps no
+content.
+
+**REPOWISE CALLS** has one line per call: the time since the turn started, the
+tool, what it asked about, how long it took, and what the reply was built
+from, for example `420 ms · 1 target · 1 documentation page · index current`.
+The call Claude is waiting on is marked `▸` and says `asking...`. A call about
+a file Claude had already edited this session says, dim,
+`from the index before this edit`. Questions you ask from Lens land in the
+Ask field, not here. Press a call to open its detail; `j: Next call` and
+`k: Previous call` move between them. The detail shows `how it was answered`
+(only what the reply said about itself, such as `indexed at <commit>`,
+`index <N> days old`, `verified against the code`,
+`partial: the server capped it`, `confidence <level>`,
+`reply <size> (cap <N> characters)` and `<N> tokens left out, restorable`),
+`reply begins` with its first characters, and `Claude then opened`: the files
+Claude opened after this reply named them, or `nothing yet`. When the calls do not fit, a dim
+line says `<N> earlier calls hidden · j / k step through calls` (or
+`<N> later calls below · ...`).
+
+Earlier turns keep one line each,
+`Turn <N> · <time> · <N> Repowise calls · <N> files read · <N> edited`, with
+`stopped` or `did not finish` when they did not end with an answer; past six
+turns they fold into `Earlier: <N> turns · ...`.
+
+Flow's text keeps your terminal's own colors and never sets a background.
+Only marks take an accent: heather plum for the hills, the thistle,
+Repowise's tool names and its part of the bar; amber for the owl's eyes and
+the call in flight. Health colors never appear here. In a repo without an index
+Flow still counts Claude's own work and says
+`Repowise is not connected in this repo, so only Claude's own steps show here.`
+Before the first turn it says
+`Lens is listening. Send a prompt and this tab shows what only Lens sees: what an edit reaches, where Claude's context came from, and what Repowise answered.`
 
 **Map** is a treemap of the repository's files, sized by lines of code and
 colored by health band: `Excellent`, `Good`, `Fair`, `Needs work`, `At risk`
@@ -153,7 +240,9 @@ The flash and ripple animations play briefly. With Claude Code's
 The map needs the local server (full mode). Without it the Map tab shows the
 setup hint instead.
 
-**Ask** takes a question about the code. Before the first question it says
+**Ask** is a field rather than a tab: `/lens ask` and the review's `Why`
+open it, and `/lens ask <question>` asks at once, its reply landing in the
+field. Before the first question the field says
 `Ask about this repo. Answers cite the evidence they used.` A question that
 starts with "why" goes to `get_why`, which reads decision records, commits and
 rationale comments. Anything else goes to `get_answer`. Each reply is headed
@@ -223,7 +312,7 @@ Lens picks one of two modes at session start and checks again after each turn:
 
 | Mode | When | What shows |
 |---|---|---|
-| Full | `repowise serve --no-ui` is running for this repo on this machine | Everything: the band including savings, spinner text, margin notes, squeeze rows, the change review, the `/lens` pane with the map, Ask and Recap, and the compaction brief |
+| Full | `repowise serve --no-ui` is running for this repo on this machine | Everything: the band including savings, spinner text, margin notes, squeeze rows, the change review, the `/lens` pane with Flow, the map, Ask and Recap, and the compaction brief |
 | Lite | The repo is indexed but no local server serves it | Everything except the map and the savings row. The Map tab and the Recap's `Saved` row point at `repowise serve --no-ui` |
 
 Lite mode works through the plugin's MCP server, which the plugin starts on its
@@ -232,23 +321,26 @@ own. Full mode adds the local server, which Lens finds through
 
 ## Settings
 
-Four toggles in the plugin's `userConfig`. Changing one reloads Lens.
+Five toggles in the plugin's `userConfig`. Changing one reloads Lens.
 
 | Setting | Default | What it controls |
 |---|---|---|
 | `lens_margin` | on | Margin notes under Edit and Write |
 | `lens_squeeze` | on | Squeeze rows under distilled Bash output |
 | `lens_review` | on | The change review after a turn that edits files, its card and its buttons |
+| `lens_flow` | on | The Flow tab. Off, Lens records nothing for it and the pane opens on the Map |
 | `lens_pane_autoopen` | off | Open the map pane on its own the first time Claude reads a file, when the terminal is wide enough to place it without asking. `/lens` opens it at any time |
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/lens` | Opens the pane on the tab shown last, with keyboard focus |
+| `/lens` | Opens the pane on the tab shown last (Flow at first), with keyboard focus |
+| `/lens flow` | Opens the pane on the Flow tab |
 | `/lens map` | Opens the pane on the Map tab |
 | `/lens recap` | Opens the pane on the Recap tab |
-| `/lens ask <question>` | Opens the Ask tab and asks the question |
+| `/lens ask` | Opens the Ask field |
+| `/lens ask <question>` | Asks the question; its reply lands in the Ask field |
 
 `/lens` writes nothing into the transcript. The pane is the answer.
 
@@ -292,6 +384,12 @@ What Lens does and does not do, as the code enforces it:
   `get_change_risk`, `get_why` and `get_answer`, with the reason
   `Repowise Lens: its own read-only index lookup`. Every other permission
   question keeps Claude Code's own answer.
+- **Flow only counts what passes.** It records each tool call's name, a few
+  arguments, its timing and the size of its result, never the result itself
+  (Repowise replies keep a short summary and their first 2 KB). What Flow
+  keeps (the last six turns, at most 60 steps each) stays in memory and is
+  gone when the session ends. Its facts come from requests Lens already makes:
+  the file card, the map's blast radius and the change review.
 - **Anything that reaches Claude goes through a button you pressed.** `Run tests`
   and `Brief Claude` submit a prompt you can see in the transcript. `Why` only
   fills the Ask field. `Details` prints into the transcript for you. Lens does

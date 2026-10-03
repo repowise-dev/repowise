@@ -10,6 +10,7 @@ import { callTool, fetchFileContext, isOwnLensCall, mcpReady, resetMcp, warmMcp 
 import { withTimeout } from "./data/transport";
 import { fit } from "./format";
 import type { Host } from "./host";
+import { LensFlow, type FlowPane } from "./flow-controller";
 import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
   CheckNext,
@@ -28,8 +29,11 @@ import type {
   ToolResultEvent,
   ToolUseEvent,
   TurnCompleteEvent,
+  TurnStartEvent,
   UiInputEvent,
 } from "./mod-api";
+import { activityOf, toolEnded, turnEnd, type FlowAction } from "./model/flow";
+import { blastFacts, type BlastResponse } from "./model/turnFacts";
 import {
   EDIT_TOOLS,
   OBSERVED_TOOLS,
@@ -42,7 +46,7 @@ import {
   savingsTotals,
   touchedPath,
 } from "./model/events";
-import { askReply, askRoute, lensCommand, whyDraft, type PaneTab } from "./model/ask";
+import { askReply, askRoute, lensCommand, whyDraft, type BarTab, type PaneTab } from "./model/ask";
 import { hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
@@ -51,7 +55,8 @@ import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/
 import { BRIEF_PRESS, briefText } from "./views/brief";
 import { HINTS, MAP_COPY, PANE_COPY, REVIEW_TIMEOUT_S } from "./views/copy";
 import { MAP_KEY } from "./views/mapPane";
-import { ASK_KEY, TABS, TAB_PRESS, TAB_ROWS, askView, paneView, recapView } from "./views/pane";
+import { FLOW_NEXT, flowPresses } from "./views/flow";
+import { ASK_KEY, TAB_ROWS, askView, paneView, recapView, tabBar, tabPress } from "./views/pane";
 import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
 import { spinnerSuffix } from "./views/spinner";
 import { bashText, parseSqueeze, type Squeeze } from "./model/squeeze";
@@ -68,6 +73,15 @@ const PANE_ID = "lens";
 const PANE_ROWS = 29;
 /** get_why took 22 s cold on Django, get_answer about 4 s. */
 const ASK_TIMEOUT_MS = 30_000;
+
+/** The `lens_flow` toggle, fixed for one activation. */
+let flowOn = true;
+let flow = new LensFlow();
+
+/** A new session's state: on the Flow tab, or the Map when Flow is off. */
+function freshSession(): SessionState {
+  return flowOn ? initialSession : reduce(initialSession, { type: "tab", tab: "map" });
+}
 
 let state: SessionState = initialSession;
 /** Bumped per session, so a refresh started in an earlier one never lands in this one. */
@@ -152,20 +166,26 @@ function bind($: ModApi): Bound {
       call: (server, tool, args) => $.mcp.call(server, tool, args),
     },
   };
-  return {
+  const bound: Bound = {
     host,
+    blastLanded: (path, r) => flowBlast(bound, path, r),
     redraw: () => $.ui.invalidate("ui.render"),
     debug: (message) => $.ui.log(`lens: ${message}`, { to: "debug" }),
     blit: (cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }),
     // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
-    openPane: (focus) =>
+    // Opened unasked on a read: the map is what it opens to. This happens at most once, and never
+    // after the person opened the pane (/lens, Why), the only ways to have picked a tab by then.
+    openPane: (focus) => (
+      focus ? null : (state = reduce(state, { type: "tab", tab: "map" })),
       $.ui.open(
         focus
           ? { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS, focus: true }
           : { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS },
-      ),
+      )
+    ),
     closePane: () => $.ui.close({ id: PANE_ID }),
   };
+  return bound;
 }
 
 function mapRepo(d: Discovery): MapRepo | null {
@@ -253,7 +273,9 @@ async function onSessionStart(
     cwd = typeof e.cwd === "string" ? e.cwd : null;
     map.dispose();
     map = new LensMap(autoOpenOn);
-    state = initialSession;
+    flow.dispose();
+    flow = new LensFlow();
+    state = freshSession();
     reviewGeneration++;
     editsThisTurn = 0;
     started = null;
@@ -265,7 +287,9 @@ async function onSessionStart(
     warmMcp(b.host);
     refresh(b);
     await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
-    map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
+    const still = (await $.settings.read())["prefersReducedMotion"] === true;
+    map.setReducedMotion(still);
+    flow.setReducedMotion(still);
   } catch (err) {
     // Lens stays quiet; the session is unaffected.
     b.debug(`session.start failed: ${String(err)}`);
@@ -289,6 +313,7 @@ function noteTurnEnd(b: Bound, e: TurnCompleteEvent): void {
   try {
     const action = fromTurnComplete(e);
     if (action === null) return;
+    noteFlow(b, () => ({ type: "turnEnded", at: Date.now(), durationMs: e.durationMs ?? null, end: turnEnd(e.reason, e.isAborted) }));
     map.turnEnded();
     dispatch(b, action);
     refresh(b);
@@ -374,7 +399,8 @@ async function finishReview(b: Bound): Promise<string | null> {
   return reviewText(state.review.outcome);
 }
 
-async function onTurnStart($: ModApi, e: unknown, next: (e: unknown) => Promise<unknown>): Promise<unknown> {
+async function onTurnStart($: ModApi, e: TurnStartEvent, next: (e: TurnStartEvent) => Promise<unknown>): Promise<unknown> {
+  noteFlow(bind($), () => ({ type: "turnStarted", turnId: e.turnId ?? null, prompt: e.text ?? "", at: Date.now() }));
   try {
     // With reviews off the review state is never touched; a new turn only retires the brief offer.
     if (reviewOn) {
@@ -457,12 +483,15 @@ function startAsk(b: Bound, question: string): void {
   const gen = generation;
   callTool<unknown>(b.host, tool, args, { timeoutMs: ASK_TIMEOUT_MS })
     .then((reply) => {
-      if (gen === generation) dispatch(b, { type: "answered", question: q, answer: askReply(tool, reply) });
+      if (gen !== generation) return;
+      const answer = askReply(tool, reply);
+      dispatch(b, { type: "answered", question: q, answer });
     })
     .catch((err: unknown) => {
       b.debug(`ask failed: ${String(err)}`);
       const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
-      if (gen === generation) dispatch(b, { type: "askFailed", question: q, tool, message });
+      if (gen !== generation) return;
+      dispatch(b, { type: "askFailed", question: q, tool, message });
     });
 }
 
@@ -537,15 +566,58 @@ function fetchContext(b: Bound, file: string): void {
 async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) => Promise<unknown>): Promise<unknown> {
   const b = bind($);
   const file = fileToolStarted(b, e);
-  let result: unknown;
+  noteFlow(b, () => {
+    const activity = activityOf(e, Date.now(), flowRoot());
+    return activity === null ? null : { type: "toolStarted", activity };
+  });
+  let result: unknown = null;
   try {
     result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
+    // `result` stays null when the call threw: Flow marks it failed.
+    noteFlow(b, () => toolEnded(e, result, Date.now(), flowRoot()));
   }
   editLanded(b, e, result);
   observeTrail($, b, e, result);
   return result;
+}
+
+/** What the Flow tab draws from beyond its own record: the file cards and this turn's review. */
+function flowPane(columns: number, rows: number): FlowPane {
+  const outcome = state.review.outcome;
+  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null };
+}
+
+/** The map's blast radius for an edited file, handed to Flow: never a second request. */
+function flowBlast(b: Bound, path: string, r: BlastResponse): void {
+  noteFlow(b, () => ({ type: "blastLanded", path, facts: blastFacts(path, r) }));
+}
+
+/** What Flow shows paths relative to: the indexed repo, else the session's directory. */
+function flowRoot(): string | null {
+  return state.repoRoot ?? cwd;
+}
+
+/** Records into Flow; a failure is logged and never reaches Claude's turn. */
+function noteFlow(b: Bound, action: () => FlowAction | null): void {
+  if (!flowOn) return;
+  try {
+    const a = action();
+    if (a !== null) flow.dispatch(b, a);
+  } catch (err) {
+    flowFailed(b, err);
+  }
+}
+
+/** Logs a recording failure; if even the log fails, Flow stops recording for this activation. */
+function flowFailed(b: Bound, err: unknown): void {
+  try {
+    b.debug(`flow failed: ${String(err)}`);
+  } catch {
+    // Not even the debug log works: stop recording rather than risk Claude's turn.
+    flowOn = false;
+  }
 }
 
 /** Where Claude looked, for the map: recorded from what next(e) returned, waiting on nothing. */
@@ -690,7 +762,7 @@ async function onToolUse($: ModApi, e: ToolUseEvent, next: (e: ToolUseEvent) => 
 async function onLensCommand($: ModApi, e: CommandRunEvent): Promise<unknown> {
   const b = bind($);
   try {
-    const asked = lensCommand(e.args ?? "");
+    const asked = lensCommand(e.args ?? "", tabBar(flowOn));
     if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
     await map.request(b);
@@ -707,6 +779,19 @@ async function onLensCommand($: ModApi, e: CommandRunEvent): Promise<unknown> {
   return {};
 }
 
+function tabPresses($: ModApi, bar: readonly BarTab[]): Record<string, () => void> {
+  return Object.fromEntries(bar.map((tab) => [tabPress(tab), () => selectTab($, tab)]));
+}
+
+/** Flow's rows open and close their detail; `j` and `k` step between calls. */
+function flowRowPresses($: ModApi): Record<string, () => void> {
+  return Object.fromEntries(flowPresses(flow.state).map(([key, id]) => [key, () => pressFlow($, key, id)]));
+}
+
+function pressFlow($: ModApi, key: string, id: string | null): void {
+  noteFlow(bind($), () => (id !== null ? { type: "toggle", id } : { type: "step", by: key === FLOW_NEXT ? 1 : -1 }));
+}
+
 function selectTab($: ModApi, tab: PaneTab): void {
   try {
     dispatch(bind($), { type: "tab", tab });
@@ -715,25 +800,28 @@ function selectTab($: ModApi, tab: PaneTab): void {
   }
 }
 
-/** The shown tab's body; the map draws only on its own tab. */
+/** The shown tab's body; the map draws only on its own tab, the owl ticks only on Flow's. */
 function tabBody(b: Bound, e: PaneRenderEvent): Node {
   const { bodyColumns, placement, scroll } = e.props;
   const tab = state.pane.tab;
   if (tab !== "map") map.offScreen();
+  if (tab !== "flow") flow.hide();
+  const bodyRows = (placement === "dock" ? scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
+  if (tab === "flow") return flow.paneTree(b, flowPane(bodyColumns, bodyRows), Date.now());
   if (tab === "ask") return askView(state, bodyColumns);
   if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
   const d = discovery;
   const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-  const bodyRows = scroll.bodyRows - TAB_ROWS;
-  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows });
+  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS });
 }
 
 async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) => Promise<unknown>): Promise<unknown> {
   if (e.requestId !== PANE_ID) return next(e);
   const b = bind($);
   try {
-    const presses = Object.fromEntries(TABS.map((tab) => [TAB_PRESS[tab], () => selectTab($, tab)]));
-    return materialize(paneView(state.pane.tab, tabBody(b, e)), $.ui.resolve(e), presses);
+    const bar = tabBar(flowOn);
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($) };
+    return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);
     return next(e);
@@ -744,6 +832,8 @@ async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) 
 export function register(on: On, options: PluginOptions = {}): void {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
+  flowOn = options["lens_flow"] !== false;
+  state = freshSession();
   on("session.start", onSessionStart);
   on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);

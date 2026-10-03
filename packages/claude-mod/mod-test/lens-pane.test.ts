@@ -67,11 +67,16 @@ test('/lens recap opens the pane with focus on the recap, and the tabs switch it
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ key: 'lens-recap' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Lens made no model calls. Every figure here is read from the local index.' })).toBeDefined()
-  await ui.press({ key: 'lens-tab-ask' })
+  await ui.press({ key: 'lens-tab-flow' })
   await ui.unmount()
   const again = await $.ui.mount(PANE)
-  expect(await again.find({ key: 'lens-ask' })).toBeDefined()
+  expect(await again.find({ key: 'lens-flow' })).toBeDefined()
   await again.unmount()
+  // The Ask field is off the bar: /lens ask opens it.
+  await $.command.run({ command: 'lens', args: 'ask' })
+  const field = await $.ui.mount(PANE)
+  expect(await field.find({ key: 'lens-ask' })).toBeDefined()
+  await field.unmount()
   expect(seen.mcp).toEqual([])
 })
 

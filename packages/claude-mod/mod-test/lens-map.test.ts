@@ -76,7 +76,7 @@ async function openMap($: any, on: any) {
   fullStubs(on, seen)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: ROOT })
   expect(await waitFor(() => seen.urls.some((u) => u.endsWith('/api/repos')))).toBe(true)
-  await $.command.run({ command: 'lens' })
+  await $.command.run({ command: 'lens', args: 'map' })
   const ui = await $.ui.mount(PANE)
   expect(await waitFor(async () => (await ui.find({ key: 'lens-map' })) !== undefined)).toBe(true)
   return { seen, ui }
@@ -116,7 +116,9 @@ test('without the local server the pane says what to run', async ($: any, on: an
   on('process.run', () => run('true\n'))
   on('mcp.connect', () => ({ value: { isConnected: true, server: 'plugin:repowise:repowise' } }))
   on('settings.read', () => ({ value: {} }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'lens', args: 'map' })
   const hint = 'Lens map needs the local server: repowise serve --no-ui'
   expect(
     await waitFor(async () => {

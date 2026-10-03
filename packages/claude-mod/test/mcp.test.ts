@@ -130,7 +130,12 @@ describe("callTool", () => {
 describe("fetchFileContext", () => {
   it("reads caller files and contributors from a recorded card", async () => {
     const host = await warmed(fakeHost({ mcp: () => sessions }));
-    expect(await fetchFileContext(host, "src/requests/sessions.py")).toEqual({ callerFiles: 3, contributors: 6 });
+    expect(await fetchFileContext(host, "src/requests/sessions.py")).toEqual({
+      callerFiles: 3,
+      contributors: 6,
+      hotspot: false,
+      recentOwner: { name: "Joren Hammudoglu", share: 0.5 },
+    });
     expect(host.calls.mcp[0]?.args).toEqual({ targets: ["src/requests/sessions.py"], include: ["callers", "ownership"] });
   });
 
@@ -140,12 +145,12 @@ describe("fetchFileContext", () => {
         mcp: () => mcpResult({ targets: { "q.py": { callers: [{}, {}], callers_total: 41, ownership: { contributor_count: 3 } } } }),
       }),
     );
-    expect(await fetchFileContext(host, "q.py")).toEqual({ callerFiles: 41, contributors: 3 });
+    expect(await fetchFileContext(host, "q.py")).toEqual({ callerFiles: 41, contributors: 3, hotspot: null, recentOwner: null });
   });
 
   it("keeps an unreported count unknown rather than zero", async () => {
     const host = await warmed(fakeHost({ mcp: () => mcpResult({ targets: { "q.py": { type: "file" } } }) }));
-    expect(await fetchFileContext(host, "q.py")).toEqual({ callerFiles: null, contributors: null });
+    expect(await fetchFileContext(host, "q.py")).toEqual({ callerFiles: null, contributors: null, hotspot: null, recentOwner: null });
   });
 
   it("is null for a file the index does not know", async () => {

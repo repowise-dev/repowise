@@ -409,6 +409,12 @@ function callTool(host, tool, args, opts = {}) {
   return withTimeout(call, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, tool);
 }
 __name(callTool, "callTool");
+function recentOwner(o) {
+  const name = o?.recent_owner;
+  const share = o?.recent_owner_pct;
+  return typeof name === "string" && name !== "" && typeof share === "number" ? { name, share } : null;
+}
+__name(recentOwner, "recentOwner");
 async function fetchFileContext(host, path) {
   const result = await callTool(host, "get_context", {
     targets: [path],
@@ -420,7 +426,9 @@ async function fetchFileContext(host, path) {
   const contributors = target.ownership?.contributor_count;
   return {
     callerFiles: typeof callers === "number" ? callers : null,
-    contributors: typeof contributors === "number" ? contributors : null
+    contributors: typeof contributors === "number" ? contributors : null,
+    hotspot: typeof target.hotspot === "boolean" ? target.hotspot : null,
+    recentOwner: recentOwner(target.ownership)
   };
 }
 __name(fetchFileContext, "fetchFileContext");
@@ -479,173 +487,635 @@ function fit(text2, columns) {
 }
 __name(fit, "fit");
 
-// ../api-client/src/blast-radius.ts
-async function analyzeBlastRadius(repoId, body) {
-  return apiPost(
-    `/api/repos/${repoId}/blast-radius`,
-    body
-  );
+// src/model/replies.ts
+var PARSE_CHARS = 64 * 1024;
+var EXCERPT_CHARS = 2 * 1024;
+var MAX_PATHS = 200;
+var MAX_DEPTH = 6;
+var isRec = /* @__PURE__ */ __name((v) => typeof v === "object" && v !== null && !Array.isArray(v), "isRec");
+var rec = /* @__PURE__ */ __name((v) => isRec(v) ? v : {}, "rec");
+var str = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : null, "str");
+var num = /* @__PURE__ */ __name((v) => typeof v === "number" && Number.isFinite(v) ? v : null, "num");
+var bool = /* @__PURE__ */ __name((v) => typeof v === "boolean" ? v : null, "bool");
+var count = /* @__PURE__ */ __name((v) => Array.isArray(v) ? v.length : num(v), "count");
+function fact(what, n, of = null) {
+  if (n === null) return [];
+  return of !== null && of > n ? [{ what, n, of }] : [{ what, n }];
 }
-__name(analyzeBlastRadius, "analyzeBlastRadius");
-
-// ../api-client/src/code-health.ts
-async function getHealthMap(repoId, opts = {}) {
-  return apiGet(`/api/repos/${repoId}/health/map`, {
-    cap: opts.cap,
-    active: opts.active?.length ? opts.active.join(",") : void 0,
-    scope: opts.scope,
-    counts: opts.counts
-  });
+__name(fact, "fact");
+function sumOver(targets, read) {
+  const found = targets.map(read).filter((n) => n !== null);
+  return found.length === 0 ? null : found.reduce((a, b) => a + b, 0);
 }
-__name(getHealthMap, "getHealthMap");
-
-// src/model/events.ts
-function fromTurnComplete(e) {
-  return e.agentId === void 0 ? { type: "turnCompleted" } : null;
+__name(sumOver, "sumOver");
+var targetsOf = /* @__PURE__ */ __name((r) => Object.values(rec(r["targets"])).filter(isRec), "targetsOf");
+var flagged = /* @__PURE__ */ __name((targets, key) => targets.some((t) => key in t) ? targets.filter((t) => t[key] === true).length : null, "flagged");
+function contextFacts(r) {
+  const targets = targetsOf(r);
+  const docs = targets.map((t) => rec(t["docs"]));
+  const symbols = sumOver(docs, (d) => count(d["symbols"]));
+  const symbolTotal = sumOver(docs, (d) => num(rec(d["symbols_truncated"])["total"]) ?? count(d["symbols"]));
+  return [
+    ...fact("targets", targets.length),
+    ...fact("docs", docs.filter((d) => str(d["title"]) !== null).length || null),
+    ...fact("symbols", symbols, symbolTotal),
+    ...fact("callers", sumOver(targets, (t) => count(t["callers"]))),
+    ...fact("callees", sumOver(targets, (t) => count(t["callees"]))),
+    ...fact("decisions", sumOver(targets, (t) => count(t["decisions"]))),
+    ...fact("hotspots", flagged(targets, "hotspot") || null)
+  ];
 }
-__name(fromTurnComplete, "fromTurnComplete");
-var FILE_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write"]);
-function fileTarget(e, repoRoot) {
-  if (!FILE_TOOLS.has(e.tool) || repoRoot === null || typeof e.file_path !== "string") return null;
-  const windows = /^[A-Za-z]:[\\/]|^[\\/]{2}/.test(repoRoot);
-  return relativeTo(e.file_path, repoRoot, windows);
+__name(contextFacts, "contextFacts");
+function riskFacts(r) {
+  const targets = targetsOf(r);
+  return [
+    ...fact("targets", targets.length),
+    ...fact("dependents", sumOver(targets, (t) => num(t["dependents_count"]))),
+    ...fact("coChange", sumOver(targets, (t) => num(t["co_change_partners_total"]) ?? count(t["co_change_partners"]))),
+    ...fact("contributors", sumOver(targets, (t) => num(t["contributor_count"]))),
+    ...fact("hotspots", flagged(targets, "is_hotspot") || null)
+  ];
 }
-__name(fileTarget, "fileTarget");
-var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write"]);
-var STANDING = /^\[repowise\] .+? is governed by a standing decision: (.+?)(?: because .*)?\.$/;
-var MINED = /^\[repowise\] .+? has a decision recorded in it, mined but not reviewed: (.+?)(?: because .*)?\.$/;
-var FIXES = /^\[repowise\] .+? has been bug-fixed (\d+)x in the last 6 months, last (.+?)(?: \(bug magnet\))?(?:; mostly in (.+?))?\.$/;
-function stripConfirmed(line2) {
-  return line2.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
+__name(riskFacts, "riskFacts");
+function answerFacts(r) {
+  return [
+    ...fact("citations", count(r["citations"])),
+    ...fact("bodies", count(r["symbol_bodies"])),
+    ...fact("rationale", count(r["code_rationale"]), num(r["code_rationale_total"])),
+    ...fact("guesses", count(r["best_guesses"]))
+  ];
 }
-__name(stripConfirmed, "stripConfirmed");
-function notesFromAugment(additionalContext) {
-  if (!Array.isArray(additionalContext)) return [];
-  const notes = [];
-  const lines = additionalContext.filter((c) => typeof c === "string").flatMap((c) => c.split(/\r?\n/));
-  for (const raw of lines) {
-    const line2 = stripConfirmed(raw.trim());
-    const standing = STANDING.exec(line2);
-    const decision = standing ?? MINED.exec(line2);
-    const fixes = FIXES.exec(line2);
-    if (decision !== null && !notes.some((n) => n.kind === "decision")) {
-      notes.push({ kind: "decision", reviewed: standing !== null, title: decision[1] });
-    } else if (fixes !== null && !notes.some((n) => n.kind === "fixes")) {
-      notes.push({ kind: "fixes", count: Number(fixes[1]), age: fixes[2], symbol: fixes[3] ?? null });
-    }
-  }
-  return notes;
+__name(answerFacts, "answerFacts");
+function whyFacts(r) {
+  const git2 = rec(r["git_archaeology"]);
+  return [
+    ...fact("decisions", count(r["decisions"])),
+    ...fact("rationale", count(r["code_rationale"]), num(r["code_rationale_total"])),
+    ...fact("commits", count(git2["git_log"] ?? git2["file_commits"]))
+  ];
 }
-__name(notesFromAugment, "notesFromAugment");
-function savingsTotals(s) {
+__name(whyFacts, "whyFacts");
+function searchFacts(r) {
+  return fact("results", count(r["results"]));
+}
+__name(searchFacts, "searchFacts");
+function symbolFacts(r) {
+  const start = num(r["start_line"]);
+  const end = num(r["end_line"]);
+  return [
+    ...fact("lines", start !== null && end !== null && end >= start ? end - start + 1 : null),
+    ...fact("callers", count(r["callers"])),
+    ...fact("callees", count(r["callees"]))
+  ];
+}
+__name(symbolFacts, "symbolFacts");
+function listFacts(r) {
+  return Object.entries(r).filter(([key, v]) => Array.isArray(v) && v.length > 0 && !key.startsWith("_")).slice(0, 3).map(([key, v]) => ({ what: key, n: v.length }));
+}
+__name(listFacts, "listFacts");
+var READERS = {
+  get_context: contextFacts,
+  get_risk: riskFacts,
+  get_answer: answerFacts,
+  get_why: whyFacts,
+  search_codebase: searchFacts,
+  get_symbol: symbolFacts
+};
+function insideOf(tool, r) {
+  const known = READERS[tool]?.(r) ?? [];
+  return known.length > 0 ? known : listFacts(r);
+}
+__name(insideOf, "insideOf");
+function behindOf(r, meta) {
+  const budget = rec(meta["response_budget"]);
+  const used = num(budget["serialized_chars"]);
+  const limit = num(budget["limit_chars"]);
+  const completeness = rec(meta["completeness"]);
+  const capped = bool(completeness["capped"]);
   return {
-    tokens: s.saved_input_tokens,
-    inferredTokens: Math.min(s.inferred_saved_input_tokens, s.saved_input_tokens),
-    usd: s.priced_input_savings_usd
+    commit: str(meta["indexed_commit"]),
+    ageDays: num(meta["index_age_days"]),
+    indexBehind: bool(meta["index_behind"]),
+    verified: bool(r["verified"]),
+    complete: bool(meta["complete"]) ?? (capped === null ? null : !capped),
+    confidence: str(r["confidence"]),
+    grounding: str(r["grounding"]),
+    retrieval: str(r["retrieval_quality"]),
+    budget: used !== null && limit !== null ? { used, limit } : null,
+    omittedTokens: num(rec(meta["omitted"])["tokens"]),
+    degraded: str(r["degraded"]) ?? str(meta["degraded"]),
+    semantic: bool(meta["semantic_search"])
   };
 }
-__name(savingsTotals, "savingsTotals");
-function savingsSince(now, base) {
-  const tokens = now.tokens - base.tokens;
-  const inferredTokens = now.inferredTokens - base.inferredTokens;
-  const usd = now.usd - base.usd;
-  if (tokens < 0 || inferredTokens < 0 || usd < 0) return null;
-  return { tokens, inferredTokens: Math.min(inferredTokens, tokens), usd };
-}
-__name(savingsSince, "savingsSince");
-var OBSERVED_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write", "Grep", "Glob"]);
-var OWN_CALL_PREFIX = "toolu_plugin_";
-function absolutePath(raw, ctx) {
-  const absolute = ctx.isWindows ? /^[A-Za-z]:[\\/]|^\\\\/.test(raw) : raw.startsWith("/");
-  const joined = absolute ? raw : `${ctx.cwd.replace(/[\\/]+$/, "")}/${raw.replace(/^\.[\\/]/, "")}`;
-  return ctx.isWindows ? joined.replace(/\\/g, "/") : joined;
-}
-__name(absolutePath, "absolutePath");
-function absoluteKey(raw, ctx) {
-  return normalizeRepoPath(absolutePath(raw, ctx), ctx.isWindows);
-}
-__name(absoluteKey, "absoluteKey");
-function relativeTo(absolute, root, isWindows) {
-  const rootKey = normalizeRepoPath(root, isWindows);
-  const slashed = isWindows ? absolute.replace(/\\/g, "/") : absolute;
-  if (!normalizeRepoPath(slashed, isWindows).startsWith(`${rootKey}/`)) return null;
-  return slashed.slice(rootKey.length + 1);
-}
-__name(relativeTo, "relativeTo");
-function filenamesOf(out) {
-  const names = typeof out.result === "object" ? out.result.filenames : void 0;
-  return Array.isArray(names) ? names.filter((v) => typeof v === "string") : [];
-}
-__name(filenamesOf, "filenamesOf");
-function isContentGrep(tool, out) {
-  return tool === "Grep" && typeof out.result === "object" && out.result.mode === "content";
-}
-__name(isContentGrep, "isContentGrep");
-function searchAction(out, ctx) {
-  return { type: "search", paths: filenamesOf(out).map((f) => absoluteKey(f, ctx)) };
-}
-__name(searchAction, "searchAction");
-function fileAction(e, ctx) {
-  const raw = e["file_path"];
-  if (typeof raw !== "string") return null;
-  const path = absoluteKey(raw, ctx);
-  return e.tool === "Read" ? { type: "read", path } : { type: "edit", path };
-}
-__name(fileAction, "fileAction");
-function fromToolCall(e, outcome, ctx) {
-  if (!OBSERVED_TOOLS.has(e.tool) || e.tool_use_id?.startsWith(OWN_CALL_PREFIX)) return null;
-  const out = outcome ?? {};
-  if (out.isError === true || isContentGrep(e.tool, out)) return null;
-  return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
-}
-__name(fromToolCall, "fromToolCall");
-function touchedPath(e, cwd2, repoRoot) {
-  const raw = typeof e.file_path === "string" ? e.file_path : e["notebook_path"];
-  if (typeof raw !== "string") return null;
-  const base = cwd2 ?? repoRoot;
-  if (base === null) return raw;
-  const isWindows = /^[A-Za-z]:[\/]|^[\/]{2}/.test(base);
-  const abs = absolutePath(raw, { cwd: base, isWindows });
-  return (repoRoot === null ? null : relativeTo(abs, repoRoot, isWindows)) ?? abs;
-}
-__name(touchedPath, "touchedPath");
-
-// src/model/trail.ts
-var MAX_READS = 200;
-var initialTrail = {
-  reads: [],
-  readsCapped: false,
-  hits: [],
-  searches: 0,
-  edit: null,
-  edits: 0,
-  callers: null
+__name(behindOf, "behindOf");
+var PATH_READERS = {
+  path: /* @__PURE__ */ __name((v, add) => add(v), "path"),
+  file: /* @__PURE__ */ __name((v, add) => add(v), "file"),
+  file_path: /* @__PURE__ */ __name((v, add) => add(v), "file_path"),
+  citations: /* @__PURE__ */ __name((v, add) => Array.isArray(v) ? v.forEach(add) : void 0, "citations"),
+  targets: /* @__PURE__ */ __name((v, add) => isRec(v) ? Object.keys(v).forEach(add) : void 0, "targets")
 };
-function withRead(state2, path) {
-  if (state2.reads.includes(path)) return state2;
-  const reads = [...state2.reads, path];
-  if (reads.length <= MAX_READS) return { ...state2, reads };
-  return { ...state2, reads: reads.slice(reads.length - MAX_READS), readsCapped: true };
-}
-__name(withRead, "withRead");
-function reduceTrail(state2, action) {
-  switch (action.type) {
-    case "read":
-      return withRead(state2, action.path);
-    case "search":
-      return { ...state2, hits: action.paths, searches: state2.searches + 1 };
-    case "edit":
-      return {
-        ...withRead(state2, action.path),
-        edit: action.path,
-        edits: state2.edits + 1,
-        callers: { status: "loading" }
-      };
-    case "callers":
-      return action.edits === state2.edits ? { ...state2, callers: action.callers } : state2;
+function walkPaths(v, depth, add) {
+  if (depth > MAX_DEPTH) return;
+  if (Array.isArray(v)) return v.forEach((item) => walkPaths(item, depth + 1, add));
+  for (const [key, value] of Object.entries(rec(v))) {
+    if (key === "_meta") continue;
+    PATH_READERS[key]?.(value, add);
+    walkPaths(value, depth + 1, add);
   }
 }
-__name(reduceTrail, "reduceTrail");
+__name(walkPaths, "walkPaths");
+function pathsOf(r) {
+  const found = /* @__PURE__ */ new Set();
+  walkPaths(r, 0, (p) => {
+    if (typeof p === "string" && p !== "" && found.size < MAX_PATHS) found.add(p.replace(/\\/g, "/"));
+  });
+  return [...found];
+}
+__name(pathsOf, "pathsOf");
+var EMPTY_BEHIND = behindOf({}, {});
+function utf8Bytes(text2) {
+  return new TextEncoder().encode(text2).length;
+}
+__name(utf8Bytes, "utf8Bytes");
+function errorOf(body) {
+  const err = body["error"];
+  if (typeof err === "string") return err.split("\n")[0] ?? err;
+  return str(rec(err)["message"]);
+}
+__name(errorOf, "errorOf");
+function summarizeBody(tool, body, bytes, excerpt = "") {
+  const r = rec(body);
+  const meta = rec(r["_meta"]);
+  return {
+    tool,
+    bytes,
+    parsed: true,
+    inside: insideOf(tool, r),
+    behind: behindOf(r, meta),
+    paths: pathsOf(r),
+    excerpt,
+    error: errorOf(r)
+  };
+}
+__name(summarizeBody, "summarizeBody");
+function summarizeReply(tool, text2) {
+  const bytes = utf8Bytes(text2);
+  const excerpt = text2.slice(0, EXCERPT_CHARS);
+  const parsed = text2.length <= PARSE_CHARS ? parseObject(text2) : null;
+  if (parsed === null) return unparsed(tool, text2, bytes, excerpt);
+  const summary = summarizeBody(tool, resultOf(parsed), bytes, excerpt);
+  return summary.error === null ? { ...summary, error: errorOf(parsed) } : summary;
+}
+__name(summarizeReply, "summarizeReply");
+function parseObject(text2) {
+  try {
+    const v = JSON.parse(text2);
+    return isRec(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+__name(parseObject, "parseObject");
+function resultOf(parsed) {
+  const result = isRec(parsed["result"]) ? parsed["result"] : parsed;
+  return isRec(parsed["_meta"]) && !isRec(result["_meta"]) ? { ...result, _meta: parsed["_meta"] } : result;
+}
+__name(resultOf, "resultOf");
+function unparsed(tool, text2, bytes, excerpt) {
+  const first = text2.trim().split("\n")[0] ?? "";
+  const error = text2.length <= PARSE_CHARS && first !== "" ? first : null;
+  return { tool, bytes, parsed: false, inside: [], behind: EMPTY_BEHIND, paths: [], excerpt, error };
+}
+__name(unparsed, "unparsed");
+
+// src/model/flow.ts
+var MAX_TURNS = 6;
+var MAX_ACTIVITIES = 60;
+var PROMPT_CHARS = 160;
+var MAX_NAMED = 2e3;
+var MAX_ARGS = 4;
+var ARG_CHARS = 160;
+var COMMAND_CHARS = 2e3;
+var MAX_HIT_PATHS = 200;
+var REPOWISE_TOOL = /^mcp__(?:repowise|plugin_repowise_repowise|claude_ai_repowise)__(\w+)$/i;
+var OWN_CALL_PREFIX = "toolu_plugin_";
+var initialFlow = {
+  turns: [],
+  earlier: { turns: 0, repowise: 0, reads: 0, edits: 0 },
+  named: {},
+  blast: {},
+  open: null
+};
+var END_OF = { answer: "answer", aborted: "stopped", refusal: "failed", error: "failed" };
+function turnEnd(reason, isAborted) {
+  return END_OF[reason ?? ""] ?? (isAborted === true ? "stopped" : "answer");
+}
+__name(turnEnd, "turnEnd");
+function repowiseTool(name) {
+  return REPOWISE_TOOL.exec(name)?.[1] ?? null;
+}
+__name(repowiseTool, "repowiseTool");
+var KIND_OF = {
+  Read: "read",
+  Edit: "edit",
+  MultiEdit: "edit",
+  Write: "edit",
+  NotebookEdit: "edit",
+  Grep: "search",
+  Glob: "search",
+  Bash: "shell"
+};
+var ARG_KEYS = ["targets", "query", "question", "id", "file_path", "notebook_path", "pattern", "path", "command", "url", "description"];
+var PATH_ARGS = /* @__PURE__ */ new Set(["file_path", "notebook_path", "path"]);
+function shortPath(path, root) {
+  const slashed = path.replace(/\\/g, "/");
+  if (root === null) return slashed;
+  const base = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const inside2 = slashed.toLowerCase().startsWith(`${base.toLowerCase()}/`);
+  return inside2 ? slashed.slice(base.length + 1) : slashed;
+}
+__name(shortPath, "shortPath");
+function argValue(key, v, root) {
+  if (typeof v === "string") return (PATH_ARGS.has(key) ? shortPath(v, root) : v.replace(/\s+/g, " ")).slice(0, ARG_CHARS);
+  if (Array.isArray(v)) return v.map((x) => typeof x === "string" ? x : JSON.stringify(x)).join(", ").slice(0, ARG_CHARS);
+  if (v === void 0 || v === null) return null;
+  return JSON.stringify(v).slice(0, ARG_CHARS);
+}
+__name(argValue, "argValue");
+function compactArgs(e, root) {
+  const out = [];
+  for (const key of ARG_KEYS) {
+    const value = argValue(key, e[key], root);
+    if (value !== null && out.length < MAX_ARGS) out.push([key, value]);
+  }
+  return out;
+}
+__name(compactArgs, "compactArgs");
+var lineCount = /* @__PURE__ */ __name((s) => typeof s === "string" ? s.split("\n").length : null, "lineCount");
+function editLines(e) {
+  const written = e.tool === "Write" ? lineCount(e["content"]) : null;
+  if (written !== null) return { written };
+  const before = lineCount(e["old_string"]);
+  const after = lineCount(e["new_string"]);
+  return before !== null && after !== null ? { delta: after - before } : null;
+}
+__name(editLines, "editLines");
+function askedFiles(e, root) {
+  const targets = e["targets"];
+  const list2 = Array.isArray(targets) ? targets : [];
+  return list2.filter((t) => typeof t === "string" && !t.includes("::")).map((t) => shortPath(t, root));
+}
+__name(askedFiles, "askedFiles");
+function isClaudeCall(e) {
+  return typeof e.tool_use_id === "string" && typeof e.tool === "string" && !e.tool_use_id.startsWith(OWN_CALL_PREFIX);
+}
+__name(isClaudeCall, "isClaudeCall");
+function activityOf(e, at, root) {
+  if (!isClaudeCall(e)) return null;
+  const rw = repowiseTool(e.tool);
+  const kind = rw !== null ? "repowise" : KIND_OF[e.tool] ?? "other";
+  return { ...BLANK, id: e.tool_use_id, kind, tool: rw ?? e.tool, agentId: agentOf(e), startedAt: at, args: compactArgs(e, root), ...BY_KIND[kind](e, root) };
+}
+__name(activityOf, "activityOf");
+var BLANK = {
+  endedAt: null,
+  paths: [],
+  asked: [],
+  command: null,
+  isError: false,
+  bytes: null,
+  reply: null,
+  namedBy: null,
+  lines: null,
+  hits: null,
+  hitPaths: []
+};
+var agentOf = /* @__PURE__ */ __name((e) => typeof e.agentId === "string" ? e.agentId : null, "agentOf");
+function fileOf(e, root) {
+  const file = e["file_path"] ?? e["notebook_path"];
+  return { paths: typeof file === "string" ? [shortPath(file, root)] : [] };
+}
+__name(fileOf, "fileOf");
+function commandOf(e) {
+  const command = e["command"];
+  return { command: typeof command === "string" ? command.slice(0, COMMAND_CHARS) : null };
+}
+__name(commandOf, "commandOf");
+var BY_KIND = {
+  repowise: /* @__PURE__ */ __name((e, root) => ({ ...fileOf(e, root), asked: askedFiles(e, root) }), "repowise"),
+  read: fileOf,
+  edit: /* @__PURE__ */ __name((e, root) => ({ ...fileOf(e, root), lines: editLines(e) }), "edit"),
+  search: fileOf,
+  shell: /* @__PURE__ */ __name((e) => commandOf(e), "shell"),
+  other: fileOf
+};
+function searchHits(outcome, root) {
+  const result = outcome?.result;
+  if (typeof result !== "object" || result === null) return { hits: null, hitPaths: [] };
+  if (!Array.isArray(result.filenames)) return { hits: typeof result.numFiles === "number" ? result.numFiles : null, hitPaths: [] };
+  const names2 = result.filenames.filter((f) => typeof f === "string");
+  return { hits: names2.length, hitPaths: names2.slice(0, MAX_HIT_PATHS).map((f) => shortPath(f, root)) };
+}
+__name(searchHits, "searchHits");
+function outcomeText(outcome) {
+  const text2 = outcome?.text;
+  return typeof text2 === "string" ? text2 : null;
+}
+__name(outcomeText, "outcomeText");
+function toolEnded(e, outcome, at, root) {
+  if (!isClaudeCall(e)) return null;
+  const rw = repowiseTool(e.tool);
+  const text2 = outcomeText(outcome);
+  const isError = outcome === null || outcome?.isError === true;
+  const summary = rw === null || text2 === null ? null : summarizeReply(rw, text2);
+  const reply = summary === null ? null : { ...summary, paths: summary.paths.map((p) => shortPath(p, root)) };
+  const bytes = summary?.bytes ?? (text2 === null ? null : new TextEncoder().encode(text2).length);
+  return { type: "toolEnded", id: e.tool_use_id, at, isError, bytes, reply, ...searchHits(outcome, root) };
+}
+__name(toolEnded, "toolEnded");
+function pathKey(path) {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+}
+__name(pathKey, "pathKey");
+function namingOf(named2, path) {
+  return named2[pathKey(path)] ?? null;
+}
+__name(namingOf, "namingOf");
+function withNamed(named2, paths, naming) {
+  let out = named2;
+  let size = Object.keys(named2).length;
+  for (const p of paths) {
+    const key = pathKey(p);
+    if (out[key] !== void 0 || size >= MAX_NAMED) continue;
+    if (out === named2) out = { ...named2 };
+    out[key] = naming;
+    size++;
+  }
+  return out;
+}
+__name(withNamed, "withNamed");
+var isFile = /* @__PURE__ */ __name((a) => a.kind === "read" || a.kind === "edit", "isFile");
+var isAnswered = /* @__PURE__ */ __name((a) => a.kind === "repowise" && a.endedAt !== null && !a.isError, "isAnswered");
+function turnTotals(turn) {
+  const files = turn.activities.filter(isFile);
+  const keys = /* @__PURE__ */ __name((list2) => new Set(list2.map((a) => pathKey(a.paths[0] ?? ""))), "keys");
+  const answered = turn.activities.filter(isAnswered);
+  const edits = files.filter((a) => a.kind === "edit");
+  return {
+    repowise: turn.activities.filter((a) => a.kind === "repowise").length,
+    answered: answered.length,
+    answeredMs: answered.reduce((ms, a) => ms + a.endedAt - a.startedAt, 0),
+    reads: keys(files.filter((a) => a.kind === "read")).size,
+    edits: keys(edits).size,
+    opened: keys(files).size,
+    named: keys(files.filter((a) => a.namedBy !== null)).size,
+    editNamed: edits.some((a) => a.namedBy !== null)
+  };
+}
+__name(turnTotals, "turnTotals");
+function fold(earlier, turn) {
+  const t = turnTotals(turn);
+  return { turns: earlier.turns + 1, repowise: earlier.repowise + t.repowise, reads: earlier.reads + t.reads, edits: earlier.edits + t.edits };
+}
+__name(fold, "fold");
+function withTurn(state2, turn) {
+  const turns = [...state2.turns, turn];
+  if (turns.length <= MAX_TURNS) return { ...state2, turns };
+  const gone = turns.shift();
+  return { ...state2, turns, earlier: fold(state2.earlier, gone) };
+}
+__name(withTurn, "withTurn");
+var INJECTED = /\s*<\\?((?:agent-message|system-reminder|task-notification|local-command-[\w-]+|command-[\w-]+))\b[^>]*>[\s\S]*?(?:<\/\1>|$)\s*/g;
+function userWords(text2) {
+  return text2.replace(INJECTED, " ").trim();
+}
+__name(userWords, "userWords");
+function newTurn(state2, turnId, prompt, at) {
+  const seq = (state2.turns.at(-1)?.seq ?? state2.earlier.turns) + 1;
+  return { seq, turnId, prompt: userWords(prompt).slice(0, PROMPT_CHARS), startedAt: at, endedAt: null, durationMs: null, end: null, activities: [], dropped: 0 };
+}
+__name(newTurn, "newTurn");
+function openTurn(state2, at) {
+  const last = state2.turns.at(-1);
+  return last !== void 0 && last.endedAt === null ? state2 : withTurn(state2, newTurn(state2, null, "", at));
+}
+__name(openTurn, "openTurn");
+function mapLast(state2, f) {
+  const last = state2.turns.at(-1);
+  const next = last === void 0 ? last : f(last);
+  return next === last ? state2 : { ...state2, turns: [...state2.turns.slice(0, -1), next] };
+}
+__name(mapLast, "mapLast");
+function mapActivity(state2, id, f) {
+  const i = state2.turns.findIndex((t) => t.activities.some((a) => a.id === id));
+  if (i < 0) return state2;
+  const turn = state2.turns[i];
+  const activities = turn.activities.map((a) => a.id === id ? f(a) : a);
+  const turns = state2.turns.map((t, j) => j === i ? { ...turn, activities } : t);
+  return { ...state2, turns };
+}
+__name(mapActivity, "mapActivity");
+function pushActivity(t, activity) {
+  const all = [...t.activities, activity];
+  const over = all.length - MAX_ACTIVITIES;
+  return over > 0 ? { ...t, activities: all.slice(over), dropped: t.dropped + over } : { ...t, activities: all };
+}
+__name(pushActivity, "pushActivity");
+function append(state2, activity) {
+  return mapLast(openTurn(state2, activity.startedAt), (t) => pushActivity(t, activity));
+}
+__name(append, "append");
+function closeTurn(state2, at, durationMs, end) {
+  return mapLast(state2, (t) => t.endedAt !== null ? t : { ...t, endedAt: at, durationMs: durationMs ?? at - t.startedAt, end });
+}
+__name(closeTurn, "closeTurn");
+function started(state2, activity) {
+  const namedBy = isFile(activity) && activity.paths[0] !== void 0 ? namingOf(state2.named, activity.paths[0]) : null;
+  return append(state2, { ...activity, namedBy });
+}
+__name(started, "started");
+function ended(state2, action) {
+  const { id, at, isError, bytes, reply, hits, hitPaths } = action;
+  const next = mapActivity(state2, id, (a) => ({ ...a, endedAt: at, isError, bytes, reply, hits, hitPaths }));
+  if (next === state2 || reply === null || isError) return next;
+  const turn = next.turns.find((t) => t.activities.some((a) => a.id === id));
+  return { ...next, named: withNamed(next.named, reply.paths, { id, tool: reply.tool, at, turn: turn.seq }) };
+}
+__name(ended, "ended");
+function openable(state2) {
+  return state2.turns.flatMap((t) => t.activities.filter((a) => a.kind === "repowise").map((a) => a.id));
+}
+__name(openable, "openable");
+function stepped(state2, by) {
+  const ids2 = openable(state2);
+  if (ids2.length === 0) return state2;
+  const at = state2.open === null ? -1 : ids2.indexOf(state2.open);
+  const i = at < 0 ? by === 1 ? 0 : ids2.length - 1 : Math.min(ids2.length - 1, Math.max(0, at + by));
+  return ids2[i] === state2.open ? state2 : { ...state2, open: ids2[i] };
+}
+__name(stepped, "stepped");
+function reduceFlow(state2, action) {
+  switch (action.type) {
+    case "turnStarted": {
+      const closed = closeTurn(state2, action.at, null, "stopped");
+      return withTurn(closed, newTurn(closed, action.turnId, action.prompt, action.at));
+    }
+    case "turnEnded":
+      return closeTurn(state2, action.at, action.durationMs, action.end);
+    case "toolStarted":
+      return started(state2, action.activity);
+    case "toolEnded":
+      return ended(state2, action);
+    case "blastLanded":
+      return { ...state2, blast: { ...state2.blast, [pathKey(action.path)]: action.facts } };
+    case "toggle":
+      return { ...state2, open: state2.open === action.id ? null : action.id };
+    case "step":
+      return stepped(state2, action.by);
+  }
+}
+__name(reduceFlow, "reduceFlow");
+function isWorking(state2) {
+  const last = state2.turns.at(-1);
+  return last !== void 0 && last.endedAt === null;
+}
+__name(isWorking, "isWorking");
+function inFlight(state2) {
+  return state2.turns.at(-1)?.activities.find((a) => a.kind === "repowise" && a.endedAt === null) ?? null;
+}
+__name(inFlight, "inFlight");
+
+// src/model/turnFacts.ts
+var COCHANGE_SHOWN = 2;
+var GENERIC = /* @__PURE__ */ new Set(["test", "tests", "spec", "specs", "__init__"]);
+var TEST_RUNNER = /\b(?:pytest|py\.test|manage\.py test|runtests|npm (?:run )?test|vitest|jest|go test|cargo test)\b/;
+function testsOf(file) {
+  if (file === void 0) return null;
+  const measured = file.measured_tests_total ?? 0;
+  if (measured > 0) return { total: measured, files: file.measured_tests ?? [], basis: "measured" };
+  const inferred = file.inferred_tests_total ?? 0;
+  return inferred > 0 ? { total: inferred, files: file.inferred_tests ?? [], basis: "inferred" } : null;
+}
+__name(testsOf, "testsOf");
+function blastFacts(path, r) {
+  const key = pathKey(path);
+  const importers = [...new Set((r.transitive_affected ?? []).map((t) => t.path))].filter((p) => pathKey(p) !== key);
+  const cochange = (r.cochange_warnings ?? []).filter((w) => pathKey(w.changed) === key).map((w) => ({ path: w.missing_partner, score: w.score })).sort((a, b) => b.score - a.score);
+  const tests = testsOf((r.test_impact?.files ?? []).find((f) => pathKey(f.source_file) === key));
+  return { importers, cochange, tests };
+}
+__name(blastFacts, "blastFacts");
+var allActivities = /* @__PURE__ */ __name((state2) => state2.turns.flatMap((t) => t.activities), "allActivities");
+function openedKeys(state2) {
+  return new Set(allActivities(state2).filter(isFile).map((a) => pathKey(a.paths[0] ?? "")));
+}
+__name(openedKeys, "openedKeys");
+function testCommands(state2) {
+  return allActivities(state2).map((a) => a.command).filter((c) => c !== null && TEST_RUNNER.test(c));
+}
+__name(testCommands, "testCommands");
+var asWord = /* @__PURE__ */ __name((command, word) => !GENERIC.has(word) && new RegExp(`(^|[^\\w])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\w])`).test(command), "asWord");
+function names(command, test) {
+  const slashed = test.replace(/\\/g, "/");
+  const parts = slashed.split("/");
+  const stem = (parts.at(-1) ?? "").replace(/\.[^.]+$/, "");
+  const folder = parts.at(-2) ?? "";
+  const cmd = command.replace(/\\/g, "/");
+  return cmd.includes(slashed) || asWord(cmd, stem) || asWord(cmd, folder);
+}
+__name(names, "names");
+function testsRun(state2, tests) {
+  const commands = testCommands(state2);
+  return tests.filter((t) => commands.some((c) => names(c, t))).length;
+}
+__name(testsRun, "testsRun");
+function gapsOf(state2, path, facts, opened) {
+  const seen = facts.importers.filter((p) => opened.has(pathKey(p))).length;
+  const t = facts.tests;
+  const run = t === null ? 0 : testsRun(state2, t.files);
+  return {
+    path,
+    importers: facts.importers.length > seen ? { total: facts.importers.length, opened: seen } : null,
+    cochange: facts.cochange.filter((c) => !opened.has(pathKey(c.path))).slice(0, COCHANGE_SHOWN),
+    tests: t !== null && run < t.total ? { total: t.total, run, basis: t.basis } : null
+  };
+}
+__name(gapsOf, "gapsOf");
+var hasGap = /* @__PURE__ */ __name((g) => g.importers !== null || g.cochange.length > 0 || g.tests !== null, "hasGap");
+function editedFiles(turn) {
+  const out = /* @__PURE__ */ new Map();
+  for (const a of turn.activities) {
+    const path = a.kind === "edit" && !a.isError ? a.paths[0] : void 0;
+    if (path !== void 0 && !out.has(pathKey(path))) out.set(pathKey(path), path);
+  }
+  return [...out.values()];
+}
+__name(editedFiles, "editedFiles");
+function beforeAccept(state2, turn) {
+  const opened = openedKeys(state2);
+  return editedFiles(turn).map((path) => [path, state2.blast[pathKey(path)]]).filter((pair) => pair[1] !== void 0).map(([path, facts]) => gapsOf(state2, path, facts, opened)).filter(hasGap);
+}
+__name(beforeAccept, "beforeAccept");
+function searchedBefore(state2, key, at) {
+  return allActivities(state2).some((a) => a.kind === "search" && a.startedAt < at && a.hitPaths.some((p) => pathKey(p) === key));
+}
+__name(searchedBefore, "searchedBefore");
+function viaOf(state2, first) {
+  if (first.namedBy !== null) return { kind: "repowise", tool: first.namedBy.tool };
+  return searchedBefore(state2, pathKey(first.paths[0] ?? ""), first.startedAt) ? { kind: "search" } : { kind: "direct" };
+}
+__name(viaOf, "viaOf");
+function workingSet(state2, turn) {
+  const first = /* @__PURE__ */ new Map();
+  const edited = /* @__PURE__ */ new Set();
+  for (const a of turn.activities.filter((x) => isFile(x) && !x.isError && x.paths[0] !== void 0)) {
+    const key = pathKey(a.paths[0]);
+    if (!first.has(key)) first.set(key, a);
+    if (a.kind === "edit") edited.add(key);
+  }
+  const rows = [...first].map(([key, a]) => ({ path: a.paths[0], kind: edited.has(key) ? "edited" : "read", via: viaOf(state2, a) }));
+  return [...rows.filter((r) => r.kind === "edited"), ...rows.filter((r) => r.kind === "read")];
+}
+__name(workingSet, "workingSet");
+var CONTEXT_KINDS = ["repowise", "read", "search", "shell", "other"];
+var CONTEXT_OF = {
+  repowise: "repowise",
+  read: "read",
+  search: "search",
+  shell: "shell",
+  edit: "other",
+  other: "other"
+};
+function contextBytes(turn) {
+  const out = { repowise: 0, read: 0, search: 0, shell: 0, other: 0 };
+  for (const a of turn.activities) {
+    const kind = CONTEXT_OF[a.kind];
+    if (kind !== null && a.bytes !== null) out[kind] += a.bytes;
+  }
+  return out;
+}
+__name(contextBytes, "contextBytes");
+function firstEditMs(turn) {
+  const edit = turn.activities.find((a) => a.kind === "edit");
+  return edit === void 0 ? null : edit.startedAt - turn.startedAt;
+}
+__name(firstEditMs, "firstEditMs");
+function firstEdits(state2) {
+  const out = /* @__PURE__ */ new Map();
+  for (const a of allActivities(state2)) {
+    const key = a.kind === "edit" && a.paths[0] !== void 0 ? pathKey(a.paths[0]) : null;
+    if (key !== null && !out.has(key)) out.set(key, a.startedAt);
+  }
+  return out;
+}
+__name(firstEdits, "firstEdits");
+function answeredBeforeEdit(state2) {
+  const edits = firstEdits(state2);
+  const before = /* @__PURE__ */ __name((a) => a.asked.some((p) => (edits.get(pathKey(p)) ?? Number.POSITIVE_INFINITY) < a.startedAt), "before");
+  return new Set(allActivities(state2).filter((a) => a.kind === "repowise" && before(a)).map((a) => a.id));
+}
+__name(answeredBeforeEdit, "answeredBeforeEdit");
 
 // src/views/copy.ts
 var HINTS = {
@@ -728,8 +1198,8 @@ function improvedShort(resolved) {
   return `improved, ${resolved.toLocaleString("en-US")} resolved`;
 }
 __name(improvedShort, "improvedShort");
-function newFindings(total, required2) {
-  return `${countOf(total, "new finding", "new findings")}, ${required2 ? "review required" : "low severity"}`;
+function newFindings(total2, required2) {
+  return `${countOf(total2, "new finding", "new findings")}, ${required2 ? "review required" : "low severity"}`;
 }
 __name(newFindings, "newFindings");
 function resolvedToo(resolved) {
@@ -761,9 +1231,9 @@ function testsBasis(measured) {
 }
 __name(testsBasis, "testsBasis");
 function testsLine(t) {
-  const count2 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  const count3 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
-  return `Tests to run: ${count2}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
+  return `Tests to run: ${count3}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
 }
 __name(testsLine, "testsLine");
 function overlapLine(branches, files, more) {
@@ -824,12 +1294,12 @@ function scopeParts(s) {
 }
 __name(scopeParts, "scopeParts");
 function readsLine(reads, matched, columns = Number.POSITIVE_INFINITY) {
-  const count2 = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
+  const count3 = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
   const full = [];
   const short = [];
   if (reads.count > 0) {
-    full.push(reads.capped ? `${count2} files read` : countOf(reads.count, "file read", "files read"));
-    short.push(`${count2} read`);
+    full.push(reads.capped ? `${count3} files read` : countOf(reads.count, "file read", "files read"));
+    short.push(`${count3} read`);
   }
   if (reads.notDrawn > 0) {
     full.push(`${formatNumber(reads.notDrawn)} not drawn`);
@@ -855,9 +1325,9 @@ function callersLine(name, callers, notDrawn, columns = Number.POSITIVE_INFINITY
 }
 __name(callersLine, "callersLine");
 var PANE_COPY = {
-  command: "Open Lens: the health map, ask the index, and the session recap",
-  argumentHint: "[map | ask <question> | recap]",
-  tabs: { map: "Map", ask: "Ask", recap: "Recap" },
+  command: "Open Lens: Claude's steps with Repowise, the health map, and the session recap",
+  argumentHint: "[map | recap | ask <question>]",
+  tabs: { flow: "Flow", map: "Map", recap: "Recap" },
   askLabel: "ask ",
   askPlaceholder: "why ...? asks the decision records; anything else asks the index",
   askSubmit: "ask",
@@ -910,13 +1380,13 @@ function filesTouched(edited, touched) {
   return `${formatNumber(edited)} edited of ${all} ${touched.count === 1 && !touched.capped ? "file" : "files"} touched`;
 }
 __name(filesTouched, "filesTouched");
-function findingsCounts(resolved, total) {
-  return `${formatNumber(resolved)} resolved · ${countOf(total, "new finding", "new findings")}`;
+function findingsCounts(resolved, total2) {
+  return `${formatNumber(resolved)} resolved · ${countOf(total2, "new finding", "new findings")}`;
 }
 __name(findingsCounts, "findingsCounts");
 function testsToRunCount(t) {
-  const count2 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
-  return `${count2}, ${t.measured ? "measured" : "inferred"}`;
+  const count3 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  return `${count3}, ${t.measured ? "measured" : "inferred"}`;
 }
 __name(testsToRunCount, "testsToRunCount");
 function decisionsSurfaced(titles) {
@@ -946,17 +1416,439 @@ function briefTests(t) {
   return `tests to run, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
 __name(briefTests, "briefTests");
+var FLOW_COPY = {
+  waiting: "Waiting for Claude",
+  empty: "Lens is listening. Send a prompt and this tab shows what only Lens sees: what an edit reaches, where Claude's context came from, and what Repowise answered.",
+  notConnected: "Repowise is not connected in this repo, so only Claude's own steps show here.",
+  beforeAccept: "BEFORE YOU ACCEPT",
+  workingSet: "WORKING SET",
+  context: "CONTEXT",
+  calls: "REPOWISE CALLS",
+  asOfIndex: "as of the last index",
+  edited: "edited",
+  read: "read",
+  search: "search",
+  direct: "direct",
+  hotspot: "hotspot",
+  subagent: "subagent",
+  asking: "asking...",
+  error: "error",
+  beforeEdit: "from the index before this edit",
+  howAnswered: "how it was answered",
+  excerpt: "reply begins",
+  thenOpened: "Claude then opened",
+  nothingOpened: "nothing yet",
+  noRepowise: "No Repowise calls",
+  editNamed: "edit landed in a file Repowise named",
+  next: "Next call",
+  previous: "Previous call"
+};
+function clockText(ms) {
+  const s = Math.max(0, Math.floor(ms / 1e3));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+__name(clockText, "clockText");
+function durationText(ms) {
+  if (ms < 1e3) return `${Math.max(0, Math.round(ms))} ms`;
+  if (ms < 1e4) return `${(ms / 1e3).toFixed(1)} s`;
+  const s = Math.round(ms / 1e3);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+__name(durationText, "durationText");
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+__name(sizeText, "sizeText");
+var END_WORD = { answer: "Done", stopped: "Stopped", failed: "Did not finish" };
+function statusLine(end, ms, edited) {
+  const head = end === null ? `Working · ${clockText(ms)}` : `${END_WORD[end]} · ${durationText(ms)}`;
+  return edited === 0 ? head : `${head} · edited ${countOf(edited, "file", "files")}`;
+}
+__name(statusLine, "statusLine");
+function answerLine(t) {
+  const parts = [t.repowise === 0 ? FLOW_COPY.noRepowise : `Repowise ${countOf(t.repowise, "call", "calls")}`];
+  const named2 = t.named > 0 ? `, ${formatNumber(t.named)} named by Repowise first` : "";
+  if (t.opened > 0) parts.push(`Claude opened ${countOf(t.opened, "file", "files")}${named2}`);
+  if (t.editNamed) parts.push(FLOW_COPY.editNamed);
+  return parts.join(" · ");
+}
+__name(answerLine, "answerLine");
+function importersLine(total2, opened) {
+  return `${countOf(total2, "direct importer", "direct importers")}; Claude opened ${opened === 0 ? "none" : formatNumber(opened)}`;
+}
+__name(importersLine, "importersLine");
+function cochangeLine(partners) {
+  return `not opened, usually changes with it (co-change score): ${partners.map((p) => `${p.path} ${p.score.toFixed(2)}`).join(", ")}`;
+}
+__name(cochangeLine, "cochangeLine");
+function testsReachLine(total2, basis, run, file) {
+  return `${countOf(total2, "test file", "test files")} reach ${file} (${basis}); ${run === 0 ? "none" : formatNumber(run)} run`;
+}
+__name(testsReachLine, "testsReachLine");
+function introducedLine(n, first) {
+  const what = first === null ? "" : `: ${first.biomarker.replace(/_/g, " ")} in ${first.path.split("/").at(-1)}`;
+  return `this turn introduced ${countOf(n, "finding", "findings")}${what}`;
+}
+__name(introducedLine, "introducedLine");
+var HEALTH_PARTLY = "health compared in part only; no new findings in the part compared";
+function knowsParts(k) {
+  const parts = [];
+  if (k.hotspot === true) parts.push(FLOW_COPY.hotspot);
+  if (k.callerFiles !== null && k.callerFiles > 0) parts.push(countOf(k.callerFiles, "file uses it", "files use it"));
+  if (k.recentOwner !== null) parts.push(`recent owner ${k.recentOwner.name} ${Math.round(k.recentOwner.share * 100)} %`);
+  return parts;
+}
+__name(knowsParts, "knowsParts");
+function moreFiles(n) {
+  return `+${formatNumber(n)} more`;
+}
+__name(moreFiles, "moreFiles");
+var CONTEXT_LABEL = { repowise: "Repowise", read: "file reads", search: "search", shell: "shell", other: "other" };
+function contextPart(kind, bytes) {
+  return `${CONTEXT_LABEL[kind]} ${sizeText(bytes)}`;
+}
+__name(contextPart, "contextPart");
+function firstEditText(ms) {
+  return `first edit after ${durationText(ms)}`;
+}
+__name(firstEditText, "firstEditText");
+function turnFooter(turn, ms, t, end = "answer") {
+  const how = end === null || end === "answer" ? "" : ` · ${END_WORD[end].toLowerCase()}`;
+  const took = ms === null ? "" : ` · ${durationText(ms)}`;
+  return `Turn ${turn}${how}${took} · ${countOf(t.repowise, "Repowise call", "Repowise calls")} · ${countOf(t.reads, "file read", "files read")} · ${formatNumber(t.edits)} edited`;
+}
+__name(turnFooter, "turnFooter");
+function earlierLine(t) {
+  return `Earlier: ${countOf(t.turns, "turn", "turns")} · ${countOf(t.repowise, "Repowise call", "Repowise calls")} · ${countOf(t.reads, "file read", "files read")} · ${formatNumber(t.edits)} edited`;
+}
+__name(earlierLine, "earlierLine");
+function hiddenSteps(n) {
+  return `${countOf(n, "earlier call", "earlier calls")} hidden · j / k step through calls`;
+}
+__name(hiddenSteps, "hiddenSteps");
+function laterSteps(n) {
+  return `${countOf(n, "later call", "later calls")} below · j / k step through calls`;
+}
+__name(laterSteps, "laterSteps");
+function droppedSteps(n) {
+  return `${countOf(n, "earlier step", "earlier steps")} of this turn not kept`;
+}
+__name(droppedSteps, "droppedSteps");
+var INSIDE_UNITS = {
+  targets: ["target", "targets"],
+  docs: ["documentation page", "documentation pages"],
+  symbols: ["symbol", "symbols"],
+  callers: ["caller", "callers"],
+  callees: ["callee", "callees"],
+  decisions: ["decision", "decisions"],
+  hotspots: ["hotspot", "hotspots"],
+  dependents: ["direct dependent", "direct dependents"],
+  coChange: ["co-change partner", "co-change partners"],
+  contributors: ["contributor", "contributors"],
+  citations: ["cited file", "cited files"],
+  bodies: ["symbol body", "symbol bodies"],
+  rationale: ["rationale comment", "rationale comments"],
+  guesses: ["best guess", "best guesses"],
+  commits: ["commit", "commits"],
+  results: ["result", "results"],
+  lines: ["line", "lines"]
+};
+function insideFact(f) {
+  const [one, many] = INSIDE_UNITS[f.what] ?? [f.what.replace(/_/g, " "), f.what.replace(/_/g, " ")];
+  return f.of === void 0 ? countOf(f.n, one, many) : `${formatNumber(f.n)} of ${countOf(f.of, one, many)}`;
+}
+__name(insideFact, "insideFact");
+function freshnessText(b) {
+  if (b.indexBehind !== null) return b.indexBehind ? "index behind HEAD" : "index current";
+  return b.ageDays === null ? null : `index ${countOf(b.ageDays, "day", "days")} old`;
+}
+__name(freshnessText, "freshnessText");
+var ageText = /* @__PURE__ */ __name((days) => `index ${countOf(days, "day", "days")} old`, "ageText");
+var when = /* @__PURE__ */ __name((on, text2) => on ? text2 : null, "when");
+var named = /* @__PURE__ */ __name((v, text2) => v === null ? null : text2(v), "named");
+var BEHIND = [
+  (b) => named(b.commit, (c) => `indexed at ${c}`),
+  (b) => named(b.ageDays, ageText),
+  (b) => named(b.verified, (v) => v ? "verified against the code" : "not verified"),
+  (b) => when(b.complete === false, "partial: the server capped it"),
+  (b) => named(b.confidence, (c) => `confidence ${c}`),
+  (b) => named(b.grounding, (g) => `grounding ${g.replace(/_/g, " ")}`),
+  (b) => named(b.retrieval, (r) => `retrieval ${r}`),
+  (b, bytes) => named(b.budget, (budget) => `reply ${bytes === null ? countOf(budget.used, "character", "characters") : sizeText(bytes)} (cap ${countOf(budget.limit, "character", "characters")})`),
+  (b) => named(b.omittedTokens, (t) => `${countOf(t, "token", "tokens")} left out, restorable`),
+  (b) => named(b.degraded, (d) => `degraded: ${d}`),
+  (b) => when(b.semantic === false, "semantic search off")
+];
+function behindParts(b, bytes = null) {
+  return BEHIND.map((part) => part(b, bytes)).filter((p) => p !== null);
+}
+__name(behindParts, "behindParts");
+
+// src/views/elements.ts
+function text(value, props = {}) {
+  return { type: "Text", props, children: [value] };
+}
+__name(text, "text");
+function box(props, children) {
+  return { type: "Box", props, children };
+}
+__name(box, "box");
+function button(key, hotkey, label, dimColor = false) {
+  return { type: "Button", props: { key, label, hotkey, plain: true, ...dimColor ? { dimColor } : {} } };
+}
+__name(button, "button");
+function raster(props) {
+  return { type: "Raster", props };
+}
+__name(raster, "raster");
+function input(props) {
+  return { type: "Input", props };
+}
+__name(input, "input");
+function markdown(text2) {
+  return { type: "Markdown", props: { text: text2 } };
+}
+__name(markdown, "markdown");
+function svg(source, alt) {
+  return { type: "Svg", props: { source, alt } };
+}
+__name(svg, "svg");
+var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
+function pressFor(key, presses) {
+  const onPress = presses[key];
+  if (!onPress) throw new Error(`button ${key} has no action`);
+  return onPress;
+}
+__name(pressFor, "pressFor");
+var PROPS = {
+  Text: /* @__PURE__ */ __name((n) => ({ ...n.props, children: n.children }), "Text"),
+  Box: /* @__PURE__ */ __name((n, table, presses) => ({ ...n.props, children: n.children.map((child) => materialize(child, table, presses)) }), "Box"),
+  Button: /* @__PURE__ */ __name((n, _table, presses) => ({ ...n.props, onPress: pressFor(n.props.key, presses) }), "Button"),
+  Input: /* @__PURE__ */ __name((n) => ({ ...n.props, onSubmit: SUBMIT_IN_HOOK }), "Input"),
+  Raster: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Raster"),
+  Markdown: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Markdown"),
+  Svg: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Svg")
+};
+function materialize(node, table, presses = {}) {
+  const build = table[node.type];
+  if (!build) throw new Error(`element ${node.type} is not on this surface`);
+  return build(PROPS[node.type](node, table, presses));
+}
+__name(materialize, "materialize");
+
+// ../types/src/health.ts
+var EXCELLENT_MIN = 8.5;
+var GOOD_MIN = 7;
+var FAIR_MIN = 5.5;
+var NEEDS_WORK_MIN = 4;
+var HEALTH_BAND_ORDER = [
+  "at_risk",
+  "needs_work",
+  "fair",
+  "good",
+  "excellent"
+];
+var HEALTH_BAND_LABEL = {
+  excellent: "Excellent",
+  good: "Good",
+  fair: "Fair",
+  needs_work: "Needs work",
+  at_risk: "At risk"
+};
+function bandForScore(score) {
+  if (score >= EXCELLENT_MIN) return "excellent";
+  if (score >= GOOD_MIN) return "good";
+  if (score >= FAIR_MIN) return "fair";
+  if (score >= NEEDS_WORK_MIN) return "needs_work";
+  return "at_risk";
+}
+__name(bandForScore, "bandForScore");
+
+// ../ui/src/brand.ts
+var BRAND = {
+  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
+  accent: "#f59520",
+  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
+  accentTextLight: "#a16215",
+  /** Brand plum — logo strokes on light surfaces, secondary accent. */
+  plum: "#473659",
+  /** Plum near-black — primary ink on warm paper. */
+  ink: "#241b2c",
+  /** Warm paper — the light-mode page background. */
+  paper: "#fbf6f1",
+  /** Cream — the logo stroke color on dark surfaces. */
+  cream: "#fce9dd"
+};
+var LIGHT = {
+  bgRoot: "#fbf6f1",
+  bgSurface: "#ffffff",
+  bgElevated: "#fbf4ee",
+  bgInset: "#f4eae1",
+  textPrimary: "#241b2c",
+  textSecondary: "#5e5360",
+  textTertiary: "#8c7f88",
+  accentPrimary: "#a16215",
+  accentFill: "#f59520",
+  accentSecondary: "#58436c",
+  success: "#1d8155",
+  warning: "#9a6614",
+  error: "#b23a2e"
+};
+var DARK = {
+  bgRoot: "#0e0e0f",
+  bgSurface: "#141416",
+  bgElevated: "#191a1c",
+  bgInset: "#0a0a0b",
+  textPrimary: "#f2f2f3",
+  textSecondary: "#b4b4b9",
+  textTertiary: "#7c7c82",
+  accentPrimary: "#f59520",
+  accentFill: "#f59520",
+  accentSecondary: "#a98fc4",
+  success: "#34d399",
+  warning: "#f2a03d",
+  error: "#e06a5a"
+};
+var DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a"
+};
+var DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk
+};
+
+// src/model/events.ts
+function fromTurnComplete(e) {
+  return e.agentId === void 0 ? { type: "turnCompleted" } : null;
+}
+__name(fromTurnComplete, "fromTurnComplete");
+var FILE_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write"]);
+function fileTarget(e, repoRoot) {
+  if (!FILE_TOOLS.has(e.tool) || repoRoot === null || typeof e.file_path !== "string") return null;
+  const windows = /^[A-Za-z]:[\\/]|^[\\/]{2}/.test(repoRoot);
+  return relativeTo(e.file_path, repoRoot, windows);
+}
+__name(fileTarget, "fileTarget");
+var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write"]);
+var STANDING = /^\[repowise\] .+? is governed by a standing decision: (.+?)(?: because .*)?\.$/;
+var MINED = /^\[repowise\] .+? has a decision recorded in it, mined but not reviewed: (.+?)(?: because .*)?\.$/;
+var FIXES = /^\[repowise\] .+? has been bug-fixed (\d+)x in the last 6 months, last (.+?)(?: \(bug magnet\))?(?:; mostly in (.+?))?\.$/;
+function stripConfirmed(line2) {
+  return line2.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
+}
+__name(stripConfirmed, "stripConfirmed");
+function notesFromAugment(additionalContext) {
+  if (!Array.isArray(additionalContext)) return [];
+  const notes = [];
+  const lines = additionalContext.filter((c) => typeof c === "string").flatMap((c) => c.split(/\r?\n/));
+  for (const raw of lines) {
+    const line2 = stripConfirmed(raw.trim());
+    const standing = STANDING.exec(line2);
+    const decision = standing ?? MINED.exec(line2);
+    const fixes = FIXES.exec(line2);
+    if (decision !== null && !notes.some((n) => n.kind === "decision")) {
+      notes.push({ kind: "decision", reviewed: standing !== null, title: decision[1] });
+    } else if (fixes !== null && !notes.some((n) => n.kind === "fixes")) {
+      notes.push({ kind: "fixes", count: Number(fixes[1]), age: fixes[2], symbol: fixes[3] ?? null });
+    }
+  }
+  return notes;
+}
+__name(notesFromAugment, "notesFromAugment");
+function savingsTotals(s) {
+  return {
+    tokens: s.saved_input_tokens,
+    inferredTokens: Math.min(s.inferred_saved_input_tokens, s.saved_input_tokens),
+    usd: s.priced_input_savings_usd
+  };
+}
+__name(savingsTotals, "savingsTotals");
+function savingsSince(now, base) {
+  const tokens = now.tokens - base.tokens;
+  const inferredTokens = now.inferredTokens - base.inferredTokens;
+  const usd = now.usd - base.usd;
+  if (tokens < 0 || inferredTokens < 0 || usd < 0) return null;
+  return { tokens, inferredTokens: Math.min(inferredTokens, tokens), usd };
+}
+__name(savingsSince, "savingsSince");
+var OBSERVED_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write", "Grep", "Glob"]);
+var OWN_CALL_PREFIX2 = "toolu_plugin_";
+function absolutePath(raw, ctx) {
+  const absolute = ctx.isWindows ? /^[A-Za-z]:[\\/]|^\\\\/.test(raw) : raw.startsWith("/");
+  const joined = absolute ? raw : `${ctx.cwd.replace(/[\\/]+$/, "")}/${raw.replace(/^\.[\\/]/, "")}`;
+  return ctx.isWindows ? joined.replace(/\\/g, "/") : joined;
+}
+__name(absolutePath, "absolutePath");
+function absoluteKey(raw, ctx) {
+  return normalizeRepoPath(absolutePath(raw, ctx), ctx.isWindows);
+}
+__name(absoluteKey, "absoluteKey");
+function relativeTo(absolute, root, isWindows) {
+  const rootKey = normalizeRepoPath(root, isWindows);
+  const slashed = isWindows ? absolute.replace(/\\/g, "/") : absolute;
+  if (!normalizeRepoPath(slashed, isWindows).startsWith(`${rootKey}/`)) return null;
+  return slashed.slice(rootKey.length + 1);
+}
+__name(relativeTo, "relativeTo");
+function filenamesOf(out) {
+  const names2 = typeof out.result === "object" ? out.result.filenames : void 0;
+  return Array.isArray(names2) ? names2.filter((v) => typeof v === "string") : [];
+}
+__name(filenamesOf, "filenamesOf");
+function isContentGrep(tool, out) {
+  return tool === "Grep" && typeof out.result === "object" && out.result.mode === "content";
+}
+__name(isContentGrep, "isContentGrep");
+function searchAction(out, ctx) {
+  return { type: "search", paths: filenamesOf(out).map((f) => absoluteKey(f, ctx)) };
+}
+__name(searchAction, "searchAction");
+function fileAction(e, ctx) {
+  const raw = e["file_path"];
+  if (typeof raw !== "string") return null;
+  const path = absoluteKey(raw, ctx);
+  return e.tool === "Read" ? { type: "read", path } : { type: "edit", path };
+}
+__name(fileAction, "fileAction");
+function fromToolCall(e, outcome, ctx) {
+  if (!OBSERVED_TOOLS.has(e.tool) || e.tool_use_id?.startsWith(OWN_CALL_PREFIX2)) return null;
+  const out = outcome ?? {};
+  if (out.isError === true || isContentGrep(e.tool, out)) return null;
+  return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
+}
+__name(fromToolCall, "fromToolCall");
+function touchedPath(e, cwd2, repoRoot) {
+  const raw = typeof e.file_path === "string" ? e.file_path : e["notebook_path"];
+  if (typeof raw !== "string") return null;
+  const base = cwd2 ?? repoRoot;
+  if (base === null) return raw;
+  const isWindows = /^[A-Za-z]:[\/]|^[\/]{2}/.test(base);
+  const abs = absolutePath(raw, { cwd: base, isWindows });
+  return (repoRoot === null ? null : relativeTo(abs, repoRoot, isWindows)) ?? abs;
+}
+__name(touchedPath, "touchedPath");
 
 // ../../node_modules/d3-hierarchy/src/hierarchy/count.js
-function count(node) {
+function count2(node) {
   var sum = 0, children = node.children, i = children && children.length;
   if (!i) sum = 1;
   else while (--i >= 0) sum += children[i].value;
   node.value = sum;
 }
-__name(count, "count");
+__name(count2, "count");
 function count_default() {
-  return this.eachAfter(count);
+  return this.eachAfter(count2);
 }
 __name(count_default, "default");
 
@@ -1241,7 +2133,7 @@ __name(slice_default, "default");
 // ../../node_modules/d3-hierarchy/src/treemap/squarify.js
 var phi = (1 + Math.sqrt(5)) / 2;
 function squarifyRatio(ratio, parent, x0, y0, x1, y1) {
-  var rows = [], nodes = parent.children, row, nodeValue, i0 = 0, i1 = 0, n = nodes.length, dx, dy, value = parent.value, sumValue, minValue, maxValue, newRatio, minRatio, alpha, beta;
+  var rows = [], nodes = parent.children, row2, nodeValue, i0 = 0, i1 = 0, n = nodes.length, dx, dy, value = parent.value, sumValue, minValue, maxValue, newRatio, minRatio, alpha, beta;
   while (i0 < n) {
     dx = x1 - x0, dy = y1 - y0;
     do
@@ -1263,9 +2155,9 @@ function squarifyRatio(ratio, parent, x0, y0, x1, y1) {
       }
       minRatio = newRatio;
     }
-    rows.push(row = { value: sumValue, dice: dx < dy, children: nodes.slice(i0, i1) });
-    if (row.dice) dice_default(row, x0, y0, x1, value ? y0 += dy * sumValue / value : y1);
-    else slice_default(row, x0, y0, value ? x0 += dx * sumValue / value : x1, y1);
+    rows.push(row2 = { value: sumValue, dice: dx < dy, children: nodes.slice(i0, i1) });
+    if (row2.dice) dice_default(row2, x0, y0, x1, value ? y0 += dy * sumValue / value : y1);
+    else slice_default(row2, x0, y0, value ? x0 += dx * sumValue / value : x1, y1);
     value -= sumValue, i0 = i1;
   }
   return rows;
@@ -1349,81 +2241,6 @@ function treemap_default() {
 }
 __name(treemap_default, "default");
 
-// ../types/src/health.ts
-var EXCELLENT_MIN = 8.5;
-var GOOD_MIN = 7;
-var FAIR_MIN = 5.5;
-var NEEDS_WORK_MIN = 4;
-var HEALTH_BAND_ORDER = [
-  "at_risk",
-  "needs_work",
-  "fair",
-  "good",
-  "excellent"
-];
-var HEALTH_BAND_LABEL = {
-  excellent: "Excellent",
-  good: "Good",
-  fair: "Fair",
-  needs_work: "Needs work",
-  at_risk: "At risk"
-};
-function bandForScore(score) {
-  if (score >= EXCELLENT_MIN) return "excellent";
-  if (score >= GOOD_MIN) return "good";
-  if (score >= FAIR_MIN) return "fair";
-  if (score >= NEEDS_WORK_MIN) return "needs_work";
-  return "at_risk";
-}
-__name(bandForScore, "bandForScore");
-
-// ../ui/src/brand.ts
-var BRAND = {
-  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
-  accent: "#f59520",
-  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
-  accentTextLight: "#a16215",
-  /** Brand plum — logo strokes on light surfaces, secondary accent. */
-  plum: "#473659",
-  /** Plum near-black — primary ink on warm paper. */
-  ink: "#241b2c",
-  /** Warm paper — the light-mode page background. */
-  paper: "#fbf6f1",
-  /** Cream — the logo stroke color on dark surfaces. */
-  cream: "#fce9dd"
-};
-var DARK = {
-  bgRoot: "#0e0e0f",
-  bgSurface: "#141416",
-  bgElevated: "#191a1c",
-  bgInset: "#0a0a0b",
-  textPrimary: "#f2f2f3",
-  textSecondary: "#b4b4b9",
-  textTertiary: "#7c7c82",
-  accentPrimary: "#f59520",
-  accentFill: "#f59520",
-  accentSecondary: "#a98fc4",
-  success: "#34d399",
-  warning: "#f2a03d",
-  error: "#e06a5a"
-};
-var DARK_CANVAS = {
-  nodeAtRisk: "#b0544b",
-  nodeNeedsWork: "#bd7c42",
-  nodeFair: "#a89453",
-  nodeGood: "#42906f",
-  nodeExcellent: "#5cb389",
-  nodeNeutral: "#333336",
-  caution: "#d9b04a"
-};
-var DARK_CANVAS_BAND = {
-  excellent: DARK_CANVAS.nodeExcellent,
-  good: DARK_CANVAS.nodeGood,
-  fair: DARK_CANVAS.nodeFair,
-  needs_work: DARK_CANVAS.nodeNeedsWork,
-  at_risk: DARK_CANVAS.nodeAtRisk
-};
-
 // src/views/map.ts
 var UPPER_HALF = 9600;
 var hex = /* @__PURE__ */ __name((s) => parseInt(s.slice(1), 16), "hex");
@@ -1487,7 +2304,7 @@ function groupKeys(files) {
   return files.map((f) => keyOf(f.file_path, split2));
 }
 __name(groupKeys, "groupKeys");
-function treemapOf(files, width, height) {
+function treemapOf(files, width2, height) {
   const keys = groupKeys(files);
   const groups = /* @__PURE__ */ new Map();
   files.forEach((file, i) => {
@@ -1496,7 +2313,7 @@ function treemapOf(files, width, height) {
   });
   const data = { name: "", children: [...groups].map(([name, children]) => ({ name, children })) };
   const root = hierarchy(data).sum((d) => d.file?.nloc ?? 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || byName(a.data.name, b.data.name));
-  return treemap_default().tile(squarify_default).size([width, height])(root);
+  return treemap_default().tile(squarify_default).size([width2, height])(root);
 }
 __name(treemapOf, "treemapOf");
 var rectOf = /* @__PURE__ */ __name((n) => ({ x: n.x0, y: n.y0, w: n.x1 - n.x0, h: n.y1 - n.y0 }), "rectOf");
@@ -1504,11 +2321,11 @@ function pixelSpan(from, to) {
   return [Math.ceil(from - 0.5), Math.ceil(to - 0.5)];
 }
 __name(pixelSpan, "pixelSpan");
-function groupInterior(rect, width, height) {
+function groupInterior(rect, width2, height) {
   const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
   const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
   const gutter = x1 - x0 >= GUTTER_MIN && y1 - y0 >= GUTTER_MIN;
-  return { x0, y0, x1: gutter && x1 < width ? x1 - 1 : x1, y1: gutter && y1 < height ? y1 - 1 : y1 };
+  return { x0, y0, x1: gutter && x1 < width2 ? x1 - 1 : x1, y1: gutter && y1 < height ? y1 - 1 : y1 };
 }
 __name(groupInterior, "groupInterior");
 function placeFile(leaf, group, inner) {
@@ -1529,32 +2346,32 @@ function placeFile(leaf, group, inner) {
   };
 }
 __name(placeFile, "placeFile");
-function paintFile(base, width, f) {
+function paintFile(base, width2, f) {
   const fill = colorForScore(f.score);
   const edge = mix(fill, BLACK, 0.3);
   const edgeX = f.px1 - f.px0 >= EDGE_MIN ? f.px1 - 1 : -1;
   const edgeY = f.py1 - f.py0 >= EDGE_MIN ? f.py1 - 1 : -1;
   for (let y = f.py0; y < f.py1; y++) {
-    base.fill(y === edgeY ? edge : fill, y * width + f.px0, y * width + f.px1);
-    if (edgeX >= 0) base[y * width + edgeX] = edge;
+    base.fill(y === edgeY ? edge : fill, y * width2 + f.px0, y * width2 + f.px1);
+    if (edgeX >= 0) base[y * width2 + edgeX] = edge;
   }
 }
 __name(paintFile, "paintFile");
-function labelText(key, width) {
+function labelText(key, width2) {
   const parts = key.split("/");
   const rungs = [key, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
-  const text2 = rungs.find((r) => r.length > 0 && r.length <= width);
+  const text2 = rungs.find((r) => r.length > 0 && r.length <= width2);
   return text2 !== void 0 && /^[\x20-\x7e]+$/.test(text2) ? text2 : null;
 }
 __name(labelText, "labelText");
 function labelFor(g, columns, rows) {
   const col = Math.ceil(g.rect.x);
-  const row = Math.ceil(g.rect.y / 2);
-  const width = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
-  const height = Math.floor((g.rect.y + g.rect.h) / 2) - row;
-  if (g.key === "" || height < 2 || row >= rows) return null;
-  const text2 = labelText(g.key, width);
-  return text2 === null ? null : { row, col, text: text2 };
+  const row2 = Math.ceil(g.rect.y / 2);
+  const width2 = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
+  const height = Math.floor((g.rect.y + g.rect.h) / 2) - row2;
+  if (g.key === "" || height < 2 || row2 >= rows) return null;
+  const text2 = labelText(g.key, width2);
+  return text2 === null ? null : { row: row2, col, text: text2 };
 }
 __name(labelFor, "labelFor");
 function labelsFor(groups, columns, rows) {
@@ -1562,52 +2379,52 @@ function labelsFor(groups, columns, rows) {
 }
 __name(labelsFor, "labelsFor");
 function layoutMap(feed, columns, rows, caseInsensitive) {
-  const width = columns;
+  const width2 = columns;
   const height = rows * 2;
   const root = treemapOf(
     feed.filter((f) => f.nloc > 0),
-    width,
+    width2,
     height
   );
   const groups = [];
   const files = [];
   for (const node of root.children ?? []) {
     const group = groups.push({ key: node.data.name, rect: rectOf(node), nloc: node.value ?? 0 }) - 1;
-    const inner = groupInterior(rectOf(node), width, height);
+    const inner = groupInterior(rectOf(node), width2, height);
     for (const leaf of node.children ?? []) files.push(placeFile(leaf, group, inner));
   }
-  const base = new Uint32Array(width * height).fill(GROUND);
+  const base = new Uint32Array(width2 * height).fill(GROUND);
   const drawn = [];
   const index = /* @__PURE__ */ new Map();
   files.forEach((f, i) => {
     if (f.px1 <= f.px0 || f.py1 <= f.py0) return;
     drawn.push(i);
     index.set(caseInsensitive ? f.path.toLowerCase() : f.path, i);
-    paintFile(base, width, f);
+    paintFile(base, width2, f);
   });
-  return { columns, rows, width, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base };
+  return { columns, rows, width: width2, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base };
 }
 __name(layoutMap, "layoutMap");
-function labelCovered(label, marked, width) {
+function labelCovered(label, marked, width2) {
   if (marked === void 0) return false;
   for (let c = label.col; c < label.col + label.text.length; c++) {
-    if (marked[2 * label.row * width + c] || marked[(2 * label.row + 1) * width + c]) return true;
+    if (marked[2 * label.row * width2 + c] || marked[(2 * label.row + 1) * width2 + c]) return true;
   }
   return false;
 }
 __name(labelCovered, "labelCovered");
 function encodeCells(layout, pixels, marked) {
-  const { columns, rows, width } = layout;
+  const { columns, rows, width: width2 } = layout;
   const words = new Uint32Array(columns * rows * 3);
   for (let i = 0; i < columns * rows; i++) {
     const r = Math.floor(i / columns);
     const c = i % columns;
     words[i * 3] = UPPER_HALF;
-    words[i * 3 + 1] = pixels[2 * r * width + c] ?? GROUND;
-    words[i * 3 + 2] = pixels[(2 * r + 1) * width + c] ?? GROUND;
+    words[i * 3 + 1] = pixels[2 * r * width2 + c] ?? GROUND;
+    words[i * 3 + 2] = pixels[(2 * r + 1) * width2 + c] ?? GROUND;
   }
   for (const label of layout.labels) {
-    if (labelCovered(label, marked, width)) continue;
+    if (labelCovered(label, marked, width2)) continue;
     for (let k = 0; k < label.text.length && label.col + k < columns; k++) {
       const o = (label.row * columns + label.col + k) * 3;
       words.set([label.text.charCodeAt(k), LABEL_FG, GROUND], o);
@@ -1616,58 +2433,6 @@ function encodeCells(layout, pixels, marked) {
   return new Uint8Array(words.buffer).toBase64();
 }
 __name(encodeCells, "encodeCells");
-
-// src/views/elements.ts
-function text(value, props = {}) {
-  return { type: "Text", props, children: [value] };
-}
-__name(text, "text");
-function box(props, children) {
-  return { type: "Box", props, children };
-}
-__name(box, "box");
-function button(key, hotkey, label, dimColor = false) {
-  return { type: "Button", props: { key, label, hotkey, plain: true, ...dimColor ? { dimColor } : {} } };
-}
-__name(button, "button");
-function raster(props) {
-  return { type: "Raster", props };
-}
-__name(raster, "raster");
-function input(props) {
-  return { type: "Input", props };
-}
-__name(input, "input");
-function markdown(text2) {
-  return { type: "Markdown", props: { text: text2 } };
-}
-__name(markdown, "markdown");
-function svg(source, alt) {
-  return { type: "Svg", props: { source, alt } };
-}
-__name(svg, "svg");
-var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
-function pressFor(key, presses) {
-  const onPress = presses[key];
-  if (!onPress) throw new Error(`button ${key} has no action`);
-  return onPress;
-}
-__name(pressFor, "pressFor");
-var PROPS = {
-  Text: /* @__PURE__ */ __name((n) => ({ ...n.props, children: n.children }), "Text"),
-  Box: /* @__PURE__ */ __name((n, table, presses) => ({ ...n.props, children: n.children.map((child) => materialize(child, table, presses)) }), "Box"),
-  Button: /* @__PURE__ */ __name((n, _table, presses) => ({ ...n.props, onPress: pressFor(n.props.key, presses) }), "Button"),
-  Input: /* @__PURE__ */ __name((n) => ({ ...n.props, onSubmit: SUBMIT_IN_HOOK }), "Input"),
-  Raster: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Raster"),
-  Markdown: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Markdown"),
-  Svg: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Svg")
-};
-function materialize(node, table, presses = {}) {
-  const build = table[node.type];
-  if (!build) throw new Error(`element ${node.type} is not on this surface`);
-  return build(PROPS[node.type](node, table, presses));
-}
-__name(materialize, "materialize");
 
 // src/views/overlay.ts
 var EDIT_TINT = mix(ACCENT, 16777215, 0.45);
@@ -1731,9 +2496,9 @@ function inside(layout, x, y) {
 __name(inside, "inside");
 function set(p, x, y, color2) {
   if (!inside(p.layout, x, y)) return;
-  const width = p.layout.width;
-  p.px[y * width + x] = color2;
-  p.marked[y * width + x] = 1;
+  const width2 = p.layout.width;
+  p.px[y * width2 + x] = color2;
+  p.marked[y * width2 + x] = 1;
 }
 __name(set, "set");
 function fillFile(p, f, color2) {
@@ -1786,11 +2551,11 @@ function paintEdited(p, f) {
 __name(paintEdited, "paintEdited");
 function paintRing(p, origin, reach) {
   const [ox, oy] = center(origin);
-  const { width, height } = p.layout;
+  const { width: width2, height } = p.layout;
   for (let y = Math.max(0, Math.floor(oy - reach)); y <= Math.min(height - 1, oy + reach); y++) {
-    for (let x = Math.max(0, Math.floor(ox - reach)); x <= Math.min(width - 1, ox + reach); x++) {
+    for (let x = Math.max(0, Math.floor(ox - reach)); x <= Math.min(width2 - 1, ox + reach); x++) {
       const d = Math.hypot(x - ox, y - oy);
-      if (d <= reach && d > reach - 2) set(p, x, y, mix(p.px[y * width + x] ?? GROUND, ACCENT, RING_AMOUNT));
+      if (d <= reach && d > reach - 2) set(p, x, y, mix(p.px[y * width2 + x] ?? GROUND, ACCENT, RING_AMOUNT));
     }
   }
 }
@@ -1854,11 +2619,11 @@ var READ = { glyph: "□", color: BRAND.accent, label: MAP_COPY.read };
 var EDITED = { glyph: "◆", color: hexOf(EDIT_TINT), label: MAP_COPY.edited };
 var IMPORTER = { glyph: "·", color: BRAND.accent, label: MAP_COPY.importer };
 var MATCH = { glyph: "▪", color: BRAND.accent, label: MAP_COPY.match };
-function packRows(items, width, columns, gap) {
+function packRows(items, width2, columns, gap) {
   const rows = [];
   let used = Infinity;
   for (const item of items) {
-    const w = width(item);
+    const w = width2(item);
     const last = rows[rows.length - 1];
     if (last === void 0 || used + gap + w > columns) {
       rows.push([item]);
@@ -1885,9 +2650,9 @@ function mapSize(pane) {
 __name(mapSize, "mapSize");
 function swatchRows(items, columns) {
   return packRows(items, swatchWidth, columns, GAP).map(
-    (row) => box(
+    (row2) => box(
       { flexDirection: "row", columnGap: GAP },
-      row.map((s) => box({ flexDirection: "row" }, [text(s.glyph, { color: s.color }), text(` ${s.label}`, { dimColor: true })]))
+      row2.map((s) => box({ flexDirection: "row" }, [text(s.glyph, { color: s.color }), text(` ${s.label}`, { dimColor: true })]))
     )
   );
 }
@@ -1906,7 +2671,7 @@ function scopeRows(scope, columns) {
     if (rows(parts).length <= 2) break;
     parts = parts.filter((p) => p !== optional);
   }
-  return rows(parts).slice(0, 2).map((row) => row.join(SEP));
+  return rows(parts).slice(0, 2).map((row2) => row2.join(SEP));
 }
 __name(scopeRows, "scopeRows");
 function factRows(resolved, scope, columns) {
@@ -1937,6 +2702,510 @@ function noticeView(line2, columns) {
 }
 __name(noticeView, "noticeView");
 
+// src/views/owl.ts
+var EYES = { open: "◉", shut: "─", side: "◐", happy: "^", still: "•" };
+var BLINK = [...Array(9).fill(EYES.open), EYES.shut];
+var BLINK_MS = 250;
+var EYES_OF = {
+  asleep: EYES.shut,
+  asking: EYES.side,
+  happy: EYES.happy,
+  stopped: EYES.still
+};
+function owlEyes(state2, now, still) {
+  if (state2 !== "watching") return EYES_OF[state2];
+  return still ? EYES.open : BLINK[Math.floor(now / BLINK_MS) % BLINK.length];
+}
+__name(owlEyes, "owlEyes");
+var OWL_WIDTH = 5;
+function owl(state2, eyes, amber) {
+  if (state2 === "asleep") return [text(`{${eyes},${eyes}}`, { dimColor: true })];
+  const eye = /* @__PURE__ */ __name(() => eyes === EYES.shut || eyes === EYES.still ? text(eyes) : text(eyes, { color: amber }), "eye");
+  return [text("{"), eye(), text(","), eye(), text("}")];
+}
+__name(owl, "owl");
+
+// src/views/theme.ts
+var DARK_THEME = { plum: DARK.accentSecondary, amber: BRAND.accent };
+var LIGHT_THEME = { plum: LIGHT.accentSecondary, amber: BRAND.accentTextLight };
+function flowTheme(light) {
+  return light ? LIGHT_THEME : DARK_THEME;
+}
+__name(flowTheme, "flowTheme");
+var HILLS = "▁▂▃▅▃▂▁▁▂▃▂▁▁▁▂▃▄▃▂▁";
+var MIRROR = { "▁": " ", "▂": "▔", "▃": "▔", "▄": "▀", "▅": "▀" };
+var THISTLE = "⚘";
+function repeat(pattern, columns) {
+  return pattern.repeat(Math.ceil(Math.max(0, columns) / pattern.length)).slice(0, Math.max(0, columns));
+}
+__name(repeat, "repeat");
+function hills(columns) {
+  return repeat(HILLS, columns);
+}
+__name(hills, "hills");
+function loch(columns) {
+  return [...hills(columns)].map((c) => MIRROR[c] ?? " ").join("");
+}
+__name(loch, "loch");
+
+// src/views/flow.ts
+var FLOW_KEY = "lens-flow";
+var FLOW_NEXT = "lens-flow-next";
+var FLOW_PREV = "lens-flow-prev";
+var HAPPY_MS = 3e3;
+var NARROW = 80;
+var MIN_BODY = 3;
+var ACTIVE_MARK = "▸";
+var GUTTER = 2;
+var CLOCK_W = 6;
+var DETAIL_W = 20;
+var DETAIL_INDENT = GUTTER + CLOCK_W;
+var EMPTY_W = 70;
+var WORKING_ROWS = 6;
+var FILE_W = 44;
+var KIND_W = 8;
+var VIA_W = 13;
+var BAR_W = 60;
+var BUILT_FROM = 2;
+var TARGET_MIN = 28;
+var SEP2 = " · ";
+var EXCERPT_LINE = 160;
+var rowKey = /* @__PURE__ */ __name((id) => `${FLOW_KEY}-${id}`, "rowKey");
+function flowPresses(state2) {
+  return [[FLOW_NEXT, null], [FLOW_PREV, null], ...openable(state2).map((id) => [rowKey(id), id])];
+}
+__name(flowPresses, "flowPresses");
+var width = /* @__PURE__ */ __name((segs) => segs.reduce((n, s) => n + s.t.length, 0), "width");
+function segNode(s) {
+  if (s.press !== void 0) return { type: "Button", props: { key: s.press, label: s.t, plain: true } };
+  const props = {};
+  if (s.color !== void 0) props.color = s.color;
+  if (s.dim === true) props.dimColor = true;
+  return text(s.t, props);
+}
+__name(segNode, "segNode");
+function row(segs, columns, right = []) {
+  const fixed = width(segs.filter((s) => s.flex !== true)) + width(right) + (right.length > 0 ? 2 : 0);
+  const fitted = segs.map((s) => s.flex === true ? { ...s, t: fit(s.t, Math.max(1, columns - fixed)) } : s);
+  const gap = right.length > 0 ? Math.max(2, columns - width(fitted) - width(right)) : 0;
+  const all = gap > 0 ? [...fitted, { t: " ".repeat(gap) }, ...right] : fitted;
+  return box({ flexDirection: "row" }, all.filter((s) => s.t !== "").map(segNode));
+}
+__name(row, "row");
+var dimLine = /* @__PURE__ */ __name((t, columns) => text(fit(t, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
+var pad = /* @__PURE__ */ __name((n) => ({ t: " ".repeat(n) }), "pad");
+function wrapWords(words, columns) {
+  return packRows(words.split(" "), (w) => w.length, Math.max(1, columns), 1).map((r) => r.join(" "));
+}
+__name(wrapWords, "wrapWords");
+function section(caption, lines) {
+  return lines.length === 0 ? [] : [text(caption, { dimColor: true }), ...lines];
+}
+__name(section, "section");
+function owlState(state2, now) {
+  const last = state2.turns.at(-1);
+  if (last === void 0) return "asleep";
+  if (isWorking(state2)) return inFlight(state2) === null ? "watching" : "asking";
+  if (last.end === "stopped" || last.end === "failed") return "stopped";
+  return last.endedAt !== null && now - last.endedAt < HAPPY_MS ? "happy" : "asleep";
+}
+__name(owlState, "owlState");
+function statusSegs(turn, now, theme) {
+  const edited = turnTotals(turn).edits;
+  if (turn.endedAt === null) return [{ t: statusLine(null, now - turn.startedAt, edited) }];
+  const end = turn.end ?? "answer";
+  const line2 = { t: statusLine(end, turn.durationMs ?? 0, edited) };
+  return end === "answer" ? [line2, { t: `  ${THISTLE}`, color: theme.plum }] : [line2];
+}
+__name(statusSegs, "statusSegs");
+function notice(mode) {
+  return mode === "no-index" || mode === "no-cli" ? FLOW_COPY.notConnected : null;
+}
+__name(notice, "notice");
+function header(state2, v, theme) {
+  const turn = state2.turns.at(-1);
+  const st = owlState(state2, v.now);
+  const face = box({ flexDirection: "row" }, owl(st, owlEyes(st, v.now, v.still), theme.amber));
+  const room = v.columns - OWL_WIDTH - 1;
+  const said = notice(v.mode);
+  const tail = said === null ? [] : [dimLine(said, v.columns)];
+  if (turn === void 0) {
+    const [first = "", ...rest] = wrapWords(FLOW_COPY.empty, Math.min(EMPTY_W, room));
+    return [box({ flexDirection: "row", columnGap: 1 }, [face, text(first)]), ...rest.map((l) => text(`${" ".repeat(OWL_WIDTH + 1)}${l}`)), ...tail];
+  }
+  const prompt = turn.prompt.replace(/\s+/g, " ").trim();
+  return [
+    box({ flexDirection: "row", columnGap: 1 }, [face, row(statusSegs(turn, v.now, theme), room)]),
+    text(fit(answerLine(turnTotals(turn)), v.columns), { wrap: "truncate-end" }),
+    ...prompt === "" ? [] : [dimLine(`"${prompt}"`, v.columns)],
+    ...tail
+  ];
+}
+__name(header, "header");
+var fileName = /* @__PURE__ */ __name((path) => path.split("/").at(-1) ?? path, "fileName");
+function gapLines(g) {
+  const out = [];
+  if (g.importers !== null) out.push(importersLine(g.importers.total, g.importers.opened));
+  if (g.cochange.length > 0) out.push(cochangeLine(g.cochange));
+  if (g.tests !== null) out.push(testsReachLine(g.tests.total, g.tests.basis, g.tests.run, fileName(g.path)));
+  return out;
+}
+__name(gapLines, "gapLines");
+function healthLines(risk) {
+  const hd = risk?.health_delta;
+  if (hd === void 0) return [];
+  if (hd.introduced > 0) return [introducedLine(hd.introduced, hd.top_findings.find((f) => f.change === "introduced") ?? null)];
+  return hd.status === "partial" ? [HEALTH_PARTLY] : [];
+}
+__name(healthLines, "healthLines");
+function beforeAcceptLines(state2, turn, v) {
+  const files = beforeAccept(state2, turn).flatMap((g) => [
+    row([pad(2), { t: g.path, flex: true }, { t: `  ${FLOW_COPY.asOfIndex}`, dim: true }], v.columns),
+    ...gapLines(g).map((l) => dimLine(`    ${l}`, v.columns))
+  ]);
+  const health2 = healthLines(v.review).map((l) => text(fit(`  ${l}`, v.columns)));
+  return section(FLOW_COPY.beforeAccept, [...files, ...health2]);
+}
+__name(beforeAcceptLines, "beforeAcceptLines");
+function viaSeg(via, theme) {
+  if (via.kind === "repowise") return { t: via.tool.padEnd(VIA_W), color: theme.plum };
+  return { t: (via.kind === "search" ? FLOW_COPY.search : FLOW_COPY.direct).padEnd(VIA_W), dim: true };
+}
+__name(viaSeg, "viaSeg");
+function workingRow(f, t) {
+  const card = t.cards.get(pathKey(f.path));
+  const knows = t.columns < NARROW || card === void 0 ? "" : knowsParts(card).join(SEP2);
+  const kind = { t: (f.kind === "edited" ? FLOW_COPY.edited : FLOW_COPY.read).padEnd(KIND_W), dim: f.kind === "read" };
+  return row([pad(2), { t: fit(f.path, t.fileW).padEnd(t.fileW + 2) }, kind, viaSeg(f.via, t.theme), { t: knows, dim: true, flex: true }], t.columns);
+}
+__name(workingRow, "workingRow");
+function workingLines(state2, turn, v, theme) {
+  const files = workingSet(state2, turn);
+  const longest = Math.max(0, ...files.map((f) => f.path.length));
+  const t = {
+    cards: new Map(Object.entries(v.contexts).map(([p, c]) => [pathKey(p), c])),
+    columns: v.columns,
+    fileW: Math.min(FILE_W, longest, Math.max(8, v.columns - 2 - KIND_W - VIA_W - 4)),
+    theme
+  };
+  const rows = files.slice(0, WORKING_ROWS).map((f) => workingRow(f, t));
+  const more = files.length > WORKING_ROWS ? [dimLine(`  ${moreFiles(files.length - WORKING_ROWS)}`, v.columns)] : [];
+  return section(`${FLOW_COPY.workingSet} · ${FLOW_COPY.asOfIndex}`, [...rows, ...more]);
+}
+__name(workingLines, "workingLines");
+var SHADE = { repowise: "█", read: "▓", search: "▒", shell: "░", other: "·" };
+function cellsOf(bytes, total2, cells) {
+  return CONTEXT_KINDS.filter((k) => bytes[k] > 0).map((k) => [k, Math.max(1, Math.round(bytes[k] / total2 * cells))]);
+}
+__name(cellsOf, "cellsOf");
+function shadeSeg(kind, n, theme) {
+  const t = SHADE[kind].repeat(n);
+  return kind === "repowise" ? { t, color: theme.plum } : { t };
+}
+__name(shadeSeg, "shadeSeg");
+function contextLines(turn, columns, theme) {
+  const bytes = contextBytes(turn);
+  const total2 = CONTEXT_KINDS.reduce((n, k) => n + bytes[k], 0);
+  if (total2 === 0) return [];
+  const cells = cellsOf(bytes, total2, Math.min(BAR_W, columns - 4));
+  const bar = row([pad(2), ...cells.map(([k, n]) => shadeSeg(k, n, theme))], columns);
+  const legend = cells.map(([k]) => `${SHADE[k]} ${contextPart(k, bytes[k])}`);
+  const first = firstEditMs(turn);
+  const parts = first === null ? legend : [...legend, firstEditText(first)];
+  const lines = packRows(parts, (p) => p.length, Math.max(10, columns - 2), 2).map((r) => dimLine(`  ${r.join("  ")}`, columns));
+  return section(FLOW_COPY.context, [bar, ...lines]);
+}
+__name(contextLines, "contextLines");
+function lead(a, ctx) {
+  const mark = a.id === ctx.active ? { t: `${ACTIVE_MARK} `, color: ctx.theme.amber } : pad(GUTTER);
+  return [mark, { t: clockText(a.startedAt - ctx.turn.startedAt).padEnd(CLOCK_W), dim: true }];
+}
+__name(lead, "lead");
+function builtFrom(a, ctx) {
+  const reply = a.reply;
+  const facts = reply === null ? [] : reply.inside.slice(0, BUILT_FROM).map(insideFact);
+  const fresh = reply === null ? null : freshnessText(reply.behind);
+  return [...ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [], ...facts, ...fresh === null ? [] : [fresh]];
+}
+__name(builtFrom, "builtFrom");
+function rightOf(a, ctx) {
+  if (a.isError) return FLOW_COPY.error;
+  if (a.endedAt === null) return FLOW_COPY.asking;
+  return [durationText(a.endedAt - a.startedAt), ...builtFrom(a, ctx)].join(SEP2);
+}
+__name(rightOf, "rightOf");
+function callLine(a, ctx) {
+  const what = a.args[0]?.[1] ?? "";
+  const sub = a.agentId === null ? [] : [{ t: `  ${FLOW_COPY.subagent}`, dim: true }];
+  const segs = [...lead(a, ctx), { t: a.tool, press: rowKey(a.id) }, pad(2), { t: what, flex: true }, ...sub];
+  const room = ctx.columns - width(segs.filter((s) => s.flex !== true)) - Math.min(what.length, TARGET_MIN) - 2;
+  return { node: row(segs, ctx.columns, [{ t: fit(rightOf(a, ctx), Math.max(1, room)), dim: true }]), id: a.id };
+}
+__name(callLine, "callLine");
+function labeled(label, body, ctx, id) {
+  return { node: row([pad(DETAIL_INDENT), { t: label.padEnd(DETAIL_W), dim: true }, { t: body, flex: true }], ctx.columns), id };
+}
+__name(labeled, "labeled");
+function wrapped(label, parts, ctx, id) {
+  const room = Math.max(10, ctx.columns - DETAIL_INDENT - DETAIL_W);
+  return packRows(parts, (p) => p.length, room, SEP2.length).map((r, i) => labeled(i === 0 ? label : "", r.join(SEP2), ctx, id));
+}
+__name(wrapped, "wrapped");
+function replyDetail(a, ctx) {
+  const reply = a.reply;
+  if (reply === null) return [];
+  const excerpt = reply.excerpt === "" ? [] : [labeled(FLOW_COPY.excerpt, reply.excerpt.replace(/\s+/g, " ").slice(0, EXCERPT_LINE), ctx, a.id)];
+  const note = ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [];
+  return [...wrapped(FLOW_COPY.howAnswered, [...note, ...behindParts(reply.behind, reply.bytes)], ctx, a.id), ...excerpt];
+}
+__name(replyDetail, "replyDetail");
+function detailLines(a, ctx) {
+  if (a.id !== ctx.open) return [];
+  const opened = ctx.opened.get(a.id) ?? [];
+  return [...replyDetail(a, ctx), labeled(FLOW_COPY.thenOpened, opened.length === 0 ? FLOW_COPY.nothingOpened : opened.join(", "), ctx, a.id)];
+}
+__name(detailLines, "detailLines");
+function openedAfter(state2) {
+  const out = /* @__PURE__ */ new Map();
+  for (const a of state2.turns.flatMap((t) => t.activities)) {
+    const by = a.namedBy?.id;
+    const path = a.paths[0];
+    if (by === void 0 || path === void 0) continue;
+    const list2 = out.get(by) ?? [];
+    if (!list2.includes(path)) list2.push(path);
+    out.set(by, list2);
+  }
+  return out;
+}
+__name(openedAfter, "openedAfter");
+var isCall = /* @__PURE__ */ __name((a) => a.kind === "repowise", "isCall");
+function callLines(state2, turn, v, theme) {
+  const ctx = {
+    turn,
+    columns: v.columns,
+    active: isWorking(state2) ? inFlight(state2)?.id ?? null : null,
+    open: state2.open,
+    theme,
+    beforeEdit: answeredBeforeEdit(state2),
+    opened: openedAfter(state2)
+  };
+  const calls = turn.activities.filter(isCall).flatMap((a) => [callLine(a, ctx), ...detailLines(a, ctx)]);
+  const dropped = turn.dropped > 0 && calls.length > 0 ? [{ node: dimLine(`  ${droppedSteps(turn.dropped)}`, v.columns) }] : [];
+  return [...dropped, ...calls];
+}
+__name(callLines, "callLines");
+var heightOf = /* @__PURE__ */ __name((l) => l.height ?? 1, "heightOf");
+var total = /* @__PURE__ */ __name((lines) => lines.reduce((n, l) => n + heightOf(l), 0), "total");
+function windowStart(lines, room, open) {
+  const at = open === null ? -1 : lines.findIndex((l) => l.id === open);
+  const floor = at < 0 ? lines.length - 1 : Math.max(0, at - 1);
+  let start = 0;
+  while (start < floor && total(lines.slice(start)) > room) start++;
+  return start;
+}
+__name(windowStart, "windowStart");
+function stepsOutside(lines, shown) {
+  return new Set(lines.map((l) => l.id).filter((id) => !shown.has(id))).size;
+}
+__name(stepsOutside, "stepsOutside");
+function windowed(lines, room, open) {
+  if (total(lines) <= room) return lines;
+  const start = windowStart(lines, room - 2, open);
+  let end = lines.length;
+  while (end > start + 1 && total(lines.slice(start, end)) > room - 2) end--;
+  const shown = new Set(lines.slice(start, end).map((l) => l.id));
+  const above = stepsOutside(lines.slice(0, start), shown);
+  const below2 = stepsOutside(lines.slice(end), shown);
+  const note = /* @__PURE__ */ __name((n, say) => n === 0 ? [] : [{ node: dimLine(say(n), Number.POSITIVE_INFINITY) }], "note");
+  return [...note(above, hiddenSteps), ...lines.slice(start, end), ...note(below2, laterSteps)];
+}
+__name(windowed, "windowed");
+function earlierTurns(state2, columns) {
+  const out = state2.turns.slice(0, -1).reverse().map((t) => dimLine(`  ${turnFooter(t.seq, t.durationMs, turnTotals(t), t.end)}`, columns));
+  if (state2.earlier.turns > 0) out.push(dimLine(`  ${earlierLine(state2.earlier)}`, columns));
+  return out;
+}
+__name(earlierTurns, "earlierTurns");
+function navRow(state2) {
+  if (openable(state2).length === 0) return [];
+  return [box({ flexDirection: "row", columnGap: 2 }, [button(FLOW_NEXT, "j", FLOW_COPY.next, true), button(FLOW_PREV, "k", FLOW_COPY.previous, true)])];
+}
+__name(navRow, "navRow");
+function dashboard(state2, turn, v, theme) {
+  return [...beforeAcceptLines(state2, turn, v), ...workingLines(state2, turn, v, theme), ...contextLines(turn, v.columns, theme)];
+}
+__name(dashboard, "dashboard");
+function closing(turn, columns) {
+  return turn !== void 0 && turn.end === "answer" ? [text(loch(columns), { dimColor: true })] : [];
+}
+__name(closing, "closing");
+function flowView(state2, v) {
+  const theme = flowTheme(v.light === true);
+  const head = [text(hills(v.columns), { color: theme.plum }), ...header(state2, v, theme)];
+  const turn = state2.turns.at(-1);
+  const fixed = turn === void 0 ? [] : dashboard(state2, turn, v, theme);
+  const after = [...closing(turn, v.columns), ...earlierTurns(state2, v.columns), ...navRow(state2)];
+  const room = Math.max(MIN_BODY, v.rows - head.length - fixed.length - after.length - 1);
+  const calls = turn === void 0 ? [] : windowed(callLines(state2, turn, v, theme), room, state2.open);
+  const callNodes = section(FLOW_COPY.calls, calls.map((l) => l.node));
+  return box({ key: FLOW_KEY, flexDirection: "column" }, [...head, ...fixed, ...callNodes, ...after]);
+}
+__name(flowView, "flowView");
+
+// src/flow-controller.ts
+var REDRAW_MS = 125;
+var STILL_TICK_MS = 1e3;
+var GONE_MS = 1e3;
+var LensFlow = class {
+  static {
+    __name(this, "LensFlow");
+  }
+  state = initialFlow;
+  /** Flow is on screen: set by its render; cleared by another tab, or by a redraw no render answered. */
+  shown = false;
+  still = false;
+  io = null;
+  lastDraw = Number.NEGATIVE_INFINITY;
+  /** When the first redraw no Flow render has answered was asked for; null once one did. */
+  unansweredSince = null;
+  pending;
+  ticker;
+  happy;
+  setReducedMotion(on) {
+    this.still = on;
+  }
+  /** Another tab is shown, or the pane is gone: nothing of Flow is on screen. */
+  hide() {
+    this.shown = false;
+    this.stopTick();
+  }
+  dispatch(io, action) {
+    this.io = io;
+    const next = reduceFlow(this.state, action);
+    if (next === this.state) return;
+    this.state = next;
+    if (action.type === "turnEnded") this.afterTurn();
+    this.request();
+  }
+  /** The tab's tree at `now`; a render marks Flow on screen and keeps the owl's clock going while Claude works. */
+  paneTree(io, pane, now) {
+    this.io = io;
+    this.shown = true;
+    this.unansweredSince = null;
+    this.ensureTick();
+    return flowView(this.state, { ...pane, now, still: this.still });
+  }
+  dispose() {
+    this.hide();
+    clearTimeout(this.pending);
+    clearTimeout(this.happy);
+    this.pending = void 0;
+    this.happy = void 0;
+    this.io = null;
+  }
+  /** A redraw now, or once the throttle allows; nothing while Flow is not on screen. */
+  request() {
+    if (!this.shown || this.pending !== void 0) return;
+    const wait = this.lastDraw + REDRAW_MS - Date.now();
+    if (wait <= 0) return this.draw();
+    this.pending = setTimeout(() => this.timer(() => (this.pending = void 0, true)), wait);
+  }
+  /** A timer's body: its step says whether to redraw; a failure is logged, never thrown into the runtime. */
+  timer(step) {
+    try {
+      if (step()) this.draw();
+    } catch (err) {
+      this.io?.debug(`flow timer failed: ${String(err)}`);
+    }
+  }
+  /** Redraws, unless redraws have gone unanswered for a while: then the pane is gone and Flow stops asking. */
+  draw() {
+    const now = Date.now();
+    if (this.unansweredSince !== null && now - this.unansweredSince >= GONE_MS) return this.hide();
+    if (!this.shown || this.io === null) return;
+    this.lastDraw = now;
+    this.unansweredSince ??= now;
+    this.io.redraw();
+  }
+  /** The owl is happy for a moment, then sleeps: one redraw when that moment ends. */
+  afterTurn() {
+    this.stopTick();
+    clearTimeout(this.happy);
+    this.happy = setTimeout(() => this.timer(() => (this.happy = void 0, true)), HAPPY_MS);
+  }
+  ensureTick() {
+    if (this.ticker !== void 0 || !this.shown || !isWorking(this.state)) return;
+    this.ticker = setInterval(() => this.timer(() => this.tick()), this.still ? STILL_TICK_MS : BLINK_MS);
+  }
+  /** Redraw while Claude works; stop once it is done. Off screen, `draw` stops it. */
+  tick() {
+    if (isWorking(this.state)) return true;
+    this.stopTick();
+    return false;
+  }
+  stopTick() {
+    clearInterval(this.ticker);
+    this.ticker = void 0;
+  }
+};
+
+// ../api-client/src/blast-radius.ts
+async function analyzeBlastRadius(repoId, body) {
+  return apiPost(
+    `/api/repos/${repoId}/blast-radius`,
+    body
+  );
+}
+__name(analyzeBlastRadius, "analyzeBlastRadius");
+
+// ../api-client/src/code-health.ts
+async function getHealthMap(repoId, opts = {}) {
+  return apiGet(`/api/repos/${repoId}/health/map`, {
+    cap: opts.cap,
+    active: opts.active?.length ? opts.active.join(",") : void 0,
+    scope: opts.scope,
+    counts: opts.counts
+  });
+}
+__name(getHealthMap, "getHealthMap");
+
+// src/model/trail.ts
+var MAX_READS = 200;
+var initialTrail = {
+  reads: [],
+  readsCapped: false,
+  hits: [],
+  searches: 0,
+  edit: null,
+  edits: 0,
+  callers: null
+};
+function withRead(state2, path) {
+  if (state2.reads.includes(path)) return state2;
+  const reads = [...state2.reads, path];
+  if (reads.length <= MAX_READS) return { ...state2, reads };
+  return { ...state2, reads: reads.slice(reads.length - MAX_READS), readsCapped: true };
+}
+__name(withRead, "withRead");
+function reduceTrail(state2, action) {
+  switch (action.type) {
+    case "read":
+      return withRead(state2, action.path);
+    case "search":
+      return { ...state2, hits: action.paths, searches: state2.searches + 1 };
+    case "edit":
+      return {
+        ...withRead(state2, action.path),
+        edit: action.path,
+        edits: state2.edits + 1,
+        callers: { status: "loading" }
+      };
+    case "callers":
+      return action.edits === state2.edits ? { ...state2, callers: action.callers } : state2;
+  }
+}
+__name(reduceTrail, "reduceTrail");
+
 // src/views/mapSvg.ts
 var SVG_CHARS = 131072;
 var DESKTOP_MAX_COLUMNS = 160;
@@ -1948,14 +3217,14 @@ function desktopSize(size) {
 }
 __name(desktopSize, "desktopSize");
 function mapSvg(layout, resolved) {
-  const { width, height } = layout;
+  const { width: width2, height } = layout;
   const { pixels } = framePixels(layout, resolved.overlay);
   const runs = /* @__PURE__ */ new Map();
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; ) {
-      const c = pixels[y * width + x] ?? GROUND;
+    for (let x = 0; x < width2; ) {
+      const c = pixels[y * width2 + x] ?? GROUND;
       let end = x + 1;
-      while (end < width && pixels[y * width + end] === c) end++;
+      while (end < width2 && pixels[y * width2 + end] === c) end++;
       if (c !== GROUND) {
         const list2 = runs.get(c) ?? [];
         list2.push(`M${x} ${y}.5h${end - x}`);
@@ -1966,7 +3235,7 @@ function mapSvg(layout, resolved) {
   }
   const paths = [...runs].map(([c, d]) => `<path stroke="${color(c)}" d="${d.join("")}"/>`).join("");
   const labels = layout.labels.map((l) => `<text x="${l.col}" y="${2 * l.row + 1.6}">${escape(l.text)}</text>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges"><rect width="${width}" height="${height}" fill="${color(GROUND)}"/><g stroke-width="1" fill="none">${paths}</g><g font-family="monospace" font-size="1.7" fill="${color(LABEL_FG)}">${labels}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width2} ${height}" shape-rendering="crispEdges"><rect width="${width2}" height="${height}" fill="${color(GROUND)}"/><g stroke-width="1" fill="none">${paths}</g><g font-family="monospace" font-size="1.7" fill="${color(LABEL_FG)}">${labels}</g></svg>`;
 }
 __name(mapSvg, "mapSvg");
 function svgPaneView(layout, resolved, scope) {
@@ -2106,8 +3375,8 @@ var LensMap = class {
   /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
   paneTree(io, pane) {
     this.drawn = null;
-    const notice = this.noticeFor(io, pane);
-    if (notice !== null) return noticeView(notice, pane.bodyColumns);
+    const notice2 = this.noticeFor(io, pane);
+    if (notice2 !== null) return noticeView(notice2, pane.bodyColumns);
     const { data } = this.feed;
     const repo = this.repo;
     const desktop = pane.surface === "desktop";
@@ -2175,7 +3444,9 @@ var LensMap = class {
     const request = { changed_files: [rel], max_depth: CALLERS_DEPTH };
     withTimeout(analyzeBlastRadius(repo.id, request), CALLERS_TIMEOUT_MS, "importers").then((r) => {
       const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel);
-      if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
+      if (this.disposed) return;
+      this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
+      io.blastLanded?.(rel, r);
     }).catch((err) => {
       io.debug(`importers failed: ${String(err)}`);
       if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "failed" } });
@@ -2222,6 +3493,7 @@ var LensMap = class {
 };
 
 // src/model/ask.ts
+var TAB_BAR = ["flow", "map", "recap"];
 function askRoute(question) {
   return /^\s*why\b/i.test(question) ? { tool: "get_why", args: { query: question } } : { tool: "get_answer", args: { question } };
 }
@@ -2235,18 +3507,13 @@ function mayHaveUsedModel(a) {
   return a.tool === "get_answer" && a.reply.degraded !== "no-llm-provider";
 }
 __name(mayHaveUsedModel, "mayHaveUsedModel");
-function lensCommand(args) {
+function lensCommand(args, tabs = TAB_BAR) {
   const [word = "", ...rest] = args.trim().split(/\s+/);
   const question = rest.join(" ");
-  switch (word.toLowerCase()) {
-    case "map":
-    case "recap":
-      return { tab: word.toLowerCase(), question: null };
-    case "ask":
-      return { tab: "ask", question: question === "" ? null : question };
-    default:
-      return { tab: null, question: null };
-  }
+  const named2 = word.toLowerCase();
+  if (named2 === "ask") return { tab: "ask", question: question === "" ? null : question };
+  const tab = tabs.find((t) => t === named2);
+  return { tab: tab ?? null, question: null };
 }
 __name(lensCommand, "lensCommand");
 function whyDraft(decision) {
@@ -2327,7 +3594,7 @@ var initialSession = {
   review: initialReview,
   lastReview: null,
   touched: [],
-  pane: { tab: "map", draft: "" },
+  pane: { tab: "flow", draft: "" },
   ask: { phase: "idle" },
   modelAsks: 0,
   compacted: false
@@ -2459,10 +3726,10 @@ function isClear(risk) {
   return risk.directive?.status === "clear_in_analyzed_scope";
 }
 __name(isClear, "isClear");
-function header(risk, changed) {
+function header2(risk, changed) {
   return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree !== false, changed)})`;
 }
-__name(header, "header");
+__name(header2, "header");
 function findingSegments(hd) {
   const rows = hd?.top_findings ?? [];
   const segments = rows.map(findingLine);
@@ -2487,10 +3754,10 @@ function overlapSegments(risk) {
 }
 __name(overlapSegments, "overlapSegments");
 function cardSegments(risk) {
-  if (isClear(risk) && overlap(risk) === null) return [header(risk, null), `health: ${health(risk).words}`];
+  if (isClear(risk) && overlap(risk) === null) return [header2(risk, null), `health: ${health(risk).words}`];
   const hd = risk.health_delta;
   return [
-    header(risk, hd?.scope?.changed ?? null),
+    header2(risk, hd?.scope?.changed ?? null),
     `Health: ${health(risk).words}`,
     ...findingSegments(hd),
     ...scopeSegments(hd),
@@ -2649,7 +3916,7 @@ function bandView(state2, viewport, extra = []) {
   const actions = [review, briefBandRow(state2, viewport.columns, review !== null)].filter((n) => n !== null);
   const own = [...bandRows(state2, viewport.columns), ...extra].slice(0, Math.max(0, MAX_BAND_ROWS - actions.length));
   if (own.length === 0 && actions.length === 0) return null;
-  const nodes = own.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
+  const nodes = own.map((row2) => text(fit(row2, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
   return box({ key: "lens-band", flexDirection: "column" }, [...nodes, ...actions]);
 }
 __name(bandView, "bandView");
@@ -2675,11 +3942,11 @@ function ids(refs) {
   return found.length === 0 ? "" : ` · ${found.map(code).join(" ")}`;
 }
 __name(ids, "ids");
-function list(head, rows, row, total) {
+function list(head, rows, row2, total2) {
   if (rows === void 0 || rows.length === 0) return [];
   const shown = rows.slice(0, LIST_ROWS);
-  const more = Math.max(total ?? 0, rows.length) - shown.length;
-  return [`**${head}**`, ...shown.map((r) => `- ${row(r)}`), ...more > 0 ? [`- ${moreRows(more)}`] : []];
+  const more = Math.max(total2 ?? 0, rows.length) - shown.length;
+  return [`**${head}**`, ...shown.map((r) => `- ${row2(r)}`), ...more > 0 ? [`- ${moreRows(more)}`] : []];
 }
 __name(list, "list");
 function answerHead(a) {
@@ -2728,14 +3995,17 @@ _${askCut(ASK_CHARS)}_`;
 __name(replyMarkdown, "replyMarkdown");
 
 // src/views/pane.ts
-var TABS = ["map", "ask", "recap"];
-var TAB_PRESS = { map: "lens-tab-map", ask: "lens-tab-ask", recap: "lens-tab-recap" };
+function tabBar(flowOn2) {
+  return flowOn2 ? TAB_BAR : TAB_BAR.filter((t) => t !== "flow");
+}
+__name(tabBar, "tabBar");
+var tabPress = /* @__PURE__ */ __name((tab) => `lens-tab-${tab}`, "tabPress");
 var ASK_KEY = "lens-ask";
 var TAB_ROWS = 1;
-function tabsView(current) {
+function tabsView(current, tabs = TAB_BAR) {
   return box(
     { key: "lens-tabs", flexDirection: "row", columnGap: 2 },
-    TABS.map((tab, i) => button(TAB_PRESS[tab], String(i + 1), PANE_COPY.tabs[tab], tab !== current))
+    tabs.map((tab, i) => button(tabPress(tab), String(i + 1), PANE_COPY.tabs[tab], tab !== current))
   );
 }
 __name(tabsView, "tabsView");
@@ -2808,18 +4078,18 @@ function recapRows(state2, touched) {
 __name(recapRows, "recapRows");
 function recapView(state2, touched, columns) {
   const rows = recapRows(state2, touched);
-  const width = Math.max(...rows.map((r) => typeof r === "string" ? 0 : r[0].length)) + 2;
+  const width2 = Math.max(...rows.map((r) => typeof r === "string" ? 0 : r[0].length)) + 2;
   const drawn = rows.map(
     (r) => typeof r === "string" ? dim(r, columns) : box({ flexDirection: "row" }, [
-      text(r[0].padEnd(width), { dimColor: true }),
-      text(fit(r[1], Math.max(1, columns - width)), { wrap: "truncate-end" })
+      text(r[0].padEnd(width2), { dimColor: true }),
+      text(fit(r[1], Math.max(1, columns - width2)), { wrap: "truncate-end" })
     ])
   );
   return box({ key: "lens-recap", flexDirection: "column" }, [...drawn, dim(recapFooter(state2.modelAsks), columns)]);
 }
 __name(recapView, "recapView");
-function paneView(tab, body) {
-  return box({ key: "lens-pane", flexDirection: "column" }, [tabsView(tab), body]);
+function paneView(tab, body, tabs = TAB_BAR) {
+  return box({ key: "lens-pane", flexDirection: "column" }, [tabsView(tab, tabs), body]);
 }
 __name(paneView, "paneView");
 
@@ -2926,6 +4196,12 @@ var MCP_SERVER_KEY = "repowise";
 var PANE_ID = "lens";
 var PANE_ROWS = 29;
 var ASK_TIMEOUT_MS = 3e4;
+var flowOn = true;
+var flow = new LensFlow();
+function freshSession() {
+  return flowOn ? initialSession : reduce(initialSession, { type: "tab", tab: "map" });
+}
+__name(freshSession, "freshSession");
 var state = initialSession;
 var generation = 0;
 var running = false;
@@ -2940,7 +4216,7 @@ var contextAsked = /* @__PURE__ */ new Set();
 var reviewOn = true;
 var reviewGeneration = 0;
 var editsThisTurn = 0;
-var started = null;
+var started2 = null;
 var autoOpenOn = false;
 var discovery = null;
 var cwd = null;
@@ -2972,17 +4248,21 @@ function bind($) {
       call: /* @__PURE__ */ __name((server, tool, args) => $.mcp.call(server, tool, args), "call")
     }
   };
-  return {
+  const bound = {
     host,
+    blastLanded: /* @__PURE__ */ __name((path, r) => flowBlast(bound, path, r), "blastLanded"),
     redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
     debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug"),
     blit: /* @__PURE__ */ __name((cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }), "blit"),
     // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
-    openPane: /* @__PURE__ */ __name((focus) => $.ui.open(
+    // Opened unasked on a read: the map is what it opens to. This happens at most once, and never
+    // after the person opened the pane (/lens, Why), the only ways to have picked a tab by then.
+    openPane: /* @__PURE__ */ __name((focus) => (focus ? null : state = reduce(state, { type: "tab", tab: "map" }), $.ui.open(
       focus ? { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS, focus: true } : { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }
-    ), "openPane"),
+    )), "openPane"),
     closePane: /* @__PURE__ */ __name(() => $.ui.close({ id: PANE_ID }), "closePane")
   };
+  return bound;
 }
 __name(bind, "bind");
 function mapRepo(d) {
@@ -3051,10 +4331,12 @@ async function onSessionStart($, e, next) {
     cwd = typeof e.cwd === "string" ? e.cwd : null;
     map.dispose();
     map = new LensMap(autoOpenOn);
-    state = initialSession;
+    flow.dispose();
+    flow = new LensFlow();
+    state = freshSession();
     reviewGeneration++;
     editsThisTurn = 0;
-    started = null;
+    started2 = null;
     contextAsked.clear();
     squeezes.clear();
     savingsBase = null;
@@ -3063,7 +4345,9 @@ async function onSessionStart($, e, next) {
     warmMcp(b.host);
     refresh(b);
     await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
-    map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
+    const still = (await $.settings.read())["prefersReducedMotion"] === true;
+    map.setReducedMotion(still);
+    flow.setReducedMotion(still);
   } catch (err) {
     b.debug(`session.start failed: ${String(err)}`);
   }
@@ -3081,6 +4365,7 @@ function noteTurnEnd(b, e) {
   try {
     const action = fromTurnComplete(e);
     if (action === null) return;
+    noteFlow(b, () => ({ type: "turnEnded", at: Date.now(), durationMs: e.durationMs ?? null, end: turnEnd(e.reason, e.isAborted) }));
     map.turnEnded();
     dispatch(b, action);
     refresh(b);
@@ -3115,19 +4400,19 @@ function startReview(b) {
   void review.outcome.then(() => {
     review.settled = true;
   });
-  started = review;
+  started2 = review;
   return review;
 }
 __name(startReview, "startReview");
 function reviewAfterEdit(b) {
   editsThisTurn++;
   dispatch(b, { type: "fileEdited" });
-  if (started !== null && started.gen === reviewGeneration && !started.settled) return;
+  if (started2 !== null && started2.gen === reviewGeneration && !started2.settled) return;
   startReview(b);
 }
 __name(reviewAfterEdit, "reviewAfterEdit");
 function coveringReview() {
-  const s = started;
+  const s = started2;
   return s !== null && s.gen === reviewGeneration && s.covers === editsThisTurn ? s : null;
 }
 __name(coveringReview, "coveringReview");
@@ -3148,11 +4433,12 @@ async function finishReview(b) {
 }
 __name(finishReview, "finishReview");
 async function onTurnStart($, e, next) {
+  noteFlow(bind($), () => ({ type: "turnStarted", turnId: e.turnId ?? null, prompt: e.text ?? "", at: Date.now() }));
   try {
     if (reviewOn) {
       reviewGeneration++;
       editsThisTurn = 0;
-      started = null;
+      started2 = null;
     }
     dispatch(bind($), reviewOn ? { type: "turnStarted" } : { type: "briefDone" });
   } catch (err) {
@@ -3212,11 +4498,14 @@ function startAsk(b, question) {
   dispatch(b, { type: "asked", question: q, tool });
   const gen = generation;
   callTool(b.host, tool, args, { timeoutMs: ASK_TIMEOUT_MS }).then((reply) => {
-    if (gen === generation) dispatch(b, { type: "answered", question: q, answer: askReply(tool, reply) });
+    if (gen !== generation) return;
+    const answer = askReply(tool, reply);
+    dispatch(b, { type: "answered", question: q, answer });
   }).catch((err) => {
     b.debug(`ask failed: ${String(err)}`);
     const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
-    if (gen === generation) dispatch(b, { type: "askFailed", question: q, tool, message });
+    if (gen !== generation) return;
+    dispatch(b, { type: "askFailed", question: q, tool, message });
   });
 }
 __name(startAsk, "startAsk");
@@ -3231,7 +4520,7 @@ async function onAskInput($, e, next) {
 __name(onAskInput, "onAskInput");
 function pressDetails($) {
   try {
-    for (const row of directiveRows(state.review.outcome) ?? []) $.ui.log(row, { to: "transcript" });
+    for (const row2 of directiveRows(state.review.outcome) ?? []) $.ui.log(row2, { to: "transcript" });
   } catch (err) {
     bind($).debug(`details failed: ${String(err)}`);
   }
@@ -3276,17 +4565,53 @@ __name(fetchContext, "fetchContext");
 async function onToolCall($, e, next) {
   const b = bind($);
   const file = fileToolStarted(b, e);
-  let result;
+  noteFlow(b, () => {
+    const activity = activityOf(e, Date.now(), flowRoot());
+    return activity === null ? null : { type: "toolStarted", activity };
+  });
+  let result = null;
   try {
     result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
+    noteFlow(b, () => toolEnded(e, result, Date.now(), flowRoot()));
   }
   editLanded(b, e, result);
   observeTrail($, b, e, result);
   return result;
 }
 __name(onToolCall, "onToolCall");
+function flowPane(columns, rows) {
+  const outcome = state.review.outcome;
+  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null };
+}
+__name(flowPane, "flowPane");
+function flowBlast(b, path, r) {
+  noteFlow(b, () => ({ type: "blastLanded", path, facts: blastFacts(path, r) }));
+}
+__name(flowBlast, "flowBlast");
+function flowRoot() {
+  return state.repoRoot ?? cwd;
+}
+__name(flowRoot, "flowRoot");
+function noteFlow(b, action) {
+  if (!flowOn) return;
+  try {
+    const a = action();
+    if (a !== null) flow.dispatch(b, a);
+  } catch (err) {
+    flowFailed(b, err);
+  }
+}
+__name(noteFlow, "noteFlow");
+function flowFailed(b, err) {
+  try {
+    b.debug(`flow failed: ${String(err)}`);
+  } catch {
+    flowOn = false;
+  }
+}
+__name(flowFailed, "flowFailed");
 function observeTrail($, b, e, result) {
   if (!OBSERVED_TOOLS.has(e.tool)) return;
   try {
@@ -3409,7 +4734,7 @@ __name(onToolUse, "onToolUse");
 async function onLensCommand($, e) {
   const b = bind($);
   try {
-    const asked = lensCommand(e.args ?? "");
+    const asked = lensCommand(e.args ?? "", tabBar(flowOn));
     if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
     await map.request(b);
@@ -3423,6 +4748,18 @@ async function onLensCommand($, e) {
   return {};
 }
 __name(onLensCommand, "onLensCommand");
+function tabPresses($, bar) {
+  return Object.fromEntries(bar.map((tab) => [tabPress(tab), () => selectTab($, tab)]));
+}
+__name(tabPresses, "tabPresses");
+function flowRowPresses($) {
+  return Object.fromEntries(flowPresses(flow.state).map(([key, id]) => [key, () => pressFlow($, key, id)]));
+}
+__name(flowRowPresses, "flowRowPresses");
+function pressFlow($, key, id) {
+  noteFlow(bind($), () => id !== null ? { type: "toggle", id } : { type: "step", by: key === FLOW_NEXT ? 1 : -1 });
+}
+__name(pressFlow, "pressFlow");
 function selectTab($, tab) {
   try {
     dispatch(bind($), { type: "tab", tab });
@@ -3435,20 +4772,23 @@ function tabBody(b, e) {
   const { bodyColumns, placement, scroll } = e.props;
   const tab = state.pane.tab;
   if (tab !== "map") map.offScreen();
+  if (tab !== "flow") flow.hide();
+  const bodyRows = (placement === "dock" ? scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
+  if (tab === "flow") return flow.paneTree(b, flowPane(bodyColumns, bodyRows), Date.now());
   if (tab === "ask") return askView(state, bodyColumns);
   if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
   const d = discovery;
-  const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-  const bodyRows = scroll.bodyRows - TAB_ROWS;
-  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows });
+  const notice2 = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+  return map.paneTree(b, { surface: e.surface, notice: notice2, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS });
 }
 __name(tabBody, "tabBody");
 async function onPane($, e, next) {
   if (e.requestId !== PANE_ID) return next(e);
   const b = bind($);
   try {
-    const presses = Object.fromEntries(TABS.map((tab) => [TAB_PRESS[tab], () => selectTab($, tab)]));
-    return materialize(paneView(state.pane.tab, tabBody(b, e)), $.ui.resolve(e), presses);
+    const bar = tabBar(flowOn);
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($) };
+    return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);
     return next(e);
@@ -3458,6 +4798,8 @@ __name(onPane, "onPane");
 function register(on, options = {}) {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
+  flowOn = options["lens_flow"] !== false;
+  state = freshSession();
   on("session.start", onSessionStart);
   on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);

@@ -36,7 +36,7 @@ describe("fileTarget", () => {
 });
 
 describe("running tool and context reducers", () => {
-  const ctx = { callerFiles: 41, contributors: 3 };
+  const ctx = { callerFiles: 41, contributors: 3, hotspot: null, recentOwner: null };
 
   it("tracks the file tool running now; an overlapping call's end does not clear it", () => {
     let s = reduce(initialSession, { type: "toolStarted", tool: { id: "a", file: "x.py" } });
@@ -62,18 +62,18 @@ describe("spinner suffix", () => {
   const running: SessionState = { ...initialSession, running: { id: "a", file: "django/db/models/query.py" } };
 
   it("names the file, its caller files and contributors once the context has landed", () => {
-    const s = { ...running, contexts: { "django/db/models/query.py": { callerFiles: 41, contributors: 3 } } };
+    const s = { ...running, contexts: { "django/db/models/query.py": { callerFiles: 41, contributors: 3, hotspot: null, recentOwner: null } } };
     expect(spinnerSuffix(s)).toBe("query.py · 41 caller files · 3 contributors");
   });
 
   it("says nothing while the context is still on its way, or when no file tool runs", () => {
     expect(spinnerSuffix(running)).toBeNull();
-    expect(spinnerSuffix({ ...running, running: null, contexts: { "a.py": { callerFiles: 1, contributors: 1 } } })).toBeNull();
+    expect(spinnerSuffix({ ...running, running: null, contexts: { "a.py": { callerFiles: 1, contributors: 1, hotspot: null, recentOwner: null } } })).toBeNull();
   });
 
   it("uses singulars, thousands separators, and leaves out unknown or zero counts", () => {
-    expect(spinnerLine("a.py", { callerFiles: 1, contributors: 1 })).toBe("a.py · 1 caller file · 1 contributor");
-    expect(spinnerLine("src/a.py", { callerFiles: 1204, contributors: null })).toBe("a.py · 1,204 caller files");
-    expect(spinnerLine("a.py", { callerFiles: 0, contributors: null })).toBe("a.py");
+    expect(spinnerLine("a.py", { callerFiles: 1, contributors: 1, hotspot: null, recentOwner: null })).toBe("a.py · 1 caller file · 1 contributor");
+    expect(spinnerLine("src/a.py", { callerFiles: 1204, contributors: null, hotspot: null, recentOwner: null })).toBe("a.py · 1,204 caller files");
+    expect(spinnerLine("a.py", { callerFiles: 0, contributors: null, hotspot: null, recentOwner: null })).toBe("a.py");
   });
 });

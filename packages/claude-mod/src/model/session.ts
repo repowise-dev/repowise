@@ -25,6 +25,10 @@ export interface FileContext {
   /** Files that import this one or call into it (the server's file-level rollup). */
   callerFiles: number | null;
   contributors: number | null;
+  /** The index marks the file a hotspot; null when it did not say. */
+  hotspot: boolean | null;
+  /** Who changed it most lately, and their share of its recent commits (0 to 1). */
+  recentOwner: { name: string; share: number } | null;
 }
 
 /** A Read, Edit or Write running on a file inside the indexed repo. */
@@ -121,7 +125,7 @@ export const initialSession: SessionState = {
   review: initialReview,
   lastReview: null,
   touched: [],
-  pane: { tab: "map", draft: "" },
+  pane: { tab: "flow", draft: "" },
   ask: { phase: "idle" },
   modelAsks: 0,
   compacted: false,

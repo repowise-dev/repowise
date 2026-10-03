@@ -40,7 +40,7 @@ describe("session reducer", () => {
       review: initialReview,
       lastReview: null,
       touched: [],
-      pane: { tab: "map", draft: "" },
+      pane: { tab: "flow", draft: "" },
       ask: { phase: "idle" },
       modelAsks: 0,
       compacted: false,

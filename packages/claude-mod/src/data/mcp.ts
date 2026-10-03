@@ -117,15 +117,22 @@ export function callTool<T>(
 }
 
 // Typed here, not shared: the MCP server has no generated TypeScript types,
-// and Lens reads three fields of a larger card.
+// and Lens reads a few fields of a larger card.
 interface ContextTarget {
   error?: string;
   callers?: unknown[];
   callers_total?: number;
-  ownership?: { contributor_count?: number | null };
+  hotspot?: boolean;
+  ownership?: { contributor_count?: number | null; recent_owner?: string | null; recent_owner_pct?: number | null };
 }
 
-/** The file card's caller and contributor counts; null when the index does not know the file. */
+function recentOwner(o: ContextTarget["ownership"]): FileContext["recentOwner"] {
+  const name = o?.recent_owner;
+  const share = o?.recent_owner_pct;
+  return typeof name === "string" && name !== "" && typeof share === "number" ? { name, share } : null;
+}
+
+/** The file card's caller and contributor counts, hotspot mark and recent owner; null when the index does not know the file. */
 export async function fetchFileContext(host: Host, path: string): Promise<FileContext | null> {
   const result = await callTool<{ targets?: Record<string, ContextTarget> }>(host, "get_context", {
     targets: [path],
@@ -140,5 +147,7 @@ export async function fetchFileContext(host: Host, path: string): Promise<FileCo
   return {
     callerFiles: typeof callers === "number" ? callers : null,
     contributors: typeof contributors === "number" ? contributors : null,
+    hotspot: typeof target.hotspot === "boolean" ? target.hotspot : null,
+    recentOwner: recentOwner(target.ownership),
   };
 }

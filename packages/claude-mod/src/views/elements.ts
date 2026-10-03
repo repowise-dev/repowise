@@ -6,6 +6,7 @@
 
 export interface TextProps {
   dimColor?: boolean;
+  italic?: boolean;
   wrap?: "truncate-end";
   /** A theme key (`success`, `warning`, `error`: the terminal's own colors for health) or a hex color. */
   color?: string;
@@ -21,7 +22,8 @@ export interface BoxProps {
 export interface ButtonProps {
   key: string;
   label: string;
-  hotkey: string;
+  /** Absent: a row pressed through the focus, with no key of its own. */
+  hotkey?: string;
   /** Drawn as `1: label`, the way a survey's rows read. */
   plain: true;
   /** Dim at rest, full strength under the focus: a tab not shown. */

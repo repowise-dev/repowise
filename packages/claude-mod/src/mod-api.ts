@@ -79,8 +79,15 @@ export interface SessionStartEvent {
   cwd?: string;
 }
 
+/** A prompt's turn starting; `text` is "" for one started without a typed prompt. */
+export interface TurnStartEvent {
+  text?: string;
+  turnId?: string;
+}
+
 export interface TurnCompleteEvent {
   agentId?: string;
+  durationMs?: number;
   /** Claude's final text this turn. */
   answer?: string;
   reason?: "answer" | "aborted" | "refusal" | "error";
@@ -151,7 +158,7 @@ export type PluginOptions = Readonly<Record<string, string | number | boolean | 
 export interface On {
   (event: "session.start", hook: Hook<SessionStartEvent>): unknown;
   (event: "turn.complete", hook: Hook<TurnCompleteEvent>): unknown;
-  (event: "turn.start", hook: Hook<unknown>): unknown;
+  (event: "turn.start", hook: Hook<TurnStartEvent>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;
   (event: "tool.call", hook: Hook<ToolCallEvent>): unknown;
   (event: "tool.check", hook: ($: ModApi, e: ToolCheckEvent, next: CheckNext) => Promise<unknown>): unknown;

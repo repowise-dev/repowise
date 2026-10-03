@@ -1,11 +1,11 @@
 /**
- * The `/lens` pane around the map: a row of tabs (Map, Ask, Recap), the Ask
- * field with the last reply, and the session recap. Every recap figure is
+ * The `/lens` pane: a row of tabs (Flow, Map, Recap), the Ask field (off the
+ * bar) with the last reply, and the session recap. Every recap figure is
  * read from the session model as it stands; nothing is re-derived.
  */
 
 import { fit } from "../format";
-import type { PaneTab } from "../model/ask";
+import { TAB_BAR, type BarTab, type PaneTab } from "../model/ask";
 import { testsToRun, type ChangeRisk } from "../model/review";
 import { surfacedDecisions, type SessionState } from "../model/session";
 import { replyMarkdown } from "./answer";
@@ -25,18 +25,21 @@ import {
 import { box, button, input, markdown, text, type Node } from "./elements";
 import { health, overlap } from "./review";
 
-export const TABS: readonly PaneTab[] = ["map", "ask", "recap"];
-/** Button keys of the tabs; register.ts maps each to its tab. */
-export const TAB_PRESS: Record<PaneTab, string> = { map: "lens-tab-map", ask: "lens-tab-ask", recap: "lens-tab-recap" };
+/** The tab bar as shown: Flow leaves it when its toggle is off. */
+export function tabBar(flowOn: boolean): readonly BarTab[] {
+  return flowOn ? TAB_BAR : TAB_BAR.filter((t) => t !== "flow");
+}
+/** A tab's Button key; register.ts maps each to its tab. */
+export const tabPress = (tab: BarTab): string => `lens-tab-${tab}`;
 export const ASK_KEY = "lens-ask";
 /** Rows the tab row takes above each tab's body. */
 export const TAB_ROWS = 1;
 
-/** `1: Map  2: Ask  3: Recap`, the shown one at full strength. */
-export function tabsView(current: PaneTab): Node {
+/** `1: Flow  2: Map  3: Recap`, the shown one at full strength (none while the Ask field shows). */
+export function tabsView(current: PaneTab, tabs: readonly BarTab[] = TAB_BAR): Node {
   return box(
     { key: "lens-tabs", flexDirection: "row", columnGap: 2 },
-    TABS.map((tab, i) => button(TAB_PRESS[tab], String(i + 1), PANE_COPY.tabs[tab], tab !== current)),
+    tabs.map((tab, i) => button(tabPress(tab), String(i + 1), PANE_COPY.tabs[tab], tab !== current)),
   );
 }
 
@@ -139,6 +142,6 @@ export function recapView(state: SessionState, touched: TrailCounts, columns: nu
 }
 
 /** The pane: the tabs, then the shown tab's body. */
-export function paneView(tab: PaneTab, body: Node): Node {
-  return box({ key: "lens-pane", flexDirection: "column" }, [tabsView(tab), body]);
+export function paneView(tab: PaneTab, body: Node, tabs: readonly BarTab[] = TAB_BAR): Node {
+  return box({ key: "lens-pane", flexDirection: "column" }, [tabsView(tab, tabs), body]);
 }

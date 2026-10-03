@@ -8,7 +8,7 @@
  * or an auto-open that was placed).
  */
 
-import { analyzeBlastRadius } from "@repowise-dev/api-client/blast-radius";
+import { analyzeBlastRadius, type BlastRadiusResponse } from "@repowise-dev/api-client/blast-radius";
 import { getHealthMap } from "@repowise-dev/api-client/code-health";
 import type { HealthMapFeed } from "@repowise-dev/types/health";
 import { formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
@@ -38,6 +38,8 @@ export interface MapIO {
   /** `focus` only when the person asked for the pane; an automatic open never takes the keyboard. */
   openPane(focus: boolean): Promise<UiOpenResult>;
   closePane(): Promise<void>;
+  /** The whole blast radius answer for an edited file, for Flow; the map keeps only the importers. */
+  blastLanded?(path: string, r: BlastRadiusResponse): void;
 }
 
 /** The repo the map draws, once discovery found the local server for it. */
@@ -287,7 +289,9 @@ export class LensMap {
     withTimeout(analyzeBlastRadius(repo.id, request), CALLERS_TIMEOUT_MS, "importers")
       .then((r) => {
         const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel);
-        if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
+        if (this.disposed) return;
+        this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
+        io.blastLanded?.(rel, r);
       })
       .catch((err: unknown) => {
         io.debug(`importers failed: ${String(err)}`);

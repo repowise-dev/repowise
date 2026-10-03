@@ -53,6 +53,7 @@ def test_claude_plugin_lens_module() -> None:
         ("lens_margin", True, "!== false"),
         ("lens_squeeze", True, "!== false"),
         ("lens_review", True, "!== false"),
+        ("lens_flow", True, "!== false"),
         # Off by default: the map opens unasked only for someone who turned this on.
         ("lens_pane_autoopen", False, "=== true"),
     ],
@@ -71,7 +72,7 @@ def test_claude_plugin_lens_toggles(field: str, default: bool, read_as: str) -> 
 def test_claude_plugin_lens_toggles_are_all_tested() -> None:
     config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
 
-    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_pane_autoopen"}
+    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_flow", "lens_pane_autoopen"}
 
 
 def test_claude_plugin_mcp_uses_repowise() -> None:
