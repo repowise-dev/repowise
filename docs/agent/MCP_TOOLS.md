@@ -203,14 +203,14 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `query` | string | required | Identifier, path or natural-language text |
-| `limit` | int | `5` | Max results |
+| `limit` | int | `5` | Max results. Outside `symbol` mode, max distinct files: same-file hits share one row |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path` or `hybrid`. An unknown mode runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Filter symbol hits, e.g. `function`, `class`, `method` |
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` to search every repo |
 
-**Key return fields:** `results` (symbol hits carry `symbol_id`, `file`, line bounds and `signature`; file hits carry `file`; concept hits carry `relevance_score`, `snippet` and `sources`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+**Key return fields:** `results` (symbol hits carry `symbol_id`, `file`, line bounds and `signature`, plus `symbols` (`name:line` of other matches in that file) when several matched; file hits carry `file`; concept hits carry `relevance_score`, `snippet` and `sources`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
 
 ```
 search_codebase(query="GitIndexer index_repo")

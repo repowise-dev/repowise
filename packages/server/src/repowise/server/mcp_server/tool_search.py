@@ -154,6 +154,40 @@ def _interleave_hybrid(
     return (symbols[: max(1, limit - reserved)] + concepts)[:limit]
 
 
+# Code-location windows over-fetch this many times ``limit`` so collapsing
+# same-file hits still leaves ``limit`` distinct files to serve.
+_FILE_WINDOW_OVERFETCH = 2
+# Other symbol names a collapsed row carries in ``symbols``.
+_MERGED_SYMBOL_CAP = 5
+
+
+def _collapse_by_file(hits: list[dict]) -> list[dict]:
+    """One row per (repo, file), best first; rows naming no file pass through.
+
+    The first row of a file wins. A later symbol hit in the same file folds
+    into the winner's ``symbols`` as ``name:line`` (capped) instead of taking a
+    slot of its own, so ``limit`` buys distinct files. Precedent:
+    ``symbol_backed_pages`` collapses the same way for the concept tail.
+    """
+    first_of: dict[tuple, dict] = {}
+    out: list[dict] = []
+    for hit in hits:
+        path = hit_file_path(hit)
+        if path is None:
+            out.append(hit)
+            continue
+        key = (hit.get("repo"), path)
+        first = first_of.get(key)
+        if first is None:
+            first_of[key] = hit
+            out.append(hit)
+        elif hit.get("type") == "symbol" and first.get("type") == "symbol":
+            merged = first.setdefault("symbols", [])
+            if len(merged) < _MERGED_SYMBOL_CAP:
+                merged.append(f"{hit.get('name')}:{hit.get('start_line')}")
+    return out
+
+
 def _downweight_decisions(output: list[dict], query: str) -> None:
     """Scale decision_record relevance in place unless the query is why-shaped."""
     if _is_why_shaped(query):
@@ -718,7 +752,7 @@ async def _search_single_repo(
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
-    return output[:limit]
+    return _collapse_by_file(output)[:limit]
 
 
 async def _federated_search(
@@ -895,10 +929,13 @@ async def _structured_search(
         if _idents:
             symbol_query = " ".join(_idents)
 
+    # Path hits are file pages, already one row per file, so only the symbol
+    # and page legs over-fetch.
+    fetch = limit * _FILE_WINDOW_OVERFETCH
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
             s = await search_symbols_single(
-                ctx, symbol_query, limit, symbol_kind=symbol_kind, kind=kind
+                ctx, symbol_query, fetch, symbol_kind=symbol_kind, kind=kind
             )
             _tag_repo(s, ctx, multi)
             symbols.extend(s)
@@ -907,7 +944,7 @@ async def _structured_search(
             _tag_repo(f, ctx, multi)
             files.extend(f)
         if mode == "hybrid":
-            c = await _search_single_repo(ctx, query, limit, page_type, kind)
+            c = await _search_single_repo(ctx, query, fetch, page_type, kind)
             for item in c:
                 item["type"] = "page"
             _tag_repo(c, ctx, multi)
@@ -936,7 +973,11 @@ async def _structured_search(
     elif mode == "path":
         results = files[:limit]
     else:  # hybrid: interleave symbol matches and concept pages for new files
-        sym_files = {s.get("file") for s in symbols}
+        # One row per file, so ``limit`` buys distinct files. Mode "symbol"
+        # stays row-per-symbol: overloads there are the answer.
+        symbols = _collapse_by_file(symbols)
+        # Only files the window can show suppress their page.
+        sym_files = {s.get("file") for s in symbols[:limit]}
         concepts = [c for c in concepts if c.get("target_path") not in sym_files]
         # Federation appends per-repo concept lists in repo order — re-rank by
         # relevance so a strong page in repo B isn't buried under repo A's weak
@@ -954,17 +995,17 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
-    # Symbols first, then everything else the window holds: in symbol and
-    # hybrid modes the ranked pool leads with symbol hits, and those are the
-    # entries most likely to collapse onto one another (several symbols of one
-    # file). Deduping them is the point.
+    # The served window first, then the pre-cut pool as concept mode does, so
+    # the block can name files the window had no room for (in symbol mode,
+    # several symbols of one file can fill it).
     #
     # Bound to its own name, NOT to ``candidates``: that one holds the query's
     # identifiers, which the exact-match note below quotes. Rebinding it here
     # made the note quote file paths as if they were the identifiers asked for,
     # and — worse — made its gate true for any query with results at all, so a
     # prose query that names no identifier was told no symbol matched it.
-    if file_cands := file_candidates(results, limit=limit):
+    pool = results + symbols + concepts + files
+    if file_cands := file_candidates(pool, limit=limit):
         response["candidates"] = file_cands
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
@@ -1039,7 +1080,8 @@ async def search_codebase(
 
     Args:
         query: identifier, path, or natural-language query.
-        limit: max results (default 5).
+        limit: max results (default 5). Outside mode="symbol", distinct
+            files: same-file symbols share a row, named in `symbols`.
         page_type: restrict to one page type. Common: file_page (per-file
             docs, always present) or module_page (subsystem/concept pages).
             Any stored type filters (repo_overview, layer_page, scc_page,
@@ -1132,6 +1174,8 @@ async def search_codebase(
         output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    # A file page and a symbol page of one file are one place to look.
+    output = _collapse_by_file(output)
     # Files the page retrievers structurally cannot see (a private helper, a
     # local name, anything a file page's public-symbol table omits) get the
     # weakest tail slots. No-op when the symbol leg names nothing new.

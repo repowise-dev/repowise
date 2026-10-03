@@ -174,8 +174,11 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 | Field | Meaning |
 |-------|---------|
 | `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `file`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `file`, `title`, `next: "get_context"`. Concept hits: wiki pages with `relevance_score`, `snippet`, `target_path`, `sources` |
+| `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`. Those matches share the row instead of taking slots of their own |
 | `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
+
+Outside `mode="symbol"`, `limit` counts distinct files: hits are collapsed to one row per file before the cut, best row first. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.
 
 Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's `target_path` is a page id (`file.py::Symbol`); open its `file`.
 

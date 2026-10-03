@@ -1563,3 +1563,106 @@ async def test_an_exact_test_class_outranks_an_exact_code_function(
         "tests/test_widget.py::Widgets",
         "src/widget/core.py::Widgets",
     ]
+
+
+def _add_symbols(session, rid, rows):
+    """Seed ``(path, name, qualified_name, line)`` WikiSymbol rows."""
+    from repowise.core.persistence.models import WikiSymbol
+
+    for path, name, qualified, line in rows:
+        session.add(
+            WikiSymbol(
+                id=f"dw-{path}-{qualified}", repository_id=rid, file_path=path,
+                symbol_id=f"{path}::{qualified}", name=name, qualified_name=qualified,
+                kind="function", signature=name, start_line=line, end_line=line + 5,
+                language="python",
+            )
+        )
+
+
+_WIDGET_ROWS = [
+    ("src/widget/core.py", "widget", "widget", 10),
+    ("src/widget/core.py", "widget", "Box.widget", 40),
+    ("src/widget/listing.py", "widget_list", "widget_list", 1),
+    ("src/widget/drop.py", "widget_drop", "widget_drop", 1),
+    ("src/widget/sync.py", "widget_sync", "widget_sync", 1),
+]
+
+
+class TestDistinctFileWindow:
+    """Code-location windows spend ``limit`` on distinct files."""
+
+    def test_collapse_folds_same_file_symbols_and_keeps_repos_apart(self):
+        from repowise.server.mcp_server.tool_search import _collapse_by_file
+
+        hits = [
+            {"type": "symbol", "name": "a", "file": "x.py", "start_line": 1},
+            {"type": "symbol", "name": "b", "file": "x.py", "start_line": 9},
+            {"type": "symbol", "name": "c", "file": "x.py", "start_line": 5, "repo": "other"},
+            {"page_type": "module_page", "target_path": "pkg"},
+            {"page_type": "file_page", "target_path": "y.py"},
+            {"page_type": "symbol_spotlight", "target_path": "y.py"},
+        ]
+        out = _collapse_by_file(hits)
+        assert [h.get("name") or h["target_path"] for h in out] == ["a", "c", "pkg", "y.py"]
+        assert out[0]["symbols"] == ["b:9"]
+        assert "symbols" not in out[1]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_limit_buys_distinct_files(self, session, populated_db, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        _add_symbols(session, populated_db, _WIDGET_ROWS)
+        await session.commit()
+
+        res = await search_codebase("widget", mode="hybrid", limit=3)
+        files = [r["file"] for r in res["results"]]
+        assert len(files) == 3 and len(set(files)) == 3
+        # The exact name still leads, carrying its same-file sibling.
+        lead = res["results"][0]
+        assert lead["file"] == "src/widget/core.py" and lead["name"] == "widget"
+        assert lead["symbols"] == ["widget:40"] or lead["symbols"] == ["widget:10"]
+
+    @pytest.mark.asyncio
+    async def test_symbol_mode_still_lists_each_overload(self, session, populated_db, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        _add_symbols(session, populated_db, _WIDGET_ROWS)
+        await session.commit()
+
+        res = await search_codebase("widget", mode="symbol", limit=3)
+        ids = [r["symbol_id"] for r in res["results"]]
+        assert ids[:2] == ["src/widget/core.py::widget", "src/widget/core.py::Box.widget"] or ids[
+            :2
+        ] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
+        assert all("symbols" not in r for r in res["results"])
+        # candidates reaches past the window to the files it had no room for.
+        assert len(res["candidates"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("file_page:api/client.go", "api/client.go")
+        await _seed_page(
+            "symbol_spotlight:api/client.go::HTTP", "api/client.go::HTTP", "symbol_spotlight"
+        )
+        await _seed_page("file_page:api/server.go", "api/server.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("file_page:api/client.go", "client.go", "file_page", "api/client.go", 0.9),
+                _mk_result(
+                    "symbol_spotlight:api/client.go::HTTP",
+                    "HTTP",
+                    "symbol_spotlight",
+                    "api/client.go::HTTP",
+                    0.8,
+                ),
+                _mk_result("file_page:api/server.go", "server.go", "file_page", "api/server.go", 0.7),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        res = await search_codebase("how are requests issued", mode="concept", limit=2)
+        assert [r["target_path"] for r in res["results"]] == ["api/client.go", "api/server.go"]
