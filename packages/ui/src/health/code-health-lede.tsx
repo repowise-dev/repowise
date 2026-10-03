@@ -349,7 +349,7 @@ export function CodeHealthLede({
   if (variant === "lead") return full;
 
   return (
-    <details className="group">
+    <details className="group/lede">
       <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Code health
@@ -373,10 +373,10 @@ export function CodeHealthLede({
             {healthChip.label}
           </span>
         ) : null}
-        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open:hidden">
+        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open/lede:hidden">
           More
         </span>
-        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open:inline">
+        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open/lede:inline">
           Less
         </span>
       </summary>
