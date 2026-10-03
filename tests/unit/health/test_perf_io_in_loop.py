@@ -531,3 +531,60 @@ def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | 
     if not hits:
         pytest.skip("typescript grammar unavailable")
     assert {h.function for h in hits} == {expected}
+
+
+_BATCHED_CLEAR = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for i in range(0, len(paths), _BATCH_SIZE):\n"
+    b"        rows = await session.execute(\n"
+    b"            select(Row).where(Row.path.in_(paths[i : i + _BATCH_SIZE]))\n"
+    b"        )\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+_N_PLUS_ONE = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for path in paths:\n"
+    b"        rows = await session.execute(select(Row).where(Row.path == path))\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+
+def _loop_hits(source: bytes):
+    fc = walk_file("f.py", "python", source)
+    return [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+
+
+def test_reading_a_result_inside_a_chunked_loop_is_already_batched():
+    """The chunk loop steps by a batch size and queries ``.in_`` over one slice; the
+    inner ``for row in rows.scalars().all()`` runs once per chunk, not once per row."""
+    hits = _loop_hits(_BATCHED_CLEAR)
+    assert {h.line for h in hits} == {4, 7}
+    assert all(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and all(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_per_item_query_still_reports_as_not_batched():
+    hits = _loop_hits(_N_PLUS_ONE)
+    assert {h.line for h in hits} == {4, 5}
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and not any(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_query_in_the_header_of_an_inner_loop_belongs_to_the_outer_loop():
+    source = (
+        b"from sqlalchemy import select\n"
+        b"async def f(session, users):\n"
+        b"    for u in users:\n"
+        b"        for r in (await session.execute(select(T).where(T.id == u.id))).scalars().all():\n"
+        b"            r.x = 1\n"
+    )
+    hits = _loop_hits(source)
+    assert hits and all(h.loop_line == 3 for h in hits)
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
