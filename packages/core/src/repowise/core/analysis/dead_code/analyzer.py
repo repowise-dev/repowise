@@ -785,6 +785,22 @@ def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
     return kinds is None or sym.get("kind") in kinds
 
 
+def _nested_class_used(node_data: dict, sym: dict) -> bool:
+    """Whether a nested class is one a framework reads or its module names.
+
+    ``ingestion/python_local_refs.py`` records a nested class its module reaches
+    (``Outer.Inner``, or ``Inner`` inside ``Outer``) under its ``Outer.Inner``
+    name, since a bare inner name like ``ErrorModel`` repeats across classes.
+    """
+    parent = sym.get("parent_name")
+    if not parent:
+        return False
+    name = sym.get("name", "")
+    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+        return True
+    return f"{parent}.{name}" in (node_data.get("local_refs") or ())
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
@@ -1478,8 +1494,7 @@ class DeadCodeAnalyzer:
         if self._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
-        parent = sym.get("parent_name")
-        if parent and sym_name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+        if _nested_class_used(node_data, sym):
             return True
 
         # TS/JS: type names referenced in type positions of the same file.
@@ -1489,12 +1504,8 @@ class DeadCodeAnalyzer:
 
         # Python: same-module references in non-call positions (callables passed
         # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
-        # A nested class is recorded by its ``Outer.Inner`` name.
         local_refs = node_data.get("local_refs")
-        return bool(
-            local_refs
-            and (sym_name in local_refs or (parent and f"{parent}.{sym_name}" in local_refs))
-        )
+        return bool(local_refs and sym_name in local_refs)
 
     def _export_use_evidence(
         self, file_ctx: _ExportFile, sym_id: str, sym: dict
