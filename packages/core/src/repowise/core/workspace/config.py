@@ -411,6 +411,29 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
         current = parent
 
 
+def workspace_root_for_path(start: Path | None = None) -> Path | None:
+    """The workspace *start* (default: cwd) belongs to, or ``None``.
+
+    Like :func:`find_workspace_root`, except that a directory with its own
+    index (``.repowise/state.json``) that is neither the workspace root nor a
+    declared member is a repo of its own, so a workspace further up does not
+    take it over.
+    """
+    path = (start or Path.cwd()).resolve()
+    ws_root = find_workspace_root(path)
+    if ws_root is None or ws_root == path:
+        return ws_root
+    if not (path / ".repowise" / "state.json").is_file():
+        return ws_root
+    try:
+        members = WorkspaceConfig.load(ws_root).repos
+    except Exception:
+        members = []
+    if any((ws_root / entry.path).resolve() == path for entry in members):
+        return ws_root
+    return None
+
+
 def ensure_workspace_data_dir(workspace_root: Path) -> Path:
     """Create the ``.repowise-workspace/`` data directory if it doesn't exist.
 
