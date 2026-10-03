@@ -179,6 +179,17 @@ function isServeLock(value) {
   return typeof v.pid === "number" && typeof v.host === "string" && typeof v.port === "number" && typeof v.url === "string" && (typeof v.ui_port === "number" || v.ui_port === null) && typeof v.server_version === "string" && typeof v.started_at === "string";
 }
 __name(isServeLock, "isServeLock");
+var LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+function isLoopbackUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return u.hostname === "localhost" || u.hostname === "[::1]" || LOOPBACK_V4.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+__name(isLoopbackUrl, "isLoopbackUrl");
 
 // src/data/transport.ts
 function connectApiClient(host, baseUrl) {
@@ -248,16 +259,6 @@ async function readServeLock(host, repoRoot) {
   return isServeLock(parsed) ? parsed : null;
 }
 __name(readServeLock, "readServeLock");
-var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-function isLoopbackUrl(url) {
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname);
-  } catch {
-    return false;
-  }
-}
-__name(isLoopbackUrl, "isLoopbackUrl");
 async function isPidAlive(host, pid, cwd2) {
   try {
     if (isWindowsPath(cwd2)) {
