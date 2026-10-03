@@ -3,7 +3,7 @@
 What protects the user here: only GitHub remotes are published, a signed-out
 user is signed in with the publish source, every refusal the platform can
 give reads as a next step with its link, and every link carries the source
-(plus the install id only with telemetry on).
+(never the install id; only sign-in carries that).
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ class TestPublish:
         assert result.outcome == "published"
         assert result.url == result.open_url
         assert result.url.startswith("https://repowise.dev/s/s1/indexing?")
-        assert _query(result.url) == {"src": ["cli_publish"], "aid": ["abc123def456"]}
+        assert _query(result.url) == {"src": ["cli_publish"]}
         text = "\n".join(result.details)
         assert "https://repowise.dev/repo/acme/widget?src=cli_publish" in text
         assert "https://api.repowise.dev/mcp/acme/widget" in text
@@ -217,7 +217,7 @@ class TestRefusals:
         assert result.outcome == "needs_plan"
         assert "10-day free Pro trial (card required" in result.message
         assert result.url.startswith("https://repowise.dev/repo/acme/widget?")
-        assert _query(result.url) == {"src": ["cli_publish"], "aid": ["abc123def456"]}
+        assert _query(result.url) == {"src": ["cli_publish"]}
 
     def test_private_repo_without_a_trial_offers_the_upgrade(self, repo, monkeypatch):
         _sign_in()
@@ -260,7 +260,6 @@ class TestRefusals:
             "interval": ["monthly"],
             "trial": ["1"],
             "src": ["cli_publish"],
-            "aid": ["abc123def456"],
         }
 
     def test_free_cap_without_a_trial_links_pricing(self, repo, monkeypatch):
@@ -352,7 +351,7 @@ class TestPostJson:
 class TestLinks:
     def test_site_link_with_params_and_fragment(self):
         url = links.site_link("hosted", "cli_x", fragment="mcp", params={"a": "1"})
-        assert url == "https://repowise.dev/hosted?a=1&src=cli_x&aid=abc123def456#mcp"
+        assert url == "https://repowise.dev/hosted?a=1&src=cli_x#mcp"
 
     def test_authorize_url_takes_the_source(self):
         url = auth.build_authorize_url(
@@ -363,6 +362,8 @@ class TestLinks:
             src="cli_publish",
         )
         assert _query(url)["src"] == ["cli_publish"]
+        # Sign-in is the one URL that ties this install to the new account.
+        assert _query(url)["aid"] == ["abc123def456"]
 
 
 class TestCommand:
