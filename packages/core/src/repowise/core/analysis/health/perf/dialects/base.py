@@ -226,6 +226,11 @@ class BasePerfDialect:
             has_db_import=has_db_import,
         )
 
+    def defers_body(self, fn: Node) -> bool:
+        """*fn*'s body runs when its result is iterated, not when it is called
+        (a generator, or an iterator closure that takes a ``yield`` callback)."""
+        return False
+
     def runs_in_place(self, closure: Node) -> bool:
         """*closure* runs to completion where it is written, like the loop body
         around it (``await limit(() => call())``), rather than being stored for later."""

@@ -236,6 +236,20 @@ class GoPerfDialect(BasePerfDialect):
             return "lock_in_loop"
         return None
 
+    def defers_body(self, fn: Node) -> bool:
+        """A ``func(yield func(...) bool)`` literal is an ``iter.Seq`` body: it runs
+        when the caller ranges over it, not when the function returning it is called."""
+        if fn.type != "func_literal":
+            return False
+        params = fn.child_by_field_name("parameters")
+        if params is None:
+            return False
+        return any(
+            decl.type == "parameter_declaration"
+            and any(c.type == "identifier" and c.text == b"yield" for c in decl.children)
+            for decl in params.children
+        )
+
     def loop_iterable_name(self, node: Node) -> str | None:
         """The collection a ``for _, x := range coll`` loop iterates (``coll``)."""
         if node.type != "for_statement":
