@@ -90,8 +90,9 @@ export function PublishPanel({ repoId }: { repoId: string }) {
       )}
       <PublishOutcome result={result} error={error} />
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        Only what&apos;s pushed to GitHub is published. Public repos are free (up to 2);
-        private repos need Pro, free for 10 days, card required.
+        {/* True on every plan: the panel doesn't know which one this account has. */}
+        Only what&apos;s pushed to GitHub is published. On a free account, public repos are
+        free (up to 2); private repos and more repos need Pro, free for 10 days, card required.
       </p>
     </div>
   );

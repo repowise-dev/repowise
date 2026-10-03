@@ -85,6 +85,13 @@ describe("PublishPanel", () => {
     ).toBeTruthy();
   });
 
+  it("states the free limits as a free account's, since the plan is unknown here", () => {
+    render(<PublishPanel repoId="r1" />);
+    const note = screen.getByText(/Only what's pushed to GitHub is published/).textContent ?? "";
+    expect(note).toContain("On a free account, public repos are free (up to 2)");
+    expect(note).toContain("free for 10 days, card required");
+  });
+
   it("renders nothing while identity is unknown", () => {
     mocks.identity.mockReturnValue(null);
     const { container } = render(<PublishPanel repoId="r1" />);
