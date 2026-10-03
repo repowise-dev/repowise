@@ -1666,3 +1666,71 @@ class TestDistinctFileWindow:
         mcp_mod._vector_store.search = fake_search
         res = await search_codebase("how are requests issued", mode="concept", limit=2)
         assert [r["target_path"] for r in res["results"]] == ["api/client.go", "api/server.go"]
+
+
+class TestPathlessPagesInCodeLocationModes:
+    """Hybrid windows drop pages naming no file; concept windows keep them."""
+
+    async def _seed(self):
+        import repowise.server.mcp_server as mcp_mod
+
+        await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
+        await _seed_page(
+            "onboarding:onboarding/how_it_works", "onboarding/how_it_works", "onboarding"
+        )
+        await _seed_page("file_page:pkg/cmd/release/list.go", "pkg/cmd/release/list.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.9
+                ),
+                _mk_result(
+                    "onboarding:onboarding/how_it_works",
+                    "Guided Tour",
+                    "onboarding",
+                    "onboarding/how_it_works",
+                    0.8,
+                ),
+                _mk_result(
+                    "file_page:pkg/cmd/release/list.go",
+                    "list.go",
+                    "file_page",
+                    "pkg/cmd/release/list.go",
+                    0.7,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+
+    @pytest.mark.asyncio
+    async def test_hybrid_drops_module_and_onboarding_pages(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="hybrid", limit=5)
+        pages = [r["page_type"] for r in res["results"] if r["type"] == "page"]
+        assert pages == ["file_page"]
+
+    @pytest.mark.asyncio
+    async def test_concept_keeps_them(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="concept", limit=5)
+        assert [r["page_type"] for r in res["results"]] == [
+            "module_page",
+            "onboarding",
+            "file_page",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_keeps_them_when_pages_are_asked_for(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase(
+            "listing releases in order", mode="hybrid", page_type="module_page"
+        )
+        pages = [r["page_type"] for r in res["results"] if r["type"] == "page"]
+        assert pages == ["module_page"]

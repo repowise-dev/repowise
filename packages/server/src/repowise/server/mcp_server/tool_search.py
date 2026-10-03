@@ -979,6 +979,12 @@ async def _structured_search(
         # Only files the window can show suppress their page.
         sym_files = {s.get("file") for s in symbols[:limit]}
         concepts = [c for c in concepts if c.get("target_path") not in sym_files]
+        # A code-location query wants files to open: a module, onboarding or
+        # decision page would spend a slot on nothing to Read. Runs after the
+        # missing-name check, which still credits a module path naming the
+        # query. Kept when the caller asked for pages by type or kind="doc".
+        if not page_type and kind != "doc":
+            concepts = [c for c in concepts if hit_file_path(c)]
         # Federation appends per-repo concept lists in repo order — re-rank by
         # relevance so a strong page in repo B isn't buried under repo A's weak
         # ones. (Single-repo: already sorted upstream; this is a no-op.)
@@ -1064,24 +1070,23 @@ async def search_codebase(
     For QUESTIONS ("how does X work", "where is Y handled", "why is Z like
     this"), call get_answer instead: it runs this same hybrid retrieval
     internally and synthesizes a cited answer, so searching first is a wasted
-    round-trip. Use this tool when you want the raw ranked hits themselves —
-    enumerating matches, resolving an identifier to a symbol_id, or scoping a
-    later get_context call.
+    round-trip. Use this tool for the raw ranked hits: enumerating matches,
+    resolving an identifier to a symbol_id, or scoping get_context.
 
     mode="auto" (default) routes the query: identifier-shaped queries search
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
-    and conceptual queries run wiki-semantic search. Mixed queries run hybrid,
-    symbol hits first. Decision records rank below file pages unless the query
-    is why-shaped.
+    and conceptual queries run wiki-semantic search. Mixed queries run hybrid:
+    symbol hits first, then file-backed pages only. Decision records rank
+    below file pages unless the query is why-shaped.
 
-    `candidates` lists up to `limit` distinct openable file paths, best first.
-    Some results are pages, not files; this is what to Read.
+    `candidates` lists up to `limit` distinct openable file paths, best
+    first: what to Read.
 
     Args:
-        query: identifier, path, or natural-language query.
-        limit: max results (default 5). Outside mode="symbol", distinct
-            files: same-file symbols share a row, named in `symbols`.
+        query: identifier, path, or natural language.
+        limit: max results (default 5); distinct files outside
+            mode="symbol" (same-file symbols in `symbols`).
         page_type: restrict to one page type. Common: file_page (per-file
             docs, always present) or module_page (subsystem/concept pages).
             Any stored type filters (repo_overview, layer_page, scc_page,

@@ -182,7 +182,7 @@ Outside `mode="symbol"`, `limit` counts distinct files: hits are collapsed to on
 
 Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's `target_path` is a page id (`file.py::Symbol`); open its `file`.
 
-`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. Decision records rank below file pages unless the query is why-shaped.
+`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. A hybrid query (prose around an identifier) drops pages that name no file (module, onboarding, overview, decision pages) from `results` unless `page_type` or `kind="doc"` asks for pages; concept mode keeps them. Decision records rank below file pages unless the query is why-shaped.
 
 ---
 

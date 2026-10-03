@@ -198,7 +198,7 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ### `search_codebase`
 
-Hybrid search that routes by the shape of the query: identifiers search the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both. Use it when you want ranked hits themselves: enumerating matches, resolving an identifier to a `symbol_id`, scoping a later `get_context`. For a question, call `get_answer`; it runs this retrieval internally.
+Hybrid search that routes by the shape of the query: identifiers search the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it when you want ranked hits themselves: enumerating matches, resolving an identifier to a `symbol_id`, scoping a later `get_context`. For a question, call `get_answer`; it runs this retrieval internally.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
