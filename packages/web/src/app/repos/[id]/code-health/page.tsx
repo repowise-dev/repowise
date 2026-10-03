@@ -541,8 +541,7 @@ export default function CodeHealthPage() {
           Health scores changed in this release.
         </span>{" "}
         Most files score higher: cohesion, duplication, hotspot and complexity findings
-        that did not hold up are gone, and test, vendored and generated code no longer
-        counts against production files. Files in languages health cannot analyse used
+        that did not hold up are gone, and test code no longer counts against production files. Files in languages health cannot analyse used
         to count as 10.0; they now read &quot;Not analysed&quot; and leave the average, so a
         repository with many of them can read lower. Scores are not comparable to
         snapshots taken before this release.
