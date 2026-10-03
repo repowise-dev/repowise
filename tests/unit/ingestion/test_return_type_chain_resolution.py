@@ -463,6 +463,79 @@ def test_go_external_return_type_does_not_bind_a_same_named_repo_type(tmp_path: 
     assert resolved == []
 
 
+_GO_BUILDER = (
+    "package m\n\ntype Builder struct{}\n\n"
+    "func NewReport(a string) *Builder { return &Builder{} }\n"
+    "func MakeValue() Builder { return Builder{} }\n"
+    "func (b *Builder) WithPhase(p int) *Builder { return b }\n"
+    "func (b Builder) WithClosest(s string) *Builder { return &b }\n"
+    "func (b *Builder) Next() Builder { return *b }\n"
+    "func (b *Builder) Build() int { return 1 }\n"
+)
+
+
+def _go_builder_edges(tmp_path: Path, test_body: str, extra: dict[str, str] | None = None):
+    files = {"m/builder.go": _GO_BUILDER, "m/builder_test.go": f"package m\n\n{test_body}\n"}
+    files.update(extra or {})
+    parsed: dict[str, ParsedFile] = {}
+    for path, source in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        parsed.update(_parse(tmp_path, path, "go", source))
+    calls = parsed["m/builder_test.go"].calls
+    imports = {path: set() for path in parsed}
+    resolved = CallResolver(parsed, imports, repo_path=str(tmp_path)).resolve_file(
+        "m/builder_test.go", calls
+    )
+    return sorted(edge.callee_id for edge in resolved)
+
+
+def test_go_builder_chain_from_a_constructor_types_every_link(tmp_path: Path) -> None:
+    """The type and its methods sit in another file of the package, as with a test file."""
+    edges = _go_builder_edges(
+        tmp_path,
+        'func TestX() {\n\tNewReport("a").\n\t\tWithPhase(3).\n\t\tWithClosest("x").Build()\n}',
+    )
+    assert edges == [
+        "m/builder.go::Builder::Build",
+        "m/builder.go::Builder::WithClosest",
+        "m/builder.go::Builder::WithPhase",
+        "m/builder.go::NewReport",
+    ]
+
+
+def test_go_chain_from_a_method_returning_its_own_type(tmp_path: Path) -> None:
+    edges = _go_builder_edges(
+        tmp_path, "func TestX(b *Builder) {\n\tb.WithPhase(1).WithPhase(2).Build()\n}"
+    )
+    assert "m/builder.go::Builder::Build" in edges
+    assert "m/builder.go::Builder::WithPhase" in edges
+
+
+def test_go_chain_types_through_value_and_pointer_receivers(tmp_path: Path) -> None:
+    edges = _go_builder_edges(
+        tmp_path, 'func TestX() {\n\tMakeValue().WithClosest("a").Next().Build()\n}'
+    )
+    assert "m/builder.go::Builder::WithClosest" in edges
+    assert "m/builder.go::Builder::Next" in edges
+    assert "m/builder.go::Builder::Build" in edges
+
+
+def test_go_builder_chain_on_an_external_type_still_refuses_the_bare_name(
+    tmp_path: Path,
+) -> None:
+    edges = _go_builder_edges(
+        tmp_path,
+        "func TestX() {\n\tWrap().WithPhase(3).Build()\n}",
+        {
+            "m/ext.go": (
+                'package m\n\nimport "github.com/rs/zerolog"\n\n'
+                "func Wrap() *zerolog.Event { return nil }\n"
+            )
+        },
+    )
+    assert "m/builder.go::Builder::WithPhase" not in edges
+
+
 # A fluent C# API: every link returns an interface, and most links are
 # extension methods on it or on an interface it extends.
 _FLUENT_SYNTAX = (
