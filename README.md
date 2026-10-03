@@ -489,7 +489,7 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**26 languages parsed to AST · 40 on a five-rung ladder · framework-aware where
+**27 languages parsed to AST · 41 on a five-rung ladder · framework-aware where
 an ecosystem handler exists.**
 
 "Do you support X" has five useful answers, not two, so languages land on a
@@ -529,6 +529,7 @@ ladder and every rung says what it buys you.
   <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
+  <img src="https://img.shields.io/badge/BYOND_DM-447FC0?style=flat-square" alt="BYOND Dream Maker" />
   <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
 </p>
 
@@ -539,7 +540,7 @@ still doing real work rather than being ignored:
 |---|---|---|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
 | **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, subject to the language-specific ceilings in the full matrix |
-| **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
+| **Partial** (3) | Luau / Roblox · Razor / Blazor · BYOND Dream Maker | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet. DM: AST symbols and project-relative `#include` resolution; no call graph or health markers yet |
 | | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |

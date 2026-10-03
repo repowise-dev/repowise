@@ -41,6 +41,8 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "dm",
+    "dmf",
     "cobol",
     "gdscript",
     "vbnet",

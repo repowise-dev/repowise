@@ -55,6 +55,7 @@ dependencies = [
     "tree-sitter-language-pack>=1.14,<2",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    "tree-sitter-dm>=0.25,<1",
     "tree-sitter-gdscript>=6.1,<7",
     "tree-sitter-vb-dotnet>=0.3,<1",
     "tree-sitter-elixir>=0.3.5,<1",

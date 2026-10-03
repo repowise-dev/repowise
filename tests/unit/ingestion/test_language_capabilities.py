@@ -182,6 +182,8 @@ _FULL = {
     "vbnet",
 }
 _PARTIAL = {
+    # Dream Maker #include paths, including Windows separators from .dme.
+    "dm",
     "luau",
     "scala",
     # Lightweight regex-tier resolvers (module-name index + import regexes).
