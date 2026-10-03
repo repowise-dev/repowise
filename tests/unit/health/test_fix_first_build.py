@@ -219,3 +219,31 @@ def test_every_open_refactoring_opportunity_carries_its_reason() -> None:
     }
     # Off the wire: the reasons are a read-model input, not part of the queue.
     assert "refactoring_reasons" not in queue.as_dict()
+
+
+def test_a_finding_item_takes_its_tests_from_the_validate_callback() -> None:
+    asked: list[tuple] = []
+
+    def validate(path, function, start, end):
+        asked.append((path, function, start, end))
+        return {
+            "basis": "inferred",
+            "via": "call-graph",
+            "total": 1,
+            "tests": ["tests/test_plain.py::test_walk"],
+            "commands": ["pytest tests/test_plain.py::test_walk"],
+        }
+
+    queue = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=validate,
+    )
+    walk = next(i for i in queue.items if i.target.file_path == "src/plain.py")
+    assert asked == [("src/plain.py", "walk", 5, 40)]
+    assert walk.verify.basis == "inferred"
+    assert [t.path for t in walk.verify.tests] == ["tests/test_plain.py::test_walk"]
+    assert "call graph" in walk.verify.tests[0].reason
