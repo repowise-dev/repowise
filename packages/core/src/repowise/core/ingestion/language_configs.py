@@ -94,6 +94,11 @@ class LanguageConfig:
     # ``modifier``, Kotlin ``modifiers``), read into ``Symbol.modifiers``.
     modifier_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Call-site node types that instantiate an object (construction syntax like
+    # C# ``new Foo()``). Used to distinguish object creation from ordinary calls
+    # so bare-name resolution does not bind construction to a same-named method.
+    construction_call_node_types: frozenset[str] = field(default_factory=frozenset)
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
@@ -328,6 +333,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "file_scoped_namespace_declaration",
             }
         ),
+        construction_call_node_types=frozenset({"object_creation_expression"}),
     ),
     "vbnet": LanguageConfig(
         symbol_node_types={
