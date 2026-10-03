@@ -133,14 +133,14 @@ def _installed_app_init(entry: str, repo_root: Path) -> str | None:
     init = _app_to_path(entry, repo_root)
     if init is not None or "." not in entry:
         return init
-    module_name = entry.rsplit(".", 1)[0]
+    module_name = entry[: entry.rindex(".")]
     module = _module_to_path(module_name, repo_root)
     if module is None:
         return None
     module_path = PurePosixPath(module)
     if module_path.name != "__init__.py":
         app_dir = module_path.parent
-    elif module_name.rsplit(".", 1)[-1] == "apps":
+    elif module_path.parent.name == "apps":
         # An ``apps`` package inside the app (``polls/apps/__init__.py``).
         app_dir = module_path.parent.parent
     else:
