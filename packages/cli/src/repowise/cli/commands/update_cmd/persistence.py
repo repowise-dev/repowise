@@ -1648,6 +1648,41 @@ def _full_rescore_interval_days() -> float:
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
+def parser_changed(repo_path: Path) -> bool:
+    """Whether the stored graph edges were written by a different parser.
+
+    Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
+    row with the running ``parser_fingerprint()``. An unstamped row, or a store
+    that cannot be read, is **not** a change, for the reason
+    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+
+    async def _stored() -> str | None:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                return repo.graph_edges_parser_fingerprint if repo is not None else None
+        finally:
+            await engine.dispose()
+
+    try:
+        stored = run_async(_stored())
+    except Exception as exc:
+        log.debug("parser_change_check_failed", error=str(exc))
+        return False
+    return stored is not None and stored != parser_fingerprint()
+
+
 def health_analyzer_changed(state: dict) -> bool:
     """Whether the stored health rows were written by a different analyzer.
 

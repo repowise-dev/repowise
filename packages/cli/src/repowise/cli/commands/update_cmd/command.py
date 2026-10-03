@@ -60,6 +60,8 @@ from .persistence import (
     _repair_module_attribution,
     _run_full_health_rescore,
     heal_commit_offsets,
+    health_analyzer_changed,
+    parser_changed,
     stamp_head_commit,
 )
 from .reporting import (
@@ -976,13 +978,29 @@ def run_update(
     if not dry_run:
         _repair_module_attribution(repo_path)
 
+    analyzer_changed = health_analyzer_changed(state)
     git_is_current = bool(
         head
         and head == base_ref
         and not config_changed
         and not renderer_changed
         and not working_tree_diffs
+        and not analyzer_changed
     )
+    # The parse is read from the store, so it is asked only when git and the
+    # analyzer would otherwise let the run exit.
+    extraction_changed = git_is_current and parser_changed(repo_path)
+    if extraction_changed:
+        git_is_current = False
+    if analyzer_changed or extraction_changed:
+        # Not a code change, but every stored score or edge is a release behind.
+        # Falls through to the re-parse below, which re-scores from the graph it
+        # builds and writes no pages, so no model is called.
+        console.print(
+            "[yellow]Health analyzer changed since this index was scored; re-scoring.[/yellow]"
+            if analyzer_changed
+            else "[yellow]Parser changed since this index was built; re-parsing.[/yellow]"
+        )
     # A page can be stale for a reason no commit explains: a cascade that ran
     # out of budget, an interrupted run, an expiry. Git says nothing changed,
     # so the shortcut below is the only place such a page could be skipped
@@ -1255,6 +1273,8 @@ def run_update(
         not file_diffs
         and not config_changed
         and not renderer_changed
+        and not analyzer_changed
+        and not extraction_changed
         and not stale_db_paths
         and not stale_deterministic_ids
     ):
@@ -2403,7 +2423,7 @@ def run_update(
     # update only reaches the changed files. Reusing this hook is what makes
     # falling through cost nothing extra — the graph is already built.
     rescored = False
-    if health_config_changed or full_rescore_due(state, head_ts):
+    if health_config_changed or extraction_changed or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
                 repo_path, graph_builder, parsed_files, exclude_patterns
