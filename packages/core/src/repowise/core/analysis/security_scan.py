@@ -311,7 +311,14 @@ _SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", r
 # comments and string literals blanked, so a docstring, a comment or a regex
 # literal that merely mentions the call does not fire.
 _MASKED_KINDS = frozenset(
-    {"pickle_loads", "subprocess_shell_true", "os_system", "new_function_call"}
+    {
+        "pickle_loads",
+        "subprocess_shell_true",
+        "os_system",
+        "new_function_call",
+        "tls_verify_false",
+        "reject_unauthorized_false",
+    }
 )
 
 # Prose is documentation, not executable code. Only secret kinds scan it,

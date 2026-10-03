@@ -511,12 +511,27 @@ class TestScanFile:
             ("const agent = new https.Agent({ rejectUnauthorized: false });\n", True),
             ("axios.get(url, { httpsAgent, rejectUnauthorized: false });\n", True),
             ("const agent = new https.Agent({ rejectUnauthorized: true });\n", False),
+            ('const doc = "TLS off (rejectUnauthorized: false).";\n', False),
+            ("// rejectUnauthorized: false would disable TLS checks\n", False),
         ],
     )
     def test_reject_unauthorized_false(self, source: str, expected: bool) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("client.ts", source, symbols=[]))
         assert bool([f for f in findings if f["kind"] == "reject_unauthorized_false"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("requests.get(url, verify=False)\n", True),
+            ('"tls_verify_false": "TLS verification turned off (verify=False).",\n', False),
+            ("# verify=False disables certificate checks\n", False),
+        ],
+    )
+    def test_tls_verify_false_ignores_prose(self, source: str, expected: bool) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("client.py", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
 
 
 class TestPersistSecurityFindings:
