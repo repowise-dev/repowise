@@ -597,7 +597,7 @@ async def get_answer(
         return await _degrade("synthesis-failed", failure_note)
 
     citations = [
-        h["target_path"] for h in hits if h["target_path"] and h["target_path"] in answer_text
+        h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
     ]
     if not citations:
         # Fall back to top-2 retrieval paths so the agent always has something to verify.
