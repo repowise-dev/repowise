@@ -134,17 +134,17 @@ Per target, under `targets`:
 
 | Field | Meaning |
 |-------|---------|
-| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers |
+| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}`; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
 | `hotspot` | Churn flag |
 | `fix_history` | Only on files with counted bug fixes: count, age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records bound to the target; `get_why` serves their bodies |
 | decisions | Titles by default. With `include=["decisions"]`, three lanes: `decisions` (accepted, governing), `candidates` (proposed, at most 3), `history` (accepted then withdrawn, at most 2) |
-| `file_preview` | For a file with no indexed symbols: line and character counts, plus the heading spine for markdown or the first lines otherwise |
+| `file_preview` | For a file with no indexed symbols: `lines`, `chars`, and for a markdown or reST document `heading_count` with the first three `headings`; otherwise the first three non-empty lines as `head` |
 | `resolved_to`, `note` | A `path::Name` target whose symbol did not resolve answers with the file's card instead |
 | `cross_repo` | Workspace mode: `co_changes_with` partners in other repos and contract `consumers` / `providers` |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: the language, how many call edges the index resolved for it, and the share that are guesses. An empty list means no resolved edge, not proof of none |
 
-Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`.
+Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`, `symbols` (every symbol of a file).
 
 **Skeleton.** Sliced from the index's stored symbol bounds, with no parsing at query time: every signature, the import preamble, and the bodies of the top symbols ranked by centrality, hotspot and query match. Elision markers carry 1-indexed line ranges, so you can read any part back.
 

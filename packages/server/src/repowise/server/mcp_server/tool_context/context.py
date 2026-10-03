@@ -26,6 +26,7 @@ Optional ``include`` parameter widens the response:
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
+  - include=["symbols"]   → every symbol in a file card, not the ranked top 15
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -82,6 +83,7 @@ _INCLUDE_BLOCKS = frozenset(
         "skeleton",
         "health",
         "doc_drift",
+        "symbols",
     }
 )
 
@@ -128,8 +130,9 @@ async def get_context(
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
     Returns title, summary, signatures with line numbers, hotspot bit, and
-    decision_record titles. fix_history appears only on files with counted bug
-    fixes (count, age, bug_magnet); hotspot is churn. Either one is a cue to
+    decision_record titles. A symbol row without symbol_id is path::name.
+    fix_history appears only on files with counted bug fixes (count, age,
+    bug_magnet); hotspot is churn. Either one is a cue to
     call get_risk. episodes counts the dated records bound to a target — what
     happened here and why — and appears only when there is at least one;
     get_why serves the bodies. A symbol target is counted as its file, and a
@@ -147,7 +150,9 @@ async def get_context(
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
             | callees | metrics | community | decisions | skeleton | health
-            | doc_drift (documents naming this file).
+            | doc_drift (documents naming this file) | symbols (all of a
+            file's symbols; the default lists the top 15, classes and
+            functions first).
             An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.

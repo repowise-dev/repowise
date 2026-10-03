@@ -43,6 +43,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget.budgeter import symbol_priority
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _decision_body,
@@ -82,6 +83,46 @@ _MAX_DECISION_HISTORY = 2
 #: 32,766 after, and which applies depends on the libsqlite3 linked at runtime.
 _RANK_LOOKUP_CHUNK = 500
 
+#: Rows the compact symbol list carries unless ``include=["symbols"]``. The
+#: head of a file is mostly constants and type vars; ranked, 15 rows cover a
+#: file's types and functions in most real files.
+_SYMBOL_CAP = 15
+
+
+async def _compact_symbol_rows(
+    session: AsyncSession, repo_id: str, file_path: str, symbols: Any
+) -> list[dict[str, Any]]:
+    """Compact rows ranked by kind, then PageRank, then start line.
+
+    ``symbol_id`` is omitted when it is exactly ``path::name``, which the
+    reader can rebuild; methods and overload variants keep theirs, because a
+    bare ``path::name`` does not resolve them uniquely.
+    """
+    res = await session.execute(
+        select(GraphNode.node_id, GraphNode.pagerank).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.file_path == file_path,
+        )
+    )
+    rank = {node_id: float(pr or 0.0) for node_id, pr in res.all()}
+    path = path_identity(file_path)
+    scored = []
+    for s in symbols:
+        row: dict[str, Any] = {
+            "name": s.name,
+            "kind": s.kind,
+            "signature": _clean_signature(s.signature),
+            "line": s.start_line,
+        }
+        sid = symbol_identity(s.symbol_id)
+        if sid != f"{path}::{s.name}":
+            row["symbol_id"] = sid
+        kind_rank = symbol_priority(row, set())[0]
+        scored.append(((-kind_rank, -rank.get(s.symbol_id, 0.0), s.start_line or 0), row))
+    scored.sort(key=lambda pair: pair[0])
+    return [row for _, row in scored]
+
+
 # The default file card is the symbol list; the skeleton is opt-in via
 # ``include=["skeleton"]``. An auto-upgraded card was mostly source text, which
 # a direct Read serves more cheaply, so measure card sizes before restoring one.
@@ -120,40 +161,83 @@ def _preview_summary(file_path: str, preview: dict[str, Any]) -> str:
     lines = preview.get("lines", 0)
     if not lines:
         return f"{name}: empty file"
-    headings = preview.get("headings")
-    if headings:
-        return f"{name}: {lines}-line document, {len(headings)} headings, no indexed symbols."
+    heading_count = preview.get("heading_count")
+    if heading_count:
+        return f"{name}: {lines}-line document, {heading_count} headings, no indexed symbols."
     return f"{name}: {lines} lines, no indexed symbols."
 
 
-# Bounds on the preview a symbol-less file (README, YAML, SQL) gets, cheap
-# enough to stay on by default.
-_PREVIEW_MAX_LINES = 15
+# Bounds on the preview a symbol-less file (README, YAML, SQL) gets: counts
+# plus a few verbatim lines, cheap enough to stay on by default.
+_PREVIEW_MAX_LINES = 3
 _PREVIEW_MAX_LINE_CHARS = 120
 # Beyond this the file is big enough that a preview would misrepresent it; the
 # counts and the "go Read it" note are the honest reply.
 _PREVIEW_MAX_BYTES = 2_000_000
 
-_MARKDOWN_EXTS = (".md", ".markdown", ".mdx", ".rst")
+_MARKDOWN_EXTS = (".md", ".markdown", ".mdx")
+_RST_EXTS = (".rst",)
+_MD_HEADING = re.compile(r" {0,3}#{1,6}(\s|$)")
+_MD_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_RST_ADORNMENT = re.compile(r"([!-/:-@\[-`{-~])\1+")
+
+
+def _markdown_headings(lines: list[str]) -> list[str]:
+    """ATX headings outside fenced code blocks, where ``#`` is a comment."""
+    headings: list[str] = []
+    fence = ""
+    for ln in lines:
+        m = _MD_FENCE.match(ln)
+        if m:
+            marker = m.group(1)
+            if not fence:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = ""
+            continue
+        if not fence and _MD_HEADING.match(ln):
+            headings.append(ln.strip())
+    return headings
+
+
+def _rst_headings(lines: list[str]) -> list[str]:
+    """Section titles: an unindented line underlined by punctuation at least as long.
+
+    Indented lines (literal and directive bodies) are never titles, so a
+    ``# comment`` inside a ``code-block`` is not one either.
+    """
+    headings: list[str] = []
+    for i in range(len(lines) - 1):
+        title, under = lines[i].rstrip(), lines[i + 1].rstrip()
+        if (
+            title
+            and not title[0].isspace()
+            and not _RST_ADORNMENT.fullmatch(title)
+            and _RST_ADORNMENT.fullmatch(under)
+            and len(under) >= len(title)
+        ):
+            headings.append(title)
+    return headings
 
 
 def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
-    """Pick the most informative ~15 lines of a symbol-less file.
+    """Return a document's headings, or the head lines of anything else.
 
-    Markdown-ish files get their heading spine, which is a genuine table of
-    contents. Everything else gets its first non-blank, non-comment lines,
-    which for config and data files is where the keys live. Returns the kind of
-    excerpt chosen so the caller can label it truthfully.
+    Returns the kind of excerpt chosen so the caller can label it truthfully.
+    A heading-less document falls through to head lines rather than reporting
+    an empty outline.
     """
     lines = text.splitlines()
-    if file_path.lower().endswith(_MARKDOWN_EXTS):
-        headings = [ln.strip() for ln in lines if ln.lstrip().startswith("#")]
-        # An .rst or heading-less .md falls through to the head-lines form
-        # rather than reporting an empty outline.
-        if headings:
-            return "headings", headings[:_PREVIEW_MAX_LINES]
-    head = [ln.rstrip() for ln in lines if ln.strip()]
-    return "head", head[:_PREVIEW_MAX_LINES]
+    lower = file_path.lower()
+    if lower.endswith(_MARKDOWN_EXTS):
+        headings = _markdown_headings(lines)
+    elif lower.endswith(_RST_EXTS):
+        headings = _rst_headings(lines)
+    else:
+        headings = []
+    if headings:
+        return "headings", headings
+    return "head", [ln.rstrip() for ln in lines if ln.strip()]
 
 
 def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:
@@ -177,12 +261,12 @@ def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:
         return preview
 
     kind, excerpt = _outline_lines(text, file_path)
+    if kind == "headings":
+        preview["heading_count"] = len(excerpt)
     if excerpt:
-        preview[kind] = [ln[:_PREVIEW_MAX_LINE_CHARS] for ln in excerpt]
+        preview[kind] = [ln[:_PREVIEW_MAX_LINE_CHARS] for ln in excerpt[:_PREVIEW_MAX_LINES]]
     preview["note"] = (
-        "This file has no indexed symbols, so there is no structural card for "
-        "it. The fields above are counts and verbatim excerpts. Read the file "
-        "for its full content."
+        "No indexed symbols; counts and a short excerpt only. Read the file for its content."
     )
     return preview
 
@@ -448,12 +532,13 @@ async def _resolve_one_target(
         if target_type is None and "::" in target:
             file_part = target.split("::", 1)[0]
             if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
-                # file_part contains no "::", so this recursion is depth-1.
+                # file_part contains no "::", so this recursion is depth-1. The
+                # caller is hunting for a name, so the symbol list is uncapped.
                 card = await _resolve_one_target(
                     session,
                     repository,
                     file_part,
-                    include,
+                    None if include is None else include | {"symbols"},
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
@@ -557,6 +642,7 @@ async def _resolve_one_target(
             }
 
     want_skeleton = bool(include and "skeleton" in include)
+    want_all_symbols = bool(include and "symbols" in include)
 
     # --- Docs ---
     # "full_doc" implies "docs" — entering the docs block whenever either is requested.
@@ -573,10 +659,12 @@ async def _resolve_one_target(
                     docs["human_notes"] = page.human_notes
             # Symbols in this file
             res = await session.execute(
-                select(WikiSymbol).where(
+                select(WikiSymbol)
+                .where(
                     WikiSymbol.repository_id == repo_id,
                     WikiSymbol.file_path == target,
                 )
+                .order_by(WikiSymbol.start_line, WikiSymbol.symbol_id)
             )
             symbols = res.scalars().all()
             classes = [s.name for s in symbols if s.kind == "class"]
@@ -587,26 +675,15 @@ async def _resolve_one_target(
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
             elif compact:
-                # Compact: name, kind, signature, line and symbol_id only. The
-                # cap stops a dense generated file blowing the budget; symbols
-                # are in start_line order, so the head is the useful slice.
-                symbol_cap = 40
-                visible = list(symbols)[:symbol_cap]
-                docs["symbols"] = [
-                    {
-                        "name": s.name,
-                        "kind": s.kind,
-                        "signature": _clean_signature(s.signature),
-                        "line": s.start_line,
-                        "symbol_id": symbol_identity(s.symbol_id),
-                    }
-                    for s in visible
-                ]
-                if len(symbols) > symbol_cap:
+                docs["symbols"] = await _compact_symbol_rows(
+                    session, repo_id, target, symbols
+                )
+                if not want_all_symbols and len(symbols) > _SYMBOL_CAP:
+                    docs["symbols"] = docs["symbols"][:_SYMBOL_CAP]
                     docs["symbols_truncated"] = {
-                        "shown": symbol_cap,
+                        "shown": _SYMBOL_CAP,
                         "total": len(symbols),
-                        "hint": "Call with compact=False or include=['full_doc'] for the full list.",
+                        "hint": "Pass include=['symbols'] for the full list.",
                     }
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
