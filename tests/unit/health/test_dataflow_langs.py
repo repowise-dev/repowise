@@ -1246,6 +1246,330 @@ def test_cpp_extraction_never_spans_a_jump():
     assert "throw_statement" in lmap.raise_kinds
 
 
+# == C# =========================================================================
+
+# Every C# write shape in one method: declarations (int a = 1, b = 2), compound
+# and plain assignment, ++/--, tuple deconstruction, using declaration and
+# statement, is-pattern, switch pattern, foreach binder, C-style for, indexer and
+# member targets (not locals), out/ref args, lambda/local func, and try/catch.
+_CSHARP_SHAPES = """
+class Demo {
+    int Shapes(int[] input, int baseVal, out int outResult, ref int refCount) {
+        int total = 0;
+        int a = 1, b = 2;
+        int acc = baseVal;
+        acc += a;
+        acc++;
+        --acc;
+        (int p, int q) = (1, 2);
+        (a, b) = (3, 4);
+        using var x = open();
+        using (var y = open()) {
+            acc += 1;
+        }
+        if (obj is string s) {
+            acc += s.Length;
+        }
+        switch (input) {
+            case int[] arr:
+                acc += arr.Length;
+                break;
+            default:
+                break;
+        }
+        foreach (int r in input) {
+            acc += r;
+        }
+        for (int i = 0; i < 10; i++) {
+            acc += i;
+        }
+        int[] seen = new int[10];
+        seen[a] = b;
+        this.field = acc;
+        obj.field = acc;
+        DoOut(out var outLocal);
+        DoOutT(out int outTLocal);
+        DoOut(out outResult);
+        DoRef(ref refCount);
+        var lam = (int z) => z + acc;
+        int LocalFunc(int w) => w + 1;
+        try {
+            acc += 1;
+        } catch (Exception e) {
+            acc -= 1;
+        }
+        return acc;
+    }
+}
+"""
+
+
+def test_csharp_def_use_classification():
+    fn = _first("csharp", _CSHARP_SHAPES)
+    defs = _def_names(fn)
+    # Declarations, for/foreach binders, tuple deconstruction, using, out/ref args, pattern variables, and local function are locals.
+    assert {
+        "total",
+        "a",
+        "b",
+        "acc",
+        "p",
+        "q",
+        "x",
+        "y",
+        "s",
+        "arr",
+        "r",
+        "i",
+        "seen",
+        "outLocal",
+        "outTLocal",
+        "outResult",
+        "refCount",
+        "lam",
+        "LocalFunc",
+    } <= defs
+    assert {"input", "baseVal", "outResult", "refCount"} <= defs  # parameters
+    # Field (``this.field = ...``) and indexer (``seen[a] = ...``) targets bind no local: bases are reads.
+    assert "field" not in defs
+    # Lambda parameter z and catch binder e are not defs of enclosing method.
+    assert "z" not in defs
+    uses = _use_names(fn)
+    assert {"baseVal", "input", "seen", "a", "b", "acc", "obj", "refCount", "r", "s"} <= uses
+    # Method names (open, DoOut, DoRef, Length) are never variable reads.
+    assert "open" not in uses
+    assert "DoOut" not in uses
+    assert "DoRef" not in uses
+    assert "Length" not in uses
+
+
+def test_csharp_compound_assign_reads_target():
+    fn = _first(
+        "csharp",
+        """
+        class Demo {
+            int f(int x) {
+                int acc = 0;
+                acc += x;
+                return acc;
+            }
+        }
+        """,
+    )
+    assert "acc" in _def_names(fn)
+    assert "acc" in _use_names(fn)
+
+
+def test_csharp_for_and_while_heads():
+    fn = _first(
+        "csharp",
+        """
+        class Demo {
+            int loops(int n) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    sum += j;
+                }
+                while (sum < 100) {
+                    sum *= 2;
+                }
+                return sum;
+            }
+        }
+        """,
+    )
+    assert "j" in _def_names(fn)
+    headers = [b for b in fn.cfg.blocks if b.kind == "loop_header"]
+    assert len(headers) == 2
+    assert fn.cfg.back_edges()
+
+
+def test_csharp_else_if_chain_branches():
+    fn = _first(
+        "csharp",
+        """
+        class Demo {
+            int grade(int x) {
+                int y = 0;
+                if (x == 1) {
+                    y = 1;
+                } else if (x == 2) {
+                    y = 2;
+                } else if (x == 3) {
+                    y = 3;
+                } else {
+                    y = 4;
+                }
+                return y;
+            }
+        }
+        """,
+    )
+    branches = [b for b in fn.cfg.blocks if b.kind == "branch"]
+    assert len(branches) == 3
+    assert fn.cfg.exit_id in fn.cfg.reachable_ids()
+
+
+def test_csharp_switch_arm_writes_are_may_defs():
+    fn = _first(
+        "csharp",
+        """
+        class Demo {
+            int f(int x) {
+                int y = 0;
+                switch (x) {
+                    case 1:
+                        y = 10;
+                        break;
+                    default:
+                        y = 20;
+                        break;
+                }
+                return y;
+            }
+        }
+        """,
+    )
+    decl_line = min(d.line for d in fn.def_use.definitions if d.var == "y")
+    switch_defs = [d for d in fn.def_use.definitions if d.var == "y" and d.line > decl_line]
+    assert switch_defs, "expected the arm writes to register as defs"
+    use_lines = {u.line for b in fn.def_use.blocks.values() for u in b.uses if u.name == "y"}
+    assert {d.line for d in switch_defs} <= use_lines
+
+
+_CSHARP_PROCESS = """
+class Demo {
+    int Process(int[] records, int threshold) {
+        int errors = 0;
+        var results = new System.Collections.Generic.List<int>();
+        foreach (int r in records) {
+            if (r < 0) {
+                errors++;
+                continue;
+            }
+            results.Add(r);
+        }
+        int total = 0;
+        int count = 0;
+        foreach (int v in results) {
+            if (v > threshold) {
+                total += v;
+                count++;
+            } else {
+                total -= v;
+            }
+        }
+        int average = 0;
+        if (count > 0) {
+            average = total / count;
+        }
+        return average + errors;
+    }
+}
+"""
+
+
+def test_csharp_extract_method_fires():
+    lmap = get_language_map("csharp")
+    extractions = find_extractions(_first("csharp", _CSHARP_PROCESS), lmap)
+    assert extractions, "expected at least one C# extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+
+
+def test_csharp_extractions_are_deterministic():
+    lmap = get_language_map("csharp")
+    fn = _first("csharp", _CSHARP_PROCESS)
+
+    def serialize():
+        return [
+            (e.start_line, e.end_line, e.params, e.returns, e.ccn_removed)
+            for e in find_extractions(fn, lmap)
+        ]
+
+    first = serialize()
+    for _ in range(3):
+        assert serialize() == first
+
+
+def test_csharp_flagged_only_gate_skips_small_functions():
+    _require("csharp")
+    lines = ["class Demo {", "    int big(int x) {", "        int y = 0;"]
+    for i in range(12):
+        lines += [f"        if (x == {i}) {{", f"            y = {i};", "        }"]
+    lines += ["        return y;", "    }", "    int tiny() {", "        return 1;", "    }", "}"]
+    result = build_cfgs_for_file("m.cs", "csharp", "\n".join(lines).encode())
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for csharp")
+    assert result.stats.functions_seen == 2
+    assert result.stats.functions_built == 1
+    assert [fc.name for fc in result.functions] == ["big"]
+
+
+def test_csharp_append_loop_is_independent():
+    assert _independent(
+        "csharp",
+        """
+        class Demo {
+            void f(int[] items) {
+                foreach (int item in items) {
+                    int r = fetch(item);  // HIT
+                    store(r);
+                }
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_csharp_accumulator_is_carried():
+    assert not _independent(
+        "csharp",
+        """
+        class Demo {
+            int f(int[] items) {
+                int acc = 0;
+                foreach (int item in items) {
+                    acc = acc + fetch(item);  // HIT
+                }
+                return acc;
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_csharp_switch_conditional_write_refuses_promotion():
+    assert not _independent(
+        "csharp",
+        """
+        class Demo {
+            void f(int[] items) {
+                int flag = 0;
+                foreach (int item in items) {
+                    switch (item) {
+                        case 1:
+                            flag = 1;
+                            break;
+                        default:
+                            break;
+                    }
+                    int r = fetch(flag);  // HIT
+                    store(r);
+                }
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Nested scopes that bind a name in the enclosing scope (and the ones that do not)
 # ---------------------------------------------------------------------------
@@ -1488,6 +1812,25 @@ _TWO_LOOPS = {
             return sum + total
         }
         """,
+    "csharp": """
+        class Demo {
+            int Run(int[] a, int n) {
+                int sum = 0;
+                for (int i = 0; i < n; i++) {
+                    sum += a[i];
+                }
+                int total = 0;
+                for (int i = 0; i < n; i++) {
+                    if (a[i] > 0) {
+                        total += a[i];
+                    } else {
+                        total -= a[i];
+                    }
+                }
+                return sum + total;
+            }
+        }
+        """,
 }
 
 
@@ -1572,6 +1915,25 @@ _READ_THEN_WRITE = {
                 }
             }
             return sum + total
+        }
+        """,
+    "csharp": """
+        class Demo {
+            int Run(int[] a, int n, int total) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    sum += a[j];
+                }
+                total = total + a[0];
+                for (int k = 1; k < n; k++) {
+                    if (a[k] > 0) {
+                        total += a[k];
+                    } else {
+                        total -= a[k];
+                    }
+                }
+                return sum + total;
+            }
         }
         """,
 }
@@ -2089,3 +2451,72 @@ def test_go_name_declared_afresh_after_the_span_does_not_refuse_it():
     lmap = get_language_map("go")
     fn = _first("go", src)
     assert any(e.start_line <= 7 and e.end_line >= 12 for e in find_extractions(fn, lmap))
+
+
+def test_csharp_local_declared_and_read_on_one_line_in_the_span_is_not_a_parameter():
+    fn = _first(
+        "csharp",
+        """
+        class Demo {
+            int Run(int[] a, int n) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    int t = a[j];
+                    sum += t;
+                }
+                int total = 0;
+                for (int k = 0; k < n; k++) {
+                    int t = a[k]; total += t;
+                    if (t > 0) {
+                        total += 1;
+                    } else {
+                        total -= 1;
+                    }
+                }
+                return sum + total;
+            }
+        }
+        """,
+    )
+
+    extractions = find_extractions(fn, get_language_map("csharp"))
+
+    assert extractions, "expected the second loop as an extraction"
+    assert all("t" not in x.params for x in extractions)
+    assert (("a", "n"), ("total",)) in [(x.params, x.returns) for x in extractions]
+
+
+def test_csharp_switch_arm_binder_inside_the_span_is_not_a_param():
+    src = """
+        class Demo {
+            int Process(object obj, int limit) {
+                switch (obj) {
+                    case int i:
+                        int armVal = i * 2;
+                        log(armVal);
+                        break;
+                    default:
+                        break;
+                }
+                int total = 0;
+                for (int j = 0; j < limit; j++) {
+                    total += j;
+                }
+                for (int k = 0; k < limit; k++) {
+                    if (k > 0) {
+                        total += k;
+                    } else {
+                        total -= k;
+                    }
+                }
+                return total;
+            }
+        }
+        """
+    lmap = get_language_map("csharp")
+    fn = _first("csharp", src)
+    spans = find_extractions(fn, lmap)
+    assert spans
+    for s in spans:
+        assert "armVal" not in s.params
+
