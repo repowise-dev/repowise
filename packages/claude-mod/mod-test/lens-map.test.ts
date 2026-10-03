@@ -127,3 +127,15 @@ test('without the local server the pane says what to run', async ($: any, on: an
     }),
   ).toBe(true)
 })
+
+test('the desktop app draws the same Django map as SVG, under the element limit', async ($: any, on: any) => {
+  const { ui } = await openMap($, on)
+  await ui.unmount()
+  const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const drawing = await desktop.find({ type: 'Svg' })
+  const source = String(drawing?.props?.source ?? '')
+  expect(source.startsWith('<svg ')).toBe(true)
+  expect(source.length).toBeLessThan(131072)
+  expect(await desktop.find({ type: 'Text', text: / of 2,970 files drawn at this size/ })).toBeDefined()
+  await desktop.unmount()
+})

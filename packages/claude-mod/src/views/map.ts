@@ -69,7 +69,7 @@ const hex = (s: string): number => parseInt(s.slice(1), 16);
 export const ACCENT = hex(BRAND.accent);
 /** The canvas ground and gutters: painted, never the terminal's own background. */
 export const GROUND = hex(DARK.bgRoot);
-const LABEL_FG = hex(DARK.textSecondary);
+export const LABEL_FG = hex(DARK.textSecondary);
 const NEUTRAL = hex(DARK_CANVAS.nodeNeutral);
 const BLACK = 0x000000;
 

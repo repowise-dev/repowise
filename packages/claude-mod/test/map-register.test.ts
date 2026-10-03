@@ -49,6 +49,7 @@ function uiFake(calls: Calls): ModApi["ui"] {
       Button: (props) => ({ el: "Button", props }),
       Input: (props) => ({ el: "Input", props }),
       Markdown: (props) => ({ el: "Markdown", props }),
+      Svg: (props) => ({ el: "Svg", props }),
     }),
     open: async (pane) => {
       calls.open.push(pane);
@@ -237,6 +238,17 @@ describe("the map pane", () => {
     expect(textOf(tree).some((t) => /^1,\d{3} of 2,970 files drawn at this size/.test(t))).toBe(true);
   });
 
+  it("the desktop app gets the same map as SVG under the element's limit, and the same legend", async () => {
+    const d = await opened();
+    const tree = (await hooks["ui.render:Pane"]!(d.$, pane("lens", "desktop"), async () => THEIRS)) as Tree;
+    const drawing = flatten(tree).find((n) => n.el === "Svg")!;
+    expect(String(drawing.props.source).startsWith("<svg ")).toBe(true);
+    expect(String(drawing.props.source).length).toBeLessThan(131_072);
+    expect(drawing.props.alt).toMatch(/^Code health map: 1,\d{3} files drawn/);
+    expect(flatten(tree).some((n) => n.el === "Raster")).toBe(false);
+    expect(textOf(tree).some((t) => / of 2,970 files drawn at this size/.test(t))).toBe(true);
+  });
+
   it("at rest nothing is asked of the server: no map, no importers, until /lens", async () => {
     const d = await started();
     await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
@@ -347,8 +359,8 @@ describe("the map pane", () => {
     await settle();
     const tree = (await hooks["ui.render:Pane"]!(lite.$, pane(), async () => THEIRS)) as Tree;
     expect(textOf(tree)).toEqual(["index this repo for Lens: repowise init --no-prose --yes"]);
-    const desktop = (await hooks["ui.render:Pane"]!(lite.$, pane("lens", "desktop"), async () => THEIRS)) as Tree;
-    expect(textOf(desktop)).toEqual([MAP_COPY.desktop]);
+    const vscode = (await hooks["ui.render:Pane"]!(lite.$, pane("lens", "vscode"), async () => THEIRS)) as Tree;
+    expect(textOf(vscode)).toEqual([MAP_COPY.desktop]);
   });
 
   it("before discovery lands, the pane says it is looking", async () => {

@@ -794,7 +794,8 @@ var MAP_COPY = {
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
   failed: "Lens map could not load the health map; it tries again on /lens",
-  desktop: "Lens map: terminal only for now",
+  desktop: "Lens map: the terminal and the desktop app only for now",
+  tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
   read: "Claude read",
   edited: "edited",
@@ -802,6 +803,10 @@ var MAP_COPY = {
   match: "search match",
   waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens"
 };
+function mapAlt(drawn) {
+  return `Code health map: ${countOf(drawn, "file", "files")} drawn, colored by health band, with the files Claude read and edited marked`;
+}
+__name(mapAlt, "mapAlt");
 function notPlacedLine(reason) {
   return `Lens map needs a wider terminal: ${reason}`;
 }
@@ -1631,6 +1636,10 @@ function markdown(text2) {
   return { type: "Markdown", props: { text: text2 } };
 }
 __name(markdown, "markdown");
+function svg(source, alt) {
+  return { type: "Svg", props: { source, alt } };
+}
+__name(svg, "svg");
 var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
 function materialize(node, table, presses = {}) {
   const build = table[node.type];
@@ -1707,26 +1716,26 @@ function inside(layout, x, y) {
   return x >= 0 && y >= 0 && x < layout.width && y < layout.height;
 }
 __name(inside, "inside");
-function set(p, x, y, color) {
+function set(p, x, y, color2) {
   if (!inside(p.layout, x, y)) return;
   const width = p.layout.width;
-  p.px[y * width + x] = color;
+  p.px[y * width + x] = color2;
   p.marked[y * width + x] = 1;
 }
 __name(set, "set");
-function fillFile(p, f, color) {
+function fillFile(p, f, color2) {
   const w = p.layout.width;
-  for (let y = f.py0; y < f.py1; y++) for (let x = f.px0; x < f.px1; x++) set(p, x, y, color(p.px[y * w + x] ?? GROUND));
+  for (let y = f.py0; y < f.py1; y++) for (let x = f.px0; x < f.px1; x++) set(p, x, y, color2(p.px[y * w + x] ?? GROUND));
 }
 __name(fillFile, "fillFile");
-function outlineFile(p, f, color) {
+function outlineFile(p, f, color2) {
   for (let x = f.px0; x < f.px1; x++) {
-    set(p, x, f.py0, color);
-    set(p, x, f.py1 - 1, color);
+    set(p, x, f.py0, color2);
+    set(p, x, f.py1 - 1, color2);
   }
   for (let y = f.py0; y < f.py1; y++) {
-    set(p, f.px0, y, color);
-    set(p, f.px1 - 1, y, color);
+    set(p, f.px0, y, color2);
+    set(p, f.px1 - 1, y, color2);
   }
 }
 __name(outlineFile, "outlineFile");
@@ -1915,6 +1924,45 @@ function noticeView(line2, columns) {
 }
 __name(noticeView, "noticeView");
 
+// src/views/mapSvg.ts
+var SVG_CHARS = 131072;
+var DESKTOP_MAX_COLUMNS = 160;
+var DESKTOP_MAX_ROWS = 45;
+var color = /* @__PURE__ */ __name((c) => `#${c.toString(16).padStart(6, "0")}`, "color");
+var escape = /* @__PURE__ */ __name((s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"), "escape");
+function desktopSize(size) {
+  return { columns: Math.min(DESKTOP_MAX_COLUMNS, size.columns), rows: Math.min(DESKTOP_MAX_ROWS, size.rows) };
+}
+__name(desktopSize, "desktopSize");
+function mapSvg(layout, resolved) {
+  const { width, height } = layout;
+  const { pixels } = framePixels(layout, resolved.overlay);
+  const runs = /* @__PURE__ */ new Map();
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; ) {
+      const c = pixels[y * width + x] ?? GROUND;
+      let end = x + 1;
+      while (end < width && pixels[y * width + end] === c) end++;
+      if (c !== GROUND) {
+        const list2 = runs.get(c) ?? [];
+        list2.push(`M${x} ${y}.5h${end - x}`);
+        runs.set(c, list2);
+      }
+      x = end;
+    }
+  }
+  const paths = [...runs].map(([c, d]) => `<path stroke="${color(c)}" d="${d.join("")}"/>`).join("");
+  const labels = layout.labels.map((l) => `<text x="${l.col}" y="${2 * l.row + 1.6}">${escape(l.text)}</text>`).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges"><rect width="${width}" height="${height}" fill="${color(GROUND)}"/><g stroke-width="1" fill="none">${paths}</g><g font-family="monospace" font-size="1.7" fill="${color(LABEL_FG)}">${labels}</g></svg>`;
+}
+__name(mapSvg, "mapSvg");
+function svgPaneView(layout, resolved, scope) {
+  const source = mapSvg(layout, resolved);
+  const picture = source.length <= SVG_CHARS ? svg(source, mapAlt(layout.drawn.length)) : text(fit(MAP_COPY.tooLarge, layout.columns), { dimColor: true, wrap: "truncate-end" });
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [picture, ...legendView(resolved, scope, layout.columns)]);
+}
+__name(svgPaneView, "svgPaneView");
+
 // src/map-controller.ts
 var MAP_CAP = 4e3;
 var MAP_TIMEOUT_MS = 15e3;
@@ -2036,24 +2084,28 @@ var LensMap = class {
   paneTree(io, pane) {
     const columns = pane.bodyColumns;
     this.drawn = null;
-    if (pane.surface !== void 0 && pane.surface !== "terminal") return noticeView(MAP_COPY.desktop, columns);
+    const desktop = pane.surface === "desktop";
+    if (pane.surface !== void 0 && pane.surface !== "terminal" && !desktop) return noticeView(MAP_COPY.desktop, columns);
     const repo = this.repo;
     if (repo === null) return noticeView(pane.notice, columns);
     this.requested = true;
     this.fetchWanted(io);
     const feed = this.feed;
     if (feed.status !== "ready") return noticeView(feed.status === "failed" ? MAP_COPY.failed : MAP_COPY.loading, columns);
-    const layout = this.layoutFor(feed.data, mapSize(pane), repo.caseInsensitive);
-    this.drawn = { layout, root: repo.root };
+    const size = desktop ? desktopSize(mapSize(pane)) : mapSize(pane);
+    const layout = this.layoutFor(feed.data, size, repo.caseInsensitive);
     const resolved = resolveOverlay(layout, this.trail, repo.root);
-    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
-    return mapPaneView(layout, cells, resolved, {
+    const scope = {
       drawn: layout.drawn.length,
       repositoryTotal: feed.data.repository_total,
       indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
       beyondCap: feed.data.omitted.files,
       cap: feed.data.cap
-    });
+    };
+    if (desktop) return svgPaneView(layout, resolved, scope);
+    this.drawn = { layout, root: repo.root };
+    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
+    return mapPaneView(layout, cells, resolved, scope);
   }
   layoutFor(data, size, caseInsensitive) {
     const cached = this.cachedLayout(data, size);

@@ -190,7 +190,8 @@ export const MAP_COPY = {
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
   failed: "Lens map could not load the health map; it tries again on /lens",
-  desktop: "Lens map: terminal only for now",
+  desktop: "Lens map: the terminal and the desktop app only for now",
+  tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
   read: "Claude read",
   edited: "edited",
@@ -198,6 +199,11 @@ export const MAP_COPY = {
   match: "search match",
   waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens",
 } as const;
+
+/** What the desktop map says to a reader that cannot see it. */
+export function mapAlt(drawn: number): string {
+  return `Code health map: ${countOf(drawn, "file", "files")} drawn, colored by health band, with the files Claude read and edited marked`;
+}
 
 /** /lens could not place the pane; the engine's reason names the width it needs. */
 export function notPlacedLine(reason: string): string {

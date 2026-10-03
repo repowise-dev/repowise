@@ -20,6 +20,7 @@ import { MAP_COPY, notPlacedLine } from "./views/copy";
 import type { Node } from "./views/elements";
 import { layoutMap, type MapLayout } from "./views/map";
 import { mapPaneView, mapSize, noticeView, type PaneSize } from "./views/mapPane";
+import { desktopSize, svgPaneView } from "./views/mapSvg";
 import { FLASH_MS, FRAME_MS, RIPPLE_MS, frameCells, resolveOverlay, rippleRadius, type Anim } from "./views/overlay";
 
 /** The server's own maximum: Django's 2,347 drawable files fit in one call. */
@@ -50,7 +51,7 @@ export interface MapRepo {
 type Feed = { status: "idle" | "loading" | "failed" } | { status: "ready"; data: HealthMapFeed };
 
 export interface PaneInput extends PaneSize {
-  /** The surface drawing the pane; the map is terminal only. */
+  /** The surface drawing the pane: the terminal (cells) or the desktop app (SVG). */
   surface: string | undefined;
   /** Why there is no repo to draw, when there is none. */
   notice: string;
@@ -196,24 +197,30 @@ export class LensMap {
   paneTree(io: MapIO, pane: PaneInput): Node {
     const columns = pane.bodyColumns;
     this.drawn = null;
-    if (pane.surface !== undefined && pane.surface !== "terminal") return noticeView(MAP_COPY.desktop, columns);
+    // The terminal draws cells and the desktop app SVG; other surfaces get a line.
+    const desktop = pane.surface === "desktop";
+    if (pane.surface !== undefined && pane.surface !== "terminal" && !desktop) return noticeView(MAP_COPY.desktop, columns);
     const repo = this.repo;
     if (repo === null) return noticeView(pane.notice, columns);
     this.requested = true;
     this.fetchWanted(io);
     const feed = this.feed;
     if (feed.status !== "ready") return noticeView(feed.status === "failed" ? MAP_COPY.failed : MAP_COPY.loading, columns);
-    const layout = this.layoutFor(feed.data, mapSize(pane), repo.caseInsensitive);
-    this.drawn = { layout, root: repo.root };
+    const size = desktop ? desktopSize(mapSize(pane)) : mapSize(pane);
+    const layout = this.layoutFor(feed.data, size, repo.caseInsensitive);
     const resolved = resolveOverlay(layout, this.trail, repo.root);
-    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
-    return mapPaneView(layout, cells, resolved, {
+    const scope = {
       drawn: layout.drawn.length,
       repositoryTotal: feed.data.repository_total,
       indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
       beyondCap: feed.data.omitted.files,
       cap: feed.data.cap,
-    });
+    };
+    // No blits on the desktop: its map is the resting frame, redrawn as the trail grows.
+    if (desktop) return svgPaneView(layout, resolved, scope);
+    this.drawn = { layout, root: repo.root };
+    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
+    return mapPaneView(layout, cells, resolved, scope);
   }
 
   private layoutFor(data: HealthMapFeed, size: { columns: number; rows: number }, caseInsensitive: boolean): MapLayout {
