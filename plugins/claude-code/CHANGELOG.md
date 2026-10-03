@@ -2,7 +2,7 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
-## Unreleased
+## 0.55.0
 
 ### Added
 - Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
@@ -28,6 +28,21 @@ All notable changes to the Repowise Claude Code plugin are documented here.
   `get_answer`, which may use the model your repo configures. See
   [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
   [footprint](../../docs/agent/LENS.md#footprint).
+
+### Changed
+- The `code-health` skill leads a "what should I refactor?" answer with the
+  `fix_first` queue and opens an item with `get_health(fix_id=...)` for its
+  steps and the tests to run.
+- The `ask` command follows the `candidate_files` that `get_answer` now
+  returns at every confidence. The `context` command and the
+  `codebase-exploration` skill note that a symbol row without a `symbol_id` is
+  addressed as `path::name`.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  augment matcher in `claude_config.py`.
+
+### Fixed
+- The `security` command passed `--output json` to history scans; the flag is
+  `--format json`.
 
 ## 0.54.0
 
