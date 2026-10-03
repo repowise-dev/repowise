@@ -1,8 +1,9 @@
 // Local benchmark for the map at 180x50: the layout (redone only on a resize
 // or a style change) and one lit frame with its encoding (a turn's searches,
-// reads, the edit and its importers, mid-ripple). Three scales: a 100-file
-// repo (synthetic), Django's 2,347 recorded files, and a 10,000-file repo
-// (synthetic; the server sends its 4,000 largest). Budget 16 ms each; vitest
+// reads, the edit and its importers, mid-ripple, and a selection). Three
+// scales: a 100-file repo (synthetic), Django's 2,347 recorded files, and a
+// 10,000-file repo (synthetic; the server sends its 4,000 largest), then the
+// last two zoomed into one folder. Budget 16 ms each; vitest
 // guards a frame at 5x that (test/overlay.test.ts).
 //
 //   npm run bench:map -w @repowise-dev/claude-mod
@@ -54,16 +55,18 @@ function time(label, work) {
 function turnOver(files, importers) {
   const paths = files.map((f) => f.file_path);
   const edit = paths[Math.floor(paths.length / 3)];
-  return { hits: paths.slice(10, 40), reads: [paths[5], edit], named: [paths[5]], importers: importers ?? paths.slice(50, 62), edit, current: edit };
+  return { hits: paths.slice(10, 40), reads: [paths[5], edit], named: [paths[5]], importers: importers ?? paths.slice(50, 62), edits: [edit], edit, current: edit };
 }
 
-function bench(label, files, importers) {
-  const layout = map.layoutMap(files, { columns: 180, rows: 50, caseInsensitive: true });
+function bench(label, files, importers, root = null) {
+  const canvas = { columns: 180, rows: 50, caseInsensitive: true, root };
+  const layout = map.layoutMap(files, canvas);
   const lit = turnOver(files, importers);
-  console.log(`${label}: ${files.length} files, ${layout.drawn.length} with a pixel, ${layout.dense ? "drawn as folders" : "a tile each"}`);
-  const layoutP95 = time("layout (on resize only)", () => map.layoutMap(files, { columns: 180, rows: 50, caseInsensitive: true }));
+  const where = root === null ? "" : `, zoomed into ${root}`;
+  console.log(`${label}${where}: ${layout.files.length} files, ${layout.drawn.length} with a pixel, ${layout.dense ? "drawn as folders" : "a tile each"}`);
+  const layoutP95 = time("layout (on resize or zoom)", () => map.layoutMap(files, canvas));
   const frameP95 = time("lit frame mid-ripple + encode", (i) =>
-    map.frameCells(layout, map.resolveLit(layout, lit), { kind: "ripple", t: (i % 30) / 30 }),
+    map.frameCells(layout, map.resolveLit(layout, lit, lit.edit), { kind: "ripple", t: (i % 30) / 30 }),
   );
   return Math.max(layoutP95, frameP95);
 }
@@ -74,6 +77,8 @@ const worst = Math.max(
   bench("100 files (synthetic)", map.syntheticTree(100).files),
   bench("Django (recorded)", django, djangoImporters),
   bench("10,000 files (synthetic, the server's 4,000 largest)", map.syntheticTree(10_000).files.slice(0, SERVER_CAP)),
+  bench("Django (recorded)", django, djangoImporters, "django/db/models"),
+  bench("10,000 files (synthetic)", map.syntheticTree(10_000).files.slice(0, SERVER_CAP), undefined, "src"),
 );
 const ok = worst <= BUDGET_MS;
 console.log(ok ? `within the ${BUDGET_MS} ms budget` : `OVER the ${BUDGET_MS} ms budget`);

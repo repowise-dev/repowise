@@ -16,14 +16,15 @@ import { Animator, type AnimIO, type Frame, type Step } from "./animator";
 import { withTimeout } from "./data/transport";
 import type { UiOpenResult } from "./mod-api";
 import { relativeTo } from "./model/events";
+import { KNOWS_NOTHING, litPaths, step, whyLit, type Knows } from "./model/inspect";
 import { NO_STORY, withImporters, type Reach, type Story } from "./model/story";
 import { initialTrail, reduceTrail, type Callers, type TrailAction, type TrailState } from "./model/trail";
-import { MAP_COPY, notPlacedLine, type ScopeFacts } from "./views/copy";
+import { MAP_COPY, detailLine, notPlacedLine, type ScopeFacts } from "./views/copy";
 import type { Node } from "./views/elements";
-import { layoutMap, type MapLayout, type MapStyle } from "./views/map";
-import { mapPaneView, mapSize, noticeView, type PaneSize } from "./views/mapPane";
+import { folderAt, layoutMap, type MapLayout, type MapStyle, type PlacedFile } from "./views/map";
+import { HEALTH_KEY, MAP_KEYS, mapPaneView, mapSize, noticeView, type MapKeyState, type MapPaneParts, type PaneSize } from "./views/mapPane";
 import { desktopSize, svgPaneView } from "./views/mapSvg";
-import { FLASH_MS, NO_LIT, RIPPLE_MS, frameCells, notOnMap, resolveLit, rippleRadius, type Anim, type Lit } from "./views/overlay";
+import { FLASH_MS, NO_LIT, RIPPLE_MS, frameCells, litPixels, notOnMap, resolveLit, rippleRadius, type Anim, type Lit } from "./views/overlay";
 import { MAP_KEY } from "./views/mapPane";
 import type { ThemeName } from "./views/theme";
 
@@ -60,26 +61,48 @@ export interface PaneInput extends PaneSize {
   theme: ThemeName;
 }
 
-/** The current turn as it stands: what it lit (before its importers are joined) and its story. */
-export type TurnSource = () => { lit: Lit; story: Story };
+/** The current turn as it stands: what it lit (before its importers are joined), its story, and what Lens knows of a file. */
+export type TurnSource = () => { lit: Lit; story: Story; knows?: (path: string) => Knows };
+
+/** One read of the turn for one render or frame: what it lit with the importers joined, and the turn itself. */
+type Lighting = { lit: Lit; reach: Reach | null; turn: ReturnType<TurnSource> };
 
 const NO_TURN: TurnSource = () => ({ lit: NO_LIT, story: NO_STORY });
 
+/** The scope of the whole feed, or (zoomed in) of the folder's files alone. */
 function scopeFacts(layout: MapLayout, data: HealthMapFeed, repo: MapRepo, offMap: number): ScopeFacts {
+  const whole = layout.root === null;
   return {
     drawn: layout.drawn.length,
-    shown: data.files.length,
-    repositoryTotal: data.repository_total,
+    shown: whole ? data.files.length : layout.files.length,
+    repositoryTotal: whole ? data.repository_total : layout.files.length,
     indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
-    beyondCap: data.omitted.files,
+    beyondCap: whole ? data.omitted.files : 0,
     dense: layout.dense,
     notOnMap: offMap,
+    zoom: layout.root,
   };
 }
 
-type LayoutKey = { data: HealthMapFeed; columns: number; rows: number; style: MapStyle };
-const keyParts = (k: LayoutKey): unknown[] => [k.data, k.columns, k.rows, k.style.theme, k.style.health];
-const sameKey = (a: LayoutKey, b: LayoutKey): boolean => keyParts(a).every((v, i) => v === keyParts(b)[i]);
+type LayoutKey = { data: HealthMapFeed; columns: number; rows: number; style: MapStyle; root: string | null };
+const cacheKey = (k: LayoutKey): string => `${k.root ?? ""}|${k.columns}|${k.rows}|${k.style.theme}|${k.style.health}`;
+/** Layouts kept per feed: a few zoom levels and sizes. */
+const LAYOUT_CACHE = 6;
+
+/** The folder above `root`; null above the top. */
+function parentOf(root: string | null): string | null {
+  const at = root === null ? -1 : root.lastIndexOf("/");
+  return at === -1 ? null : (root as string).slice(0, at);
+}
+
+/** The folder drawn where a file sits: the zoom target for it, or null when there is none deeper. */
+function folderOf(layout: MapLayout, path: string): string | null {
+  const at = layout.index.get(layout.caseInsensitive ? path.toLowerCase() : path);
+  if (at === undefined) return null;
+  const b = litPixels(layout, layout.files[at] as PlacedFile);
+  const folder = folderAt(layout, Math.floor((b.x0 + b.x1 - 1) / 2), Math.floor((b.y0 + b.y1 - 1) / 2));
+  return folder === layout.root ? null : folder;
+}
 
 export class LensMap {
   trail: TrailState = initialTrail;
@@ -100,7 +123,12 @@ export class LensMap {
   private readonly edited = new Set<string>();
   private readonly importers = new Map<string, Callers>();
   private drawn: { layout: MapLayout; root: string } | null = null;
-  private layoutCache: { key: LayoutKey; layout: MapLayout } | null = null;
+  /** What the last render drew, for the keys: its layout and the lit files on it, in cursor order. */
+  private view: { layout: MapLayout; paths: string[] } | null = null;
+  private layoutCache: { data: HealthMapFeed; layouts: Map<string, MapLayout> } | null = null;
+  /** The inspector's selection (a repo-relative path) and the folder zoomed into. */
+  private selected: string | null = null;
+  private zoom: string | null = null;
   private reducedMotion = false;
   /** Health colours on the tiles: off by default (`lens_map_health`), toggled from the pane. */
   private health: boolean;
@@ -127,15 +155,74 @@ export class LensMap {
     return this.repo?.caseInsensitive === false ? rel : rel.toLowerCase();
   }
 
-  /** The pane's toggle: health colours on the tiles, or the quiet ghost map. */
-  toggleHealth(io: MapIO): void {
-    this.health = !this.health;
+  /** A press of one of the map's keys (MAP_PRESSES): moves the cursor, zooms, or toggles health colours; one redraw. */
+  press(io: MapIO, key: string): void {
+    const act = this.actions()[key];
+    if (act === undefined) return;
+    act();
     io.redraw();
   }
 
+  private actions(): Record<string, () => void> {
+    return {
+      [MAP_KEYS.next.key]: () => this.move(1),
+      [MAP_KEYS.previous.key]: () => this.move(-1),
+      [MAP_KEYS.clear.key]: () => (this.selected = null),
+      [MAP_KEYS.zoom.key]: () => (this.zoom = this.zoomTarget() ?? this.zoom),
+      [MAP_KEYS.up.key]: () => (this.zoom = parentOf(this.zoom)),
+      [HEALTH_KEY]: () => (this.health = !this.health),
+    };
+  }
+
+  /** The cursor walks the lit files the last render drew, so a zoomed view walks only its own folder's. */
+  private move(by: 1 | -1): void {
+    this.selected = step(this.view?.paths ?? [], this.selected, by);
+  }
+
+  /** Where the zoom key goes: the folder holding the selection, when one is drawn deeper than the current view. */
+  private zoomTarget(): string | null {
+    const layout = this.view?.layout ?? null;
+    return layout === null || this.selected === null ? null : folderOf(layout, this.selected);
+  }
+
+  /** A new prompt starts with nothing selected and the whole repo in view. */
+  turnStarted(): void {
+    this.selected = null;
+    this.zoom = null;
+  }
+
+  /**
+   * The lit files on this layout in cursor order, and the selection among them.
+   * A selection the turn stops lighting (or this view no longer draws) is dropped
+   * for good, so it never comes back ringed when the file is lit again.
+   */
+  private see(layout: MapLayout, lit: Lit): string[] {
+    const paths = litPaths(lit).filter((p) => layout.index.has(layout.caseInsensitive ? p.toLowerCase() : p));
+    const s = this.selected;
+    if (s !== null && !paths.some((p) => p.toLowerCase() === s.toLowerCase())) this.selected = null;
+    this.view = { layout, paths };
+    return paths;
+  }
+
+  /** The detail line, the keys that would act, and the rest of the pane's parts. */
+  private parts(layout: MapLayout, lighting: Lighting, scope: ScopeFacts, paths: readonly string[]): MapPaneParts {
+    const turn = lighting.turn;
+    const selected = this.selected;
+    const knows = selected === null ? KNOWS_NOTHING : (turn.knows?.(selected) ?? KNOWS_NOTHING);
+    const detail = selected === null ? null : detailLine(selected, whyLit(selected, lighting.lit, turn.story, knows), knows);
+    const keys: MapKeyState = {
+      items: paths.length > 0,
+      selected: selected !== null,
+      zoomable: selected !== null && folderOf(layout, selected) !== null,
+      zoomed: layout.root !== null,
+    };
+    return { story: turn.story, reach: lighting.reach, scope, detail, keys };
+  }
+
   /** What the turn lit, with the latest edit's importers joined as they stand now. */
-  private lighting(): { lit: Lit; reach: Reach | null } {
-    return withImporters(this.turn().lit, (p) => this.importersOf(p));
+  private lighting(): Lighting {
+    const turn = this.turn();
+    return { ...withImporters(turn.lit, (p) => this.importersOf(p)), turn };
   }
 
   /** The band row the map wants shown, if any. */
@@ -154,8 +241,8 @@ export class LensMap {
   }
 
   /**
-   * A `/clear`: the conversation's trail and edits go, so nothing of it stays
-   * lit. The feed, the repo and the importers already asked for (index data,
+   * A `/clear`: the conversation's trail and edits go, with the selection and
+   * the zoom, so nothing of it stays lit. The feed, the repo and the importers already asked for (index data,
    * by path) stay, and so does an open pane.
    */
   clearConversation(io: MapIO): void {
@@ -163,6 +250,7 @@ export class LensMap {
     this.edited.clear();
     this.editPath = null;
     this.band = null;
+    this.turnStarted();
     io.redraw();
   }
 
@@ -212,10 +300,17 @@ export class LensMap {
     const desktop = pane.surface === "desktop";
     const style: MapStyle = { theme: pane.theme, health: this.health };
     const size = mapSize(pane, this.health);
-    const layout = this.layoutFor({ data, ...(desktop ? desktopSize(size) : size), style }, repo.caseInsensitive);
-    const { lit, reach } = this.lighting();
-    const overlay = resolveLit(layout, lit);
-    const parts = { story: this.turn().story, reach, scope: scopeFacts(layout, data, repo, notOnMap(layout, lit)) };
+    const at = desktop ? desktopSize(size) : size;
+    let layout = this.layoutFor({ data, ...at, style, root: this.zoom }, repo.caseInsensitive);
+    if (layout.root !== null && layout.files.length === 0) {
+      // The zoomed folder left the feed (it refreshed): back to the whole repo.
+      this.zoom = null;
+      layout = this.layoutFor({ data, ...at, style, root: null }, repo.caseInsensitive);
+    }
+    const lighting = this.lighting();
+    const paths = this.see(layout, lighting.lit);
+    const overlay = resolveLit(layout, lighting.lit, this.selected);
+    const parts = this.parts(layout, lighting, scopeFacts(layout, data, repo, notOnMap(layout, lighting.lit)), paths);
     if (desktop) return svgPaneView(layout, overlay, parts);
     this.drawn = { layout, root: repo.root };
     return mapPaneView(layout, frameCells(layout, overlay, mapStep(this.animator.progress(Date.now()))), parts);
@@ -232,12 +327,15 @@ export class LensMap {
     return status === "failed" ? MAP_COPY.failed : MAP_COPY.loading;
   }
 
-  /** The layout for this feed, size and style; laid out again only when one of them changed. */
+  /** The layout for this feed, size, style and zoom; kept per (zoom, size, style) for the feed, a few at a time. */
   private layoutFor(key: LayoutKey, caseInsensitive: boolean): MapLayout {
-    const c = this.layoutCache;
-    if (c !== null && sameKey(c.key, key)) return c.layout;
-    const layout = layoutMap(key.data.files, { columns: key.columns, rows: key.rows, caseInsensitive, style: key.style });
-    this.layoutCache = { key, layout };
+    if (this.layoutCache?.data !== key.data) this.layoutCache = { data: key.data, layouts: new Map() };
+    const layouts = this.layoutCache.layouts;
+    const cached = layouts.get(cacheKey(key));
+    if (cached !== undefined) return cached;
+    const layout = layoutMap(key.data.files, { columns: key.columns, rows: key.rows, caseInsensitive, style: key.style, root: key.root });
+    if (layouts.size >= LAYOUT_CACHE) layouts.delete(layouts.keys().next().value as string);
+    layouts.set(cacheKey(key), layout);
     return layout;
   }
 
@@ -344,7 +442,8 @@ export class LensMap {
     const on = this.drawn;
     const anim = mapStep(step);
     if (on === null || anim === undefined) return null;
-    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit), anim);
+    // The selection was checked against this layout when it was drawn.
+    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit, this.selected), anim);
     return { key: MAP_KEY, cells, columns: on.layout.columns, rows: on.layout.rows };
   }
 }

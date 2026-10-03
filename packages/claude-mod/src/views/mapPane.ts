@@ -12,6 +12,8 @@ import { fit } from "../format";
 import type { Reach, Story } from "../model/story";
 import {
   MAP_COPY,
+  MAP_KEYS_COPY,
+  crumbLine,
   REACHES_FAILED,
   SCOPE_REST,
   STORY_COPY,
@@ -29,15 +31,28 @@ import { MAP_PALETTES, type MapLayout, type MapStyle } from "./map";
 
 export const MAP_KEY = "lens-map";
 export const HEALTH_KEY = "lens-map-health";
+/** The map's key Buttons, by press key, with their hotkeys: letters only (digits are the tabs). */
+export const MAP_KEYS = {
+  next: { key: "lens-map-next", hotkey: "j" },
+  previous: { key: "lens-map-previous", hotkey: "k" },
+  zoom: { key: "lens-map-zoom", hotkey: "z" },
+  up: { key: "lens-map-up", hotkey: "u" },
+  clear: { key: "lens-map-clear", hotkey: "x" },
+} as const;
+export type MapKeyName = keyof typeof MAP_KEYS;
+/** Every Button key the map's pane presses, for register.ts's press table. */
+export const MAP_PRESSES: readonly string[] = [...Object.values(MAP_KEYS).map((k) => k.key), HEALTH_KEY];
 const MAX_COLUMNS = 512;
 const MAX_ROWS = 256;
 const MIN_ROWS = 4;
 const GAP = 2;
 const SEP = " · ";
-/** The story strip's four rows, the scope's two, and the toggle's one. */
+/** The breadcrumb, the story strip's four rows, the detail line, the scope's two, and the key row. */
+const CRUMB_ROWS = 1;
 const STORY_ROWS = 4;
+const DETAIL_ROWS = 1;
 const SCOPE_ROWS = 2;
-const TOGGLE_ROWS = 1;
+const KEY_ROWS = 1;
 const HEAD = 10;
 /** Importers named on the REACHES row before `+N`. */
 const REACH_NAMES = 3;
@@ -81,7 +96,7 @@ export const swatchWidth = (s: Swatch): number => s.label.length + 2;
 /** Rows under the map at this width, reserved whatever they hold: the map's height must not move under a blit. */
 export function legendRows(columns: number, health = false): number {
   const bands = health ? packRows(BAND_SWATCHES, swatchWidth, columns, GAP).length : 0;
-  return STORY_ROWS + bands + SCOPE_ROWS + TOGGLE_ROWS;
+  return CRUMB_ROWS + STORY_ROWS + DETAIL_ROWS + bands + SCOPE_ROWS + KEY_ROWS;
 }
 
 export interface PaneSize {
@@ -182,26 +197,80 @@ export function storyView(story: Story, reach: Reach | null, style: MapStyle, co
   return rows.filter(([, segs]) => segs.length > 0).map(([head, segs]) => storyRow(head, segs, columns));
 }
 
+/** Which of the map's keys mean something now. */
+export interface MapKeyState {
+  items: boolean;
+  selected: boolean;
+  zoomable: boolean;
+  zoomed: boolean;
+}
+
+export const NO_KEYS: MapKeyState = { items: false, selected: false, zoomable: false, zoomed: false };
+
 export interface MapPaneParts {
   story: Story;
   reach: Reach | null;
   scope: ScopeFacts;
+  /** The selected file's line: its path, why it is lit, what the index knows; null with nothing selected. */
+  detail?: string | null;
+  keys?: MapKeyState;
 }
 
-/** Everything under the drawing: the story (or a quiet line), the health legend when on, the scope, and the toggle. */
+/** The keys a narrow row gives up first: clear, up, previous, zoom, next; the health toggle last. */
+const KEY_PRIORITY: readonly (MapKeyName | "health")[] = ["health", "next", "zoom", "previous", "up", "clear"];
+/** A plain Button draws as `h: label`. */
+const keyCells = (label: string): number => label.length + 3;
+const MORE = "…";
+
+/**
+ * The quiet key row: only the keys that would do something, then the health
+ * toggle, on one row whatever the width: keys that do not fit are dropped,
+ * lowest priority first, behind a `…`, so the rows under the map never grow
+ * under a blit.
+ */
+export function keyRow(keys: MapKeyState, style: MapStyle, columns: number): Node {
+  const on: [MapKeyName, boolean][] = [
+    ["next", keys.items],
+    ["previous", keys.items],
+    ["zoom", keys.zoomable],
+    ["up", keys.zoomed],
+    ["clear", keys.selected],
+  ];
+  const all = [...on.filter(([, shown]) => shown).map(([name]) => ({ name, label: MAP_KEYS_COPY[name] as string })), { name: "health" as const, label: style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff }];
+  const ranked = [...all].sort((a, b) => KEY_PRIORITY.indexOf(a.name) - KEY_PRIORITY.indexOf(b.name));
+  // The top `n` keys by priority, with the gaps between them and the `…` when some are left out.
+  const cells = (n: number) => ranked.slice(0, n).reduce((w, k) => w + keyCells(k.label) + GAP, 0) + (n < all.length ? MORE.length : -GAP);
+  let kept = all.length;
+  while (kept > 0 && cells(kept) > columns) kept--;
+  const shown = new Set(ranked.slice(0, kept).map((k) => k.name));
+  const nodes = all.filter((k) => shown.has(k.name)).map((k) => (k.name === "health" ? button(HEALTH_KEY, "h", k.label, true) : button(MAP_KEYS[k.name].key, MAP_KEYS[k.name].hotkey, k.label, true)));
+  return box({ flexDirection: "row", columnGap: GAP }, kept < all.length ? [...nodes, text(MORE, { dimColor: true })] : nodes);
+}
+
+const dimLine = (line: string, columns: number): Node => text(fit(line, columns), { dimColor: true, wrap: "truncate-end" });
+
+/** Everything under the drawing: the story (or a quiet line), the selection's detail, the health legend when on, the scope, and the keys. */
 export function legendView(parts: MapPaneParts, style: MapStyle, columns: number): Node[] {
   const story = storyView(parts.story, parts.reach, style, columns);
-  const quiet = story.length === 0 ? [text(fit(MAP_COPY.quiet, columns), { dimColor: true, wrap: "truncate-end" })] : story;
+  const quiet = story.length === 0 ? [dimLine(MAP_COPY.quiet, columns)] : story;
+  const detail = parts.detail ?? null;
   return [
     ...quiet,
+    ...(detail === null ? [] : [text(fit(detail, columns), { wrap: "truncate-end" })]),
     ...(style.health ? swatchRows(BAND_SWATCHES, columns) : []),
-    ...scopeRows(parts.scope, columns).map((f) => text(fit(f, columns), { dimColor: true, wrap: "truncate-end" })),
-    button(HEALTH_KEY, "h", style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff, true),
+    ...scopeRows(parts.scope, columns).map((f) => dimLine(f, columns)),
+    keyRow(parts.keys ?? NO_KEYS, style, columns),
   ];
+}
+
+/** Zoomed in: where, above the drawing. */
+function crumbs(layout: MapLayout): Node[] {
+  return layout.root === null ? [] : [dimLine(crumbLine(layout.root), layout.columns)];
 }
 
 export function mapPaneView(layout: MapLayout, cells: string, parts: MapPaneParts): Node {
   return box({ key: "lens-map-pane", flexDirection: "column" }, [
+    ...crumbs(layout),
     raster({ key: MAP_KEY, columns: layout.columns, rows: layout.rows, cells }),
     ...legendView(parts, layout.style, layout.columns),
   ]);

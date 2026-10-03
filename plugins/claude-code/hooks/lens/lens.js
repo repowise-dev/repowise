@@ -1003,7 +1003,8 @@ var MAP_PALETTES = {
     read: hex(DARK.textSecondary),
     named: mix(hex(DARK.accentSecondary), hex(DARK.bgRoot), 0.45),
     importer: hex(DARK.accentSecondary),
-    edit: hex(BRAND.accent)
+    edit: hex(BRAND.accent),
+    ring: hex(BRAND.cream)
   },
   light: {
     tileA: mix(hex(LIGHT.bgInset), hex(LIGHT.textTertiary), 0.08),
@@ -1013,7 +1014,8 @@ var MAP_PALETTES = {
     read: hex(LIGHT.textSecondary),
     named: mix(hex(LIGHT.accentSecondary), hex(LIGHT.bgRoot), 0.55),
     importer: hex(LIGHT.accentSecondary),
-    edit: hex(BRAND.accentTextLight)
+    edit: hex(BRAND.accentTextLight),
+    ring: hex(LIGHT.textPrimary)
   }
 };
 var DEFAULT_STYLE = { theme: "dark", health: false };
@@ -1050,14 +1052,14 @@ __name(keyOf, "keyOf");
 function nextSplit(files, split, limit) {
   const weight = /* @__PURE__ */ new Map();
   for (const f of files) {
-    const key = keyOf(f.file_path, split);
-    weight.set(key, (weight.get(key) ?? 0) + f.nloc);
+    const key2 = keyOf(f.file_path, split);
+    weight.set(key2, (weight.get(key2) ?? 0) + f.nloc);
   }
-  const heavy = [...weight].filter(([key, w]) => key !== "" && w > limit).sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
-  for (const [key] of heavy) {
-    const deeper = /* @__PURE__ */ new Set([...split, key]);
-    const parts = new Set(files.filter((f) => keyOf(f.file_path, split) === key).map((f) => keyOf(f.file_path, deeper)));
-    if (parts.size > 1) return key;
+  const heavy = [...weight].filter(([key2, w]) => key2 !== "" && w > limit).sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
+  for (const [key2] of heavy) {
+    const deeper = /* @__PURE__ */ new Set([...split, key2]);
+    const parts = new Set(files.filter((f) => keyOf(f.file_path, split) === key2).map((f) => keyOf(f.file_path, deeper)));
+    if (parts.size > 1) return key2;
   }
   return null;
 }
@@ -1066,16 +1068,16 @@ function groupKeys(files) {
   const split = /* @__PURE__ */ new Set();
   const limit = files.reduce((sum, f) => sum + f.nloc, 0) * SPLIT_SHARE;
   for (let i = 0; i < MAX_SPLITS; i++) {
-    const key = nextSplit(files, split, limit);
-    if (key === null) break;
-    split.add(key);
+    const key2 = nextSplit(files, split, limit);
+    if (key2 === null) break;
+    split.add(key2);
   }
   return files.map((f) => keyOf(f.file_path, split));
 }
 __name(groupKeys, "groupKeys");
 var folderDatum = /* @__PURE__ */ __name((name) => ({ name, children: [], kids: /* @__PURE__ */ new Map() }), "folderDatum");
-function insertFile(group, key, file) {
-  const rel2 = key === "" ? file.file_path : file.file_path.slice(key.length + 1);
+function insertFile(group, key2, file) {
+  const rel2 = key2 === "" ? file.file_path : file.file_path.slice(key2.length + 1);
   let node = group;
   for (const dir of rel2.split("/").slice(0, -1)) {
     let next = node.kids?.get(dir);
@@ -1093,10 +1095,10 @@ function treemapOf(files, width2, height) {
   const keys = groupKeys(files);
   const groups = /* @__PURE__ */ new Map();
   files.forEach((file, i) => {
-    const key = keys[i] ?? "";
-    const group = groups.get(key) ?? folderDatum(key);
-    groups.set(key, group);
-    insertFile(group, key, file);
+    const key2 = keys[i] ?? "";
+    const group = groups.get(key2) ?? folderDatum(key2);
+    groups.set(key2, group);
+    insertFile(group, key2, file);
   });
   const data = { name: "", children: [...groups.values()] };
   const root = hierarchy(data).sum((d) => d.file?.nloc ?? 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || byName(a.data.name, b.data.name));
@@ -1143,6 +1145,11 @@ function paintBox(base, width2, box2, fill) {
   for (let y = box2.y0; y < box2.y1; y++) base.fill(fill, y * width2 + box2.x0, y * width2 + box2.x1);
 }
 __name(paintBox, "paintBox");
+function folderPath(group, node) {
+  const below2 = node.ancestors().reverse().slice(2).map((n) => n.data.name);
+  return [group.data.name, ...below2].filter((part) => part !== "").join("/");
+}
+__name(folderPath, "folderPath");
 function folderTiles(group, inner) {
   const out = [];
   for (const node of group.descendants()) {
@@ -1150,11 +1157,20 @@ function folderTiles(group, inner) {
     const tone = (node.parent?.children ?? []).indexOf(node) % 2;
     const [x0, x1] = pixelSpan(node.x0, node.x1);
     const [y0, y1] = pixelSpan(node.y0, node.y1);
-    out.push({ x0: Math.max(x0, inner.x0), y0: Math.max(y0, inner.y0), x1: Math.min(x1, inner.x1), y1: Math.min(y1, inner.y1), tone });
+    const box2 = { x0: Math.max(x0, inner.x0), y0: Math.max(y0, inner.y0), x1: Math.min(x1, inner.x1), y1: Math.min(y1, inner.y1) };
+    out.push({ path: folderPath(group, node), ...box2, tone });
   }
   return out;
 }
 __name(folderTiles, "folderTiles");
+var within = /* @__PURE__ */ __name((f, x, y) => x >= f.x0 && x < f.x1 && y >= f.y0 && y < f.y1, "within");
+function folderAt(layout, x, y) {
+  const tile = layout.folders.filter((f) => within(f, x, y)).at(-1);
+  if (tile !== void 0) return tile.path;
+  const group = layout.groups.find((g) => within({ x0: g.rect.x, y0: g.rect.y, x1: g.rect.x + g.rect.w, y1: g.rect.y + g.rect.h }, x, y));
+  return group === void 0 || group.key === "" ? null : group.key;
+}
+__name(folderAt, "folderAt");
 function paintFile(base, width2, f, fill) {
   const edge = mix(fill, BLACK, 0.3);
   const edgeX = f.px1 - f.px0 >= EDGE_MIN ? f.px1 - 1 : -1;
@@ -1165,9 +1181,9 @@ function paintFile(base, width2, f, fill) {
   }
 }
 __name(paintFile, "paintFile");
-function labelText(key, width2) {
-  const parts = key.split("/");
-  const rungs = [key, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
+function labelText(key2, width2) {
+  const parts = key2.split("/");
+  const rungs = [key2, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
   const text2 = rungs.find((r) => r.length > 0 && r.length <= width2);
   return text2 !== void 0 && /^[\x20-\x7e]+$/.test(text2) ? text2 : null;
 }
@@ -1175,21 +1191,42 @@ __name(labelText, "labelText");
 var LABEL_MIN_COLS = 12;
 var LABEL_MIN_ROWS = 3;
 var MAX_LABELS = 8;
-function labelFor(g, columns, rows) {
+function labelFor(g, columns, rows, root) {
   const col = Math.ceil(g.rect.x);
   const row2 = Math.ceil(g.rect.y / 2);
   const width2 = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
   const height = Math.floor((g.rect.y + g.rect.h) / 2) - row2;
   const small = height < LABEL_MIN_ROWS || width2 < LABEL_MIN_COLS;
-  if (g.key === "" || small || row2 >= rows) return null;
-  const text2 = labelText(g.key, width2);
+  const key2 = root === null ? g.key : g.key.slice(root.length + 1);
+  if (key2 === "" || small || row2 >= rows) return null;
+  const text2 = labelText(key2, width2);
   return text2 === null ? null : { row: row2, col, text: text2 };
 }
 __name(labelFor, "labelFor");
-function labelsFor(groups, columns, rows) {
-  return [...groups].sort((a, b) => b.nloc - a.nloc).map((g) => labelFor(g, columns, rows)).filter((l) => l !== null).slice(0, MAX_LABELS);
+function labelsFor(groups, columns, rows, root = null) {
+  return [...groups].sort((a, b) => b.nloc - a.nloc).map((g) => labelFor(g, columns, rows, root)).filter((l) => l !== null).slice(0, MAX_LABELS);
 }
 __name(labelsFor, "labelsFor");
+function fileLabel(f, rows) {
+  const text2 = cellSafe(f.path.slice(f.path.lastIndexOf("/") + 1));
+  const row2 = Math.ceil(f.py0 / 2);
+  const roomy = f.px1 - f.px0 >= text2.length + 2 && Math.floor(f.py1 / 2) > row2;
+  return roomy && row2 < rows ? { row: row2, col: f.px0 + 1, text: text2 } : null;
+}
+__name(fileLabel, "fileLabel");
+function fileLabels(files, rows, taken) {
+  const used = new Set(taken.flatMap((l) => [...l.text].map((_, k) => `${l.row}:${l.col + k}`)));
+  const out = [];
+  for (const label of files.map((f) => fileLabel(f, rows))) {
+    if (label === null) continue;
+    const cells = [...label.text].map((_, k) => `${label.row}:${label.col + k}`);
+    if (cells.some((c) => used.has(c))) continue;
+    cells.forEach((c) => used.add(c));
+    out.push(label);
+  }
+  return out;
+}
+__name(fileLabels, "fileLabels");
 function paintBase(map2, style, dense) {
   const { width: width2, height } = map2;
   const base = new Uint32Array(width2 * height).fill(GROUND);
@@ -1202,16 +1239,18 @@ function paintBase(map2, style, dense) {
   return base;
 }
 __name(paintBase, "paintBase");
+function filesUnder(feed, root) {
+  const lines = feed.filter((f) => f.nloc > 0);
+  return root === null ? lines : lines.filter((f) => f.file_path.startsWith(`${root}/`));
+}
+__name(filesUnder, "filesUnder");
 function layoutMap(feed, canvas) {
   const { columns, rows, caseInsensitive } = canvas;
   const style = canvas.style ?? DEFAULT_STYLE;
   const width2 = columns;
   const height = rows * 2;
-  const root = treemapOf(
-    feed.filter((f) => f.nloc > 0),
-    width2,
-    height
-  );
+  const zoom = canvas.root ?? null;
+  const root = treemapOf(filesUnder(feed, zoom), width2, height);
   const groups = [];
   const files = [];
   const folders = [];
@@ -1231,7 +1270,9 @@ function layoutMap(feed, canvas) {
   });
   const dense = drawn.length < files.length * DENSE_SHARE;
   const base = paintBase({ width: width2, height, groups, folders, files, drawn }, style, dense);
-  return { columns, rows, width: width2, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base, style, dense, lower, folders };
+  const folderNames = labelsFor(groups, columns, rows, zoom);
+  const labels = zoom === null || dense ? folderNames : [...folderNames, ...fileLabels(files, rows, folderNames)];
+  return { columns, rows, width: width2, height, groups, files, drawn, index, caseInsensitive, labels, base, style, dense, lower, folders, root: zoom };
 }
 __name(layoutMap, "layoutMap");
 function halfCell(top, bottom) {
@@ -1250,7 +1291,8 @@ function labelCovered(label, marked, width2) {
 __name(labelCovered, "labelCovered");
 var cellGround = /* @__PURE__ */ __name((pixel) => pixel === void 0 || pixel === GROUND ? TERMINAL_DEFAULT : pixel, "cellGround");
 function writeText(words, layout, label, colors) {
-  for (let k = 0; k < label.text.length && label.col + k < layout.columns; k++) {
+  if (label.row < 0 || label.row >= layout.rows) return;
+  for (let k = Math.max(0, -label.col); k < label.text.length && label.col + k < layout.columns; k++) {
     const col = label.col + k;
     words.set([label.text.charCodeAt(k), ...colors(col)], (label.row * layout.columns + col) * 3);
   }
@@ -1337,7 +1379,7 @@ function namesFor(layout, o) {
   return order.map((i) => placeName(layout, taken, layout.files[i], hot.has(i) ? pal.edit : TERMINAL_DEFAULT)).filter((n) => n !== null);
 }
 __name(namesFor, "namesFor");
-function resolveLit(layout, lit) {
+function resolveLit(layout, lit, selected = null) {
   const o = {
     hits: indices(layout, lit.hits),
     reads: indices(layout, lit.reads),
@@ -1347,7 +1389,7 @@ function resolveLit(layout, lit) {
     edit: one(layout, lit.edit),
     current: one(layout, lit.current)
   };
-  return { ...o, names: namesFor(layout, o) };
+  return { ...o, names: namesFor(layout, o), selected: one(layout, selected) };
 }
 __name(resolveLit, "resolveLit");
 function center(layout, f) {
@@ -1405,6 +1447,24 @@ function rippleReach(layout, overlay, anim) {
   return anim?.kind === "ripple" && anim.t < 1 ? rippleRadius(layout, overlay) * anim.t : Infinity;
 }
 __name(rippleReach, "rippleReach");
+var inRange = /* @__PURE__ */ __name((v, n) => v >= 0 && v < n, "inRange");
+function set(p, x, y, color2) {
+  if (!inRange(x, p.layout.width) || !inRange(y, p.layout.height)) return;
+  p.px[y * p.layout.width + x] = color2;
+  p.marked[y * p.layout.width + x] = 1;
+}
+__name(set, "set");
+function around(box2) {
+  const out = [];
+  for (let x = box2.x0 - 1; x <= box2.x1; x++) out.push([x, box2.y0 - 1], [x, box2.y1]);
+  for (let y = box2.y0; y < box2.y1; y++) out.push([box2.x0 - 1, y], [box2.x1, y]);
+  return out;
+}
+__name(around, "around");
+function paintSelection(p, f, color2) {
+  for (const [x, y] of around(litPixels(p.layout, f))) set(p, x, y, color2);
+}
+__name(paintSelection, "paintSelection");
 function framePixels(layout, overlay, anim) {
   const p = { layout, px: layout.base.slice(), marked: new Uint8Array(layout.width * layout.height) };
   const pal = MAP_PALETTES[layout.style.theme];
@@ -1416,6 +1476,8 @@ function framePixels(layout, overlay, anim) {
   fillAll(p, [overlay.edit, overlay.current].filter((i) => i !== null), pal.edit);
   const origin = overlay.edit === null ? void 0 : layout.files[overlay.edit];
   if (origin !== void 0 && reach < Infinity) paintRing(p, origin, reach, pal.importer);
+  const selected = overlay.selected === null ? void 0 : layout.files[overlay.selected];
+  if (selected !== void 0) paintSelection(p, selected, pal.ring);
   return { pixels: p.px, marked: p.marked };
 }
 __name(framePixels, "framePixels");
@@ -1479,12 +1541,12 @@ var Animator = class {
     this.io?.debug(`animation failed: ${String(err)}`);
   }
   frame(screen) {
-    const step = this.progress(Date.now());
-    const frame = step === void 0 ? null : screen(step);
+    const step2 = this.progress(Date.now());
+    const frame = step2 === void 0 ? null : screen(step2);
     const io = this.io;
-    if (step === void 0 || frame === null || io === null) return this.stop();
+    if (step2 === void 0 || frame === null || io === null) return this.stop();
     if (this.blitting) return;
-    if (step.t >= 1) this.stop();
+    if (step2.t >= 1) this.stop();
     this.blitting = true;
     io.blit(frame.key, frame.cells, frame.columns, frame.rows).then((r) => r.deny === void 0 || this.refused(io, r.deny)).catch((err) => this.refused(io, String(err))).finally(() => {
       this.blitting = false;
@@ -1520,7 +1582,7 @@ function sumOver(targets, read) {
 }
 __name(sumOver, "sumOver");
 var targetsOf = /* @__PURE__ */ __name((r) => Object.values(rec(r["targets"])).filter(isRec), "targetsOf");
-var flagged = /* @__PURE__ */ __name((targets, key) => targets.some((t) => key in t) ? targets.filter((t) => t[key] === true).length : null, "flagged");
+var flagged = /* @__PURE__ */ __name((targets, key2) => targets.some((t) => key2 in t) ? targets.filter((t) => t[key2] === true).length : null, "flagged");
 function contextFacts(r) {
   const targets = targetsOf(r);
   const docs = targets.map((t) => rec(t["docs"]));
@@ -1581,7 +1643,7 @@ function symbolFacts(r) {
 }
 __name(symbolFacts, "symbolFacts");
 function listFacts(r) {
-  return Object.entries(r).filter(([key, v]) => Array.isArray(v) && v.length > 0 && !key.startsWith("_")).slice(0, 3).map(([key, v]) => ({ what: key, n: v.length }));
+  return Object.entries(r).filter(([key2, v]) => Array.isArray(v) && v.length > 0 && !key2.startsWith("_")).slice(0, 3).map(([key2, v]) => ({ what: key2, n: v.length }));
 }
 __name(listFacts, "listFacts");
 var READERS = {
@@ -1629,9 +1691,9 @@ var PATH_READERS = {
 function walkPaths(v, depth, add) {
   if (depth > MAX_DEPTH) return;
   if (Array.isArray(v)) return v.forEach((item) => walkPaths(item, depth + 1, add));
-  for (const [key, value] of Object.entries(rec(v))) {
-    if (key === "_meta") continue;
-    PATH_READERS[key]?.(value, add);
+  for (const [key2, value] of Object.entries(rec(v))) {
+    if (key2 === "_meta") continue;
+    PATH_READERS[key2]?.(value, add);
     walkPaths(value, depth + 1, add);
   }
 }
@@ -1747,8 +1809,8 @@ function shortPath(path, root) {
   return inside2 ? slashed.slice(base.length + 1) : slashed;
 }
 __name(shortPath, "shortPath");
-function argValue(key, v, root) {
-  if (typeof v === "string") return (PATH_ARGS.has(key) ? shortPath(v, root) : v.replace(/\s+/g, " ")).slice(0, ARG_CHARS);
+function argValue(key2, v, root) {
+  if (typeof v === "string") return (PATH_ARGS.has(key2) ? shortPath(v, root) : v.replace(/\s+/g, " ")).slice(0, ARG_CHARS);
   if (Array.isArray(v)) return v.map((x) => typeof x === "string" ? x : JSON.stringify(x)).join(", ").slice(0, ARG_CHARS);
   if (v === void 0 || v === null) return null;
   return JSON.stringify(v).slice(0, ARG_CHARS);
@@ -1756,9 +1818,9 @@ function argValue(key, v, root) {
 __name(argValue, "argValue");
 function compactArgs(e, root) {
   const out = [];
-  for (const key of ARG_KEYS) {
-    const value = argValue(key, e[key], root);
-    if (value !== null && out.length < MAX_ARGS) out.push([key, value]);
+  for (const key2 of ARG_KEYS) {
+    const value = argValue(key2, e[key2], root);
+    if (value !== null && out.length < MAX_ARGS) out.push([key2, value]);
   }
   return out;
 }
@@ -1857,10 +1919,10 @@ function withNamed(named2, paths, naming) {
   let out = named2;
   let size = Object.keys(named2).length;
   for (const p of paths) {
-    const key = pathKey(p);
-    if (out[key] !== void 0 || size >= MAX_NAMED) continue;
+    const key2 = pathKey(p);
+    if (out[key2] !== void 0 || size >= MAX_NAMED) continue;
     if (out === named2) out = { ...named2 };
-    out[key] = naming;
+    out[key2] = naming;
     size++;
   }
   return out;
@@ -2029,10 +2091,10 @@ function testsOf(file) {
 }
 __name(testsOf, "testsOf");
 function blastFacts(path, r) {
-  const key = pathKey(path);
-  const importers = [...new Set((r.transitive_affected ?? []).map((t) => t.path))].filter((p) => pathKey(p) !== key);
-  const cochange = (r.cochange_warnings ?? []).filter((w) => pathKey(w.changed) === key).map((w) => ({ path: w.missing_partner, score: w.score })).sort((a, b) => b.score - a.score);
-  const tests = testsOf((r.test_impact?.files ?? []).find((f) => pathKey(f.source_file) === key));
+  const key2 = pathKey(path);
+  const importers = [...new Set((r.transitive_affected ?? []).map((t) => t.path))].filter((p) => pathKey(p) !== key2);
+  const cochange = (r.cochange_warnings ?? []).filter((w) => pathKey(w.changed) === key2).map((w) => ({ path: w.missing_partner, score: w.score })).sort((a, b) => b.score - a.score);
+  const tests = testsOf((r.test_impact?.files ?? []).find((f) => pathKey(f.source_file) === key2));
   return { importers, cochange, tests };
 }
 __name(blastFacts, "blastFacts");
@@ -2087,8 +2149,8 @@ function beforeAccept(state2, turn) {
   return editedFiles(turn).map((path) => [path, state2.blast[pathKey(path)]]).filter((pair) => pair[1] !== void 0).map(([path, facts]) => gapsOf(state2, path, facts, opened)).filter(hasGap);
 }
 __name(beforeAccept, "beforeAccept");
-function searchedBefore(state2, key, at) {
-  return allActivities(state2).some((a) => a.kind === "search" && a.startedAt < at && a.hitPaths.some((p) => pathKey(p) === key));
+function searchedBefore(state2, key2, at) {
+  return allActivities(state2).some((a) => a.kind === "search" && a.startedAt < at && a.hitPaths.some((p) => pathKey(p) === key2));
 }
 __name(searchedBefore, "searchedBefore");
 function viaOf(state2, first) {
@@ -2100,11 +2162,11 @@ function workingSet(state2, turn) {
   const first = /* @__PURE__ */ new Map();
   const edited = /* @__PURE__ */ new Set();
   for (const a of turn.activities.filter((x) => isFile(x) && !x.isError && x.paths[0] !== void 0)) {
-    const key = pathKey(a.paths[0]);
-    if (!first.has(key)) first.set(key, a);
-    if (a.kind === "edit") edited.add(key);
+    const key2 = pathKey(a.paths[0]);
+    if (!first.has(key2)) first.set(key2, a);
+    if (a.kind === "edit") edited.add(key2);
   }
-  const rows = [...first].map(([key, a]) => ({ path: a.paths[0], kind: edited.has(key) ? "edited" : "read", via: viaOf(state2, a) }));
+  const rows = [...first].map(([key2, a]) => ({ path: a.paths[0], kind: edited.has(key2) ? "edited" : "read", via: viaOf(state2, a) }));
   return [...rows.filter((r) => r.kind === "edited"), ...rows.filter((r) => r.kind === "read")];
 }
 __name(workingSet, "workingSet");
@@ -2134,8 +2196,8 @@ __name(firstEditMs, "firstEditMs");
 function firstEdits(state2) {
   const out = /* @__PURE__ */ new Map();
   for (const a of allActivities(state2)) {
-    const key = a.kind === "edit" && a.paths[0] !== void 0 ? pathKey(a.paths[0]) : null;
-    if (key !== null && !out.has(key)) out.set(key, a.startedAt);
+    const key2 = a.kind === "edit" && a.paths[0] !== void 0 ? pathKey(a.paths[0]) : null;
+    if (key2 !== null && !out.has(key2)) out.set(key2, a.startedAt);
   }
   return out;
 }
@@ -2338,7 +2400,7 @@ __name(drawnPart, "drawnPart");
 function scopeParts(s) {
   const parts = drawnPart(s);
   if (s.indexed !== null) parts.push(indexedPart(s.indexed));
-  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} not on the map`);
+  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} ${s.zoom === null ? "not on the map" : "outside this folder"}`);
   return parts;
 }
 __name(scopeParts, "scopeParts");
@@ -2369,6 +2431,36 @@ function reachesPending(edit) {
 }
 __name(reachesPending, "reachesPending");
 var REACHES_FAILED = "import graph unavailable";
+var MAP_KEYS_COPY = {
+  next: "next",
+  previous: "previous",
+  zoom: "zoom in",
+  up: "up",
+  clear: "clear"
+};
+function crumbLine(root) {
+  return root.split("/").join(" / ");
+}
+__name(crumbLine, "crumbLine");
+function whyParts(why) {
+  const parts = [];
+  if (why.edited !== null) parts.push(`Claude edited it${why.edited.lines === null ? "" : `,${linesPart(why.edited.lines)}`}`);
+  if (why.opened) parts.push("Claude opened it");
+  if (why.imports !== null) parts.push(`imports ${why.imports}`);
+  if (why.namedBy !== null) parts.push(`named by ${why.namedBy}`);
+  return parts;
+}
+__name(whyParts, "whyParts");
+function detailLine(path, why, knows) {
+  const facts = knows.context === null ? [] : knowsParts(knows.context);
+  const tests = knows.tests === null ? [] : [testsReach(knows.tests)];
+  return [path, ...whyParts(why), ...facts, ...tests].join(" · ");
+}
+__name(detailLine, "detailLine");
+function testsReach(t) {
+  return `${countOf(t.total, "test reaches it", "tests reach it")} (${t.basis})`;
+}
+__name(testsReach, "testsReach");
 var PANE_COPY = {
   command: "Open Lens: Claude's steps with Repowise, the map of its turn, ask the index, and the session recap",
   argumentHint: "[flow | map | ask <question> | recap]",
@@ -2380,7 +2472,8 @@ var PANE_COPY = {
   askBusy: "still answering the last question; ask again when it lands",
   noEvidence: "no evidence cited",
   fromIndex: "Built from the index",
-  fromModel: "Written by this repo's configured model, from the index"
+  fromModel: "Written by this repo's configured model, from the index",
+  bodyFailed: "Lens could not draw this tab; details in the debug log"
 };
 var ASK_CHARS = 4e3;
 function askingLine(tool) {
@@ -2640,8 +2733,8 @@ function box(props, children) {
   return { type: "Box", props, children };
 }
 __name(box, "box");
-function button(key, hotkey, label, dimColor = false) {
-  return { type: "Button", props: { key, label, hotkey, plain: true, ...dimColor ? { dimColor } : {} } };
+function button(key2, hotkey, label, dimColor = false) {
+  return { type: "Button", props: { key: key2, label, hotkey, plain: true, ...dimColor ? { dimColor } : {} } };
 }
 __name(button, "button");
 function raster(props) {
@@ -2661,9 +2754,9 @@ function svg(source, alt) {
 }
 __name(svg, "svg");
 var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
-function pressFor(key, presses) {
-  const onPress = presses[key];
-  if (!onPress) throw new Error(`button ${key} has no action`);
+function pressFor(key2, presses) {
+  const onPress = presses[key2];
+  if (!onPress) throw new Error(`button ${key2} has no action`);
   return onPress;
 }
 __name(pressFor, "pressFor");
@@ -2686,14 +2779,24 @@ __name(materialize, "materialize");
 // src/views/mapPane.ts
 var MAP_KEY = "lens-map";
 var HEALTH_KEY = "lens-map-health";
+var MAP_KEYS = {
+  next: { key: "lens-map-next", hotkey: "j" },
+  previous: { key: "lens-map-previous", hotkey: "k" },
+  zoom: { key: "lens-map-zoom", hotkey: "z" },
+  up: { key: "lens-map-up", hotkey: "u" },
+  clear: { key: "lens-map-clear", hotkey: "x" }
+};
+var MAP_PRESSES = [...Object.values(MAP_KEYS).map((k) => k.key), HEALTH_KEY];
 var MAX_COLUMNS = 512;
 var MAX_ROWS = 256;
 var MIN_ROWS = 4;
 var GAP = 2;
 var SEP = " · ";
+var CRUMB_ROWS = 1;
 var STORY_ROWS = 4;
+var DETAIL_ROWS = 1;
 var SCOPE_ROWS = 2;
-var TOGGLE_ROWS = 1;
+var KEY_ROWS = 1;
 var HEAD = 10;
 var REACH_NAMES = 3;
 var INLINE_ROWS_PER_COLUMN = 1 / 6;
@@ -2723,7 +2826,7 @@ __name(packRows, "packRows");
 var swatchWidth = /* @__PURE__ */ __name((s) => s.label.length + 2, "swatchWidth");
 function legendRows(columns, health2 = false) {
   const bands = health2 ? packRows(BAND_SWATCHES, swatchWidth, columns, GAP).length : 0;
-  return STORY_ROWS + bands + SCOPE_ROWS + TOGGLE_ROWS;
+  return CRUMB_ROWS + STORY_ROWS + DETAIL_ROWS + bands + SCOPE_ROWS + KEY_ROWS;
 }
 __name(legendRows, "legendRows");
 function mapSize(pane, health2 = false) {
@@ -2797,19 +2900,49 @@ function storyView(story, reach, style, columns) {
   return rows.filter(([, segs]) => segs.length > 0).map(([head, segs]) => storyRow(head, segs, columns));
 }
 __name(storyView, "storyView");
+var NO_KEYS = { items: false, selected: false, zoomable: false, zoomed: false };
+var KEY_PRIORITY = ["health", "next", "zoom", "previous", "up", "clear"];
+var keyCells = /* @__PURE__ */ __name((label) => label.length + 3, "keyCells");
+var MORE = "…";
+function keyRow(keys, style, columns) {
+  const on = [
+    ["next", keys.items],
+    ["previous", keys.items],
+    ["zoom", keys.zoomable],
+    ["up", keys.zoomed],
+    ["clear", keys.selected]
+  ];
+  const all = [...on.filter(([, shown2]) => shown2).map(([name]) => ({ name, label: MAP_KEYS_COPY[name] })), { name: "health", label: style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff }];
+  const ranked = [...all].sort((a, b) => KEY_PRIORITY.indexOf(a.name) - KEY_PRIORITY.indexOf(b.name));
+  const cells = /* @__PURE__ */ __name((n) => ranked.slice(0, n).reduce((w, k) => w + keyCells(k.label) + GAP, 0) + (n < all.length ? MORE.length : -GAP), "cells");
+  let kept = all.length;
+  while (kept > 0 && cells(kept) > columns) kept--;
+  const shown = new Set(ranked.slice(0, kept).map((k) => k.name));
+  const nodes = all.filter((k) => shown.has(k.name)).map((k) => k.name === "health" ? button(HEALTH_KEY, "h", k.label, true) : button(MAP_KEYS[k.name].key, MAP_KEYS[k.name].hotkey, k.label, true));
+  return box({ flexDirection: "row", columnGap: GAP }, kept < all.length ? [...nodes, text(MORE, { dimColor: true })] : nodes);
+}
+__name(keyRow, "keyRow");
+var dimLine = /* @__PURE__ */ __name((line2, columns) => text(fit(line2, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
 function legendView(parts, style, columns) {
   const story = storyView(parts.story, parts.reach, style, columns);
-  const quiet = story.length === 0 ? [text(fit(MAP_COPY.quiet, columns), { dimColor: true, wrap: "truncate-end" })] : story;
+  const quiet = story.length === 0 ? [dimLine(MAP_COPY.quiet, columns)] : story;
+  const detail = parts.detail ?? null;
   return [
     ...quiet,
+    ...detail === null ? [] : [text(fit(detail, columns), { wrap: "truncate-end" })],
     ...style.health ? swatchRows(BAND_SWATCHES, columns) : [],
-    ...scopeRows(parts.scope, columns).map((f) => text(fit(f, columns), { dimColor: true, wrap: "truncate-end" })),
-    button(HEALTH_KEY, "h", style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff, true)
+    ...scopeRows(parts.scope, columns).map((f) => dimLine(f, columns)),
+    keyRow(parts.keys ?? NO_KEYS, style, columns)
   ];
 }
 __name(legendView, "legendView");
+function crumbs(layout) {
+  return layout.root === null ? [] : [dimLine(crumbLine(layout.root), layout.columns)];
+}
+__name(crumbs, "crumbs");
 function mapPaneView(layout, cells, parts) {
   return box({ key: "lens-map-pane", flexDirection: "column" }, [
+    ...crumbs(layout),
     raster({ key: MAP_KEY, columns: layout.columns, rows: layout.rows, cells }),
     ...legendView(parts, layout.style, layout.columns)
   ]);
@@ -2914,7 +3047,7 @@ function row(segs, columns, right = []) {
   return box({ flexDirection: "row" }, all.filter((s) => s.t !== "").map(segNode));
 }
 __name(row, "row");
-var dimLine = /* @__PURE__ */ __name((t, columns) => text(fit(t, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
+var dimLine2 = /* @__PURE__ */ __name((t, columns) => text(fit(t, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
 var pad = /* @__PURE__ */ __name((n) => ({ t: " ".repeat(n) }), "pad");
 function wrapWords(words, columns) {
   return packRows(words.split(" "), (w) => w.length, Math.max(1, columns), 1).map((r) => r.join(" "));
@@ -2950,7 +3083,7 @@ function header(state2, v, theme2) {
   const face = box({ flexDirection: "row" }, owl(st, owlEyes(st, v.now, v.still), theme2.amber));
   const room = v.columns - OWL_WIDTH - 1;
   const said = notice(v.mode);
-  const tail = said === null ? [] : [dimLine(said, v.columns)];
+  const tail = said === null ? [] : [dimLine2(said, v.columns)];
   if (turn === void 0) {
     const [first = "", ...rest] = wrapWords(FLOW_COPY.empty, Math.min(EMPTY_W, room));
     return [box({ flexDirection: "row", columnGap: 1 }, [face, text(first)]), ...rest.map((l) => text(`${" ".repeat(OWL_WIDTH + 1)}${l}`)), ...tail];
@@ -2959,7 +3092,7 @@ function header(state2, v, theme2) {
   return [
     box({ flexDirection: "row", columnGap: 1 }, [face, row(statusSegs(turn, v.now, theme2), room)]),
     text(fit(answerLine(turnTotals(turn)), v.columns), { wrap: "truncate-end" }),
-    ...prompt === "" ? [] : [dimLine(`"${prompt}"`, v.columns)],
+    ...prompt === "" ? [] : [dimLine2(`"${prompt}"`, v.columns)],
     ...tail
   ];
 }
@@ -2983,7 +3116,7 @@ __name(healthLines, "healthLines");
 function beforeAcceptLines(state2, turn, v) {
   const files = beforeAccept(state2, turn).flatMap((g) => [
     row([pad(2), { t: g.path, flex: true }, { t: `  ${FLOW_COPY.asOfIndex}`, dim: true }], v.columns),
-    ...gapLines(g).map((l) => dimLine(`    ${l}`, v.columns))
+    ...gapLines(g).map((l) => dimLine2(`    ${l}`, v.columns))
   ]);
   const health2 = healthLines(v.review).map((l) => text(fit(`  ${l}`, v.columns)));
   return section(FLOW_COPY.beforeAccept, [...files, ...health2]);
@@ -3011,7 +3144,7 @@ function workingLines(state2, turn, v, theme2) {
     theme: theme2
   };
   const rows = files.slice(0, WORKING_ROWS).map((f) => workingRow(f, t));
-  const more = files.length > WORKING_ROWS ? [dimLine(`  ${moreFiles(files.length - WORKING_ROWS)}`, v.columns)] : [];
+  const more = files.length > WORKING_ROWS ? [dimLine2(`  ${moreFiles(files.length - WORKING_ROWS)}`, v.columns)] : [];
   return section(`${FLOW_COPY.workingSet} · ${FLOW_COPY.asOfIndex}`, [...rows, ...more]);
 }
 __name(workingLines, "workingLines");
@@ -3034,7 +3167,7 @@ function contextLines(turn, columns, theme2) {
   const legend = cells.map(([k]) => `${SHADE[k]} ${contextPart(k, bytes[k])}`);
   const first = firstEditMs(turn);
   const parts = first === null ? legend : [...legend, firstEditText(first)];
-  const lines = packRows(parts, (p) => p.length, Math.max(10, columns - 2), 2).map((r) => dimLine(`  ${r.join("  ")}`, columns));
+  const lines = packRows(parts, (p) => p.length, Math.max(10, columns - 2), 2).map((r) => dimLine2(`  ${r.join("  ")}`, columns));
   return section(FLOW_COPY.context, [bar, ...lines]);
 }
 __name(contextLines, "contextLines");
@@ -3112,7 +3245,7 @@ function callLines(state2, turn, v, theme2) {
     opened: openedAfter(state2)
   };
   const calls = turn.activities.filter(isCall).flatMap((a) => [callLine(a, ctx), ...detailLines(a, ctx)]);
-  const dropped = turn.dropped > 0 && calls.length > 0 ? [{ node: dimLine(`  ${droppedSteps(turn.dropped)}`, v.columns) }] : [];
+  const dropped = turn.dropped > 0 && calls.length > 0 ? [{ node: dimLine2(`  ${droppedSteps(turn.dropped)}`, v.columns) }] : [];
   return [...dropped, ...calls];
 }
 __name(callLines, "callLines");
@@ -3138,13 +3271,13 @@ function windowed(lines, room, open) {
   const shown = new Set(lines.slice(start, end).map((l) => l.id));
   const above = stepsOutside(lines.slice(0, start), shown);
   const below2 = stepsOutside(lines.slice(end), shown);
-  const note = /* @__PURE__ */ __name((n, say) => n === 0 ? [] : [{ node: dimLine(say(n), Number.POSITIVE_INFINITY) }], "note");
+  const note = /* @__PURE__ */ __name((n, say) => n === 0 ? [] : [{ node: dimLine2(say(n), Number.POSITIVE_INFINITY) }], "note");
   return [...note(above, hiddenSteps), ...lines.slice(start, end), ...note(below2, laterSteps)];
 }
 __name(windowed, "windowed");
 function earlierTurns(state2, columns) {
-  const out = state2.turns.slice(0, -1).reverse().map((t) => dimLine(`  ${turnFooter(t.seq, t.durationMs, turnTotals(t), t.end)}`, columns));
-  if (state2.earlier.turns > 0) out.push(dimLine(`  ${earlierLine(state2.earlier)}`, columns));
+  const out = state2.turns.slice(0, -1).reverse().map((t) => dimLine2(`  ${turnFooter(t.seq, t.durationMs, turnTotals(t), t.end)}`, columns));
+  if (state2.earlier.turns > 0) out.push(dimLine2(`  ${earlierLine(state2.earlier)}`, columns));
   return out;
 }
 __name(earlierTurns, "earlierTurns");
@@ -3233,9 +3366,9 @@ var LensFlow = class {
     this.pending = setTimeout(() => this.timer(() => (this.pending = void 0, true)), wait);
   }
   /** A timer's body: its step says whether to redraw; a failure is logged, never thrown into the runtime. */
-  timer(step) {
+  timer(step2) {
     try {
-      if (step()) this.draw();
+      if (step2()) this.draw();
     } catch (err) {
       this.io?.debug(`flow timer failed: ${String(err)}`);
     }
@@ -3430,7 +3563,7 @@ function litFromFlow(state2) {
   return {
     hits: mine.filter((v) => v.kind === "search-hit").map((v) => v.path),
     reads: [...new Set(opened.map((v) => v.path))],
-    named: Object.entries(state2.named).filter(([, n]) => n.turn === turn.seq).map(([key]) => key),
+    named: Object.entries(state2.named).filter(([, n]) => n.turn === turn.seq).map(([key2]) => key2),
     importers: [],
     edits: [...new Set(edits.map((v) => v.path))],
     edit: edits.at(-1)?.path ?? null,
@@ -3470,6 +3603,58 @@ function withImporters(lit, importersOf) {
   return { lit: { ...lit, importers }, reach: { edit: lit.edit, callers, opened: new Set(lit.reads.map((p) => p.toLowerCase())) } };
 }
 __name(withImporters, "withImporters");
+
+// src/model/inspect.ts
+var KNOWS_NOTHING = { context: null, tests: null, namedBy: null };
+var key = /* @__PURE__ */ __name((p) => p.toLowerCase(), "key");
+function litPaths(lit) {
+  const edits = [...lit.edits].reverse();
+  const order = [...edits, ...lit.reads, ...lit.importers, ...lit.named];
+  const seen = /* @__PURE__ */ new Set();
+  return order.filter((p) => {
+    if (seen.has(key(p))) return false;
+    seen.add(key(p));
+    return true;
+  });
+}
+__name(litPaths, "litPaths");
+function step(paths, current, by) {
+  if (paths.length === 0) return null;
+  const at = current === null ? -1 : paths.findIndex((p) => key(p) === key(current));
+  if (at === -1) return (by === 1 ? paths[0] : paths.at(-1)) ?? null;
+  return paths[(at + by + paths.length) % paths.length] ?? null;
+}
+__name(step, "step");
+var nameOf2 = /* @__PURE__ */ __name((p) => p.slice(p.lastIndexOf("/") + 1), "nameOf");
+var has = /* @__PURE__ */ __name((paths, p) => paths.some((x) => key(x) === key(p)), "has");
+function whyLit(path, lit, story, knows) {
+  const edit = has(lit.edits, path) ? story.edited.find((e) => e.name === nameOf2(path)) ?? { lines: null } : null;
+  return {
+    edited: edit === null ? null : { lines: edit.lines },
+    opened: edit === null && has(lit.reads, path),
+    imports: has(lit.importers, path) && lit.edit !== null ? nameOf2(lit.edit) : null,
+    namedBy: knows.namedBy
+  };
+}
+__name(whyLit, "whyLit");
+function contextOf(contexts, path) {
+  const exact = contexts[path];
+  if (exact !== void 0) return exact;
+  const lower = key(path);
+  const found = Object.keys(contexts).find((k) => key(k) === lower);
+  return found === void 0 ? null : contexts[found] ?? null;
+}
+__name(contextOf, "contextOf");
+function knowsOf(path, contexts, flow2) {
+  const facts = flow2 === null ? void 0 : flow2.blast[pathKey(path)];
+  const tests = facts?.tests ?? null;
+  return {
+    context: contextOf(contexts, path),
+    tests: tests === null ? null : { total: tests.total, basis: tests.basis },
+    namedBy: flow2 === null ? null : flow2.named[pathKey(path)]?.tool ?? null
+  };
+}
+__name(knowsOf, "knowsOf");
 
 // ../api-client/src/blast-radius.ts
 async function analyzeBlastRadius(repoId, body) {
@@ -3581,19 +3766,34 @@ var CALLERS_TIMEOUT_MS = 2e4;
 var CALLERS_DEPTH = 1;
 var NO_TURN = /* @__PURE__ */ __name(() => ({ lit: NO_LIT, story: NO_STORY }), "NO_TURN");
 function scopeFacts(layout, data, repo, offMap) {
+  const whole = layout.root === null;
   return {
     drawn: layout.drawn.length,
-    shown: data.files.length,
-    repositoryTotal: data.repository_total,
+    shown: whole ? data.files.length : layout.files.length,
+    repositoryTotal: whole ? data.repository_total : layout.files.length,
     indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
-    beyondCap: data.omitted.files,
+    beyondCap: whole ? data.omitted.files : 0,
     dense: layout.dense,
-    notOnMap: offMap
+    notOnMap: offMap,
+    zoom: layout.root
   };
 }
 __name(scopeFacts, "scopeFacts");
-var keyParts = /* @__PURE__ */ __name((k) => [k.data, k.columns, k.rows, k.style.theme, k.style.health], "keyParts");
-var sameKey = /* @__PURE__ */ __name((a, b) => keyParts(a).every((v, i) => v === keyParts(b)[i]), "sameKey");
+var cacheKey = /* @__PURE__ */ __name((k) => `${k.root ?? ""}|${k.columns}|${k.rows}|${k.style.theme}|${k.style.health}`, "cacheKey");
+var LAYOUT_CACHE = 6;
+function parentOf(root) {
+  const at = root === null ? -1 : root.lastIndexOf("/");
+  return at === -1 ? null : root.slice(0, at);
+}
+__name(parentOf, "parentOf");
+function folderOf(layout, path) {
+  const at = layout.index.get(layout.caseInsensitive ? path.toLowerCase() : path);
+  if (at === void 0) return null;
+  const b = litPixels(layout, layout.files[at]);
+  const folder = folderAt(layout, Math.floor((b.x0 + b.x1 - 1) / 2), Math.floor((b.y0 + b.y1 - 1) / 2));
+  return folder === layout.root ? null : folder;
+}
+__name(folderOf, "folderOf");
 var LensMap = class {
   static {
     __name(this, "LensMap");
@@ -3616,7 +3816,12 @@ var LensMap = class {
   edited = /* @__PURE__ */ new Set();
   importers = /* @__PURE__ */ new Map();
   drawn = null;
+  /** What the last render drew, for the keys: its layout and the lit files on it, in cursor order. */
+  view = null;
   layoutCache = null;
+  /** The inspector's selection (a repo-relative path) and the folder zoomed into. */
+  selected = null;
+  zoom = null;
   reducedMotion = false;
   /** Health colours on the tiles: off by default (`lens_map_health`), toggled from the pane. */
   health;
@@ -3638,14 +3843,67 @@ var LensMap = class {
   keyOf(rel2) {
     return this.repo?.caseInsensitive === false ? rel2 : rel2.toLowerCase();
   }
-  /** The pane's toggle: health colours on the tiles, or the quiet ghost map. */
-  toggleHealth(io) {
-    this.health = !this.health;
+  /** A press of one of the map's keys (MAP_PRESSES): moves the cursor, zooms, or toggles health colours; one redraw. */
+  press(io, key2) {
+    const act = this.actions()[key2];
+    if (act === void 0) return;
+    act();
     io.redraw();
+  }
+  actions() {
+    return {
+      [MAP_KEYS.next.key]: () => this.move(1),
+      [MAP_KEYS.previous.key]: () => this.move(-1),
+      [MAP_KEYS.clear.key]: () => this.selected = null,
+      [MAP_KEYS.zoom.key]: () => this.zoom = this.zoomTarget() ?? this.zoom,
+      [MAP_KEYS.up.key]: () => this.zoom = parentOf(this.zoom),
+      [HEALTH_KEY]: () => this.health = !this.health
+    };
+  }
+  /** The cursor walks the lit files the last render drew, so a zoomed view walks only its own folder's. */
+  move(by) {
+    this.selected = step(this.view?.paths ?? [], this.selected, by);
+  }
+  /** Where the zoom key goes: the folder holding the selection, when one is drawn deeper than the current view. */
+  zoomTarget() {
+    const layout = this.view?.layout ?? null;
+    return layout === null || this.selected === null ? null : folderOf(layout, this.selected);
+  }
+  /** A new prompt starts with nothing selected and the whole repo in view. */
+  turnStarted() {
+    this.selected = null;
+    this.zoom = null;
+  }
+  /**
+   * The lit files on this layout in cursor order, and the selection among them.
+   * A selection the turn stops lighting (or this view no longer draws) is dropped
+   * for good, so it never comes back ringed when the file is lit again.
+   */
+  see(layout, lit) {
+    const paths = litPaths(lit).filter((p) => layout.index.has(layout.caseInsensitive ? p.toLowerCase() : p));
+    const s = this.selected;
+    if (s !== null && !paths.some((p) => p.toLowerCase() === s.toLowerCase())) this.selected = null;
+    this.view = { layout, paths };
+    return paths;
+  }
+  /** The detail line, the keys that would act, and the rest of the pane's parts. */
+  parts(layout, lighting, scope, paths) {
+    const turn = lighting.turn;
+    const selected = this.selected;
+    const knows = selected === null ? KNOWS_NOTHING : turn.knows?.(selected) ?? KNOWS_NOTHING;
+    const detail = selected === null ? null : detailLine(selected, whyLit(selected, lighting.lit, turn.story, knows), knows);
+    const keys = {
+      items: paths.length > 0,
+      selected: selected !== null,
+      zoomable: selected !== null && folderOf(layout, selected) !== null,
+      zoomed: layout.root !== null
+    };
+    return { story: turn.story, reach: lighting.reach, scope, detail, keys };
   }
   /** What the turn lit, with the latest edit's importers joined as they stand now. */
   lighting() {
-    return withImporters(this.turn().lit, (p) => this.importersOf(p));
+    const turn = this.turn();
+    return { ...withImporters(turn.lit, (p) => this.importersOf(p)), turn };
   }
   /** The band row the map wants shown, if any. */
   bandLine() {
@@ -3660,8 +3918,8 @@ var LensMap = class {
     this.animator.end();
   }
   /**
-   * A `/clear`: the conversation's trail and edits go, so nothing of it stays
-   * lit. The feed, the repo and the importers already asked for (index data,
+   * A `/clear`: the conversation's trail and edits go, with the selection and
+   * the zoom, so nothing of it stays lit. The feed, the repo and the importers already asked for (index data,
    * by path) stay, and so does an open pane.
    */
   clearConversation(io) {
@@ -3669,6 +3927,7 @@ var LensMap = class {
     this.edited.clear();
     this.editPath = null;
     this.band = null;
+    this.turnStarted();
     io.redraw();
   }
   setRepo(io, repo) {
@@ -3711,10 +3970,16 @@ var LensMap = class {
     const desktop = pane.surface === "desktop";
     const style = { theme: pane.theme, health: this.health };
     const size = mapSize(pane, this.health);
-    const layout = this.layoutFor({ data, ...desktop ? desktopSize(size) : size, style }, repo.caseInsensitive);
-    const { lit, reach } = this.lighting();
-    const overlay = resolveLit(layout, lit);
-    const parts = { story: this.turn().story, reach, scope: scopeFacts(layout, data, repo, notOnMap(layout, lit)) };
+    const at = desktop ? desktopSize(size) : size;
+    let layout = this.layoutFor({ data, ...at, style, root: this.zoom }, repo.caseInsensitive);
+    if (layout.root !== null && layout.files.length === 0) {
+      this.zoom = null;
+      layout = this.layoutFor({ data, ...at, style, root: null }, repo.caseInsensitive);
+    }
+    const lighting = this.lighting();
+    const paths = this.see(layout, lighting.lit);
+    const overlay = resolveLit(layout, lighting.lit, this.selected);
+    const parts = this.parts(layout, lighting, scopeFacts(layout, data, repo, notOnMap(layout, lighting.lit)), paths);
     if (desktop) return svgPaneView(layout, overlay, parts);
     this.drawn = { layout, root: repo.root };
     return mapPaneView(layout, frameCells(layout, overlay, mapStep(this.animator.progress(Date.now()))), parts);
@@ -3729,12 +3994,15 @@ var LensMap = class {
     if (status === "ready") return null;
     return status === "failed" ? MAP_COPY.failed : MAP_COPY.loading;
   }
-  /** The layout for this feed, size and style; laid out again only when one of them changed. */
-  layoutFor(key, caseInsensitive) {
-    const c = this.layoutCache;
-    if (c !== null && sameKey(c.key, key)) return c.layout;
-    const layout = layoutMap(key.data.files, { columns: key.columns, rows: key.rows, caseInsensitive, style: key.style });
-    this.layoutCache = { key, layout };
+  /** The layout for this feed, size, style and zoom; kept per (zoom, size, style) for the feed, a few at a time. */
+  layoutFor(key2, caseInsensitive) {
+    if (this.layoutCache?.data !== key2.data) this.layoutCache = { data: key2.data, layouts: /* @__PURE__ */ new Map() };
+    const layouts = this.layoutCache.layouts;
+    const cached = layouts.get(cacheKey(key2));
+    if (cached !== void 0) return cached;
+    const layout = layoutMap(key2.data.files, { columns: key2.columns, rows: key2.rows, caseInsensitive, style: key2.style, root: key2.root });
+    if (layouts.size >= LAYOUT_CACHE) layouts.delete(layouts.keys().next().value);
+    layouts.set(cacheKey(key2), layout);
     return layout;
   }
   apply(io, action) {
@@ -3766,9 +4034,9 @@ var LensMap = class {
   /** One edited file's importers, asked once; the answer is kept by path. */
   loadCallers(io, repo, abs) {
     const rel2 = relativeTo(abs, repo.root, repo.caseInsensitive);
-    const key = rel2 === null ? null : this.keyOf(rel2);
-    if (rel2 === null || key === null || this.importers.has(key)) return;
-    this.importers.set(key, { status: "loading" });
+    const key2 = rel2 === null ? null : this.keyOf(rel2);
+    if (rel2 === null || key2 === null || this.importers.has(key2)) return;
+    this.importers.set(key2, { status: "loading" });
     const request = { changed_files: [rel2], max_depth: CALLERS_DEPTH };
     withTimeout(analyzeBlastRadius(repo.id, request), CALLERS_TIMEOUT_MS, "importers").then((r) => {
       const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel2);
@@ -3818,19 +4086,19 @@ var LensMap = class {
    */
   animate(io, kind) {
     if (!this.canAnimate(kind)) return io.redraw();
-    this.animator.play(io, kind, kind === "flash" ? FLASH_MS : RIPPLE_MS, (step) => this.frame(step));
+    this.animator.play(io, kind, kind === "flash" ? FLASH_MS : RIPPLE_MS, (step2) => this.frame(step2));
   }
   /** The current trail on the drawn map at one step, or null once the map is off screen. */
-  frame(step) {
+  frame(step2) {
     const on = this.drawn;
-    const anim = mapStep(step);
+    const anim = mapStep(step2);
     if (on === null || anim === void 0) return null;
-    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit), anim);
+    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit, this.selected), anim);
     return { key: MAP_KEY, cells, columns: on.layout.columns, rows: on.layout.rows };
   }
 };
-function mapStep(step) {
-  return step !== void 0 && (step.kind === "flash" || step.kind === "ripple") ? step : void 0;
+function mapStep(step2) {
+  return step2 !== void 0 && (step2.kind === "flash" || step2.kind === "ripple") ? step2 : void 0;
 }
 __name(mapStep, "mapStep");
 
@@ -4603,7 +4871,7 @@ function bind($) {
     blastLanded: /* @__PURE__ */ __name((path, r) => flowBlast(bound, path, r), "blastLanded"),
     redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
     debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug"),
-    blit: /* @__PURE__ */ __name((key, cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key, cells, columns, rows }), "blit"),
+    blit: /* @__PURE__ */ __name((key2, cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: key2, cells, columns, rows }), "blit"),
     // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
     // Opened unasked on a read: the map is what it opens to. This happens at most once, and never
     // after the person opened the pane (/lens, Why), the only ways to have picked a tab by then.
@@ -4795,6 +5063,7 @@ async function onTurnStart($, e, next) {
       started2 = null;
     }
     dispatch(bind($), reviewOn ? { type: "turnStarted" } : { type: "briefDone" });
+    map.turnStarted();
   } catch (err) {
     bind($).debug(`turn.start failed: ${String(err)}`);
   }
@@ -5131,11 +5400,11 @@ function tabPresses($, bar) {
 }
 __name(tabPresses, "tabPresses");
 function flowRowPresses($) {
-  return Object.fromEntries(flowPresses(flow.state).map(([key, id]) => [key, () => pressFlow($, key, id)]));
+  return Object.fromEntries(flowPresses(flow.state).map(([key2, id]) => [key2, () => pressFlow($, key2, id)]));
 }
 __name(flowRowPresses, "flowRowPresses");
-function pressFlow($, key, id) {
-  noteFlow(bind($), () => id !== null ? { type: "toggle", id } : { type: "step", by: key === FLOW_NEXT ? 1 : -1 });
+function pressFlow($, key2, id) {
+  noteFlow(bind($), () => id !== null ? { type: "toggle", id } : { type: "step", by: key2 === FLOW_NEXT ? 1 : -1 });
 }
 __name(pressFlow, "pressFlow");
 function selectTab($, tab) {
@@ -5160,10 +5429,11 @@ var TAB_BODIES = {
   map: /* @__PURE__ */ __name((b, e) => mapBody(b, e), "map")
 };
 function mapTurn() {
-  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state) };
+  const knows = /* @__PURE__ */ __name((path) => knowsOf(path, state.contexts, flowOn ? flow.state : null), "knows");
+  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state), knows };
   const root = state.repoRoot;
   const lit = root === null ? NO_LIT : litFromTrail(map.trail, root, isWindowsPath(root));
-  return { lit, story: storyFromTrail(map.trail) };
+  return { lit, story: storyFromTrail(map.trail), knows };
 }
 __name(mapTurn, "mapTurn");
 function mapBody(b, e) {
@@ -5173,20 +5443,29 @@ function mapBody(b, e) {
   return map.paneTree(b, { surface: e.surface, notice: notice2, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS, theme });
 }
 __name(mapBody, "mapBody");
-function pressHealth($) {
+function pressMap($, key2) {
   try {
-    map.toggleHealth(bind($));
+    map.press(bind($), key2);
   } catch (err) {
-    bind($).debug(`health toggle failed: ${String(err)}`);
+    bind($).debug(`map key failed: ${String(err)}`);
   }
 }
-__name(pressHealth, "pressHealth");
+__name(pressMap, "pressMap");
+function mapPresses($) {
+  return Object.fromEntries(MAP_PRESSES.map((key2) => [key2, () => pressMap($, key2)]));
+}
+__name(mapPresses, "mapPresses");
 function tabBody(b, e) {
   const tab = state.pane.tab;
   if (tab !== "map") map.offScreen();
   if (tab !== "flow") flow.hide();
   const rows = (e.props.placement === "dock" ? e.props.scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
-  return TAB_BODIES[tab](b, e, rows);
+  try {
+    return TAB_BODIES[tab](b, e, rows);
+  } catch (err) {
+    b.debug(`${tab} tab render failed: ${String(err)}`);
+    return text(fit(PANE_COPY.bodyFailed, e.props.bodyColumns), { dimColor: true, wrap: "truncate-end" });
+  }
 }
 __name(tabBody, "tabBody");
 async function onPane($, e, next) {
@@ -5194,7 +5473,7 @@ async function onPane($, e, next) {
   const b = bind($);
   try {
     const bar = tabBar(flowOn);
-    const presses = { ...tabPresses($, bar), ...flowRowPresses($), [HEALTH_KEY]: () => pressHealth($) };
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($), ...mapPresses($) };
     return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);

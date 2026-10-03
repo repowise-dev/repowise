@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckNext, Hook, McpToolResult, ModApi, On, ToolCheckEvent } from "../src/mod-api";
 import { DARK } from "@repowise-dev/ui/brand";
 import { TimeoutError } from "../src/data/transport";
@@ -117,6 +117,7 @@ function promptFor(calls: Calls): ModApi["prompt"] {
 /** A `$` for a git work tree: no index by default, an index with `indexed`, a live server with `savings`. */
 function fakeDollar(o: DollarOptions = {}) {
   const calls: Calls = { cwd: 0, invalidate: 0, logs: [], mcp: [], savings: 0, submitted: [], transcript: [] };
+  made.push(calls);
   let release: () => void = () => {};
   const gate = { hold: false, wait: Promise.resolve() };
   const session: ModApi["session"] = {
@@ -140,6 +141,19 @@ const band = { props: { hasSurvey: false, bodyColumns: 100 } };
 const THEIRS = { el: "theirs" };
 
 let hooks: Hooks;
+
+/**
+ * Every fake `$` this test made, so a draw that failed into the never-blank
+ * guard cannot pass unnoticed: only a test about failing may log one.
+ */
+const made: { logs: string[] }[] = [];
+afterEach(() => {
+  const name = expect.getState().currentTestName ?? "";
+  const failed = made.flatMap((c) => c.logs).filter((l) => /render failed|key failed/.test(l));
+  made.length = 0;
+  if (!/fail|throw/.test(name)) expect(failed).toEqual([]);
+});
+
 beforeEach(async () => {
   hooks = await load();
 });

@@ -248,6 +248,30 @@ is drawn: `<N> files, all drawn`, `<N> of <M> files drawn at this size · rest t
 cap, `4,000 largest of <M> files drawn`, then `indexed <age>` and
 `<N> touched files not on the map` when some were outside it.
 
+The keys under the map walk what the turn lit. They are letters, since digits
+switch tabs, and only the ones that would do something are shown:
+
+| Key | What it does |
+|---|---|
+| `j` | Select the next lit file: the edit, then the files Claude opened, then the edit's other importers, then files a Repowise reply named; it wraps around |
+| `k` | Select the previous one |
+| `z` | Zoom into the folder holding the selection: only that folder's files, at the full pane size, with their names |
+| `u` | Zoom out one folder |
+| `x` | Clear the selection |
+| `h` | Health colours on or off |
+
+The selected tile gets a bright ring, and one line under the strip says what it
+is: its path, why it is lit (`Claude edited it, +1 line`, `Claude opened it`,
+`imports query.py`, `named by get_context`), and what Lens already knows of it
+(`hotspot`, `131 files use it`, `recent owner ...`, `9 tests reach it (inferred)`).
+Lens asks for nothing new to fill that line. Zoomed in, a breadcrumb such as
+`django / db / models` sits above the map and the scope line counts that
+folder's files, and `j` and `k` walk only the lit files in it. Selection draws
+one redraw, no animation. A new prompt or a `/clear` starts with nothing
+selected and the whole repo in view, and a file the turn stops lighting loses
+its selection. On a narrow pane the keys stay on one row: the least used ones
+(`x`, then `u`, `k`, `z`) give way to a `…` first, and `h` stays.
+
 The `Health colours` button under the map (hotkey `h`) colours the tiles by
 health band instead, `Excellent`, `Good`, `Fair`, `Needs work`, `At risk` and
 `Not scored`, with that legend; the `lens_map_health` setting starts the map
@@ -393,6 +417,10 @@ own background.
 
 **The map says it could not load.** `Lens map could not load; it tries again on /lens`.
 Run `/lens` again once the server is up.
+
+**A tab says Lens could not draw it.** `Lens could not draw this tab; details in the debug log`.
+The tab bar stays, so the other tabs still work. Claude Code's debug log has a
+line starting `lens:` that names the tab and the error.
 
 **The change review timed out.** It has 20 seconds. The review is skipped for
 that turn and runs again after the next turn that edits files.

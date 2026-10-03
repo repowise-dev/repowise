@@ -26,7 +26,7 @@ export interface Lit {
 
 export const NO_LIT: Lit = { hits: [], reads: [], named: [], importers: [], edits: [], edit: null, current: null };
 
-/** The lit files as indices into `layout.files`, and the names written beside them. */
+/** The lit files as indices into `layout.files`, the names beside them, and the selection. */
 export interface Overlay {
   hits: number[];
   reads: number[];
@@ -35,6 +35,8 @@ export interface Overlay {
   edit: number | null;
   current: number | null;
   names: NameLabel[];
+  /** The inspector's selection, ringed. */
+  selected: number | null;
 }
 
 /** One step of an animation, `t` from 0 to 1; t = 1 is the resting frame. */
@@ -103,7 +105,7 @@ function placeName(layout: MapLayout, taken: Set<number>, f: PlacedFile, color: 
 }
 
 /** Names for the edit and the current step (amber) first, then the opened files, newest first. */
-function namesFor(layout: MapLayout, o: Omit<Overlay, "names">): NameLabel[] {
+function namesFor(layout: MapLayout, o: Pick<Overlay, "reads" | "edit" | "current">): NameLabel[] {
   const pal = MAP_PALETTES[layout.style.theme];
   const order = [...new Set([o.edit, o.current, ...[...o.reads].reverse()].filter((i): i is number => i !== null))];
   const taken = new Set<number>();
@@ -113,8 +115,8 @@ function namesFor(layout: MapLayout, o: Omit<Overlay, "names">): NameLabel[] {
     .filter((n): n is NameLabel => n !== null);
 }
 
-/** The lit files on this layout, with their names placed. */
-export function resolveLit(layout: MapLayout, lit: Lit): Overlay {
+/** The lit files on this layout, with their names placed; `selected` (a path) is ringed. */
+export function resolveLit(layout: MapLayout, lit: Lit, selected: string | null = null): Overlay {
   const o = {
     hits: indices(layout, lit.hits),
     reads: indices(layout, lit.reads),
@@ -124,7 +126,7 @@ export function resolveLit(layout: MapLayout, lit: Lit): Overlay {
     edit: one(layout, lit.edit),
     current: one(layout, lit.current),
   };
-  return { ...o, names: namesFor(layout, o) };
+  return { ...o, names: namesFor(layout, o), selected: one(layout, selected) };
 }
 
 function center(layout: MapLayout, f: PlacedFile): [number, number] {
@@ -191,6 +193,27 @@ function rippleReach(layout: MapLayout, overlay: Overlay, anim: Anim | undefined
   return anim?.kind === "ripple" && anim.t < 1 ? rippleRadius(layout, overlay) * anim.t : Infinity;
 }
 
+const inRange = (v: number, n: number): boolean => v >= 0 && v < n;
+
+function set(p: Paint, x: number, y: number, color: number): void {
+  if (!inRange(x, p.layout.width) || !inRange(y, p.layout.height)) return;
+  p.px[y * p.layout.width + x] = color;
+  p.marked[y * p.layout.width + x] = 1;
+}
+
+/** The pixels around a box (one outside it on every side). */
+function around(box: { x0: number; y0: number; x1: number; y1: number }): [number, number][] {
+  const out: [number, number][] = [];
+  for (let x = box.x0 - 1; x <= box.x1; x++) out.push([x, box.y0 - 1], [x, box.y1]);
+  for (let y = box.y0; y < box.y1; y++) out.push([box.x0 - 1, y], [box.x1, y]);
+  return out;
+}
+
+/** The inspector's ring: the pixels just around the selected tile, in the theme's brightest neutral. */
+function paintSelection(p: Paint, f: PlacedFile, color: number): void {
+  for (const [x, y] of around(litPixels(p.layout, f))) set(p, x, y, color);
+}
+
 /** Map pixels for one frame: the base with the turn's roles filled in, weakest first so the strongest shows. */
 export function framePixels(layout: MapLayout, overlay: Overlay, anim?: Anim): { pixels: Uint32Array; marked: Uint8Array } {
   const p: Paint = { layout, px: layout.base.slice(), marked: new Uint8Array(layout.width * layout.height) };
@@ -203,6 +226,8 @@ export function framePixels(layout: MapLayout, overlay: Overlay, anim?: Anim): {
   fillAll(p, [overlay.edit, overlay.current].filter((i): i is number => i !== null), pal.edit);
   const origin = overlay.edit === null ? undefined : layout.files[overlay.edit];
   if (origin !== undefined && reach < Infinity) paintRing(p, origin, reach, pal.importer);
+  const selected = overlay.selected === null ? undefined : layout.files[overlay.selected];
+  if (selected !== undefined) paintSelection(p, selected, pal.ring);
   return { pixels: p.px, marked: p.marked };
 }
 

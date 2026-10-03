@@ -14,6 +14,7 @@
 import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } from "d3-hierarchy";
 import { bandForScore, type HealthFileMetric } from "@repowise-dev/types/health";
 import { BRAND, DARK, DARK_CANVAS, DARK_CANVAS_BAND, LIGHT } from "@repowise-dev/ui/brand";
+import { cellSafe } from "../format";
 import type { ThemeName } from "./theme";
 
 export type MapFile = Pick<HealthFileMetric, "file_path" | "score" | "nloc">;
@@ -71,6 +72,8 @@ export interface MapPalette {
   named: number;
   importer: number;
   edit: number;
+  /** The inspector's ring around the selected tile: the theme's brightest neutral, not a new hue. */
+  ring: number;
 }
 
 export interface MapLayout {
@@ -96,6 +99,8 @@ export interface MapLayout {
   dense: boolean;
   /** Every folder below the groups, parents first, as painted. */
   folders: FolderTile[];
+  /** The folder zoomed into, or null for the whole repo. */
+  root: string | null;
 }
 
 const UPPER_HALF = 0x2580;
@@ -129,6 +134,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     named: mix(hex(DARK.accentSecondary), hex(DARK.bgRoot), 0.45),
     importer: hex(DARK.accentSecondary),
     edit: hex(BRAND.accent),
+    ring: hex(BRAND.cream),
   },
   light: {
     tileA: mix(hex(LIGHT.bgInset), hex(LIGHT.textTertiary), 0.08),
@@ -139,6 +145,7 @@ export const MAP_PALETTES: Record<ThemeName, MapPalette> = {
     named: mix(hex(LIGHT.accentSecondary), hex(LIGHT.bgRoot), 0.55),
     importer: hex(LIGHT.accentSecondary),
     edit: hex(BRAND.accentTextLight),
+    ring: hex(LIGHT.textPrimary),
   },
 };
 
@@ -308,11 +315,20 @@ function paintBox(base: Uint32Array, width: number, box: { x0: number; y0: numbe
 
 /** A folder inside a group: its pixels (within the group's interior) and its tone, alternating among its siblings. */
 export interface FolderTile {
+  /** The folder's repo-relative path. */
+  path: string;
   x0: number;
   y0: number;
   x1: number;
   y1: number;
   tone: 0 | 1;
+}
+
+/** A folder node's path: its group's key, then the folder names below it. */
+function folderPath(group: HierarchyRectangularNode<Datum>, node: HierarchyRectangularNode<Datum>): string {
+  // Ancestors from the root: the tree's root, then the group, then the folders below it.
+  const below = node.ancestors().reverse().slice(2).map((n) => n.data.name);
+  return [group.data.name, ...below].filter((part) => part !== "").join("/");
 }
 
 /** Every folder below the groups, parents before children, so the deepest folder big enough to show wins. */
@@ -323,9 +339,21 @@ function folderTiles(group: HierarchyRectangularNode<Datum>, inner: ReturnType<t
     const tone = ((node.parent?.children ?? []).indexOf(node) % 2) as 0 | 1;
     const [x0, x1] = pixelSpan(node.x0, node.x1);
     const [y0, y1] = pixelSpan(node.y0, node.y1);
-    out.push({ x0: Math.max(x0, inner.x0), y0: Math.max(y0, inner.y0), x1: Math.min(x1, inner.x1), y1: Math.min(y1, inner.y1), tone });
+    const box = { x0: Math.max(x0, inner.x0), y0: Math.max(y0, inner.y0), x1: Math.min(x1, inner.x1), y1: Math.min(y1, inner.y1) };
+    out.push({ path: folderPath(group, node), ...box, tone });
   }
   return out;
+}
+
+const within = (f: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number): boolean =>
+  x >= f.x0 && x < f.x1 && y >= f.y0 && y < f.y1;
+
+/** The folder drawn at a pixel: the deepest folder tile holding it, else its group (gutters included); null off the map. */
+export function folderAt(layout: MapLayout, x: number, y: number): string | null {
+  const tile = layout.folders.filter((f) => within(f, x, y)).at(-1);
+  if (tile !== undefined) return tile.path;
+  const group = layout.groups.find((g) => within({ x0: g.rect.x, y0: g.rect.y, x1: g.rect.x + g.rect.w, y1: g.rect.y + g.rect.h }, x, y));
+  return group === undefined || group.key === "" ? null : group.key;
 }
 
 function paintFile(base: Uint32Array, width: number, f: PlacedFile, fill: number): void {
@@ -351,24 +379,48 @@ const LABEL_MIN_COLS = 12;
 const LABEL_MIN_ROWS = 3;
 const MAX_LABELS = 8;
 
-function labelFor(g: MapGroup, columns: number, rows: number): MapLabel | null {
+function labelFor(g: MapGroup, columns: number, rows: number, root: string | null): MapLabel | null {
   const col = Math.ceil(g.rect.x);
   const row = Math.ceil(g.rect.y / 2);
   const width = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
   const height = Math.floor((g.rect.y + g.rect.h) / 2) - row;
   const small = height < LABEL_MIN_ROWS || width < LABEL_MIN_COLS;
-  if (g.key === "" || small || row >= rows) return null;
-  const text = labelText(g.key, width);
+  // Zoomed in, a folder is named below the zoom root; files directly in it get no name.
+  const key = root === null ? g.key : g.key.slice(root.length + 1);
+  if (key === "" || small || row >= rows) return null;
+  const text = labelText(key, width);
   return text === null ? null : { row, col, text };
 }
 
 /** Group labels, largest groups first, where the group is wide and tall enough. */
-function labelsFor(groups: readonly MapGroup[], columns: number, rows: number): MapLabel[] {
+function labelsFor(groups: readonly MapGroup[], columns: number, rows: number, root: string | null = null): MapLabel[] {
   return [...groups]
     .sort((a, b) => b.nloc - a.nloc)
-    .map((g) => labelFor(g, columns, rows))
+    .map((g) => labelFor(g, columns, rows, root))
     .filter((l): l is MapLabel => l !== null)
     .slice(0, MAX_LABELS);
+}
+
+/** A file's name inside its own tile, when the tile is a row tall and wide enough for it. */
+function fileLabel(f: PlacedFile, rows: number): MapLabel | null {
+  const text = cellSafe(f.path.slice(f.path.lastIndexOf("/") + 1));
+  const row = Math.ceil(f.py0 / 2);
+  const roomy = f.px1 - f.px0 >= text.length + 2 && Math.floor(f.py1 / 2) > row;
+  return roomy && row < rows ? { row, col: f.px0 + 1, text } : null;
+}
+
+/** Zoomed in: the names of files big enough to hold them, where no folder name already sits. */
+function fileLabels(files: readonly PlacedFile[], rows: number, taken: readonly MapLabel[]): MapLabel[] {
+  const used = new Set(taken.flatMap((l) => [...l.text].map((_, k) => `${l.row}:${l.col + k}`)));
+  const out: MapLabel[] = [];
+  for (const label of files.map((f) => fileLabel(f, rows))) {
+    if (label === null) continue;
+    const cells = [...label.text].map((_, k) => `${label.row}:${label.col + k}`);
+    if (cells.some((c) => used.has(c))) continue;
+    cells.forEach((c) => used.add(c));
+    out.push(label);
+  }
+  return out;
 }
 
 /**
@@ -403,6 +455,14 @@ export interface MapCanvas {
   rows: number;
   caseInsensitive: boolean;
   style?: MapStyle;
+  /** Zoomed in: only this folder's files, at the full size, with their names. */
+  root?: string | null;
+}
+
+/** The files under `root` (all of them without one). */
+function filesUnder(feed: readonly MapFile[], root: string | null): MapFile[] {
+  const lines = feed.filter((f) => f.nloc > 0);
+  return root === null ? lines : lines.filter((f) => f.file_path.startsWith(`${root}/`));
 }
 
 export function layoutMap(feed: readonly MapFile[], canvas: MapCanvas): MapLayout {
@@ -410,11 +470,8 @@ export function layoutMap(feed: readonly MapFile[], canvas: MapCanvas): MapLayou
   const style = canvas.style ?? DEFAULT_STYLE;
   const width = columns;
   const height = rows * 2;
-  const root = treemapOf(
-    feed.filter((f) => f.nloc > 0),
-    width,
-    height,
-  );
+  const zoom = canvas.root ?? null;
+  const root = treemapOf(filesUnder(feed, zoom), width, height);
   const groups: MapGroup[] = [];
   const files: PlacedFile[] = [];
   const folders: FolderTile[] = [];
@@ -434,7 +491,9 @@ export function layoutMap(feed: readonly MapFile[], canvas: MapCanvas): MapLayou
   });
   const dense = drawn.length < files.length * DENSE_SHARE;
   const base = paintBase({ width, height, groups, folders, files, drawn }, style, dense);
-  return { columns, rows, width, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base, style, dense, lower, folders };
+  const folderNames = labelsFor(groups, columns, rows, zoom);
+  const labels = zoom === null || dense ? folderNames : [...folderNames, ...fileLabels(files, rows, folderNames)];
+  return { columns, rows, width, height, groups, files, drawn, index, caseInsensitive, labels, base, style, dense, lower, folders, root: zoom };
 }
 
 /**
@@ -460,7 +519,8 @@ function labelCovered(label: MapLabel, marked: Uint8Array | undefined, width: nu
 const cellGround = (pixel: number | undefined): number => (pixel === undefined || pixel === GROUND ? TERMINAL_DEFAULT : pixel);
 
 function writeText(words: Uint32Array, layout: MapLayout, label: MapLabel, colors: (col: number) => [number, number]): void {
-  for (let k = 0; k < label.text.length && label.col + k < layout.columns; k++) {
+  if (label.row < 0 || label.row >= layout.rows) return;
+  for (let k = Math.max(0, -label.col); k < label.text.length && label.col + k < layout.columns; k++) {
     const col = label.col + k;
     words.set([label.text.charCodeAt(k), ...colors(col)], (label.row * layout.columns + col) * 3);
   }

@@ -6,6 +6,7 @@
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { countOf, fit } from "../format";
 import type { FileContext, HintKind, IndexFreshness, MarginNote, SavingsDelta } from "../model/session";
+import type { Knows } from "../model/inspect";
 import type { Squeeze } from "../model/squeeze";
 import type { Behind, ReplyFact } from "../model/replies";
 
@@ -228,8 +229,10 @@ export interface ScopeFacts {
   beyondCap: number;
   /** Too many files for a pixel each: drawn as folders. */
   dense: boolean;
-  /** Files the turn touched that are not on the map (outside the feed). */
+  /** Files the turn touched that are not on the map (outside the feed, or outside the zoomed folder). */
   notOnMap: number;
+  /** The folder zoomed into, or null. */
+  zoom: string | null;
 }
 
 /** Scope parts a narrow line may leave out; the counts and the cap always stay. */
@@ -257,7 +260,7 @@ function drawnPart(s: ScopeFacts): string[] {
 export function scopeParts(s: ScopeFacts): string[] {
   const parts = drawnPart(s);
   if (s.indexed !== null) parts.push(indexedPart(s.indexed));
-  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} not on the map`);
+  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} ${s.zoom === null ? "not on the map" : "outside this folder"}`);
   return parts;
 }
 
@@ -292,6 +295,47 @@ export function reachesPending(edit: string): string {
 
 export const REACHES_FAILED = "import graph unavailable";
 
+/** The map's keys, as the hint row names them. */
+export const MAP_KEYS_COPY = {
+  next: "next",
+  previous: "previous",
+  zoom: "zoom in",
+  up: "up",
+  clear: "clear",
+} as const;
+
+/** Where the zoom is: `django / db / models`. */
+export function crumbLine(root: string): string {
+  return root.split("/").join(" / ");
+}
+
+/** Why a file is lit, in words: `Claude edited it, +1 line`, `Claude opened it`, `imports query.py`, `named by get_context`. */
+export function whyParts(why: {
+  edited: { lines: { delta: number } | { written: number } | null } | null;
+  opened: boolean;
+  imports: string | null;
+  namedBy: string | null;
+}): string[] {
+  const parts: string[] = [];
+  if (why.edited !== null) parts.push(`Claude edited it${why.edited.lines === null ? "" : `,${linesPart(why.edited.lines)}`}`);
+  if (why.opened) parts.push("Claude opened it");
+  if (why.imports !== null) parts.push(`imports ${why.imports}`);
+  if (why.namedBy !== null) parts.push(`named by ${why.namedBy}`);
+  return parts;
+}
+
+/** The inspector's line: `django/db/models/base.py · imports query.py · hotspot · 131 files use it`. */
+export function detailLine(path: string, why: Parameters<typeof whyParts>[0], knows: Knows): string {
+  const facts = knows.context === null ? [] : knowsParts(knows.context);
+  const tests = knows.tests === null ? [] : [testsReach(knows.tests)];
+  return [path, ...whyParts(why), ...facts, ...tests].join(" · ");
+}
+
+/** `12 tests reach it (inferred)`. */
+export function testsReach(t: { total: number; basis: "measured" | "inferred" }): string {
+  return `${countOf(t.total, "test reaches it", "tests reach it")} (${t.basis})`;
+}
+
 // The pane's tabs, Ask and Recap.
 
 export const PANE_COPY = {
@@ -306,6 +350,7 @@ export const PANE_COPY = {
   noEvidence: "no evidence cited",
   fromIndex: "Built from the index",
   fromModel: "Written by this repo's configured model, from the index",
+  bodyFailed: "Lens could not draw this tab; details in the debug log",
 } as const;
 
 /** Characters of a reply the Ask tab draws; the Markdown element takes at most 10,000. */

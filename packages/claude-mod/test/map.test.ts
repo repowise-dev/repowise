@@ -109,7 +109,7 @@ describe("layoutMap on the Django feed at 180x50", () => {
   });
 
   it("the legend counts exactly the files drawn", () => {
-    const parts = scopeParts({ drawn: layout.drawn.length, shown: feed.files.length, repositoryTotal: feed.repository_total, indexed: "2h ago", beyondCap: 0, dense: layout.dense, notOnMap: 0 });
+    const parts = scopeParts({ drawn: layout.drawn.length, shown: feed.files.length, repositoryTotal: feed.repository_total, indexed: "2h ago", beyondCap: 0, dense: layout.dense, notOnMap: 0, zoom: null });
     expect(parts[0]).toBe(`${layout.drawn.length.toLocaleString("en-US")} of 2,970 files drawn at this size`);
   });
 });
@@ -171,6 +171,12 @@ describe("cell encoding", () => {
     const marked = new Uint8Array(layout.width * layout.height);
     marked[(2 * label.row + 1) * 180 + label.col + label.text.length - 1] = 1;
     expect(text(decode(encodeCells(layout, layout.base, marked)))).toBe("▀".repeat(label.text.length));
+  });
+
+  it("drops a name that falls outside the raster instead of writing past its last row", () => {
+    const layout = { ...layoutMap(feed.files, { columns: 60, rows: 20, caseInsensitive: true }), labels: [] };
+    const outside = [20, -1].map((row) => ({ row, col: 0, text: "query.py", color: 0xffffff }));
+    expect(encodeCells(layout, layout.base, undefined, outside)).toBe(encodeCells(layout, layout.base));
   });
 
   it("encodes a 180x50 frame to the documented size", () => {

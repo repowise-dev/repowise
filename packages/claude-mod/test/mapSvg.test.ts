@@ -8,7 +8,7 @@ import { SVG_CHARS, desktopSize, mapSvg, svgPaneView } from "../src/views/mapSvg
 import { NO_LIT, framePixels, resolveLit, type Lit } from "../src/views/overlay";
 import { feed, importers } from "./django";
 
-const scope = { drawn: 0, shown: feed.files.length, repositoryTotal: feed.repository_total, indexed: null, beyondCap: 0, dense: false, notOnMap: 0 };
+const scope = { drawn: 0, shown: feed.files.length, repositoryTotal: feed.repository_total, indexed: null, beyondCap: 0, dense: false, notOnMap: 0, zoom: null };
 const parts = { story: NO_STORY, reach: null, scope };
 const hex = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
 
@@ -70,5 +70,15 @@ describe("desktop map", () => {
     const over = svgPaneView(huge, resolveLit(huge, busy), parts);
     if (over.type !== "Box") throw new Error("expected a Box");
     expect(over.children[0]).toMatchObject({ type: "Text", children: ["Lens map has too much detail to draw here; the terminal map shows it"] });
+  });
+});
+
+describe("the inspector on the desktop", () => {
+  it("rings the selected tile in the SVG as the terminal does", () => {
+    const layout = layoutMap(feed.files, { columns: 160, rows: 45, caseInsensitive: true });
+    const lit = { ...NO_LIT, reads: ["django/db/models/query.py"] };
+    const ring = `stroke="#${MAP_PALETTES.dark.ring.toString(16).padStart(6, "0")}"`;
+    expect(mapSvg(layout, resolveLit(layout, lit))).not.toContain(ring);
+    expect(mapSvg(layout, resolveLit(layout, lit, "django/db/models/query.py"))).toContain(ring);
   });
 });

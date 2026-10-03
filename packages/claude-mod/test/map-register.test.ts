@@ -1,7 +1,7 @@
 // The map's wiring through register(): /lens, the Pane, the trail from tool
 // calls, importers and the ripple, auto-open. Answers come from the recorded
 // Django payloads (test/fixtures).
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hook, ModApi, On, PluginOptions } from "../src/mod-api";
 import { MAP_COPY, PANE_COPY } from "../src/views/copy";
 import { DARK_CANVAS_BAND } from "@repowise-dev/ui/brand";
@@ -70,6 +70,7 @@ function uiFake(calls: Calls): ModApi["ui"] {
 /** A `$` for a git work tree with no index and a connecting MCP server. */
 function fakeDollar() {
   const calls: Calls = { cwd: 0, invalidate: 0, logs: [], open: [], close: [], blit: [], commands: [], http: [] };
+  made.push(calls);
   let release: () => void = () => {};
   const gate = { hold: false, wait: Promise.resolve() };
   const $: ModApi = {
@@ -157,6 +158,19 @@ const pane = (requestId = "lens", surface = "terminal") => ({
 const THEIRS = { el: "theirs" };
 
 let hooks: Hooks;
+
+/**
+ * Every fake `$` this test made, so a draw that failed into the never-blank
+ * guard cannot pass unnoticed: only a test about failing may log one.
+ */
+const made: { logs: string[] }[] = [];
+afterEach(() => {
+  const name = expect.getState().currentTestName ?? "";
+  const failed = made.flatMap((c) => c.logs).filter((l) => /render failed|key failed/.test(l));
+  made.length = 0;
+  if (!/fail|throw/.test(name)) expect(failed).toEqual([]);
+});
+
 beforeEach(async () => {
   hooks = await load();
 });
@@ -221,6 +235,42 @@ describe("the map pane", () => {
     expect(shown).toContain("Lens map needs a wider terminal: below 110 columns (90 now)");
   });
 
+  it("the inspector: j and k walk the lit files with a detail line, z zooms into the selection's folder, u goes up, x clears", async () => {
+    const d = await opened();
+    await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
+    await until(() => asked(d, "/blast-radius") === 1);
+    await settle();
+    const key = async (k: string) => flatten(await render(d)).find((n) => n.props.key === `lens-map-${k}`);
+    const hotkeys = async () => flatten(await render(d)).filter((n) => n.el === "Button" && String(n.props.key).startsWith("lens-map-")).map((n) => n.props.hotkey);
+    expect(await hotkeys()).toEqual(["j", "k", "h"]);
+    (await key("next"))!.props.onPress();
+    let shown = textOf(await render(d));
+    expect(shown.some((t) => t.startsWith("django/db/models/query.py · Claude edited it"))).toBe(true);
+    expect(await hotkeys()).toEqual(["j", "k", "z", "x", "h"]);
+    (await key("zoom"))!.props.onPress();
+    shown = textOf(await render(d));
+    expect(shown[0]).toMatch(/^django \/ db/);
+    expect(await hotkeys()).toContain("u");
+    // Zoomed in, the selection and its lighting stay.
+    expect(shown.some((t) => t.startsWith("django/db/models/query.py · "))).toBe(true);
+    for (let i = 0; i < 4 && (await key("up")) !== undefined; i++) (await key("up"))!.props.onPress();
+    expect(textOf(await render(d))[0]).not.toMatch(/ \/ /);
+    (await key("previous"))!.props.onPress();
+    expect(textOf(await render(d)).some((t) => / · imports query\.py$/.test(t))).toBe(true);
+    (await key("clear"))!.props.onPress();
+    expect(textOf(await render(d)).some((t) => t.includes(" · Claude edited it") || t.includes(" · imports "))).toBe(false);
+  });
+
+  it("each tab's keys are its own: the map's letters only on the Map tab, never a digit (digits are the tabs)", async () => {
+    const d = await opened();
+    const tree = await render(d);
+    const hot = flatten(tree).filter((n) => n.el === "Button").map((n) => n.props.hotkey as string);
+    expect(new Set(hot).size).toBe(hot.length);
+    expect(flatten(tree).filter((n) => n.el === "Button" && String(n.props.key).startsWith("lens-map-")).every((n) => /^[a-z]$/.test(n.props.hotkey))).toBe(true);
+    flatten(tree).find((n) => n.props.key === "lens-tab-flow")!.props.onPress();
+    expect(flatten(await render(d)).some((n) => n.el === "Button" && String(n.props.key).startsWith("lens-map-"))).toBe(false);
+  });
+
   it("the map is quiet ghost tiles until the Health colours button turns the bands on; lens_map_health starts it on", async () => {
     const d = await opened();
     const bands = (tree: Tree) => decode(String(flatten(tree).find((n) => n.el === "Raster")!.props.cells)).some((w, i) => i % 3 === 1 && w === parseInt(DARK_CANVAS_BAND.good.slice(1), 16));
@@ -241,8 +291,8 @@ describe("the map pane", () => {
     const tree = await render(d);
     const r = flatten(tree).find((n) => n.el === "Raster")!;
     // The pane's 55 rows less the tab row and the rows under the map (story, scope, toggle).
-    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 47 });
-    expect(r.props.cells).toHaveLength(180 * 47 * 16);
+    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 45 });
+    expect(r.props.cells).toHaveLength(180 * 45 * 16);
     expect(textOf(tree).some((t) => /^1,\d{3} of 2,970 files drawn at this size/.test(t))).toBe(true);
   });
 
@@ -272,7 +322,7 @@ describe("the map pane", () => {
     await render(d);
     await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
     await until(() => d.calls.blit.length >= 2);
-    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 47 });
+    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 45 });
     const shown = textOf(await render(d));
     expect(shown.some((t) => t.startsWith("12 importers: "))).toBe(true);
     expect(shown).toContain("◉ query.py");

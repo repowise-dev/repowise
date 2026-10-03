@@ -15,7 +15,8 @@ import { LensFlow, type FlowPane } from "./flow-controller";
 import { themeOf, type ThemeName } from "./views/theme";
 import { litFromFlow, litFromTrail, storyFromFlow, storyFromTrail, type Story } from "./model/story";
 import { NO_LIT, type Lit } from "./views/overlay";
-import { HEALTH_KEY } from "./views/mapPane";
+import { MAP_PRESSES } from "./views/mapPane";
+import { knowsOf, type Knows } from "./model/inspect";
 import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
   CheckNext,
@@ -55,7 +56,7 @@ import {
 import { askReply, askRoute, lensCommand, whyDraft, type BarTab, type PaneTab } from "./model/ask";
 import { clearedConversation, hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
 import { bandView } from "./views/band";
-import { materialize, type ElementTable, type Node } from "./views/elements";
+import { materialize, text, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
 import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/review";
 import { BRIEF_PRESS, briefText } from "./views/brief";
@@ -425,6 +426,7 @@ async function onTurnStart($: ModApi, e: TurnStartEvent, next: (e: TurnStartEven
       started = null;
     }
     dispatch(bind($), reviewOn ? { type: "turnStarted" } : { type: "briefDone" });
+    map.turnStarted();
   } catch (err) {
     bind($).debug(`turn.start failed: ${String(err)}`);
   }
@@ -872,11 +874,12 @@ const TAB_BODIES: Record<PaneTab, TabBody> = {
 };
 
 /** The current turn for the map: from Flow's record, or from the map's own trail when Flow is off. */
-function mapTurn(): { lit: Lit; story: Story } {
-  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state) };
+function mapTurn(): { lit: Lit; story: Story; knows: (path: string) => Knows } {
+  const knows = (path: string) => knowsOf(path, state.contexts, flowOn ? flow.state : null);
+  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state), knows };
   const root = state.repoRoot;
   const lit = root === null ? NO_LIT : litFromTrail(map.trail, root, isWindowsPath(root));
-  return { lit, story: storyFromTrail(map.trail) };
+  return { lit, story: storyFromTrail(map.trail), knows };
 }
 
 function mapBody(b: Bound, e: PaneRenderEvent): Node {
@@ -886,13 +889,17 @@ function mapBody(b: Bound, e: PaneRenderEvent): Node {
   return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS, theme });
 }
 
-/** The map's "Health colours" button. */
-function pressHealth($: ModApi): void {
+/** One of the map's keys: the cursor, the zoom, or the health colours. */
+function pressMap($: ModApi, key: string): void {
   try {
-    map.toggleHealth(bind($));
+    map.press(bind($), key);
   } catch (err) {
-    bind($).debug(`health toggle failed: ${String(err)}`);
+    bind($).debug(`map key failed: ${String(err)}`);
   }
+}
+
+function mapPresses($: ModApi): Record<string, () => void> {
+  return Object.fromEntries(MAP_PRESSES.map((key) => [key, () => pressMap($, key)]));
 }
 
 /** The shown tab's body; the map draws (and animates) only on its own tab, the owl ticks only on Flow's. */
@@ -901,7 +908,13 @@ function tabBody(b: Bound, e: PaneRenderEvent): Node {
   if (tab !== "map") map.offScreen();
   if (tab !== "flow") flow.hide();
   const rows = (e.props.placement === "dock" ? e.props.scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
-  return TAB_BODIES[tab](b, e, rows);
+  try {
+    return TAB_BODIES[tab](b, e, rows);
+  } catch (err) {
+    // A body that throws keeps the tab bar and says so, instead of blanking the pane.
+    b.debug(`${tab} tab render failed: ${String(err)}`);
+    return text(fit(PANE_COPY.bodyFailed, e.props.bodyColumns), { dimColor: true, wrap: "truncate-end" });
+  }
 }
 
 async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) => Promise<unknown>): Promise<unknown> {
@@ -909,7 +922,7 @@ async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) 
   const b = bind($);
   try {
     const bar = tabBar(flowOn);
-    const presses = { ...tabPresses($, bar), ...flowRowPresses($), [HEALTH_KEY]: () => pressHealth($) };
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($), ...mapPresses($) };
     return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);

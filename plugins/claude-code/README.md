@@ -142,7 +142,9 @@ which may use the model your repo configures. See
 It needs Claude Code 2.1.287 or later and an indexed repo. The map and the
 savings row also need `repowise serve --no-ui`. Six `userConfig` toggles
 control it: `lens_margin`, `lens_squeeze`, `lens_review` and `lens_flow` (on by
-default), and `lens_pane_autoopen` and `lens_map_health` (off). On an older Claude Code, or where mods are switched
+default), and `lens_pane_autoopen` and `lens_map_health` (off). In the map,
+`j` and `k` walk the files Claude's turn lit, `z` and `u` zoom into and out of a
+folder, `x` clears the selection and `h` switches health colours. On an older Claude Code, or where mods are switched
 off, the rest of the plugin works as before.
 
 Guide: [docs/agent/LENS.md](../../docs/agent/LENS.md)

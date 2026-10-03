@@ -4,7 +4,7 @@ import { NO_STORY, type Reach, type Story } from "../src/model/story";
 import { HINTS, MAP_COPY, STORY_COPY, freshnessLine, linesPart, notPlacedLine, reachesPart, scopeParts, searchedPart } from "../src/views/copy";
 import type { Node } from "../src/views/elements";
 import { MAP_PALETTES, layoutMap } from "../src/views/map";
-import { HEALTH_KEY, MAP_KEY, legendRows, mapPaneView, mapSize, noticeView, packRows, storyView, type MapPaneParts } from "../src/views/mapPane";
+import { HEALTH_KEY, MAP_KEY, keyRow, legendRows, mapPaneView, mapSize, noticeView, packRows, storyView, type MapPaneParts } from "../src/views/mapPane";
 import { NO_LIT, frameCells, resolveLit } from "../src/views/overlay";
 import { feed, importers } from "./django";
 
@@ -27,7 +27,7 @@ function rows(node: Node): string[] {
 
 const DARK = { theme: "dark" as const, health: false };
 const hex = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
-const scope = { drawn: 1_639, shown: 2_347, repositoryTotal: 2_970, indexed: "2h ago", beyondCap: 0, dense: false, notOnMap: 0 };
+const scope = { drawn: 1_639, shown: 2_347, repositoryTotal: 2_970, indexed: "2h ago", beyondCap: 0, dense: false, notOnMap: 0, zoom: null };
 
 /** The recorded Django turn's story: Flow's record of it, as model/story.ts reads it. */
 const story: Story = {
@@ -48,11 +48,11 @@ const reach: Reach = {
 };
 
 describe("mapSize and legendRows", () => {
-  it("docked: full width, the pane's rows less the story, scope and toggle rows (and the health legend when on)", () => {
-    expect(legendRows(180)).toBe(4 + 2 + 1);
-    expect(legendRows(180, true)).toBe(4 + 1 + 2 + 1);
-    expect(mapSize({ bodyColumns: 180, placement: "dock", bodyRows: 55 })).toEqual({ columns: 180, rows: 48 });
-    expect(mapSize({ bodyColumns: 180, placement: "dock", bodyRows: 55 }, true)).toEqual({ columns: 180, rows: 47 });
+  it("docked: full width, the pane's rows less the breadcrumb, story, detail, scope and key rows (and the health legend when on)", () => {
+    expect(legendRows(180)).toBe(1 + 4 + 1 + 2 + 1);
+    expect(legendRows(180, true)).toBe(1 + 4 + 1 + 1 + 2 + 1);
+    expect(mapSize({ bodyColumns: 180, placement: "dock", bodyRows: 55 })).toEqual({ columns: 180, rows: 46 });
+    expect(mapSize({ bodyColumns: 180, placement: "dock", bodyRows: 55 }, true)).toEqual({ columns: 180, rows: 45 });
   });
 
   it("inline: a squat share of the width, capped; within the Raster's limits", () => {
@@ -141,7 +141,8 @@ describe("mapPaneView", () => {
     const shown = rows(tree);
     expect(shown.slice(1, 5).map((r) => r.slice(0, 8))).toEqual(["SEARCHED", "OPENED  ", "EDITED  ", "REACHES "]);
     expect(shown.at(-2)).toBe("1,639 of 2,970 files drawn at this size · rest too small to draw · indexed 2h ago");
-    expect(tree.children.at(-1)).toMatchObject({ type: "Button", props: { key: HEALTH_KEY, hotkey: "h", label: MAP_COPY.healthOff } });
+    const keyRow = tree.children.at(-1)!;
+    expect(keyRow.type === "Box" && keyRow.children.at(-1)).toMatchObject({ type: "Button", props: { key: HEALTH_KEY, hotkey: "h", label: MAP_COPY.healthOff } });
     expect(JSON.stringify(tree)).not.toContain(DARK_CANVAS_BAND.at_risk);
   });
 
@@ -166,5 +167,33 @@ describe("mapPaneView", () => {
 
   it("noticeView is one dim line, fitted", () => {
     expect(texts(noticeView(MAP_COPY.loading, 20))).toEqual(["Lens map: loading t…"]);
+  });
+});
+
+describe("the key row", () => {
+  const ALL = { items: true, selected: true, zoomable: true, zoomed: true };
+  /** Cells the row takes: each plain Button as `h: label`, a `…` as one, two between. */
+  const cells = (row: Node): number => {
+    const kids = row.type === "Box" ? row.children : [];
+    return kids.reduce((n, k) => n + (k.type === "Button" ? String(k.props.label).length + 3 : k.type === "Text" ? k.children.join("").length : 0), 0) + 2 * (kids.length - 1);
+  };
+  const hotkeys = (row: Node): string[] => (row.type === "Box" ? row.children.flatMap((k) => (k.type === "Button" ? [String(k.props.hotkey)] : k.type === "Text" ? ["…"] : [])) : []);
+
+  for (const columns of [40, 60, 110]) {
+    it(`stays on one row at ${columns} columns, dropping the least useful keys behind a …`, () => {
+      for (const health of [false, true]) {
+        const row = keyRow(ALL, { theme: "dark", health }, columns);
+        expect(cells(row)).toBeLessThanOrEqual(columns);
+        expect(hotkeys(row)).toContain("h");
+        expect(hotkeys(row)).toContain("j");
+      }
+    });
+  }
+
+  it("keeps every key where they fit, and drops clear before next", () => {
+    expect(hotkeys(keyRow(ALL, { theme: "dark", health: false }, 110))).toEqual(["j", "k", "z", "u", "x", "h"]);
+    const narrow = hotkeys(keyRow(ALL, { theme: "dark", health: false }, 40));
+    expect(narrow.at(-1)).toBe("…");
+    expect(narrow).not.toContain("x");
   });
 });
