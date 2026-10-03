@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { absoluteKey, absolutePath, fromToolCall, relativeTo } from "../src/model/events";
 import { initialTrail, reduceTrail, type TrailAction } from "../src/model/trail";
 import { layoutMap } from "../src/views/map";
-import { resolveOverlay } from "../src/views/overlay";
+import { litFromTrail } from "../src/model/story";
+import { notOnMap, resolveLit } from "../src/views/overlay";
 import { fixture } from "./fake-host";
 
 /** Tool calls recorded from a headless Claude Code 2.1.288 run in a Django copy, its root renamed to C:/work/django (long strings cut). */
@@ -129,16 +130,16 @@ describe("paths", () => {
   });
 
   it("a Windows read lands on its map cell regardless of separators and case", () => {
-    const layout = layoutMap([{ file_path: "django/db/models/query.py", score: 6, nloc: 10 }], 4, 2, true);
+    const layout = layoutMap([{ file_path: "django/db/models/query.py", score: 6, nloc: 10 }], { columns: 4, rows: 2, caseInsensitive: true });
     const action = fromToolCall({ tool: "Read", file_path: "c:\\users\\dev\\DJANGO\\Django\\DB\\models\\query.py" }, ok, win);
     const trail = reduceTrail(initialTrail, action as TrailAction);
-    expect(resolveOverlay(layout, trail, "C:\\Users\\Dev\\django").overlay.reads).toEqual([0]);
+    expect(resolveLit(layout, litFromTrail(trail, "C:\\Users\\Dev\\django", true)).reads).toEqual([0]);
   });
 
   it("a POSIX read differing only in case is off the map", () => {
-    const layout = layoutMap([{ file_path: "src/App.ts", score: 6, nloc: 10 }], 4, 2, false);
+    const layout = layoutMap([{ file_path: "src/App.ts", score: 6, nloc: 10 }], { columns: 4, rows: 2, caseInsensitive: false });
     const trail = reduceTrail(initialTrail, { type: "read", path: "/repo/src/app.ts" });
-    expect(resolveOverlay(layout, trail, "/repo").reads.notDrawn).toBe(1);
+    expect(notOnMap(layout, litFromTrail(trail, "/repo", false))).toBe(1);
   });
 });
 

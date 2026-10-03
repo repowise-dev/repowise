@@ -25,6 +25,13 @@ export function flowTheme(light: boolean): FlowTheme {
   return light ? LIGHT_THEME : DARK_THEME;
 }
 
+/** Claude Code's `theme` setting, as the two ramps Lens draws with: light for any light theme, else dark. */
+export type ThemeName = "dark" | "light";
+
+export function themeOf(value: unknown): ThemeName {
+  return typeof value === "string" && value.startsWith("light") ? "light" : "dark";
+}
+
 /** One period of the hills along the pane's top. */
 const HILLS = "▁▂▃▅▃▂▁▁▂▃▂▁▁▁▂▃▄▃▂▁";
 /** The hills mirrored in the water: lower shapes read as a flat shore, higher as reflections. */

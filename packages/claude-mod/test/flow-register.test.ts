@@ -44,6 +44,7 @@ function fakeDollar() {
       blit: async () => ({}),
     },
     command: { register: async () => ({}) },
+    config: { list: async () => [] },
     settings: { read: async () => ({}) },
   };
   return { $, calls };
@@ -73,7 +74,7 @@ describe("lens_flow off", () => {
     hooks = await load({ lens_flow: false });
     expect(Object.keys(hooks)).not.toContain("turn.step");
     const d = await session();
-    expect(buttonsOf(await pane(d)).map((b) => b.props.label)).toEqual(["Map", "Recap"]);
+    expect(buttonsOf(await pane(d)).map((b) => b.props.label)).toEqual(["Map", "Ask", "Recap"]);
     const out = { text: "x" };
     expect(await hooks["tool.call"]!(d.$, { tool: "Bash", tool_use_id: "b", command: "ls" }, async () => out)).toBe(out);
   });

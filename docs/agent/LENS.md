@@ -126,7 +126,7 @@ branch and no decision. A new turn retires it.
 
 ### The /lens pane
 
-`/lens` opens a pane with three tabs, `1: Flow  2: Map  3: Recap`. A session
+`/lens` opens a pane with four tabs, `1: Flow  2: Map  3: Ask  4: Recap`. A session
 starts on Flow; after that `/lens` reopens the tab shown last.
 
 **Flow** is a dashboard of the turn, built from what only Lens sees: the chat
@@ -188,7 +188,7 @@ from, for example `420 ms · 1 target · 1 documentation page · index current`.
 The call Claude is waiting on is marked `▸` and says `asking...`. A call about
 a file Claude had already edited this session says, dim,
 `from the index before this edit`. Questions you ask from Lens land in the
-Ask field, not here. Press a call to open its detail; `j: Next call` and
+Ask tab, not here. Press a call to open its detail; `j: Next call` and
 `k: Previous call` move between them. The detail shows `how it was answered`
 (only what the reply said about itself, such as `indexed at <commit>`,
 `index <N> days old`, `verified against the code`,
@@ -213,36 +213,52 @@ Flow still counts Claude's own work and says
 Before the first turn it says
 `Lens is listening. Send a prompt and this tab shows what only Lens sees: what an edit reaches, where Claude's context came from, and what Repowise answered.`
 
-**Map** is a treemap of the repository's files, sized by lines of code and
-colored by health band: `Excellent`, `Good`, `Fair`, `Needs work`, `At risk`
-and `Not scored`. Claude's activity is marked on top of it, and the legend
-names each mark:
+**Map** shows the whole repository as quiet tiles, one per file, sized by
+lines of code and grouped into folders, in two tones close to the terminal's
+own ground, so the current turn is the only colour on it. As Claude works,
+the files of its turn light up: search matches glow faintly, files Claude
+opened turn mist, the edit (and Claude's latest step) turns orange, files a
+Repowise reply named take a deep plum, and the files that import the edit
+ripple out in plum from it. Every mark fills a whole tile; a file too small
+for a tile of its own still lights one full cell where it sits. Opened and
+edited files keep their names beside their tiles, and large folders show their
+names faintly. The empty ground between tiles is the terminal's own
+background. In a very large repository, where most files would be smaller than
+a pixel, folders are drawn as tiles instead of files.
 
-- `Claude read` outlines files Claude read
-- `edited` marks the file Claude edited
-- `imports the edited file` marks the files that import it, with a ripple
-  from the edit
-- `search match` flashes the files the last Grep or Glob matched
+Under the map, a story strip says what happened this turn, a row each once it
+has something to say:
 
-Under the legend, the pane states what it counts:
-`<N> files read · <N> not drawn · last search matched <N> files`, and
-`edited <file> · <N> files import it (from imports, not calls)`. The importers
-come from the import graph, so they are inferred, not observed calls. The
-scope line says how much of the repo is drawn, for example
-`<N> files, all drawn` or
-`<N> of <M> files drawn at this size · rest empty or too small`, then
-`indexed <age>`, and `<N> beyond the 4,000-file cap` when the server stopped at
-its cap. Read counts stop at 200 and then show as `200+`.
+```
+SEARCHED  class QuerySet: 4 files · django/db/models/sql/*.py: 7 files
+OPENED    manager.py · query.py  ◆ query.py named by get_context
+EDITED    ◉ query.py +1 line
+REACHES   12 importers: manager.py (opened), fields.py, prefetch.py, +9
+```
 
-The flash and ripple animations play briefly. With Claude Code's
-`prefersReducedMotion` setting on, the map shows still frames only.
+The strip is the map's legend. Before anything happens it says
+`Nothing lit yet this turn. Files Claude searches, opens and edits light up here.`
+The importers come from the import graph, so they are inferred from imports,
+not observed calls; while that lookup runs the row says
+`finding the files that import <file>`. A scope line says how much of the repo
+is drawn: `<N> files, all drawn`, `<N> of <M> files drawn at this size · rest too small to draw`,
+`<M> files, drawn as folders at this size`, or, when the server stopped at its
+cap, `4,000 largest of <M> files drawn`, then `indexed <age>` and
+`<N> touched files not on the map` when some were outside it.
+
+The `Health colours` button under the map (hotkey `h`) colours the tiles by
+health band instead, `Excellent`, `Good`, `Fair`, `Needs work`, `At risk` and
+`Not scored`, with that legend; the `lens_map_health` setting starts the map
+that way. The glow and ripple animations play briefly. With Claude Code's
+`prefersReducedMotion` setting on, the map shows still frames only. Colours
+follow Claude Code's `theme` setting: a light theme gets the light ramp.
 
 The map needs the local server (full mode). Without it the Map tab shows the
 setup hint instead.
 
-**Ask** is a field rather than a tab: `/lens ask` and the review's `Why`
+**Ask** asks the index about this repo. `/lens ask` and the review's `Why`
 open it, and `/lens ask <question>` asks at once, its reply landing in the
-field. Before the first question the field says
+Ask tab. Before the first question the field says
 `Ask about this repo. Answers cite the evidence they used.` A question that
 starts with "why" goes to `get_why`, which reads decision records, commits and
 rationale comments. Anything else goes to `get_answer`. Each reply is headed
@@ -258,7 +274,7 @@ lookups:
 
 | Row | Example value |
 |---|---|
-| `Files` | `<N> edited of <M> files touched`, with `<M>` shown as `200+` once the trail is capped |
+| `Files` | `<N> edited of <M> files touched`, with `<M>` shown as `200+` once the count of touched files is capped |
 | `Change review` | `none this session`, shown in place of the four review rows when no review has run |
 | `from the last change review` | a dim sub-head over the next four rows |
 | `Code health` | the last review's health verdict |
@@ -321,7 +337,7 @@ own. Full mode adds the local server, which Lens finds through
 
 ## Settings
 
-Five toggles in the plugin's `userConfig`. Changing one reloads Lens.
+Six toggles in the plugin's `userConfig`. Changing one reloads Lens.
 
 | Setting | Default | What it controls |
 |---|---|---|
@@ -329,6 +345,7 @@ Five toggles in the plugin's `userConfig`. Changing one reloads Lens.
 | `lens_squeeze` | on | Squeeze rows under distilled Bash output |
 | `lens_review` | on | The change review after a turn that edits files, its card and its buttons |
 | `lens_flow` | on | The Flow tab. Off, Lens records nothing for it and the pane opens on the Map |
+| `lens_map_health` | off | Start the map with health colours on its tiles. Off, the map is quiet tiles lit by Claude's turn; the `Health colours` button switches either way |
 | `lens_pane_autoopen` | off | Open the map pane on its own the first time Claude reads a file, when the terminal is wide enough to place it without asking. `/lens` opens it at any time |
 
 ## Commands
@@ -338,9 +355,9 @@ Five toggles in the plugin's `userConfig`. Changing one reloads Lens.
 | `/lens` | Opens the pane on the tab shown last (Flow at first), with keyboard focus |
 | `/lens flow` | Opens the pane on the Flow tab |
 | `/lens map` | Opens the pane on the Map tab |
+| `/lens ask` | Opens the pane on the Ask tab |
+| `/lens ask <question>` | Asks the question; its reply lands in the Ask tab |
 | `/lens recap` | Opens the pane on the Recap tab |
-| `/lens ask` | Opens the Ask field |
-| `/lens ask <question>` | Asks the question; its reply lands in the Ask field |
 
 `/lens` writes nothing into the transcript. The pane is the answer.
 
@@ -367,11 +384,23 @@ band says `Lens map needs a wider terminal: <reason>`.
 Run `repowise serve --no-ui` in the repo. If the server has an API key
 configured, Lens stays in lite mode, because it never reads keys.
 
-**The map says it could not load.** `Lens map could not load the health map; it tries again on /lens`.
+**The docked pane is grey, not my terminal's background.** The docked pane's
+surface is Claude Code's own; mods cannot set or clear it. Lens draws nothing
+behind its own rows, and inside the map the empty ground is the terminal's
+own background.
+
+**The map says it could not load.** `Lens map could not load; it tries again on /lens`.
 Run `/lens` again once the server is up.
 
 **The change review timed out.** It has 20 seconds. The review is skipped for
 that turn and runs again after the next turn that edits files.
+
+**After `/clear`.** A `/clear` starts Lens's view of the conversation over. Flow's turns, the map's lighting
+and story, the change review, the Ask answer, the brief offer and the savings
+baseline all reset, since `/clear` restarts Claude Code's own session clock.
+What the index said stays (the health map, file cards and the importers already
+asked for), so the map redraws without asking the server again. Resuming a
+session does not reset anything.
 
 ## Footprint
 

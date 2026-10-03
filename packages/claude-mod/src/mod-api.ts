@@ -73,10 +73,21 @@ export interface ModApi {
     register(command: { name: string; description: string; argumentHint?: string; immediate?: true }): Promise<unknown>;
   };
   settings: { read(): Promise<Readonly<Record<string, unknown>>> };
+  /** The `/config` menu's rows; Lens reads only `theme`. */
+  config: { list(): Promise<ReadonlyArray<{ key: string; value: unknown }>> };
 }
 
 export interface SessionStartEvent {
   cwd?: string;
+}
+
+/**
+ * The conversation ending. `clear` is a `/clear`: the process goes on under a
+ * new session id and no `session.start` fires for it.
+ */
+export interface SessionEndEvent {
+  reason?: "clear" | "resume" | "logout" | "prompt_input_exit" | "other";
+  sessionId?: string;
 }
 
 /** A prompt's turn starting; `text` is "" for one started without a typed prompt. */
@@ -157,6 +168,7 @@ export type PluginOptions = Readonly<Record<string, string | number | boolean | 
 
 export interface On {
   (event: "session.start", hook: Hook<SessionStartEvent>): unknown;
+  (event: "session.end", hook: Hook<SessionEndEvent>): unknown;
   (event: "turn.complete", hook: Hook<TurnCompleteEvent>): unknown;
   (event: "turn.start", hook: Hook<TurnStartEvent>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;

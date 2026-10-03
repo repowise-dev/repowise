@@ -10,7 +10,12 @@ import { callTool, fetchFileContext, isOwnLensCall, mcpReady, resetMcp, warmMcp 
 import { withTimeout } from "./data/transport";
 import { fit } from "./format";
 import type { Host } from "./host";
+import { Animator } from "./animator";
 import { LensFlow, type FlowPane } from "./flow-controller";
+import { themeOf, type ThemeName } from "./views/theme";
+import { litFromFlow, litFromTrail, storyFromFlow, storyFromTrail, type Story } from "./model/story";
+import { NO_LIT, type Lit } from "./views/overlay";
+import { HEALTH_KEY } from "./views/mapPane";
 import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
   CheckNext,
@@ -22,6 +27,7 @@ import type {
   PostCompactEvent,
   PostToolUseEvent,
   RenderEvent,
+  SessionEndEvent,
   SessionStartEvent,
   SpinnerEvent,
   ToolCallEvent,
@@ -47,14 +53,13 @@ import {
   touchedPath,
 } from "./model/events";
 import { askReply, askRoute, lensCommand, whyDraft, type BarTab, type PaneTab } from "./model/ask";
-import { hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
+import { clearedConversation, hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
 import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/review";
 import { BRIEF_PRESS, briefText } from "./views/brief";
 import { HINTS, MAP_COPY, PANE_COPY, REVIEW_TIMEOUT_S } from "./views/copy";
-import { MAP_KEY } from "./views/mapPane";
 import { FLOW_NEXT, flowPresses } from "./views/flow";
 import { ASK_KEY, TAB_ROWS, askView, paneView, recapView, tabBar, tabPress } from "./views/pane";
 import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
@@ -77,6 +82,8 @@ const ASK_TIMEOUT_MS = 30_000;
 /** The `lens_flow` toggle, fixed for one activation. */
 let flowOn = true;
 let flow = new LensFlow();
+/** The person's `prefersReducedMotion`, read at session start, for a Flow made again after a `/clear`. */
+let reducedMotion = false;
 
 /** A new session's state: on the Flow tab, or the Map when Flow is off. */
 function freshSession(): SessionState {
@@ -121,11 +128,15 @@ interface StartedReview {
 let started: StartedReview | null = null;
 /** The `lens_pane_autoopen` toggle, fixed for one activation. */
 let autoOpenOn = false;
+/** The `lens_map_health` default: health colours on the map's tiles when it opens. */
+let healthOn = false;
 /** The last discovery, for the map pane's notice and its repo. */
 let discovery: Discovery | null = null;
 /** The session's cwd, from its start event, so observing a tool call waits on nothing. */
 let cwd: string | null = null;
 let map = new LensMap(false);
+/** The pane's one animator, driven by the tab shown (today the map). */
+let animator = new Animator();
 
 /** Cut so an error stays one line under the answer. */
 const ERROR_CELLS = 160;
@@ -171,7 +182,7 @@ function bind($: ModApi): Bound {
     blastLanded: (path, r) => flowBlast(bound, path, r),
     redraw: () => $.ui.invalidate("ui.render"),
     debug: (message) => $.ui.log(`lens: ${message}`, { to: "debug" }),
-    blit: (cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }),
+    blit: (key, cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key, cells, columns, rows }),
     // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
     // Opened unasked on a read: the map is what it opens to. This happens at most once, and never
     // after the person opened the pane (/lens, Why), the only ways to have picked a tab by then.
@@ -185,6 +196,8 @@ function bind($: ModApi): Bound {
     ),
     closePane: () => $.ui.close({ id: PANE_ID }),
   };
+  // Each hook's closures for the animator's next frame: never a `$` kept from an earlier hook.
+  animator.use(bound);
   return bound;
 }
 
@@ -272,7 +285,9 @@ async function onSessionStart(
     generation++;
     cwd = typeof e.cwd === "string" ? e.cwd : null;
     map.dispose();
-    map = new LensMap(autoOpenOn);
+    animator.end();
+    animator = new Animator();
+    map = new LensMap(autoOpenOn, animator, healthOn, mapTurn);
     flow.dispose();
     flow = new LensFlow();
     state = freshSession();
@@ -287,9 +302,10 @@ async function onSessionStart(
     warmMcp(b.host);
     refresh(b);
     await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
-    const still = (await $.settings.read())["prefersReducedMotion"] === true;
-    map.setReducedMotion(still);
-    flow.setReducedMotion(still);
+    readTheme($);
+    reducedMotion = (await $.settings.read())["prefersReducedMotion"] === true;
+    map.setReducedMotion(reducedMotion);
+    flow.setReducedMotion(reducedMotion);
   } catch (err) {
     // Lens stays quiet; the session is unaffected.
     b.debug(`session.start failed: ${String(err)}`);
@@ -454,6 +470,37 @@ function pressBrief($: ModApi): void {
   }
 }
 
+/**
+ * A `/clear` starts a new conversation in the same process, with no
+ * `session.start`: Flow, the map's lighting, the review, Ask and the savings
+ * baseline start over. What the index said (discovery, the health map, file
+ * cards, importers by path) and the MCP connection stay. Savings restart
+ * because the engine's own session clock (`usage().startedAt`) does too.
+ * Any other end (exit, resume, logout) leaves everything to the next activation.
+ */
+async function onSessionEnd($: ModApi, e: SessionEndEvent, next: (e: SessionEndEvent) => Promise<unknown>): Promise<unknown> {
+  if (e.reason !== "clear") return next(e);
+  const b = bind($);
+  try {
+    animator.end();
+    flow.dispose();
+    flow = new LensFlow();
+    flow.setReducedMotion(reducedMotion);
+    map.clearConversation(b);
+    state = clearedConversation(state);
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started = null;
+    squeezes.clear();
+    savingsBase = null;
+    savingsAskedAt = Number.NEGATIVE_INFINITY;
+    b.redraw();
+  } catch (err) {
+    b.debug(`clear failed: ${String(err)}`);
+  }
+  return next(e);
+}
+
 // Only offers the brief: the compaction and its summary pass on untouched.
 async function onPostCompact(
   $: ModApi,
@@ -586,7 +633,7 @@ async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) 
 /** What the Flow tab draws from beyond its own record: the file cards and this turn's review. */
 function flowPane(columns: number, rows: number): FlowPane {
   const outcome = state.review.outcome;
-  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null };
+  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null, light: theme === "light" };
 }
 
 /** The map's blast radius for an edited file, handed to Flow: never a second request. */
@@ -757,11 +804,12 @@ async function onToolUse($: ModApi, e: ToolUseEvent, next: (e: ToolUseEvent) => 
   }
 }
 
-// `/lens`, `/lens map`, `/lens recap`, `/lens ask <question>`: the pane, with
+// `/lens`, `/lens flow`, `/lens map`, `/lens ask [question]`, `/lens recap`: the pane, with
 // focus, on the tab asked for (else the last one shown).
 async function onLensCommand($: ModApi, e: CommandRunEvent): Promise<unknown> {
   const b = bind($);
   try {
+    readTheme($);
     const asked = lensCommand(e.args ?? "", tabBar(flowOn));
     if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
@@ -800,19 +848,60 @@ function selectTab($: ModApi, tab: PaneTab): void {
   }
 }
 
-/** The shown tab's body; the map draws only on its own tab, the owl ticks only on Flow's. */
-function tabBody(b: Bound, e: PaneRenderEvent): Node {
+/** Claude Code's theme, for the map's and Flow's colors; dark until read. */
+let theme: ThemeName = "dark";
+
+/** Reads the theme in the background; a failure keeps the last one (dark by default). */
+function readTheme($: ModApi): void {
+  $.config
+    .list()
+    .then((rows) => {
+      theme = themeOf(rows.find((r) => r.key === "theme")?.value);
+    })
+    .catch((err: unknown) => bind($).debug(`theme failed: ${String(err)}`));
+}
+
+/** A tab's body at this pane size; `rows` is the body's height under the tab row. */
+type TabBody = (b: Bound, e: PaneRenderEvent, rows: number) => Node;
+
+const TAB_BODIES: Record<PaneTab, TabBody> = {
+  flow: (b, e, rows) => flow.paneTree(b, flowPane(e.props.bodyColumns, rows), Date.now()),
+  ask: (_b, e) => askView(state, e.props.bodyColumns),
+  recap: (_b, e) => recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, e.props.bodyColumns),
+  map: (b, e) => mapBody(b, e),
+};
+
+/** The current turn for the map: from Flow's record, or from the map's own trail when Flow is off. */
+function mapTurn(): { lit: Lit; story: Story } {
+  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state) };
+  const root = state.repoRoot;
+  const lit = root === null ? NO_LIT : litFromTrail(map.trail, root, isWindowsPath(root));
+  return { lit, story: storyFromTrail(map.trail) };
+}
+
+function mapBody(b: Bound, e: PaneRenderEvent): Node {
   const { bodyColumns, placement, scroll } = e.props;
+  const d = discovery;
+  const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS, theme });
+}
+
+/** The map's "Health colours" button. */
+function pressHealth($: ModApi): void {
+  try {
+    map.toggleHealth(bind($));
+  } catch (err) {
+    bind($).debug(`health toggle failed: ${String(err)}`);
+  }
+}
+
+/** The shown tab's body; the map draws (and animates) only on its own tab, the owl ticks only on Flow's. */
+function tabBody(b: Bound, e: PaneRenderEvent): Node {
   const tab = state.pane.tab;
   if (tab !== "map") map.offScreen();
   if (tab !== "flow") flow.hide();
-  const bodyRows = (placement === "dock" ? scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
-  if (tab === "flow") return flow.paneTree(b, flowPane(bodyColumns, bodyRows), Date.now());
-  if (tab === "ask") return askView(state, bodyColumns);
-  if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
-  const d = discovery;
-  const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS });
+  const rows = (e.props.placement === "dock" ? e.props.scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
+  return TAB_BODIES[tab](b, e, rows);
 }
 
 async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) => Promise<unknown>): Promise<unknown> {
@@ -820,7 +909,7 @@ async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) 
   const b = bind($);
   try {
     const bar = tabBar(flowOn);
-    const presses = { ...tabPresses($, bar), ...flowRowPresses($) };
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($), [HEALTH_KEY]: () => pressHealth($) };
     return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);
@@ -832,9 +921,11 @@ async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) 
 export function register(on: On, options: PluginOptions = {}): void {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
+  healthOn = options["lens_map_health"] === true;
   flowOn = options["lens_flow"] !== false;
   state = freshSession();
   on("session.start", onSessionStart);
+  on("session.end", onSessionEnd);
   on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);

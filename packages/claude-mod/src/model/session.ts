@@ -137,6 +137,16 @@ export function hintFor(mode: Mode, liteReason: LiteReason | undefined): HintKin
   return mode;
 }
 
+/**
+ * After a `/clear`: what the index said stays (mode, freshness, hints, the repo,
+ * file cards) and so does the pane's tab; everything the old conversation did
+ * goes (its tools, notes, savings, review, touched files, Ask, compaction).
+ */
+export function clearedConversation(state: SessionState): SessionState {
+  const { mode, freshness, hint, hintsShown, repoRoot, contexts } = state;
+  return { ...initialSession, mode, freshness, hint, hintsShown, repoRoot, contexts, pane: { tab: state.pane.tab, draft: "" } };
+}
+
 export function reduce(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
     case "discovered": {

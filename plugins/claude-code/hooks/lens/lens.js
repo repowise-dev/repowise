@@ -214,8 +214,8 @@ function isWindowsPath(p) {
   return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 }
 __name(isWindowsPath, "isWindowsPath");
-function join(dir, rel) {
-  return `${dir.replace(/[\\/]+$/, "")}/${rel}`;
+function join(dir, rel2) {
+  return `${dir.replace(/[\\/]+$/, "")}/${rel2}`;
 }
 __name(join, "join");
 function parentDir(p) {
@@ -486,6 +486,1017 @@ function fit(text2, columns) {
   return `${text2.slice(0, columns - 1).trimEnd()}…`;
 }
 __name(fit, "fit");
+var NOT_ONE_CELL = /[\u0000-\u001f\u007f-\u009f\ud800-\udfffᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+function cellSafe(text2) {
+  return Array.from(text2, (ch) => ch.length === 1 && !NOT_ONE_CELL.test(ch) ? ch : "?").join("");
+}
+__name(cellSafe, "cellSafe");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/count.js
+function count(node) {
+  var sum = 0, children = node.children, i = children && children.length;
+  if (!i) sum = 1;
+  else while (--i >= 0) sum += children[i].value;
+  node.value = sum;
+}
+__name(count, "count");
+function count_default() {
+  return this.eachAfter(count);
+}
+__name(count_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/each.js
+function each_default(callback, that) {
+  let index = -1;
+  for (const node of this) {
+    callback.call(that, node, ++index, this);
+  }
+  return this;
+}
+__name(each_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/eachBefore.js
+function eachBefore_default(callback, that) {
+  var node = this, nodes = [node], children, i, index = -1;
+  while (node = nodes.pop()) {
+    callback.call(that, node, ++index, this);
+    if (children = node.children) {
+      for (i = children.length - 1; i >= 0; --i) {
+        nodes.push(children[i]);
+      }
+    }
+  }
+  return this;
+}
+__name(eachBefore_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/eachAfter.js
+function eachAfter_default(callback, that) {
+  var node = this, nodes = [node], next = [], children, i, n, index = -1;
+  while (node = nodes.pop()) {
+    next.push(node);
+    if (children = node.children) {
+      for (i = 0, n = children.length; i < n; ++i) {
+        nodes.push(children[i]);
+      }
+    }
+  }
+  while (node = next.pop()) {
+    callback.call(that, node, ++index, this);
+  }
+  return this;
+}
+__name(eachAfter_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/find.js
+function find_default(callback, that) {
+  let index = -1;
+  for (const node of this) {
+    if (callback.call(that, node, ++index, this)) {
+      return node;
+    }
+  }
+}
+__name(find_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/sum.js
+function sum_default(value) {
+  return this.eachAfter(function(node) {
+    var sum = +value(node.data) || 0, children = node.children, i = children && children.length;
+    while (--i >= 0) sum += children[i].value;
+    node.value = sum;
+  });
+}
+__name(sum_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/sort.js
+function sort_default(compare) {
+  return this.eachBefore(function(node) {
+    if (node.children) {
+      node.children.sort(compare);
+    }
+  });
+}
+__name(sort_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/path.js
+function path_default(end) {
+  var start = this, ancestor = leastCommonAncestor(start, end), nodes = [start];
+  while (start !== ancestor) {
+    start = start.parent;
+    nodes.push(start);
+  }
+  var k = nodes.length;
+  while (end !== ancestor) {
+    nodes.splice(k, 0, end);
+    end = end.parent;
+  }
+  return nodes;
+}
+__name(path_default, "default");
+function leastCommonAncestor(a, b) {
+  if (a === b) return a;
+  var aNodes = a.ancestors(), bNodes = b.ancestors(), c = null;
+  a = aNodes.pop();
+  b = bNodes.pop();
+  while (a === b) {
+    c = a;
+    a = aNodes.pop();
+    b = bNodes.pop();
+  }
+  return c;
+}
+__name(leastCommonAncestor, "leastCommonAncestor");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/ancestors.js
+function ancestors_default() {
+  var node = this, nodes = [node];
+  while (node = node.parent) {
+    nodes.push(node);
+  }
+  return nodes;
+}
+__name(ancestors_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/descendants.js
+function descendants_default() {
+  return Array.from(this);
+}
+__name(descendants_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/leaves.js
+function leaves_default() {
+  var leaves = [];
+  this.eachBefore(function(node) {
+    if (!node.children) {
+      leaves.push(node);
+    }
+  });
+  return leaves;
+}
+__name(leaves_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/links.js
+function links_default() {
+  var root = this, links = [];
+  root.each(function(node) {
+    if (node !== root) {
+      links.push({ source: node.parent, target: node });
+    }
+  });
+  return links;
+}
+__name(links_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/iterator.js
+function* iterator_default() {
+  var node = this, current, next = [node], children, i, n;
+  do {
+    current = next.reverse(), next = [];
+    while (node = current.pop()) {
+      yield node;
+      if (children = node.children) {
+        for (i = 0, n = children.length; i < n; ++i) {
+          next.push(children[i]);
+        }
+      }
+    }
+  } while (next.length);
+}
+__name(iterator_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/hierarchy/index.js
+function hierarchy(data, children) {
+  if (data instanceof Map) {
+    data = [void 0, data];
+    if (children === void 0) children = mapChildren;
+  } else if (children === void 0) {
+    children = objectChildren;
+  }
+  var root = new Node(data), node, nodes = [root], child, childs, i, n;
+  while (node = nodes.pop()) {
+    if ((childs = children(node.data)) && (n = (childs = Array.from(childs)).length)) {
+      node.children = childs;
+      for (i = n - 1; i >= 0; --i) {
+        nodes.push(child = childs[i] = new Node(childs[i]));
+        child.parent = node;
+        child.depth = node.depth + 1;
+      }
+    }
+  }
+  return root.eachBefore(computeHeight);
+}
+__name(hierarchy, "hierarchy");
+function node_copy() {
+  return hierarchy(this).eachBefore(copyData);
+}
+__name(node_copy, "node_copy");
+function objectChildren(d) {
+  return d.children;
+}
+__name(objectChildren, "objectChildren");
+function mapChildren(d) {
+  return Array.isArray(d) ? d[1] : null;
+}
+__name(mapChildren, "mapChildren");
+function copyData(node) {
+  if (node.data.value !== void 0) node.value = node.data.value;
+  node.data = node.data.data;
+}
+__name(copyData, "copyData");
+function computeHeight(node) {
+  var height = 0;
+  do
+    node.height = height;
+  while ((node = node.parent) && node.height < ++height);
+}
+__name(computeHeight, "computeHeight");
+function Node(data) {
+  this.data = data;
+  this.depth = this.height = 0;
+  this.parent = null;
+}
+__name(Node, "Node");
+Node.prototype = hierarchy.prototype = {
+  constructor: Node,
+  count: count_default,
+  each: each_default,
+  eachAfter: eachAfter_default,
+  eachBefore: eachBefore_default,
+  find: find_default,
+  sum: sum_default,
+  sort: sort_default,
+  path: path_default,
+  ancestors: ancestors_default,
+  descendants: descendants_default,
+  leaves: leaves_default,
+  links: links_default,
+  copy: node_copy,
+  [Symbol.iterator]: iterator_default
+};
+
+// ../../node_modules/d3-hierarchy/src/accessors.js
+function required(f) {
+  if (typeof f !== "function") throw new Error();
+  return f;
+}
+__name(required, "required");
+
+// ../../node_modules/d3-hierarchy/src/constant.js
+function constantZero() {
+  return 0;
+}
+__name(constantZero, "constantZero");
+function constant_default(x) {
+  return function() {
+    return x;
+  };
+}
+__name(constant_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/round.js
+function round_default(node) {
+  node.x0 = Math.round(node.x0);
+  node.y0 = Math.round(node.y0);
+  node.x1 = Math.round(node.x1);
+  node.y1 = Math.round(node.y1);
+}
+__name(round_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/dice.js
+function dice_default(parent, x0, y0, x1, y1) {
+  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (x1 - x0) / parent.value;
+  while (++i < n) {
+    node = nodes[i], node.y0 = y0, node.y1 = y1;
+    node.x0 = x0, node.x1 = x0 += node.value * k;
+  }
+}
+__name(dice_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/slice.js
+function slice_default(parent, x0, y0, x1, y1) {
+  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (y1 - y0) / parent.value;
+  while (++i < n) {
+    node = nodes[i], node.x0 = x0, node.x1 = x1;
+    node.y0 = y0, node.y1 = y0 += node.value * k;
+  }
+}
+__name(slice_default, "default");
+
+// ../../node_modules/d3-hierarchy/src/treemap/squarify.js
+var phi = (1 + Math.sqrt(5)) / 2;
+function squarifyRatio(ratio, parent, x0, y0, x1, y1) {
+  var rows = [], nodes = parent.children, row2, nodeValue, i0 = 0, i1 = 0, n = nodes.length, dx, dy, value = parent.value, sumValue, minValue, maxValue, newRatio, minRatio, alpha, beta;
+  while (i0 < n) {
+    dx = x1 - x0, dy = y1 - y0;
+    do
+      sumValue = nodes[i1++].value;
+    while (!sumValue && i1 < n);
+    minValue = maxValue = sumValue;
+    alpha = Math.max(dy / dx, dx / dy) / (value * ratio);
+    beta = sumValue * sumValue * alpha;
+    minRatio = Math.max(maxValue / beta, beta / minValue);
+    for (; i1 < n; ++i1) {
+      sumValue += nodeValue = nodes[i1].value;
+      if (nodeValue < minValue) minValue = nodeValue;
+      if (nodeValue > maxValue) maxValue = nodeValue;
+      beta = sumValue * sumValue * alpha;
+      newRatio = Math.max(maxValue / beta, beta / minValue);
+      if (newRatio > minRatio) {
+        sumValue -= nodeValue;
+        break;
+      }
+      minRatio = newRatio;
+    }
+    rows.push(row2 = { value: sumValue, dice: dx < dy, children: nodes.slice(i0, i1) });
+    if (row2.dice) dice_default(row2, x0, y0, x1, value ? y0 += dy * sumValue / value : y1);
+    else slice_default(row2, x0, y0, value ? x0 += dx * sumValue / value : x1, y1);
+    value -= sumValue, i0 = i1;
+  }
+  return rows;
+}
+__name(squarifyRatio, "squarifyRatio");
+var squarify_default = (/* @__PURE__ */ __name((function custom(ratio) {
+  function squarify(parent, x0, y0, x1, y1) {
+    squarifyRatio(ratio, parent, x0, y0, x1, y1);
+  }
+  __name(squarify, "squarify");
+  squarify.ratio = function(x) {
+    return custom((x = +x) > 1 ? x : 1);
+  };
+  return squarify;
+}), "custom"))(phi);
+
+// ../../node_modules/d3-hierarchy/src/treemap/index.js
+function treemap_default() {
+  var tile = squarify_default, round = false, dx = 1, dy = 1, paddingStack = [0], paddingInner = constantZero, paddingTop = constantZero, paddingRight = constantZero, paddingBottom = constantZero, paddingLeft = constantZero;
+  function treemap(root) {
+    root.x0 = root.y0 = 0;
+    root.x1 = dx;
+    root.y1 = dy;
+    root.eachBefore(positionNode);
+    paddingStack = [0];
+    if (round) root.eachBefore(round_default);
+    return root;
+  }
+  __name(treemap, "treemap");
+  function positionNode(node) {
+    var p = paddingStack[node.depth], x0 = node.x0 + p, y0 = node.y0 + p, x1 = node.x1 - p, y1 = node.y1 - p;
+    if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
+    if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
+    node.x0 = x0;
+    node.y0 = y0;
+    node.x1 = x1;
+    node.y1 = y1;
+    if (node.children) {
+      p = paddingStack[node.depth + 1] = paddingInner(node) / 2;
+      x0 += paddingLeft(node) - p;
+      y0 += paddingTop(node) - p;
+      x1 -= paddingRight(node) - p;
+      y1 -= paddingBottom(node) - p;
+      if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
+      if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
+      tile(node, x0, y0, x1, y1);
+    }
+  }
+  __name(positionNode, "positionNode");
+  treemap.round = function(x) {
+    return arguments.length ? (round = !!x, treemap) : round;
+  };
+  treemap.size = function(x) {
+    return arguments.length ? (dx = +x[0], dy = +x[1], treemap) : [dx, dy];
+  };
+  treemap.tile = function(x) {
+    return arguments.length ? (tile = required(x), treemap) : tile;
+  };
+  treemap.padding = function(x) {
+    return arguments.length ? treemap.paddingInner(x).paddingOuter(x) : treemap.paddingInner();
+  };
+  treemap.paddingInner = function(x) {
+    return arguments.length ? (paddingInner = typeof x === "function" ? x : constant_default(+x), treemap) : paddingInner;
+  };
+  treemap.paddingOuter = function(x) {
+    return arguments.length ? treemap.paddingTop(x).paddingRight(x).paddingBottom(x).paddingLeft(x) : treemap.paddingTop();
+  };
+  treemap.paddingTop = function(x) {
+    return arguments.length ? (paddingTop = typeof x === "function" ? x : constant_default(+x), treemap) : paddingTop;
+  };
+  treemap.paddingRight = function(x) {
+    return arguments.length ? (paddingRight = typeof x === "function" ? x : constant_default(+x), treemap) : paddingRight;
+  };
+  treemap.paddingBottom = function(x) {
+    return arguments.length ? (paddingBottom = typeof x === "function" ? x : constant_default(+x), treemap) : paddingBottom;
+  };
+  treemap.paddingLeft = function(x) {
+    return arguments.length ? (paddingLeft = typeof x === "function" ? x : constant_default(+x), treemap) : paddingLeft;
+  };
+  return treemap;
+}
+__name(treemap_default, "default");
+
+// ../types/src/health.ts
+var EXCELLENT_MIN = 8.5;
+var GOOD_MIN = 7;
+var FAIR_MIN = 5.5;
+var NEEDS_WORK_MIN = 4;
+var HEALTH_BAND_ORDER = [
+  "at_risk",
+  "needs_work",
+  "fair",
+  "good",
+  "excellent"
+];
+var HEALTH_BAND_LABEL = {
+  excellent: "Excellent",
+  good: "Good",
+  fair: "Fair",
+  needs_work: "Needs work",
+  at_risk: "At risk"
+};
+function bandForScore(score) {
+  if (score >= EXCELLENT_MIN) return "excellent";
+  if (score >= GOOD_MIN) return "good";
+  if (score >= FAIR_MIN) return "fair";
+  if (score >= NEEDS_WORK_MIN) return "needs_work";
+  return "at_risk";
+}
+__name(bandForScore, "bandForScore");
+
+// ../ui/src/brand.ts
+var BRAND = {
+  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
+  accent: "#f59520",
+  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
+  accentTextLight: "#a16215",
+  /** Brand plum — logo strokes on light surfaces, secondary accent. */
+  plum: "#473659",
+  /** Plum near-black — primary ink on warm paper. */
+  ink: "#241b2c",
+  /** Warm paper — the light-mode page background. */
+  paper: "#fbf6f1",
+  /** Cream — the logo stroke color on dark surfaces. */
+  cream: "#fce9dd"
+};
+var LIGHT = {
+  bgRoot: "#fbf6f1",
+  bgSurface: "#ffffff",
+  bgElevated: "#fbf4ee",
+  bgInset: "#f4eae1",
+  textPrimary: "#241b2c",
+  textSecondary: "#5e5360",
+  textTertiary: "#8c7f88",
+  accentPrimary: "#a16215",
+  accentFill: "#f59520",
+  accentSecondary: "#58436c",
+  success: "#1d8155",
+  warning: "#9a6614",
+  error: "#b23a2e"
+};
+var DARK = {
+  bgRoot: "#0e0e0f",
+  bgSurface: "#141416",
+  bgElevated: "#191a1c",
+  bgInset: "#0a0a0b",
+  textPrimary: "#f2f2f3",
+  textSecondary: "#b4b4b9",
+  textTertiary: "#7c7c82",
+  accentPrimary: "#f59520",
+  accentFill: "#f59520",
+  accentSecondary: "#a98fc4",
+  success: "#34d399",
+  warning: "#f2a03d",
+  error: "#e06a5a"
+};
+var DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a"
+};
+var DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk
+};
+
+// src/views/map.ts
+var UPPER_HALF = 9600;
+var LOWER_HALF = 9604;
+var SPACE = 32;
+var hex = /* @__PURE__ */ __name((s) => parseInt(s.slice(1), 16), "hex");
+var GROUND = hex(DARK.bgRoot);
+var TERMINAL_DEFAULT = 16777216;
+var LABEL_FG = hex(DARK.textSecondary);
+var NEUTRAL = hex(DARK_CANVAS.nodeNeutral);
+var BLACK = 0;
+var MAP_PALETTES = {
+  dark: {
+    tileA: mix(hex(DARK.bgElevated), hex(DARK.textTertiary), 0.12),
+    tileB: mix(hex(DARK.bgElevated), hex(DARK.textTertiary), 0.22),
+    folder: hex(DARK.textTertiary),
+    hit: mix(hex(DARK.bgElevated), hex(DARK.textSecondary), 0.32),
+    read: hex(DARK.textSecondary),
+    named: mix(hex(DARK.accentSecondary), hex(DARK.bgRoot), 0.45),
+    importer: hex(DARK.accentSecondary),
+    edit: hex(BRAND.accent)
+  },
+  light: {
+    tileA: mix(hex(LIGHT.bgInset), hex(LIGHT.textTertiary), 0.08),
+    tileB: mix(hex(LIGHT.bgInset), hex(LIGHT.textTertiary), 0.16),
+    folder: hex(LIGHT.textTertiary),
+    hit: mix(hex(LIGHT.bgInset), hex(LIGHT.textSecondary), 0.3),
+    read: hex(LIGHT.textSecondary),
+    named: mix(hex(LIGHT.accentSecondary), hex(LIGHT.bgRoot), 0.55),
+    importer: hex(LIGHT.accentSecondary),
+    edit: hex(BRAND.accentTextLight)
+  }
+};
+var DEFAULT_STYLE = { theme: "dark", health: false };
+var DENSE_SHARE = 0.6;
+var SPLIT_SHARE = 0.25;
+var MAX_SPLITS = 8;
+var GUTTER_MIN = 6;
+var EDGE_MIN = 3;
+function colorForScore(score) {
+  return score === null ? NEUTRAL : hex(DARK_CANVAS_BAND[bandForScore(score)]);
+}
+__name(colorForScore, "colorForScore");
+function mix(a, b, amount) {
+  const ch = /* @__PURE__ */ __name((shift) => {
+    const x = a >> shift & 255;
+    const y = b >> shift & 255;
+    return Math.round(x + (y - x) * amount) << shift;
+  }, "ch");
+  return (ch(16) | ch(8) | ch(0)) >>> 0;
+}
+__name(mix, "mix");
+var byName = /* @__PURE__ */ __name((a, b) => a < b ? -1 : a > b ? 1 : 0, "byName");
+function dirsOf(path) {
+  return path.split("/").slice(0, -1);
+}
+__name(dirsOf, "dirsOf");
+function keyOf(path, split) {
+  const dirs = dirsOf(path);
+  let depth = Math.min(1, dirs.length);
+  while (depth < dirs.length && split.has(dirs.slice(0, depth).join("/"))) depth++;
+  return dirs.slice(0, depth).join("/");
+}
+__name(keyOf, "keyOf");
+function nextSplit(files, split, limit) {
+  const weight = /* @__PURE__ */ new Map();
+  for (const f of files) {
+    const key = keyOf(f.file_path, split);
+    weight.set(key, (weight.get(key) ?? 0) + f.nloc);
+  }
+  const heavy = [...weight].filter(([key, w]) => key !== "" && w > limit).sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
+  for (const [key] of heavy) {
+    const deeper = /* @__PURE__ */ new Set([...split, key]);
+    const parts = new Set(files.filter((f) => keyOf(f.file_path, split) === key).map((f) => keyOf(f.file_path, deeper)));
+    if (parts.size > 1) return key;
+  }
+  return null;
+}
+__name(nextSplit, "nextSplit");
+function groupKeys(files) {
+  const split = /* @__PURE__ */ new Set();
+  const limit = files.reduce((sum, f) => sum + f.nloc, 0) * SPLIT_SHARE;
+  for (let i = 0; i < MAX_SPLITS; i++) {
+    const key = nextSplit(files, split, limit);
+    if (key === null) break;
+    split.add(key);
+  }
+  return files.map((f) => keyOf(f.file_path, split));
+}
+__name(groupKeys, "groupKeys");
+var folderDatum = /* @__PURE__ */ __name((name) => ({ name, children: [], kids: /* @__PURE__ */ new Map() }), "folderDatum");
+function insertFile(group, key, file) {
+  const rel2 = key === "" ? file.file_path : file.file_path.slice(key.length + 1);
+  let node = group;
+  for (const dir of rel2.split("/").slice(0, -1)) {
+    let next = node.kids?.get(dir);
+    if (next === void 0) {
+      next = folderDatum(dir);
+      node.kids?.set(dir, next);
+      node.children?.push(next);
+    }
+    node = next;
+  }
+  node.children?.push({ name: file.file_path, file });
+}
+__name(insertFile, "insertFile");
+function treemapOf(files, width2, height) {
+  const keys = groupKeys(files);
+  const groups = /* @__PURE__ */ new Map();
+  files.forEach((file, i) => {
+    const key = keys[i] ?? "";
+    const group = groups.get(key) ?? folderDatum(key);
+    groups.set(key, group);
+    insertFile(group, key, file);
+  });
+  const data = { name: "", children: [...groups.values()] };
+  const root = hierarchy(data).sum((d) => d.file?.nloc ?? 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || byName(a.data.name, b.data.name));
+  return treemap_default().tile(squarify_default).size([width2, height])(root);
+}
+__name(treemapOf, "treemapOf");
+var rectOf = /* @__PURE__ */ __name((n) => ({ x: n.x0, y: n.y0, w: n.x1 - n.x0, h: n.y1 - n.y0 }), "rectOf");
+function pixelSpan(from, to) {
+  return [Math.ceil(from - 0.5), Math.ceil(to - 0.5)];
+}
+__name(pixelSpan, "pixelSpan");
+function groupInterior(rect, width2, height) {
+  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
+  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
+  const gutter = x1 - x0 >= GUTTER_MIN && y1 - y0 >= GUTTER_MIN;
+  return { x0, y0, x1: gutter && x1 < width2 ? x1 - 1 : x1, y1: gutter && y1 < height ? y1 - 1 : y1 };
+}
+__name(groupInterior, "groupInterior");
+function placeFile(leaf, group, inner) {
+  const file = leaf.data.file;
+  const rect = rectOf(leaf);
+  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
+  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
+  return {
+    path: file.file_path,
+    score: file.score,
+    nloc: file.nloc,
+    group,
+    rect,
+    px0: Math.max(x0, inner.x0),
+    py0: Math.max(y0, inner.y0),
+    px1: Math.min(x1, inner.x1),
+    py1: Math.min(y1, inner.y1)
+  };
+}
+__name(placeFile, "placeFile");
+function tileFor(f, i, style) {
+  const pal = MAP_PALETTES[style.theme];
+  if (style.health) return colorForScore(f.score);
+  return i % 2 === 0 ? pal.tileA : pal.tileB;
+}
+__name(tileFor, "tileFor");
+function paintBox(base, width2, box2, fill) {
+  for (let y = box2.y0; y < box2.y1; y++) base.fill(fill, y * width2 + box2.x0, y * width2 + box2.x1);
+}
+__name(paintBox, "paintBox");
+function folderTiles(group, inner) {
+  const out = [];
+  for (const node of group.descendants()) {
+    if (node === group || node.children === void 0) continue;
+    const tone = (node.parent?.children ?? []).indexOf(node) % 2;
+    const [x0, x1] = pixelSpan(node.x0, node.x1);
+    const [y0, y1] = pixelSpan(node.y0, node.y1);
+    out.push({ x0: Math.max(x0, inner.x0), y0: Math.max(y0, inner.y0), x1: Math.min(x1, inner.x1), y1: Math.min(y1, inner.y1), tone });
+  }
+  return out;
+}
+__name(folderTiles, "folderTiles");
+function paintFile(base, width2, f, fill) {
+  const edge = mix(fill, BLACK, 0.3);
+  const edgeX = f.px1 - f.px0 >= EDGE_MIN ? f.px1 - 1 : -1;
+  const edgeY = f.py1 - f.py0 >= EDGE_MIN ? f.py1 - 1 : -1;
+  for (let y = f.py0; y < f.py1; y++) {
+    base.fill(y === edgeY ? edge : fill, y * width2 + f.px0, y * width2 + f.px1);
+    if (edgeX >= 0) base[y * width2 + edgeX] = edge;
+  }
+}
+__name(paintFile, "paintFile");
+function labelText(key, width2) {
+  const parts = key.split("/");
+  const rungs = [key, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
+  const text2 = rungs.find((r) => r.length > 0 && r.length <= width2);
+  return text2 !== void 0 && /^[\x20-\x7e]+$/.test(text2) ? text2 : null;
+}
+__name(labelText, "labelText");
+var LABEL_MIN_COLS = 12;
+var LABEL_MIN_ROWS = 3;
+var MAX_LABELS = 8;
+function labelFor(g, columns, rows) {
+  const col = Math.ceil(g.rect.x);
+  const row2 = Math.ceil(g.rect.y / 2);
+  const width2 = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
+  const height = Math.floor((g.rect.y + g.rect.h) / 2) - row2;
+  const small = height < LABEL_MIN_ROWS || width2 < LABEL_MIN_COLS;
+  if (g.key === "" || small || row2 >= rows) return null;
+  const text2 = labelText(g.key, width2);
+  return text2 === null ? null : { row: row2, col, text: text2 };
+}
+__name(labelFor, "labelFor");
+function labelsFor(groups, columns, rows) {
+  return [...groups].sort((a, b) => b.nloc - a.nloc).map((g) => labelFor(g, columns, rows)).filter((l) => l !== null).slice(0, MAX_LABELS);
+}
+__name(labelsFor, "labelsFor");
+function paintBase(map2, style, dense) {
+  const { width: width2, height } = map2;
+  const base = new Uint32Array(width2 * height).fill(GROUND);
+  const pal = MAP_PALETTES[style.theme];
+  const tone = /* @__PURE__ */ __name((t) => t === 0 ? pal.tileB : pal.tileA, "tone");
+  if (!style.health) map2.groups.forEach((g, i) => paintBox(base, width2, groupInterior(g.rect, width2, height), tone(i % 2)));
+  if (!style.health) for (const f of map2.folders) paintBox(base, width2, f, tone(1 - f.tone));
+  if (dense && !style.health) return base;
+  for (const i of map2.drawn) paintFile(base, width2, map2.files[i], tileFor(map2.files[i], i, style));
+  return base;
+}
+__name(paintBase, "paintBase");
+function layoutMap(feed, canvas) {
+  const { columns, rows, caseInsensitive } = canvas;
+  const style = canvas.style ?? DEFAULT_STYLE;
+  const width2 = columns;
+  const height = rows * 2;
+  const root = treemapOf(
+    feed.filter((f) => f.nloc > 0),
+    width2,
+    height
+  );
+  const groups = [];
+  const files = [];
+  const folders = [];
+  for (const node of root.children ?? []) {
+    const group = groups.push({ key: node.data.name, rect: rectOf(node), nloc: node.value ?? 0 }) - 1;
+    const inner = groupInterior(rectOf(node), width2, height);
+    for (const leaf of node.leaves()) files.push(placeFile(leaf, group, inner));
+    folders.push(...folderTiles(node, inner));
+  }
+  const drawn = [];
+  const index = /* @__PURE__ */ new Map();
+  const lower = /* @__PURE__ */ new Map();
+  files.forEach((f, i) => {
+    index.set(caseInsensitive ? f.path.toLowerCase() : f.path, i);
+    lower.set(f.path.toLowerCase(), i);
+    if (f.px1 > f.px0 && f.py1 > f.py0) drawn.push(i);
+  });
+  const dense = drawn.length < files.length * DENSE_SHARE;
+  const base = paintBase({ width: width2, height, groups, folders, files, drawn }, style, dense);
+  return { columns, rows, width: width2, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base, style, dense, lower, folders };
+}
+__name(layoutMap, "layoutMap");
+function halfCell(top, bottom) {
+  if (top === GROUND && bottom === GROUND) return [SPACE, TERMINAL_DEFAULT, TERMINAL_DEFAULT];
+  if (top === GROUND) return [LOWER_HALF, bottom, TERMINAL_DEFAULT];
+  return [UPPER_HALF, top, bottom === GROUND ? TERMINAL_DEFAULT : bottom];
+}
+__name(halfCell, "halfCell");
+function labelCovered(label, marked, width2) {
+  if (marked === void 0) return false;
+  for (let c = label.col; c < label.col + label.text.length; c++) {
+    if (marked[2 * label.row * width2 + c] || marked[(2 * label.row + 1) * width2 + c]) return true;
+  }
+  return false;
+}
+__name(labelCovered, "labelCovered");
+var cellGround = /* @__PURE__ */ __name((pixel) => pixel === void 0 || pixel === GROUND ? TERMINAL_DEFAULT : pixel, "cellGround");
+function writeText(words, layout, label, colors) {
+  for (let k = 0; k < label.text.length && label.col + k < layout.columns; k++) {
+    const col = label.col + k;
+    words.set([label.text.charCodeAt(k), ...colors(col)], (label.row * layout.columns + col) * 3);
+  }
+}
+__name(writeText, "writeText");
+function writeFolderLabels(words, layout, pixels, marked) {
+  const fg = layout.style.health ? LABEL_FG : MAP_PALETTES[layout.style.theme].folder;
+  for (const label of layout.labels) {
+    if (labelCovered(label, marked, layout.width)) continue;
+    writeText(words, layout, label, (col) => [fg, cellGround(pixels[2 * label.row * layout.width + col])]);
+  }
+}
+__name(writeFolderLabels, "writeFolderLabels");
+function encodeCells(layout, pixels, marked, names2 = []) {
+  const { columns, rows, width: width2 } = layout;
+  const words = new Uint32Array(columns * rows * 3);
+  for (let i = 0; i < columns * rows; i++) {
+    const r = Math.floor(i / columns);
+    const c = i % columns;
+    words.set(halfCell(pixels[2 * r * width2 + c] ?? GROUND, pixels[(2 * r + 1) * width2 + c] ?? GROUND), i * 3);
+  }
+  writeFolderLabels(words, layout, pixels, marked);
+  for (const name of names2) writeText(words, layout, name, () => [name.color, TERMINAL_DEFAULT]);
+  return new Uint8Array(words.buffer).toBase64();
+}
+__name(encodeCells, "encodeCells");
+
+// src/views/overlay.ts
+var NO_LIT = { hits: [], reads: [], named: [], importers: [], edits: [], edit: null, current: null };
+var FRAME_MS = 40;
+var FLASH_MS = 600;
+var RIPPLE_MS = 1200;
+var NAME_MAX = 18;
+var FLASH_LIFT = 0.6;
+var keyOf2 = /* @__PURE__ */ __name((layout, path) => layout.caseInsensitive ? path.toLowerCase() : path, "keyOf");
+function indices(layout, paths, lowered = false) {
+  const out = [];
+  for (const p of paths) {
+    const i = lowered ? layout.lower.get(p) : layout.index.get(keyOf2(layout, p));
+    if (i !== void 0) out.push(i);
+  }
+  return out;
+}
+__name(indices, "indices");
+var one = /* @__PURE__ */ __name((layout, path) => path === null ? null : layout.index.get(keyOf2(layout, path)) ?? null, "one");
+function notOnMap(layout, lit) {
+  const all = new Set([...lit.hits, ...lit.reads, ...lit.importers, ...lit.edit === null ? [] : [lit.edit]].map((p) => keyOf2(layout, p)));
+  return [...all].filter((p) => !layout.index.has(p)).length;
+}
+__name(notOnMap, "notOnMap");
+function litPixels(layout, f) {
+  if (f.px1 > f.px0 && f.py1 > f.py0) return { x0: f.px0, y0: f.py0, x1: f.px1, y1: f.py1 };
+  const x = Math.min(layout.width - 1, Math.max(0, Math.floor(f.rect.x + f.rect.w / 2)));
+  const row2 = Math.min(layout.rows - 1, Math.max(0, Math.floor((f.rect.y + f.rect.h / 2) / 2)));
+  return { x0: x, y0: row2 * 2, x1: x + 1, y1: row2 * 2 + 2 };
+}
+__name(litPixels, "litPixels");
+var ROW_TRIES = [0, 1, -1, 2, -2];
+var rowIn = /* @__PURE__ */ __name((layout, row2) => row2 >= 0 && row2 < layout.rows, "rowIn");
+var spanIn = /* @__PURE__ */ __name((layout, col, len) => col >= 0 && col + len <= layout.columns, "spanIn");
+var inside = /* @__PURE__ */ __name((layout, row2, col, len) => rowIn(layout, row2) && spanIn(layout, col, len), "inside");
+function freeSpan(taken, layout, at, len) {
+  if (!inside(layout, at.row, at.col, len)) return false;
+  for (let c = at.col - 1; c <= at.col + len; c++) if (taken.has(at.row * layout.columns + c)) return false;
+  return true;
+}
+__name(freeSpan, "freeSpan");
+function placeName(layout, taken, f, color2) {
+  const text2 = fit(cellSafe(f.path.slice(f.path.lastIndexOf("/") + 1)), NAME_MAX);
+  const box2 = litPixels(layout, f);
+  const mid = Math.floor((box2.y0 + box2.y1 - 1) / 4);
+  const tries = ROW_TRIES.flatMap((dr) => [box2.x1 + 1, box2.x0 - text2.length - 1].map((col) => ({ row: mid + dr, col })));
+  const at = tries.find((t) => freeSpan(taken, layout, t, text2.length));
+  if (at === void 0) return null;
+  for (let c = at.col; c < at.col + text2.length; c++) taken.add(at.row * layout.columns + c);
+  return { ...at, text: text2, color: color2 };
+}
+__name(placeName, "placeName");
+function namesFor(layout, o) {
+  const pal = MAP_PALETTES[layout.style.theme];
+  const order = [...new Set([o.edit, o.current, ...[...o.reads].reverse()].filter((i) => i !== null))];
+  const taken = /* @__PURE__ */ new Set();
+  const hot = /* @__PURE__ */ new Set([o.edit, o.current]);
+  return order.map((i) => placeName(layout, taken, layout.files[i], hot.has(i) ? pal.edit : TERMINAL_DEFAULT)).filter((n) => n !== null);
+}
+__name(namesFor, "namesFor");
+function resolveLit(layout, lit) {
+  const o = {
+    hits: indices(layout, lit.hits),
+    reads: indices(layout, lit.reads),
+    // Flow keeps the files a reply named lowercased.
+    named: indices(layout, lit.named, true),
+    importers: indices(layout, lit.importers),
+    edit: one(layout, lit.edit),
+    current: one(layout, lit.current)
+  };
+  return { ...o, names: namesFor(layout, o) };
+}
+__name(resolveLit, "resolveLit");
+function center(layout, f) {
+  const b = litPixels(layout, f);
+  return [Math.floor((b.x0 + b.x1 - 1) / 2), Math.floor((b.y0 + b.y1 - 1) / 2)];
+}
+__name(center, "center");
+function distance(layout, a, b) {
+  const [ax, ay] = center(layout, a);
+  const [bx, by] = center(layout, b);
+  return Math.hypot(ax - bx, ay - by);
+}
+__name(distance, "distance");
+function rippleRadius(layout, overlay) {
+  const origin = overlay.edit === null ? void 0 : layout.files[overlay.edit];
+  if (!origin || overlay.importers.length === 0) return 0;
+  return Math.max(...overlay.importers.map((i) => distance(layout, origin, layout.files[i]))) + 3;
+}
+__name(rippleRadius, "rippleRadius");
+function fillFile(p, f, color2) {
+  const { width: width2 } = p.layout;
+  const b = litPixels(p.layout, f);
+  for (let y = b.y0; y < b.y1; y++) {
+    p.px.fill(color2, y * width2 + b.x0, y * width2 + b.x1);
+    p.marked.fill(1, y * width2 + b.x0, y * width2 + b.x1);
+  }
+}
+__name(fillFile, "fillFile");
+function fillAll(p, files, color2) {
+  for (const i of files) fillFile(p, p.layout.files[i], color2);
+}
+__name(fillAll, "fillAll");
+function paintRing(p, origin, reach, color2) {
+  const [ox, oy] = center(p.layout, origin);
+  const { width: width2, height } = p.layout;
+  for (let y = Math.max(0, Math.floor(oy - reach)); y <= Math.min(height - 1, oy + reach); y++) {
+    for (let x = Math.max(0, Math.floor(ox - reach)); x <= Math.min(width2 - 1, ox + reach); x++) {
+      const d = Math.hypot(x - ox, y - oy);
+      if (d <= reach && d > reach - 2) p.px[y * width2 + x] = mix(p.px[y * width2 + x], color2, 0.5);
+    }
+  }
+}
+__name(paintRing, "paintRing");
+function hitColor(pal, anim) {
+  return anim?.kind === "flash" ? mix(pal.hit, pal.read, FLASH_LIFT * (1 - anim.t)) : pal.hit;
+}
+__name(hitColor, "hitColor");
+function reached(layout, overlay, reach) {
+  const origin = overlay.edit === null ? void 0 : layout.files[overlay.edit];
+  if (origin === void 0 || reach === Infinity) return overlay.importers;
+  return overlay.importers.filter((i) => distance(layout, origin, layout.files[i]) <= reach);
+}
+__name(reached, "reached");
+function rippleReach(layout, overlay, anim) {
+  return anim?.kind === "ripple" && anim.t < 1 ? rippleRadius(layout, overlay) * anim.t : Infinity;
+}
+__name(rippleReach, "rippleReach");
+function framePixels(layout, overlay, anim) {
+  const p = { layout, px: layout.base.slice(), marked: new Uint8Array(layout.width * layout.height) };
+  const pal = MAP_PALETTES[layout.style.theme];
+  const reach = rippleReach(layout, overlay, anim);
+  fillAll(p, overlay.hits, hitColor(pal, anim));
+  fillAll(p, overlay.named, pal.named);
+  fillAll(p, reached(layout, overlay, reach), pal.importer);
+  fillAll(p, overlay.reads, pal.read);
+  fillAll(p, [overlay.edit, overlay.current].filter((i) => i !== null), pal.edit);
+  const origin = overlay.edit === null ? void 0 : layout.files[overlay.edit];
+  if (origin !== void 0 && reach < Infinity) paintRing(p, origin, reach, pal.importer);
+  return { pixels: p.px, marked: p.marked };
+}
+__name(framePixels, "framePixels");
+function frameCells(layout, overlay, anim) {
+  const { pixels, marked } = framePixels(layout, overlay, anim);
+  return encodeCells(layout, pixels, marked, overlay.names);
+}
+__name(frameCells, "frameCells");
+
+// src/animator.ts
+var Animator = class {
+  static {
+    __name(this, "Animator");
+  }
+  anim = null;
+  timer;
+  blitting = false;
+  stopped = false;
+  io = null;
+  /** The closures of the hook running now; the timer's next frame goes through them. */
+  use(io) {
+    this.io = io;
+  }
+  progress(now) {
+    const a = this.anim;
+    return a === null ? void 0 : { kind: a.kind, t: Math.min(1, (now - a.start) / a.duration) };
+  }
+  /**
+   * Plays `kind` for `duration` ms, replacing whatever played. `redraw` false
+   * when called from a render, which already draws the first step.
+   */
+  play(io, kind, duration, screen, redraw = true) {
+    this.stop();
+    if (this.stopped) return;
+    this.io = io;
+    this.anim = { kind, start: Date.now(), duration };
+    if (redraw) io.redraw();
+    this.timer = setInterval(() => this.tick(screen), FRAME_MS);
+  }
+  stop() {
+    clearInterval(this.timer);
+    this.timer = void 0;
+    this.anim = null;
+  }
+  /** For good: a disposed session plays nothing more. */
+  end() {
+    this.stopped = true;
+    this.stop();
+  }
+  /** A timer's frame: never throws out of the timer; a failure stops the animation. */
+  tick(screen) {
+    try {
+      this.frame(screen);
+    } catch (err) {
+      this.failed(err);
+    }
+  }
+  /** A failed frame: the animation stops and the failure goes to the debug log. */
+  failed(err) {
+    this.stop();
+    this.io?.debug(`animation failed: ${String(err)}`);
+  }
+  frame(screen) {
+    const step = this.progress(Date.now());
+    const frame = step === void 0 ? null : screen(step);
+    const io = this.io;
+    if (step === void 0 || frame === null || io === null) return this.stop();
+    if (this.blitting) return;
+    if (step.t >= 1) this.stop();
+    this.blitting = true;
+    io.blit(frame.key, frame.cells, frame.columns, frame.rows).then((r) => r.deny === void 0 || this.refused(io, r.deny)).catch((err) => this.refused(io, String(err))).finally(() => {
+      this.blitting = false;
+    });
+  }
+  /** Resized, closed or refused under the animation: stop and let a redraw show the resting frame. */
+  refused(io, why) {
+    io.debug(`blit refused: ${why}`);
+    this.stop();
+    if (!this.stopped) io.redraw();
+  }
+};
 
 // src/model/replies.ts
 var PARSE_CHARS = 64 * 1024;
@@ -497,7 +1508,7 @@ var rec = /* @__PURE__ */ __name((v) => isRec(v) ? v : {}, "rec");
 var str = /* @__PURE__ */ __name((v) => typeof v === "string" && v !== "" ? v : null, "str");
 var num = /* @__PURE__ */ __name((v) => typeof v === "number" && Number.isFinite(v) ? v : null, "num");
 var bool = /* @__PURE__ */ __name((v) => typeof v === "boolean" ? v : null, "bool");
-var count = /* @__PURE__ */ __name((v) => Array.isArray(v) ? v.length : num(v), "count");
+var count2 = /* @__PURE__ */ __name((v) => Array.isArray(v) ? v.length : num(v), "count");
 function fact(what, n, of = null) {
   if (n === null) return [];
   return of !== null && of > n ? [{ what, n, of }] : [{ what, n }];
@@ -513,15 +1524,15 @@ var flagged = /* @__PURE__ */ __name((targets, key) => targets.some((t) => key i
 function contextFacts(r) {
   const targets = targetsOf(r);
   const docs = targets.map((t) => rec(t["docs"]));
-  const symbols = sumOver(docs, (d) => count(d["symbols"]));
-  const symbolTotal = sumOver(docs, (d) => num(rec(d["symbols_truncated"])["total"]) ?? count(d["symbols"]));
+  const symbols = sumOver(docs, (d) => count2(d["symbols"]));
+  const symbolTotal = sumOver(docs, (d) => num(rec(d["symbols_truncated"])["total"]) ?? count2(d["symbols"]));
   return [
     ...fact("targets", targets.length),
     ...fact("docs", docs.filter((d) => str(d["title"]) !== null).length || null),
     ...fact("symbols", symbols, symbolTotal),
-    ...fact("callers", sumOver(targets, (t) => count(t["callers"]))),
-    ...fact("callees", sumOver(targets, (t) => count(t["callees"]))),
-    ...fact("decisions", sumOver(targets, (t) => count(t["decisions"]))),
+    ...fact("callers", sumOver(targets, (t) => count2(t["callers"]))),
+    ...fact("callees", sumOver(targets, (t) => count2(t["callees"]))),
+    ...fact("decisions", sumOver(targets, (t) => count2(t["decisions"]))),
     ...fact("hotspots", flagged(targets, "hotspot") || null)
   ];
 }
@@ -531,7 +1542,7 @@ function riskFacts(r) {
   return [
     ...fact("targets", targets.length),
     ...fact("dependents", sumOver(targets, (t) => num(t["dependents_count"]))),
-    ...fact("coChange", sumOver(targets, (t) => num(t["co_change_partners_total"]) ?? count(t["co_change_partners"]))),
+    ...fact("coChange", sumOver(targets, (t) => num(t["co_change_partners_total"]) ?? count2(t["co_change_partners"]))),
     ...fact("contributors", sumOver(targets, (t) => num(t["contributor_count"]))),
     ...fact("hotspots", flagged(targets, "is_hotspot") || null)
   ];
@@ -539,24 +1550,24 @@ function riskFacts(r) {
 __name(riskFacts, "riskFacts");
 function answerFacts(r) {
   return [
-    ...fact("citations", count(r["citations"])),
-    ...fact("bodies", count(r["symbol_bodies"])),
-    ...fact("rationale", count(r["code_rationale"]), num(r["code_rationale_total"])),
-    ...fact("guesses", count(r["best_guesses"]))
+    ...fact("citations", count2(r["citations"])),
+    ...fact("bodies", count2(r["symbol_bodies"])),
+    ...fact("rationale", count2(r["code_rationale"]), num(r["code_rationale_total"])),
+    ...fact("guesses", count2(r["best_guesses"]))
   ];
 }
 __name(answerFacts, "answerFacts");
 function whyFacts(r) {
   const git2 = rec(r["git_archaeology"]);
   return [
-    ...fact("decisions", count(r["decisions"])),
-    ...fact("rationale", count(r["code_rationale"]), num(r["code_rationale_total"])),
-    ...fact("commits", count(git2["git_log"] ?? git2["file_commits"]))
+    ...fact("decisions", count2(r["decisions"])),
+    ...fact("rationale", count2(r["code_rationale"]), num(r["code_rationale_total"])),
+    ...fact("commits", count2(git2["git_log"] ?? git2["file_commits"]))
   ];
 }
 __name(whyFacts, "whyFacts");
 function searchFacts(r) {
-  return fact("results", count(r["results"]));
+  return fact("results", count2(r["results"]));
 }
 __name(searchFacts, "searchFacts");
 function symbolFacts(r) {
@@ -564,8 +1575,8 @@ function symbolFacts(r) {
   const end = num(r["end_line"]);
   return [
     ...fact("lines", start !== null && end !== null && end >= start ? end - start + 1 : null),
-    ...fact("callers", count(r["callers"])),
-    ...fact("callees", count(r["callees"]))
+    ...fact("callers", count2(r["callers"])),
+    ...fact("callees", count2(r["callees"]))
   ];
 }
 __name(symbolFacts, "symbolFacts");
@@ -976,6 +1987,25 @@ function reduceFlow(state2, action) {
   }
 }
 __name(reduceFlow, "reduceFlow");
+function visits(state2) {
+  const out = [];
+  let order = 0;
+  const steps = state2.turns.flatMap((t) => t.activities.map((a) => [a, t.seq]));
+  for (const [a, turn] of steps) {
+    const found = visitsOf(a, turn, order + 1);
+    if (found.length > 0) order++;
+    out.push(...found);
+  }
+  return out;
+}
+__name(visits, "visits");
+function visitsOf(a, turn, order) {
+  if (a.isError) return [];
+  if (a.kind === "search") return a.hitPaths.map((path2) => ({ path: path2, kind: "search-hit", order, at: a.endedAt ?? a.startedAt, turn }));
+  const path = a.paths[0];
+  return (a.kind === "read" || a.kind === "edit") && path !== void 0 ? [{ path, kind: a.kind, order, at: a.startedAt, turn }] : [];
+}
+__name(visitsOf, "visitsOf");
 function isWorking(state2) {
   const last = state2.turns.at(-1);
   return last !== void 0 && last.endedAt === null;
@@ -1262,72 +2292,87 @@ __name(runTestsPrompt, "runTestsPrompt");
 var MAP_COPY = {
   title: "Lens",
   looking: "Lens map: looking for the local server",
-  loading: "Lens map: loading the health map",
-  failed: "Lens map could not load the health map; it tries again on /lens",
+  loading: "Lens map: loading the map",
+  failed: "Lens map could not load; it tries again on /lens",
   desktop: "Lens map: not drawn on this surface (terminal and desktop app only)",
   tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
-  read: "Claude read",
-  edited: "edited",
-  importer: "imports the edited file",
-  match: "search match",
-  waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens"
+  waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens",
+  healthOn: "Health colours: on",
+  healthOff: "Health colours: off",
+  quiet: "Nothing lit yet this turn. Files Claude searches, opens and edits light up here."
+};
+var STORY_COPY = {
+  searched: "SEARCHED",
+  opened: "OPENED",
+  edited: "EDITED",
+  reaches: "REACHES"
 };
 function mapAlt(drawn) {
-  return `Code health map: ${countOf(drawn, "file", "files")} drawn, colored by health band, with the files Claude read and edited marked`;
+  return `Map of the repo: ${countOf(drawn, "file", "files")} drawn as tiles, with the files Claude searched, opened and edited this turn lit, and the files that import its edit`;
 }
 __name(mapAlt, "mapAlt");
 function notPlacedLine(reason) {
   return `Lens map needs a wider terminal: ${reason}`;
 }
 __name(notPlacedLine, "notPlacedLine");
-var SCOPE_REST = "rest empty or too small";
+var SCOPE_REST = "rest too small to draw";
 function indexedPart(age) {
   return `indexed ${age}`;
 }
 __name(indexedPart, "indexedPart");
+function cappedPart(s) {
+  const largest = `${formatNumber(s.shown)} largest of ${countOf(s.repositoryTotal, "file", "files")}`;
+  if (s.dense) return [`${largest}; drawn as folders at this size`];
+  if (s.drawn >= s.shown) return [`${largest} drawn`];
+  return [`${formatNumber(s.drawn)} of the ${formatNumber(s.shown)} largest (of ${countOf(s.repositoryTotal, "file", "files")}) drawn at this size`, SCOPE_REST];
+}
+__name(cappedPart, "cappedPart");
+function drawnPart(s) {
+  if (s.beyondCap > 0) return cappedPart(s);
+  if (s.dense) return [`${countOf(s.repositoryTotal, "file", "files")}, drawn as folders at this size`];
+  if (s.drawn >= s.repositoryTotal) return [`${countOf(s.repositoryTotal, "file", "files")}, all drawn`];
+  return [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+}
+__name(drawnPart, "drawnPart");
 function scopeParts(s) {
-  const parts = s.drawn === s.repositoryTotal ? [`${countOf(s.drawn, "file", "files")}, all drawn`] : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+  const parts = drawnPart(s);
   if (s.indexed !== null) parts.push(indexedPart(s.indexed));
-  if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
+  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} not on the map`);
   return parts;
 }
 __name(scopeParts, "scopeParts");
-function readsLine(reads, matched, columns = Number.POSITIVE_INFINITY) {
-  const count3 = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
-  const full = [];
-  const short = [];
-  if (reads.count > 0) {
-    full.push(reads.capped ? `${count3} files read` : countOf(reads.count, "file read", "files read"));
-    short.push(`${count3} read`);
-  }
-  if (reads.notDrawn > 0) {
-    full.push(`${formatNumber(reads.notDrawn)} not drawn`);
-    short.push(`${formatNumber(reads.notDrawn)} not drawn`);
-  }
-  if (matched !== null) {
-    full.push(`last search matched ${countOf(matched, "file", "files")}`);
-    short.push(`search matched ${formatNumber(matched)}`);
-  }
-  if (full.length === 0) return null;
-  const line2 = full.join(" · ");
-  return line2.length <= columns ? line2 : short.join(" · ");
+function searchedPart(pattern, hits) {
+  const count3 = hits === null ? "matches not counted" : countOf(hits, "file", "files");
+  return pattern === "" ? `last search matched ${count3}` : `${pattern}: ${count3}`;
 }
-__name(readsLine, "readsLine");
-function callersLine(name, callers, notDrawn, columns = Number.POSITIVE_INFINITY) {
-  if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
-  if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
-  const missing = notDrawn === 0 ? "" : ` · ${formatNumber(notDrawn)} not drawn`;
-  const full = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)${missing}`;
-  if (full.length <= columns) return full;
-  const rest = ` · ${formatNumber(callers.paths.length)} import it${missing}`;
-  return `edited ${fit(name, columns - "edited ".length - rest.length)}${rest}`;
+__name(searchedPart, "searchedPart");
+function linesPart(lines) {
+  if (lines === null) return "";
+  if ("written" in lines) return ` ${countOf(lines.written, "line", "lines")} written`;
+  const sign = lines.delta > 0 ? "+" : lines.delta < 0 ? "-" : "";
+  return ` ${sign}${countOf(Math.abs(lines.delta), "line", "lines")}`;
 }
-__name(callersLine, "callersLine");
+__name(linesPart, "linesPart");
+function namedByPart(name, tool) {
+  return `◆ ${name} named by ${tool}`;
+}
+__name(namedByPart, "namedByPart");
+function reachesPart(total2, names2) {
+  const shown = names2.map((n) => n.opened ? `${n.name} (opened)` : n.name);
+  const more = total2 - names2.length;
+  return `${countOf(total2, "importer", "importers")}: ${[...shown, ...more > 0 ? [`+${formatNumber(more)}`] : []].join(", ")}`;
+}
+__name(reachesPart, "reachesPart");
+function reachesPending(edit) {
+  return `finding the files that import ${edit}`;
+}
+__name(reachesPending, "reachesPending");
+var REACHES_FAILED = "import graph unavailable";
 var PANE_COPY = {
-  command: "Open Lens: Claude's steps with Repowise, the health map, and the session recap",
-  argumentHint: "[map | recap | ask <question>]",
-  tabs: { flow: "Flow", map: "Map", recap: "Recap" },
+  command: "Open Lens: Claude's steps with Repowise, the map of its turn, ask the index, and the session recap",
+  argumentHint: "[flow | map | ask <question> | recap]",
+  tabs: { flow: "Flow", map: "Map", ask: "Ask", recap: "Recap" },
   askLabel: "ask ",
   askPlaceholder: "why ...? asks the decision records; anything else asks the index",
   askSubmit: "ask",
@@ -1556,8 +2601,8 @@ var INSIDE_UNITS = {
   lines: ["line", "lines"]
 };
 function insideFact(f) {
-  const [one, many] = INSIDE_UNITS[f.what] ?? [f.what.replace(/_/g, " "), f.what.replace(/_/g, " ")];
-  return f.of === void 0 ? countOf(f.n, one, many) : `${formatNumber(f.n)} of ${countOf(f.of, one, many)}`;
+  const [one2, many] = INSIDE_UNITS[f.what] ?? [f.what.replace(/_/g, " "), f.what.replace(/_/g, " ")];
+  return f.of === void 0 ? countOf(f.n, one2, many) : `${formatNumber(f.n)} of ${countOf(f.of, one2, many)}`;
 }
 __name(insideFact, "insideFact");
 function freshnessText(b) {
@@ -1638,94 +2683,592 @@ function materialize(node, table, presses = {}) {
 }
 __name(materialize, "materialize");
 
-// ../types/src/health.ts
-var EXCELLENT_MIN = 8.5;
-var GOOD_MIN = 7;
-var FAIR_MIN = 5.5;
-var NEEDS_WORK_MIN = 4;
-var HEALTH_BAND_ORDER = [
-  "at_risk",
-  "needs_work",
-  "fair",
-  "good",
-  "excellent"
+// src/views/mapPane.ts
+var MAP_KEY = "lens-map";
+var HEALTH_KEY = "lens-map-health";
+var MAX_COLUMNS = 512;
+var MAX_ROWS = 256;
+var MIN_ROWS = 4;
+var GAP = 2;
+var SEP = " · ";
+var STORY_ROWS = 4;
+var SCOPE_ROWS = 2;
+var TOGGLE_ROWS = 1;
+var HEAD = 10;
+var REACH_NAMES = 3;
+var INLINE_ROWS_PER_COLUMN = 1 / 6;
+var INLINE_MAX_ROWS = 20;
+var hexOf = /* @__PURE__ */ __name((n) => `#${n.toString(16).padStart(6, "0")}`, "hexOf");
+var BAND_SWATCHES = [
+  ...HEALTH_BAND_ORDER.map((band) => ({ glyph: "■", color: DARK_CANVAS_BAND[band], label: HEALTH_BAND_LABEL[band] })),
+  { glyph: "■", color: DARK_CANVAS.nodeNeutral, label: MAP_COPY.noScore }
 ];
-var HEALTH_BAND_LABEL = {
-  excellent: "Excellent",
-  good: "Good",
-  fair: "Fair",
-  needs_work: "Needs work",
-  at_risk: "At risk"
-};
-function bandForScore(score) {
-  if (score >= EXCELLENT_MIN) return "excellent";
-  if (score >= GOOD_MIN) return "good";
-  if (score >= FAIR_MIN) return "fair";
-  if (score >= NEEDS_WORK_MIN) return "needs_work";
-  return "at_risk";
+function packRows(items, width2, columns, gap) {
+  const rows = [];
+  let used = Infinity;
+  for (const item of items) {
+    const w = width2(item);
+    const last = rows[rows.length - 1];
+    if (last === void 0 || used + gap + w > columns) {
+      rows.push([item]);
+      used = w;
+    } else {
+      last.push(item);
+      used += gap + w;
+    }
+  }
+  return rows;
 }
-__name(bandForScore, "bandForScore");
+__name(packRows, "packRows");
+var swatchWidth = /* @__PURE__ */ __name((s) => s.label.length + 2, "swatchWidth");
+function legendRows(columns, health2 = false) {
+  const bands = health2 ? packRows(BAND_SWATCHES, swatchWidth, columns, GAP).length : 0;
+  return STORY_ROWS + bands + SCOPE_ROWS + TOGGLE_ROWS;
+}
+__name(legendRows, "legendRows");
+function mapSize(pane, health2 = false) {
+  const columns = Math.max(1, Math.min(MAX_COLUMNS, pane.bodyColumns));
+  const wanted = pane.placement === "dock" ? pane.bodyRows - legendRows(columns, health2) : Math.min(INLINE_MAX_ROWS, Math.round(columns * INLINE_ROWS_PER_COLUMN));
+  return { columns, rows: Math.max(MIN_ROWS, Math.min(MAX_ROWS, wanted)) };
+}
+__name(mapSize, "mapSize");
+function swatchRows(items, columns) {
+  return packRows(items, swatchWidth, columns, GAP).map(
+    (row2) => box(
+      { flexDirection: "row", columnGap: GAP },
+      row2.map((s) => box({ flexDirection: "row" }, [text(s.glyph, { color: s.color }), text(` ${s.label}`, { dimColor: true })]))
+    )
+  );
+}
+__name(swatchRows, "swatchRows");
+function scopeRows(scope, columns) {
+  const rows = /* @__PURE__ */ __name((parts2) => packRows(parts2, (p) => p.length, columns, SEP.length), "rows");
+  let parts = scopeParts(scope);
+  for (const optional of [SCOPE_REST, scope.indexed === null ? null : indexedPart(scope.indexed)]) {
+    if (rows(parts).length <= 2) break;
+    parts = parts.filter((p) => p !== optional);
+  }
+  return rows(parts).slice(0, 2).map((row2) => row2.join(SEP));
+}
+__name(scopeRows, "scopeRows");
+function storyRow(head, segs, columns) {
+  let room = Math.max(0, columns - HEAD);
+  const parts = [text(head.padEnd(HEAD), { dimColor: true })];
+  for (const s of segs) {
+    if (room <= 0) break;
+    const shown = fit(s.text, room);
+    room -= shown.length;
+    parts.push(text(shown, s.color === void 0 ? {} : { color: s.color }));
+  }
+  return box({ flexDirection: "row" }, parts);
+}
+__name(storyRow, "storyRow");
+function reachSegs(reach, plum) {
+  if (reach.callers.status === "loading") return [{ text: reachesPending(reach.edit.slice(reach.edit.lastIndexOf("/") + 1)) }];
+  if (reach.callers.status === "failed") return [{ text: REACHES_FAILED }];
+  const paths = [...reach.callers.paths].sort((a, b) => Number(reach.opened.has(b.toLowerCase())) - Number(reach.opened.has(a.toLowerCase())));
+  const names2 = paths.slice(0, REACH_NAMES).map((p) => ({ name: p.slice(p.lastIndexOf("/") + 1), opened: reach.opened.has(p.toLowerCase()) }));
+  return [{ text: reachesPart(paths.length, names2), color: plum }];
+}
+__name(reachSegs, "reachSegs");
+function searchedSegs(story) {
+  return story.searched.length === 0 ? [] : [{ text: story.searched.map((s) => searchedPart(s.pattern, s.hits)).join(SEP) }];
+}
+__name(searchedSegs, "searchedSegs");
+function openedSegs(story, plum) {
+  if (story.opened.length === 0) return [];
+  const named2 = story.opened.find((o) => o.namedBy !== null);
+  const names2 = { text: story.opened.map((o) => o.name).join(SEP) };
+  return named2 === void 0 ? [names2] : [names2, { text: `  ${namedByPart(named2.name, named2.namedBy)}`, color: plum }];
+}
+__name(openedSegs, "openedSegs");
+function editedSegs(story, amber) {
+  return story.edited.map((e, i) => ({ text: `${i === 0 ? "" : SEP}◉ ${e.name}${linesPart(e.lines)}`, color: amber }));
+}
+__name(editedSegs, "editedSegs");
+function storyView(story, reach, style, columns) {
+  const pal = MAP_PALETTES[style.theme];
+  const rows = [
+    [STORY_COPY.searched, searchedSegs(story)],
+    [STORY_COPY.opened, openedSegs(story, hexOf(pal.importer))],
+    [STORY_COPY.edited, editedSegs(story, hexOf(pal.edit))],
+    [STORY_COPY.reaches, reach === null ? [] : reachSegs(reach, hexOf(pal.importer))]
+  ];
+  return rows.filter(([, segs]) => segs.length > 0).map(([head, segs]) => storyRow(head, segs, columns));
+}
+__name(storyView, "storyView");
+function legendView(parts, style, columns) {
+  const story = storyView(parts.story, parts.reach, style, columns);
+  const quiet = story.length === 0 ? [text(fit(MAP_COPY.quiet, columns), { dimColor: true, wrap: "truncate-end" })] : story;
+  return [
+    ...quiet,
+    ...style.health ? swatchRows(BAND_SWATCHES, columns) : [],
+    ...scopeRows(parts.scope, columns).map((f) => text(fit(f, columns), { dimColor: true, wrap: "truncate-end" })),
+    button(HEALTH_KEY, "h", style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff, true)
+  ];
+}
+__name(legendView, "legendView");
+function mapPaneView(layout, cells, parts) {
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [
+    raster({ key: MAP_KEY, columns: layout.columns, rows: layout.rows, cells }),
+    ...legendView(parts, layout.style, layout.columns)
+  ]);
+}
+__name(mapPaneView, "mapPaneView");
+function noticeView(line2, columns) {
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [text(fit(line2, columns), { dimColor: true, wrap: "truncate-end" })]);
+}
+__name(noticeView, "noticeView");
 
-// ../ui/src/brand.ts
-var BRAND = {
-  /** Accent orange — the brand fill (CTAs, owl eyes, highlights). */
-  accent: "#f59520",
-  /** Accent text on light surfaces (darkened for 4.5:1 contrast). */
-  accentTextLight: "#a16215",
-  /** Brand plum — logo strokes on light surfaces, secondary accent. */
-  plum: "#473659",
-  /** Plum near-black — primary ink on warm paper. */
-  ink: "#241b2c",
-  /** Warm paper — the light-mode page background. */
-  paper: "#fbf6f1",
-  /** Cream — the logo stroke color on dark surfaces. */
-  cream: "#fce9dd"
+// src/views/owl.ts
+var EYES = { open: "◉", shut: "─", side: "◐", happy: "^", still: "•" };
+var BLINK = [...Array(9).fill(EYES.open), EYES.shut];
+var BLINK_MS = 250;
+var EYES_OF = {
+  asleep: EYES.shut,
+  asking: EYES.side,
+  happy: EYES.happy,
+  stopped: EYES.still
 };
-var LIGHT = {
-  bgRoot: "#fbf6f1",
-  bgSurface: "#ffffff",
-  bgElevated: "#fbf4ee",
-  bgInset: "#f4eae1",
-  textPrimary: "#241b2c",
-  textSecondary: "#5e5360",
-  textTertiary: "#8c7f88",
-  accentPrimary: "#a16215",
-  accentFill: "#f59520",
-  accentSecondary: "#58436c",
-  success: "#1d8155",
-  warning: "#9a6614",
-  error: "#b23a2e"
-};
-var DARK = {
-  bgRoot: "#0e0e0f",
-  bgSurface: "#141416",
-  bgElevated: "#191a1c",
-  bgInset: "#0a0a0b",
-  textPrimary: "#f2f2f3",
-  textSecondary: "#b4b4b9",
-  textTertiary: "#7c7c82",
-  accentPrimary: "#f59520",
-  accentFill: "#f59520",
-  accentSecondary: "#a98fc4",
-  success: "#34d399",
-  warning: "#f2a03d",
-  error: "#e06a5a"
-};
-var DARK_CANVAS = {
-  nodeAtRisk: "#b0544b",
-  nodeNeedsWork: "#bd7c42",
-  nodeFair: "#a89453",
-  nodeGood: "#42906f",
-  nodeExcellent: "#5cb389",
-  nodeNeutral: "#333336",
-  caution: "#d9b04a"
-};
-var DARK_CANVAS_BAND = {
-  excellent: DARK_CANVAS.nodeExcellent,
-  good: DARK_CANVAS.nodeGood,
-  fair: DARK_CANVAS.nodeFair,
-  needs_work: DARK_CANVAS.nodeNeedsWork,
-  at_risk: DARK_CANVAS.nodeAtRisk
+function owlEyes(state2, now, still) {
+  if (state2 !== "watching") return EYES_OF[state2];
+  return still ? EYES.open : BLINK[Math.floor(now / BLINK_MS) % BLINK.length];
+}
+__name(owlEyes, "owlEyes");
+var OWL_WIDTH = 5;
+function owl(state2, eyes, amber) {
+  if (state2 === "asleep") return [text(`{${eyes},${eyes}}`, { dimColor: true })];
+  const eye = /* @__PURE__ */ __name(() => eyes === EYES.shut || eyes === EYES.still ? text(eyes) : text(eyes, { color: amber }), "eye");
+  return [text("{"), eye(), text(","), eye(), text("}")];
+}
+__name(owl, "owl");
+
+// src/views/theme.ts
+var DARK_THEME = { plum: DARK.accentSecondary, amber: BRAND.accent };
+var LIGHT_THEME = { plum: LIGHT.accentSecondary, amber: BRAND.accentTextLight };
+function flowTheme(light) {
+  return light ? LIGHT_THEME : DARK_THEME;
+}
+__name(flowTheme, "flowTheme");
+function themeOf(value) {
+  return typeof value === "string" && value.startsWith("light") ? "light" : "dark";
+}
+__name(themeOf, "themeOf");
+var HILLS = "▁▂▃▅▃▂▁▁▂▃▂▁▁▁▂▃▄▃▂▁";
+var MIRROR = { "▁": " ", "▂": "▔", "▃": "▔", "▄": "▀", "▅": "▀" };
+var THISTLE = "⚘";
+function repeat(pattern, columns) {
+  return pattern.repeat(Math.ceil(Math.max(0, columns) / pattern.length)).slice(0, Math.max(0, columns));
+}
+__name(repeat, "repeat");
+function hills(columns) {
+  return repeat(HILLS, columns);
+}
+__name(hills, "hills");
+function loch(columns) {
+  return [...hills(columns)].map((c) => MIRROR[c] ?? " ").join("");
+}
+__name(loch, "loch");
+
+// src/views/flow.ts
+var FLOW_KEY = "lens-flow";
+var FLOW_NEXT = "lens-flow-next";
+var FLOW_PREV = "lens-flow-prev";
+var HAPPY_MS = 3e3;
+var NARROW = 80;
+var MIN_BODY = 3;
+var ACTIVE_MARK = "▸";
+var GUTTER = 2;
+var CLOCK_W = 6;
+var DETAIL_W = 20;
+var DETAIL_INDENT = GUTTER + CLOCK_W;
+var EMPTY_W = 70;
+var WORKING_ROWS = 6;
+var FILE_W = 44;
+var KIND_W = 8;
+var VIA_W = 13;
+var BAR_W = 60;
+var BUILT_FROM = 2;
+var TARGET_MIN = 28;
+var SEP2 = " · ";
+var EXCERPT_LINE = 160;
+var rowKey = /* @__PURE__ */ __name((id) => `${FLOW_KEY}-${id}`, "rowKey");
+function flowPresses(state2) {
+  return [[FLOW_NEXT, null], [FLOW_PREV, null], ...openable(state2).map((id) => [rowKey(id), id])];
+}
+__name(flowPresses, "flowPresses");
+var width = /* @__PURE__ */ __name((segs) => segs.reduce((n, s) => n + s.t.length, 0), "width");
+function segNode(s) {
+  if (s.press !== void 0) return { type: "Button", props: { key: s.press, label: s.t, plain: true } };
+  const props = {};
+  if (s.color !== void 0) props.color = s.color;
+  if (s.dim === true) props.dimColor = true;
+  return text(s.t, props);
+}
+__name(segNode, "segNode");
+function row(segs, columns, right = []) {
+  const fixed = width(segs.filter((s) => s.flex !== true)) + width(right) + (right.length > 0 ? 2 : 0);
+  const fitted = segs.map((s) => s.flex === true ? { ...s, t: fit(s.t, Math.max(1, columns - fixed)) } : s);
+  const gap = right.length > 0 ? Math.max(2, columns - width(fitted) - width(right)) : 0;
+  const all = gap > 0 ? [...fitted, { t: " ".repeat(gap) }, ...right] : fitted;
+  return box({ flexDirection: "row" }, all.filter((s) => s.t !== "").map(segNode));
+}
+__name(row, "row");
+var dimLine = /* @__PURE__ */ __name((t, columns) => text(fit(t, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
+var pad = /* @__PURE__ */ __name((n) => ({ t: " ".repeat(n) }), "pad");
+function wrapWords(words, columns) {
+  return packRows(words.split(" "), (w) => w.length, Math.max(1, columns), 1).map((r) => r.join(" "));
+}
+__name(wrapWords, "wrapWords");
+function section(caption, lines) {
+  return lines.length === 0 ? [] : [text(caption, { dimColor: true }), ...lines];
+}
+__name(section, "section");
+function owlState(state2, now) {
+  const last = state2.turns.at(-1);
+  if (last === void 0) return "asleep";
+  if (isWorking(state2)) return inFlight(state2) === null ? "watching" : "asking";
+  if (last.end === "stopped" || last.end === "failed") return "stopped";
+  return last.endedAt !== null && now - last.endedAt < HAPPY_MS ? "happy" : "asleep";
+}
+__name(owlState, "owlState");
+function statusSegs(turn, now, theme2) {
+  const edited = turnTotals(turn).edits;
+  if (turn.endedAt === null) return [{ t: statusLine(null, now - turn.startedAt, edited) }];
+  const end = turn.end ?? "answer";
+  const line2 = { t: statusLine(end, turn.durationMs ?? 0, edited) };
+  return end === "answer" ? [line2, { t: `  ${THISTLE}`, color: theme2.plum }] : [line2];
+}
+__name(statusSegs, "statusSegs");
+function notice(mode) {
+  return mode === "no-index" || mode === "no-cli" ? FLOW_COPY.notConnected : null;
+}
+__name(notice, "notice");
+function header(state2, v, theme2) {
+  const turn = state2.turns.at(-1);
+  const st = owlState(state2, v.now);
+  const face = box({ flexDirection: "row" }, owl(st, owlEyes(st, v.now, v.still), theme2.amber));
+  const room = v.columns - OWL_WIDTH - 1;
+  const said = notice(v.mode);
+  const tail = said === null ? [] : [dimLine(said, v.columns)];
+  if (turn === void 0) {
+    const [first = "", ...rest] = wrapWords(FLOW_COPY.empty, Math.min(EMPTY_W, room));
+    return [box({ flexDirection: "row", columnGap: 1 }, [face, text(first)]), ...rest.map((l) => text(`${" ".repeat(OWL_WIDTH + 1)}${l}`)), ...tail];
+  }
+  const prompt = turn.prompt.replace(/\s+/g, " ").trim();
+  return [
+    box({ flexDirection: "row", columnGap: 1 }, [face, row(statusSegs(turn, v.now, theme2), room)]),
+    text(fit(answerLine(turnTotals(turn)), v.columns), { wrap: "truncate-end" }),
+    ...prompt === "" ? [] : [dimLine(`"${prompt}"`, v.columns)],
+    ...tail
+  ];
+}
+__name(header, "header");
+var fileName = /* @__PURE__ */ __name((path) => path.split("/").at(-1) ?? path, "fileName");
+function gapLines(g) {
+  const out = [];
+  if (g.importers !== null) out.push(importersLine(g.importers.total, g.importers.opened));
+  if (g.cochange.length > 0) out.push(cochangeLine(g.cochange));
+  if (g.tests !== null) out.push(testsReachLine(g.tests.total, g.tests.basis, g.tests.run, fileName(g.path)));
+  return out;
+}
+__name(gapLines, "gapLines");
+function healthLines(risk) {
+  const hd = risk?.health_delta;
+  if (hd === void 0) return [];
+  if (hd.introduced > 0) return [introducedLine(hd.introduced, hd.top_findings.find((f) => f.change === "introduced") ?? null)];
+  return hd.status === "partial" ? [HEALTH_PARTLY] : [];
+}
+__name(healthLines, "healthLines");
+function beforeAcceptLines(state2, turn, v) {
+  const files = beforeAccept(state2, turn).flatMap((g) => [
+    row([pad(2), { t: g.path, flex: true }, { t: `  ${FLOW_COPY.asOfIndex}`, dim: true }], v.columns),
+    ...gapLines(g).map((l) => dimLine(`    ${l}`, v.columns))
+  ]);
+  const health2 = healthLines(v.review).map((l) => text(fit(`  ${l}`, v.columns)));
+  return section(FLOW_COPY.beforeAccept, [...files, ...health2]);
+}
+__name(beforeAcceptLines, "beforeAcceptLines");
+function viaSeg(via, theme2) {
+  if (via.kind === "repowise") return { t: via.tool.padEnd(VIA_W), color: theme2.plum };
+  return { t: (via.kind === "search" ? FLOW_COPY.search : FLOW_COPY.direct).padEnd(VIA_W), dim: true };
+}
+__name(viaSeg, "viaSeg");
+function workingRow(f, t) {
+  const card = t.cards.get(pathKey(f.path));
+  const knows = t.columns < NARROW || card === void 0 ? "" : knowsParts(card).join(SEP2);
+  const kind = { t: (f.kind === "edited" ? FLOW_COPY.edited : FLOW_COPY.read).padEnd(KIND_W), dim: f.kind === "read" };
+  return row([pad(2), { t: fit(f.path, t.fileW).padEnd(t.fileW + 2) }, kind, viaSeg(f.via, t.theme), { t: knows, dim: true, flex: true }], t.columns);
+}
+__name(workingRow, "workingRow");
+function workingLines(state2, turn, v, theme2) {
+  const files = workingSet(state2, turn);
+  const longest = Math.max(0, ...files.map((f) => f.path.length));
+  const t = {
+    cards: new Map(Object.entries(v.contexts).map(([p, c]) => [pathKey(p), c])),
+    columns: v.columns,
+    fileW: Math.min(FILE_W, longest, Math.max(8, v.columns - 2 - KIND_W - VIA_W - 4)),
+    theme: theme2
+  };
+  const rows = files.slice(0, WORKING_ROWS).map((f) => workingRow(f, t));
+  const more = files.length > WORKING_ROWS ? [dimLine(`  ${moreFiles(files.length - WORKING_ROWS)}`, v.columns)] : [];
+  return section(`${FLOW_COPY.workingSet} · ${FLOW_COPY.asOfIndex}`, [...rows, ...more]);
+}
+__name(workingLines, "workingLines");
+var SHADE = { repowise: "█", read: "▓", search: "▒", shell: "░", other: "·" };
+function cellsOf(bytes, total2, cells) {
+  return CONTEXT_KINDS.filter((k) => bytes[k] > 0).map((k) => [k, Math.max(1, Math.round(bytes[k] / total2 * cells))]);
+}
+__name(cellsOf, "cellsOf");
+function shadeSeg(kind, n, theme2) {
+  const t = SHADE[kind].repeat(n);
+  return kind === "repowise" ? { t, color: theme2.plum } : { t };
+}
+__name(shadeSeg, "shadeSeg");
+function contextLines(turn, columns, theme2) {
+  const bytes = contextBytes(turn);
+  const total2 = CONTEXT_KINDS.reduce((n, k) => n + bytes[k], 0);
+  if (total2 === 0) return [];
+  const cells = cellsOf(bytes, total2, Math.min(BAR_W, columns - 4));
+  const bar = row([pad(2), ...cells.map(([k, n]) => shadeSeg(k, n, theme2))], columns);
+  const legend = cells.map(([k]) => `${SHADE[k]} ${contextPart(k, bytes[k])}`);
+  const first = firstEditMs(turn);
+  const parts = first === null ? legend : [...legend, firstEditText(first)];
+  const lines = packRows(parts, (p) => p.length, Math.max(10, columns - 2), 2).map((r) => dimLine(`  ${r.join("  ")}`, columns));
+  return section(FLOW_COPY.context, [bar, ...lines]);
+}
+__name(contextLines, "contextLines");
+function lead(a, ctx) {
+  const mark = a.id === ctx.active ? { t: `${ACTIVE_MARK} `, color: ctx.theme.amber } : pad(GUTTER);
+  return [mark, { t: clockText(a.startedAt - ctx.turn.startedAt).padEnd(CLOCK_W), dim: true }];
+}
+__name(lead, "lead");
+function builtFrom(a, ctx) {
+  const reply = a.reply;
+  const facts = reply === null ? [] : reply.inside.slice(0, BUILT_FROM).map(insideFact);
+  const fresh = reply === null ? null : freshnessText(reply.behind);
+  return [...ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [], ...facts, ...fresh === null ? [] : [fresh]];
+}
+__name(builtFrom, "builtFrom");
+function rightOf(a, ctx) {
+  if (a.isError) return FLOW_COPY.error;
+  if (a.endedAt === null) return FLOW_COPY.asking;
+  return [durationText(a.endedAt - a.startedAt), ...builtFrom(a, ctx)].join(SEP2);
+}
+__name(rightOf, "rightOf");
+function callLine(a, ctx) {
+  const what = a.args[0]?.[1] ?? "";
+  const sub = a.agentId === null ? [] : [{ t: `  ${FLOW_COPY.subagent}`, dim: true }];
+  const segs = [...lead(a, ctx), { t: a.tool, press: rowKey(a.id) }, pad(2), { t: what, flex: true }, ...sub];
+  const room = ctx.columns - width(segs.filter((s) => s.flex !== true)) - Math.min(what.length, TARGET_MIN) - 2;
+  return { node: row(segs, ctx.columns, [{ t: fit(rightOf(a, ctx), Math.max(1, room)), dim: true }]), id: a.id };
+}
+__name(callLine, "callLine");
+function labeled(label, body, ctx, id) {
+  return { node: row([pad(DETAIL_INDENT), { t: label.padEnd(DETAIL_W), dim: true }, { t: body, flex: true }], ctx.columns), id };
+}
+__name(labeled, "labeled");
+function wrapped(label, parts, ctx, id) {
+  const room = Math.max(10, ctx.columns - DETAIL_INDENT - DETAIL_W);
+  return packRows(parts, (p) => p.length, room, SEP2.length).map((r, i) => labeled(i === 0 ? label : "", r.join(SEP2), ctx, id));
+}
+__name(wrapped, "wrapped");
+function replyDetail(a, ctx) {
+  const reply = a.reply;
+  if (reply === null) return [];
+  const excerpt = reply.excerpt === "" ? [] : [labeled(FLOW_COPY.excerpt, reply.excerpt.replace(/\s+/g, " ").slice(0, EXCERPT_LINE), ctx, a.id)];
+  const note = ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [];
+  return [...wrapped(FLOW_COPY.howAnswered, [...note, ...behindParts(reply.behind, reply.bytes)], ctx, a.id), ...excerpt];
+}
+__name(replyDetail, "replyDetail");
+function detailLines(a, ctx) {
+  if (a.id !== ctx.open) return [];
+  const opened = ctx.opened.get(a.id) ?? [];
+  return [...replyDetail(a, ctx), labeled(FLOW_COPY.thenOpened, opened.length === 0 ? FLOW_COPY.nothingOpened : opened.join(", "), ctx, a.id)];
+}
+__name(detailLines, "detailLines");
+function openedAfter(state2) {
+  const out = /* @__PURE__ */ new Map();
+  for (const a of state2.turns.flatMap((t) => t.activities)) {
+    const by = a.namedBy?.id;
+    const path = a.paths[0];
+    if (by === void 0 || path === void 0) continue;
+    const list2 = out.get(by) ?? [];
+    if (!list2.includes(path)) list2.push(path);
+    out.set(by, list2);
+  }
+  return out;
+}
+__name(openedAfter, "openedAfter");
+var isCall = /* @__PURE__ */ __name((a) => a.kind === "repowise", "isCall");
+function callLines(state2, turn, v, theme2) {
+  const ctx = {
+    turn,
+    columns: v.columns,
+    active: isWorking(state2) ? inFlight(state2)?.id ?? null : null,
+    open: state2.open,
+    theme: theme2,
+    beforeEdit: answeredBeforeEdit(state2),
+    opened: openedAfter(state2)
+  };
+  const calls = turn.activities.filter(isCall).flatMap((a) => [callLine(a, ctx), ...detailLines(a, ctx)]);
+  const dropped = turn.dropped > 0 && calls.length > 0 ? [{ node: dimLine(`  ${droppedSteps(turn.dropped)}`, v.columns) }] : [];
+  return [...dropped, ...calls];
+}
+__name(callLines, "callLines");
+var heightOf = /* @__PURE__ */ __name((l) => l.height ?? 1, "heightOf");
+var total = /* @__PURE__ */ __name((lines) => lines.reduce((n, l) => n + heightOf(l), 0), "total");
+function windowStart(lines, room, open) {
+  const at = open === null ? -1 : lines.findIndex((l) => l.id === open);
+  const floor = at < 0 ? lines.length - 1 : Math.max(0, at - 1);
+  let start = 0;
+  while (start < floor && total(lines.slice(start)) > room) start++;
+  return start;
+}
+__name(windowStart, "windowStart");
+function stepsOutside(lines, shown) {
+  return new Set(lines.map((l) => l.id).filter((id) => !shown.has(id))).size;
+}
+__name(stepsOutside, "stepsOutside");
+function windowed(lines, room, open) {
+  if (total(lines) <= room) return lines;
+  const start = windowStart(lines, room - 2, open);
+  let end = lines.length;
+  while (end > start + 1 && total(lines.slice(start, end)) > room - 2) end--;
+  const shown = new Set(lines.slice(start, end).map((l) => l.id));
+  const above = stepsOutside(lines.slice(0, start), shown);
+  const below2 = stepsOutside(lines.slice(end), shown);
+  const note = /* @__PURE__ */ __name((n, say) => n === 0 ? [] : [{ node: dimLine(say(n), Number.POSITIVE_INFINITY) }], "note");
+  return [...note(above, hiddenSteps), ...lines.slice(start, end), ...note(below2, laterSteps)];
+}
+__name(windowed, "windowed");
+function earlierTurns(state2, columns) {
+  const out = state2.turns.slice(0, -1).reverse().map((t) => dimLine(`  ${turnFooter(t.seq, t.durationMs, turnTotals(t), t.end)}`, columns));
+  if (state2.earlier.turns > 0) out.push(dimLine(`  ${earlierLine(state2.earlier)}`, columns));
+  return out;
+}
+__name(earlierTurns, "earlierTurns");
+function navRow(state2) {
+  if (openable(state2).length === 0) return [];
+  return [box({ flexDirection: "row", columnGap: 2 }, [button(FLOW_NEXT, "j", FLOW_COPY.next, true), button(FLOW_PREV, "k", FLOW_COPY.previous, true)])];
+}
+__name(navRow, "navRow");
+function dashboard(state2, turn, v, theme2) {
+  return [...beforeAcceptLines(state2, turn, v), ...workingLines(state2, turn, v, theme2), ...contextLines(turn, v.columns, theme2)];
+}
+__name(dashboard, "dashboard");
+function closing(turn, columns) {
+  return turn !== void 0 && turn.end === "answer" ? [text(loch(columns), { dimColor: true })] : [];
+}
+__name(closing, "closing");
+function flowView(state2, v) {
+  const theme2 = flowTheme(v.light === true);
+  const head = [text(hills(v.columns), { color: theme2.plum }), ...header(state2, v, theme2)];
+  const turn = state2.turns.at(-1);
+  const fixed = turn === void 0 ? [] : dashboard(state2, turn, v, theme2);
+  const after = [...closing(turn, v.columns), ...earlierTurns(state2, v.columns), ...navRow(state2)];
+  const room = Math.max(MIN_BODY, v.rows - head.length - fixed.length - after.length - 1);
+  const calls = turn === void 0 ? [] : windowed(callLines(state2, turn, v, theme2), room, state2.open);
+  const callNodes = section(FLOW_COPY.calls, calls.map((l) => l.node));
+  return box({ key: FLOW_KEY, flexDirection: "column" }, [...head, ...fixed, ...callNodes, ...after]);
+}
+__name(flowView, "flowView");
+
+// src/flow-controller.ts
+var REDRAW_MS = 125;
+var STILL_TICK_MS = 1e3;
+var GONE_MS = 1e3;
+var LensFlow = class {
+  static {
+    __name(this, "LensFlow");
+  }
+  state = initialFlow;
+  /** Flow is on screen: set by its render; cleared by another tab, or by a redraw no render answered. */
+  shown = false;
+  still = false;
+  io = null;
+  lastDraw = Number.NEGATIVE_INFINITY;
+  /** When the first redraw no Flow render has answered was asked for; null once one did. */
+  unansweredSince = null;
+  pending;
+  ticker;
+  happy;
+  setReducedMotion(on) {
+    this.still = on;
+  }
+  /** Another tab is shown, or the pane is gone: nothing of Flow is on screen. */
+  hide() {
+    this.shown = false;
+    this.stopTick();
+  }
+  dispatch(io, action) {
+    this.io = io;
+    const next = reduceFlow(this.state, action);
+    if (next === this.state) return;
+    this.state = next;
+    if (action.type === "turnEnded") this.afterTurn();
+    this.request();
+  }
+  /** The tab's tree at `now`; a render marks Flow on screen and keeps the owl's clock going while Claude works. */
+  paneTree(io, pane, now) {
+    this.io = io;
+    this.shown = true;
+    this.unansweredSince = null;
+    this.ensureTick();
+    return flowView(this.state, { ...pane, now, still: this.still });
+  }
+  dispose() {
+    this.hide();
+    clearTimeout(this.pending);
+    clearTimeout(this.happy);
+    this.pending = void 0;
+    this.happy = void 0;
+    this.io = null;
+  }
+  /** A redraw now, or once the throttle allows; nothing while Flow is not on screen. */
+  request() {
+    if (!this.shown || this.pending !== void 0) return;
+    const wait = this.lastDraw + REDRAW_MS - Date.now();
+    if (wait <= 0) return this.draw();
+    this.pending = setTimeout(() => this.timer(() => (this.pending = void 0, true)), wait);
+  }
+  /** A timer's body: its step says whether to redraw; a failure is logged, never thrown into the runtime. */
+  timer(step) {
+    try {
+      if (step()) this.draw();
+    } catch (err) {
+      this.io?.debug(`flow timer failed: ${String(err)}`);
+    }
+  }
+  /** Redraws, unless redraws have gone unanswered for a while: then the pane is gone and Flow stops asking. */
+  draw() {
+    const now = Date.now();
+    if (this.unansweredSince !== null && now - this.unansweredSince >= GONE_MS) return this.hide();
+    if (!this.shown || this.io === null) return;
+    this.lastDraw = now;
+    this.unansweredSince ??= now;
+    this.io.redraw();
+  }
+  /** The owl is happy for a moment, then sleeps: one redraw when that moment ends. */
+  afterTurn() {
+    this.stopTick();
+    clearTimeout(this.happy);
+    this.happy = setTimeout(() => this.timer(() => (this.happy = void 0, true)), HAPPY_MS);
+  }
+  ensureTick() {
+    if (this.ticker !== void 0 || !this.shown || !isWorking(this.state)) return;
+    this.ticker = setInterval(() => this.timer(() => this.tick()), this.still ? STILL_TICK_MS : BLINK_MS);
+  }
+  /** Redraw while Claude works; stop once it is done. Off screen, `draw` stops it. */
+  tick() {
+    if (isWorking(this.state)) return true;
+    this.stopTick();
+    return false;
+  }
+  stopTick() {
+    clearInterval(this.ticker);
+    this.ticker = void 0;
+  }
 };
 
 // src/model/events.ts
@@ -1839,1315 +3382,94 @@ function touchedPath(e, cwd2, repoRoot) {
 }
 __name(touchedPath, "touchedPath");
 
-// ../../node_modules/d3-hierarchy/src/hierarchy/count.js
-function count2(node) {
-  var sum = 0, children = node.children, i = children && children.length;
-  if (!i) sum = 1;
-  else while (--i >= 0) sum += children[i].value;
-  node.value = sum;
-}
-__name(count2, "count");
-function count_default() {
-  return this.eachAfter(count2);
-}
-__name(count_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/each.js
-function each_default(callback, that) {
-  let index = -1;
-  for (const node of this) {
-    callback.call(that, node, ++index, this);
-  }
-  return this;
-}
-__name(each_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/eachBefore.js
-function eachBefore_default(callback, that) {
-  var node = this, nodes = [node], children, i, index = -1;
-  while (node = nodes.pop()) {
-    callback.call(that, node, ++index, this);
-    if (children = node.children) {
-      for (i = children.length - 1; i >= 0; --i) {
-        nodes.push(children[i]);
-      }
-    }
-  }
-  return this;
-}
-__name(eachBefore_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/eachAfter.js
-function eachAfter_default(callback, that) {
-  var node = this, nodes = [node], next = [], children, i, n, index = -1;
-  while (node = nodes.pop()) {
-    next.push(node);
-    if (children = node.children) {
-      for (i = 0, n = children.length; i < n; ++i) {
-        nodes.push(children[i]);
-      }
-    }
-  }
-  while (node = next.pop()) {
-    callback.call(that, node, ++index, this);
-  }
-  return this;
-}
-__name(eachAfter_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/find.js
-function find_default(callback, that) {
-  let index = -1;
-  for (const node of this) {
-    if (callback.call(that, node, ++index, this)) {
-      return node;
-    }
-  }
-}
-__name(find_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/sum.js
-function sum_default(value) {
-  return this.eachAfter(function(node) {
-    var sum = +value(node.data) || 0, children = node.children, i = children && children.length;
-    while (--i >= 0) sum += children[i].value;
-    node.value = sum;
-  });
-}
-__name(sum_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/sort.js
-function sort_default(compare) {
-  return this.eachBefore(function(node) {
-    if (node.children) {
-      node.children.sort(compare);
-    }
-  });
-}
-__name(sort_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/path.js
-function path_default(end) {
-  var start = this, ancestor = leastCommonAncestor(start, end), nodes = [start];
-  while (start !== ancestor) {
-    start = start.parent;
-    nodes.push(start);
-  }
-  var k = nodes.length;
-  while (end !== ancestor) {
-    nodes.splice(k, 0, end);
-    end = end.parent;
-  }
-  return nodes;
-}
-__name(path_default, "default");
-function leastCommonAncestor(a, b) {
-  if (a === b) return a;
-  var aNodes = a.ancestors(), bNodes = b.ancestors(), c = null;
-  a = aNodes.pop();
-  b = bNodes.pop();
-  while (a === b) {
-    c = a;
-    a = aNodes.pop();
-    b = bNodes.pop();
-  }
-  return c;
-}
-__name(leastCommonAncestor, "leastCommonAncestor");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/ancestors.js
-function ancestors_default() {
-  var node = this, nodes = [node];
-  while (node = node.parent) {
-    nodes.push(node);
-  }
-  return nodes;
-}
-__name(ancestors_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/descendants.js
-function descendants_default() {
-  return Array.from(this);
-}
-__name(descendants_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/leaves.js
-function leaves_default() {
-  var leaves = [];
-  this.eachBefore(function(node) {
-    if (!node.children) {
-      leaves.push(node);
-    }
-  });
-  return leaves;
-}
-__name(leaves_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/links.js
-function links_default() {
-  var root = this, links = [];
-  root.each(function(node) {
-    if (node !== root) {
-      links.push({ source: node.parent, target: node });
-    }
-  });
-  return links;
-}
-__name(links_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/iterator.js
-function* iterator_default() {
-  var node = this, current, next = [node], children, i, n;
-  do {
-    current = next.reverse(), next = [];
-    while (node = current.pop()) {
-      yield node;
-      if (children = node.children) {
-        for (i = 0, n = children.length; i < n; ++i) {
-          next.push(children[i]);
-        }
-      }
-    }
-  } while (next.length);
-}
-__name(iterator_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/hierarchy/index.js
-function hierarchy(data, children) {
-  if (data instanceof Map) {
-    data = [void 0, data];
-    if (children === void 0) children = mapChildren;
-  } else if (children === void 0) {
-    children = objectChildren;
-  }
-  var root = new Node(data), node, nodes = [root], child, childs, i, n;
-  while (node = nodes.pop()) {
-    if ((childs = children(node.data)) && (n = (childs = Array.from(childs)).length)) {
-      node.children = childs;
-      for (i = n - 1; i >= 0; --i) {
-        nodes.push(child = childs[i] = new Node(childs[i]));
-        child.parent = node;
-        child.depth = node.depth + 1;
-      }
-    }
-  }
-  return root.eachBefore(computeHeight);
-}
-__name(hierarchy, "hierarchy");
-function node_copy() {
-  return hierarchy(this).eachBefore(copyData);
-}
-__name(node_copy, "node_copy");
-function objectChildren(d) {
-  return d.children;
-}
-__name(objectChildren, "objectChildren");
-function mapChildren(d) {
-  return Array.isArray(d) ? d[1] : null;
-}
-__name(mapChildren, "mapChildren");
-function copyData(node) {
-  if (node.data.value !== void 0) node.value = node.data.value;
-  node.data = node.data.data;
-}
-__name(copyData, "copyData");
-function computeHeight(node) {
-  var height = 0;
-  do
-    node.height = height;
-  while ((node = node.parent) && node.height < ++height);
-}
-__name(computeHeight, "computeHeight");
-function Node(data) {
-  this.data = data;
-  this.depth = this.height = 0;
-  this.parent = null;
-}
-__name(Node, "Node");
-Node.prototype = hierarchy.prototype = {
-  constructor: Node,
-  count: count_default,
-  each: each_default,
-  eachAfter: eachAfter_default,
-  eachBefore: eachBefore_default,
-  find: find_default,
-  sum: sum_default,
-  sort: sort_default,
-  path: path_default,
-  ancestors: ancestors_default,
-  descendants: descendants_default,
-  leaves: leaves_default,
-  links: links_default,
-  copy: node_copy,
-  [Symbol.iterator]: iterator_default
-};
-
-// ../../node_modules/d3-hierarchy/src/accessors.js
-function required(f) {
-  if (typeof f !== "function") throw new Error();
-  return f;
-}
-__name(required, "required");
-
-// ../../node_modules/d3-hierarchy/src/constant.js
-function constantZero() {
-  return 0;
-}
-__name(constantZero, "constantZero");
-function constant_default(x) {
-  return function() {
-    return x;
-  };
-}
-__name(constant_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/treemap/round.js
-function round_default(node) {
-  node.x0 = Math.round(node.x0);
-  node.y0 = Math.round(node.y0);
-  node.x1 = Math.round(node.x1);
-  node.y1 = Math.round(node.y1);
-}
-__name(round_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/treemap/dice.js
-function dice_default(parent, x0, y0, x1, y1) {
-  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (x1 - x0) / parent.value;
-  while (++i < n) {
-    node = nodes[i], node.y0 = y0, node.y1 = y1;
-    node.x0 = x0, node.x1 = x0 += node.value * k;
-  }
-}
-__name(dice_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/treemap/slice.js
-function slice_default(parent, x0, y0, x1, y1) {
-  var nodes = parent.children, node, i = -1, n = nodes.length, k = parent.value && (y1 - y0) / parent.value;
-  while (++i < n) {
-    node = nodes[i], node.x0 = x0, node.x1 = x1;
-    node.y0 = y0, node.y1 = y0 += node.value * k;
-  }
-}
-__name(slice_default, "default");
-
-// ../../node_modules/d3-hierarchy/src/treemap/squarify.js
-var phi = (1 + Math.sqrt(5)) / 2;
-function squarifyRatio(ratio, parent, x0, y0, x1, y1) {
-  var rows = [], nodes = parent.children, row2, nodeValue, i0 = 0, i1 = 0, n = nodes.length, dx, dy, value = parent.value, sumValue, minValue, maxValue, newRatio, minRatio, alpha, beta;
-  while (i0 < n) {
-    dx = x1 - x0, dy = y1 - y0;
-    do
-      sumValue = nodes[i1++].value;
-    while (!sumValue && i1 < n);
-    minValue = maxValue = sumValue;
-    alpha = Math.max(dy / dx, dx / dy) / (value * ratio);
-    beta = sumValue * sumValue * alpha;
-    minRatio = Math.max(maxValue / beta, beta / minValue);
-    for (; i1 < n; ++i1) {
-      sumValue += nodeValue = nodes[i1].value;
-      if (nodeValue < minValue) minValue = nodeValue;
-      if (nodeValue > maxValue) maxValue = nodeValue;
-      beta = sumValue * sumValue * alpha;
-      newRatio = Math.max(maxValue / beta, beta / minValue);
-      if (newRatio > minRatio) {
-        sumValue -= nodeValue;
-        break;
-      }
-      minRatio = newRatio;
-    }
-    rows.push(row2 = { value: sumValue, dice: dx < dy, children: nodes.slice(i0, i1) });
-    if (row2.dice) dice_default(row2, x0, y0, x1, value ? y0 += dy * sumValue / value : y1);
-    else slice_default(row2, x0, y0, value ? x0 += dx * sumValue / value : x1, y1);
-    value -= sumValue, i0 = i1;
-  }
-  return rows;
-}
-__name(squarifyRatio, "squarifyRatio");
-var squarify_default = (/* @__PURE__ */ __name((function custom(ratio) {
-  function squarify(parent, x0, y0, x1, y1) {
-    squarifyRatio(ratio, parent, x0, y0, x1, y1);
-  }
-  __name(squarify, "squarify");
-  squarify.ratio = function(x) {
-    return custom((x = +x) > 1 ? x : 1);
-  };
-  return squarify;
-}), "custom"))(phi);
-
-// ../../node_modules/d3-hierarchy/src/treemap/index.js
-function treemap_default() {
-  var tile = squarify_default, round = false, dx = 1, dy = 1, paddingStack = [0], paddingInner = constantZero, paddingTop = constantZero, paddingRight = constantZero, paddingBottom = constantZero, paddingLeft = constantZero;
-  function treemap(root) {
-    root.x0 = root.y0 = 0;
-    root.x1 = dx;
-    root.y1 = dy;
-    root.eachBefore(positionNode);
-    paddingStack = [0];
-    if (round) root.eachBefore(round_default);
-    return root;
-  }
-  __name(treemap, "treemap");
-  function positionNode(node) {
-    var p = paddingStack[node.depth], x0 = node.x0 + p, y0 = node.y0 + p, x1 = node.x1 - p, y1 = node.y1 - p;
-    if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
-    if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
-    node.x0 = x0;
-    node.y0 = y0;
-    node.x1 = x1;
-    node.y1 = y1;
-    if (node.children) {
-      p = paddingStack[node.depth + 1] = paddingInner(node) / 2;
-      x0 += paddingLeft(node) - p;
-      y0 += paddingTop(node) - p;
-      x1 -= paddingRight(node) - p;
-      y1 -= paddingBottom(node) - p;
-      if (x1 < x0) x0 = x1 = (x0 + x1) / 2;
-      if (y1 < y0) y0 = y1 = (y0 + y1) / 2;
-      tile(node, x0, y0, x1, y1);
-    }
-  }
-  __name(positionNode, "positionNode");
-  treemap.round = function(x) {
-    return arguments.length ? (round = !!x, treemap) : round;
-  };
-  treemap.size = function(x) {
-    return arguments.length ? (dx = +x[0], dy = +x[1], treemap) : [dx, dy];
-  };
-  treemap.tile = function(x) {
-    return arguments.length ? (tile = required(x), treemap) : tile;
-  };
-  treemap.padding = function(x) {
-    return arguments.length ? treemap.paddingInner(x).paddingOuter(x) : treemap.paddingInner();
-  };
-  treemap.paddingInner = function(x) {
-    return arguments.length ? (paddingInner = typeof x === "function" ? x : constant_default(+x), treemap) : paddingInner;
-  };
-  treemap.paddingOuter = function(x) {
-    return arguments.length ? treemap.paddingTop(x).paddingRight(x).paddingBottom(x).paddingLeft(x) : treemap.paddingTop();
-  };
-  treemap.paddingTop = function(x) {
-    return arguments.length ? (paddingTop = typeof x === "function" ? x : constant_default(+x), treemap) : paddingTop;
-  };
-  treemap.paddingRight = function(x) {
-    return arguments.length ? (paddingRight = typeof x === "function" ? x : constant_default(+x), treemap) : paddingRight;
-  };
-  treemap.paddingBottom = function(x) {
-    return arguments.length ? (paddingBottom = typeof x === "function" ? x : constant_default(+x), treemap) : paddingBottom;
-  };
-  treemap.paddingLeft = function(x) {
-    return arguments.length ? (paddingLeft = typeof x === "function" ? x : constant_default(+x), treemap) : paddingLeft;
-  };
-  return treemap;
-}
-__name(treemap_default, "default");
-
-// src/views/map.ts
-var UPPER_HALF = 9600;
-var hex = /* @__PURE__ */ __name((s) => parseInt(s.slice(1), 16), "hex");
-var ACCENT = hex(BRAND.accent);
-var GROUND = hex(DARK.bgRoot);
-var LABEL_FG = hex(DARK.textSecondary);
-var NEUTRAL = hex(DARK_CANVAS.nodeNeutral);
-var BLACK = 0;
-var SPLIT_SHARE = 0.25;
-var MAX_SPLITS = 8;
-var GUTTER_MIN = 6;
-var EDGE_MIN = 3;
-function colorForScore(score) {
-  return score === null ? NEUTRAL : hex(DARK_CANVAS_BAND[bandForScore(score)]);
-}
-__name(colorForScore, "colorForScore");
-function mix(a, b, amount) {
-  const ch = /* @__PURE__ */ __name((shift) => {
-    const x = a >> shift & 255;
-    const y = b >> shift & 255;
-    return Math.round(x + (y - x) * amount) << shift;
-  }, "ch");
-  return (ch(16) | ch(8) | ch(0)) >>> 0;
-}
-__name(mix, "mix");
-var byName = /* @__PURE__ */ __name((a, b) => a < b ? -1 : a > b ? 1 : 0, "byName");
-function dirsOf(path) {
-  return path.split("/").slice(0, -1);
-}
-__name(dirsOf, "dirsOf");
-function keyOf(path, split2) {
-  const dirs = dirsOf(path);
-  let depth = Math.min(1, dirs.length);
-  while (depth < dirs.length && split2.has(dirs.slice(0, depth).join("/"))) depth++;
-  return dirs.slice(0, depth).join("/");
-}
-__name(keyOf, "keyOf");
-function nextSplit(files, split2, limit) {
-  const weight = /* @__PURE__ */ new Map();
-  for (const f of files) {
-    const key = keyOf(f.file_path, split2);
-    weight.set(key, (weight.get(key) ?? 0) + f.nloc);
-  }
-  const heavy = [...weight].filter(([key, w]) => key !== "" && w > limit).sort((a, b) => b[1] - a[1] || byName(a[0], b[0]));
-  for (const [key] of heavy) {
-    const deeper = /* @__PURE__ */ new Set([...split2, key]);
-    const parts = new Set(files.filter((f) => keyOf(f.file_path, split2) === key).map((f) => keyOf(f.file_path, deeper)));
-    if (parts.size > 1) return key;
+// src/model/story.ts
+var NO_STORY = { searched: [], opened: [], edited: [] };
+var nameOf = /* @__PURE__ */ __name((path) => path.slice(path.lastIndexOf("/") + 1), "nameOf");
+var FILE_KINDS = /* @__PURE__ */ new Set(["read", "edit", "search"]);
+var isFileStep = /* @__PURE__ */ __name((a) => !a.isError && FILE_KINDS.has(a.kind), "isFileStep");
+var isOpen = /* @__PURE__ */ __name((a) => a.kind === "read" || a.kind === "edit", "isOpen");
+function storyTurn(state2) {
+  for (let i = state2.turns.length - 1; i >= 0; i--) {
+    const t = state2.turns[i];
+    if (t.activities.some(isFileStep)) return t;
   }
   return null;
 }
-__name(nextSplit, "nextSplit");
-function groupKeys(files) {
-  const split2 = /* @__PURE__ */ new Set();
-  const limit = files.reduce((sum, f) => sum + f.nloc, 0) * SPLIT_SHARE;
-  for (let i = 0; i < MAX_SPLITS; i++) {
-    const key = nextSplit(files, split2, limit);
-    if (key === null) break;
-    split2.add(key);
-  }
-  return files.map((f) => keyOf(f.file_path, split2));
-}
-__name(groupKeys, "groupKeys");
-function treemapOf(files, width2, height) {
-  const keys = groupKeys(files);
-  const groups = /* @__PURE__ */ new Map();
-  files.forEach((file, i) => {
-    const key = keys[i] ?? "";
-    groups.set(key, [...groups.get(key) ?? [], { name: file.file_path, file }]);
-  });
-  const data = { name: "", children: [...groups].map(([name, children]) => ({ name, children })) };
-  const root = hierarchy(data).sum((d) => d.file?.nloc ?? 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0) || byName(a.data.name, b.data.name));
-  return treemap_default().tile(squarify_default).size([width2, height])(root);
-}
-__name(treemapOf, "treemapOf");
-var rectOf = /* @__PURE__ */ __name((n) => ({ x: n.x0, y: n.y0, w: n.x1 - n.x0, h: n.y1 - n.y0 }), "rectOf");
-function pixelSpan(from, to) {
-  return [Math.ceil(from - 0.5), Math.ceil(to - 0.5)];
-}
-__name(pixelSpan, "pixelSpan");
-function groupInterior(rect, width2, height) {
-  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
-  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
-  const gutter = x1 - x0 >= GUTTER_MIN && y1 - y0 >= GUTTER_MIN;
-  return { x0, y0, x1: gutter && x1 < width2 ? x1 - 1 : x1, y1: gutter && y1 < height ? y1 - 1 : y1 };
-}
-__name(groupInterior, "groupInterior");
-function placeFile(leaf, group, inner) {
-  const file = leaf.data.file;
-  const rect = rectOf(leaf);
-  const [x0, x1] = pixelSpan(rect.x, rect.x + rect.w);
-  const [y0, y1] = pixelSpan(rect.y, rect.y + rect.h);
-  return {
-    path: file.file_path,
-    score: file.score,
-    nloc: file.nloc,
-    group,
-    rect,
-    px0: Math.max(x0, inner.x0),
-    py0: Math.max(y0, inner.y0),
-    px1: Math.min(x1, inner.x1),
-    py1: Math.min(y1, inner.y1)
-  };
-}
-__name(placeFile, "placeFile");
-function paintFile(base, width2, f) {
-  const fill = colorForScore(f.score);
-  const edge = mix(fill, BLACK, 0.3);
-  const edgeX = f.px1 - f.px0 >= EDGE_MIN ? f.px1 - 1 : -1;
-  const edgeY = f.py1 - f.py0 >= EDGE_MIN ? f.py1 - 1 : -1;
-  for (let y = f.py0; y < f.py1; y++) {
-    base.fill(y === edgeY ? edge : fill, y * width2 + f.px0, y * width2 + f.px1);
-    if (edgeX >= 0) base[y * width2 + edgeX] = edge;
-  }
-}
-__name(paintFile, "paintFile");
-function labelText(key, width2) {
-  const parts = key.split("/");
-  const rungs = [key, parts.slice(-2).join("/"), parts[parts.length - 1] ?? ""];
-  const text2 = rungs.find((r) => r.length > 0 && r.length <= width2);
-  return text2 !== void 0 && /^[\x20-\x7e]+$/.test(text2) ? text2 : null;
-}
-__name(labelText, "labelText");
-function labelFor(g, columns, rows) {
-  const col = Math.ceil(g.rect.x);
-  const row2 = Math.ceil(g.rect.y / 2);
-  const width2 = Math.min(columns, Math.floor(g.rect.x + g.rect.w)) - col - 1;
-  const height = Math.floor((g.rect.y + g.rect.h) / 2) - row2;
-  if (g.key === "" || height < 2 || row2 >= rows) return null;
-  const text2 = labelText(g.key, width2);
-  return text2 === null ? null : { row: row2, col, text: text2 };
-}
-__name(labelFor, "labelFor");
-function labelsFor(groups, columns, rows) {
-  return [...groups].sort((a, b) => b.nloc - a.nloc).map((g) => labelFor(g, columns, rows)).filter((l) => l !== null);
-}
-__name(labelsFor, "labelsFor");
-function layoutMap(feed, columns, rows, caseInsensitive) {
-  const width2 = columns;
-  const height = rows * 2;
-  const root = treemapOf(
-    feed.filter((f) => f.nloc > 0),
-    width2,
-    height
-  );
-  const groups = [];
-  const files = [];
-  for (const node of root.children ?? []) {
-    const group = groups.push({ key: node.data.name, rect: rectOf(node), nloc: node.value ?? 0 }) - 1;
-    const inner = groupInterior(rectOf(node), width2, height);
-    for (const leaf of node.children ?? []) files.push(placeFile(leaf, group, inner));
-  }
-  const base = new Uint32Array(width2 * height).fill(GROUND);
-  const drawn = [];
-  const index = /* @__PURE__ */ new Map();
-  files.forEach((f, i) => {
-    if (f.px1 <= f.px0 || f.py1 <= f.py0) return;
-    drawn.push(i);
-    index.set(caseInsensitive ? f.path.toLowerCase() : f.path, i);
-    paintFile(base, width2, f);
-  });
-  return { columns, rows, width: width2, height, groups, files, drawn, index, caseInsensitive, labels: labelsFor(groups, columns, rows), base };
-}
-__name(layoutMap, "layoutMap");
-function labelCovered(label, marked, width2) {
-  if (marked === void 0) return false;
-  for (let c = label.col; c < label.col + label.text.length; c++) {
-    if (marked[2 * label.row * width2 + c] || marked[(2 * label.row + 1) * width2 + c]) return true;
-  }
-  return false;
-}
-__name(labelCovered, "labelCovered");
-function encodeCells(layout, pixels, marked) {
-  const { columns, rows, width: width2 } = layout;
-  const words = new Uint32Array(columns * rows * 3);
-  for (let i = 0; i < columns * rows; i++) {
-    const r = Math.floor(i / columns);
-    const c = i % columns;
-    words[i * 3] = UPPER_HALF;
-    words[i * 3 + 1] = pixels[2 * r * width2 + c] ?? GROUND;
-    words[i * 3 + 2] = pixels[(2 * r + 1) * width2 + c] ?? GROUND;
-  }
-  for (const label of layout.labels) {
-    if (labelCovered(label, marked, width2)) continue;
-    for (let k = 0; k < label.text.length && label.col + k < columns; k++) {
-      const o = (label.row * columns + label.col + k) * 3;
-      words.set([label.text.charCodeAt(k), LABEL_FG, GROUND], o);
-    }
-  }
-  return new Uint8Array(words.buffer).toBase64();
-}
-__name(encodeCells, "encodeCells");
-
-// src/views/overlay.ts
-var EDIT_TINT = mix(ACCENT, 16777215, 0.45);
-var READ_DIM = 0.4;
-var PATH_AMOUNT = 0.85;
-var MATCH_FLASH = 0.85;
-var MATCH_REST = 0.25;
-var RING_AMOUNT = 0.5;
-var SMALL = 3;
-function lookup(layout, rel) {
-  return layout.index.get(layout.caseInsensitive ? rel.toLowerCase() : rel);
-}
-__name(lookup, "lookup");
-function locate(layout, abs, root) {
-  const rel = relativeTo(abs, root, layout.caseInsensitive);
-  return rel === null ? void 0 : lookup(layout, rel);
-}
-__name(locate, "locate");
-function split(items, find) {
-  const found = [];
-  for (const item of items) {
-    const i = find(item);
-    if (i !== void 0) found.push(i);
-  }
-  return { found, missing: items.length - found.length };
-}
-__name(split, "split");
-function resolveOverlay(layout, trail, repoRoot) {
-  const reads = split(trail.reads, (p) => locate(layout, p, repoRoot));
-  const hits = split(trail.hits, (p) => locate(layout, p, repoRoot)).found;
-  const callers = split(trail.callers?.status === "ready" ? trail.callers.paths : [], (p) => lookup(layout, p));
-  const edited = trail.edit === null ? null : locate(layout, trail.edit, repoRoot) ?? null;
-  const edit = trail.edit === null ? null : { name: trail.edit.slice(trail.edit.lastIndexOf("/") + 1), callers: trail.callers, notDrawn: callers.missing };
-  return {
-    overlay: { reads: reads.found, hits, edited, callers: callers.found },
-    reads: { count: trail.reads.length, capped: trail.readsCapped, notDrawn: reads.missing },
-    matched: trail.searches === 0 ? null : trail.hits.length,
-    edit
-  };
-}
-__name(resolveOverlay, "resolveOverlay");
-function center(f) {
-  return [Math.floor((f.px0 + f.px1 - 1) / 2), Math.floor((f.py0 + f.py1 - 1) / 2)];
-}
-__name(center, "center");
-function distance(a, b) {
-  const [ax, ay] = center(a);
-  const [bx, by] = center(b);
-  return Math.hypot(ax - bx, ay - by);
-}
-__name(distance, "distance");
-function rippleRadius(layout, overlay) {
-  const origin = overlay.edited === null ? void 0 : layout.files[overlay.edited];
-  if (!origin || overlay.callers.length === 0) return 0;
-  return Math.max(...overlay.callers.map((i) => distance(origin, layout.files[i]))) + 3;
-}
-__name(rippleRadius, "rippleRadius");
-function inside(layout, x, y) {
-  return x >= 0 && y >= 0 && x < layout.width && y < layout.height;
-}
-__name(inside, "inside");
-function set(p, x, y, color2) {
-  if (!inside(p.layout, x, y)) return;
-  const width2 = p.layout.width;
-  p.px[y * width2 + x] = color2;
-  p.marked[y * width2 + x] = 1;
-}
-__name(set, "set");
-function fillFile(p, f, color2) {
-  const w = p.layout.width;
-  for (let y = f.py0; y < f.py1; y++) for (let x = f.px0; x < f.px1; x++) set(p, x, y, color2(p.px[y * w + x] ?? GROUND));
-}
-__name(fillFile, "fillFile");
-function outlineFile(p, f, color2) {
-  for (let x = f.px0; x < f.px1; x++) {
-    set(p, x, f.py0, color2);
-    set(p, x, f.py1 - 1, color2);
-  }
-  for (let y = f.py0; y < f.py1; y++) {
-    set(p, f.px0, y, color2);
-    set(p, f.px1 - 1, y, color2);
-  }
-}
-__name(outlineFile, "outlineFile");
-var isSmall = /* @__PURE__ */ __name((f) => f.px1 - f.px0 < SMALL || f.py1 - f.py0 < SMALL, "isSmall");
-function paintPath(p, overlay) {
-  const files = p.layout.files;
-  for (let k = 1; k < overlay.reads.length; k++) {
-    const [ax, ay] = center(files[overlay.reads[k - 1]]);
-    const [bx, by] = center(files[overlay.reads[k]]);
-    const steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay));
-    for (let s = 1; s < steps; s += 3) {
-      const x = Math.round(ax + (bx - ax) * s / steps);
-      const y = Math.round(ay + (by - ay) * s / steps);
-      set(p, x, y, mix(p.px[y * p.layout.width + x] ?? GROUND, ACCENT, PATH_AMOUNT));
-    }
-  }
-}
-__name(paintPath, "paintPath");
-function paintHits(p, overlay, amount) {
-  for (const i of overlay.hits) fillFile(p, p.layout.files[i], (c) => mix(c, ACCENT, amount));
-}
-__name(paintHits, "paintHits");
-function paintReads(p, overlay) {
-  for (const i of overlay.reads) {
-    const f = p.layout.files[i];
-    fillFile(p, f, (c) => mix(c, 0, READ_DIM));
-    outlineFile(p, f, ACCENT);
-  }
-}
-__name(paintReads, "paintReads");
-function paintEdited(p, f) {
-  fillFile(p, f, () => EDIT_TINT);
-  if (!isSmall(f)) outlineFile(p, f, ACCENT);
-}
-__name(paintEdited, "paintEdited");
-function paintRing(p, origin, reach) {
-  const [ox, oy] = center(origin);
-  const { width: width2, height } = p.layout;
-  for (let y = Math.max(0, Math.floor(oy - reach)); y <= Math.min(height - 1, oy + reach); y++) {
-    for (let x = Math.max(0, Math.floor(ox - reach)); x <= Math.min(width2 - 1, ox + reach); x++) {
-      const d = Math.hypot(x - ox, y - oy);
-      if (d <= reach && d > reach - 2) set(p, x, y, mix(p.px[y * width2 + x] ?? GROUND, ACCENT, RING_AMOUNT));
-    }
-  }
-}
-__name(paintRing, "paintRing");
-function paintCallers(p, overlay, origin, reach) {
-  for (const i of overlay.callers) {
-    const f = p.layout.files[i];
-    if (origin !== void 0 && distance(origin, f) > reach) continue;
-    const [x, y] = center(f);
-    set(p, x, y, ACCENT);
-    set(p, x, y ^ 1, GROUND);
-  }
-}
-__name(paintCallers, "paintCallers");
-function matchAmount(anim) {
-  return anim?.kind === "flash" ? MATCH_REST + (MATCH_FLASH - MATCH_REST) * (1 - anim.t) : MATCH_REST;
-}
-__name(matchAmount, "matchAmount");
-function rippleReach(layout, overlay, anim) {
-  return anim?.kind === "ripple" && anim.t < 1 ? rippleRadius(layout, overlay) * anim.t : Infinity;
-}
-__name(rippleReach, "rippleReach");
-function framePixels(layout, overlay, anim) {
-  const p = { layout, px: layout.base.slice(), marked: new Uint8Array(layout.width * layout.height) };
-  const origin = overlay.edited === null ? void 0 : layout.files[overlay.edited];
-  const reach = rippleReach(layout, overlay, anim);
-  paintPath(p, overlay);
-  paintHits(p, overlay, matchAmount(anim));
-  paintReads(p, overlay);
-  if (origin !== void 0) paintEdited(p, origin);
-  if (origin !== void 0 && reach < Infinity) paintRing(p, origin, reach);
-  paintCallers(p, overlay, origin, reach);
-  return { pixels: p.px, marked: p.marked };
-}
-__name(framePixels, "framePixels");
-function frameCells(layout, overlay, anim) {
-  const { pixels, marked } = framePixels(layout, overlay, anim);
-  return encodeCells(layout, pixels, marked);
-}
-__name(frameCells, "frameCells");
-var FRAME_MS = 40;
-var FLASH_MS = 600;
-var RIPPLE_MS = 1200;
-
-// src/views/mapPane.ts
-var MAP_KEY = "lens-map";
-var MAX_COLUMNS = 512;
-var MAX_ROWS = 256;
-var MIN_ROWS = 4;
-var GAP = 2;
-var SEP = " · ";
-var FACT_ROWS = 4;
-var INLINE_ROWS_PER_COLUMN = 1 / 6;
-var INLINE_MAX_ROWS = 20;
-var hexOf = /* @__PURE__ */ __name((n) => `#${n.toString(16).padStart(6, "0")}`, "hexOf");
-var BAND_SWATCHES = [
-  ...HEALTH_BAND_ORDER.map((band) => ({ glyph: "■", color: DARK_CANVAS_BAND[band], label: HEALTH_BAND_LABEL[band] })),
-  { glyph: "■", color: DARK_CANVAS.nodeNeutral, label: MAP_COPY.noScore }
-];
-var READ = { glyph: "□", color: BRAND.accent, label: MAP_COPY.read };
-var EDITED = { glyph: "◆", color: hexOf(EDIT_TINT), label: MAP_COPY.edited };
-var IMPORTER = { glyph: "·", color: BRAND.accent, label: MAP_COPY.importer };
-var MATCH = { glyph: "▪", color: BRAND.accent, label: MAP_COPY.match };
-function packRows(items, width2, columns, gap) {
-  const rows = [];
-  let used = Infinity;
-  for (const item of items) {
-    const w = width2(item);
-    const last = rows[rows.length - 1];
-    if (last === void 0 || used + gap + w > columns) {
-      rows.push([item]);
-      used = w;
-    } else {
-      last.push(item);
-      used += gap + w;
-    }
-  }
-  return rows;
-}
-__name(packRows, "packRows");
-var swatchWidth = /* @__PURE__ */ __name((s) => s.label.length + 2, "swatchWidth");
-function legendRows(columns) {
-  const swatchRows2 = /* @__PURE__ */ __name((items) => packRows(items, swatchWidth, columns, GAP).length, "swatchRows");
-  return swatchRows2(BAND_SWATCHES) + swatchRows2([READ, EDITED, IMPORTER, MATCH]) + FACT_ROWS;
-}
-__name(legendRows, "legendRows");
-function mapSize(pane) {
-  const columns = Math.max(1, Math.min(MAX_COLUMNS, pane.bodyColumns));
-  const wanted = pane.placement === "dock" ? pane.bodyRows - legendRows(columns) : Math.min(INLINE_MAX_ROWS, Math.round(columns * INLINE_ROWS_PER_COLUMN));
-  return { columns, rows: Math.max(MIN_ROWS, Math.min(MAX_ROWS, wanted)) };
-}
-__name(mapSize, "mapSize");
-function swatchRows(items, columns) {
-  return packRows(items, swatchWidth, columns, GAP).map(
-    (row2) => box(
-      { flexDirection: "row", columnGap: GAP },
-      row2.map((s) => box({ flexDirection: "row" }, [text(s.glyph, { color: s.color }), text(` ${s.label}`, { dimColor: true })]))
-    )
-  );
-}
-__name(swatchRows, "swatchRows");
-function marksOf(resolved) {
-  const marks = [READ, EDITED];
-  if (resolved.overlay.callers.length > 0) marks.push(IMPORTER);
-  if (resolved.overlay.hits.length > 0) marks.push(MATCH);
-  return marks;
-}
-__name(marksOf, "marksOf");
-function scopeRows(scope, columns) {
-  const rows = /* @__PURE__ */ __name((parts2) => packRows(parts2, (p) => p.length, columns, SEP.length), "rows");
-  let parts = scopeParts(scope);
-  for (const optional of [SCOPE_REST, scope.indexed === null ? null : indexedPart(scope.indexed)]) {
-    if (rows(parts).length <= 2) break;
-    parts = parts.filter((p) => p !== optional);
-  }
-  return rows(parts).slice(0, 2).map((row2) => row2.join(SEP));
-}
-__name(scopeRows, "scopeRows");
-function factRows(resolved, scope, columns) {
-  const facts = [];
-  const reads = readsLine(resolved.reads, resolved.matched, columns);
-  if (reads !== null) facts.push(reads);
-  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn, columns));
-  return [...facts, ...scopeRows(scope, columns)];
-}
-__name(factRows, "factRows");
-function legendView(resolved, scope, columns) {
-  return [
-    ...swatchRows(BAND_SWATCHES, columns),
-    ...swatchRows(marksOf(resolved), columns),
-    ...factRows(resolved, scope, columns).map((f) => text(fit(f, columns), { dimColor: true, wrap: "truncate-end" }))
-  ];
-}
-__name(legendView, "legendView");
-function mapPaneView(layout, cells, resolved, scope) {
-  return box({ key: "lens-map-pane", flexDirection: "column" }, [
-    raster({ key: MAP_KEY, columns: layout.columns, rows: layout.rows, cells }),
-    ...legendView(resolved, scope, layout.columns)
-  ]);
-}
-__name(mapPaneView, "mapPaneView");
-function noticeView(line2, columns) {
-  return box({ key: "lens-map-pane", flexDirection: "column" }, [text(fit(line2, columns), { dimColor: true, wrap: "truncate-end" })]);
-}
-__name(noticeView, "noticeView");
-
-// src/views/owl.ts
-var EYES = { open: "◉", shut: "─", side: "◐", happy: "^", still: "•" };
-var BLINK = [...Array(9).fill(EYES.open), EYES.shut];
-var BLINK_MS = 250;
-var EYES_OF = {
-  asleep: EYES.shut,
-  asking: EYES.side,
-  happy: EYES.happy,
-  stopped: EYES.still
-};
-function owlEyes(state2, now, still) {
-  if (state2 !== "watching") return EYES_OF[state2];
-  return still ? EYES.open : BLINK[Math.floor(now / BLINK_MS) % BLINK.length];
-}
-__name(owlEyes, "owlEyes");
-var OWL_WIDTH = 5;
-function owl(state2, eyes, amber) {
-  if (state2 === "asleep") return [text(`{${eyes},${eyes}}`, { dimColor: true })];
-  const eye = /* @__PURE__ */ __name(() => eyes === EYES.shut || eyes === EYES.still ? text(eyes) : text(eyes, { color: amber }), "eye");
-  return [text("{"), eye(), text(","), eye(), text("}")];
-}
-__name(owl, "owl");
-
-// src/views/theme.ts
-var DARK_THEME = { plum: DARK.accentSecondary, amber: BRAND.accent };
-var LIGHT_THEME = { plum: LIGHT.accentSecondary, amber: BRAND.accentTextLight };
-function flowTheme(light) {
-  return light ? LIGHT_THEME : DARK_THEME;
-}
-__name(flowTheme, "flowTheme");
-var HILLS = "▁▂▃▅▃▂▁▁▂▃▂▁▁▁▂▃▄▃▂▁";
-var MIRROR = { "▁": " ", "▂": "▔", "▃": "▔", "▄": "▀", "▅": "▀" };
-var THISTLE = "⚘";
-function repeat(pattern, columns) {
-  return pattern.repeat(Math.ceil(Math.max(0, columns) / pattern.length)).slice(0, Math.max(0, columns));
-}
-__name(repeat, "repeat");
-function hills(columns) {
-  return repeat(HILLS, columns);
-}
-__name(hills, "hills");
-function loch(columns) {
-  return [...hills(columns)].map((c) => MIRROR[c] ?? " ").join("");
-}
-__name(loch, "loch");
-
-// src/views/flow.ts
-var FLOW_KEY = "lens-flow";
-var FLOW_NEXT = "lens-flow-next";
-var FLOW_PREV = "lens-flow-prev";
-var HAPPY_MS = 3e3;
-var NARROW = 80;
-var MIN_BODY = 3;
-var ACTIVE_MARK = "▸";
-var GUTTER = 2;
-var CLOCK_W = 6;
-var DETAIL_W = 20;
-var DETAIL_INDENT = GUTTER + CLOCK_W;
-var EMPTY_W = 70;
-var WORKING_ROWS = 6;
-var FILE_W = 44;
-var KIND_W = 8;
-var VIA_W = 13;
-var BAR_W = 60;
-var BUILT_FROM = 2;
-var TARGET_MIN = 28;
-var SEP2 = " · ";
-var EXCERPT_LINE = 160;
-var rowKey = /* @__PURE__ */ __name((id) => `${FLOW_KEY}-${id}`, "rowKey");
-function flowPresses(state2) {
-  return [[FLOW_NEXT, null], [FLOW_PREV, null], ...openable(state2).map((id) => [rowKey(id), id])];
-}
-__name(flowPresses, "flowPresses");
-var width = /* @__PURE__ */ __name((segs) => segs.reduce((n, s) => n + s.t.length, 0), "width");
-function segNode(s) {
-  if (s.press !== void 0) return { type: "Button", props: { key: s.press, label: s.t, plain: true } };
-  const props = {};
-  if (s.color !== void 0) props.color = s.color;
-  if (s.dim === true) props.dimColor = true;
-  return text(s.t, props);
-}
-__name(segNode, "segNode");
-function row(segs, columns, right = []) {
-  const fixed = width(segs.filter((s) => s.flex !== true)) + width(right) + (right.length > 0 ? 2 : 0);
-  const fitted = segs.map((s) => s.flex === true ? { ...s, t: fit(s.t, Math.max(1, columns - fixed)) } : s);
-  const gap = right.length > 0 ? Math.max(2, columns - width(fitted) - width(right)) : 0;
-  const all = gap > 0 ? [...fitted, { t: " ".repeat(gap) }, ...right] : fitted;
-  return box({ flexDirection: "row" }, all.filter((s) => s.t !== "").map(segNode));
-}
-__name(row, "row");
-var dimLine = /* @__PURE__ */ __name((t, columns) => text(fit(t, columns), { dimColor: true, wrap: "truncate-end" }), "dimLine");
-var pad = /* @__PURE__ */ __name((n) => ({ t: " ".repeat(n) }), "pad");
-function wrapWords(words, columns) {
-  return packRows(words.split(" "), (w) => w.length, Math.max(1, columns), 1).map((r) => r.join(" "));
-}
-__name(wrapWords, "wrapWords");
-function section(caption, lines) {
-  return lines.length === 0 ? [] : [text(caption, { dimColor: true }), ...lines];
-}
-__name(section, "section");
-function owlState(state2, now) {
-  const last = state2.turns.at(-1);
-  if (last === void 0) return "asleep";
-  if (isWorking(state2)) return inFlight(state2) === null ? "watching" : "asking";
-  if (last.end === "stopped" || last.end === "failed") return "stopped";
-  return last.endedAt !== null && now - last.endedAt < HAPPY_MS ? "happy" : "asleep";
-}
-__name(owlState, "owlState");
-function statusSegs(turn, now, theme) {
-  const edited = turnTotals(turn).edits;
-  if (turn.endedAt === null) return [{ t: statusLine(null, now - turn.startedAt, edited) }];
-  const end = turn.end ?? "answer";
-  const line2 = { t: statusLine(end, turn.durationMs ?? 0, edited) };
-  return end === "answer" ? [line2, { t: `  ${THISTLE}`, color: theme.plum }] : [line2];
-}
-__name(statusSegs, "statusSegs");
-function notice(mode) {
-  return mode === "no-index" || mode === "no-cli" ? FLOW_COPY.notConnected : null;
-}
-__name(notice, "notice");
-function header(state2, v, theme) {
-  const turn = state2.turns.at(-1);
-  const st = owlState(state2, v.now);
-  const face = box({ flexDirection: "row" }, owl(st, owlEyes(st, v.now, v.still), theme.amber));
-  const room = v.columns - OWL_WIDTH - 1;
-  const said = notice(v.mode);
-  const tail = said === null ? [] : [dimLine(said, v.columns)];
-  if (turn === void 0) {
-    const [first = "", ...rest] = wrapWords(FLOW_COPY.empty, Math.min(EMPTY_W, room));
-    return [box({ flexDirection: "row", columnGap: 1 }, [face, text(first)]), ...rest.map((l) => text(`${" ".repeat(OWL_WIDTH + 1)}${l}`)), ...tail];
-  }
-  const prompt = turn.prompt.replace(/\s+/g, " ").trim();
-  return [
-    box({ flexDirection: "row", columnGap: 1 }, [face, row(statusSegs(turn, v.now, theme), room)]),
-    text(fit(answerLine(turnTotals(turn)), v.columns), { wrap: "truncate-end" }),
-    ...prompt === "" ? [] : [dimLine(`"${prompt}"`, v.columns)],
-    ...tail
-  ];
-}
-__name(header, "header");
-var fileName = /* @__PURE__ */ __name((path) => path.split("/").at(-1) ?? path, "fileName");
-function gapLines(g) {
-  const out = [];
-  if (g.importers !== null) out.push(importersLine(g.importers.total, g.importers.opened));
-  if (g.cochange.length > 0) out.push(cochangeLine(g.cochange));
-  if (g.tests !== null) out.push(testsReachLine(g.tests.total, g.tests.basis, g.tests.run, fileName(g.path)));
-  return out;
-}
-__name(gapLines, "gapLines");
-function healthLines(risk) {
-  const hd = risk?.health_delta;
-  if (hd === void 0) return [];
-  if (hd.introduced > 0) return [introducedLine(hd.introduced, hd.top_findings.find((f) => f.change === "introduced") ?? null)];
-  return hd.status === "partial" ? [HEALTH_PARTLY] : [];
-}
-__name(healthLines, "healthLines");
-function beforeAcceptLines(state2, turn, v) {
-  const files = beforeAccept(state2, turn).flatMap((g) => [
-    row([pad(2), { t: g.path, flex: true }, { t: `  ${FLOW_COPY.asOfIndex}`, dim: true }], v.columns),
-    ...gapLines(g).map((l) => dimLine(`    ${l}`, v.columns))
-  ]);
-  const health2 = healthLines(v.review).map((l) => text(fit(`  ${l}`, v.columns)));
-  return section(FLOW_COPY.beforeAccept, [...files, ...health2]);
-}
-__name(beforeAcceptLines, "beforeAcceptLines");
-function viaSeg(via, theme) {
-  if (via.kind === "repowise") return { t: via.tool.padEnd(VIA_W), color: theme.plum };
-  return { t: (via.kind === "search" ? FLOW_COPY.search : FLOW_COPY.direct).padEnd(VIA_W), dim: true };
-}
-__name(viaSeg, "viaSeg");
-function workingRow(f, t) {
-  const card = t.cards.get(pathKey(f.path));
-  const knows = t.columns < NARROW || card === void 0 ? "" : knowsParts(card).join(SEP2);
-  const kind = { t: (f.kind === "edited" ? FLOW_COPY.edited : FLOW_COPY.read).padEnd(KIND_W), dim: f.kind === "read" };
-  return row([pad(2), { t: fit(f.path, t.fileW).padEnd(t.fileW + 2) }, kind, viaSeg(f.via, t.theme), { t: knows, dim: true, flex: true }], t.columns);
-}
-__name(workingRow, "workingRow");
-function workingLines(state2, turn, v, theme) {
-  const files = workingSet(state2, turn);
-  const longest = Math.max(0, ...files.map((f) => f.path.length));
-  const t = {
-    cards: new Map(Object.entries(v.contexts).map(([p, c]) => [pathKey(p), c])),
-    columns: v.columns,
-    fileW: Math.min(FILE_W, longest, Math.max(8, v.columns - 2 - KIND_W - VIA_W - 4)),
-    theme
-  };
-  const rows = files.slice(0, WORKING_ROWS).map((f) => workingRow(f, t));
-  const more = files.length > WORKING_ROWS ? [dimLine(`  ${moreFiles(files.length - WORKING_ROWS)}`, v.columns)] : [];
-  return section(`${FLOW_COPY.workingSet} · ${FLOW_COPY.asOfIndex}`, [...rows, ...more]);
-}
-__name(workingLines, "workingLines");
-var SHADE = { repowise: "█", read: "▓", search: "▒", shell: "░", other: "·" };
-function cellsOf(bytes, total2, cells) {
-  return CONTEXT_KINDS.filter((k) => bytes[k] > 0).map((k) => [k, Math.max(1, Math.round(bytes[k] / total2 * cells))]);
-}
-__name(cellsOf, "cellsOf");
-function shadeSeg(kind, n, theme) {
-  const t = SHADE[kind].repeat(n);
-  return kind === "repowise" ? { t, color: theme.plum } : { t };
-}
-__name(shadeSeg, "shadeSeg");
-function contextLines(turn, columns, theme) {
-  const bytes = contextBytes(turn);
-  const total2 = CONTEXT_KINDS.reduce((n, k) => n + bytes[k], 0);
-  if (total2 === 0) return [];
-  const cells = cellsOf(bytes, total2, Math.min(BAR_W, columns - 4));
-  const bar = row([pad(2), ...cells.map(([k, n]) => shadeSeg(k, n, theme))], columns);
-  const legend = cells.map(([k]) => `${SHADE[k]} ${contextPart(k, bytes[k])}`);
-  const first = firstEditMs(turn);
-  const parts = first === null ? legend : [...legend, firstEditText(first)];
-  const lines = packRows(parts, (p) => p.length, Math.max(10, columns - 2), 2).map((r) => dimLine(`  ${r.join("  ")}`, columns));
-  return section(FLOW_COPY.context, [bar, ...lines]);
-}
-__name(contextLines, "contextLines");
-function lead(a, ctx) {
-  const mark = a.id === ctx.active ? { t: `${ACTIVE_MARK} `, color: ctx.theme.amber } : pad(GUTTER);
-  return [mark, { t: clockText(a.startedAt - ctx.turn.startedAt).padEnd(CLOCK_W), dim: true }];
-}
-__name(lead, "lead");
-function builtFrom(a, ctx) {
-  const reply = a.reply;
-  const facts = reply === null ? [] : reply.inside.slice(0, BUILT_FROM).map(insideFact);
-  const fresh = reply === null ? null : freshnessText(reply.behind);
-  return [...ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [], ...facts, ...fresh === null ? [] : [fresh]];
-}
-__name(builtFrom, "builtFrom");
-function rightOf(a, ctx) {
-  if (a.isError) return FLOW_COPY.error;
-  if (a.endedAt === null) return FLOW_COPY.asking;
-  return [durationText(a.endedAt - a.startedAt), ...builtFrom(a, ctx)].join(SEP2);
-}
-__name(rightOf, "rightOf");
-function callLine(a, ctx) {
-  const what = a.args[0]?.[1] ?? "";
-  const sub = a.agentId === null ? [] : [{ t: `  ${FLOW_COPY.subagent}`, dim: true }];
-  const segs = [...lead(a, ctx), { t: a.tool, press: rowKey(a.id) }, pad(2), { t: what, flex: true }, ...sub];
-  const room = ctx.columns - width(segs.filter((s) => s.flex !== true)) - Math.min(what.length, TARGET_MIN) - 2;
-  return { node: row(segs, ctx.columns, [{ t: fit(rightOf(a, ctx), Math.max(1, room)), dim: true }]), id: a.id };
-}
-__name(callLine, "callLine");
-function labeled(label, body, ctx, id) {
-  return { node: row([pad(DETAIL_INDENT), { t: label.padEnd(DETAIL_W), dim: true }, { t: body, flex: true }], ctx.columns), id };
-}
-__name(labeled, "labeled");
-function wrapped(label, parts, ctx, id) {
-  const room = Math.max(10, ctx.columns - DETAIL_INDENT - DETAIL_W);
-  return packRows(parts, (p) => p.length, room, SEP2.length).map((r, i) => labeled(i === 0 ? label : "", r.join(SEP2), ctx, id));
-}
-__name(wrapped, "wrapped");
-function replyDetail(a, ctx) {
-  const reply = a.reply;
-  if (reply === null) return [];
-  const excerpt = reply.excerpt === "" ? [] : [labeled(FLOW_COPY.excerpt, reply.excerpt.replace(/\s+/g, " ").slice(0, EXCERPT_LINE), ctx, a.id)];
-  const note = ctx.beforeEdit.has(a.id) ? [FLOW_COPY.beforeEdit] : [];
-  return [...wrapped(FLOW_COPY.howAnswered, [...note, ...behindParts(reply.behind, reply.bytes)], ctx, a.id), ...excerpt];
-}
-__name(replyDetail, "replyDetail");
-function detailLines(a, ctx) {
-  if (a.id !== ctx.open) return [];
-  const opened = ctx.opened.get(a.id) ?? [];
-  return [...replyDetail(a, ctx), labeled(FLOW_COPY.thenOpened, opened.length === 0 ? FLOW_COPY.nothingOpened : opened.join(", "), ctx, a.id)];
-}
-__name(detailLines, "detailLines");
-function openedAfter(state2) {
-  const out = /* @__PURE__ */ new Map();
-  for (const a of state2.turns.flatMap((t) => t.activities)) {
-    const by = a.namedBy?.id;
+__name(storyTurn, "storyTurn");
+function argOf(a, keys) {
+  return a.args.find(([k]) => keys.includes(k))?.[1] ?? "";
+}
+__name(argOf, "argOf");
+function openedOf(steps) {
+  const seen = /* @__PURE__ */ new Map();
+  for (const a of steps) {
     const path = a.paths[0];
-    if (by === void 0 || path === void 0) continue;
-    const list2 = out.get(by) ?? [];
-    if (!list2.includes(path)) list2.push(path);
-    out.set(by, list2);
+    if (!isOpen(a) || path === void 0 || seen.has(path)) continue;
+    seen.set(path, { name: nameOf(path), namedBy: a.namedBy?.tool ?? null });
   }
-  return out;
+  return [...seen.values()];
 }
-__name(openedAfter, "openedAfter");
-var isCall = /* @__PURE__ */ __name((a) => a.kind === "repowise", "isCall");
-function callLines(state2, turn, v, theme) {
-  const ctx = {
-    turn,
-    columns: v.columns,
-    active: isWorking(state2) ? inFlight(state2)?.id ?? null : null,
-    open: state2.open,
-    theme,
-    beforeEdit: answeredBeforeEdit(state2),
-    opened: openedAfter(state2)
+__name(openedOf, "openedOf");
+function storyFromFlow(state2) {
+  const turn = storyTurn(state2);
+  if (turn === null) return NO_STORY;
+  const steps = turn.activities.filter(isFileStep);
+  return {
+    searched: steps.filter((a) => a.kind === "search").map((a) => ({ pattern: argOf(a, ["pattern", "query"]), hits: a.hits })),
+    opened: openedOf(steps),
+    edited: steps.filter((a) => a.kind === "edit" && a.paths[0] !== void 0).map((a) => ({ name: nameOf(a.paths[0]), lines: a.lines }))
   };
-  const calls = turn.activities.filter(isCall).flatMap((a) => [callLine(a, ctx), ...detailLines(a, ctx)]);
-  const dropped = turn.dropped > 0 && calls.length > 0 ? [{ node: dimLine(`  ${droppedSteps(turn.dropped)}`, v.columns) }] : [];
-  return [...dropped, ...calls];
 }
-__name(callLines, "callLines");
-var heightOf = /* @__PURE__ */ __name((l) => l.height ?? 1, "heightOf");
-var total = /* @__PURE__ */ __name((lines) => lines.reduce((n, l) => n + heightOf(l), 0), "total");
-function windowStart(lines, room, open) {
-  const at = open === null ? -1 : lines.findIndex((l) => l.id === open);
-  const floor = at < 0 ? lines.length - 1 : Math.max(0, at - 1);
-  let start = 0;
-  while (start < floor && total(lines.slice(start)) > room) start++;
-  return start;
+__name(storyFromFlow, "storyFromFlow");
+function litFromFlow(state2) {
+  const turn = storyTurn(state2);
+  if (turn === null) return NO_LIT;
+  const mine = visits(state2).filter((v) => v.turn === turn.seq);
+  const opened = mine.filter((v) => v.kind !== "search-hit");
+  const edits = opened.filter((v) => v.kind === "edit");
+  return {
+    hits: mine.filter((v) => v.kind === "search-hit").map((v) => v.path),
+    reads: [...new Set(opened.map((v) => v.path))],
+    named: Object.entries(state2.named).filter(([, n]) => n.turn === turn.seq).map(([key]) => key),
+    importers: [],
+    edits: [...new Set(edits.map((v) => v.path))],
+    edit: edits.at(-1)?.path ?? null,
+    current: opened.at(-1)?.path ?? null
+  };
 }
-__name(windowStart, "windowStart");
-function stepsOutside(lines, shown) {
-  return new Set(lines.map((l) => l.id).filter((id) => !shown.has(id))).size;
+__name(litFromFlow, "litFromFlow");
+var rel = /* @__PURE__ */ __name((abs, root, ci) => relativeTo(abs, root, ci), "rel");
+function litFromTrail(trail, root, caseInsensitive) {
+  const all = /* @__PURE__ */ __name((paths) => paths.map((p) => rel(p, root, caseInsensitive)).filter((p) => p !== null), "all");
+  const reads = all(trail.reads);
+  const edit = trail.edit === null ? null : rel(trail.edit, root, caseInsensitive);
+  return { hits: all(trail.hits), reads, named: [], importers: [], edits: edit === null ? [] : [edit], edit, current: reads.at(-1) ?? null };
 }
-__name(stepsOutside, "stepsOutside");
-function windowed(lines, room, open) {
-  if (total(lines) <= room) return lines;
-  const start = windowStart(lines, room - 2, open);
-  let end = lines.length;
-  while (end > start + 1 && total(lines.slice(start, end)) > room - 2) end--;
-  const shown = new Set(lines.slice(start, end).map((l) => l.id));
-  const above = stepsOutside(lines.slice(0, start), shown);
-  const below2 = stepsOutside(lines.slice(end), shown);
-  const note = /* @__PURE__ */ __name((n, say) => n === 0 ? [] : [{ node: dimLine(say(n), Number.POSITIVE_INFINITY) }], "note");
-  return [...note(above, hiddenSteps), ...lines.slice(start, end), ...note(below2, laterSteps)];
+__name(litFromTrail, "litFromTrail");
+function storyFromTrail(trail) {
+  return {
+    searched: trail.searches === 0 ? [] : [{ pattern: "", hits: trail.hits.length }],
+    opened: trail.reads.map((p) => ({ name: nameOf(p), namedBy: null })),
+    edited: trail.edit === null ? [] : [{ name: nameOf(trail.edit), lines: null }]
+  };
 }
-__name(windowed, "windowed");
-function earlierTurns(state2, columns) {
-  const out = state2.turns.slice(0, -1).reverse().map((t) => dimLine(`  ${turnFooter(t.seq, t.durationMs, turnTotals(t), t.end)}`, columns));
-  if (state2.earlier.turns > 0) out.push(dimLine(`  ${earlierLine(state2.earlier)}`, columns));
-  return out;
+__name(storyFromTrail, "storyFromTrail");
+function combineCallers(answers, edited) {
+  const ready = answers.filter((c) => c.status === "ready");
+  if (ready.length > 0) return { status: "ready", paths: [...new Set(ready.flatMap((c) => c.paths))].filter((p) => !edited.has(p.toLowerCase())) };
+  if (answers.some((c) => c.status === "loading")) return { status: "loading" };
+  return answers.length > 0 ? { status: "failed" } : null;
 }
-__name(earlierTurns, "earlierTurns");
-function navRow(state2) {
-  if (openable(state2).length === 0) return [];
-  return [box({ flexDirection: "row", columnGap: 2 }, [button(FLOW_NEXT, "j", FLOW_COPY.next, true), button(FLOW_PREV, "k", FLOW_COPY.previous, true)])];
+__name(combineCallers, "combineCallers");
+function withImporters(lit, importersOf) {
+  if (lit.edit === null) return { lit, reach: null };
+  const answers = lit.edits.map(importersOf).filter((c) => c !== null);
+  const callers = combineCallers(answers, new Set(lit.edits.map((p) => p.toLowerCase())));
+  if (callers === null) return { lit, reach: null };
+  const importers = callers.status === "ready" ? callers.paths : [];
+  return { lit: { ...lit, importers }, reach: { edit: lit.edit, callers, opened: new Set(lit.reads.map((p) => p.toLowerCase())) } };
 }
-__name(navRow, "navRow");
-function dashboard(state2, turn, v, theme) {
-  return [...beforeAcceptLines(state2, turn, v), ...workingLines(state2, turn, v, theme), ...contextLines(turn, v.columns, theme)];
-}
-__name(dashboard, "dashboard");
-function closing(turn, columns) {
-  return turn !== void 0 && turn.end === "answer" ? [text(loch(columns), { dimColor: true })] : [];
-}
-__name(closing, "closing");
-function flowView(state2, v) {
-  const theme = flowTheme(v.light === true);
-  const head = [text(hills(v.columns), { color: theme.plum }), ...header(state2, v, theme)];
-  const turn = state2.turns.at(-1);
-  const fixed = turn === void 0 ? [] : dashboard(state2, turn, v, theme);
-  const after = [...closing(turn, v.columns), ...earlierTurns(state2, v.columns), ...navRow(state2)];
-  const room = Math.max(MIN_BODY, v.rows - head.length - fixed.length - after.length - 1);
-  const calls = turn === void 0 ? [] : windowed(callLines(state2, turn, v, theme), room, state2.open);
-  const callNodes = section(FLOW_COPY.calls, calls.map((l) => l.node));
-  return box({ key: FLOW_KEY, flexDirection: "column" }, [...head, ...fixed, ...callNodes, ...after]);
-}
-__name(flowView, "flowView");
-
-// src/flow-controller.ts
-var REDRAW_MS = 125;
-var STILL_TICK_MS = 1e3;
-var GONE_MS = 1e3;
-var LensFlow = class {
-  static {
-    __name(this, "LensFlow");
-  }
-  state = initialFlow;
-  /** Flow is on screen: set by its render; cleared by another tab, or by a redraw no render answered. */
-  shown = false;
-  still = false;
-  io = null;
-  lastDraw = Number.NEGATIVE_INFINITY;
-  /** When the first redraw no Flow render has answered was asked for; null once one did. */
-  unansweredSince = null;
-  pending;
-  ticker;
-  happy;
-  setReducedMotion(on) {
-    this.still = on;
-  }
-  /** Another tab is shown, or the pane is gone: nothing of Flow is on screen. */
-  hide() {
-    this.shown = false;
-    this.stopTick();
-  }
-  dispatch(io, action) {
-    this.io = io;
-    const next = reduceFlow(this.state, action);
-    if (next === this.state) return;
-    this.state = next;
-    if (action.type === "turnEnded") this.afterTurn();
-    this.request();
-  }
-  /** The tab's tree at `now`; a render marks Flow on screen and keeps the owl's clock going while Claude works. */
-  paneTree(io, pane, now) {
-    this.io = io;
-    this.shown = true;
-    this.unansweredSince = null;
-    this.ensureTick();
-    return flowView(this.state, { ...pane, now, still: this.still });
-  }
-  dispose() {
-    this.hide();
-    clearTimeout(this.pending);
-    clearTimeout(this.happy);
-    this.pending = void 0;
-    this.happy = void 0;
-    this.io = null;
-  }
-  /** A redraw now, or once the throttle allows; nothing while Flow is not on screen. */
-  request() {
-    if (!this.shown || this.pending !== void 0) return;
-    const wait = this.lastDraw + REDRAW_MS - Date.now();
-    if (wait <= 0) return this.draw();
-    this.pending = setTimeout(() => this.timer(() => (this.pending = void 0, true)), wait);
-  }
-  /** A timer's body: its step says whether to redraw; a failure is logged, never thrown into the runtime. */
-  timer(step) {
-    try {
-      if (step()) this.draw();
-    } catch (err) {
-      this.io?.debug(`flow timer failed: ${String(err)}`);
-    }
-  }
-  /** Redraws, unless redraws have gone unanswered for a while: then the pane is gone and Flow stops asking. */
-  draw() {
-    const now = Date.now();
-    if (this.unansweredSince !== null && now - this.unansweredSince >= GONE_MS) return this.hide();
-    if (!this.shown || this.io === null) return;
-    this.lastDraw = now;
-    this.unansweredSince ??= now;
-    this.io.redraw();
-  }
-  /** The owl is happy for a moment, then sleeps: one redraw when that moment ends. */
-  afterTurn() {
-    this.stopTick();
-    clearTimeout(this.happy);
-    this.happy = setTimeout(() => this.timer(() => (this.happy = void 0, true)), HAPPY_MS);
-  }
-  ensureTick() {
-    if (this.ticker !== void 0 || !this.shown || !isWorking(this.state)) return;
-    this.ticker = setInterval(() => this.timer(() => this.tick()), this.still ? STILL_TICK_MS : BLINK_MS);
-  }
-  /** Redraw while Claude works; stop once it is done. Off screen, `draw` stops it. */
-  tick() {
-    if (isWorking(this.state)) return true;
-    this.stopTick();
-    return false;
-  }
-  stopTick() {
-    clearInterval(this.ticker);
-    this.ticker = void 0;
-  }
-};
+__name(withImporters, "withImporters");
 
 // ../api-client/src/blast-radius.ts
 async function analyzeBlastRadius(repoId, body) {
@@ -3216,9 +3538,17 @@ function desktopSize(size) {
   return { columns: Math.min(DESKTOP_MAX_COLUMNS, size.columns), rows: Math.min(DESKTOP_MAX_ROWS, size.rows) };
 }
 __name(desktopSize, "desktopSize");
-function mapSvg(layout, resolved) {
+var textAt = /* @__PURE__ */ __name((l, fill) => `<text x="${l.col}" y="${2 * l.row + 1.6}" fill="${color(fill)}">${escape(l.text)}</text>`, "textAt");
+function svgLabels(layout, overlay) {
+  const pal = MAP_PALETTES[layout.style.theme];
+  const folder = layout.style.health ? LABEL_FG : pal.folder;
+  const names2 = overlay.names.map((n) => textAt(n, n.color === TERMINAL_DEFAULT ? pal.read : n.color));
+  return [...layout.labels.map((l) => textAt(l, folder)), ...names2].join("");
+}
+__name(svgLabels, "svgLabels");
+function mapSvg(layout, overlay) {
   const { width: width2, height } = layout;
-  const { pixels } = framePixels(layout, resolved.overlay);
+  const { pixels } = framePixels(layout, overlay);
   const runs = /* @__PURE__ */ new Map();
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width2; ) {
@@ -3234,14 +3564,13 @@ function mapSvg(layout, resolved) {
     }
   }
   const paths = [...runs].map(([c, d]) => `<path stroke="${color(c)}" d="${d.join("")}"/>`).join("");
-  const labels = layout.labels.map((l) => `<text x="${l.col}" y="${2 * l.row + 1.6}">${escape(l.text)}</text>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width2} ${height}" shape-rendering="crispEdges"><rect width="${width2}" height="${height}" fill="${color(GROUND)}"/><g stroke-width="1" fill="none">${paths}</g><g font-family="monospace" font-size="1.7" fill="${color(LABEL_FG)}">${labels}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width2} ${height}" shape-rendering="crispEdges"><g stroke-width="1" fill="none">${paths}</g><g font-family="monospace" font-size="1.7">${svgLabels(layout, overlay)}</g></svg>`;
 }
 __name(mapSvg, "mapSvg");
-function svgPaneView(layout, resolved, scope) {
-  const source = mapSvg(layout, resolved);
+function svgPaneView(layout, overlay, parts) {
+  const source = mapSvg(layout, overlay);
   const picture = source.length <= SVG_CHARS ? svg(source, mapAlt(layout.drawn.length)) : text(fit(MAP_COPY.tooLarge, layout.columns), { dimColor: true, wrap: "truncate-end" });
-  return box({ key: "lens-map-pane", flexDirection: "column" }, [picture, ...legendView(resolved, scope, layout.columns)]);
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [picture, ...legendView(parts, layout.style, layout.columns)]);
 }
 __name(svgPaneView, "svgPaneView");
 
@@ -3250,63 +3579,21 @@ var MAP_CAP = 4e3;
 var MAP_TIMEOUT_MS = 15e3;
 var CALLERS_TIMEOUT_MS = 2e4;
 var CALLERS_DEPTH = 1;
-function scopeFacts(layout, data, repo) {
+var NO_TURN = /* @__PURE__ */ __name(() => ({ lit: NO_LIT, story: NO_STORY }), "NO_TURN");
+function scopeFacts(layout, data, repo, offMap) {
   return {
     drawn: layout.drawn.length,
+    shown: data.files.length,
     repositoryTotal: data.repository_total,
     indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
     beyondCap: data.omitted.files,
-    cap: data.cap
+    dense: layout.dense,
+    notOnMap: offMap
   };
 }
 __name(scopeFacts, "scopeFacts");
-var Animator = class {
-  static {
-    __name(this, "Animator");
-  }
-  anim = null;
-  timer;
-  blitting = false;
-  stopped = false;
-  progress(now) {
-    const a = this.anim;
-    return a === null ? void 0 : { kind: a.kind, t: Math.min(1, (now - a.start) / a.duration) };
-  }
-  play(io, kind, screen) {
-    this.stop();
-    if (this.stopped) return;
-    this.anim = { kind, start: Date.now(), duration: kind === "flash" ? FLASH_MS : RIPPLE_MS };
-    io.redraw();
-    this.timer = setInterval(() => this.tick(io, screen), FRAME_MS);
-  }
-  stop() {
-    clearInterval(this.timer);
-    this.timer = void 0;
-    this.anim = null;
-  }
-  /** For good: a disposed map plays nothing more. */
-  end() {
-    this.stopped = true;
-    this.stop();
-  }
-  tick(io, screen) {
-    const step = this.progress(Date.now());
-    const frame = step === void 0 ? null : screen(step);
-    if (step === void 0 || frame === null) return this.stop();
-    if (this.blitting) return;
-    if (step.t >= 1) this.stop();
-    this.blitting = true;
-    io.blit(frame.cells, frame.columns, frame.rows).then((r) => r.deny === void 0 || this.refused(io, r.deny)).catch((err) => this.refused(io, String(err))).finally(() => {
-      this.blitting = false;
-    });
-  }
-  /** Resized, closed or refused under the animation: stop and let a redraw show the resting frame. */
-  refused(io, why) {
-    io.debug(`blit refused: ${why}`);
-    this.stop();
-    if (!this.stopped) io.redraw();
-  }
-};
+var keyParts = /* @__PURE__ */ __name((k) => [k.data, k.columns, k.rows, k.style.theme, k.style.health], "keyParts");
+var sameKey = /* @__PURE__ */ __name((a, b) => keyParts(a).every((v, i) => v === keyParts(b)[i]), "sameKey");
 var LensMap = class {
   static {
     __name(this, "LensMap");
@@ -3319,17 +3606,46 @@ var LensMap = class {
   feed = { status: "idle" };
   requested = false;
   autoOpenTried = false;
-  /** The latest edit's absolute path with its case, for the importers request. */
+  /** The latest edit's absolute path with its case. */
   editPath = null;
-  /** The edit whose importers were asked for, so each is asked once. */
-  callersAsked = 0;
+  /**
+   * Every file edited this session (absolute, case kept), and the importers
+   * of each, asked once per distinct path. Ceiling: never asked again, so an
+   * index update mid-session is not seen; nothing tells Lens it changed.
+   */
+  edited = /* @__PURE__ */ new Set();
+  importers = /* @__PURE__ */ new Map();
   drawn = null;
   layoutCache = null;
-  animator = new Animator();
   reducedMotion = false;
+  /** Health colours on the tiles: off by default (`lens_map_health`), toggled from the pane. */
+  health;
+  /** Read at every frame, so an animation sees the turn as it is now. */
+  turn;
   autoOpenOnRead;
-  constructor(autoOpenOnRead) {
+  /** The pane's one animator, shared with the trail: whichever tab is shown drives it. */
+  animator;
+  constructor(autoOpenOnRead, animator2 = new Animator(), health2 = false, turn = NO_TURN) {
     this.autoOpenOnRead = autoOpenOnRead;
+    this.animator = animator2;
+    this.health = health2;
+    this.turn = turn;
+  }
+  /** The importers of a repo-relative path, as far as they are known; null when never asked. */
+  importersOf(path) {
+    return this.importers.get(this.keyOf(path)) ?? null;
+  }
+  keyOf(rel2) {
+    return this.repo?.caseInsensitive === false ? rel2 : rel2.toLowerCase();
+  }
+  /** The pane's toggle: health colours on the tiles, or the quiet ghost map. */
+  toggleHealth(io) {
+    this.health = !this.health;
+    io.redraw();
+  }
+  /** What the turn lit, with the latest edit's importers joined as they stand now. */
+  lighting() {
+    return withImporters(this.turn().lit, (p) => this.importersOf(p));
   }
   /** The band row the map wants shown, if any. */
   bandLine() {
@@ -3343,12 +3659,25 @@ var LensMap = class {
     this.disposed = true;
     this.animator.end();
   }
+  /**
+   * A `/clear`: the conversation's trail and edits go, so nothing of it stays
+   * lit. The feed, the repo and the importers already asked for (index data,
+   * by path) stay, and so does an open pane.
+   */
+  clearConversation(io) {
+    this.trail = initialTrail;
+    this.edited.clear();
+    this.editPath = null;
+    this.band = null;
+    io.redraw();
+  }
   setRepo(io, repo) {
     this.repo = repo;
     this.fetchWanted(io);
   }
   /** One observed tool call; `editPath` is the edited file's absolute path, case kept. */
   observe(io, action, editPath) {
+    if (action.type === "edit" && editPath !== null) this.edited.add(editPath);
     if (action.type === "edit") this.editPath = editPath;
     this.apply(io, action);
     if (action.type === "edit") this.fetchWanted(io);
@@ -3380,12 +3709,15 @@ var LensMap = class {
     const { data } = this.feed;
     const repo = this.repo;
     const desktop = pane.surface === "desktop";
-    const layout = this.layoutFor(data, desktop ? desktopSize(mapSize(pane)) : mapSize(pane), repo.caseInsensitive);
-    const resolved = resolveOverlay(layout, this.trail, repo.root);
-    const scope = scopeFacts(layout, data, repo);
-    if (desktop) return svgPaneView(layout, resolved, scope);
+    const style = { theme: pane.theme, health: this.health };
+    const size = mapSize(pane, this.health);
+    const layout = this.layoutFor({ data, ...desktop ? desktopSize(size) : size, style }, repo.caseInsensitive);
+    const { lit, reach } = this.lighting();
+    const overlay = resolveLit(layout, lit);
+    const parts = { story: this.turn().story, reach, scope: scopeFacts(layout, data, repo, notOnMap(layout, lit)) };
+    if (desktop) return svgPaneView(layout, overlay, parts);
     this.drawn = { layout, root: repo.root };
-    return mapPaneView(layout, frameCells(layout, resolved.overlay, this.animator.progress(Date.now())), resolved, scope);
+    return mapPaneView(layout, frameCells(layout, overlay, mapStep(this.animator.progress(Date.now()))), parts);
   }
   /** Why there is no map to draw yet (and the feed fetch started when wanted), or null once it can be drawn. */
   noticeFor(io, pane) {
@@ -3397,17 +3729,13 @@ var LensMap = class {
     if (status === "ready") return null;
     return status === "failed" ? MAP_COPY.failed : MAP_COPY.loading;
   }
-  layoutFor(data, size, caseInsensitive) {
-    const cached = this.cachedLayout(data, size);
-    if (cached !== null) return cached;
-    const layout = layoutMap(data.files, size.columns, size.rows, caseInsensitive);
-    this.layoutCache = { data, columns: size.columns, rows: size.rows, layout };
-    return layout;
-  }
-  cachedLayout(data, size) {
+  /** The layout for this feed, size and style; laid out again only when one of them changed. */
+  layoutFor(key, caseInsensitive) {
     const c = this.layoutCache;
-    const same = c !== null && c.data === data && c.columns === size.columns && c.rows === size.rows;
-    return same ? c.layout : null;
+    if (c !== null && sameKey(c.key, key)) return c.layout;
+    const layout = layoutMap(key.data.files, { columns: key.columns, rows: key.rows, caseInsensitive, style: key.style });
+    this.layoutCache = { key, layout };
+    return layout;
   }
   apply(io, action) {
     const next = reduceTrail(this.trail, action);
@@ -3417,11 +3745,11 @@ var LensMap = class {
     else if (action.type === "callers" && action.callers.status === "ready") this.animate(io, "ripple");
     else io.redraw();
   }
-  /** The feed and the latest edit's importers, once the map is wanted and the repo known. */
+  /** The feed and the importers of every edited file not yet asked for, once the map is wanted and the repo known. */
   fetchWanted(io) {
     if (!this.requested || this.repo === null) return;
     this.loadFeed(io, this.repo);
-    this.loadCallers(io, this.repo);
+    for (const path of this.edited) this.loadCallers(io, this.repo, path);
   }
   loadFeed(io, repo) {
     if (this.feed.status !== "idle") return;
@@ -3435,22 +3763,29 @@ var LensMap = class {
       if (!this.disposed) io.redraw();
     });
   }
-  loadCallers(io, repo) {
-    const edits = this.trail.edits;
-    if (this.editPath === null || this.callersAsked === edits) return;
-    this.callersAsked = edits;
-    const rel = relativeTo(this.editPath, repo.root, repo.caseInsensitive);
-    if (rel === null) return this.apply(io, { type: "callers", edits, callers: { status: "failed" } });
-    const request = { changed_files: [rel], max_depth: CALLERS_DEPTH };
+  /** One edited file's importers, asked once; the answer is kept by path. */
+  loadCallers(io, repo, abs) {
+    const rel2 = relativeTo(abs, repo.root, repo.caseInsensitive);
+    const key = rel2 === null ? null : this.keyOf(rel2);
+    if (rel2 === null || key === null || this.importers.has(key)) return;
+    this.importers.set(key, { status: "loading" });
+    const request = { changed_files: [rel2], max_depth: CALLERS_DEPTH };
     withTimeout(analyzeBlastRadius(repo.id, request), CALLERS_TIMEOUT_MS, "importers").then((r) => {
-      const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel);
+      const paths = [...new Set(r.transitive_affected.map((t) => t.path))].filter((p) => p !== rel2);
       if (this.disposed) return;
-      this.apply(io, { type: "callers", edits, callers: { status: "ready", paths } });
-      io.blastLanded?.(rel, r);
+      this.landed(io, abs, { status: "ready", paths });
+      io.blastLanded?.(rel2, r);
     }).catch((err) => {
       io.debug(`importers failed: ${String(err)}`);
-      if (!this.disposed) this.apply(io, { type: "callers", edits, callers: { status: "failed" } });
+      if (!this.disposed) this.landed(io, abs, { status: "failed" });
     });
+  }
+  /** An answer for one edited file: kept by path; for the latest edit, also the trail's (which ripples). */
+  landed(io, abs, callers) {
+    const rel2 = this.repo === null ? null : relativeTo(abs, this.repo.root, this.repo.caseInsensitive);
+    if (rel2 !== null) this.importers.set(this.keyOf(rel2), callers);
+    if (abs === this.editPath) this.apply(io, { type: "callers", edits: this.trail.edits, callers });
+    else io.redraw();
   }
   /** The first read opens the map when the toggle is on and the pane would be placed; never forced. */
   async autoOpen(io) {
@@ -3475,25 +3810,32 @@ var LensMap = class {
   canAnimate(kind) {
     const on = this.drawn;
     if (this.reducedMotion || on === null) return false;
-    return kind === "flash" || rippleRadius(on.layout, resolveOverlay(on.layout, this.trail, on.root).overlay) > 0;
+    return kind === "flash" || rippleRadius(on.layout, resolveLit(on.layout, this.lighting().lit)) > 0;
   }
-  /** A flash or a ripple when it would show; otherwise (reduced motion, nothing on screen) the resting frame. */
+  /**
+   * A flash or a ripple when it would show; otherwise (reduced motion, nothing
+   * on screen) the resting frame, leaving another tab's animation playing.
+   */
   animate(io, kind) {
-    this.animator.stop();
     if (!this.canAnimate(kind)) return io.redraw();
-    this.animator.play(io, kind, (step) => this.frame(step));
+    this.animator.play(io, kind, kind === "flash" ? FLASH_MS : RIPPLE_MS, (step) => this.frame(step));
   }
   /** The current trail on the drawn map at one step, or null once the map is off screen. */
   frame(step) {
     const on = this.drawn;
-    if (on === null) return null;
-    const cells = frameCells(on.layout, resolveOverlay(on.layout, this.trail, on.root).overlay, step);
-    return { cells, columns: on.layout.columns, rows: on.layout.rows };
+    const anim = mapStep(step);
+    if (on === null || anim === void 0) return null;
+    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit), anim);
+    return { key: MAP_KEY, cells, columns: on.layout.columns, rows: on.layout.rows };
   }
 };
+function mapStep(step) {
+  return step !== void 0 && (step.kind === "flash" || step.kind === "ripple") ? step : void 0;
+}
+__name(mapStep, "mapStep");
 
 // src/model/ask.ts
-var TAB_BAR = ["flow", "map", "recap"];
+var TAB_BAR = ["flow", "map", "ask", "recap"];
 function askRoute(question) {
   return /^\s*why\b/i.test(question) ? { tool: "get_why", args: { query: question } } : { tool: "get_answer", args: { question } };
 }
@@ -3605,6 +3947,11 @@ function hintFor(mode, liteReason) {
   return mode;
 }
 __name(hintFor, "hintFor");
+function clearedConversation(state2) {
+  const { mode, freshness, hint, hintsShown, repoRoot, contexts } = state2;
+  return { ...initialSession, mode, freshness, hint, hintsShown, repoRoot, contexts, pane: { tab: state2.pane.tab, draft: "" } };
+}
+__name(clearedConversation, "clearedConversation");
 function reduce(state2, action) {
   switch (action.type) {
     case "discovered": {
@@ -4198,6 +4545,7 @@ var PANE_ROWS = 29;
 var ASK_TIMEOUT_MS = 3e4;
 var flowOn = true;
 var flow = new LensFlow();
+var reducedMotion = false;
 function freshSession() {
   return flowOn ? initialSession : reduce(initialSession, { type: "tab", tab: "map" });
 }
@@ -4218,9 +4566,11 @@ var reviewGeneration = 0;
 var editsThisTurn = 0;
 var started2 = null;
 var autoOpenOn = false;
+var healthOn = false;
 var discovery = null;
 var cwd = null;
 var map = new LensMap(false);
+var animator = new Animator();
 var ERROR_CELLS = 160;
 function bind($) {
   const host = {
@@ -4253,7 +4603,7 @@ function bind($) {
     blastLanded: /* @__PURE__ */ __name((path, r) => flowBlast(bound, path, r), "blastLanded"),
     redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
     debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug"),
-    blit: /* @__PURE__ */ __name((cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }), "blit"),
+    blit: /* @__PURE__ */ __name((key, cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key, cells, columns, rows }), "blit"),
     // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
     // Opened unasked on a read: the map is what it opens to. This happens at most once, and never
     // after the person opened the pane (/lens, Why), the only ways to have picked a tab by then.
@@ -4262,6 +4612,7 @@ function bind($) {
     )), "openPane"),
     closePane: /* @__PURE__ */ __name(() => $.ui.close({ id: PANE_ID }), "closePane")
   };
+  animator.use(bound);
   return bound;
 }
 __name(bind, "bind");
@@ -4330,7 +4681,9 @@ async function onSessionStart($, e, next) {
     generation++;
     cwd = typeof e.cwd === "string" ? e.cwd : null;
     map.dispose();
-    map = new LensMap(autoOpenOn);
+    animator.end();
+    animator = new Animator();
+    map = new LensMap(autoOpenOn, animator, healthOn, mapTurn);
     flow.dispose();
     flow = new LensFlow();
     state = freshSession();
@@ -4345,9 +4698,10 @@ async function onSessionStart($, e, next) {
     warmMcp(b.host);
     refresh(b);
     await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
-    const still = (await $.settings.read())["prefersReducedMotion"] === true;
-    map.setReducedMotion(still);
-    flow.setReducedMotion(still);
+    readTheme($);
+    reducedMotion = (await $.settings.read())["prefersReducedMotion"] === true;
+    map.setReducedMotion(reducedMotion);
+    flow.setReducedMotion(reducedMotion);
   } catch (err) {
     b.debug(`session.start failed: ${String(err)}`);
   }
@@ -4481,6 +4835,29 @@ function pressBrief($) {
   }
 }
 __name(pressBrief, "pressBrief");
+async function onSessionEnd($, e, next) {
+  if (e.reason !== "clear") return next(e);
+  const b = bind($);
+  try {
+    animator.end();
+    flow.dispose();
+    flow = new LensFlow();
+    flow.setReducedMotion(reducedMotion);
+    map.clearConversation(b);
+    state = clearedConversation(state);
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started2 = null;
+    squeezes.clear();
+    savingsBase = null;
+    savingsAskedAt = Number.NEGATIVE_INFINITY;
+    b.redraw();
+  } catch (err) {
+    b.debug(`clear failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onSessionEnd, "onSessionEnd");
 async function onPostCompact($, e, next) {
   try {
     dispatch(bind($), { type: "compacted" });
@@ -4583,7 +4960,7 @@ async function onToolCall($, e, next) {
 __name(onToolCall, "onToolCall");
 function flowPane(columns, rows) {
   const outcome = state.review.outcome;
-  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null };
+  return { columns, rows, mode: state.mode, contexts: state.contexts, review: outcome.phase === "done" ? outcome.risk : null, light: theme === "light" };
 }
 __name(flowPane, "flowPane");
 function flowBlast(b, path, r) {
@@ -4734,6 +5111,7 @@ __name(onToolUse, "onToolUse");
 async function onLensCommand($, e) {
   const b = bind($);
   try {
+    readTheme($);
     const asked = lensCommand(e.args ?? "", tabBar(flowOn));
     if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
@@ -4768,18 +5146,47 @@ function selectTab($, tab) {
   }
 }
 __name(selectTab, "selectTab");
-function tabBody(b, e) {
+var theme = "dark";
+function readTheme($) {
+  $.config.list().then((rows) => {
+    theme = themeOf(rows.find((r) => r.key === "theme")?.value);
+  }).catch((err) => bind($).debug(`theme failed: ${String(err)}`));
+}
+__name(readTheme, "readTheme");
+var TAB_BODIES = {
+  flow: /* @__PURE__ */ __name((b, e, rows) => flow.paneTree(b, flowPane(e.props.bodyColumns, rows), Date.now()), "flow"),
+  ask: /* @__PURE__ */ __name((_b, e) => askView(state, e.props.bodyColumns), "ask"),
+  recap: /* @__PURE__ */ __name((_b, e) => recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, e.props.bodyColumns), "recap"),
+  map: /* @__PURE__ */ __name((b, e) => mapBody(b, e), "map")
+};
+function mapTurn() {
+  if (flowOn) return { lit: litFromFlow(flow.state), story: storyFromFlow(flow.state) };
+  const root = state.repoRoot;
+  const lit = root === null ? NO_LIT : litFromTrail(map.trail, root, isWindowsPath(root));
+  return { lit, story: storyFromTrail(map.trail) };
+}
+__name(mapTurn, "mapTurn");
+function mapBody(b, e) {
   const { bodyColumns, placement, scroll } = e.props;
+  const d = discovery;
+  const notice2 = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+  return map.paneTree(b, { surface: e.surface, notice: notice2, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS, theme });
+}
+__name(mapBody, "mapBody");
+function pressHealth($) {
+  try {
+    map.toggleHealth(bind($));
+  } catch (err) {
+    bind($).debug(`health toggle failed: ${String(err)}`);
+  }
+}
+__name(pressHealth, "pressHealth");
+function tabBody(b, e) {
   const tab = state.pane.tab;
   if (tab !== "map") map.offScreen();
   if (tab !== "flow") flow.hide();
-  const bodyRows = (placement === "dock" ? scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
-  if (tab === "flow") return flow.paneTree(b, flowPane(bodyColumns, bodyRows), Date.now());
-  if (tab === "ask") return askView(state, bodyColumns);
-  if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
-  const d = discovery;
-  const notice2 = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-  return map.paneTree(b, { surface: e.surface, notice: notice2, bodyColumns, placement, bodyRows: scroll.bodyRows - TAB_ROWS });
+  const rows = (e.props.placement === "dock" ? e.props.scroll.bodyRows : PANE_ROWS) - TAB_ROWS;
+  return TAB_BODIES[tab](b, e, rows);
 }
 __name(tabBody, "tabBody");
 async function onPane($, e, next) {
@@ -4787,7 +5194,7 @@ async function onPane($, e, next) {
   const b = bind($);
   try {
     const bar = tabBar(flowOn);
-    const presses = { ...tabPresses($, bar), ...flowRowPresses($) };
+    const presses = { ...tabPresses($, bar), ...flowRowPresses($), [HEALTH_KEY]: () => pressHealth($) };
     return materialize(paneView(state.pane.tab, tabBody(b, e), bar), $.ui.resolve(e), presses);
   } catch (err) {
     b.debug(`pane render failed: ${String(err)}`);
@@ -4798,9 +5205,11 @@ __name(onPane, "onPane");
 function register(on, options = {}) {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
+  healthOn = options["lens_map_health"] === true;
   flowOn = options["lens_flow"] !== false;
   state = freshSession();
   on("session.start", onSessionStart);
+  on("session.end", onSessionEnd);
   on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);

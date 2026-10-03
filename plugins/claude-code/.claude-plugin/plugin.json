@@ -40,6 +40,12 @@
       "title": "Open the Lens map on the first read",
       "description": "Opens the Lens map pane when Claude first reads a file, if the terminal is wide enough to place it without asking. /lens opens it at any time.",
       "default": false
+    },
+    "lens_map_health": {
+      "type": "boolean",
+      "title": "Lens map health colours",
+      "description": "Colours the Lens map's tiles by code health from the start. Off, the map is quiet tiles that light up with the files Claude touches; the Health colours button in the map turns the bands on at any time.",
+      "default": false
     }
   },
   "keywords": [

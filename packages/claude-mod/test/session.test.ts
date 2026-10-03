@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fromTurnComplete } from "../src/model/events";
 import { initialReview } from "../src/model/review";
-import { hintFor, initialSession, reduce, type SessionAction, type SessionState } from "../src/model/session";
+import { clearedConversation, hintFor, initialSession, reduce, type SessionAction, type SessionState } from "../src/model/session";
 
 function run(actions: SessionAction[], from: SessionState = initialSession): SessionState {
   return actions.reduce(reduce, from);
@@ -126,5 +126,20 @@ describe("events", () => {
   it("counts only main-loop turns", () => {
     expect(fromTurnComplete({})).toEqual({ type: "turnCompleted" });
     expect(fromTurnComplete({ agentId: "a1" })).toBeNull();
+  });
+});
+
+describe("a /clear", () => {
+  it("keeps what the index said and the tab; drops what the conversation did", () => {
+    const ctx = { callerFiles: 3, contributors: 1, hotspot: false, recentOwner: null };
+    let s = reduce(initialSession, { type: "discovered", mode: "full", freshness: null, repoRoot: "/r" });
+    s = reduce(s, { type: "contextLoaded", file: "a.py", context: ctx });
+    s = reduce(s, { type: "touched", path: "a.py" });
+    s = reduce(s, { type: "savings", delta: { tokens: 10, dollars: 0.1 } as never });
+    s = reduce(s, { type: "tab", tab: "map", draft: "why" });
+    s = reduce(s, { type: "compacted" });
+    const c = clearedConversation(s);
+    expect([c.mode, c.repoRoot, c.contexts["a.py"], c.pane]).toEqual(["full", "/r", ctx, { tab: "map", draft: "" }]);
+    expect([c.touched, c.savings, c.compacted, c.lastReview, c.ask]).toEqual([[], null, false, null, { phase: "idle" }]);
   });
 });

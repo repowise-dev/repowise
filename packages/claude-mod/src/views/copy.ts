@@ -7,7 +7,6 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { countOf, fit } from "../format";
 import type { FileContext, HintKind, IndexFreshness, MarginNote, SavingsDelta } from "../model/session";
 import type { Squeeze } from "../model/squeeze";
-import type { Callers } from "../model/trail";
 import type { Behind, ReplyFact } from "../model/replies";
 
 export const HINTS: Record<HintKind, string> = {
@@ -184,26 +183,33 @@ export function runTestsPrompt(t: { tests: string[]; truncated: boolean; total: 
   return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
 
-// The living map.
+// The map: the repo as quiet tiles, lit by the turn, with its story underneath.
 
 export const MAP_COPY = {
   title: "Lens",
   looking: "Lens map: looking for the local server",
-  loading: "Lens map: loading the health map",
-  failed: "Lens map could not load the health map; it tries again on /lens",
+  loading: "Lens map: loading the map",
+  failed: "Lens map could not load; it tries again on /lens",
   desktop: "Lens map: not drawn on this surface (terminal and desktop app only)",
   tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
-  read: "Claude read",
-  edited: "edited",
-  importer: "imports the edited file",
-  match: "search match",
   waiting: "Lens map is ready; this pane is too narrow to open on its own. Run /lens",
+  healthOn: "Health colours: on",
+  healthOff: "Health colours: off",
+  quiet: "Nothing lit yet this turn. Files Claude searches, opens and edits light up here.",
+} as const;
+
+/** The story strip's row heads, padded to one width. */
+export const STORY_COPY = {
+  searched: "SEARCHED",
+  opened: "OPENED",
+  edited: "EDITED",
+  reaches: "REACHES",
 } as const;
 
 /** What the desktop map says to a reader that cannot see it. */
 export function mapAlt(drawn: number): string {
-  return `Code health map: ${countOf(drawn, "file", "files")} drawn, colored by health band, with the files Claude read and edited marked`;
+  return `Map of the repo: ${countOf(drawn, "file", "files")} drawn as tiles, with the files Claude searched, opened and edited this turn lit, and the files that import its edit`;
 }
 
 /** /lens could not place the pane; the engine's reason names the width it needs. */
@@ -213,81 +219,85 @@ export function notPlacedLine(reason: string): string {
 
 export interface ScopeFacts {
   drawn: number;
+  /** Files in the feed: the largest, up to the server's cap. */
+  shown: number;
   repositoryTotal: number;
   /** "2h ago", or null when the server did not say. */
   indexed: string | null;
-  /** Files the server left out at its cap, and the cap. */
+  /** Files the server left out at its cap. */
   beyondCap: number;
-  cap: number;
+  /** Too many files for a pixel each: drawn as folders. */
+  dense: boolean;
+  /** Files the turn touched that are not on the map (outside the feed). */
+  notOnMap: number;
 }
 
-/** Scope parts a narrow legend may leave out; the counts and the cap always stay. */
-export const SCOPE_REST = "rest empty or too small";
+/** Scope parts a narrow line may leave out; the counts and the cap always stay. */
+export const SCOPE_REST = "rest too small to draw";
 export function indexedPart(age: string): string {
   return `indexed ${age}`;
 }
 
-/** The scope, as parts the legend joins with ` · ` and wraps onto two rows when narrow. */
+/** Under the server's cap: the largest files only, and of those, as many as are drawn (or as folders). */
+function cappedPart(s: ScopeFacts): string[] {
+  const largest = `${formatNumber(s.shown)} largest of ${countOf(s.repositoryTotal, "file", "files")}`;
+  if (s.dense) return [`${largest}; drawn as folders at this size`];
+  if (s.drawn >= s.shown) return [`${largest} drawn`];
+  return [`${formatNumber(s.drawn)} of the ${formatNumber(s.shown)} largest (of ${countOf(s.repositoryTotal, "file", "files")}) drawn at this size`, SCOPE_REST];
+}
+
+function drawnPart(s: ScopeFacts): string[] {
+  if (s.beyondCap > 0) return cappedPart(s);
+  if (s.dense) return [`${countOf(s.repositoryTotal, "file", "files")}, drawn as folders at this size`];
+  if (s.drawn >= s.repositoryTotal) return [`${countOf(s.repositoryTotal, "file", "files")}, all drawn`];
+  return [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+}
+
+/** The scope, as parts the pane joins with ` · ` and wraps onto two rows when narrow. */
 export function scopeParts(s: ScopeFacts): string[] {
-  const parts =
-    s.drawn === s.repositoryTotal
-      ? [`${countOf(s.drawn, "file", "files")}, all drawn`]
-      : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+  const parts = drawnPart(s);
   if (s.indexed !== null) parts.push(indexedPart(s.indexed));
-  if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
+  if (s.notOnMap > 0) parts.push(`${countOf(s.notOnMap, "touched file", "touched files")} not on the map`);
   return parts;
 }
 
-/**
- * Reads so far (`200+` once capped), what was not drawn, and what the last
- * search matched. Narrower than `columns`, a short form that keeps every count.
- */
-export function readsLine(
-  reads: { count: number; capped: boolean; notDrawn: number },
-  matched: number | null,
-  columns = Number.POSITIVE_INFINITY,
-): string | null {
-  const count = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
-  const full: string[] = [];
-  const short: string[] = [];
-  if (reads.count > 0) {
-    full.push(reads.capped ? `${count} files read` : countOf(reads.count, "file read", "files read"));
-    short.push(`${count} read`);
-  }
-  if (reads.notDrawn > 0) {
-    full.push(`${formatNumber(reads.notDrawn)} not drawn`);
-    short.push(`${formatNumber(reads.notDrawn)} not drawn`);
-  }
-  if (matched !== null) {
-    full.push(`last search matched ${countOf(matched, "file", "files")}`);
-    short.push(`search matched ${formatNumber(matched)}`);
-  }
-  if (full.length === 0) return null;
-  const line = full.join(" · ");
-  return line.length <= columns ? line : short.join(" · ");
+/** `class QuerySet: 4 files`; a search with Flow off has no pattern. */
+export function searchedPart(pattern: string, hits: number | null): string {
+  const count = hits === null ? "matches not counted" : countOf(hits, "file", "files");
+  return pattern === "" ? `last search matched ${count}` : `${pattern}: ${count}`;
 }
 
-/**
- * The importers of the edited file: inferred from the import graph, not
- * observed calls. Narrower than `columns`, a short form that keeps the counts
- * and cuts the file name instead (the legend's swatch names the basis).
- */
-export function callersLine(name: string, callers: Callers | null, notDrawn: number, columns = Number.POSITIVE_INFINITY): string {
-  if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
-  if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
-  const missing = notDrawn === 0 ? "" : ` · ${formatNumber(notDrawn)} not drawn`;
-  const full = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)${missing}`;
-  if (full.length <= columns) return full;
-  const rest = ` · ${formatNumber(callers.paths.length)} import it${missing}`;
-  return `edited ${fit(name, columns - "edited ".length - rest.length)}${rest}`;
+/** An edit's size: `+1 line`, `-3 lines`, `40 lines written`; nothing when unknown. */
+export function linesPart(lines: { delta: number } | { written: number } | null): string {
+  if (lines === null) return "";
+  if ("written" in lines) return ` ${countOf(lines.written, "line", "lines")} written`;
+  const sign = lines.delta > 0 ? "+" : lines.delta < 0 ? "-" : "";
+  return ` ${sign}${countOf(Math.abs(lines.delta), "line", "lines")}`;
 }
+
+export function namedByPart(name: string, tool: string): string {
+  return `◆ ${name} named by ${tool}`;
+}
+
+/** `12 importers: manager.py (opened), base.py, +9`. */
+export function reachesPart(total: number, names: readonly { name: string; opened: boolean }[]): string {
+  const shown = names.map((n) => (n.opened ? `${n.name} (opened)` : n.name));
+  const more = total - names.length;
+  return `${countOf(total, "importer", "importers")}: ${[...shown, ...(more > 0 ? [`+${formatNumber(more)}`] : [])].join(", ")}`;
+}
+
+export function reachesPending(edit: string): string {
+  return `finding the files that import ${edit}`;
+}
+
+export const REACHES_FAILED = "import graph unavailable";
 
 // The pane's tabs, Ask and Recap.
 
 export const PANE_COPY = {
-  command: "Open Lens: Claude's steps with Repowise, the health map, and the session recap",
-  argumentHint: "[map | recap | ask <question>]",
-  tabs: { flow: "Flow", map: "Map", recap: "Recap" },
+  command: "Open Lens: Claude's steps with Repowise, the map of its turn, ask the index, and the session recap",
+  argumentHint: "[flow | map | ask <question> | recap]",
+  tabs: { flow: "Flow", map: "Map", ask: "Ask", recap: "Recap" },
   askLabel: "ask ",
   askPlaceholder: "why ...? asks the decision records; anything else asks the index",
   askSubmit: "ask",
@@ -590,3 +600,4 @@ const BEHIND: ReadonlyArray<(b: Behind, bytes: number | null) => string | null> 
 export function behindParts(b: Behind, bytes: number | null = null): string[] {
   return BEHIND.map((part) => part(b, bytes)).filter((p): p is string => p !== null);
 }
+

@@ -12,11 +12,13 @@ All notable changes to the Repowise Claude Code plugin are documented here.
   under Edit and Write repeating what the augment hook flagged, a row under
   Bash output `repowise distill` shortened, a `get_change_risk` review beneath
   Claude's answer after a turn that edits files (with `Run tests`, `Why` and
-  `Details` buttons), and a `/lens` pane with a health map, an Ask tab
-  (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  `Details` buttons), and a `/lens` pane with Flow (a dashboard of each turn
+  with Repowise), a map of the repo lit by Claude's turn with its story under
+  it, an Ask tab (`get_why` or `get_answer`) and a session recap. After a compaction it offers
   a `Brief Claude` button. In the desktop app the map draws as SVG.
-- Four `userConfig` toggles: `lens_margin`, `lens_squeeze` and `lens_review`
-  (on by default) and `lens_pane_autoopen` (off).
+- Six `userConfig` toggles: `lens_margin`, `lens_squeeze`, `lens_review` and
+  `lens_flow` (on by default), and `lens_pane_autoopen` and `lens_map_health`
+  (off).
 - Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
   mods are switched off, load the rest of the plugin unchanged. Lens never
   denies, holds or rewrites Claude's tool calls. It approves only its own

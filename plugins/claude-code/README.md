@@ -132,16 +132,17 @@ Lens is the part of the plugin you see, a Claude Code mod that ships in
 edits, a row under output `repowise distill` shortened, a change review under
 Claude's answer after a turn that edits files, and a `/lens` pane with Flow (a dashboard
 of each turn: what an edit reaches, where Claude's context came from, what
-Repowise answered), a health map and a session recap. Lens never blocks or rewrites Claude's
+Repowise answered), a map of the repo lit by Claude's turn with its story
+underneath, Ask, and a session recap. Lens never blocks or rewrites Claude's
 tool calls, makes no model calls of its own, and sends Claude nothing unless you
 press a button. Ask questions that do not start with "why" go to `get_answer`,
 which may use the model your repo configures. See
 [the footprint](../../docs/agent/LENS.md#footprint) for the full list.
 
 It needs Claude Code 2.1.287 or later and an indexed repo. The map and the
-savings row also need `repowise serve --no-ui`. Five `userConfig` toggles
+savings row also need `repowise serve --no-ui`. Six `userConfig` toggles
 control it: `lens_margin`, `lens_squeeze`, `lens_review` and `lens_flow` (on by
-default) and `lens_pane_autoopen` (off). On an older Claude Code, or where mods are switched
+default), and `lens_pane_autoopen` and `lens_map_health` (off). On an older Claude Code, or where mods are switched
 off, the rest of the plugin works as before.
 
 Guide: [docs/agent/LENS.md](../../docs/agent/LENS.md)

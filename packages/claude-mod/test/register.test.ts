@@ -126,7 +126,8 @@ function fakeDollar(o: DollarOptions = {}) {
       return "/work/app";
     },
   };
-  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), prompt: promptFor(calls), ui: uiFor(calls), command: { register: async () => ({}) }, settings: { read: async () => ({}) } };
+  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), prompt: promptFor(calls), ui: uiFor(calls), command: { register: async () => ({}) }, config: { list: async () => [] },
+    settings: { read: async () => ({}) } };
   const hold = () => {
     gate.hold = true;
     gate.wait = new Promise<void>((resolve) => (release = resolve));
@@ -150,6 +151,7 @@ describe("register", () => {
       "classic.PostToolUse",
       "command.run:lens",
       "session.start",
+      "session.end",
       "tool.call",
       "tool.check",
       "turn.complete",

@@ -58,6 +58,7 @@ function fullStubs(on: any, seen: { urls: string[]; blits: any[]; opened: any[] 
   on('process.run', (_$: any, e: any) => processRun(e.argv))
   on('http.fetch', (_$: any, e: any) => (seen.urls.push(e.url), answer(e.url)))
   on('settings.read', () => ({ value: {} }))
+  on('config.list', () => ({ value: [{ key: 'theme', value: 'dark' }] }))
   on('ui.open', (_$: any, e: any) => (seen.opened.push(e), { value: { isPlaced: true } }))
   on('ui.blit', (_$: any, e: any) => (seen.blits.push(e), { value: {} }))
   on('tool.call', () => ({ result: {} }))
@@ -82,30 +83,36 @@ async function openMap($: any, on: any) {
   return { seen, ui }
 }
 
-test('/lens draws the Django health map with its legend', async ($: any, on: any) => {
+test('/lens map draws Django as quiet tiles, says what will light up, and offers health colours', async ($: any, on: any) => {
   const { seen, ui } = await openMap($, on)
   expect(seen.opened).toEqual([{ id: 'lens', title: 'Lens', rows: 29, focus: true }])
   expect(seen.urls.filter((u) => u.includes('/health/map?cap=4000'))).toHaveLength(1)
   const map = await ui.find({ key: 'lens-map' })
   expect(map?.type).toBe('Raster')
   expect(map?.props.columns).toBe(180)
-  expect(map?.props.rows).toBe(48)
-  expect(String(map?.props.cells).length).toBe(180 * 48 * 16)
+  expect(map?.props.rows).toBe(47)
+  expect(String(map?.props.cells).length).toBe(180 * 47 * 16)
   expect(await ui.find({ type: 'Text', text: /^1,\d{3} of 2,970 files drawn at this size/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: ' Needs work' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: ' Claude read' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Nothing lit yet this turn/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ' Needs work' })).toBeUndefined()
+  await ui.press({ key: 'lens-map-health' })
   await ui.unmount()
+  const health = await $.ui.mount(PANE)
+  expect(await health.find({ type: 'Text', text: ' Needs work' })).toBeDefined()
+  await health.unmount()
 })
 
 test('an edit ripples to the importers the server returned, by blit', async ($: any, on: any) => {
   const { seen, ui } = await openMap($, on)
-  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}\\django\\db\\models\\query.py`, old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'toolu_e1', file_path: `${ROOT}\\django\\db\\models\\query.py`, old_string: 'a', new_string: 'a\nb' })
   expect(await waitFor(() => seen.blits.length >= 2)).toBe(true)
-  expect(seen.blits[0]).toMatchObject({ requestId: 'lens', key: 'lens-map', columns: 180, rows: 48 })
+  expect(seen.blits[0]).toMatchObject({ requestId: 'lens', key: 'lens-map', columns: 180, rows: 47 })
   const fetched = BLAST_RADIUS.transitive_affected.length
-  const line = await ui.find({ type: 'Text', text: /^edited query\.py/ })
-  expect(line?.text).toMatch(new RegExp(`^edited query\\.py · ${fetched} files import it \\(from imports, not calls\\)`))
   await ui.unmount()
+  const after = await $.ui.mount(PANE)
+  expect(await after.find({ type: 'Text', text: '◉ query.py +1 line' })).toBeDefined()
+  expect(await after.find({ type: 'Text', text: new RegExp(`^${fetched} importers: `) })).toBeDefined()
+  await after.unmount()
 })
 
 test('without the local server the pane says what to run', async ($: any, on: any) => {

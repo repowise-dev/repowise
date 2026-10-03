@@ -1,6 +1,9 @@
-// Local benchmark for the map's per-frame work at 180x50 on the recorded
-// Django feed: layout, a ripple frame, and the cell encoding. Budget 16 ms per
-// frame; vitest guards at 5x that (test/overlay.test.ts).
+// Local benchmark for the map at 180x50: the layout (redone only on a resize
+// or a style change) and one lit frame with its encoding (a turn's searches,
+// reads, the edit and its importers, mid-ripple). Three scales: a 100-file
+// repo (synthetic), Django's 2,347 recorded files, and a 10,000-file repo
+// (synthetic; the server sends its 4,000 largest). Budget 16 ms each; vitest
+// guards a frame at 5x that (test/overlay.test.ts).
 //
 //   npm run bench:map -w @repowise-dev/claude-mod
 
@@ -11,12 +14,13 @@ import { build } from "esbuild";
 
 const BUDGET_MS = 16;
 const RUNS = 50;
+const SERVER_CAP = 4_000;
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // test/setup gives Node the runtime's Uint8Array.prototype.toBase64.
 const bundled = await build({
   stdin: {
-    contents: 'import "./test/setup"; export * from "./src/views/map"; export * from "./src/views/overlay"; export * from "./src/model/trail";',
+    contents: 'import "./test/setup"; export * from "./src/views/map"; export * from "./src/views/overlay"; export { syntheticTree } from "./test/synthetic";',
     resolveDir: pkg,
     loader: "ts",
   },
@@ -30,15 +34,6 @@ const bundled = await build({
 const map = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`);
 
 const fixture = (name) => JSON.parse(readFileSync(resolve(pkg, "test/fixtures", name), "utf8"));
-const feed = fixture("django-health-map.json");
-const importers = fixture("django-blast-radius-query-depth1.json").transitive_affected.map((t) => t.path);
-const root = "C:/work/django";
-let trail = map.initialTrail;
-for (const p of ["django/db/models/base.py", "django/db/models/manager.py"]) {
-  trail = map.reduceTrail(trail, { type: "read", path: `c:/work/django/${p}` });
-}
-trail = map.reduceTrail(trail, { type: "edit", path: "c:/work/django/django/db/models/query.py" });
-trail = map.reduceTrail(trail, { type: "callers", edits: 1, callers: { status: "ready", paths: importers } });
 
 function time(label, work) {
   for (let i = 0; i < 5; i++) work(i);
@@ -51,18 +46,35 @@ function time(label, work) {
   samples.sort((a, b) => a - b);
   const median = samples[Math.floor(RUNS / 2)];
   const p95 = samples[Math.floor(RUNS * 0.95)];
-  console.log(`${label.padEnd(32)} median ${median.toFixed(2)} ms  p95 ${p95.toFixed(2)} ms`);
+  console.log(`  ${label.padEnd(30)} median ${median.toFixed(2)} ms  p95 ${p95.toFixed(2)} ms`);
   return p95;
 }
 
-const layout = map.layoutMap(feed.files, 180, 50, true);
-const overlay = map.resolveOverlay(layout, trail, root).overlay;
-console.log(`Django feed: ${feed.files.length} files, ${layout.drawn.length} drawn at 180x50`);
-const layoutP95 = time("layout (on resize only)", () => map.layoutMap(feed.files, 180, 50, true));
-const frameP95 = time("ripple frame + encode", (i) =>
-  map.frameCells(layout, map.resolveOverlay(layout, trail, root).overlay, { kind: "ripple", t: (i % 30) / 30 }),
+/** A turn over these files: matches, two reads, the edit, and importers, all real paths of the feed. */
+function turnOver(files, importers) {
+  const paths = files.map((f) => f.file_path);
+  const edit = paths[Math.floor(paths.length / 3)];
+  return { hits: paths.slice(10, 40), reads: [paths[5], edit], named: [paths[5]], importers: importers ?? paths.slice(50, 62), edit, current: edit };
+}
+
+function bench(label, files, importers) {
+  const layout = map.layoutMap(files, { columns: 180, rows: 50, caseInsensitive: true });
+  const lit = turnOver(files, importers);
+  console.log(`${label}: ${files.length} files, ${layout.drawn.length} with a pixel, ${layout.dense ? "drawn as folders" : "a tile each"}`);
+  const layoutP95 = time("layout (on resize only)", () => map.layoutMap(files, { columns: 180, rows: 50, caseInsensitive: true }));
+  const frameP95 = time("lit frame mid-ripple + encode", (i) =>
+    map.frameCells(layout, map.resolveLit(layout, lit), { kind: "ripple", t: (i % 30) / 30 }),
+  );
+  return Math.max(layoutP95, frameP95);
+}
+
+const django = fixture("django-health-map.json").files;
+const djangoImporters = fixture("django-blast-radius-query-depth1.json").transitive_affected.map((t) => t.path);
+const worst = Math.max(
+  bench("100 files (synthetic)", map.syntheticTree(100).files),
+  bench("Django (recorded)", django, djangoImporters),
+  bench("10,000 files (synthetic, the server's 4,000 largest)", map.syntheticTree(10_000).files.slice(0, SERVER_CAP)),
 );
-time("resting frame + encode", () => map.frameCells(layout, overlay));
-const ok = frameP95 <= BUDGET_MS && layoutP95 <= BUDGET_MS;
+const ok = worst <= BUDGET_MS;
 console.log(ok ? `within the ${BUDGET_MS} ms budget` : `OVER the ${BUDGET_MS} ms budget`);
 process.exitCode = ok ? 0 : 1;

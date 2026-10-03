@@ -1,5 +1,5 @@
 /**
- * The `/lens` pane: a row of tabs (Flow, Map, Recap), the Ask field (off the
+ * The `/lens` pane: a row of tabs (Flow, Map, Ask, Recap), the Ask field (its own tab,
  * bar) with the last reply, and the session recap. Every recap figure is
  * read from the session model as it stands; nothing is re-derived.
  */
@@ -35,7 +35,7 @@ export const ASK_KEY = "lens-ask";
 /** Rows the tab row takes above each tab's body. */
 export const TAB_ROWS = 1;
 
-/** `1: Flow  2: Map  3: Recap`, the shown one at full strength (none while the Ask field shows). */
+/** `1: Flow  2: Map  3: Ask  4: Recap`, the shown one at full strength. */
 export function tabsView(current: PaneTab, tabs: readonly BarTab[] = TAB_BAR): Node {
   return box(
     { key: "lens-tabs", flexDirection: "row", columnGap: 2 },

@@ -4,6 +4,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hook, ModApi, On, PluginOptions } from "../src/mod-api";
 import { MAP_COPY, PANE_COPY } from "../src/views/copy";
+import { DARK_CANVAS_BAND } from "@repowise-dev/ui/brand";
+import { decode } from "./django";
 import { fixture, flatten, textOf, type Tree } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
@@ -95,6 +97,7 @@ function fakeDollar() {
         return { command: c.name };
       },
     },
+    config: { list: async () => [] },
     settings: { read: async () => ({}) },
   };
   const hold = () => {
@@ -174,7 +177,7 @@ describe("register, for the map", () => {
     const { $, calls } = fakeDollar();
     await hooks["session.start"]!($, {}, async () => undefined);
     expect(calls.commands).toEqual([
-      { name: "lens", description: PANE_COPY.command, argumentHint: "[map | recap | ask <question>]", immediate: true },
+      { name: "lens", description: PANE_COPY.command, argumentHint: "[flow | map | ask <question> | recap]", immediate: true },
     ]);
   });
 });
@@ -218,13 +221,28 @@ describe("the map pane", () => {
     expect(shown).toContain("Lens map needs a wider terminal: below 110 columns (90 now)");
   });
 
+  it("the map is quiet ghost tiles until the Health colours button turns the bands on; lens_map_health starts it on", async () => {
+    const d = await opened();
+    const bands = (tree: Tree) => decode(String(flatten(tree).find((n) => n.el === "Raster")!.props.cells)).some((w, i) => i % 3 === 1 && w === parseInt(DARK_CANVAS_BAND.good.slice(1), 16));
+    let tree = await render(d);
+    expect(bands(tree)).toBe(false);
+    const toggle = flatten(tree).find((n) => n.props.key === "lens-map-health")!;
+    expect(toggle.props.label).toBe(MAP_COPY.healthOff);
+    toggle.props.onPress();
+    tree = await render(d);
+    expect(bands(tree)).toBe(true);
+    expect(flatten(tree).find((n) => n.props.key === "lens-map-health")!.props.label).toBe(MAP_COPY.healthOn);
+    hooks = await load({ lens_map_health: true });
+    expect(bands(await render(await opened()))).toBe(true);
+  });
+
   it("draws the Django map with a legend that counts what it drew", async () => {
     const d = await opened();
     const tree = await render(d);
     const r = flatten(tree).find((n) => n.el === "Raster")!;
-    // The pane's 55 rows less the tab row and the legend.
-    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 48 });
-    expect(r.props.cells).toHaveLength(180 * 48 * 16);
+    // The pane's 55 rows less the tab row and the rows under the map (story, scope, toggle).
+    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 47 });
+    expect(r.props.cells).toHaveLength(180 * 47 * 16);
     expect(textOf(tree).some((t) => /^1,\d{3} of 2,970 files drawn at this size/.test(t))).toBe(true);
   });
 
@@ -234,7 +252,7 @@ describe("the map pane", () => {
     const drawing = flatten(tree).find((n) => n.el === "Svg")!;
     expect(String(drawing.props.source).startsWith("<svg ")).toBe(true);
     expect(String(drawing.props.source).length).toBeLessThan(131_072);
-    expect(drawing.props.alt).toMatch(/^Code health map: 1,\d{3} files drawn/);
+    expect(drawing.props.alt).toMatch(/^Map of the repo: 1,\d{3} files drawn as tiles/);
     expect(flatten(tree).some((n) => n.el === "Raster")).toBe(false);
     expect(textOf(tree).some((t) => / of 2,970 files drawn at this size/.test(t))).toBe(true);
   });
@@ -254,12 +272,50 @@ describe("the map pane", () => {
     await render(d);
     await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
     await until(() => d.calls.blit.length >= 2);
-    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 48 });
+    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 47 });
     const shown = textOf(await render(d));
-    // At 180x48 one of the twelve is under a pixel: counted, not hidden.
-    expect(shown).toContain("edited query.py · 12 files import it (from imports, not calls) · 1 not drawn");
-    expect(shown).toContain("1 file read");
+    expect(shown.some((t) => t.startsWith("12 importers: "))).toBe(true);
+    expect(shown).toContain("◉ query.py");
     expect(asked(d, "/blast-radius")).toBe(1);
+  });
+
+  /** A turn that edits query.py, drawn: the prompt on Flow, the edit and its importers on the map. */
+  async function editedTurn(): Promise<Full> {
+    const d = await opened();
+    await hooks["turn.start"]!(d.$, { text: "tidy the bulk create path", turnId: "t1" }, async () => ({}));
+    await render(d);
+    await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
+    await until(() => asked(d, "/blast-radius") === 1);
+    await settle();
+    expect(textOf(await render(d)).some((t) => t.startsWith("12 importers: "))).toBe(true);
+    return d;
+  }
+  const lens = (d: Full, args: string) => hooks["command.run:lens"]!(d.$, { command: "lens", args }, async () => ({}));
+  const flowText = async (d: Full) => {
+    await lens(d, "flow");
+    return JSON.stringify(await render(d));
+  };
+
+  it("/clear starts the conversation over: Flow and the map's lighting go, the health map stays and is not asked again", async () => {
+    const d = await editedTurn();
+    expect(await flowText(d)).toContain("tidy the bulk create path");
+    await hooks["session.end"]!(d.$, { reason: "clear", sessionId: "s1" }, async () => ({}));
+    expect(await flowText(d)).not.toContain("tidy the bulk create path");
+    await lens(d, "map");
+    const tree = await render(d);
+    expect(flatten(tree).some((n) => n.el === "Raster")).toBe(true);
+    const shown = textOf(tree);
+    expect(shown).toContain(MAP_COPY.quiet);
+    expect(shown.some((t) => t.includes("importers") || t.includes("query.py"))).toBe(false);
+    expect(asked(d, "/health/map")).toBe(1);
+    expect(d.calls.logs.filter((l) => /clear failed|render failed/.test(l))).toEqual([]);
+  });
+
+  it("an end that is not a /clear (a resume, an exit) leaves the turn lit", async () => {
+    const d = await editedTurn();
+    await hooks["session.end"]!(d.$, { reason: "resume", sessionId: "s1" }, async () => ({}));
+    expect(textOf(await render(d)).some((t) => t.startsWith("12 importers: "))).toBe(true);
+    expect(await flowText(d)).toContain("tidy the bulk create path");
   });
 
   it("Flow reads the same blast radius answer: its importers before you accept, with no second request", async () => {
@@ -272,6 +328,29 @@ describe("the map pane", () => {
     expect(shown).toContain("BEFORE YOU ACCEPT");
     expect(shown).toContain("    12 direct importers; Claude opened none");
     expect(asked(d, "/blast-radius")).toBe(1);
+  });
+
+  it("importers are asked once per edited file: five edits to one file, one request; a second file, a second", async () => {
+    const d = await opened();
+    for (let i = 0; i < 5; i++) await hooks["tool.call"]!(d.$, { ...editQuery, tool_use_id: `toolu_q${i}` }, async () => ({ result: {} }));
+    await until(() => asked(d, "/blast-radius") === 1);
+    await wait(30);
+    expect(asked(d, "/blast-radius")).toBe(1);
+    const editBase = { tool: "Edit", tool_use_id: "toolu_b", file_path: `${ROOT}\\django\\db\\models\\base.py` };
+    await hooks["tool.call"]!(d.$, editBase, async () => ({ result: {} }));
+    await hooks["tool.call"]!(d.$, { ...editBase, tool_use_id: "toolu_b2" }, async () => ({ result: {} }));
+    await until(() => asked(d, "/blast-radius") === 2);
+    await wait(30);
+    expect(asked(d, "/blast-radius")).toBe(2);
+  });
+
+  it("edits before the first /lens are each asked for when it opens", async () => {
+    const d = await started();
+    await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
+    await hooks["tool.call"]!(d.$, { tool: "Edit", tool_use_id: "toolu_b", file_path: `${ROOT}\\django\\db\\models\\base.py` }, async () => ({ result: {} }));
+    expect(asked(d, "/blast-radius")).toBe(0);
+    await hooks["command.run:lens"]!(d.$, { command: "lens", args: "map" }, async () => ({}));
+    await until(() => asked(d, "/blast-radius") === 2);
   });
 
   it("observing a tool call waits on nothing once next(e) resolved", async () => {
@@ -338,12 +417,12 @@ describe("the map pane", () => {
     d.$.settings.read = async () => ({ prefersReducedMotion: true });
     await opened(d);
     await render(d);
-    await hooks["tool.call"]!(d.$, { tool: "Grep", pattern: "x" }, async () => ({ result: { filenames: ["django/db/models/query.py"] } }));
+    await hooks["tool.call"]!(d.$, { tool: "Grep", tool_use_id: "toolu_g", pattern: "x" }, async () => ({ result: { filenames: ["django/db/models/query.py"] } }));
     await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
     await until(() => asked(d, "/blast-radius") === 1);
     await wait(120);
     expect(d.calls.blit).toEqual([]);
-    expect(textOf(await render(d))).toContain("1 file read · last search matched 1 file");
+    expect(textOf(await render(d))).toContain("x: 1 file");
   });
 
   it("an edit with no local server asks nothing of the network", async () => {
