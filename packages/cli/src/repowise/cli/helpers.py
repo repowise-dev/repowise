@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -611,12 +612,14 @@ def _pending_commit_still_ahead(
         return False
     import subprocess
 
+    if as_commit_id(indexed_head) is None or as_commit_id(pending_head) is None:
+        return False
     try:
         # ``indexed_head`` is an ancestor of ``pending_head`` => pending is
         # newer than what we indexed and worth keeping. A non-zero exit
         # (including an unresolvable pending commit) means "not ahead".
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+            ["git", "merge-base", "--is-ancestor", "--end-of-options", indexed_head, pending_head],
             cwd=str(repo_path),
             capture_output=True,
             timeout=10,
@@ -687,6 +690,22 @@ def rotate_update_log_if_needed(repo_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
+
+
+_COMMIT_ID_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+
+
+def as_commit_id(value: object) -> str | None:
+    """*value* when it is a full or abbreviated hex commit id, else ``None``.
+
+    Commit ids read back from ``.repowise/state.json`` (or a file beside it)
+    can be edited by anyone who can commit that file, so they are checked
+    before they reach a ``git`` argument list, where a leading ``-`` would be
+    read as an option.
+    """
+    if isinstance(value, str) and _COMMIT_ID_RE.fullmatch(value):
+        return value
+    return None
 
 
 def get_head_commit(repo_path: Path) -> str | None:

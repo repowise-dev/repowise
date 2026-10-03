@@ -110,3 +110,12 @@ def test_adopting_identity_rekeys_the_repo_level_pages(tmp_path: Path) -> None:
     assert ("module_page:src", "src", "repo_overview:feature-tree") in pages
     assert versions == [("repo_overview:feature-tree",)]
     assert fts == [("repo_overview:feature-tree", "feature-tree")]
+
+
+def test_as_commit_id_accepts_only_hex_commit_ids() -> None:
+    from repowise.cli.helpers import as_commit_id
+
+    assert as_commit_id("a" * 40) == "a" * 40
+    assert as_commit_id("DeadBee") == "DeadBee"
+    for bad in ("--output=x", "-abcdef0", "abc123", "a" * 41, "HEAD", "", None, 7):
+        assert as_commit_id(bad) is None

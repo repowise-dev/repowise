@@ -19,6 +19,7 @@ from typing import Any
 import structlog
 
 from repowise.cli.helpers import (
+    as_commit_id,
     console,
     head_commit_ts,
     load_config,
@@ -355,6 +356,8 @@ def resolve_repair_base(
     from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
     if not from_commit or from_commit == base_ref:
         return base_ref, None
+    if as_commit_id(from_commit) is None or as_commit_id(base_ref) is None:
+        return base_ref, None
 
     def _git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -362,7 +365,7 @@ def resolve_repair_base(
         )
 
     try:
-        if _git("merge-base", "--is-ancestor", from_commit, base_ref).returncode != 0:
+        if _git("merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref).returncode != 0:
             # Non-zero covers both "not an ancestor" (rebased, force-pushed,
             # branch switched) and "cannot resolve that object" (gc'd, or a
             # shallow clone that never fetched it), and git does not
@@ -371,7 +374,7 @@ def resolve_repair_base(
                 f"the recorded commit {from_commit[:8]} is not an ancestor of this "
                 "branch's history, or is not present in this clone"
             )
-        counted = _git("rev-list", "--count", f"{from_commit}..{head or 'HEAD'}")
+        counted = _git("rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}")
         if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
             return base_ref, (
                 f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
