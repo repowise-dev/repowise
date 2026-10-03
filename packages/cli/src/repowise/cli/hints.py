@@ -74,7 +74,7 @@ HINTS: dict[str, Hint] = {
         moment="sync",
     ),
     "ask_nokey": Hint(
-        "No LLM key set. Sign in to repowise.dev for 10 free answers a month: repowise login.",
+        "No LLM key set. Sign in to repowise.dev for 10 free answers a month.",
         src="cli_ask_nokey",
         moment="keys",
         action="Start free: repowise publish",

@@ -154,6 +154,11 @@ class TestWording:
             assert hint.action.endswith("repowise publish")
             assert hint.action.split(":")[0] in {"Publish it free", "Start free"}
 
+    def test_one_next_step_per_line(self):
+        # publish signs the person in, so a second command would only compete.
+        for hint in hints.HINTS.values():
+            assert f"{hint.text} {hint.action}".count("repowise ") == 1
+
     def test_trial_claims_name_the_card(self):
         for hint in hints.HINTS.values():
             text = f"{hint.text} {hint.action}".lower()
