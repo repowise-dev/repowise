@@ -174,7 +174,8 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     does not exist. ``names`` is tested for the token, then for its lowered
     form, so a container that also answers for each name's lowered spelling
     gets the case-insensitive leg. A one-hump word (``Add``, ``API``) is also
-    an English word, so it counts only in code context (``_in_code_context``).
+    an English word, so it counts only in code context (``_in_code_context``);
+    all-caps constants (``DEBUG``, ``TIMEOUT``) included.
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
@@ -208,10 +209,33 @@ def _one_hump(token: str) -> bool:
     return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
 
 
+_CALLED_RE = re.compile(r"\s*\(|::")
+_ASKS_AFTER_RE = re.compile(
+    r"^\s*(?:where\s+is|where's|where\s+are|what\s+does|how\s+is|how\s+does|how\s+do)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_LOOKUP_VERB_RE = re.compile(r"\b(?:find|show|open|locate)\s+$", re.IGNORECASE)
+_BARE_LEAD_RE = re.compile(r"^\s*(?:the\s+)?$", re.IGNORECASE)
+_KIND_TAIL_RE = re.compile(
+    r"\s+(?:class|struct|interface|trait|function|method|type|enum)\W*$", re.IGNORECASE
+)
+
+
 def _in_code_context(query: str, m: re.Match[str]) -> bool:
-    """Inside a backtick span, or called (``Add(``). Dotted chains never get
-    here: ``_one_hump`` rejects the dot."""
-    return query.count("`", 0, m.start()) % 2 == 1 or query.startswith("(", m.end())
+    """Code syntax around the word (backtick span, ``Add(``, ``Client::new``),
+    or a short lookup frame (``where is Session``, ``find Config``,
+    ``the Router struct``). Issue prose ("Add support for", "Add type
+    annotations") fits none. Dotted chains never get here."""
+    before, after = query[: m.start()], query[m.end() :]
+    if before.count("`") % 2 or before.endswith("::") or _CALLED_RE.match(after):
+        return True
+    if _ASKS_AFTER_RE.match(before):
+        return True
+    if len(query.split()) > 3:
+        return False
+    return bool(
+        _LOOKUP_VERB_RE.search(before) or (_BARE_LEAD_RE.match(before) and _KIND_TAIL_RE.match(after))
+    )
 
 
 def _name_lookup_keys(query: str) -> set[str]:
