@@ -299,7 +299,9 @@ def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
         payload["candidate_files"] = paths
 
 
-def _default_shape(payload: dict[str, Any], question: str) -> None:
+def _default_shape(
+    payload: dict[str, Any], question: str, *, raw_fallbacks: list[Any] | None = None
+) -> None:
     confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
     if confidence == "high":
@@ -342,8 +344,34 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
     else:
         _keep(payload, "retrieval", 3)
     payload.pop("candidates", None)
-    if payload.get("best_guesses") or payload.get("retrieval") or payload.get("symbol_bodies"):
+
+    emitted = {
+        path
+        for key in (
+            "citations",
+            "symbol_bodies",
+            "code_rationale",
+            "quotes",
+            "best_guesses",
+            "retrieval",
+        )
+        for row in payload.get(key) or []
+        if (path := _nav_path(row))
+    }
+    targets = [
+        row
+        for row in (
+            raw_fallbacks
+            if raw_fallbacks is not None
+            else payload.get("fallback_targets") or []
+        )
+        if _nav_path(row) not in emitted
+    ]
+    if targets:
+        payload["fallback_targets"] = targets
+    else:
         payload.pop("fallback_targets", None)
+
     if not str(payload.get("answer") or "").strip():
         payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
     payload.setdefault(
@@ -394,6 +422,7 @@ def project_answer_payload(
 ) -> dict[str, Any]:
     """Return the cache-independent, confidence-specific external response."""
     payload = copy.deepcopy(raw)
+    raw_fallbacks = _unique(list(payload.get("fallback_targets") or []), lambda row: row)
     totals = {
         key: len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         for key in _COLLECTIONS
@@ -401,7 +430,7 @@ def project_answer_payload(
     _deduplicate(payload)
     expanded = "evidence" in set(include or [])
     if not expanded:
-        _default_shape(payload, question)
+        _default_shape(payload, question, raw_fallbacks=raw_fallbacks)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     for key in _COLLECTIONS:
