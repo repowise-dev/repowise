@@ -62,7 +62,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`augment`](#repowise-augment)
 
 **Server**
-[`serve`](#repowise-serve-path) ·
+[`serve`](#repowise-serve) ·
 [`mcp`](#repowise-mcp-path)
 
 **Workspace**
@@ -101,7 +101,13 @@ Most commands auto-detect whether you're in a workspace root and route according
 | `--repo <alias>` | Scope a workspace command to one repo. Available on commands where it makes sense. |
 | `--all` | Fan out across every workspace repo (on `costs`, `search`). |
 
-The commands that grew these flags: `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `doc-drift`, `decision`, `coverage`, `generate-claude-md`, `hook install/status/uninstall`.
+Which commands take which flag:
+
+- `--workspace` / `-w` and `--no-workspace`: `update`, `status`, `watch`, `doctor`, `generate-claude-md`, `hook install/status/uninstall`.
+- `--no-workspace` only: `costs`, `search`, `dead-code`, `doc-drift`, `health`, `ask`, `context`, `symbol`, `why`, `next`, `mcp`, `init`.
+- `--repo`: `update`, `costs`, `search`, `dead-code`, `doc-drift`, `health`, `ask`, `context`, `symbol`, `why`, `next`, `workspace diagnostics`.
+
+`decision` and `coverage` auto-detect a workspace and act on its primary repo. They take none of these flags. The `coverage` subcommands take `--path` for another repo. For `decision`, run it from inside that repo.
 
 ---
 
@@ -177,7 +183,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--codex` / `--no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](../agent/DISTILL.md). |
 | `--hook` / `--no-hook` | Install or skip the post-commit hook that runs `repowise update` after each commit. Default: on. Interactive runs ask; `--yes` and non-interactive runs install it and print how to undo it (`repowise hook uninstall`). `--no-editor-setup` skips it too, since a git hook is a write outside `.repowise/`. In workspace mode the choice applies to every selected repo. |
-| `--editor-setup` / `--no-editor-setup` | Wire repowise into your editors, both halves at once. Machine-wide: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Project-local: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`. Default: on. `--no-editor-setup` indexes the repo writing nothing into it and nothing outside it — only `.repowise/` is touched — which is what you want for a scratch checkout, a throwaway venv, a git worktree, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. `repowise mcp .` still prints the config to connect a client by hand. It also skips the post-commit auto-sync hook (a write into the git hooks directory) and the `--distill-hook` offer, which installs a user-level hook; `--no-distill-hook`, `--no-claude-md` and `--no-agents-md` still record their opt-outs in this repo's config, because those flags mean "never", not "not this run". `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn setup back on. |
+| `--editor-setup` / `--no-editor-setup` | Wire repowise into your editors, both halves at once. Machine-wide: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Project-local: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`. Default: on. `--no-editor-setup` indexes the repo writing nothing into it and nothing outside it (only `.repowise/` is touched), which is what you want for a scratch checkout, a throwaway venv, a git worktree, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. `repowise mcp .` still prints the config to connect a client by hand. It also skips the post-commit auto-sync hook (a write into the git hooks directory) and the `--distill-hook` offer, which installs a user-level hook; `--no-distill-hook`, `--no-claude-md` and `--no-agents` still record their opt-outs in this repo's config, because those flags mean "never", not "not this run". `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn setup back on. |
 | `--save-key` / `--no-save-key` | Save the provider API key this run authenticated with into `.repowise/.env` (git-ignored, owner-only). Default: on, because a scripted `init` that succeeds must leave a repo whose MCP server can actually answer, and a key supplied through the environment would otherwise vanish with the shell that set it. The file is what `repowise mcp`, `serve` and `update` read back; without it `get_answer` degrades to `no-llm-provider` and returns retrieval-only output. Use `--no-save-key` when the key is injected per-process (CI secrets, a shared machine) and must not reach disk; `REPOWISE_NO_SAVE_KEY=1` is the same switch for CI and sandboxes. Answering No to the interactive key prompt also wins over the default. Note this writes one line to the repo's `.gitignore`, so pair it with `--no-save-key` when you need `--no-editor-setup`'s "nothing written into the repo" guarantee. |
 | `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](../scale/WORKTREES.md). |
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
@@ -433,9 +439,9 @@ repowise wiki-styles
 
 ---
 
-### `repowise serve [PATH]`
+### `repowise serve`
 
-Start the API server and web UI.
+Start the API server and web UI. It takes no path argument. Run it from the indexed repository, whose `.repowise/` it picks up, or point it at a database with `REPOWISE_DB_URL`.
 
 **Options:**
 
@@ -522,7 +528,7 @@ decision / test pages are demoted on queries that did not ask for them.
 | `--limit` | Max results (default: 10) |
 | `--repo` | Scope to a specific workspace repo by alias |
 | `--all` | Fan out across every workspace repo and merge results |
-| `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--no-workspace` | Force single-repo mode |
 | `--format` | `table` (default) or `json` |
 | `--full` | Emit the complete tool payload as JSON (implies `--format json`) |
 
@@ -750,7 +756,7 @@ Detect dead and unused code.
 | `--no-unreachable` | Skip unreachable-file findings |
 | `--no-unused-exports` | Skip unused-export findings |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
-| `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--no-workspace` | Force single-repo mode |
 
 ```bash
 repowise dead-code
@@ -1680,7 +1686,7 @@ Show LLM spend tracking.
 | `--by` | Grouping: `operation`, `model`, `day` |
 | `--repo` | Scope to a specific workspace repo |
 | `--all` | Aggregate across every workspace repo |
-| `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--no-workspace` | Force single-repo mode |
 | `--format` | `table` (default) or `json` |
 
 ```bash
@@ -1742,7 +1748,6 @@ This defaults to `--index --docs` when a provider is configured, the added repo 
 | `--docs` / `--no-docs` | Run LLM doc generation (default: on when a provider is configured) |
 | `--provider` / `--model` | Override the inherited provider/model |
 | `--concurrency` | Max concurrent LLM calls for this repo's generation |
-| `--primary` | Mark this repo as the workspace default |
 | `--verbose`, `-v` | Show debug logs from indexing and doc generation |
 
 ```bash
