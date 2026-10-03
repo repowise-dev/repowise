@@ -388,6 +388,9 @@ export interface SearchResultsArtifactData {
     title: string;
     page_type: string;
     page_id?: string;
+    /** Openable repo-relative file; absent when the hit names no file. */
+    path?: string;
+    /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
     relevance_score?: number;

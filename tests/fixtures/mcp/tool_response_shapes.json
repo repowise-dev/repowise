@@ -2035,13 +2035,14 @@
     "results": [
       {
         "confidence_score": null,
+        "page_id": null,
         "page_type": null,
+        "path": null,
         "relevance_score": null,
         "snippet": null,
         "sources": [
           null
         ],
-        "target_path": null,
         "title": null
       }
     ]

@@ -261,7 +261,7 @@ class TestDecisionDownweight:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("sqlite store", limit=5, kind="implementation")
-        paths = [r["target_path"] for r in result["results"]]
+        paths = [r["path"] for r in result["results"]]
         assert paths == ["src/auth/service.py"]
 
     @pytest.mark.asyncio
@@ -443,7 +443,7 @@ class TestNoiseDemotion:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("how does the auth service work")
-        paths = [r["target_path"] for r in result["results"]]
+        paths = [r["path"] for r in result["results"]]
         assert paths[0] == "src/auth/service.py"
         assert "tests/unit/test_service.py" in paths  # demoted, not dropped
 
@@ -474,7 +474,7 @@ class TestNoiseDemotion:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("how is the auth service tested")
-        assert result["results"][0]["target_path"] == "tests/unit/test_service.py"
+        assert result["results"][0]["path"] == "tests/unit/test_service.py"
 
 
 class TestClassifyHitKind:
@@ -1243,14 +1243,14 @@ class TestFusion:
         mcp_mod._fts.search = fake_fts
 
         result = await search_codebase("session cache layer", limit=10)
-        by_path = {r["target_path"]: r for r in result["results"]}
+        by_path = {r["path"]: r for r in result["results"]}
         # All three surface — including the FTS-only page the old path dropped.
         assert {"src/both.py", "src/vec.py", "src/fts.py"} <= set(by_path)
         assert by_path["src/vec.py"]["sources"] == ["vector"]
         assert by_path["src/fts.py"]["sources"] == ["fts"]
         assert by_path["src/both.py"]["sources"] == ["fts", "vector"]
         # A page both retrievers rank #1 fuses to the top.
-        assert result["results"][0]["target_path"] == "src/both.py"
+        assert result["results"][0]["path"] == "src/both.py"
 
     @pytest.mark.asyncio
     async def test_vector_miss_falls_through_to_fts(self, setup_mcp):
@@ -1274,7 +1274,7 @@ class TestFusion:
         mcp_mod._fts.search = fake_fts
 
         result = await search_codebase("session cache layer", limit=10)
-        by_path = {r["target_path"]: r for r in result["results"]}
+        by_path = {r["path"]: r for r in result["results"]}
         assert by_path["src/fts_rescue.py"]["sources"] == ["fts"]
 
 
@@ -1368,8 +1368,9 @@ class TestSearchCandidates:
         result = await search_codebase("how are requests issued", limit=10)
 
         hit = result["results"][0]
-        assert hit["target_path"] == "api/client.go"
-        assert hit["file"] == "api/client.go"
+        assert hit["path"] == "api/client.go"
+        assert "target_path" not in hit  # same string as path
+        assert hit["file"] == "api/client.go"  # alias for one minor release
         assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["file"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
@@ -1695,6 +1696,8 @@ class TestDistinctFileWindow:
         ids = [r["symbol_id"] for r in res["results"]]
         assert ids[:2] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
         assert all("symbols" not in r for r in res["results"])
+        # Symbol rows serve path, with file as the transition alias.
+        assert all(r["path"] == r["file"] == "src/widget/core.py" for r in res["results"][:2])
 
     @pytest.mark.asyncio
     async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
@@ -1722,7 +1725,7 @@ class TestDistinctFileWindow:
 
         mcp_mod._vector_store.search = fake_search
         res = await search_codebase("how are requests issued", mode="concept", limit=2)
-        assert [r["target_path"] for r in res["results"]] == ["api/client.go", "api/server.go"]
+        assert [r["path"] for r in res["results"]] == ["api/client.go", "api/server.go"]
 
 
 class TestPathlessPagesInCodeLocationModes:
@@ -1780,6 +1783,38 @@ class TestPathlessPagesInCodeLocationModes:
             "onboarding",
             "file_page",
         ]
+
+    @pytest.mark.asyncio
+    async def test_concept_rows_carry_path_only_when_they_name_a_file(self, setup_mcp):
+        """A pathless page keeps its key in target_path; a file page's moves to path."""
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="concept", limit=5)
+        module, onboarding, file_page = res["results"]
+        for pathless, key in ((module, "pkg/cmd/release"), (onboarding, "onboarding/how_it_works")):
+            assert "path" not in pathless
+            assert pathless["target_path"] == key
+        assert file_page["path"] == "pkg/cmd/release/list.go"
+        assert "target_path" not in file_page
+        # Not derivable without target_path, so the id stays for citations.
+        assert file_page["page_id"] == "file_page:pkg/cmd/release/list.go"
+
+    @pytest.mark.asyncio
+    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        await self._seed()
+        ctx = await tool_search._resolve_repo_context(None)
+
+        async def one_context():
+            return [ctx]
+
+        monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
+        res = await search_codebase("listing releases in order", mode="concept", repo="all")
+        by_type = {r["page_type"]: r for r in res["results"]}
+        assert by_type["file_page"]["path"] == "pkg/cmd/release/list.go"
+        assert "path" not in by_type["module_page"]
 
     @pytest.mark.asyncio
     async def test_an_empty_window_does_not_repeat_its_grep_hint(self, setup_mcp):

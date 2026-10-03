@@ -173,14 +173,17 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 
 | Field | Meaning |
 |-------|---------|
-| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `file`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `file`, `title`, `next: "get_context"`. Concept hits: wiki pages with `relevance_score`, `snippet`, `target_path`, `sources` |
+| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`. Concept hits: wiki pages with `page_type`, `path` when the page names a file, `relevance_score`, `snippet`, `sources` |
+| `path` | The repo-relative file a row names, openable as is. Absent when the row names no file (a module page's group key, an onboarding slot, the repo overview); never a page id |
+| `file` | Deprecated alias of `path` on symbol and file hits (and on a `symbol_spotlight` page). Removed in the next minor release |
+| `target_path` | On a page hit, kept only where it is not the same string as `path`: a page with no `path` keeps its group key, slot or repo name here. Where it is dropped, `page_id` stays |
 | `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`, then a `+N more` entry counting the rest. Those matches share the row instead of taking slots of their own |
 | `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
 
 Outside `mode="symbol"`, `limit` caps distinct files: hits are collapsed to one row per file, best row first, and the freed slots go to the next pages, then the next symbols. This includes concept mode, where a file page and a `symbol_spotlight` page of the same file are one row. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.
 
-Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's `target_path` is a page id (`file.py::Symbol`); open its `file`.
+Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's id is `file.py::Symbol`; its `path` is the file.
 
 `results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. A hybrid query (prose around an identifier) drops pages that name no file (module, onboarding, overview, decision pages) from `results` without refilling their slots, unless `page_type` or `kind="doc"` asks for pages; concept mode keeps them. Decision records rank below file pages unless the query is why-shaped.
 

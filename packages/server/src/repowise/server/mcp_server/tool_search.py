@@ -39,7 +39,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
+from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
@@ -815,6 +815,7 @@ async def _federated_search(
     if candidates := file_candidates(all_results, limit=limit):
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
+    add_row_paths(output)
     _drop_derivable_page_ids(output)
     return response
 
@@ -1080,7 +1081,9 @@ async def _structured_search(
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
-    # Last, so nothing above has to know the field is on its way out.
+    # Last, so nothing above has to know the field is on its way out. Paths
+    # first, so a page whose target_path is dropped keeps its page_id.
+    add_row_paths(results)
     _drop_derivable_page_ids(results)
     return response
 
@@ -1116,14 +1119,14 @@ async def search_codebase(
     resolving an identifier to a symbol_id, or scoping get_context.
 
     mode="auto" (default) routes the query: identifier-shaped queries search
-    the indexed symbols (returns symbol_id/file/line bounds — pipe into
+    the indexed symbols (returns symbol_id/path/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
     and conceptual queries run wiki-semantic search. Mixed queries run hybrid:
     symbol hits first, then file-backed pages only. Decision records rank
     below file pages unless the query is why-shaped.
 
-    `candidates` lists up to `limit` distinct openable file paths, best
-    first: what to Read.
+    Rows naming a file carry `path`; `candidates` is up to `limit`
+    distinct files to Read, best first.
 
     Args:
         query: identifier, path, or natural language.
@@ -1247,5 +1250,6 @@ async def search_codebase(
         response["grep_hint"] = grep_hint
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
+    add_row_paths(output)
     _drop_derivable_page_ids(output)
     return response
