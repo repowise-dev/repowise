@@ -461,3 +461,13 @@ class TestGoImportSurfaceExcludesTestFiles:
         assert "store/store_test.go" in pkg.files
         # The import surface does not.
         assert index.files_for_import("example.com/app/store") == ("store/store.go",)
+
+
+def test_typescript_type_only_imports_excluded_from_cycle_subgraph() -> None:
+    builder = _pair_builder(type_only=True)
+
+    cycle_sub = builder.cycle_subgraph()
+    assert cycle_sub.number_of_edges() == 0
+    assert _cycles(cycle_sub) == []
+
+

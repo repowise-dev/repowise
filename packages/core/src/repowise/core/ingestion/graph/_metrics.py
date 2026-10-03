@@ -150,7 +150,8 @@ class MetricsMixin:
         only ever read. Callers must treat the result as read-only.
         """
         return self._file_edge_view(
-            "_cycle_subgraph_cache", lambda base, u, v, d: is_cohesion_edge(d)
+            "_cycle_subgraph_cache",
+            lambda base, u, v, d: is_cohesion_edge(d) or d.get("type_only") is True,
         )
 
     def centrality_subgraph(self) -> nx.DiGraph:

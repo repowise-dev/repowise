@@ -271,3 +271,16 @@ def test_same_directory_python_cycle_is_not_demoted():
     # A Python import cycle fails at import time; it is never an idiom.
     out = _detect_lang(_import_graph([("pkg/a.py", "pkg/b.py"), ("pkg/b.py", "pkg/a.py")]), "pkg/a.py", "python")
     assert out[0].confidence == "high"
+
+
+def test_type_only_import_edges_suppress_break_cycle():
+    g = nx.DiGraph()
+    g.add_node("a.ts", node_type="file")
+    g.add_node("b.ts", node_type="file")
+    # Mutually type-only imports
+    g.add_edge("a.ts", "b.ts", edge_type="imports", type_only=True)
+    g.add_edge("b.ts", "a.ts", edge_type="imports", type_only=True)
+
+    assert build_file_scc_index(g) == {}
+    assert _detect(g, "a.ts") == []
+    assert _detect(g, "b.ts") == []
