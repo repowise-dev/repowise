@@ -75,18 +75,10 @@ interface StartedReview {
   gen: number;
   covers: number;
   settled: boolean;
-  /** Resolves once `$.mcp.call` has been invoked. */
-  callStarted: Promise<void>;
   /** Never rejects: a failure is a `reviewFailed` action. */
   outcome: Promise<SessionAction>;
 }
 let started: StartedReview | null = null;
-/**
- * How long an edit's tool.call stays live waiting for its review call to
- * start (the server name is usually resolved already, so this is microtasks).
- * A call that starts later may be refused; the turn's end then retries.
- */
-const START_WAIT_MS = 1_000;
 /** Cut so an error stays one line under the answer. */
 const ERROR_CELLS = 160;
 
@@ -258,9 +250,11 @@ async function withReview(b: Bound, e: TurnCompleteEvent, result: unknown): Prom
   }
 }
 
-async function fetchReview(b: Bound, host: Host): Promise<SessionAction> {
+// callTool starts `$.mcp.call` synchronously (or rejects at once when the
+// server name is not resolved yet), so the call starts inside the caller's hook.
+async function fetchReview(b: Bound): Promise<SessionAction> {
   try {
-    const risk = await callTool<ChangeRisk>(host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1000 });
+    const risk = await callTool<ChangeRisk>(b.host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1000 });
     return { type: "reviewed", risk };
   } catch (err) {
     b.debug(`change review failed: ${String(err)}`);
@@ -275,25 +269,7 @@ async function fetchReview(b: Bound, host: Host): Promise<SessionAction> {
  * engine approves the call.
  */
 function startReview(b: Bound): StartedReview {
-  let markStarted: () => void = () => undefined;
-  const callStarted = new Promise<void>((resolve) => (markStarted = resolve));
-  const host: Host = {
-    ...b.host,
-    mcp: {
-      ...b.host.mcp,
-      call: (server, tool, args) => {
-        markStarted();
-        return b.host.mcp.call(server, tool, args);
-      },
-    },
-  };
-  const review: StartedReview = {
-    gen: reviewGeneration,
-    covers: editsThisTurn,
-    settled: false,
-    callStarted,
-    outcome: fetchReview(b, host),
-  };
+  const review: StartedReview = { gen: reviewGeneration, covers: editsThisTurn, settled: false, outcome: fetchReview(b) };
   void review.outcome.then(() => {
     review.settled = true;
   });
@@ -301,19 +277,12 @@ function startReview(b: Bound): StartedReview {
   return review;
 }
 
-/**
- * After an edit lands: start a review now unless one is already in flight,
- * and keep the calling hook live until its call has started (or a short cap).
- */
-async function reviewAfterEdit(b: Bound): Promise<void> {
+/** After an edit lands: start a review, not awaited, unless one is already in flight. */
+function reviewAfterEdit(b: Bound): void {
   editsThisTurn++;
   dispatch(b, { type: "fileEdited" });
   if (started !== null && started.gen === reviewGeneration && !started.settled) return;
-  const review = startReview(b);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const cap = new Promise<void>((resolve) => (timer = setTimeout(resolve, START_WAIT_MS)));
-  await Promise.race([review.callStarted, review.outcome, cap]);
-  clearTimeout(timer);
+  startReview(b);
 }
 
 /** The review started this turn, when it covers every edit so far. */
@@ -323,9 +292,8 @@ function coveringReview(): StartedReview | null {
 }
 
 /**
- * A review started during an edit can fail where one awaited at the turn's
- * end would not (a call refused for starting late): that one is tried once
- * more, awaited.
+ * A review started at an edit can fail where one started here would not (the
+ * server name was not resolved yet): that one is tried once more, awaited.
  */
 async function outcomeOf(b: Bound, review: StartedReview, reused: boolean): Promise<SessionAction> {
   const action = await review.outcome;
@@ -435,7 +403,7 @@ async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) 
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
-  await editLanded(b, e, result);
+  editLanded(b, e, result);
   return result;
 }
 
@@ -453,9 +421,9 @@ function fileToolStarted(b: Bound, e: ToolCallEvent): string | null {
   }
 }
 
-async function editLanded(b: Bound, e: ToolCallEvent, result: unknown): Promise<void> {
+function editLanded(b: Bound, e: ToolCallEvent, result: unknown): void {
   try {
-    if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
+    if (reviewOn && isFileEdit(e, result)) reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }

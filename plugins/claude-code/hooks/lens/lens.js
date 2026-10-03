@@ -1091,7 +1091,6 @@ var reviewOn = true;
 var reviewGeneration = 0;
 var editsThisTurn = 0;
 var started = null;
-var START_WAIT_MS = 1e3;
 var ERROR_CELLS = 160;
 function bind($) {
   const host = {
@@ -1227,9 +1226,9 @@ async function withReview(b, e, result) {
   }
 }
 __name(withReview, "withReview");
-async function fetchReview(b, host) {
+async function fetchReview(b) {
   try {
-    const risk = await callTool(host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1e3 });
+    const risk = await callTool(b.host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1e3 });
     return { type: "reviewed", risk };
   } catch (err) {
     b.debug(`change review failed: ${String(err)}`);
@@ -1239,25 +1238,7 @@ async function fetchReview(b, host) {
 }
 __name(fetchReview, "fetchReview");
 function startReview(b) {
-  let markStarted = /* @__PURE__ */ __name(() => void 0, "markStarted");
-  const callStarted = new Promise((resolve) => markStarted = resolve);
-  const host = {
-    ...b.host,
-    mcp: {
-      ...b.host.mcp,
-      call: /* @__PURE__ */ __name((server, tool, args) => {
-        markStarted();
-        return b.host.mcp.call(server, tool, args);
-      }, "call")
-    }
-  };
-  const review = {
-    gen: reviewGeneration,
-    covers: editsThisTurn,
-    settled: false,
-    callStarted,
-    outcome: fetchReview(b, host)
-  };
+  const review = { gen: reviewGeneration, covers: editsThisTurn, settled: false, outcome: fetchReview(b) };
   void review.outcome.then(() => {
     review.settled = true;
   });
@@ -1265,15 +1246,11 @@ function startReview(b) {
   return review;
 }
 __name(startReview, "startReview");
-async function reviewAfterEdit(b) {
+function reviewAfterEdit(b) {
   editsThisTurn++;
   dispatch(b, { type: "fileEdited" });
   if (started !== null && started.gen === reviewGeneration && !started.settled) return;
-  const review = startReview(b);
-  let timer;
-  const cap = new Promise((resolve) => timer = setTimeout(resolve, START_WAIT_MS));
-  await Promise.race([review.callStarted, review.outcome, cap]);
-  clearTimeout(timer);
+  startReview(b);
 }
 __name(reviewAfterEdit, "reviewAfterEdit");
 function coveringReview() {
@@ -1368,7 +1345,7 @@ async function onToolCall($, e, next) {
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
-  await editLanded(b, e, result);
+  editLanded(b, e, result);
   return result;
 }
 __name(onToolCall, "onToolCall");
@@ -1385,9 +1362,9 @@ function fileToolStarted(b, e) {
   }
 }
 __name(fileToolStarted, "fileToolStarted");
-async function editLanded(b, e, result) {
+function editLanded(b, e, result) {
   try {
-    if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
+    if (reviewOn && isFileEdit(e, result)) reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
