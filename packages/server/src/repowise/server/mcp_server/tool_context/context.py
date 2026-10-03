@@ -88,27 +88,6 @@ _INCLUDE_BLOCKS = frozenset(
 )
 
 
-async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> str | None:
-    """One sentence naming index layers that hold none of the files served here."""
-    try:
-        from repowise.server.mcp_server._index_state import index_state_key
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
-
-        served = [
-            r.get("path") or str(r.get("target") or "").split("::", 1)[0]
-            for r in raw_results
-            if isinstance(r, dict)
-        ]
-        return await unrelated_scope_hint(
-            session,
-            repository.id,
-            served,
-            cache_key=f"{repository.id}:{index_state_key(repository)}",
-        )
-    except Exception:
-        return None
-
-
 @mcp.tool(
     surface_order=20,
     artifact_type="context",
@@ -224,10 +203,6 @@ async def get_context(
             collector=collector,
         )
 
-        # repo="all" already returned above, so ctx here is always one repo.
-        # Computed on the open session: never open a second one for this.
-        scope_hint = await _scope_hint(session, repository, raw_results)
-
     results: list[dict[str, Any]] = []
     for t, r in zip(targets, raw_results, strict=True):
         if isinstance(r, BaseException) and not isinstance(r, Exception):
@@ -259,8 +234,6 @@ async def get_context(
             targets=targets,
         ),
     }
-    if scope_hint:
-        response["_meta"]["scope_hint"] = scope_hint
     # A "raw" skeleton is the file's own source served untouched; the
     # signatures and smart modes elide bodies, so they are not whole files.
     whole_files = sum(

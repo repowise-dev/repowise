@@ -92,9 +92,9 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 | `complete` | Symbol bodies or whole files served verified against the live file. Do not re-read them. |
 | `state` | `degraded`, `partial` or `truncated` when something fired, with reasons. A degraded empty result is a failed read, not an empty repository. |
 | `omitted` | Refs to content cut for size. Restore with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. |
-| `response_budget` | The character ceiling that applied and the size delivered. |
+| `response_budget` | The character ceiling that applied and the size delivered. Present when the budget cut something. |
 
-`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
+`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
 
 ### Reversible truncation: `_meta.omitted`
 

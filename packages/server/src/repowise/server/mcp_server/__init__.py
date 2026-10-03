@@ -105,6 +105,7 @@ def tool_middleware(fn: Any) -> Any:
        It must be here rather than further out, because the estimators read
        fields a later budget pass is free to drop.
     6. ``timed`` — stamps ``_meta.timing_ms`` for any tool that did not.
+       On a lean envelope it removes the field instead (see ``_meta.full_meta``).
     7. ``budget`` — accounts for those final middleware fields and rechecks.
     8. ``record`` — writes the one savings event for the call.
 
@@ -128,7 +129,7 @@ def tool_middleware(fn: Any) -> Any:
         resolve_response_budget_repo_root,
     )
     from repowise.server.mcp_server._failure_shield import shield
-    from repowise.server.mcp_server._meta import finalize_trust_envelope
+    from repowise.server.mcp_server._meta import finalize_trust_envelope, full_meta
     from repowise.server.mcp_server._rounding import quantize
     from repowise.server.mcp_server._savings import event as savings_event
     from repowise.server.mcp_server._savings import instrument
@@ -150,7 +151,8 @@ def tool_middleware(fn: Any) -> Any:
         """Stamp elapsed time for the tools that do not thread it themselves.
 
         A tool that already reports ``timing_ms`` keeps its own number, which
-        measures its retrieval rather than the middleware around it.
+        measures its retrieval rather than the middleware around it. On a lean
+        envelope the field is a diagnostic, so it is removed instead.
         """
 
         @wraps(inner)
@@ -159,8 +161,11 @@ def tool_middleware(fn: Any) -> Any:
             result = await inner(*args, **kwargs)
             if isinstance(result, dict):
                 meta = result.setdefault("_meta", {})
-                if isinstance(meta, dict) and meta.get("timing_ms") is None:
-                    meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                if isinstance(meta, dict):
+                    if not full_meta(fn.__name__):
+                        meta.pop("timing_ms", None)
+                    elif meta.get("timing_ms") is None:
+                        meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
             return result
 
         return wrapped

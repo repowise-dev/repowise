@@ -18,6 +18,9 @@ from repowise.server.mcp_server._budget import (
     resolve_response_budget_repo_root,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _payload(tool: str, pad: int) -> dict[str, Any]:
     if tool == "get_health":

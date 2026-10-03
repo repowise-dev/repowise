@@ -688,6 +688,14 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
     return rid
 
 
+@pytest.fixture
+def debug_meta(monkeypatch):
+    """Restore the diagnostic ``_meta`` fields, for tests of the accounting itself."""
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+
+
 @pytest.fixture(autouse=True)
 def _no_savings_writes_outside_a_test_repo(monkeypatch):
     """Keep a tool call in these tests from banking a saving in the real repo.

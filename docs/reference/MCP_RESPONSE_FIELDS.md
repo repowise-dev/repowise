@@ -16,10 +16,12 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 
 Every response carries `_meta`. Fields are present only when they carry a signal, so read absence as "nothing to report", never as an error.
 
+Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call, and the whole `index_scope`. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
+
 | Field | When present | Meaning |
 |-------|--------------|---------|
-| `contract_version` | Always | Version of the response contract |
-| `timing_ms` | Usually | Tool wall time |
+| `contract_version` | `get_overview`, or with `REPOWISE_MCP_DEBUG_META=1` | Version of the response contract (currently 3). It stays the version of record for wire-shape changes even when not emitted |
+| `timing_ms` | `get_overview`, or with `REPOWISE_MCP_DEBUG_META=1` | Tool wall time |
 | `hint` | Sometimes | A short follow-up suggestion. On a `get_answer` reply graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again |
 | `cached` | Only when `true` | The response came from cache |
 | `index_age_days` | When a repository is resolved | Days since the last `repowise update` |
@@ -27,16 +29,16 @@ Every response carries `_meta`. Fields are present only when they carry a signal
 | `live_head` | When `.git/HEAD` is readable | Short SHA of the current checkout; equal to `indexed_commit` when current |
 | `index_behind` | When the live-versus-indexed comparison ran | `true` if HEAD moved, `false` if it matches. Absent means the comparison could not run |
 | `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
-| `index_scope` | When the index records it | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
+| `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |
 | `newer_release` | Once per server process | A newer repowise is published; restart the MCP server after upgrading |
-| `response_budget` | Always | `limit_chars` (the ceiling), `tier` (`default` or `expanded`), `serialized_chars` (size delivered) |
+| `response_budget` | When the budget cut something or could not fit the protected fields (`enforcement_error`); always on `get_overview` | `limit_chars` (the ceiling), `tier` (`default` or `expanded`), `serialized_chars` (size delivered) |
 | `omitted` | When content was cut | `refs`, `tokens`, `restore`. See [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | When the omission store could not be written | Names the storage failure; the cut rows cannot be restored |
-| `scope_hint` | `get_answer`, `get_context` | Up to three knowledge-graph layers holding none of the served paths, with file counts: areas the answer did not touch |
+| `scope_hint` | `get_answer` | Up to three knowledge-graph layers holding none of the served paths, with file counts: areas the answer did not touch |
 | `complete` | When whole units were served | Symbol bodies (bounds verified against the live file) or whole files. Do not re-read them. Sliced bodies and partial ranges are never counted |
-| `completeness` | Always | `capped`, plus `shown` and `total` summed over the collections a reducing pass counted, and `reason` naming the pass that dropped most. It measures what survived reduction, not what share of the repository you hold |
+| `completeness` | When something was capped; always on `get_overview` | `capped`, plus `shown` and `total` summed over the collections a reducing pass counted, and `reason` naming the pass that dropped most. It measures what survived reduction, not what share of the repository you hold |
 | `floor` | When a count comes from walking the graph | Names those fields. Their values are lower bounds: an unresolved edge is uncounted, not proven absent |
 | `state` | Only when something fired | `degraded` with `degraded_reasons`, `partial`, `truncated`. A roll-up of the response's own flags |
 
@@ -46,7 +48,7 @@ Every response carries `_meta`. Fields are present only when they carry a signal
 
 ## Truncation and recovery
 
-Responses fit 24,000 serialized characters by default and 32,000 when the call passes an expansion argument (for most tools, a nonempty `include`; for `get_answer`, `include=["evidence"]`). `_meta.response_budget` reports which ceiling applied.
+Responses fit 24,000 serialized characters by default and 32,000 when the call passes an expansion argument (for most tools, a nonempty `include`; for `get_answer`, `include=["evidence"]`). When the budget cut something, `_meta.response_budget` reports which ceiling applied.
 
 Content cut to fit is stored in the repo's [omission store](../agent/DISTILL.md#the-omission-store), and `_meta.omitted` says how to get it back:
 
