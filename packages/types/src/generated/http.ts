@@ -2042,6 +2042,12 @@ export interface HotspotResponse {
   original_path?: string | null;
 }
 
+export interface IdentityResponse {
+  anon_id: string | null;
+  signed_in: boolean;
+  hints_enabled: boolean;
+}
+
 /** One file on the impact / effort plane. */
 export interface ImpactEffortPoint {
   file_path: string;
@@ -2636,6 +2642,10 @@ export interface ProviderValidationResponse {
   provider?: string | null;
   model?: string | null;
   error?: string | null;
+}
+
+export interface PublishRequest {
+  repo_id: string;
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */

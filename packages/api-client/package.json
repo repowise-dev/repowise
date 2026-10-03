@@ -38,6 +38,7 @@
     "./pagination": "./src/pagination.ts",
     "./owners": "./src/owners.ts",
     "./pages": "./src/pages.ts",
+    "./platform": "./src/platform.ts",
     "./providers": "./src/providers.ts",
     "./refactoring": "./src/refactoring.ts",
     "./repos": "./src/repos.ts",

@@ -31,6 +31,7 @@ import {
 } from "./docs-page-actions";
 import { PageGenerateButton } from "./page-generate-button";
 import { BulkGenerateButton } from "./bulk-generate-button";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 import { isModelWrittenType, isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
@@ -401,6 +402,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             />
           )}
         </DocsHeader>
+
+        {/* Pages still rendered from structure get the docs tip; a written
+            wiki gets the sharing one. */}
+        <HostedNudgeSlot
+          candidates={[hasStubs && "docs", "share"]}
+          repoId={repoId}
+          className="mx-3 mt-2 sm:mx-6"
+        />
 
         <div className="flex-1 min-h-0">{body}</div>
       </div>

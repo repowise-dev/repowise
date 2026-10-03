@@ -14,6 +14,7 @@ import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 
 interface ChatInterfaceProps {
   repoId: string;
@@ -218,16 +219,19 @@ export function ChatInterface({
       }
       sendDisabled={!anyConfigured}
       sendDisabledReason={
-        <span>
-          No chat provider is configured. Add an API key in{" "}
-          <Link
-            href="/settings"
-            className="text-[var(--color-accent-primary)] hover:underline"
-          >
-            settings
-          </Link>{" "}
-          to start asking questions.
-        </span>
+        <>
+          <span>
+            No chat provider is configured. Add an API key in{" "}
+            <Link
+              href="/settings"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              settings
+            </Link>{" "}
+            to start asking questions.
+          </span>
+          <HostedNudgeSlot candidates={["chat"]} repoId={repoId} className="mt-2" />
+        </>
       }
       historySlot={
         <div className="lg:hidden">

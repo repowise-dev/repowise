@@ -64,12 +64,14 @@ export function DisplaySection() {
     ask: true,
     selection: true,
   });
+  const [tipsShown, setTipsShown] = useState(true);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Read after mount so SSR and the first client render agree.
   useEffect(() => {
     setWeekend(config.getWeekend() || DEFAULT_WEEKEND_PRESET.id);
+    setTipsShown(!config.getHostedTipsHidden());
   }, []);
 
   // The same two listeners the affordances themselves use: `storage` covers
@@ -107,6 +109,12 @@ export function DisplaySection() {
   function handleChange(v: string) {
     setWeekend(v);
     config.setWeekend(v);
+    markSaved();
+  }
+
+  function handleTipsChange(shown: boolean) {
+    setTipsShown(shown);
+    config.setHostedTipsHidden(!shown);
     markSaved();
   }
 
@@ -169,6 +177,16 @@ export function DisplaySection() {
             </SettingsRow>
           );
         })}
+        <SettingsRow
+          label="Show repowise.dev tips"
+          hint="An occasional one-line tip about what repowise.dev adds, at most one per page. Never shown once you have signed in with repowise login."
+        >
+          <Switch
+            checked={tipsShown}
+            onCheckedChange={handleTipsChange}
+            aria-label="Show repowise.dev tips"
+          />
+        </SettingsRow>
       </SettingsRows>
     </OverviewSection>
   );

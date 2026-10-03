@@ -12,6 +12,7 @@ import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { OperationsPanel } from "@/components/repos/operations-panel";
+import { PublishPanel } from "@/components/hosted/publish";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -99,6 +100,13 @@ export default async function RepoSettingsPage({ params }: Props) {
         description="Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set."
       >
         <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
+      </OverviewSection>
+
+      <OverviewSection
+        title="Publish on repowise.dev"
+        description="Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
+      >
+        <PublishPanel repoId={id} />
       </OverviewSection>
 
       {/* Not a tinted card. A destructive action earns emphasis on the verb and

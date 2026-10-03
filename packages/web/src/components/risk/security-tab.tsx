@@ -16,6 +16,7 @@ import { syncRepo } from "@/lib/api/repos";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 
 export function SecurityTab({ repoId }: { repoId: string }) {
   const { data: findings, isLoading, error } = useSWR<SecurityFinding[]>(
@@ -68,6 +69,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
           {rescanning ? "Re-scanning…" : "Re-scan"}
         </Button>
       </div>
+      <HostedNudgeSlot candidates={["security"]} repoId={repoId} />
 
       {isLoading ? (
         <Skeleton className="h-40 w-full rounded-lg" />
