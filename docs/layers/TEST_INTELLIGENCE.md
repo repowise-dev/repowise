@@ -58,7 +58,7 @@ Longer walkthrough: [examples/health-coverage/](../../examples/health-coverage/)
 | | Per-file aggregate | Per-test map | Inferred map |
 |---|---|---|---|
 | Comes from | Any coverage report | A report that records which test ran each line | The call and import graph, already indexed |
-| Says | `src/auth/service.py` is 71% covered | `tests/test_auth.py::test_login` ran lines 40-58 of `src/auth/service.py` | `tests/test_round_trips.py` reaches `src/auth/service.py` |
+| Says | `src/auth/service.py` is 71% covered | `tests/test_auth.py::test_login` ran lines 40-58 of `src/auth/service.py` | `tests/test_auth.py` reaches `src/auth/service.py` |
 | Granularity | File | Line | File |
 | May produce a percentage | Yes | Yes | **Never** |
 | Goes stale | Yes: tied to the commit it was measured at | Yes | No: read from the current graph |

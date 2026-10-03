@@ -228,8 +228,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ("README.md", "flagship", "{W} is a deliberate ceiling"),
     ("docs/README.md", "flagship", "decisions, and {w} MCP tools"),
     ("docs/README.md", "flagship", "The {w} task-shaped tools,"),
-    ("docs/agent/MCP_TOOLS.md", "total", "{n} tools are registered."),
-    ("docs/agent/MCP_TOOLS.md", "single_repo", "exposes {n} of them by default"),
+    ("docs/agent/MCP_TOOLS.md", "total", "{n} tools are registered in total"),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "advertises {n} by default"),
     # COMMERCIAL.md counts the flagship tools and names `list_repos` alongside
     # them, the same convention the README uses.
     ("docs/business/COMMERCIAL.md", "flagship", "the {w} MCP tools,"),
@@ -251,6 +251,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "single_repo",
         "{w} task-shaped MCP tools",
     ),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
     ("docs/reference/CLI_REFERENCE.md", "lean", "the {w}-tool agent-lean profile"),
     ("packages/server/README.md", "total", "{n} registered MCP tools"),

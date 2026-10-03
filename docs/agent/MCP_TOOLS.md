@@ -2,7 +2,7 @@
 
 repowise serves its codebase intelligence to AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf and any other [Model Context Protocol](https://modelcontextprotocol.io) client) as a set of MCP tools. The tools answer questions from the index: the dependency graph, git history, generated docs, decision records, health and dead-code analysis. None of them edits your code. Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your configured LLM to draft a diff.
 
-18 tools are registered. A single-repo server exposes 10 of them by default; a workspace server adds `list_repos` for 11. The other 7 are opt-in.
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
 
 This page tells you which tool to call and with what arguments. Every response field, the full `_meta` envelope and the truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
@@ -12,10 +12,17 @@ This page tells you which tool to call and with what arguments. Every response f
 - [Configuring the tool surface](#configuring-the-tool-surface)
 - [Reading a response](#reading-a-response)
 - [Which tool for which question](#which-tool-for-which-question)
-- Default tools: [get_answer](#get_answer) · [get_context](#get_context) · [get_symbol](#get_symbol) · [search_codebase](#search_codebase) · [get_risk](#get_risk) · [get_change_risk](#get_change_risk) · [get_why](#get_why) · [get_overview](#get_overview) · [get_health](#get_health) · [get_dead_code](#get_dead_code)
-- Workspace default: [list_repos](#list_repos)
-- Opt-in tools: [get_dependency_path](#get_dependency_path) · [get_execution_flows](#get_execution_flows) · [generate_refactoring_code](#generate_refactoring_code) · [set_finding_status](#set_finding_status) · [get_blast_radius](#get_blast_radius) · [get_architecture](#get_architecture) · [get_conformance](#get_conformance)
 - [Workspace mode](#workspace-mode)
+
+**Canonical tools (default in both modes, 10)**
+[get_answer](#get_answer) &middot; [get_context](#get_context) &middot; [get_symbol](#get_symbol) &middot; [search_codebase](#search_codebase) &middot; [get_risk](#get_risk) &middot; [get_change_risk](#get_change_risk) &middot; [get_why](#get_why) &middot; [get_overview](#get_overview) &middot; [get_health](#get_health) &middot; [get_dead_code](#get_dead_code)
+
+**Workspace discovery utility (default in workspace mode, 1)**
+[list_repos](#list_repos)
+
+**Opt-in specialists (7; workspace eligibility still applies)**
+[get_dependency_path](#get_dependency_path) &middot; [get_execution_flows](#get_execution_flows) &middot; [generate_refactoring_code](#generate_refactoring_code) &middot; [set_finding_status](#set_finding_status) &middot; [get_blast_radius](#get_blast_radius) &middot; [get_architecture](#get_architecture) &middot; [get_conformance](#get_conformance)
+
 
 ---
 
@@ -63,8 +70,12 @@ The dashboard Settings page has a per-repo toggle for each tool and writes the s
 
 - Tokens prefixed `+` or `-` adjust the default set. A list without prefixes is an allowlist.
 - Unknown names are ignored with a warning. A workspace-only tool named outside workspace mode is ignored too: it has no workspace graph to read.
-- `lean` is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so when a repo sets `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
 - Raw MCP clients see the surface resolved when the server started. Restart the server after changing it.
+
+- **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
+- **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
+
+**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so when a repo sets `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
 
 See [CONFIG.md](../reference/CONFIG.md#the-mcp-block) for the config block itself.
 
