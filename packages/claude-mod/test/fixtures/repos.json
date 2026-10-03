@@ -1,0 +1,17 @@
+[
+  {
+    "id": "repo-outer",
+    "name": "workspace",
+    "local_path": "C:\\work"
+  },
+  {
+    "id": "repo-requests",
+    "name": "requests",
+    "local_path": "c:/work/requests/"
+  },
+  {
+    "id": "repo-other",
+    "name": "other",
+    "local_path": "C:\\work\\other"
+  }
+]

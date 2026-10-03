@@ -19,5 +19,31 @@
     "mcp",
     "graph",
     "git"
-  ]
+  ],
+  "userConfig": {
+    "lens_pane_autoopen": {
+      "type": "boolean",
+      "title": "Lens: open the map automatically",
+      "description": "Open the Lens map pane on Claude's first file read when the terminal is wide enough. Off: open it with /lens.",
+      "default": false
+    },
+    "lens_margin": {
+      "type": "boolean",
+      "title": "Lens: margin notes",
+      "description": "Show a short note under an Edit or Write when Repowise flags the file (a governing decision or a fix history).",
+      "default": true
+    },
+    "lens_review": {
+      "type": "boolean",
+      "title": "Lens: change review",
+      "description": "After a turn that edited files, show the change review card under Claude's answer.",
+      "default": true
+    },
+    "lens_squeeze": {
+      "type": "boolean",
+      "title": "Lens: squeeze rows",
+      "description": "Show how much repowise distill trimmed under a Bash result it shortened.",
+      "default": true
+    }
+  }
 }

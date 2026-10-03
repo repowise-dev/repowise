@@ -1,0 +1,24 @@
+{
+  "name": "@repowise-dev/claude-mod",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Repowise Lens: the Claude Code mod source. build:mod writes the loadable bundle into plugins/claude-code/hooks/lens/.",
+  "type": "module",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "build:mod": "node build.mjs",
+    "test:mod": "node scripts/mod-test.mjs"
+  },
+  "dependencies": {
+    "@repowise-dev/api-client": "*",
+    "@repowise-dev/types": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@vitest/coverage-v8": "4.1.10",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.5"
+  }
+}
