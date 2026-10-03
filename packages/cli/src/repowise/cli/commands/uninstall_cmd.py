@@ -73,7 +73,7 @@ def _group_choices(plan: Plan, preticked: frozenset[Group]) -> list:
 
     labels = {
         Group.AGENTS: ("Agent configuration", "every wired agent, both scopes"),
-        Group.REPO_FILES: ("Generated blocks", "the managed sections in CLAUDE.md and AGENTS.md"),
+        Group.REPO_FILES: ("Generated blocks", "the managed sections in CLAUDE.md and AGENTS.md, plus the post-commit hook"),
         Group.INDEX: ("Repo index", "rebuilding it costs a full re-index"),
         Group.GLOBAL: ("Machine-wide state", "login, caches, telemetry preference"),
     }

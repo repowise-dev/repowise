@@ -616,3 +616,89 @@ def test_the_two_agents_md_blocks_are_removed_independently(repo: Path) -> None:
     remaining = agents.read_text(encoding="utf-8") if agents.exists() else ""
     assert "REPOWISE_AGENTS:START" not in remaining
     assert "REPOWISE_DISTILL:START" not in remaining
+
+
+# ---------------------------------------------------------------------------
+# The post-commit hook ``init`` installs (issue #2469)
+# ---------------------------------------------------------------------------
+
+
+def _git_init(repo: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+
+def _install_hook(repo: Path) -> Path:
+    """Install the real hook through the same entry point ``init`` uses."""
+    from repowise.cli.hooks import hook_path, install
+
+    assert install(repo) == "installed"
+    path = hook_path(repo)
+    assert path is not None and path.exists()
+    return path
+
+
+def test_uninstall_all_removes_the_post_commit_hook_init_installed(repo: Path) -> None:
+    """``init`` writes it, so ``uninstall`` must name it and take it out."""
+    _git_init(repo)
+    hook = _install_hook(repo)
+
+    result = _invoke(["uninstall", str(repo), "--all"])
+
+    assert result.exit_code == 0
+    assert not hook.exists()
+
+
+def test_uninstall_preserves_other_tools_hook_content(repo: Path) -> None:
+    """The hook file is shared: only our marker block goes."""
+    _git_init(repo)
+    hook = _install_hook(repo)
+    ours = hook.read_text(encoding="utf-8")
+    hook.write_text("#!/bin/sh\n# my lint hook\necho linting\n" + ours, encoding="utf-8")
+
+    result = _invoke(["uninstall", str(repo), "--all"])
+
+    assert result.exit_code == 0
+    content = hook.read_text(encoding="utf-8")
+    assert "repowise-hook-start" not in content
+    assert "echo linting" in content
+
+
+def test_a_foreign_hook_is_named_and_left_alone(repo: Path) -> None:
+    """A hook file with no repowise block is listed with its reason, untouched."""
+    _git_init(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\n# my lint hook\necho linting\n", encoding="utf-8")
+
+    payload = _payload(["uninstall", str(repo), "--all"])
+
+    rows = [r for r in payload["results"] if r["path"] == str(hook)]
+    assert rows and rows[0]["action"] == "kept", payload["results"]
+    assert rows[0]["reason"]
+    assert "echo linting" in hook.read_text(encoding="utf-8")
+
+
+def test_no_hook_file_means_no_hook_row(repo: Path) -> None:
+    """Nothing written, nothing to name: the plan carries no hook row."""
+    _git_init(repo)
+
+    payload = _payload(["uninstall", str(repo), "--all", "--dry-run"])
+
+    hook_rows = [i for i in payload["plan"]["items"] if i["label"] == "post-commit hook (auto-sync)"]
+    assert not hook_rows
+
+
+def test_dry_run_names_the_hook_path_the_real_run_removes(repo: Path) -> None:
+    """Dry-run and real run share the plan, so the named path is the removed one."""
+    _git_init(repo)
+    hook = _install_hook(repo)
+
+    dry = _payload(["uninstall", str(repo), "--all", "--dry-run"])
+    assert str(hook) in {i["path"] for i in dry["plan"]["items"]}
+
+    result = _invoke(["uninstall", str(repo), "--all"])
+
+    assert result.exit_code == 0
+    assert not hook.exists()
