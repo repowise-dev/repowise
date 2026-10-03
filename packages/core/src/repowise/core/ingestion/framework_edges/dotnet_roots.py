@@ -56,7 +56,9 @@ _MARKER_ATTRIBUTE_RE = re.compile(r"\[\s*(?:[\w.]+\.)?(\w+)\s*<")
 # Comments and string literals, blanked before the marker is looked for so a
 # commented-out or quoted attribute roots nothing. A copy of the blanker in
 # ``analysis.dead_code.csharp_reachability`` (that layer sits above this one).
-_COMMENT_OR_STRING = re.compile(r'"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*', re.DOTALL)
+_COMMENT_OR_STRING = re.compile(
+    r'@"(?:[^"]|"")*"|"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*', re.DOTALL
+)
 
 # The opening of a file-based app: an optional BOM, shebang and ``//`` lines,
 # then a ``#:sdk`` / ``#:package`` / ``#:property`` directive.

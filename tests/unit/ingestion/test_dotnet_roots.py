@@ -53,9 +53,10 @@ def test_sibling_type_keeps_the_file_judged(tmp_path: Path) -> None:
     [
         "// [EfCoreConverter<X>] partial class A;\nSystem.Console.WriteLine(1);\n",
         'var s = "[EfCoreConverter<X>]";\n',
+        'var s = @"\n[EfCoreConverter<X>]\npartial class A;\n";\n',
         "/* [EfCoreConverter<X>]\npartial class A; */\nSystem.Console.WriteLine(1);\n",
     ],
-    ids=["line-comment", "string", "block-comment"],
+    ids=["line-comment", "string", "verbatim-string", "block-comment"],
 )
 def test_generator_marker_in_a_comment_or_string_is_not_a_root(tmp_path: Path, text: str) -> None:
     assert _roots(tmp_path, {"A.cs": text}) == set()
