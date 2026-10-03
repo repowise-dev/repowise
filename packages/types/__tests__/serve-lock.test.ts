@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isServeLock, type ServeLock } from "../src/serve-lock.js";
+import { isLoopbackUrl, isServeLock, type ServeLock } from "../src/serve-lock.js";
 
 const VALID: ServeLock = {
   pid: 4242,
@@ -44,5 +44,30 @@ describe("isServeLock", () => {
     for (const value of [null, undefined, 0, "lock", true, [], [VALID]]) {
       expect(isServeLock(value)).toBe(false);
     }
+  });
+});
+
+describe("isLoopbackUrl", () => {
+  it.each([
+    "http://127.0.0.1:7411",
+    "http://127.3.4.5:7411",
+    "https://127.0.0.1:7411",
+    "http://localhost:7411/",
+    "http://[::1]:7411",
+  ])("accepts %s", (url) => {
+    expect(isLoopbackUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "http://evil.example:7411",
+    "http://127.0.0.1.evil.example",
+    "http://10.0.0.5:7411",
+    "http://0.0.0.0:7411",
+    "http://[::2]:7411",
+    "file:///etc/passwd",
+    "ftp://127.0.0.1",
+    "not a url",
+  ])("refuses %s", (url) => {
+    expect(isLoopbackUrl(url)).toBe(false);
   });
 });
