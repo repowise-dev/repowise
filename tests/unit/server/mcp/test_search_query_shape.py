@@ -123,6 +123,40 @@ def test_resolve_mode_routes_on_validated_identifiers() -> None:
     assert _resolve_mode("how does the TypeScript client work", None, _NAMES) == "concept"
 
 
+# Go exports plain English words as methods and types.
+_ONE_HUMP = {"Add", "Fixes", "Client", "Do", "API", "HTTPClient", "TypeScript"}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Add support for retries in the transport",
+        "Fixes a panic when the pool is closed twice",
+        "Client should retry when the API returns 503",
+    ],
+)
+def test_a_one_hump_word_in_prose_is_not_an_identifier(query) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == []
+    assert _resolve_mode(query, None, _ONE_HUMP) == "concept"
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("support for `Add` in the transport", ["Add"]),
+        ("why does `the API` reject retries", ["API"]),
+        ("calling Add() twice panics", ["Add"]),
+        ("retries in Client.Do are lost", ["Client.Do"]),
+        ("the transport calls x.Add on close", ["x.Add"]),
+        # Multi-hump names are validated as before, in prose too.
+        ("HTTPClient should retry on TypeScript errors", ["HTTPClient", "TypeScript"]),
+    ],
+)
+def test_a_one_hump_word_in_code_context_is_an_identifier(query, expected) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == expected
+    assert _resolve_mode(query, None, _ONE_HUMP) == "hybrid"
+
+
 @pytest.mark.parametrize(
     "token",
     [

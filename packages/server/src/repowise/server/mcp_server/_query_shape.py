@@ -173,20 +173,45 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     (``_looks_like_code_name``) counts even unindexed, so a search can say it
     does not exist. ``names`` is tested for the token, then for its lowered
     form, so a container that also answers for each name's lowered spelling
-    gets the case-insensitive leg.
+    gets the case-insensitive leg. A one-hump word (``Add``, ``API``) is also
+    an English word, so it counts only in code context (``_in_code_context``).
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
     return [
-        token
-        for token in _name_tokens(query)
-        if _names_symbol(token, names) or _looks_like_code_name(token)
+        m.group()
+        for m in _name_token_matches(query)
+        if _looks_like_code_name(m.group())
+        or (
+            _names_symbol(m.group(), names)
+            and (not _one_hump(m.group()) or _in_code_context(query, m))
+        )
+    ]
+
+
+def _name_token_matches(query: str) -> list[re.Match[str]]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [
+        m
+        for m in _WORD_CHAIN_RE.finditer(query)
+        if "." in m.group() or _identifier_shaped(m.group())
     ]
 
 
 def _name_tokens(query: str) -> list[str]:
-    """Words that could name a symbol: identifier-shaped, or dotted chains."""
-    return [t for t in _WORD_CHAIN_RE.findall(query) if "." in t or _identifier_shaped(t)]
+    return [m.group() for m in _name_token_matches(query)]
+
+
+def _one_hump(token: str) -> bool:
+    """``Add``, ``Client``, ``API``: letters only, one capitalised hump. Go
+    exports plain English words, so prose (``Add support for``) names them."""
+    return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
+
+
+def _in_code_context(query: str, m: re.Match[str]) -> bool:
+    """Inside a backtick span, or called (``Add(``). Dotted chains never get
+    here: ``_one_hump`` rejects the dot."""
+    return query.count("`", 0, m.start()) % 2 == 1 or query.startswith("(", m.end())
 
 
 def _name_lookup_keys(query: str) -> set[str]:
