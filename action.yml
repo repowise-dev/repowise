@@ -109,6 +109,16 @@ inputs:
   impacted-tests-runner:
     description: Runner the tests output is written for (auto, pytest, go, jest or files).
     default: auto
+  upload:
+    description: >-
+      "true" sends the coverage report (found like the coverage gate finds it)
+      to the Repowise pull request bot, after the gates and also when they
+      fail. The workflow needs the id-token write permission. With checks
+      empty, no gate runs. An upload problem warns and never fails the job.
+    default: "false"
+  upload-url:
+    description: Where upload sends the coverage.
+    default: https://api.repowise.dev/ci/coverage
 
 outputs:
   coverage:
@@ -135,6 +145,9 @@ outputs:
       "true" when every test must run, also when selection could not run.
       Branch on != 'false' so a skipped step runs everything.
     value: ${{ steps.impacted.outputs.run-all-tests }}
+  upload:
+    description: With upload, accepted, skipped (no identity to send) or failed; empty when not run.
+    value: ${{ steps.upload.outputs.upload }}
 
 runs:
   using: composite
@@ -162,8 +175,8 @@ runs:
 
     - name: Run gates
       id: gates
-      # Test selection alone runs no gate.
-      if: inputs.checks != '' || inputs.impacted-tests != 'true'
+      # Test selection or upload alone runs no gate.
+      if: inputs.checks != '' || (inputs.impacted-tests != 'true' && inputs.upload != 'true')
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -192,3 +205,23 @@ runs:
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ steps.gates.outputs.sarif-dir }}
+
+    - name: Upload coverage
+      id: upload
+      if: always() && inputs.upload == 'true'
+      # The script never fails the job; this covers an interpreter crash.
+      continue-on-error: true
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        COVERAGE_REPORT: ${{ inputs.coverage-report }}
+        UPLOAD_URL: ${{ inputs.upload-url }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPOSITORY: ${{ github.repository }}
+        EVENT_NAME: ${{ github.event_name }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        FROM_FORK: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository }}
+        REPO_PRIVATE: ${{ github.event.repository.private }}
+        PYTHONUTF8: "1"
+      run: python "$GITHUB_ACTION_PATH/ci/github/upload_coverage.py"

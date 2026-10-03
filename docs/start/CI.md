@@ -137,11 +137,14 @@ release the action installs.
 | `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
 | `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
 | `impacted-tests-runner` | `auto` | `auto`, `pytest`, `go`, `jest` or `files`. |
+| `upload` | `false` | Send the coverage report to the Repowise pull request bot; see [below](#send-coverage-to-the-pull-request-bot). |
+| `upload-url` | `https://api.repowise.dev/ci/coverage` | Where `upload` sends it. |
 
 Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
 code (empty when not run), and `sarif-dir` the SARIF directory.
 `impacted-tests` holds the runner arguments (or `:all`), and `run-all-tests` is
-`false` only when that subset is safe to run alone.
+`false` only when that subset is safe to run alone. `upload` is `accepted`,
+`skipped` or `failed` when the upload ran.
 
 The risk gate ranks the change against the repository's own recent commits,
 so at a percentile P roughly (100 - P)% of changes fail it by construction.
@@ -172,6 +175,50 @@ On a pull request the gates read the target branch from `GITHUB_BASE_REF`
 themselves. On a `push` event there is none; pass the range explicitly, for
 example `"$BEFORE..$GITHUB_SHA"` with `BEFORE: ${{ github.event.before }}` set
 under `env:`.
+
+## Send coverage to the pull request bot
+
+With the [Repowise pull request bot](https://repowise.dev/bot) installed, the
+action can send the pull request's coverage to it, and the bot shows patch
+coverage in its checks comment. Set `upload: true`; with `checks: ""` the
+action runs no gate and only uploads:
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+  id-token: write   # lets the upload prove it comes from this repository
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest --cov --cov-report=xml
+      - uses: repowise-dev/repowise@main
+        with:
+          checks: ""
+          upload: true
+```
+
+The report is found the way the coverage gate finds it: the
+`coverage-report` input, else `coverage.paths` in `.repowise/config.yaml`,
+else discovery. When gates run too, the upload runs after them, also when one
+failed. An upload problem never fails the job: it prints a warning with the
+server's reason and sets the `upload` output to `failed`.
+
+The job proves which repository it runs in with a GitHub OIDC token, so it
+needs `id-token: write`. Without it the upload is skipped with a warning
+saying so.
+
+**Pull requests from forks** cannot get that token. On a public repository
+the upload is sent without one and accepted only while it names the head
+commit of an open pull request from a fork; the bot labels that coverage as
+unverified. On a private repository it is skipped.
+
+**What is sent:** for each file the report covers, the covered and executable
+line numbers and the line coverage percent, plus the head commit, the pull
+request number, the repository name, the event, the run's URL, the Repowise
+version and the report formats. No source code is sent.
 
 ## GitLab
 
@@ -210,6 +257,9 @@ separated, like the report list), `REPOWISE_COVERAGE_MAX_DROP`,
 `REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
+
+Sending coverage to the pull request bot (`upload` on GitHub) is not yet
+available on GitLab.
 
 GitLab can also draw line coverage in the merge request diff. That comes from
 your own test job, not from Repowise: have your test runner write a Cobertura
