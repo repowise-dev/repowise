@@ -618,7 +618,8 @@ def _plan_detail_console(p: dict) -> list[str]:
         cuts = pl.get("cut_edges", [])
         out.append(
             f"    [dim]import cycle of {ev.get('cycle_size')} files "
-            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)[/dim]"
+            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}[/dim]"
         )
         for e in cuts:
             out.append(f"    [dim]-[/dim] invert {e['from']} -> {e['to']}")
@@ -687,7 +688,10 @@ def _plan_detail_md(p: dict) -> list[str]:
         )
     elif kind == "break_cycle":
         cuts = pl.get("cut_edges", [])
-        out.append(f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s):")
+        out.append(
+            f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}:"
+        )
         for e in cuts:
             out.append(f"      - invert {e['from']} -> {e['to']}")
     elif kind == "split_file":
@@ -703,6 +707,11 @@ def _plan_detail_md(p: dict) -> list[str]:
         if residual and residual.get("symbols"):
             out.append(f"      - core (shared): {', '.join(residual['symbols'])}")
     return out
+
+
+def _idiom_note(pl: dict) -> str:
+    """Marks a cycle the detector judged idiomatic, so its cut reads as optional."""
+    return " (same directory, idiomatic; optional)" if pl.get("idiom") else ""
 
 
 def _helper_site(pl: dict) -> str:
