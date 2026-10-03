@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hook, ModApi, On, PluginOptions } from "../src/mod-api";
 import { MAP_COPY, PANE_COPY } from "../src/views/copy";
-import { fixture } from "./fake-host";
+import { fixture, flatten, textOf, type Tree } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
 
@@ -178,16 +178,6 @@ describe("register, for the map", () => {
     ]);
   });
 });
-
-type Tree = { el: string; props: Record<string, any> };
-function flatten(t: Tree): Tree[] {
-  const kids = Array.isArray(t.props.children) ? (t.props.children as unknown[]) : [];
-  return [t, ...kids.filter((k): k is Tree => typeof k === "object" && k !== null).flatMap(flatten)];
-}
-const textOf = (t: Tree) =>
-  flatten(t)
-    .filter((n) => n.el === "Text")
-    .map((n) => (n.props.children as string[]).join(""));
 
 type Full = ReturnType<typeof fullDollar>;
 const START = { cwd: ROOT };

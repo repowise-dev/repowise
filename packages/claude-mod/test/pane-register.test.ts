@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hook, McpToolResult, ModApi, On } from "../src/mod-api";
 import { ASK_KEY } from "../src/views/pane";
-import { fixture, mcpResult } from "./fake-host";
+import { buttonsOf, fixture, flatten, mcpResult, textOf } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
 
@@ -23,18 +23,6 @@ async function load(options: Record<string, boolean> = {}): Promise<{ hooks: Hoo
   return { hooks, events };
 }
 
-type Tree = { el: string; props: Record<string, any> };
-function flatten(t: unknown): Tree[] {
-  const n = t as Tree;
-  if (typeof n !== "object" || n === null || n.props === undefined) return [];
-  const kids = Array.isArray(n.props.children) ? (n.props.children as unknown[]) : [];
-  return [n, ...kids.flatMap(flatten)];
-}
-const textOf = (t: unknown) =>
-  flatten(t)
-    .filter((n) => n.el === "Text" || n.el === "Markdown")
-    .map((n) => (n.el === "Markdown" ? (n.props.text as string) : (n.props.children as string[]).join("")));
-const buttonsOf = (t: unknown) => flatten(t).filter((n) => n.el === "Button");
 
 function fakeDollar(mcp: (tool: string, args: Record<string, unknown>) => Promise<McpToolResult>) {
   const calls = { mcp: [] as Array<[string, Record<string, unknown>]>, open: [] as unknown[], submitted: [] as string[], logs: [] as string[] };
@@ -110,10 +98,10 @@ describe("/lens routing and tabs", () => {
     expect(await lens(d, "recap")).toEqual({});
     expect(d.calls.open).toEqual([{ id: "lens", title: "Lens", rows: 29, focus: true }]);
     const shown = textOf(await pane(d));
-    expect(shown).toContain("Files touched: ");
-    expect(shown.at(-1)).toBe("0 model calls · nothing uploaded");
+    expect(shown[0]!.trim()).toBe("Files");
+    expect(shown.at(-1)).toBe("Lens made no model calls. Every figure here is read from the local index.");
     await lens(d, "");
-    expect(textOf(await pane(d))).toContain("Files touched: ");
+    expect(textOf(await pane(d))[0]!.trim()).toBe("Files");
     expect(d.calls.mcp).toEqual([]);
   });
 
@@ -136,7 +124,7 @@ describe("/lens routing and tabs", () => {
     expect(d.calls.mcp).toEqual([["get_why", { query: "why does Session merge environment settings?" }]]);
     await settle();
     const md = textOf(await pane(d)).at(-1)!;
-    expect(md).toContain("**get_why** · basis: archaeology");
+    expect(md).toContain("**Built from the index** · basis archaeology");
     expect(md).toContain("`ev_8964f795d9001bd297ca`");
   });
 });
@@ -155,8 +143,8 @@ describe("the Ask field", () => {
     expect(d.calls.mcp).toEqual([["get_answer", { question: "how does filter() build SQL?" }]]);
     await settle();
     const md = textOf(await pane(d)).at(-1)!;
-    expect(md).toContain("**get_answer** · confidence: low · retrieval: weak · not synthesized: no-llm-provider");
-    expect(md).toContain("cited: `django/utils/tree.py`, `django/db/models/sql/constants.py`");
+    expect(md).toContain("**Built from the index** · confidence low · retrieval weak");
+    expect(md).toContain("evidence: `django/utils/tree.py`, `django/db/models/sql/constants.py`");
   });
 
   it("typing and empty submits ask nothing; one question at a time", async () => {
@@ -169,7 +157,8 @@ describe("the Ask field", () => {
     await submit(d, "why B");
     expect(d.calls.mcp).toHaveLength(1);
     await lens(d, "ask");
-    expect(textOf(await pane(d))).toEqual(["> why A", "asking get_why..."]);
+    // The second was not asked, and the tab says so.
+    expect(textOf(await pane(d))).toEqual(["> why A", "asking the decision records...", "still answering the last question; ask again when it lands"]);
     land(reply("django-why-no-record"));
   });
 
@@ -179,7 +168,7 @@ describe("the Ask field", () => {
     });
     await lens(d, "ask how?");
     await settle();
-    expect(textOf(await pane(d)).at(-1)).toBe("get_answer could not answer: refused");
+    expect(textOf(await pane(d)).at(-1)).toBe("Could not answer: refused");
     expect(d.calls.logs).toContain("lens: ask failed: Error: refused\nsecond line");
   });
 
@@ -203,7 +192,7 @@ describe("the Ask field", () => {
     await submit(d, "how?");
     await settle();
     expect(d.calls.mcp).toEqual([]);
-    expect(textOf(await pane(d)).at(-1)).toBe("get_answer could not answer: repowise MCP server name not resolved yet");
+    expect(textOf(await pane(d)).at(-1)).toBe("Could not answer: repowise MCP server name not resolved yet");
   });
 
   it("the field's address is the one the hook's literal matcher names", () => {
@@ -246,10 +235,10 @@ describe("Why on the review", () => {
     const d = await reviewed(NOTICE);
     await lens(d, "recap");
     const shown = textOf(await pane(d));
-    const at = (label: string) => shown[shown.indexOf(`${label}: `) + 1];
-    expect(at("Files touched")).toBe("1 edited · 1 read or edited");
+    const at = (label: string) => shown[shown.findIndex((t) => t.trim() === label) + 1];
+    expect(at("Files")).toBe("1 edited of 1 file touched");
     expect(at("Decisions surfaced")).toBe("1: Keep the cache bounded");
-    expect(at("Code health (last review)")).toBe("no new findings in the 1 changed file");
+    expect(at("Code health")).toBe("no new findings in the 1 changed file");
   });
 });
 
@@ -273,7 +262,7 @@ describe("the brief after a compaction", () => {
     brief.props.onPress();
     await settle();
     expect(d.calls.submitted).toEqual([
-      "The context was compacted. Lens brief of this session, from Repowise index lookups (no model):\nFiles edited: src/new.py",
+      "The context was compacted. This brief is built from the Repowise index and this session's edits:\nFiles edited: src/new.py",
     ]);
     expect(buttonsOf(await band(d))).toEqual([]);
   });
@@ -285,5 +274,21 @@ describe("the brief after a compaction", () => {
     await hooks["turn.start"]!(d.$, {}, async () => undefined);
     expect(buttonsOf(await band(d))).toEqual([]);
     expect(d.calls.submitted).toEqual([]);
+  });
+});
+
+describe("with lens_review off", () => {
+  it("a new turn leaves the review state alone and only retires the brief offer", async () => {
+    ({ hooks } = await load({ lens_review: false }));
+    const d = await session(async (tool) => {
+      throw new Error(`no ${tool} here`);
+    });
+    await hooks["tool.call"]!(d.$, { tool: "Write", tool_use_id: "toolu_w", file_path: "/work/app/src/new.py" }, async () => ({ result: {} }));
+    await hooks["classic.PostCompact"]!(d.$, {}, async () => ({}));
+    expect(buttonsOf(await band(d)).map((b) => b.props.label)).toEqual(["Brief Claude"]);
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
+    expect(buttonsOf(await band(d))).toEqual([]);
+    // No review was started: the only lookup is the spinner's file context.
+    expect(d.calls.mcp.map(([tool]) => tool)).not.toContain("get_change_risk");
   });
 });

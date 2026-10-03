@@ -29,18 +29,22 @@ function list<T>(head: string, rows: readonly T[] | undefined, row: (r: T) => st
   return [`**${head}**`, ...shown.map((r) => `- ${row(r)}`), ...(more > 0 ? [`- ${moreRows(more)}`] : [])];
 }
 
-/** `**get_answer** · confidence: low · retrieval: weak · not synthesized: no-llm-provider`. */
+/**
+ * `**Built from the index** · confidence low · retrieval weak`. A reply that
+ * says why it is not a synthesis (`degraded`) was built from the index; any
+ * other may have been written by the repo's configured model. The reply does
+ * not name the model.
+ */
 function answerHead(a: AnswerReply): string {
-  const parts = ["**get_answer**"];
-  if (a.confidence !== undefined) parts.push(`confidence: ${a.confidence}`);
-  if (a.retrieval_quality !== undefined) parts.push(`retrieval: ${a.retrieval_quality}`);
-  if (a.degraded !== undefined) parts.push(`not synthesized: ${a.degraded}`);
+  const parts = [`**${a.degraded === undefined ? PANE_COPY.fromModel : PANE_COPY.fromIndex}**`];
+  if (a.confidence !== undefined) parts.push(`confidence ${a.confidence}`);
+  if (a.retrieval_quality !== undefined) parts.push(`retrieval ${a.retrieval_quality}`);
   return parts.join(" · ");
 }
 
 function answerMarkdown(a: AnswerReply): string[] {
   const cited = a.citations ?? [];
-  const evidence = cited.length === 0 ? PANE_COPY.noEvidence : `cited: ${cited.map(code).join(", ")}`;
+  const evidence = cited.length === 0 ? PANE_COPY.noEvidence : `evidence: ${cited.map(code).join(", ")}`;
   return [answerHead(a), a.answer ?? "", evidence];
 }
 
@@ -60,7 +64,8 @@ const rationaleRow = (r: WhyRationale): string =>
   `${code(r.lines === undefined ? r.path : `${r.path}:${r.lines[0]}`)} ${line(r.comment)}${ids(r.evidence_refs)}`;
 
 function whyMarkdown(w: WhyReply): string[] {
-  const head = w.answer_basis === undefined ? "**get_why**" : `**get_why** · basis: ${w.answer_basis}`;
+  const from = `**${PANE_COPY.fromIndex}**`;
+  const head = w.answer_basis === undefined ? from : `${from} · basis ${w.answer_basis}`;
   const commits = w.git_archaeology?.git_log ?? w.git_archaeology?.file_commits;
   return [
     head,

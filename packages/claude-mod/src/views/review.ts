@@ -10,7 +10,7 @@
 
 import { DARK } from "@repowise-dev/ui/brand";
 import { fit } from "../format";
-import { testsToRun, type ChangeRisk, type ReviewOutcome } from "../model/review";
+import { emptyDiff, reviewable, testsToRun, type ChangeRisk, type ReviewOutcome } from "../model/review";
 import {
   DETAILS,
   HEALTH_NOT_REPORTED,
@@ -56,16 +56,6 @@ export interface HealthWords {
 
 type Directive = NonNullable<ChangeRisk["directive"]>;
 type Delta = NonNullable<ChangeRisk["health_delta"]>;
-
-/** A diff with nothing in it: the server's own status, or a scope of 0 changed files (an edit reverted). */
-function emptyDiff(risk: ChangeRisk): boolean {
-  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
-}
-
-/** A result the card can describe: not a server error and not an empty diff. */
-function scored(risk: ChangeRisk): boolean {
-  return risk.error === undefined && !emptyDiff(risk);
-}
 
 /** Delta statuses where both sides were compared, fully or in part. */
 const COMPARED = new Set(["available", "partial"]);
@@ -213,7 +203,7 @@ function summaryParts(risk: ChangeRisk, room: number): Node[] {
 }
 
 function resultRow(risk: ChangeRisk, columns: number, decision: string | null): Node | null {
-  if (!scored(risk) || quietInBand(risk, decision)) return null;
+  if (!reviewable(risk) || quietInBand(risk, decision)) return null;
   const pressable = buttons(risk, decision);
   const room = Math.max(0, columns - buttonCells(pressable));
   return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [

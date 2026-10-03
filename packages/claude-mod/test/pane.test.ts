@@ -10,12 +10,14 @@ import { bandView } from "../src/views/band";
 import { BRIEF_PRESS, briefBandRow, briefText, listWithin } from "../src/views/brief";
 import { ASK_CHARS, BRIEF_CHARS, savingsLine } from "../src/views/copy";
 import type { Node } from "../src/views/elements";
-import { ASK_KEY, askView, paneView, recapRows, recapView, tabsView } from "../src/views/pane";
+import { ASK_KEY, askView, paneView, recapRows, recapView, tabsView, type RecapRow } from "../src/views/pane";
 import { health } from "../src/views/review";
 import { fixture } from "./fake-host";
 
 const reply = (name: string) => JSON.parse(fixture(`ask/${name}.json`)) as unknown;
 const risk = (name: string) => JSON.parse(fixture(`change-risk/${name}.json`)) as ChangeRisk;
+/** The recap's label and value rows by label; sub-heads left out. */
+const byLabel = (rows: RecapRow[]) => Object.fromEntries(rows.filter((r): r is [string, string] => typeof r !== "string"));
 const run = (actions: SessionAction[], from: SessionState = initialSession) => actions.reduce(reduce, from);
 
 function texts(node: Node | null): string[] {
@@ -61,19 +63,23 @@ describe("Ask replies as Markdown", () => {
     const md = replyMarkdown("how does filter() build SQL?", askReply("get_answer", reply("django-answer-filter")));
     expect(md.split("\n\n")).toEqual([
       "> how does filter() build SQL?",
-      "**get_answer** · confidence: low · retrieval: weak · not synthesized: no-llm-provider",
+      "**Built from the index** · confidence low · retrieval weak",
       "Synthesis is unavailable (no-llm-provider). Source rationale in django/utils/tree.py: A class for storing a tree graph. Primarily used for filter constructs in the ORM.",
-      "cited: `django/utils/tree.py`, `django/db/models/sql/constants.py`",
+      "evidence: `django/utils/tree.py`, `django/db/models/sql/constants.py`",
     ]);
     expect(replyMarkdown("q", askReply("get_answer", { answer: "x" }))).toContain("no evidence cited");
+    // No `degraded`: the reply may be the configured model's synthesis, and says so.
+    expect(replyMarkdown("q", askReply("get_answer", { answer: "x", confidence: "high" }))).toContain(
+      "**Written by this repo's configured model, from the index** · confidence high",
+    );
     const named = replyMarkdown("where is QuerySet defined?", askReply("get_answer", reply("django-answer-queryset")));
-    expect(named).toContain("**get_answer** · confidence: medium · retrieval: high · not synthesized: no-llm-provider");
-    expect(named).toContain("cited: `django/db/models/query.py`");
+    expect(named).toContain("**Built from the index** · confidence medium · retrieval high");
+    expect(named).toContain("evidence: `django/db/models/query.py`");
   });
 
   it("get_why: the basis and reason, each commit with its evidence id", () => {
     const md = replyMarkdown("why does Session merge environment settings?", askReply("get_why", reply("requests-why-archaeology")));
-    expect(md).toContain("**get_why** · basis: archaeology");
+    expect(md).toContain("**Built from the index** · basis archaeology");
     expect(md).toContain("No decision record covers this question.");
     expect(md).toContain("- `827bbe2a7e40` docs: correct error in 'merge_environment_settings' usage (2019-02-04) · `ev_8964f795d9001bd297ca`");
   });
@@ -81,7 +87,7 @@ describe("Ask replies as Markdown", () => {
   it("get_why on a path: five rows of each list, the rest counted against the server's own total", () => {
     const w = reply("django-why-query-path") as { git_archaeology: { git_log: unknown[] }; code_rationale_total: number };
     const md = replyMarkdown("why django/db/models/query.py", askReply("get_why", w));
-    expect(md).toContain("**get_why** · basis: rationale");
+    expect(md).toContain("**Built from the index** · basis rationale");
     expect(md).toContain(`- and ${w.git_archaeology.git_log.length - 5} more`);
     expect(md).toContain(`- and ${w.code_rationale_total - 5} more`);
     expect(md).toMatch(/- `django\/db\/models\/query\.py:\d+` .+ · `ev_[0-9a-f]+`/);
@@ -92,7 +98,7 @@ describe("Ask replies as Markdown", () => {
     const md = replyMarkdown("why rotate?", askReply("get_why", reply("django-why-no-record")));
     expect(md.split("\n\n")).toEqual([
       "> why rotate?",
-      "**get_why**",
+      "**Built from the index**",
       "No recorded rationale: no decision record covers this question. The store holds none carrying its terms, and the closest ones would be noise.",
     ]);
   });
@@ -134,11 +140,11 @@ describe("tabs and the Ask tab", () => {
   it("asking, failed and answered each say so; asking empties the field", () => {
     const asking = run([{ type: "tab", tab: "ask", draft: "why X" }, { type: "asked", question: "why X", tool: "get_why" }]);
     expect(asking.pane.draft).toBe("");
-    expect(texts(askView(asking, 80)).slice(-1)).toEqual(["asking get_why..."]);
+    expect(texts(askView(asking, 80)).slice(-1)).toEqual(["asking the decision records..."]);
     const failed = reduce(asking, { type: "askFailed", question: "why X", tool: "get_why", message: "timed out" });
-    expect(texts(askView(failed, 80)).slice(-1)).toEqual(["get_why could not answer: timed out"]);
+    expect(texts(askView(failed, 80)).slice(-1)).toEqual(["Could not answer: timed out"]);
     const answered = reduce(asking, { type: "answered", question: "why X", answer: askReply("get_why", reply("django-why-no-record")) });
-    expect(texts(askView(answered, 80)).at(-1)).toContain("**get_why**");
+    expect(texts(askView(answered, 80)).at(-1)).toContain("**Built from the index**");
   });
 
   it("paneView puts the tabs over the body", () => {
@@ -166,15 +172,15 @@ describe("recap", () => {
   it("every figure equals its source in the session model", () => {
     const s = busySession();
     const reads = { count: 41, capped: false };
-    const rows = Object.fromEntries(recapRows(s, reads));
+    const rows = byLabel(recapRows(s, reads));
     const r = s.lastReview!;
     const hd = r.health_delta!;
-    expect(rows["Files touched"]).toBe(`${s.touched.length} edited · ${reads.count} read or edited`);
+    expect(rows["Files"]).toBe(`${s.touched.length} edited of ${reads.count} files touched`);
     expect(s.touched).toEqual(["src/requests/sessions.py", "src/requests/models.py"]);
-    expect(rows["Code health (last review)"]).toBe(health(r).words);
-    expect(rows["Findings (last review)"]).toBe(`${hd.resolved} resolved · ${hd.findings_total} new`);
+    expect(rows["Code health"]).toBe(health(r).words);
+    expect(rows["Findings"]).toBe(`${hd.resolved} resolved · ${hd.findings_total} new finding${hd.findings_total === 1 ? "" : "s"}`);
     const tests = r.impacted_tests!;
-    expect(rows["Tests queued (last review)"]).toBe(
+    expect(rows["Tests to run"]).toBe(
       `${tests.total ?? tests.tests_to_run!.length} test file${(tests.total ?? 0) === 1 ? "" : "s"}, ${tests.basis === "measured" ? "measured" : "inferred"}`,
     );
     expect(rows["Saved"]).toBe(savingsLine(s.savings!, Number.POSITIVE_INFINITY));
@@ -185,19 +191,19 @@ describe("recap", () => {
     ]);
     expect(rows["Decisions surfaced"]).toBe(`${decisions.length}: Sessions own their adapters; Retry on 503`);
     const branches = r.branch_overlap!.branches!.map((b) => b.branch);
-    expect(rows["Branches overlapping (last review)"]).toContain(`(${branches.join(", ")})`);
-    expect(rows["Branches overlapping (last review)"]!.startsWith("◦ ")).toBe(true);
-    expect(texts(recapView(s, reads, 200)).at(-1)).toBe("0 model calls · nothing uploaded");
+    expect(rows["Branches overlapping"]).toContain(`(${branches.join(", ")})`);
+    expect(rows["Branches overlapping"]!.startsWith("◦ ")).toBe(true);
+    expect(texts(recapView(s, reads, 200)).at(-1)).toBe("Lens made no model calls. Every figure here is read from the local index.");
   });
 
   it("the last review outlives its turn; a new session starts empty", () => {
     const s = reduce(busySession(), { type: "turnStarted" });
     expect(s.review.outcome).toEqual({ phase: "none" });
     expect(s.lastReview).not.toBeNull();
-    const empty = Object.fromEntries(recapRows(initialSession, { count: 0, capped: false }));
+    const empty = byLabel(recapRows(initialSession, { count: 0, capped: false }));
     expect(empty).toEqual({
-      "Files touched": "0 edited · 0 read or edited",
-      "Code health (last review)": "no change review this session",
+      Files: "0 edited of 0 files touched",
+      "Change review": "none this session",
       Saved: "needs the local server: repowise serve --no-ui",
       "Decisions surfaced": "none",
     });
@@ -206,23 +212,41 @@ describe("recap", () => {
   it("states what is unknown rather than zero: capped reads, no tests, no overlap block, nothing saved yet", () => {
     const { branch_overlap: _unreported, ...noOverlapBlock } = risk("clear");
     const clear = run([{ type: "discovered", mode: "full", freshness: null }, { type: "reviewed", risk: { ...noOverlapBlock, impacted_tests: {} } }]);
-    const rows = Object.fromEntries(recapRows(clear, { count: 200, capped: true }));
-    expect(rows["Files touched"]).toBe("0 edited · 200+ read or edited");
-    expect(rows["Tests queued (last review)"]).toBe("none named");
-    expect(rows["Branches overlapping (last review)"]).toBe("not reported");
+    const rows = byLabel(recapRows(clear, { count: 200, capped: true }));
+    expect(rows["Files"]).toBe("0 edited of 200+ files touched");
+    expect(rows["Tests to run"]).toBe("none named");
+    expect(rows["Branches overlapping"]).toBe("not reported");
     expect(rows["Saved"]).toBe("nothing yet since this session started");
     const none = reduce(clear, { type: "reviewed", risk: { ...risk("clear"), branch_overlap: { branches: [] } } });
-    expect(Object.fromEntries(recapRows(none, { count: 0, capped: false }))["Branches overlapping (last review)"]).toBe("none found");
+    expect(byLabel(recapRows(none, { count: 0, capped: false }))["Branches overlapping"]).toBe("none found");
     const unavailable = reduce(clear, { type: "reviewed", risk: risk("unavailable") });
-    expect(Object.fromEntries(recapRows(unavailable, { count: 0, capped: false }))["Findings (last review)"]).toBe("not compared");
+    expect(byLabel(recapRows(unavailable, { count: 0, capped: false }))["Findings"]).toBe("not compared");
   });
 
-  it("the footer names get_answer replies that may have used the repo's model", () => {
-    const s = reduce(initialSession, { type: "answered", question: "q", answer: askReply("get_answer", { answer: "a" }) });
-    expect(s.modelAsks).toBe(1);
-    expect(texts(recapView(s, { count: 0, capped: false }, 300)).at(-1)).toBe(
-      "Lens: 0 model calls · nothing uploaded · 1 Ask reply from get_answer may have used this repo's configured model",
+  it("the footer counts get_answer asks from their start; a reply that had no provider is uncounted", () => {
+    const asked = run([{ type: "asked", question: "q", tool: "get_answer" }]);
+    expect(asked.modelAsks).toBe(1);
+    expect(texts(recapView(asked, { count: 0, capped: false }, 300)).at(-1)).toBe(
+      "Lens made no model calls. 1 Ask reply from get_answer may have been written by this repo's configured model.",
     );
+    // Failed or timed out: it stays counted; the provider may have seen the question.
+    expect(reduce(asked, { type: "askFailed", question: "q", tool: "get_answer", message: "timeout" }).modelAsks).toBe(1);
+    expect(reduce(asked, { type: "answered", question: "q", answer: askReply("get_answer", { answer: "a" }) }).modelAsks).toBe(1);
+    expect(reduce(asked, { type: "answered", question: "q", answer: askReply("get_answer", reply("django-answer-filter")) }).modelAsks).toBe(0);
+    expect(run([{ type: "asked", question: "why", tool: "get_why" }]).modelAsks).toBe(0);
+  });
+
+  it("draws a dim sub-head over the review rows and aligns values to one label column", () => {
+    const shown = texts(recapView(busySession(), { count: 41, capped: false }, 200));
+    expect(shown[2]).toBe("from the last change review");
+    expect(shown[0]).toBe("Files                 ");
+    expect(shown[3]).toBe("Code health           ");
+  });
+
+  it("an errored or empty review does not replace the last one", () => {
+    const s = busySession();
+    expect(reduce(s, { type: "reviewed", risk: { error: "boom" } }).lastReview).toBe(s.lastReview);
+    expect(reduce(s, { type: "reviewed", risk: risk("nothing-to-score") }).lastReview).toBe(s.lastReview);
   });
 });
 
@@ -237,7 +261,7 @@ describe("compaction brief", () => {
     const s = reduce(busySession(), { type: "compacted" });
     const brief = briefText(s)!;
     const lines = brief.split("\n");
-    expect(lines[0]).toBe("The context was compacted. Lens brief of this session, from Repowise index lookups (no model):");
+    expect(lines[0]).toBe("The context was compacted. This brief is built from the Repowise index and this session's edits:");
     expect(lines[1]).toBe("Files edited: src/requests/sessions.py; src/requests/models.py");
     expect(lines[2]).toBe(
       "Decisions in play: Sessions own their adapters (standing decision); Retry on 503 (found in the code, not yet reviewed)",
@@ -266,15 +290,22 @@ describe("compaction brief", () => {
     expect(listWithin("Files:", ["a"], 5).length).toBeLessThanOrEqual(5);
   });
 
-  it("the band offers it in place of the review's buttons until pressed or a new turn", () => {
+  it("the band offers it beside a pending review row (hotkey 4), or alone (hotkey 1), until pressed or a new turn", () => {
     const s = reduce(busySession(), { type: "compacted" });
     const band = bandView(s, { columns: 100, hasSurvey: false });
-    expect(texts(band).slice(-2)).toEqual(["context compacted", "1: Brief Claude"]);
+    expect(texts(band)).toContain("2: Why");
+    expect(texts(band).slice(-2)).toEqual(["context compacted", "4: Brief Claude"]);
     expect(JSON.stringify(band)).toContain(BRIEF_PRESS);
+    const alone = run([{ type: "touched", path: "a.py" }, { type: "compacted" }]);
+    expect(texts(bandView(alone, { columns: 100, hasSurvey: false }))).toEqual(["context compacted", "1: Brief Claude"]);
     expect(reduce(s, { type: "briefDone" }).compacted).toBe(false);
     expect(reduce(s, { type: "turnStarted" }).compacted).toBe(false);
     expect(reduce(s, { type: "compacted" })).toBe(s);
     expect(reduce(initialSession, { type: "briefDone" })).toBe(initialSession);
+  });
+
+  it("joins an item written over several lines", () => {
+    expect(listWithin("Decisions:", ["keep\n  it\tbounded"], 100)).toBe("Decisions: keep it bounded");
   });
 });
 

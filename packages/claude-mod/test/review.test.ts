@@ -24,9 +24,8 @@ function drawn(node: Node | null): string[] {
 }
 
 function colors(node: Node | null): string[] {
-  if (node === null || node.type === "Button" || node.type === "Raster" || node.type === "Input" || node.type === "Markdown" || node.type === "Svg") return [];
-  if (node.type === "Text") return node.props.color === undefined ? [] : [node.props.color];
-  return node.children.flatMap(colors);
+  if (node?.type === "Text") return node.props.color === undefined ? [] : [node.props.color];
+  return node?.type === "Box" ? node.children.flatMap(colors) : [];
 }
 
 /** The card is one row of segments; split it back to compare them. */

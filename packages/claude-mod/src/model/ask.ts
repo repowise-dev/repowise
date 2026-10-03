@@ -3,6 +3,8 @@
  * `get_why` or `get_answer`, and the reply is kept as the tool sent it.
  */
 
+import type { DecisionsArtifactData } from "@repowise-dev/types";
+
 export type PaneTab = "map" | "ask" | "recap";
 
 export type AskTool = "get_why" | "get_answer";
@@ -31,15 +33,13 @@ export interface WhyCommit {
   evidence_refs?: EvidenceRef[];
 }
 
-export interface WhyDecision {
+/** A decision row: the shared shape, plus the id, authority and confidence `get_why` also sends. */
+export type WhyDecision = NonNullable<DecisionsArtifactData["decisions"]>[number] & {
   id?: string;
-  title: string;
-  status?: string;
   /** `accepted` when somebody signed it, `candidate` when nobody has yet. */
   authority?: string;
   confidence?: number | null;
-  decision?: string;
-}
+};
 
 export interface WhyRationale {
   path: string;
@@ -62,7 +62,8 @@ export type AskReply = { tool: "get_answer"; reply: AnswerReply } | { tool: "get
 
 export type AskState =
   | { phase: "idle" }
-  | { phase: "asking"; question: string; tool: AskTool }
+  /** `busy`: another question came while this one ran; it was not asked. */
+  | { phase: "asking"; question: string; tool: AskTool; busy: boolean }
   | { phase: "answered"; question: string; answer: AskReply }
   | { phase: "failed"; question: string; tool: AskTool; message: string };
 

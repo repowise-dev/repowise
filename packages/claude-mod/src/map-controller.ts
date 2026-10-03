@@ -16,7 +16,7 @@ import { withTimeout } from "./data/transport";
 import type { UiOpenResult } from "./mod-api";
 import { relativeTo } from "./model/events";
 import { initialTrail, reduceTrail, type TrailAction, type TrailState } from "./model/trail";
-import { MAP_COPY, notPlacedLine } from "./views/copy";
+import { MAP_COPY, notPlacedLine, type ScopeFacts } from "./views/copy";
 import type { Node } from "./views/elements";
 import { layoutMap, type MapLayout } from "./views/map";
 import { mapPaneView, mapSize, noticeView, type PaneSize } from "./views/mapPane";
@@ -55,6 +55,16 @@ export interface PaneInput extends PaneSize {
   surface: string | undefined;
   /** Why there is no repo to draw, when there is none. */
   notice: string;
+}
+
+function scopeFacts(layout: MapLayout, data: HealthMapFeed, repo: MapRepo): ScopeFacts {
+  return {
+    drawn: layout.drawn.length,
+    repositoryTotal: data.repository_total,
+    indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
+    beyondCap: data.omitted.files,
+    cap: data.cap,
+  };
 }
 
 /** What an animation draws on: the frame for a step, or null once nothing is on screen. */
@@ -195,32 +205,30 @@ export class LensMap {
 
   /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
   paneTree(io: MapIO, pane: PaneInput): Node {
-    const columns = pane.bodyColumns;
     this.drawn = null;
-    // The terminal draws cells and the desktop app SVG; other surfaces get a line.
+    const notice = this.noticeFor(io, pane);
+    if (notice !== null) return noticeView(notice, pane.bodyColumns);
+    const { data } = this.feed as { data: HealthMapFeed };
+    const repo = this.repo as MapRepo;
+    // The terminal draws cells and the desktop app SVG, with no blits: its resting frame redraws as the trail grows.
     const desktop = pane.surface === "desktop";
-    if (pane.surface !== undefined && pane.surface !== "terminal" && !desktop) return noticeView(MAP_COPY.desktop, columns);
-    const repo = this.repo;
-    if (repo === null) return noticeView(pane.notice, columns);
-    this.requested = true;
-    this.fetchWanted(io);
-    const feed = this.feed;
-    if (feed.status !== "ready") return noticeView(feed.status === "failed" ? MAP_COPY.failed : MAP_COPY.loading, columns);
-    const size = desktop ? desktopSize(mapSize(pane)) : mapSize(pane);
-    const layout = this.layoutFor(feed.data, size, repo.caseInsensitive);
+    const layout = this.layoutFor(data, desktop ? desktopSize(mapSize(pane)) : mapSize(pane), repo.caseInsensitive);
     const resolved = resolveOverlay(layout, this.trail, repo.root);
-    const scope = {
-      drawn: layout.drawn.length,
-      repositoryTotal: feed.data.repository_total,
-      indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
-      beyondCap: feed.data.omitted.files,
-      cap: feed.data.cap,
-    };
-    // No blits on the desktop: its map is the resting frame, redrawn as the trail grows.
+    const scope = scopeFacts(layout, data, repo);
     if (desktop) return svgPaneView(layout, resolved, scope);
     this.drawn = { layout, root: repo.root };
-    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
-    return mapPaneView(layout, cells, resolved, scope);
+    return mapPaneView(layout, frameCells(layout, resolved.overlay, this.animator.progress(Date.now())), resolved, scope);
+  }
+
+  /** Why there is no map to draw yet (and the feed fetch started when wanted), or null once it can be drawn. */
+  private noticeFor(io: MapIO, pane: PaneInput): string | null {
+    if (pane.surface !== undefined && pane.surface !== "terminal" && pane.surface !== "desktop") return MAP_COPY.desktop;
+    if (this.repo === null) return pane.notice;
+    this.requested = true;
+    this.fetchWanted(io);
+    const status = this.feed.status;
+    if (status === "ready") return null;
+    return status === "failed" ? MAP_COPY.failed : MAP_COPY.loading;
   }
 
   private layoutFor(data: HealthMapFeed, size: { columns: number; rows: number }, caseInsensitive: boolean): MapLayout {

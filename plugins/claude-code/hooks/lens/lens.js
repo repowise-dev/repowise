@@ -794,7 +794,7 @@ var MAP_COPY = {
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
   failed: "Lens map could not load the health map; it tries again on /lens",
-  desktop: "Lens map: the terminal and the desktop app only for now",
+  desktop: "Lens map: not drawn on this surface (terminal and desktop app only)",
   tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
   read: "Claude read",
@@ -859,18 +859,21 @@ var PANE_COPY = {
   argumentHint: "[map | ask <question> | recap]",
   tabs: { map: "Map", ask: "Ask", recap: "Recap" },
   askLabel: "ask ",
-  askPlaceholder: "why ...? reads the decision records; anything else asks get_answer",
+  askPlaceholder: "why ...? asks the decision records; anything else asks the index",
   askSubmit: "ask",
-  askIdle: "Answers come from this repo's Repowise index, with the evidence it cites.",
-  noEvidence: "no evidence cited"
+  askIdle: "Ask about this repo. Answers cite the evidence they used.",
+  askBusy: "still answering the last question; ask again when it lands",
+  noEvidence: "no evidence cited",
+  fromIndex: "Built from the index",
+  fromModel: "Written by this repo's configured model, from the index"
 };
 var ASK_CHARS = 4e3;
 function askingLine(tool) {
-  return `asking ${tool}...`;
+  return tool === "get_why" ? "asking the decision records..." : "asking the index...";
 }
 __name(askingLine, "askingLine");
-function askFailedLine(tool, message) {
-  return `${tool} could not answer: ${message}`;
+function askFailedLine(message) {
+  return `Could not answer: ${message}`;
 }
 __name(askFailedLine, "askFailedLine");
 function askCut(chars) {
@@ -882,14 +885,16 @@ function moreRows(more) {
 }
 __name(moreRows, "moreRows");
 var RECAP_COPY = {
-  files: "Files touched",
-  health: "Code health (last review)",
-  findings: "Findings (last review)",
-  tests: "Tests queued (last review)",
+  files: "Files",
+  fromReview: "from the last change review",
+  review: "Change review",
+  health: "Code health",
+  findings: "Findings",
+  tests: "Tests to run",
+  overlap: "Branches overlapping",
   saved: "Saved",
   decisions: "Decisions surfaced",
-  overlap: "Branches overlapping (last review)",
-  noReview: "no change review this session",
+  noReview: "none this session",
   notCompared: "not compared",
   noTests: "none named",
   noOverlap: "none found",
@@ -897,36 +902,37 @@ var RECAP_COPY = {
   noSavings: "nothing yet since this session started",
   savingsNeedServer: "needs the local server: repowise serve --no-ui",
   noDecisions: "none",
-  footer: "0 model calls · nothing uploaded"
+  noModel: "Lens made no model calls.",
+  fromIndex: "Every figure here is read from the local index."
 };
-function filesTouched(edited, reads) {
-  const read = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
-  return `${formatNumber(edited)} edited · ${read} read or edited`;
+function filesTouched(edited, touched) {
+  const all = touched.capped ? `${formatNumber(touched.count)}+` : formatNumber(touched.count);
+  return `${formatNumber(edited)} edited of ${all} ${touched.count === 1 && !touched.capped ? "file" : "files"} touched`;
 }
 __name(filesTouched, "filesTouched");
 function findingsCounts(resolved, total) {
-  return `${formatNumber(resolved)} resolved · ${formatNumber(total)} new`;
+  return `${formatNumber(resolved)} resolved · ${countOf(total, "new finding", "new findings")}`;
 }
 __name(findingsCounts, "findingsCounts");
-function testsQueued(t) {
+function testsToRunCount(t) {
   const count2 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   return `${count2}, ${t.measured ? "measured" : "inferred"}`;
 }
-__name(testsQueued, "testsQueued");
+__name(testsToRunCount, "testsToRunCount");
 function decisionsSurfaced(titles) {
   return `${formatNumber(titles.length)}: ${titles.join("; ")}`;
 }
 __name(decisionsSurfaced, "decisionsSurfaced");
 function recapFooter(modelAsks) {
-  if (modelAsks === 0) return RECAP_COPY.footer;
+  if (modelAsks === 0) return `${RECAP_COPY.noModel} ${RECAP_COPY.fromIndex}`;
   const asks = countOf(modelAsks, "Ask reply", "Ask replies");
-  return `Lens: ${RECAP_COPY.footer} · ${asks} from get_answer may have used this repo's configured model`;
+  return `${RECAP_COPY.noModel} ${asks} from get_answer may have been written by this repo's configured model.`;
 }
 __name(recapFooter, "recapFooter");
 var BRIEF_COPY = {
   compacted: "context compacted",
   button: "Brief Claude",
-  intro: "The context was compacted. Lens brief of this session, from Repowise index lookups (no model):",
+  intro: "The context was compacted. This brief is built from the Repowise index and this session's edits:",
   files: "Files edited:",
   decisions: "Decisions in play:",
   review: "Open review items:"
@@ -1641,18 +1647,25 @@ function svg(source, alt) {
 }
 __name(svg, "svg");
 var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
+function pressFor(key, presses) {
+  const onPress = presses[key];
+  if (!onPress) throw new Error(`button ${key} has no action`);
+  return onPress;
+}
+__name(pressFor, "pressFor");
+var PROPS = {
+  Text: /* @__PURE__ */ __name((n) => ({ ...n.props, children: n.children }), "Text"),
+  Box: /* @__PURE__ */ __name((n, table, presses) => ({ ...n.props, children: n.children.map((child) => materialize(child, table, presses)) }), "Box"),
+  Button: /* @__PURE__ */ __name((n, _table, presses) => ({ ...n.props, onPress: pressFor(n.props.key, presses) }), "Button"),
+  Input: /* @__PURE__ */ __name((n) => ({ ...n.props, onSubmit: SUBMIT_IN_HOOK }), "Input"),
+  Raster: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Raster"),
+  Markdown: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Markdown"),
+  Svg: /* @__PURE__ */ __name((n) => ({ ...n.props }), "Svg")
+};
 function materialize(node, table, presses = {}) {
   const build = table[node.type];
   if (!build) throw new Error(`element ${node.type} is not on this surface`);
-  if (node.type === "Button") {
-    const onPress = presses[node.props.key];
-    if (!onPress) throw new Error(`button ${node.props.key} has no action`);
-    return build({ ...node.props, onPress });
-  }
-  if (node.type === "Input") return build({ ...node.props, onSubmit: SUBMIT_IN_HOOK });
-  if (node.type === "Raster" || node.type === "Markdown" || node.type === "Svg") return build({ ...node.props });
-  const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
-  return build({ ...node.props, children });
+  return build(PROPS[node.type](node, table, presses));
 }
 __name(materialize, "materialize");
 
@@ -1968,6 +1981,16 @@ var MAP_CAP = 4e3;
 var MAP_TIMEOUT_MS = 15e3;
 var CALLERS_TIMEOUT_MS = 2e4;
 var CALLERS_DEPTH = 1;
+function scopeFacts(layout, data, repo) {
+  return {
+    drawn: layout.drawn.length,
+    repositoryTotal: data.repository_total,
+    indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
+    beyondCap: data.omitted.files,
+    cap: data.cap
+  };
+}
+__name(scopeFacts, "scopeFacts");
 var Animator = class {
   static {
     __name(this, "Animator");
@@ -2082,30 +2105,28 @@ var LensMap = class {
   }
   /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
   paneTree(io, pane) {
-    const columns = pane.bodyColumns;
     this.drawn = null;
-    const desktop = pane.surface === "desktop";
-    if (pane.surface !== void 0 && pane.surface !== "terminal" && !desktop) return noticeView(MAP_COPY.desktop, columns);
+    const notice = this.noticeFor(io, pane);
+    if (notice !== null) return noticeView(notice, pane.bodyColumns);
+    const { data } = this.feed;
     const repo = this.repo;
-    if (repo === null) return noticeView(pane.notice, columns);
-    this.requested = true;
-    this.fetchWanted(io);
-    const feed = this.feed;
-    if (feed.status !== "ready") return noticeView(feed.status === "failed" ? MAP_COPY.failed : MAP_COPY.loading, columns);
-    const size = desktop ? desktopSize(mapSize(pane)) : mapSize(pane);
-    const layout = this.layoutFor(feed.data, size, repo.caseInsensitive);
+    const desktop = pane.surface === "desktop";
+    const layout = this.layoutFor(data, desktop ? desktopSize(mapSize(pane)) : mapSize(pane), repo.caseInsensitive);
     const resolved = resolveOverlay(layout, this.trail, repo.root);
-    const scope = {
-      drawn: layout.drawn.length,
-      repositoryTotal: feed.data.repository_total,
-      indexed: formatRelativeTimeOrNull(repo.updatedAt, "") || null,
-      beyondCap: feed.data.omitted.files,
-      cap: feed.data.cap
-    };
+    const scope = scopeFacts(layout, data, repo);
     if (desktop) return svgPaneView(layout, resolved, scope);
     this.drawn = { layout, root: repo.root };
-    const cells = frameCells(layout, resolved.overlay, this.animator.progress(Date.now()));
-    return mapPaneView(layout, cells, resolved, scope);
+    return mapPaneView(layout, frameCells(layout, resolved.overlay, this.animator.progress(Date.now())), resolved, scope);
+  }
+  /** Why there is no map to draw yet (and the feed fetch started when wanted), or null once it can be drawn. */
+  noticeFor(io, pane) {
+    if (pane.surface !== void 0 && pane.surface !== "terminal" && pane.surface !== "desktop") return MAP_COPY.desktop;
+    if (this.repo === null) return pane.notice;
+    this.requested = true;
+    this.fetchWanted(io);
+    const status = this.feed.status;
+    if (status === "ready") return null;
+    return status === "failed" ? MAP_COPY.failed : MAP_COPY.loading;
   }
   layoutFor(data, size, caseInsensitive) {
     const cached = this.cachedLayout(data, size);
@@ -2252,6 +2273,14 @@ function reduceReview(state2, action) {
   }
 }
 __name(reduceReview, "reduceReview");
+function emptyDiff(risk) {
+  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
+}
+__name(emptyDiff, "emptyDiff");
+function reviewable(risk) {
+  return risk.error === void 0 && !emptyDiff(risk);
+}
+__name(reviewable, "reviewable");
 var WRITE_TOOLS = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 function isFileEdit(e, result) {
   if (typeof e.tool !== "string" || !WRITE_TOOLS.has(e.tool)) return false;
@@ -2345,10 +2374,15 @@ function reduce(state2, action) {
       return state2.touched.includes(action.path) ? state2 : { ...state2, touched: [...state2.touched, action.path] };
     case "tab":
       return { ...state2, pane: { tab: action.tab, draft: action.draft ?? state2.pane.draft } };
-    case "asked":
-      return { ...state2, ask: { phase: "asking", question: action.question, tool: action.tool }, pane: { ...state2.pane, draft: "" } };
+    case "asked": {
+      const modelAsks = state2.modelAsks + (action.tool === "get_answer" ? 1 : 0);
+      const ask = { phase: "asking", question: action.question, tool: action.tool, busy: false };
+      return { ...state2, modelAsks, ask, pane: { ...state2.pane, draft: "" } };
+    }
+    case "askBusy":
+      return state2.ask.phase === "asking" && !state2.ask.busy ? { ...state2, ask: { ...state2.ask, busy: true } } : state2;
     case "answered": {
-      const modelAsks = state2.modelAsks + (mayHaveUsedModel(action.answer) ? 1 : 0);
+      const modelAsks = Math.max(0, state2.modelAsks - (action.answer.tool === "get_answer" && !mayHaveUsedModel(action.answer) ? 1 : 0));
       return { ...state2, modelAsks, ask: { phase: "answered", question: action.question, answer: action.answer } };
     }
     case "askFailed":
@@ -2365,7 +2399,7 @@ __name(reduce, "reduce");
 function reduceTurn(state2, action) {
   const review = reduceReview(state2.review, action);
   const compacted = action.type === "turnStarted" ? false : state2.compacted;
-  const lastReview = action.type === "reviewed" ? action.risk : state2.lastReview;
+  const lastReview = action.type === "reviewed" && reviewable(action.risk) ? action.risk : state2.lastReview;
   if (review === state2.review && compacted === state2.compacted && lastReview === state2.lastReview) return state2;
   return { ...state2, review, compacted, lastReview };
 }
@@ -2381,14 +2415,6 @@ __name(surfacedDecisions, "surfacedDecisions");
 
 // src/views/review.ts
 var PRESS = { tests: "lens-review-tests", why: "lens-review-why", details: "lens-review-details" };
-function emptyDiff(risk) {
-  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
-}
-__name(emptyDiff, "emptyDiff");
-function scored(risk) {
-  return risk.error === void 0 && !emptyDiff(risk);
-}
-__name(scored, "scored");
 var COMPARED = /* @__PURE__ */ new Set(["available", "partial"]);
 var NOT_REPORTED = { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
 function notComparedWords(hd) {
@@ -2520,7 +2546,7 @@ function summaryParts(risk, room) {
 }
 __name(summaryParts, "summaryParts");
 function resultRow(risk, columns, decision) {
-  if (!scored(risk) || quietInBand(risk, decision)) return null;
+  if (!reviewable(risk) || quietInBand(risk, decision)) return null;
   const pressable = buttons(risk, decision);
   const room = Math.max(0, columns - buttonCells(pressable));
   return box({ key: "lens-review", flexDirection: "row", columnGap: GAP2 }, [
@@ -2557,7 +2583,7 @@ __name(withCard, "withCard");
 var BRIEF_PRESS = "lens-brief";
 var ITEM_CHARS = 240;
 function listWithin(head, items, room) {
-  const cut = items.map((i) => fit(i, ITEM_CHARS));
+  const cut = items.map((i) => fit(i.replace(/\s+/g, " ").trim(), ITEM_CHARS));
   for (let k = cut.length; k >= 0; k--) {
     const more = cut.length - k;
     const shown = cut.slice(0, k).join("; ");
@@ -2570,7 +2596,7 @@ function listWithin(head, items, room) {
 __name(listWithin, "listWithin");
 function reviewItems(state2) {
   const risk = state2.lastReview;
-  if (risk === null || risk.error !== void 0) return [];
+  if (risk === null) return [];
   const findings = (risk.health_delta?.findings_total ?? 0) > 0 ? (risk.health_delta?.top_findings ?? []).map(findingLine) : [];
   const tests = testsToRun(risk);
   const shared = overlap(risk);
@@ -2598,11 +2624,11 @@ ${listWithin(head, items, Math.max(0, room))}`;
   return brief;
 }
 __name(briefText, "briefText");
-function briefBandRow(state2, columns) {
+function briefBandRow(state2, columns, besideReview = false) {
   if (!state2.compacted || briefText(state2) === null) return null;
   return box({ key: "lens-brief", flexDirection: "row", columnGap: 2 }, [
     text(fit(BRIEF_COPY.compacted, Math.max(1, columns - BRIEF_COPY.button.length - 5)), { dimColor: true }),
-    button(BRIEF_PRESS, "1", BRIEF_COPY.button)
+    button(BRIEF_PRESS, besideReview ? "4" : "1", BRIEF_COPY.button)
   ]);
 }
 __name(briefBandRow, "briefBandRow");
@@ -2619,12 +2645,12 @@ function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
 __name(bandRows, "bandRows");
 function bandView(state2, viewport, extra = []) {
   if (viewport.hasSurvey) return null;
-  const review = briefBandRow(state2, viewport.columns) ?? reviewBandRow(state2.review.outcome, viewport.columns, state2.review.decision);
-  const own = [...bandRows(state2, viewport.columns), ...extra];
-  const rows = own.slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
-  if (rows.length === 0 && review === null) return null;
-  const nodes = rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
-  return box({ key: "lens-band", flexDirection: "column" }, review === null ? nodes : [...nodes, review]);
+  const review = reviewBandRow(state2.review.outcome, viewport.columns, state2.review.decision);
+  const actions = [review, briefBandRow(state2, viewport.columns, review !== null)].filter((n) => n !== null);
+  const own = [...bandRows(state2, viewport.columns), ...extra].slice(0, Math.max(0, MAX_BAND_ROWS - actions.length));
+  if (own.length === 0 && actions.length === 0) return null;
+  const nodes = own.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
+  return box({ key: "lens-band", flexDirection: "column" }, [...nodes, ...actions]);
 }
 __name(bandView, "bandView");
 
@@ -2657,16 +2683,15 @@ function list(head, rows, row, total) {
 }
 __name(list, "list");
 function answerHead(a) {
-  const parts = ["**get_answer**"];
-  if (a.confidence !== void 0) parts.push(`confidence: ${a.confidence}`);
-  if (a.retrieval_quality !== void 0) parts.push(`retrieval: ${a.retrieval_quality}`);
-  if (a.degraded !== void 0) parts.push(`not synthesized: ${a.degraded}`);
+  const parts = [`**${a.degraded === void 0 ? PANE_COPY.fromModel : PANE_COPY.fromIndex}**`];
+  if (a.confidence !== void 0) parts.push(`confidence ${a.confidence}`);
+  if (a.retrieval_quality !== void 0) parts.push(`retrieval ${a.retrieval_quality}`);
   return parts.join(" · ");
 }
 __name(answerHead, "answerHead");
 function answerMarkdown(a) {
   const cited = a.citations ?? [];
-  const evidence = cited.length === 0 ? PANE_COPY.noEvidence : `cited: ${cited.map(code).join(", ")}`;
+  const evidence = cited.length === 0 ? PANE_COPY.noEvidence : `evidence: ${cited.map(code).join(", ")}`;
   return [answerHead(a), a.answer ?? "", evidence];
 }
 __name(answerMarkdown, "answerMarkdown");
@@ -2679,7 +2704,8 @@ var decisionRow = /* @__PURE__ */ __name((d) => {
 var commitRow = /* @__PURE__ */ __name((c) => `${code(c.sha ?? "?")} ${line(c.message ?? "", 160)}${c.date === void 0 ? "" : ` (${c.date.slice(0, 10)})`}${ids(c.evidence_refs)}`, "commitRow");
 var rationaleRow = /* @__PURE__ */ __name((r) => `${code(r.lines === void 0 ? r.path : `${r.path}:${r.lines[0]}`)} ${line(r.comment)}${ids(r.evidence_refs)}`, "rationaleRow");
 function whyMarkdown(w) {
-  const head = w.answer_basis === void 0 ? "**get_why**" : `**get_why** · basis: ${w.answer_basis}`;
+  const from = `**${PANE_COPY.fromIndex}**`;
+  const head = w.answer_basis === void 0 ? from : `${from} · basis ${w.answer_basis}`;
   const commits = w.git_archaeology?.git_log ?? w.git_archaeology?.file_commits;
   return [
     head,
@@ -2720,9 +2746,13 @@ function askStatus(state2, columns) {
     case "idle":
       return [dim(PANE_COPY.askIdle, columns)];
     case "asking":
-      return [dim(`> ${ask.question}`, columns), dim(askingLine(ask.tool), columns)];
+      return [
+        dim(`> ${ask.question}`, columns),
+        dim(askingLine(ask.tool), columns),
+        ...ask.busy ? [dim(PANE_COPY.askBusy, columns)] : []
+      ];
     case "failed":
-      return [dim(`> ${ask.question}`, columns), dim(askFailedLine(ask.tool, ask.message), columns)];
+      return [dim(`> ${ask.question}`, columns), dim(askFailedLine(ask.message), columns)];
     case "answered":
       return [markdown(replyMarkdown(ask.question, ask.answer))];
   }
@@ -2740,19 +2770,24 @@ function askView(state2, columns) {
   return box({ key: "lens-ask-tab", flexDirection: "column" }, [field, ...askStatus(state2, columns)]);
 }
 __name(askView, "askView");
+function overlapWords(risk) {
+  const shared = overlap(risk);
+  if (shared !== null) return overlapLine(shared.branches, shared.files, shared.more);
+  return risk.branch_overlap === void 0 ? RECAP_COPY.notReported : RECAP_COPY.noOverlap;
+}
+__name(overlapWords, "overlapWords");
 function reviewRows(state2) {
   const risk = state2.lastReview;
-  if (risk === null) return [[RECAP_COPY.health, RECAP_COPY.noReview]];
+  if (risk === null) return [[RECAP_COPY.review, RECAP_COPY.noReview]];
   const hd = risk.health_delta;
   const compared = hd !== void 0 && (hd.status === "available" || hd.status === "partial");
   const tests = testsToRun(risk);
-  const shared = overlap(risk);
-  const branches = shared !== null ? overlapLine(shared.branches, shared.files, shared.more) : risk.branch_overlap === void 0 ? RECAP_COPY.notReported : RECAP_COPY.noOverlap;
   return [
+    RECAP_COPY.fromReview,
     [RECAP_COPY.health, health(risk).words],
     [RECAP_COPY.findings, compared ? findingsCounts(hd.resolved, hd.findings_total) : RECAP_COPY.notCompared],
-    [RECAP_COPY.tests, tests === null ? RECAP_COPY.noTests : testsQueued(tests)],
-    [RECAP_COPY.overlap, branches]
+    [RECAP_COPY.tests, tests === null ? RECAP_COPY.noTests : testsToRunCount(tests)],
+    [RECAP_COPY.overlap, overlapWords(risk)]
   ];
 }
 __name(reviewRows, "reviewRows");
@@ -2761,21 +2796,26 @@ function savedRow(state2) {
   return state2.mode === "full" ? RECAP_COPY.noSavings : RECAP_COPY.savingsNeedServer;
 }
 __name(savedRow, "savedRow");
-function recapRows(state2, reads) {
+function recapRows(state2, touched) {
   const decisions = surfacedDecisions(state2).map((d) => d.title);
   return [
-    [RECAP_COPY.files, filesTouched(state2.touched.length, reads)],
+    [RECAP_COPY.files, filesTouched(state2.touched.length, touched)],
     ...reviewRows(state2),
     [RECAP_COPY.saved, savedRow(state2)],
     [RECAP_COPY.decisions, decisions.length === 0 ? RECAP_COPY.noDecisions : decisionsSurfaced(decisions)]
   ];
 }
 __name(recapRows, "recapRows");
-function recapView(state2, reads, columns) {
-  const rows = recapRows(state2, reads).map(
-    ([label, value]) => box({ flexDirection: "row" }, [text(`${label}: `, { dimColor: true }), text(fit(value, Math.max(1, columns - label.length - 2)), { wrap: "truncate-end" })])
+function recapView(state2, touched, columns) {
+  const rows = recapRows(state2, touched);
+  const width = Math.max(...rows.map((r) => typeof r === "string" ? 0 : r[0].length)) + 2;
+  const drawn = rows.map(
+    (r) => typeof r === "string" ? dim(r, columns) : box({ flexDirection: "row" }, [
+      text(r[0].padEnd(width), { dimColor: true }),
+      text(fit(r[1], Math.max(1, columns - width)), { wrap: "truncate-end" })
+    ])
   );
-  return box({ key: "lens-recap", flexDirection: "column" }, [...rows, dim(recapFooter(state2.modelAsks), columns)]);
+  return box({ key: "lens-recap", flexDirection: "column" }, [...drawn, dim(recapFooter(state2.modelAsks), columns)]);
 }
 __name(recapView, "recapView");
 function paneView(tab, body) {
@@ -3109,10 +3149,12 @@ async function finishReview(b) {
 __name(finishReview, "finishReview");
 async function onTurnStart($, e, next) {
   try {
-    reviewGeneration++;
-    editsThisTurn = 0;
-    started = null;
-    dispatch(bind($), { type: "turnStarted" });
+    if (reviewOn) {
+      reviewGeneration++;
+      editsThisTurn = 0;
+      started = null;
+    }
+    dispatch(bind($), reviewOn ? { type: "turnStarted" } : { type: "briefDone" });
   } catch (err) {
     bind($).debug(`turn.start failed: ${String(err)}`);
   }
@@ -3164,7 +3206,8 @@ async function onPostCompact($, e, next) {
 __name(onPostCompact, "onPostCompact");
 function startAsk(b, question) {
   const q = question.trim();
-  if (q === "" || state.ask.phase === "asking") return;
+  if (q === "") return;
+  if (state.ask.phase === "asking") return dispatch(b, { type: "askBusy" });
   const { tool, args } = askRoute(q);
   dispatch(b, { type: "asked", question: q, tool });
   const gen = generation;

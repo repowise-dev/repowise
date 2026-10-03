@@ -93,3 +93,25 @@ export function json(status: number, body: unknown): MinimalResponse {
 export function mcpResult(result: unknown, isError = false): McpToolResult {
   return { content: [{ type: "text", text: JSON.stringify(isError ? result : { result }) }], isError };
 }
+
+/** An element as the tests' fake `$.ui.resolve` builds it. */
+export type Tree = { el: string; props: Record<string, any> };
+
+/** Every element in a drawn tree, depth first. */
+export function flatten(t: unknown): Tree[] {
+  const n = t as Tree;
+  if (typeof n !== "object" || n === null || n.props === undefined) return [];
+  const kids = Array.isArray(n.props.children) ? (n.props.children as unknown[]) : [];
+  return [n, ...kids.flatMap(flatten)];
+}
+
+/** Each Text's string and each Markdown's text, in order. */
+export function textOf(t: unknown): string[] {
+  return flatten(t)
+    .filter((n) => n.el === "Text" || n.el === "Markdown")
+    .map((n) => (n.el === "Markdown" ? (n.props.text as string) : (n.props.children as string[]).join("")));
+}
+
+export function buttonsOf(t: unknown): Tree[] {
+  return flatten(t).filter((n) => n.el === "Button");
+}

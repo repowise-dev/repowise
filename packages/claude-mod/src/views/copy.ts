@@ -190,7 +190,7 @@ export const MAP_COPY = {
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
   failed: "Lens map could not load the health map; it tries again on /lens",
-  desktop: "Lens map: the terminal and the desktop app only for now",
+  desktop: "Lens map: not drawn on this surface (terminal and desktop app only)",
   tooLarge: "Lens map has too much detail to draw here; the terminal map shows it",
   noScore: "Not scored",
   read: "Claude read",
@@ -288,21 +288,24 @@ export const PANE_COPY = {
   argumentHint: "[map | ask <question> | recap]",
   tabs: { map: "Map", ask: "Ask", recap: "Recap" },
   askLabel: "ask ",
-  askPlaceholder: "why ...? reads the decision records; anything else asks get_answer",
+  askPlaceholder: "why ...? asks the decision records; anything else asks the index",
   askSubmit: "ask",
-  askIdle: "Answers come from this repo's Repowise index, with the evidence it cites.",
+  askIdle: "Ask about this repo. Answers cite the evidence they used.",
+  askBusy: "still answering the last question; ask again when it lands",
   noEvidence: "no evidence cited",
+  fromIndex: "Built from the index",
+  fromModel: "Written by this repo's configured model, from the index",
 } as const;
 
 /** Characters of a reply the Ask tab draws; the Markdown element takes at most 10,000. */
 export const ASK_CHARS = 4_000;
 
-export function askingLine(tool: string): string {
-  return `asking ${tool}...`;
+export function askingLine(tool: "get_why" | "get_answer"): string {
+  return tool === "get_why" ? "asking the decision records..." : "asking the index...";
 }
 
-export function askFailedLine(tool: string, message: string): string {
-  return `${tool} could not answer: ${message}`;
+export function askFailedLine(message: string): string {
+  return `Could not answer: ${message}`;
 }
 
 export function askCut(chars: number): string {
@@ -314,14 +317,16 @@ export function moreRows(more: number): string {
 }
 
 export const RECAP_COPY = {
-  files: "Files touched",
-  health: "Code health (last review)",
-  findings: "Findings (last review)",
-  tests: "Tests queued (last review)",
+  files: "Files",
+  fromReview: "from the last change review",
+  review: "Change review",
+  health: "Code health",
+  findings: "Findings",
+  tests: "Tests to run",
+  overlap: "Branches overlapping",
   saved: "Saved",
   decisions: "Decisions surfaced",
-  overlap: "Branches overlapping (last review)",
-  noReview: "no change review this session",
+  noReview: "none this session",
   notCompared: "not compared",
   noTests: "none named",
   noOverlap: "none found",
@@ -329,20 +334,22 @@ export const RECAP_COPY = {
   noSavings: "nothing yet since this session started",
   savingsNeedServer: "needs the local server: repowise serve --no-ui",
   noDecisions: "none",
-  footer: "0 model calls · nothing uploaded",
+  noModel: "Lens made no model calls.",
+  fromIndex: "Every figure here is read from the local index.",
 } as const;
 
-/** `4 edited · 41 read or edited`, `200+` once the trail is capped. */
-export function filesTouched(edited: number, reads: { count: number; capped: boolean }): string {
-  const read = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
-  return `${formatNumber(edited)} edited · ${read} read or edited`;
+/** `4 edited of 41 files touched`, `200+` once the trail is capped. */
+export function filesTouched(edited: number, touched: { count: number; capped: boolean }): string {
+  const all = touched.capped ? `${formatNumber(touched.count)}+` : formatNumber(touched.count);
+  return `${formatNumber(edited)} edited of ${all} ${touched.count === 1 && !touched.capped ? "file" : "files"} touched`;
 }
 
+/** `1 resolved · 3 new findings`. */
 export function findingsCounts(resolved: number, total: number): string {
-  return `${formatNumber(resolved)} resolved · ${formatNumber(total)} new`;
+  return `${formatNumber(resolved)} resolved · ${countOf(total, "new finding", "new findings")}`;
 }
 
-export function testsQueued(t: { total: number; files: boolean; measured: boolean }): string {
+export function testsToRunCount(t: { total: number; files: boolean; measured: boolean }): string {
   const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   return `${count}, ${t.measured ? "measured" : "inferred"}`;
 }
@@ -352,13 +359,13 @@ export function decisionsSurfaced(titles: readonly string[]): string {
 }
 
 /**
- * Lens itself never calls a model or uploads anything; `get_answer` may use
- * the model a repo configures, which the footer then says.
+ * Lens itself calls no model. `get_answer` may have its reply written by the
+ * model a repo configures, which the footer then says.
  */
 export function recapFooter(modelAsks: number): string {
-  if (modelAsks === 0) return RECAP_COPY.footer;
+  if (modelAsks === 0) return `${RECAP_COPY.noModel} ${RECAP_COPY.fromIndex}`;
   const asks = countOf(modelAsks, "Ask reply", "Ask replies");
-  return `Lens: ${RECAP_COPY.footer} · ${asks} from get_answer may have used this repo's configured model`;
+  return `${RECAP_COPY.noModel} ${asks} from get_answer may have been written by this repo's configured model.`;
 }
 
 // The brief after a compaction: a visible prompt, sent only on a press.
@@ -366,7 +373,7 @@ export function recapFooter(modelAsks: number): string {
 export const BRIEF_COPY = {
   compacted: "context compacted",
   button: "Brief Claude",
-  intro: "The context was compacted. Lens brief of this session, from Repowise index lookups (no model):",
+  intro: "The context was compacted. This brief is built from the Repowise index and this session's edits:",
   files: "Files edited:",
   decisions: "Decisions in play:",
   review: "Open review items:",

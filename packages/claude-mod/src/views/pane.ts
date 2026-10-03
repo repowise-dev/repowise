@@ -6,7 +6,7 @@
 
 import { fit } from "../format";
 import type { PaneTab } from "../model/ask";
-import { testsToRun } from "../model/review";
+import { testsToRun, type ChangeRisk } from "../model/review";
 import { surfacedDecisions, type SessionState } from "../model/session";
 import { replyMarkdown } from "./answer";
 import {
@@ -20,7 +20,7 @@ import {
   overlapLine,
   recapFooter,
   savingsLine,
-  testsQueued,
+  testsToRunCount,
 } from "./copy";
 import { box, button, input, markdown, text, type Node } from "./elements";
 import { health, overlap } from "./review";
@@ -48,15 +48,23 @@ function askStatus(state: SessionState, columns: number): Node[] {
     case "idle":
       return [dim(PANE_COPY.askIdle, columns)];
     case "asking":
-      return [dim(`> ${ask.question}`, columns), dim(askingLine(ask.tool), columns)];
+      return [
+        dim(`> ${ask.question}`, columns),
+        dim(askingLine(ask.tool), columns),
+        ...(ask.busy ? [dim(PANE_COPY.askBusy, columns)] : []),
+      ];
     case "failed":
-      return [dim(`> ${ask.question}`, columns), dim(askFailedLine(ask.tool, ask.message), columns)];
+      return [dim(`> ${ask.question}`, columns), dim(askFailedLine(ask.message), columns)];
     case "answered":
       return [markdown(replyMarkdown(ask.question, ask.answer))];
   }
 }
 
-/** The field (pre-filled when `Why` opened the tab) and the last reply. */
+/**
+ * The field (pre-filled when `Why` opened the tab) and the last reply. Once a
+ * question is asked no value is drawn, so the field keeps what was typed and
+ * a follow-up can edit the last question.
+ */
 export function askView(state: SessionState, columns: number): Node {
   const field = input({
     key: ASK_KEY,
@@ -75,24 +83,27 @@ export interface TrailCounts {
   capped: boolean;
 }
 
-function reviewRows(state: SessionState): Array<[string, string]> {
+/** A label and its value, or a dim sub-head over the rows that follow. */
+export type RecapRow = [label: string, value: string] | string;
+
+function overlapWords(risk: ChangeRisk): string {
+  const shared = overlap(risk);
+  if (shared !== null) return overlapLine(shared.branches, shared.files, shared.more);
+  return risk.branch_overlap === undefined ? RECAP_COPY.notReported : RECAP_COPY.noOverlap;
+}
+
+function reviewRows(state: SessionState): RecapRow[] {
   const risk = state.lastReview;
-  if (risk === null) return [[RECAP_COPY.health, RECAP_COPY.noReview]];
+  if (risk === null) return [[RECAP_COPY.review, RECAP_COPY.noReview]];
   const hd = risk.health_delta;
   const compared = hd !== undefined && (hd.status === "available" || hd.status === "partial");
   const tests = testsToRun(risk);
-  const shared = overlap(risk);
-  const branches =
-    shared !== null
-      ? overlapLine(shared.branches, shared.files, shared.more)
-      : risk.branch_overlap === undefined
-        ? RECAP_COPY.notReported
-        : RECAP_COPY.noOverlap;
   return [
+    RECAP_COPY.fromReview,
     [RECAP_COPY.health, health(risk).words],
     [RECAP_COPY.findings, compared ? findingsCounts(hd.resolved, hd.findings_total) : RECAP_COPY.notCompared],
-    [RECAP_COPY.tests, tests === null ? RECAP_COPY.noTests : testsQueued(tests)],
-    [RECAP_COPY.overlap, branches],
+    [RECAP_COPY.tests, tests === null ? RECAP_COPY.noTests : testsToRunCount(tests)],
+    [RECAP_COPY.overlap, overlapWords(risk)],
   ];
 }
 
@@ -101,22 +112,30 @@ function savedRow(state: SessionState): string {
   return state.mode === "full" ? RECAP_COPY.noSavings : RECAP_COPY.savingsNeedServer;
 }
 
-/** The recap as label and value pairs, in the order drawn. */
-export function recapRows(state: SessionState, reads: TrailCounts): Array<[string, string]> {
+/** The recap in the order drawn. */
+export function recapRows(state: SessionState, touched: TrailCounts): RecapRow[] {
   const decisions = surfacedDecisions(state).map((d) => d.title);
   return [
-    [RECAP_COPY.files, filesTouched(state.touched.length, reads)],
+    [RECAP_COPY.files, filesTouched(state.touched.length, touched)],
     ...reviewRows(state),
     [RECAP_COPY.saved, savedRow(state)],
     [RECAP_COPY.decisions, decisions.length === 0 ? RECAP_COPY.noDecisions : decisionsSurfaced(decisions)],
   ];
 }
 
-export function recapView(state: SessionState, reads: TrailCounts, columns: number): Node {
-  const rows = recapRows(state, reads).map(([label, value]) =>
-    box({ flexDirection: "row" }, [text(`${label}: `, { dimColor: true }), text(fit(value, Math.max(1, columns - label.length - 2)), { wrap: "truncate-end" })]),
+/** Labels in a dim column wide enough for the longest, values beside them. */
+export function recapView(state: SessionState, touched: TrailCounts, columns: number): Node {
+  const rows = recapRows(state, touched);
+  const width = Math.max(...rows.map((r) => (typeof r === "string" ? 0 : r[0].length))) + 2;
+  const drawn = rows.map((r) =>
+    typeof r === "string"
+      ? dim(r, columns)
+      : box({ flexDirection: "row" }, [
+          text(r[0].padEnd(width), { dimColor: true }),
+          text(fit(r[1], Math.max(1, columns - width)), { wrap: "truncate-end" }),
+        ]),
   );
-  return box({ key: "lens-recap", flexDirection: "column" }, [...rows, dim(recapFooter(state.modelAsks), columns)]);
+  return box({ key: "lens-recap", flexDirection: "column" }, [...drawn, dim(recapFooter(state.modelAsks), columns)]);
 }
 
 /** The pane: the tabs, then the shown tab's body. */

@@ -102,18 +102,28 @@ export type ElementTable = Record<string, (props: Record<string, unknown>) => un
 /** What a press on each Button key runs. */
 export type PressTable = Record<string, () => void>;
 
+type Props = Record<string, unknown>;
+type PropsOf = { [K in Node["type"]]: (node: Extract<Node, { type: K }>, table: ElementTable, presses: PressTable) => Props };
+
+function pressFor(key: string, presses: PressTable): () => void {
+  const onPress = presses[key];
+  if (!onPress) throw new Error(`button ${key} has no action`);
+  return onPress;
+}
+
+// Leaves (Raster, Markdown, Svg) pass their props alone: the element refuses a `children` prop.
+const PROPS: PropsOf = {
+  Text: (n) => ({ ...n.props, children: n.children }),
+  Box: (n, table, presses) => ({ ...n.props, children: n.children.map((child) => materialize(child, table, presses)) }),
+  Button: (n, _table, presses) => ({ ...n.props, onPress: pressFor(n.props.key, presses) }),
+  Input: (n) => ({ ...n.props, onSubmit: SUBMIT_IN_HOOK }),
+  Raster: (n) => ({ ...n.props }),
+  Markdown: (n) => ({ ...n.props }),
+  Svg: (n) => ({ ...n.props }),
+};
+
 export function materialize(node: Node, table: ElementTable, presses: PressTable = {}): unknown {
   const build = table[node.type];
   if (!build) throw new Error(`element ${node.type} is not on this surface`);
-  if (node.type === "Button") {
-    const onPress = presses[node.props.key];
-    if (!onPress) throw new Error(`button ${node.props.key} has no action`);
-    return build({ ...node.props, onPress });
-  }
-  if (node.type === "Input") return build({ ...node.props, onSubmit: SUBMIT_IN_HOOK });
-  // A leaf: the element refuses a `children` prop.
-  if (node.type === "Raster" || node.type === "Markdown" || node.type === "Svg") return build({ ...node.props });
-  const children =
-    node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
-  return build({ ...node.props, children });
+  return build((PROPS[node.type] as (n: Node, t: ElementTable, p: PressTable) => Props)(node, table, presses));
 }

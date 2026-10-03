@@ -20,7 +20,8 @@ const ITEM_CHARS = 240;
  * last resort cuts the line itself, so the result never passes `room`.
  */
 export function listWithin(head: string, items: readonly string[], room: number): string {
-  const cut = items.map((i) => fit(i, ITEM_CHARS));
+  // One line per section: a title or a finding written over several lines is joined.
+  const cut = items.map((i) => fit(i.replace(/\s+/g, " ").trim(), ITEM_CHARS));
   for (let k = cut.length; k >= 0; k--) {
     const more = cut.length - k;
     const shown = cut.slice(0, k).join("; ");
@@ -33,7 +34,7 @@ export function listWithin(head: string, items: readonly string[], room: number)
 
 function reviewItems(state: SessionState): string[] {
   const risk = state.lastReview;
-  if (risk === null || risk.error !== undefined) return [];
+  if (risk === null) return [];
   const findings = (risk.health_delta?.findings_total ?? 0) > 0 ? (risk.health_delta?.top_findings ?? []).map(findingLine) : [];
   const tests = testsToRun(risk);
   const shared = overlap(risk);
@@ -62,11 +63,14 @@ export function briefText(state: SessionState): string | null {
   return brief;
 }
 
-/** `context compacted  1: Brief Claude`, while the offer stands and there is something to brief. */
-export function briefBandRow(state: SessionState, columns: number): Node | null {
+/**
+ * `context compacted  1: Brief Claude`, while the offer stands and there is
+ * something to brief. Beside a review row (hotkeys 1 to 3) it takes 4.
+ */
+export function briefBandRow(state: SessionState, columns: number, besideReview = false): Node | null {
   if (!state.compacted || briefText(state) === null) return null;
   return box({ key: "lens-brief", flexDirection: "row", columnGap: 2 }, [
     text(fit(BRIEF_COPY.compacted, Math.max(1, columns - BRIEF_COPY.button.length - 5)), { dimColor: true }),
-    button(BRIEF_PRESS, "1", BRIEF_COPY.button),
+    button(BRIEF_PRESS, besideReview ? "4" : "1", BRIEF_COPY.button),
   ]);
 }

@@ -50,6 +50,16 @@ export function reduceReview(state: ReviewState, action: ReviewAction): ReviewSt
   }
 }
 
+/** A diff with nothing in it: the server's own status, or a scope of 0 changed files (an edit reverted). */
+export function emptyDiff(risk: ChangeRisk): boolean {
+  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
+}
+
+/** A review with something to say: no server error and a non-empty diff. */
+export function reviewable(risk: ChangeRisk): boolean {
+  return risk.error === undefined && !emptyDiff(risk);
+}
+
 /** Every tool that writes a file (wider than the margin's Edit and Write: any change to the tree counts). */
 const WRITE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 

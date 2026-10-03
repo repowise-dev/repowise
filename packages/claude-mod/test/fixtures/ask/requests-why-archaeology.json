@@ -13,14 +13,7 @@
         "date": "2019-02-04",
         "evidence_refs": [
           {
-            "id": "ev_8964f795d9001bd297ca",
-            "repository": "default",
-            "kind": "commit",
-            "commit": "827bbe2a7e40078b2dfb3a29d5f7d6df9a336b62",
-            "provenance": "historical",
-            "source": "archaeology:git_log",
-            "source_kind": "archaeology:git_log",
-            "verification_basis": "historical"
+            "id": "ev_8964f795d9001bd297ca"
           }
         ]
       }

@@ -376,10 +376,13 @@ async function finishReview(b: Bound): Promise<string | null> {
 
 async function onTurnStart($: ModApi, e: unknown, next: (e: unknown) => Promise<unknown>): Promise<unknown> {
   try {
-    reviewGeneration++;
-    editsThisTurn = 0;
-    started = null;
-    dispatch(bind($), { type: "turnStarted" });
+    // With reviews off the review state is never touched; a new turn only retires the brief offer.
+    if (reviewOn) {
+      reviewGeneration++;
+      editsThisTurn = 0;
+      started = null;
+    }
+    dispatch(bind($), reviewOn ? { type: "turnStarted" } : { type: "briefDone" });
   } catch (err) {
     bind($).debug(`turn.start failed: ${String(err)}`);
   }
@@ -446,7 +449,9 @@ async function onPostCompact(
  */
 function startAsk(b: Bound, question: string): void {
   const q = question.trim();
-  if (q === "" || state.ask.phase === "asking") return;
+  if (q === "") return;
+  // One question at a time; the tab says this one was not asked.
+  if (state.ask.phase === "asking") return dispatch(b, { type: "askBusy" });
   const { tool, args } = askRoute(q);
   dispatch(b, { type: "asked", question: q, tool });
   const gen = generation;

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckNext, Hook, McpToolResult, ModApi, On, ToolCheckEvent } from "../src/mod-api";
 import { DARK } from "@repowise-dev/ui/brand";
 import { TimeoutError } from "../src/data/transport";
-import { fixture, mcpResult } from "./fake-host";
+import { buttonsOf, fixture, mcpResult } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
 
@@ -672,14 +672,7 @@ describe("change review", () => {
     await hooks["turn.complete"]!(d.$, DONE, answered);
     expect(d.calls.submitted).toEqual([]);
     const tree = (await hooks["ui.render:AbovePrompt"]!(d.$, band, async () => null)) as unknown;
-    const buttons: Array<{ key: string; onPress: () => void }> = [];
-    const walk = (n: unknown): void => {
-      const node = n as { el?: string; props?: { key?: string; onPress?: () => void; children?: unknown } };
-      if (node?.el === "Button") buttons.push(node.props as { key: string; onPress: () => void });
-      const kids = node?.props?.children;
-      if (Array.isArray(kids)) kids.forEach(walk);
-    };
-    walk(tree);
+    const buttons = buttonsOf(tree).map((b) => b.props as { key: string; onPress: () => void });
     expect(buttons.map((b) => b.key)).toEqual(["lens-review-tests", "lens-review-details"]);
     buttons[0]!.onPress();
     buttons[1]!.onPress();

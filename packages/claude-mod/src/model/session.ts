@@ -4,7 +4,7 @@
 
 import type { AskReply, AskState, AskTool, PaneTab } from "./ask";
 import { mayHaveUsedModel } from "./ask";
-import { initialReview, reduceReview, type ChangeRisk, type ReviewAction, type ReviewState } from "./review";
+import { initialReview, reduceReview, reviewable, type ChangeRisk, type ReviewAction, type ReviewState } from "./review";
 
 /** `no-repo`: not inside a git work tree, so there is nothing to index and Lens stays quiet. */
 export type Mode = "full" | "lite" | "no-index" | "no-cli" | "no-repo";
@@ -84,7 +84,7 @@ export interface SessionState {
   /** The pane's tab, and the text the Ask field starts with. */
   pane: { tab: PaneTab; draft: string };
   ask: AskState;
-  /** Ask replies that may have used the index's own model (see `mayHaveUsedModel`). */
+  /** get_answer asks that may have used the repo's configured model: counted at the start, dropped when the reply says no provider. */
   modelAsks: number;
   /** The context was compacted and the brief not yet sent or passed over. */
   compacted: boolean;
@@ -103,6 +103,7 @@ export type SessionAction =
   | { type: "asked"; question: string; tool: AskTool }
   | { type: "answered"; question: string; answer: AskReply }
   | { type: "askFailed"; question: string; tool: AskTool; message: string }
+  | { type: "askBusy" }
   | { type: "compacted" }
   | { type: "briefDone" }
   | ReviewAction;
@@ -172,11 +173,17 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
       return state.touched.includes(action.path) ? state : { ...state, touched: [...state.touched, action.path] };
     case "tab":
       return { ...state, pane: { tab: action.tab, draft: action.draft ?? state.pane.draft } };
-    case "asked":
-      // The field starts empty once its text was asked.
-      return { ...state, ask: { phase: "asking", question: action.question, tool: action.tool }, pane: { ...state.pane, draft: "" } };
+    case "asked": {
+      // Counted when it starts (it may fail or time out after the provider saw it); the Why draft is spent.
+      const modelAsks = state.modelAsks + (action.tool === "get_answer" ? 1 : 0);
+      const ask: AskState = { phase: "asking", question: action.question, tool: action.tool, busy: false };
+      return { ...state, modelAsks, ask, pane: { ...state.pane, draft: "" } };
+    }
+    case "askBusy":
+      return state.ask.phase === "asking" && !state.ask.busy ? { ...state, ask: { ...state.ask, busy: true } } : state;
     case "answered": {
-      const modelAsks = state.modelAsks + (mayHaveUsedModel(action.answer) ? 1 : 0);
+      // A reply that says it had no provider is known to have used no model: no longer counted.
+      const modelAsks = Math.max(0, state.modelAsks - (action.answer.tool === "get_answer" && !mayHaveUsedModel(action.answer) ? 1 : 0));
       return { ...state, modelAsks, ask: { phase: "answered", question: action.question, answer: action.answer } };
     }
     case "askFailed":
@@ -194,7 +201,8 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
 function reduceTurn(state: SessionState, action: ReviewAction): SessionState {
   const review = reduceReview(state.review, action);
   const compacted = action.type === "turnStarted" ? false : state.compacted;
-  const lastReview = action.type === "reviewed" ? action.risk : state.lastReview;
+  // Only a review with something to say is kept: an error or an empty diff leaves the last one.
+  const lastReview = action.type === "reviewed" && reviewable(action.risk) ? action.risk : state.lastReview;
   if (review === state.review && compacted === state.compacted && lastReview === state.lastReview) return state;
   return { ...state, review, compacted, lastReview };
 }
