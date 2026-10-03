@@ -121,7 +121,7 @@ The same engine, hosted. Run **Repowise: Publish to repowise.dev** (or `repowise
 
 ## Privacy
 
-The extension talks only to the local Repowise CLI and server on your machine and reads the index under `.repowise/` in your project. It sends no telemetry of its own, and nothing about your code leaves your machine through this extension unless you run **Publish to repowise.dev**, which asks repowise.dev to index the repo's GitHub remote. Links to repowise.dev carry where they were clicked and, only while VS Code telemetry is on, the repowise CLI's anonymous install id; never VS Code's machine id.
+The extension talks only to the local Repowise CLI and server on your machine and reads the index under `.repowise/` in your project. It sends no telemetry of its own, and nothing about your code leaves your machine through this extension unless you run **Publish to repowise.dev**, which asks repowise.dev to index the repo's GitHub remote. Links to repowise.dev carry only where they were clicked: no install id, and never VS Code's machine id.
 
 ## Learn more
 
