@@ -83,12 +83,22 @@ def _parameter_count(symbol: Symbol) -> str | None:
     return None if count is None else str(count)
 
 
+def _rust_cfg_predicate(symbol: Symbol) -> str | None:
+    """A Rust item's ``cfg(...)`` predicate with whitespace stripped, or None."""
+    for decorator in symbol.decorators:
+        predicate = "".join(decorator.split())
+        if predicate.startswith("cfg(") and predicate.endswith(")"):
+            return predicate
+    return None
+
+
 # Which discriminator tells colliding members apart, per language. A build
 # variant (C ``#if`` branches, Rust ``cfg``) registers here as its own function.
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
+    "rust": _rust_cfg_predicate,
 }
 
 # Languages where a type may share its name with a sibling of another arity.
