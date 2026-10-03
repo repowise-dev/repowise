@@ -263,6 +263,29 @@ Adding a new language has a dedicated recipe, see
 - Place tests in `tests/unit/` or `tests/integration/`
 - Run the full suite with `uv run pytest`
 
+### Retrieval guard
+
+`tests/unit/server/mcp/test_retrieval_guard.py` indexes `tests/fixtures/sample_repo`
+with no API key, asks `search_codebase` (default and `limit=10`) and `get_answer`
+48 questions with hand-read gold files, and compares coverage at 1, 5 and all
+served files, file precision and median response tokens against
+`tests/fixtures/mcp/retrieval_guard_baseline.json`. It takes about 10 seconds
+inside `tests/unit/`, so every pull request runs it, and CI writes the metrics
+table to the job summary. Run it alone with
+`uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s` to see the table.
+
+It fails when coverage or precision drops by more than 0.03 or median tokens
+grow by more than 15%. If your change moves ranking or response shape on
+purpose, refresh the baseline in the same pull request:
+
+```bash
+REPOWISE_UPDATE_RETRIEVAL_BASELINE=1 uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s
+```
+
+and paste the before/after table into the description. Always report coverage
+with precision beside it: serving more files raises coverage for free, so a
+coverage gain that costs precision is a trade-off to justify, not a win.
+
 ## Pull Request Guidelines
 
 - Keep PRs focused on a single change
