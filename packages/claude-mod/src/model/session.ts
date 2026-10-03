@@ -2,6 +2,8 @@
  * Session state and its reducer. Pure: no I/O, no clock, no `$`.
  */
 
+import { initialReview, reduceReview, type ReviewAction, type ReviewState } from "./review";
+
 /** `no-repo`: not inside a git work tree, so there is nothing to index and Lens stays quiet. */
 export type Mode = "full" | "lite" | "no-index" | "no-cli" | "no-repo";
 
@@ -71,6 +73,8 @@ export interface SessionState {
   notes: Readonly<Record<string, readonly MarginNote[]>>;
   /** Shown only once something was saved; full mode only. */
   savings: SavingsDelta | null;
+  /** The last turn's change review. */
+  review: ReviewState;
 }
 
 export type SessionAction =
@@ -80,7 +84,8 @@ export type SessionAction =
   | { type: "toolEnded"; id: string }
   | { type: "contextLoaded"; file: string; context: FileContext }
   | { type: "notesFor"; id: string; notes: readonly MarginNote[] }
-  | { type: "savings"; delta: SavingsDelta };
+  | { type: "savings"; delta: SavingsDelta }
+  | ReviewAction;
 
 export const initialSession: SessionState = {
   mode: null,
@@ -92,6 +97,7 @@ export const initialSession: SessionState = {
   contexts: {},
   notes: {},
   savings: null,
+  review: initialReview,
 };
 
 export function hintFor(mode: Mode, liteReason: LiteReason | undefined): HintKind | null {
@@ -131,5 +137,9 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
       return action.notes.length === 0 ? state : { ...state, notes: { ...state.notes, [action.id]: action.notes } };
     case "savings":
       return { ...state, savings: action.delta.tokens > 0 ? action.delta : null };
+    default: {
+      const review = reduceReview(state.review, action);
+      return review === state.review ? state : { ...state, review };
+    }
   }
 }

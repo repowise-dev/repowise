@@ -13,6 +13,7 @@ const at = (columns: number) => ({ columns, hasSurvey: false });
 function lines(node: Node | null): string[] {
   if (node === null) return [];
   if (node.type === "Text") return node.children;
+  if (node.type === "Button") return [node.props.label];
   return node.children.flatMap(lines);
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fromTurnComplete } from "../src/model/events";
+import { initialReview } from "../src/model/review";
 import { hintFor, initialSession, reduce, type SessionAction, type SessionState } from "../src/model/session";
 
 function run(actions: SessionAction[], from: SessionState = initialSession): SessionState {
@@ -36,6 +37,7 @@ describe("session reducer", () => {
       contexts: {},
       notes: {},
       savings: null,
+      review: initialReview,
     });
   });
 

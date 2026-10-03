@@ -460,6 +460,37 @@ function savingsSince(now, base) {
 }
 __name(savingsSince, "savingsSince");
 
+// src/model/review.ts
+var initialReview = { edited: false, outcome: { phase: "none" } };
+function reduceReview(state2, action) {
+  switch (action.type) {
+    case "turnStarted":
+      return state2.edited || state2.outcome.phase !== "none" ? initialReview : state2;
+    case "fileEdited":
+      return state2.edited ? state2 : { ...state2, edited: true };
+    case "reviewStarted":
+      return { ...state2, outcome: { phase: "reviewing" } };
+    case "reviewed":
+      return { ...state2, outcome: { phase: "done", risk: action.risk } };
+    case "reviewFailed":
+      return { ...state2, outcome: { phase: "failed", reason: action.reason, message: action.message } };
+  }
+}
+__name(reduceReview, "reduceReview");
+function testsToRun(risk) {
+  const block = risk.impacted_tests;
+  const tests = block?.tests_to_run ?? [];
+  if (block === void 0 || tests.length === 0) return null;
+  return {
+    tests,
+    total: block.total ?? tests.length,
+    truncated: block.truncated === true,
+    files: block.tests_to_run_kind === "test_file",
+    measured: block.basis === "measured"
+  };
+}
+__name(testsToRun, "testsToRun");
+
 // src/model/session.ts
 var initialSession = {
   mode: null,
@@ -470,7 +501,8 @@ var initialSession = {
   running: null,
   contexts: {},
   notes: {},
-  savings: null
+  savings: null,
+  review: initialReview
 };
 function hintFor(mode, liteReason) {
   if (mode === "full" || mode === "no-repo") return null;
@@ -505,6 +537,10 @@ function reduce(state2, action) {
       return action.notes.length === 0 ? state2 : { ...state2, notes: { ...state2.notes, [action.id]: action.notes } };
     case "savings":
       return { ...state2, savings: action.delta.tokens > 0 ? action.delta : null };
+    default: {
+      const review = reduceReview(state2.review, action);
+      return review === state2.review ? state2 : { ...state2, review };
+    }
   }
 }
 __name(reduce, "reduce");
@@ -567,6 +603,43 @@ function savingsLine(d, columns) {
   return full.length <= columns ? full : `${head} this session · all agents`;
 }
 __name(savingsLine, "savingsLine");
+var REVIEWING = "Reviewing the change...";
+var REVIEW_TIMEOUT_S = 20;
+var REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
+var RUN_TESTS = "Run tests";
+var DETAILS = "Details";
+var OVERLAP_MARK = "◦";
+function noNewFindings(analyzed) {
+  return `no new findings in ${analyzed === 1 ? "the 1 changed file" : `all ${analyzed.toLocaleString("en-US")} changed files`}`;
+}
+__name(noNewFindings, "noNewFindings");
+function healthImproved(resolved) {
+  return `improved, ${countOf(resolved, "finding", "findings")} resolved, none new`;
+}
+__name(healthImproved, "healthImproved");
+var HEALTH_NOT_REPORTED = "not reported";
+var NO_NEW_FINDINGS = "no new findings";
+var PARTLY_COMPARED = "partly compared, no new findings";
+function notCompared(why) {
+  return why === "" ? "not compared" : `not compared: ${why}`;
+}
+__name(notCompared, "notCompared");
+function improvedShort(resolved) {
+  return `improved, ${resolved.toLocaleString("en-US")} resolved`;
+}
+__name(improvedShort, "improvedShort");
+function newFindings(total, required) {
+  return `${countOf(total, "new finding", "new findings")}, ${required ? "review required" : "low severity"}`;
+}
+__name(newFindings, "newFindings");
+function resolvedToo(resolved) {
+  return `${countOf(resolved, "finding", "findings")} resolved`;
+}
+__name(resolvedToo, "resolvedToo");
+function overlapShort(branches) {
+  return `${OVERLAP_MARK} ${countOf(branches, "other branch edits", "other branches edit")} these files`;
+}
+__name(overlapShort, "overlapShort");
 
 // src/views/elements.ts
 function text(value, props = {}) {
@@ -577,13 +650,88 @@ function box(props, children) {
   return { type: "Box", props, children };
 }
 __name(box, "box");
-function materialize(node, table) {
+function button(key, hotkey, label) {
+  return { type: "Button", props: { key, label, hotkey, plain: true } };
+}
+__name(button, "button");
+function materialize(node, table, presses = {}) {
   const build = table[node.type];
   if (!build) throw new Error(`element ${node.type} is not on this surface`);
-  const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table));
+  if (node.type === "Button") {
+    const onPress = presses[node.props.key];
+    if (!onPress) throw new Error(`button ${node.props.key} has no action`);
+    return build({ ...node.props, onPress });
+  }
+  const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
   return build({ ...node.props, children });
 }
 __name(materialize, "materialize");
+
+// src/views/review.ts
+var PRESS = { tests: "lens-review-tests", details: "lens-review-details" };
+function scored(risk) {
+  return risk.error === void 0 && risk.status !== "nothing_to_score";
+}
+__name(scored, "scored");
+var COMPARED = /* @__PURE__ */ new Set(["available", "partial"]);
+function health(risk) {
+  const d = risk.directive;
+  const hd = risk.health_delta;
+  if (d === void 0 || hd === void 0) return { words: HEALTH_NOT_REPORTED, short: HEALTH_NOT_REPORTED };
+  if (!COMPARED.has(hd.status)) {
+    const words2 = notCompared(hd.explanation.replace(/\.$/, ""));
+    return { words: words2, short: notCompared("") };
+  }
+  if (d.status === "clear_in_analyzed_scope") {
+    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: "success" };
+    return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
+  }
+  const headline = d.headline.replace(/\.$/, "");
+  const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
+  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: "error" };
+  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: "warning" };
+  return { words, short: PARTLY_COMPARED };
+}
+__name(health, "health");
+function overlap(risk) {
+  const block = risk.branch_overlap;
+  const branches = block?.branches ?? [];
+  if (branches.length === 0) return null;
+  const files = [...new Set(branches.flatMap((b) => (b.files ?? []).map((f) => f.file)))];
+  return { branches: branches.map((b) => b.branch), files, more: block?.truncated === true };
+}
+__name(overlap, "overlap");
+function buttons(risk) {
+  const out = [];
+  if (testsToRun(risk) !== null) out.push(button(PRESS.tests, "1", RUN_TESTS));
+  if (risk.directive !== void 0) out.push(button(PRESS.details, "3", DETAILS));
+  return out;
+}
+__name(buttons, "buttons");
+var GAP = 2;
+function reviewBandRow(outcome, columns) {
+  if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
+  if (outcome.phase !== "done" || !scored(outcome.risk)) return null;
+  const risk = outcome.risk;
+  const pressable = buttons(risk);
+  const buttonCells = pressable.reduce(
+    (n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP,
+    0
+  );
+  const room = Math.max(0, columns - buttonCells);
+  const h = health(risk);
+  const shared = overlap(risk);
+  const words = fit(`review · health: ${h.short}`, room);
+  const parts = [text(words, h.color === void 0 ? { dimColor: true } : { color: h.color })];
+  const left = room - words.length;
+  const tail = shared === null ? "" : ` · ${overlapShort(shared.branches.length)}`;
+  if (tail !== "" && left >= tail.length) parts.push(text(tail, { dimColor: true }));
+  return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
+    box({ flexDirection: "row" }, parts),
+    ...pressable
+  ]);
+}
+__name(reviewBandRow, "reviewBandRow");
 
 // src/views/band.ts
 var MAX_BAND_ROWS = 2;
@@ -597,12 +745,11 @@ function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
 __name(bandRows, "bandRows");
 function bandView(state2, viewport) {
   if (viewport.hasSurvey) return null;
-  const rows = bandRows(state2, viewport.columns);
-  if (rows.length === 0) return null;
-  return box(
-    { key: "lens-band", flexDirection: "column" },
-    rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }))
-  );
+  const review = reviewBandRow(state2.review.outcome, viewport.columns);
+  const rows = bandRows(state2, viewport.columns).slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
+  if (rows.length === 0 && review === null) return null;
+  const nodes = rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
+  return box({ key: "lens-band", flexDirection: "column" }, review === null ? nodes : [...nodes, review]);
 }
 __name(bandView, "bandView");
 

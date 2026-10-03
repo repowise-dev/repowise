@@ -7,6 +7,7 @@ import { fit } from "../format";
 import type { SessionState } from "../model/session";
 import { HINTS, freshnessLine, savingsLine } from "./copy";
 import { box, text, type Node } from "./elements";
+import { reviewBandRow } from "./review";
 
 export const MAX_BAND_ROWS = 2;
 
@@ -26,10 +27,10 @@ export function bandRows(state: SessionState, columns = Number.POSITIVE_INFINITY
 /** null means draw nothing: pass the site on. */
 export function bandView(state: SessionState, viewport: BandViewport): Node | null {
   if (viewport.hasSurvey) return null;
-  const rows = bandRows(state, viewport.columns);
-  if (rows.length === 0) return null;
-  return box(
-    { key: "lens-band", flexDirection: "column" },
-    rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" })),
-  );
+  const review = reviewBandRow(state.review.outcome, viewport.columns);
+  // The review row holds the buttons, so it keeps its place within the cap.
+  const rows = bandRows(state, viewport.columns).slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
+  if (rows.length === 0 && review === null) return null;
+  const nodes = rows.map((row) => text(fit(row, viewport.columns), { dimColor: true, wrap: "truncate-end" }));
+  return box({ key: "lens-band", flexDirection: "column" }, review === null ? nodes : [...nodes, review]);
 }
