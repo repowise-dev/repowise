@@ -33,6 +33,34 @@ interface Calls {
   http: string[];
 }
 
+/** The surface's side: redraws, logs, elements, and the pane and blit calls, all recorded. */
+function uiFake(calls: Calls): ModApi["ui"] {
+  return {
+    invalidate: () => {
+      calls.invalidate++;
+    },
+    log: (text) => {
+      calls.logs.push(text);
+    },
+    resolve: () => ({
+      Box: (props) => ({ el: "Box", props }),
+      Text: (props) => ({ el: "Text", props }),
+      Raster: (props) => ({ el: "Raster", props }),
+    }),
+    open: async (pane) => {
+      calls.open.push(pane);
+      return { isPlaced: true };
+    },
+    close: async (pane) => {
+      calls.close.push(pane);
+    },
+    blit: async (args) => {
+      calls.blit.push(args);
+      return {};
+    },
+  };
+}
+
 /** A `$` for a git work tree with no index and a connecting MCP server. */
 function fakeDollar() {
   const calls: Calls = { cwd: 0, invalidate: 0, logs: [], open: [], close: [], blit: [], commands: [], http: [] };
@@ -56,30 +84,7 @@ function fakeDollar() {
       call: async () => Promise.reject(new Error("no MCP in this test")),
     },
     prompt: { submit: async () => ({}) },
-    ui: {
-      invalidate: () => {
-        calls.invalidate++;
-      },
-      log: (text) => {
-        calls.logs.push(text);
-      },
-      resolve: () => ({
-        Box: (props) => ({ el: "Box", props }),
-        Text: (props) => ({ el: "Text", props }),
-        Raster: (props) => ({ el: "Raster", props }),
-      }),
-      open: async (pane) => {
-        calls.open.push(pane);
-        return { isPlaced: true };
-      },
-      close: async (pane) => {
-        calls.close.push(pane);
-      },
-      blit: async (args) => {
-        calls.blit.push(args);
-        return {};
-      },
-    },
+    ui: uiFake(calls),
     command: {
       register: async (c) => {
         calls.commands.push(c);
