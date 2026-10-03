@@ -269,6 +269,10 @@ export interface RiskReportArtifactData {
   classification?: string;
   warning?: string;
   error?: string;
+  /** `nothing_to_score` when the change has no counted files. */
+  status?: string;
+  /** True when uncommitted work was scored; false when a clean tree fell back to `HEAD`. */
+  working_tree?: boolean;
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
@@ -282,7 +286,17 @@ export interface RiskReportArtifactData {
     groups?: Array<{ files: string[]; bridging_files?: string[] }>;
     [k: string]: unknown;
   };
-  impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
+  impacted_tests?: {
+    tests_to_run?: string[];
+    status?: string;
+    summary?: string;
+    /** `measured` from stored coverage, `inferred` from the dependency graph. */
+    basis?: "measured" | "inferred" | "none";
+    /** Test ids, or whole test files when inferred. */
+    tests_to_run_kind?: "test_id" | "test_file" | null;
+    total?: number;
+    truncated?: boolean;
+  };
   /** Bug-fix record of the touched files: the "historically fragile" signal. */
   fix_history?: {
     available?: boolean;
@@ -388,6 +402,9 @@ export interface SearchResultsArtifactData {
     title: string;
     page_type: string;
     page_id?: string;
+    /** Openable repo-relative file; absent when the hit names no file. */
+    path?: string;
+    /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
     relevance_score?: number;

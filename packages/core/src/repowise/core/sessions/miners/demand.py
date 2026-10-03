@@ -145,7 +145,12 @@ def _search_files(result: dict[str, Any]) -> list[str]:
     for item in result.get("results") or []:
         if not isinstance(item, dict):
             continue
-        hit = item.get("file") or item.get("target_path") or item.get("symbol_id")
+        hit = (
+            item.get("path")
+            or item.get("file")
+            or item.get("target_path")
+            or item.get("symbol_id")
+        )
         if isinstance(hit, str):
             files.append(hit)
     return files

@@ -397,6 +397,7 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
             [executable, "format", "--check", "."],
             cwd=str(root),
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=FORMATTER_TIMEOUT_S,
             env={**os.environ, "NO_COLOR": "1"},
@@ -480,6 +481,7 @@ def _head_commit(root: Path) -> str | None:
             ["git", "rev-parse", "HEAD"],
             cwd=str(root),
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=_GIT_TIMEOUT_S,
         )

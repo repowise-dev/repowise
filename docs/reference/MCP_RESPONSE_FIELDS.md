@@ -5,6 +5,7 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 ## Contents
 
 - [The `_meta` envelope](#the-_meta-envelope)
+- [On the wire](#on-the-wire)
 - [Truncation and recovery](#truncation-and-recovery)
 - [Ignored arguments](#ignored-arguments)
 - [Next-call shape](#next-call-shape)
@@ -16,10 +17,12 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 
 Every response carries `_meta`. Fields are present only when they carry a signal, so read absence as "nothing to report", never as an error.
 
+Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call, and the whole `index_scope`. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
+
 | Field | When present | Meaning |
 |-------|--------------|---------|
-| `contract_version` | Always | Version of the response contract |
-| `timing_ms` | Usually | Tool wall time |
+| `contract_version` | `get_overview`, or with `REPOWISE_MCP_DEBUG_META=1` | Version of the response contract (currently 3). It stays the version of record for wire-shape changes even when not emitted |
+| `timing_ms` | `get_overview`, or with `REPOWISE_MCP_DEBUG_META=1` | Tool wall time |
 | `hint` | Sometimes | A short follow-up suggestion. On a `get_answer` reply graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again |
 | `cached` | Only when `true` | The response came from cache |
 | `index_age_days` | When a repository is resolved | Days since the last `repowise update` |
@@ -27,16 +30,16 @@ Every response carries `_meta`. Fields are present only when they carry a signal
 | `live_head` | When `.git/HEAD` is readable | Short SHA of the current checkout; equal to `indexed_commit` when current |
 | `index_behind` | When the live-versus-indexed comparison ran | `true` if HEAD moved, `false` if it matches. Absent means the comparison could not run |
 | `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
-| `index_scope` | When the index records it | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
+| `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
-| `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode | Which embedder, and why |
+| `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |
 | `newer_release` | Once per server process | A newer repowise is published; restart the MCP server after upgrading |
-| `response_budget` | Always | `limit_chars` (the ceiling), `tier` (`default` or `expanded`), `serialized_chars` (size delivered) |
+| `response_budget` | When the budget cut something or could not fit the protected fields (`enforcement_error`); always on `get_overview` | `limit_chars` (the ceiling), `tier` (`default` or `expanded`), `serialized_chars` (size delivered) |
 | `omitted` | When content was cut | `refs`, `tokens`, `restore`. See [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | When the omission store could not be written | Names the storage failure; the cut rows cannot be restored |
-| `scope_hint` | `get_answer`, `get_context` | Up to three knowledge-graph layers holding none of the served paths, with file counts: areas the answer did not touch |
+| `scope_hint` | `get_answer` | Up to three knowledge-graph layers holding none of the served paths, with file counts: areas the answer did not touch |
 | `complete` | When whole units were served | Symbol bodies (bounds verified against the live file) or whole files. Do not re-read them. Sliced bodies and partial ranges are never counted |
-| `completeness` | Always | `capped`, plus `shown` and `total` summed over the collections a reducing pass counted, and `reason` naming the pass that dropped most. It measures what survived reduction, not what share of the repository you hold |
+| `completeness` | When something was capped; always on `get_overview` | `capped`, plus `shown` and `total` summed over the collections a reducing pass counted, and `reason` naming the pass that dropped most. It measures what survived reduction, not what share of the repository you hold |
 | `floor` | When a count comes from walking the graph | Names those fields. Their values are lower bounds: an unresolved edge is uncounted, not proven absent |
 | `state` | Only when something fired | `degraded` with `degraded_reasons`, `partial`, `truncated`. A roll-up of the response's own flags |
 
@@ -44,9 +47,15 @@ Every response carries `_meta`. Fields are present only when they carry a signal
 
 ---
 
+## On the wire
+
+Each result carries the payload twice, as MCP allows: `structuredContent` is `{"result": <payload>}` (the tools advertise an `outputSchema`), and the text block is the same payload as compact JSON, with no indentation. Clients that read `structuredContent` see no difference; clients that forward the text block send fewer tokens. Set `REPOWISE_MCP_PRETTY_JSON=1` in the server's environment to restore indented text for a client that depends on it.
+
+---
+
 ## Truncation and recovery
 
-Responses fit 24,000 serialized characters by default and 32,000 when the call passes an expansion argument (for most tools, a nonempty `include`; for `get_answer`, `include=["evidence"]`). `_meta.response_budget` reports which ceiling applied.
+Responses fit 24,000 serialized characters by default and 32,000 when the call passes an expansion argument (for most tools, a nonempty `include`; for `get_answer`, `include=["evidence"]`). When the budget cut something, `_meta.response_budget` reports which ceiling applied.
 
 Content cut to fit is stored in the repo's [omission store](../agent/DISTILL.md#the-omission-store), and `_meta.omitted` says how to get it back:
 
@@ -117,7 +126,8 @@ Every suggested follow-up (`get_health`'s `fix_first[].next_call`, the refactori
 | `retrieval_quality` | `high`, `partial` or `weak`: rates the evidence under the prose |
 | `symbol_bodies` | Live bodies of the symbols the answer names. Read these before calling `get_symbol` |
 | `retrieval` | Evidence rows (summary, snippet, key symbols). Shrinks as confidence rises |
-| `candidates` | Ranked shortlist of files retrieval resolved, `{path, lines?}`, up to 5. Navigation, not evidence. Only with `include=["evidence"]` |
+| `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 3 at `high`, 5 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file |
+| `candidates` | The top 5 of those files as `{path, lines?, defines?}` rows. Only with `include=["evidence"]` |
 | `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason |
 | `episodes` | A dated fact recorded about this checkout that bears on the question; `still_true` says how current it is |
 | `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` unless `retrieval_quality` is `weak`, never `high` |
@@ -134,17 +144,17 @@ Per target, under `targets`:
 
 | Field | Meaning |
 |-------|---------|
-| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers |
+| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}` and `symbols_total`; a budget trim below that keeps symbols by kind and name match, not centrality; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
 | `hotspot` | Churn flag |
 | `fix_history` | Only on files with counted bug fixes: count, age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records bound to the target; `get_why` serves their bodies |
 | decisions | Titles by default. With `include=["decisions"]`, three lanes: `decisions` (accepted, governing), `candidates` (proposed, at most 3), `history` (accepted then withdrawn, at most 2) |
-| `file_preview` | For a file with no indexed symbols: line and character counts, plus the heading spine for markdown or the first lines otherwise |
+| `file_preview` | For a file with no indexed symbols: `lines`, `chars`, and for a markdown or reST document `heading_count` with the first three `headings`; otherwise the first three non-empty lines as `head` |
 | `resolved_to`, `note` | A `path::Name` target whose symbol did not resolve answers with the file's card instead |
 | `cross_repo` | Workspace mode: `co_changes_with` partners in other repos and contract `consumers` / `providers` |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: the language, how many call edges the index resolved for it, and the share that are guesses. An empty list means no resolved edge, not proof of none |
 
-Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`.
+Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor count), `last_change`, `callers`, `callees`, `metrics` (PageRank, betweenness, percentiles), `community`, `skeleton`, `health`, `doc_drift`, `symbols` (every symbol of a file).
 
 **Skeleton.** Sliced from the index's stored symbol bounds, with no parsing at query time: every signature, the import preamble, and the bodies of the top symbols ranked by centrality, hotspot and query match. Elision markers carry 1-indexed line ranges, so you can read any part back.
 
@@ -173,13 +183,19 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 
 | Field | Meaning |
 |-------|---------|
-| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `file`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `file`, `title`, `next: "get_context"`. Concept hits: wiki pages with `relevance_score`, `snippet`, `target_path`, `sources` |
+| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`. Concept hits: wiki pages with `page_type`, `path` when the page names a file, `relevance_score`, `snippet`, `sources` |
+| `path` | The repo-relative file a row names, openable as is. Absent when the row names no file (a module page's group key, an onboarding slot, the repo overview); never a page id |
+| `file` | Deprecated alias of `path` on symbol and file hits (and on a `symbol_spotlight` page). Removed in the next minor release |
+| `target_path` | On a page hit, kept only where it is not the same string as `path`: a page with no `path` keeps its group key, slot or repo name here. Where it is dropped, `page_id` stays |
+| `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`, then a `+N more` entry counting the rest. Those matches share the row instead of taking slots of their own |
 | `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
 
-Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's `target_path` is a page id (`file.py::Symbol`); open its `file`.
+Outside `mode="symbol"`, `limit` caps distinct files: hits are collapsed to one row per file, best row first, and the freed slots go to the next pages, then the next symbols. This includes concept mode, where a file page and a `symbol_spotlight` page of the same file are one row. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.
 
-`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. Decision records rank below file pages unless the query is why-shaped.
+Symbol hits rank by exact and qualified name match, query-token coverage, then graph centrality; non-test before test unless `kind="test"`. A `symbol_spotlight` page's id is `file.py::Symbol`; its `path` is the file.
+
+`results` ranks pages, and some pages are not files: a `module_page` is named by a group key that looks like a directory, an `scc_page` by a hash. `candidates` resolves symbol pages to their file, collapses several symbols of one file into one entry, skips pages that name no file, and backfills from below the result window. If the next move is a Read, read `candidates`. A hybrid query (prose around an identifier) drops pages that name no file (module, onboarding, overview, decision pages) from `results` without refilling their slots, unless `page_type` or `kind="doc"` asks for pages; concept mode keeps them. Decision records rank below file pages unless the query is why-shaped.
 
 ---
 

@@ -357,7 +357,12 @@ def _run_repo_checks(
         creds = credentials.load()
         if creds is None:
             checks.append(
-                _check("Hosted account", True, "Not signed in (optional: repowise login)")
+                _check(
+                    "Hosted account",
+                    True,
+                    "Not signed in (optional: repowise login). "
+                    "Publish this repo free: repowise publish",
+                )
             )
         elif creds.get("stale"):
             checks.append(
@@ -420,6 +425,9 @@ def _run_repo_checks(
     orphaned_vector: set[str] = set()
     missing_from_fts: set[str] = set()
     orphaned_fts: set[str] = set()
+    # An index on disk holding no vectors at all. Repairing that is a whole
+    # reindex, which doctor does not start on a hosted embedder unasked.
+    vector_store_empty = False
 
     if db_ok and page_count > 0:
         try:
@@ -450,7 +458,7 @@ def _run_repo_checks(
                     repo = await get_repository_by_path(session, str(repo_path))
                     if not repo:
                         await engine.dispose()
-                        return set(), set(), set(), set()
+                        return set(), set(), set(), set(), 0, None, False
                     pages = await _all_pages_for_reconciliation(session, repo.id)
                     sql_ids = {p.id for p in pages}
                     # ``Page``'s primary key is the column ``id``; there is no
@@ -524,6 +532,7 @@ def _run_repo_checks(
 
                 # Check vector store
                 vs_ids: set[str] = set()
+                vs_error: str | None = None
                 lance_dir = repowise_dir / "lancedb"
                 if lance_dir.exists():
                     try:
@@ -531,11 +540,20 @@ def _run_repo_checks(
                         vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                         vs_ids = await vs.list_page_ids()
                         await vs.close()
-                    except Exception:
-                        pass  # LanceDB not available
+                    except Exception as exc:
+                        # Named, not passed: a store that cannot be opened
+                        # used to read as an empty one, and so as "in sync".
+                        from repowise.core.persistence.vector_store.lancedb_store import (
+                            store_open_fix_hint,
+                        )
 
-                m_vec = vector_indexable_ids - vs_ids if vs_ids else set()
-                o_vec = vs_ids - vector_sql_ids if vs_ids else set()
+                        vs_error = f"{type(exc).__name__}: {exc}; to fix: {store_open_fix_hint(exc)}"
+
+                # An index on disk that holds none of the indexable pages is
+                # every one of them missing. Only no index at all (fast mode,
+                # nothing embedded yet) has nothing to compare.
+                m_vec = vector_indexable_ids - vs_ids if lance_dir.exists() else set()
+                o_vec = vs_ids - vector_sql_ids
 
                 # Check FTS
                 fts = FullTextSearch(engine)
@@ -547,7 +565,8 @@ def _run_repo_checks(
                 o_fts = fts_ids - sql_ids if fts_ids else set()
 
                 await engine.dispose()
-                return m_vec, o_vec, m_fts, o_fts, len(stub_ids)
+                empty = lance_dir.exists() and vs_error is None and not vs_ids
+                return m_vec, o_vec, m_fts, o_fts, len(stub_ids), vs_error, empty
 
             (
                 missing_from_vector,
@@ -555,7 +574,18 @@ def _run_repo_checks(
                 missing_from_fts,
                 orphaned_fts,
                 stub_count,
+                vector_store_error,
+                vector_store_empty,
             ) = run_async(_check_stores())
+            if vector_store_error is not None:
+                checks.append(
+                    _check(
+                        "Vector store",
+                        False,
+                        f"cannot open .repowise/lancedb ({vector_store_error}); semantic "
+                        "search is off until it opens, then run `repowise reindex`",
+                    )
+                )
 
             vec_ok = not missing_from_vector and not orphaned_vector
             vec_detail = (
@@ -843,13 +873,23 @@ def _run_repo_checks(
                     # that does not exist), so a hosted embedder here is a new
                     # charge on a command people run to diagnose, not to spend.
                     # Say so. It is bounded by the missing pages, not the wiki.
-                    if missing_from_vector and embedder_name != "mock":
+                    reindex_instead = (
+                        bool(missing_from_vector) and embedder_name != "mock" and vector_store_empty
+                    )
+                    if reindex_instead:
+                        console.print(
+                            f"  [yellow]The vector store is empty: {len(missing_from_vector)} "
+                            f"page(s) need embedding with {embedder_name}. Not starting a "
+                            "paid re-embed of the whole wiki from doctor; run "
+                            "`repowise reindex` to do it.[/yellow]"
+                        )
+                    elif missing_from_vector and embedder_name != "mock":
                         console.print(
                             f"  [dim]Embedding {len(missing_from_vector)} missing "
                             f"page(s) with {embedder_name}.[/dim]"
                         )
 
-                    if missing_from_vector:
+                    if missing_from_vector and not reindex_instead:
                         async with get_session(sf) as session:
                             from sqlalchemy import select
 

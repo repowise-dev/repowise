@@ -343,6 +343,12 @@ _CAP_FAMILY: tuple[str, ...] = ("cap", "limit", "max", "bound", "ceiling", "thre
 
 # Git-grep is bounded so a pathological pattern can't stall a tool response.
 _GREP_TIMEOUT_S = 20
+# A pasted issue body carries 100+ nouns and numbers; an uncapped alternation
+# matches most comment lines in the repo. Longest nouns are the most specific:
+# on sample issue bodies they ranked the target no worse than the uncapped or
+# first-12 sets, and a minimum per-file count added nothing.
+_MAX_GREP_NOUNS = 12
+_MAX_GREP_NUMBERS = 4
 
 
 def grep_comment_candidates(
@@ -372,9 +378,10 @@ def grep_comment_candidates(
         return []
     if not repo_root:
         return []
-    numbers = _salient_numbers(query)
+    numbers = _salient_numbers(query)[:_MAX_GREP_NUMBERS]
     terms = _content_terms(query)
-    nouns = [t for t in terms if t not in _CAP_FAMILY]
+    nouns = sorted((t for t in terms if t not in _CAP_FAMILY), key=lambda t: (-len(t), t))
+    nouns = nouns[:_MAX_GREP_NOUNS]
     anchors = list(numbers) or list(_CAP_FAMILY)
     if not nouns or not anchors:
         return []
@@ -405,7 +412,9 @@ def grep_comment_candidates(
                 # ``color.ui=always`` git config must not wrap paths in ANSI
                 # escapes (which would corrupt the path split below).
                 "--no-color",
-                "-n",
+                # -c: one ``path:count`` line per file, so the output is bounded
+                # by the file count, not by how many lines a broad pattern hits.
+                "-c",
                 "-I",
                 "-i",
                 "-E",
@@ -432,9 +441,9 @@ def grep_comment_candidates(
         return []
     counts: Counter[str] = Counter()
     for line in proc.stdout.splitlines():
-        path = line.split(":", 1)[0]
-        if path:
-            counts[path] += 1
+        path, _, n = line.rpartition(":")
+        if path and n.isdigit():
+            counts[path] += int(n)
     # ``git grep`` only scans tracked files, but a gitignored copy can still be
     # tracked (or land here via a future --no-index retry); filter the winners
     # through the repo's exclusion rules so an ignored path is never anchored on.

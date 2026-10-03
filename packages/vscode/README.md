@@ -109,13 +109,23 @@ The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly pan
 | `repowise.diagnostics.enabled` | `false` | Also publish high-severity findings to the Problems panel |
 | `repowise.docDrift.diagnostics.enabled` | `true` | Flag lines in visible markdown files whose paths, links, anchors, commands or code symbols no longer exist |
 
+## Take it further with repowise.dev
+
+The same engine, hosted. Run **Repowise: Publish to repowise.dev** (or `repowise publish`) and repowise.dev indexes this repo from GitHub, free for public repos:
+
+- **Use your index from Claude.ai and ChatGPT.** Each hosted repo has an MCP address that cloud AI apps can reach; they cannot reach your laptop.
+- **Keep it fresh on every push.** No manual updates; the index follows the repo (Pro, free for 10 days with a card).
+- **The PR bot comments on every pull request** with the callers a change reaches and the tests to run first.
+
+[See what hosted adds](https://repowise.dev/hosted?src=vscode_listing) · [Open Repowise's own repo on repowise.dev](https://repowise.dev/repo/repowise-dev/repowise?src=vscode_listing)
+
 ## Privacy
 
-The extension talks only to the local Repowise CLI and server on your machine and reads the index under `.repowise/` in your project. It sends no telemetry of its own, and nothing about your code leaves your machine through this extension.
+The extension talks only to the local Repowise CLI and server on your machine and reads the index under `.repowise/` in your project. It sends no telemetry of its own, and nothing about your code leaves your machine through this extension unless you run **Publish to repowise.dev**, which asks repowise.dev to index the repo's GitHub remote. Links to repowise.dev carry only where they were clicked: no install id, and never VS Code's machine id.
 
 ## Learn more
 
-- [repowise.dev](https://www.repowise.dev) and the [live demo](https://www.repowise.dev)
+- [repowise.dev](https://repowise.dev/?src=vscode_listing) and the [live demo](https://repowise.dev/repo/repowise-dev/repowise?src=vscode_listing)
 - [Documentation](https://docs.repowise.dev)
 - [GitHub](https://github.com/repowise-dev/repowise) (AGPL-3.0, free and open source)
 - [Discord](https://discord.gg/cQVpuDB6rh)

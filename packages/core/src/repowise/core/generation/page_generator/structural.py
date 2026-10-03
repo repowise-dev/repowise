@@ -45,7 +45,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "3"
+STRUCTURAL_GENERATION_VERSION = "4"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.
@@ -88,6 +88,13 @@ _REST_ROLE_RE = re.compile(
 _REST_DIRECTIVE_RE = re.compile(
     r"^([ \t]*)\.\.[ \t]+[a-z-]+::.*(?:\n(?:\1[ \t]+.*|[ \t]*(?=\n|$)))*", re.MULTILINE
 )
+# A reStructuredText section title: a line underlined by at least as many
+# punctuation characters. Left alone, markdown shows the underline as text and
+# the title becomes the page summary.
+_REST_TITLE_RE = re.compile(
+    r"^(?:([=\-~^\"'*+#])\1{2,}[ \t]*\n)?([^\n]*\S)[ \t]*\n([=\-~^\"'*+#])\3{2,}[ \t]*$",
+    re.MULTILINE,
+)
 # Not preceded or followed by a third backtick, so a ``` fence is left intact.
 _DOUBLE_TICK_RE = re.compile(r"(?<!`)``([^`\n]+)``(?!`)")
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
@@ -120,9 +127,22 @@ def as_markdown(value: object) -> str:
     text = _REST_ROLE_RE.sub(r"`\1`", text)
     text = _DOUBLE_TICK_RE.sub(r"`\1`", text)
     text = dedent_body(text).strip()
+    text = _REST_TITLE_RE.sub(_rest_title, text)
     for i, fence in enumerate(fences):
         text = text.replace(f"\x00FENCE{i}\x00", fence)
     return text
+
+
+def _rest_title(match: re.Match[str]) -> str:
+    """A reST title as a level-3 heading, when the underline is long enough.
+
+    An overline, when present, has to use the underline's character.
+    """
+    overline, title, mark = match.group(1), match.group(2).strip(), match.group(3)
+    underline = match.group(0).splitlines()[-1].strip()
+    if len(underline) < len(title) or (overline and overline != mark):
+        return match.group(0)
+    return f"### {title}"
 
 
 def dedent_body(text: str) -> str:
@@ -502,6 +522,9 @@ def register_filters(env: Any) -> None:
     that reaches for a filter the caller forgot raises at render time, and the
     callers are the generator and four test fixtures.
     """
+    # Local: file_facts builds on the filters defined in this module.
+    from .file_facts import file_facts, symbol_entries, with_subject
+
     for name, fn in (
         ("oneline", oneline),
         ("as_markdown", as_markdown),
@@ -515,6 +538,10 @@ def register_filters(env: Any) -> None:
         ("code_span", code_span),
         ("group_paths", group_paths),
         ("datestamp", datestamp),
+        # The file page's opening sentences and its API list.
+        ("file_facts", file_facts),
+        ("symbol_entries", symbol_entries),
+        ("with_subject", with_subject),
     ):
         env.filters.setdefault(name, fn)
 

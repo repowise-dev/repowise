@@ -1,0 +1,189 @@
+{
+  "directive": {
+    "status": "review_required",
+    "headline": "2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py.",
+    "reasons": [
+      "critical defect: nested_complexity in classify_headers (added_lines)",
+      "high defect: complex_method in classify_headers (added_lines)"
+    ],
+    "next_actions": [
+      "Inspect src/requests/_internal_utils.py:55 (chf_7c35d63fcc13e52b)",
+      "Inspect src/requests/_internal_utils.py:55 (chf_1d478916e70baee8)",
+      "Run: tests/test_requests.py tests/test_utils.py"
+    ]
+  },
+  "health_delta": {
+    "status": "available",
+    "explanation": "Compared 1 changed files on both sides.",
+    "basis": "both_sides_analyzed",
+    "introduced": 2,
+    "worsened": 0,
+    "resolved": 0,
+    "by_dimension": {
+      "defect": 2
+    },
+    "by_severity": {
+      "critical": 1,
+      "high": 1
+    },
+    "scope": {
+      "changed": 1,
+      "eligible": 1,
+      "analyzed": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "top_findings": [
+      {
+        "id": "chf_7c35d63fcc13e52b",
+        "change": "introduced",
+        "dimension": "defect",
+        "biomarker": "nested_complexity",
+        "severity": "critical",
+        "path": "src/requests/_internal_utils.py",
+        "reason": "classify_headers nests 7 levels deep",
+        "attribution": {
+          "basis": "added_lines",
+          "confidence": "high",
+          "why": "Lines 55-85 are added or rewritten by this change."
+        },
+        "inspect": "get_change_risk(finding_id='chf_7c35d63fcc13e52b')",
+        "symbol": "classify_headers",
+        "lines": [
+          55,
+          85
+        ]
+      },
+      {
+        "id": "chf_1d478916e70baee8",
+        "change": "introduced",
+        "dimension": "defect",
+        "biomarker": "complex_method",
+        "severity": "high",
+        "path": "src/requests/_internal_utils.py",
+        "reason": "classify_headers has cyclomatic complexity 15",
+        "attribution": {
+          "basis": "added_lines",
+          "confidence": "high",
+          "why": "Lines 55-85 are added or rewritten by this change."
+        },
+        "inspect": "get_change_risk(finding_id='chf_1d478916e70baee8')",
+        "symbol": "classify_headers",
+        "lines": [
+          55,
+          85
+        ]
+      }
+    ],
+    "findings_total": 2,
+    "findings_emitted": 2,
+    "base": {
+      "ref": "HEAD",
+      "sha": "3bb56ba566ce783ebdc4e61929522fd1648c2527",
+      "kind": "commit"
+    },
+    "head": {
+      "ref": "WORKTREE",
+      "sha": "",
+      "kind": "working_tree"
+    },
+    "analyzer": {
+      "analyzer_version": 38,
+      "rules_fingerprint": "2f1b53b61c545f3ce5e44371e52b0428f710f8cee6f8d8547f8ca5c474e864fd",
+      "performance_model_version": 3
+    },
+    "limits": [
+      "Both sides are analysed over the changed files only, so cross-file detectors (duplication, cross-function performance) see no wider context."
+    ]
+  },
+  "ref": "working tree",
+  "working_tree": true,
+  "fix_history": {
+    "available": true,
+    "density": 1.329,
+    "percentile": 75.0,
+    "files": [
+      {
+        "path": "src/requests/_internal_utils.py",
+        "churn": 36,
+        "fix_pressure": 1.33
+      }
+    ],
+    "overlap": {
+      "files": [
+        {
+          "file_path": "src/requests/_internal_utils.py",
+          "fix_count": 1,
+          "overlapping_lines": 0,
+          "changed_lines": 35,
+          "share_of_change": 1.0,
+          "last_fix_days_ago": 186
+        }
+      ],
+      "truncated": false,
+      "total_fixes": 1,
+      "files_with_fixes": 1,
+      "changed_lines_in_fixed_files": 35,
+      "line_overlap": "approximate",
+      "summary": "1 past bug-fix commit(s) touched 1 of the changed file(s). Line overlap is approximate (past ranges are numbered on their own parent commit); the per-file counts are not.",
+      "concentration": "src/requests/_internal_utils.py carries 100% of the changed lines and 1 past bug fix(es)."
+    }
+  },
+  "risk_percentile": 92.0,
+  "review_priority": "high",
+  "classification": "Elevated",
+  "exclude_patterns": [],
+  "is_fix": false,
+  "impacted_tests": {
+    "status": "inferred",
+    "basis": "inferred",
+    "map_present": false,
+    "tests_to_run": [
+      "tests/test_requests.py",
+      "tests/test_utils.py"
+    ],
+    "tests_to_run_kind": "test_file",
+    "total": 2,
+    "truncated": false,
+    "line_coverage": {
+      "untested_changes": [],
+      "stale_test_candidates": [],
+      "covered": [],
+      "no_coverage_data": []
+    },
+    "summary": "2 test file(s) reach the changed files in the graph. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+  },
+  "diff_shape": "Diff shape: bigger than 92% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "_meta": {
+    "contract_version": 2,
+    "timing_ms": 999.7,
+    "index_age_days": 49,
+    "indexed_commit": "4ed3d1b3204c",
+    "live_head": "3bb56ba566ce",
+    "index_behind": true,
+    "index_scope": {
+      "version": 1,
+      "projection": "compact",
+      "run_mode": "standard",
+      "content_provenance": "template",
+      "git_tier": "full",
+      "status": "unknown",
+      "fingerprint": "118fda63ca3a",
+      "full": "get_overview()"
+    },
+    "embedder": "mock",
+    "embedder_degraded": false,
+    "semantic_search": false,
+    "source": "live_git",
+    "response_budget": {
+      "limit_chars": 24000,
+      "tier": "default",
+      "serialized_chars": 4324
+    },
+    "completeness": {
+      "capped": false,
+      "shown": 2,
+      "total": 2
+    }
+  }
+}

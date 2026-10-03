@@ -46,6 +46,9 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _candidate_justification,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_candidate_files as _serialize_candidate_files,
+)
+from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_candidates as _serialize_candidates,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
@@ -152,6 +155,9 @@ def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
     candidates = _serialize_candidates(resolved_pool)
     if candidates:
         payload["candidates"] = candidates
+        # Longer than ``candidates``: the projection serves these paths at
+        # every confidence, while ``candidates`` waits for include=["evidence"].
+        payload["candidate_files"] = _serialize_candidate_files(resolved_pool)
     return payload
 
 
@@ -239,7 +245,7 @@ def _union_answer_payload(
         )
     note += (
         " If the question was about something other than these definitions, "
-        "candidates holds the files retrieval ranked for it."
+        "candidate_files holds the files retrieval ranked for it."
     )
     payload: dict = {
         "answer": (
@@ -352,7 +358,7 @@ def build_value_payload(
         "note": (
             "Extracted verbatim from the live source line — no LLM "
             "synthesis involved. Cite directly; no verification "
-            "Read needed. candidates holds the files retrieval ranked, "
+            "Read needed. candidate_files holds the files retrieval ranked, "
             "for the wider question the value sits inside."
         ),
         "_meta": _build_meta(

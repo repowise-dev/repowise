@@ -80,6 +80,8 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
 
     assert fresh["confidence"] == "high"
     assert cached["_meta"]["cached"] is True
+    assert "src/auth/middleware.py" in fresh["candidate_files"]
+    assert "src/auth/service.py" not in fresh["candidate_files"]  # cited
     assert _without_meta(fresh) == _without_meta(cached)
     assert "stale_warning" not in fresh["_meta"]
     assert "stale_warning" not in cached["_meta"]
@@ -192,12 +194,10 @@ def test_adversarial_duplicate_evidence_survives_once_with_exact_recovery():
     assert compact["retrieval_reduced_reason"] == "confidence_projection_and_deduplication"
     assert compact["_meta"]["projection"]["recovery"] == {
         "tool": "get_answer",
-        "arguments": {
-            "question": "how does auth work",
-            "include": ["evidence"],
-            "scope": "src/auth",
-        },
+        "same_arguments": True,
+        "arguments": {"include": ["evidence"], "scope": "src/auth"},
     }
+    assert "how does auth work" not in json.dumps(compact["_meta"])
     assert expanded["retrieval"], "the advertised one-call expansion must recover evidence"
 
 
@@ -334,6 +334,8 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert result["answer"]
     assert result["next_action_hint"]
     assert result.get("best_guesses") or result.get("symbol_bodies") or result.get("retrieval")
+    assert result["candidate_files"]
+    assert not set(result["candidate_files"]) & set(result.get("citations") or [])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
         assert result["_meta"]["retrieval_degraded"] == ["vector"]
@@ -671,3 +673,63 @@ def test_the_expanded_projection_dedupes_key_symbols_too():
     entry = expanded["retrieval"][0]["key_symbols"][0]
     assert "source_excerpt" not in entry and "docstring" not in entry
     assert entry["name"] == "check"
+
+
+_POOL = [f"src/auth/f{i}.py" for i in range(12)]
+
+
+def _with_pool(confidence: str, **extra) -> dict:
+    raw = _raw(confidence)
+    raw["candidate_files"] = ["src/auth/service.py", *_POOL[:9]]
+    raw.update(extra)
+    return raw
+
+
+@pytest.mark.parametrize(
+    ("confidence", "extra", "cap"),
+    [
+        ("high", {}, 3),
+        ("medium", {}, 5),
+        ("low", {}, 5),
+        ("medium", {"degraded": "no-llm-provider"}, 5),
+    ],
+)
+def test_candidate_files_serve_ranked_uncited_paths_at_every_confidence(
+    confidence, extra, cap
+):
+    out = project_answer_payload(_with_pool(confidence, **extra), question="how does auth work")
+
+    # Ranked, minus the cited file, capped by grade: 3 at high, 5 otherwise.
+    assert out["candidate_files"] == _POOL[:cap]
+    assert "candidates" not in out
+    assert not any(key.startswith("candidates_") for key in out)
+
+
+def test_candidate_files_cap_at_five_and_dedupe_only_against_citations():
+    raw = _with_pool("low")
+    raw["candidate_files"] = ["src/auth/service.py", "src/auth/middleware.py", *_POOL]
+
+    out = project_answer_payload(raw, question="how does auth work")
+
+    # middleware.py is a fallback target and a retrieval row, not a citation.
+    assert out["candidate_files"] == ["src/auth/middleware.py", *_POOL[:4]]
+
+
+def test_candidate_files_absent_when_retrieval_resolved_no_file():
+    out = project_answer_payload(_raw("low"), question="how does auth work")
+    assert "candidate_files" not in out
+
+    raw = _raw("low")
+    raw["candidate_files"] = ["src/auth/service.py"]
+    assert "candidate_files" not in project_answer_payload(raw, question="how does auth work")
+
+
+def test_evidence_projection_only_gains_candidate_files():
+    raw = _raw("medium")
+    before = project_answer_payload(copy.deepcopy(raw), question="q", include=["evidence"])
+    raw["candidate_files"] = ["src/auth/service.py", *_POOL]
+
+    after = project_answer_payload(raw, question="q", include=["evidence"])
+
+    assert after.pop("candidate_files") == _POOL[:5]
+    assert after == before

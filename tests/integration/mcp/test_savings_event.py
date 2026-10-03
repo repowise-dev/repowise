@@ -16,6 +16,7 @@ import pytest
 
 from repowise.core.distill.store import OmissionStore
 from repowise.server.mcp_server import _state, tool_middleware
+from repowise.server.mcp_server._meta import DEBUG_META_ENV
 from repowise.server.mcp_server._savings import declare_replaced
 
 
@@ -92,7 +93,9 @@ async def test_a_counterfactual_is_inferred_and_the_drop_is_not_added_twice(
 
 
 @pytest.mark.asyncio
-async def test_delivered_is_measured_after_the_outermost_budget(repo: Path) -> None:
+async def test_delivered_is_measured_after_the_outermost_budget(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The ordering fix, stated as a number.
 
     ``instrument`` sits five layers deep. After it, ``timed`` stamps ``_meta``
@@ -107,6 +110,8 @@ async def test_delivered_is_measured_after_the_outermost_budget(repo: Path) -> N
             "_meta": {},
         }
 
+    # The full envelope, so the fields stamped outside instrument are present.
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
     out = await tool_middleware(get_context)(["a.py"])
     event = _events(repo)[0]
 

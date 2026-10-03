@@ -499,13 +499,12 @@ class PerTypeGenerationMixin:
         # the model, and both embeds are idempotent so a reused page picks them
         # up too. Appended in reading order, so what the repository does lands
         # above what it is made of, and both above the diagram.
-        if capabilities:
-            response = replace(
-                response,
-                content=embed_capability_table(
-                    response.content, build_capability_table(capabilities)
-                ),
-            )
+        # Unconditional: content reused from an earlier run keeps that run's
+        # rows, and an empty selection has to remove them.
+        response = replace(
+            response,
+            content=embed_capability_table(response.content, build_capability_table(capabilities)),
+        )
         if ctx.package_stats:
             response = replace(
                 response,

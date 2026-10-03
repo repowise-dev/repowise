@@ -495,3 +495,37 @@ async def test_no_capabilities_leaves_the_page_as_it_was(structure, parsed_files
         structure, {}, [], {}, repo_name="testrepo", parsed_files=parsed_files
     )
     assert CAPABILITY_TABLE_HEADING not in page.content
+
+
+def test_embedding_nothing_removes_a_section_an_earlier_run_left():
+    """A model page is reused verbatim while its prompt is unchanged, and the
+    table is not part of the prompt. Rows an earlier selection embedded stay
+    on that page unless an empty selection takes them off."""
+    reused = "# Overview\n\nProse.\n\n## What it does\n\n| a | b |\n\n## Packages\n\nrows\n"
+    out = embed_capability_table(reused, None)
+    assert CAPABILITY_TABLE_HEADING not in out
+    assert out.startswith("# Overview\n\nProse.\n\n## Packages")
+
+
+async def test_a_reused_model_page_loses_rows_the_selection_no_longer_has(
+    structure, parsed_files
+):
+    from repowise.core.generation.models import GenerationConfig
+    from repowise.core.generation.page_generator import PageGenerator
+    from repowise.core.providers.llm.base import GeneratedResponse
+    from repowise.core.providers.llm.mock import MockProvider
+
+    earlier = (
+        "## Project Summary\n\nProse.\n\n## What it does\n\n"
+        "| Capability | What it is | Where it is written |\n|---|---|---|\n"
+        "| Dead code | — | `README.md` |\n"
+    )
+    provider = MockProvider(
+        responses=[GeneratedResponse(content=earlier, input_tokens=0, output_tokens=0)]
+    )
+    config = GenerationConfig()
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_repo_overview(
+        structure, {}, [], {}, repo_name="testrepo", parsed_files=parsed_files
+    )
+    assert CAPABILITY_TABLE_HEADING not in page.content
+    assert "| Dead code | — |" not in page.content

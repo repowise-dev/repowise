@@ -55,6 +55,7 @@ async def run_generation(
     test_run: bool = False,
     selection_out: dict[str, Any] | None = None,
     persisted_page_ids: set[str] | None = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -74,6 +75,10 @@ async def run_generation(
 
     ``persisted_page_ids`` (ids with a stored page row) narrows what a
     ``resume`` run treats as already done; see ``PageGenerator.generate_all``.
+
+    ``stats_out`` is filled with ``embed_failed_pages``: how many pages this
+    run failed to embed, so a caller can refuse to call semantic search
+    healthy after a failed write.
 
     ``test_run`` limits generation to the top 10 files by PageRank, so a quick
     validation run can exercise the whole generation path without paying for a
@@ -218,6 +223,8 @@ async def run_generation(
         on_warning=on_warning,
         persisted_page_ids=persisted_page_ids,
     )
+    if stats_out is not None:
+        stats_out["embed_failed_pages"] = generator.embed_failed_pages
     selection = getattr(generator, "selection", None)
     if selection_out is not None and selection is not None:
         selection_out.update(

@@ -364,6 +364,11 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
+    from repowise.cli.providers import semantic_search_status
+
+    semantic = semantic_search_status(
+        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+    )
     stamp_index_scope(
         state,
         {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
@@ -383,8 +388,8 @@ def _stamp_full_init_scope(
         },
         search={
             "full_text": "available",
-            "semantic": "unavailable" if embedder_name_resolved == "mock" else "available",
-            "next_command": "repowise reindex" if embedder_name_resolved == "mock" else None,
+            "semantic": semantic,
+            "next_command": "repowise reindex" if semantic == "unavailable" else None,
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )

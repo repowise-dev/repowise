@@ -58,6 +58,35 @@ export const DARK = {
   error: "#e06a5a",
 } as const;
 
+/**
+ * Dark-theme canvas colors: the health node ramp (`--color-node-*`) and the
+ * caution tone (`--color-caution`) from the `.dark` block. The ramp is deeper
+ * and less saturated than the semantic colors so a field of nodes reads as
+ * pigment rather than light. Dark only; there is no light counterpart here.
+ */
+export const DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a",
+} as const;
+
+/**
+ * Dark canvas node color per health band. Keys are the `HealthBand` values
+ * from `@repowise-dev/types` (`bandForScore`), spelled out because this
+ * module stays import-free.
+ */
+export const DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk,
+} as const;
+
 /** Signature gradients (CSS gradient strings) for hero/OG canvases. */
 export const GRADIENTS = {
   sunset: "linear-gradient(135deg, #58436c 0%, #f59520 55%, #f7a94d 100%)",

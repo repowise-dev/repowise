@@ -1,45 +1,134 @@
-{#- Deterministic (no-LLM) tier-2 file page.
+{#- Deterministic (no-LLM) file page.
 
-    Rendered straight from the assembled FilePageContext for the long tail
-    of selected files on large repos. No model call, the content is a
-    structured, factual stub built entirely from parsed AST + graph signals,
-    and is embedded for search like any other page.
+    Rendered straight from the assembled FilePageContext: no model call, every
+    statement comes from the parse, the import graph, git history or the
+    knowledge graph. It is read on the file view and embedded for search, so it
+    serves both a reader and the index.
 
-    Written for retrieval as much as for reading: the page names its own
-    symbols, its neighbours' file paths and its layer in full, because those
-    are the identifiers a question embeds near. Where readability and
-    retrieval disagree, retrieval wins and the reader personas in
-    ``docs/reader-persona.ts`` decide what a reader is shown — a section is
-    hidden client-side rather than dropped here, since dropping it would take
-    it out of the index with it.
+    For the reader it opens with prose (the docstring, or sentences built from
+    what the file defines and who imports it) and follows with a compact
+    reference. For the index every identifier the context carried stays in the
+    text: symbols, neighbour paths and the layer are spelled in full. Sections
+    written only for retrieval stay on the page and the reader personas in
+    ``docs/reader-persona.ts`` hide them client-side.
 
     Every section below the Overview is conditional. A heading with nothing
-    under it costs a reader a stop and puts the same stock sentence into the
-    search index on thousands of pages, where it matches every query and
-    distinguishes none of them. The Overview is the one exception: it is
-    generated rather than looked up, so it always has something to say, and
-    ``_extract_summary`` reads it back as the summary shown in search results
-    and the wiki list.
+    under it costs a reader a stop and puts the same stock sentence on
+    thousands of pages. The Overview always says something, and
+    ``_extract_summary`` reads its first paragraph back as the summary shown in
+    search results, the wiki list and ``get_context``.
 -#}
 {%- set api_syms = ctx.symbols | api_symbols -%}
 {%- set other_syms = ctx.symbols | internal_symbols -%}
 {%- set git = ctx.git_metadata or {} -%}
+{%- set facts = ctx | file_facts -%}
+{#- "`a`, `b` and `c`", or "`a`, `b`, `c` and 4 more". -#}
+{%- macro name_list(names, more=0) -%}
+{%- set items = names + ([labels.and_count_more.format(count=more)] if more else []) -%}
+{%- if items | length > 1 -%}{{ items[:-1] | join(", ") }} {{ labels.and_word }} {{ items[-1] }}{%- else -%}{{ items | join("") }}{%- endif -%}
+{%- endmacro -%}
+{#- The opening, which is also the page summary the wiki list, search results
+    and ``get_context`` show. The author's docstring leads when there is one;
+    otherwise the first sentence names the file and says what it defines and
+    who imports it, and a second paragraph says where it sits. Every sentence
+    is conditional on the fact behind it. Sentences carry a ``{subject}`` slot:
+    the page's first sentence names the file, the rest say "it". -#}
+{%- set about = [] -%}
+{%- set where = [] -%}
+{%- if facts.defines -%}
+{%- set _ = about.append(labels.file_defines.format(subject="{subject}", names=name_list(facts.defines, facts.defines_more))) -%}
+{%- endif -%}
+{%- set imp = facts.importers -%}
+{%- if imp.listed -%}
+{%- set _ = about.append(labels.file_imported_by.format(subject="{subject}", names=name_list(imp.listed))) -%}
+{%- elif imp.count -%}
+{%- set _ = about.append(labels.file_imported_by_count.format(subject="{subject}", count=imp.count, tests=labels.of_them_tests.format(count=imp.tests) if imp.tests else "")) -%}
+{%- if imp.all_in_one -%}
+{%- set _ = about.append(labels.all_in_directory.format(directory=imp.directory)) -%}
+{%- elif imp.directory -%}
+{%- set _ = about.append((labels.largest_share_code if imp.tests else labels.largest_share).format(count=imp.share, directory=imp.directory)) -%}
+{%- endif -%}
+{%- endif -%}
+{%- set dep = facts.imports -%}
+{%- if dep.listed -%}
+{%- set _ = where.append(labels.file_imports.format(subject="{subject}", names=name_list(dep.listed))) -%}
+{%- elif dep.count -%}
+{%- set _ = where.append(labels.file_imports_count.format(subject="{subject}", count=dep.count)) -%}
+{%- if dep.all_in_one -%}
+{%- set _ = where.append(labels.all_in_directory.format(directory=dep.directory)) -%}
+{%- elif dep.directory -%}
+{%- set _ = where.append(labels.largest_share.format(count=dep.share, directory=dep.directory)) -%}
+{%- endif -%}
+{%- endif -%}
+{%- if ctx.kg_layer_name and ctx.kg_layer_role == "entry_point" -%}
+{%- set _ = where.append(labels.file_layer_entry.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- elif ctx.kg_layer_name and ctx.kg_layer_role == "edge_connector" -%}
+{%- set _ = where.append(labels.file_layer_boundary.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- elif ctx.kg_layer_name -%}
+{%- set _ = where.append(labels.file_layer.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- endif -%}
+{%- if ctx.is_entry_point and not (ctx.kg_layer_name and ctx.kg_layer_role == "entry_point") -%}
+{%- set _ = where.append(labels.file_entry_point.format(subject="{subject}")) -%}
+{%- endif -%}
+{%- if not (facts.purpose or about or where) -%}
+{%- set _ = about.append(labels.file_fallback.format(subject="{subject}", article=labels.article_an if ctx.language and ctx.language[0] in "aeiou" else labels.article_a, language=ctx.language)) -%}
+{%- endif -%}
+{%- set sentences = (about + where) | with_subject(labels.it_subject if facts.purpose else facts.name, labels.it_subject) -%}
+{%- set paragraphs = [facts.purpose, sentences] if facts.purpose else [sentences[:about | length], sentences[about | length:]] -%}
 # {{ ctx.file_path }}
 
 ## {{ labels.overview }}
+{%- for paragraph in paragraphs if paragraph %}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}{% if ctx.kg_node_summary %}{{ ctx.kg_node_summary | oneline }} {% endif %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
-{%- if api_syms %}
-{%- set symbol_word = labels.public_symbol_plural if api_syms | length != 1 else labels.public_symbol_singular %}
+{{ paragraph if paragraph is string else paragraph | join(" ") }}
+{%- endfor %}
+{%- if ctx.decision_records %}
 
-{% if ctx.dependencies %}{{ labels.exposes_symbols_and_depends.format(symbol_count=api_syms | length, symbol_word=symbol_word, file_count=ctx.dependencies | length, file_word=labels.other_file_plural if ctx.dependencies | length != 1 else labels.other_file_singular) }}{% else %}{{ labels.exposes_symbols.format(symbol_count=api_syms | length, symbol_word=symbol_word) }}{% endif %}
+## {{ labels.decisions_heading }}
+{% for dr in ctx.decision_records[:3] %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *({{ dr.rationale | oneline(120) }})*{% endif %}
+{%- endfor %}
 {%- endif %}
-{#- What the history knows and the code cannot say.
+{#- The declared surface as a list a reader scans: each symbol's declaration
+    and the first sentence of its docstring, methods under their class.
 
-    All of this was assembled already and thrown away at render time. That a
-    file has been fixed twice and moves with ``incremental.py`` is something a
-    reader acts on; twenty-five import paths are something they could have got
-    from grep.
+    Names that are public to the parser without being anything a caller
+    reaches for (``log``, ``__all__``) are declared under the list, not
+    dropped, with their signatures: ``content`` is also the index entry, and
+    ``log`` alone would take ``structlog`` and ``get_logger`` out of it.
+-#}
+{%- if api_syms or other_syms %}
+
+## {{ labels.public_api }}
+{%- if api_syms %}
+{% for entry in api_syms | symbol_entries %}
+- {{ entry.declared }}{% if entry.doc %}: {{ entry.doc }}{% endif %}
+{%- for member in entry.members %}
+  - {{ member.declared }}{% if member.doc %}: {{ member.doc }}{% endif %}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+{%- if other_syms %}
+
+{{ labels.also_defined.format(names=other_syms | declarations | map("code_span") | join(", ")) }}
+{%- endif %}
+{%- endif %}
+{#- Import neighbourhoods, one line per directory. The opening already says
+    how many and where most of them are; this is the lookup. Each path is
+    printed whole: it is what the reader's link resolves and what a question
+    matches in the index. -#}
+{%- for heading, paths in [(labels.used_by, ctx.dependents), (labels.depends_on, ctx.dependencies)] if paths %}
+
+## {{ heading }}
+{% for group in paths | group_paths %}
+- {{ group.paths | map("code_span") | join(", ") }}
+{%- endfor %}
+{%- if paths | length > 25 %}
+
+_{{ labels.and_more.format(count=paths | length - 25) }}_
+{%- endif %}
+{%- endfor %}
+{#- What the history knows and the code cannot say, as one short paragraph.
 
     Every clause is conditional on the number behind it, so a repository with
     no git history renders no heading rather than a row of zeroes. Dates are
@@ -93,91 +182,8 @@
 
 {{ labels.changes_with_intro }}
 {% for cc in ctx.co_change_pages %}
-- `{{ cc.path }}` — {{ labels.changes_with_entry.format(count=cc.commits, commit_word=labels.commit_plural if cc.commits != 1 else labels.commit_singular) }}{% if cc.last %} ({{ labels.last_together.format(date=cc.last | datestamp) }}){% endif %}
+- `{{ cc.path }}`: {{ labels.changes_with_entry.format(count=cc.commits, commit_word=labels.commit_plural if cc.commits != 1 else labels.commit_singular) }}{% if cc.last %} ({{ labels.last_together.format(date=cc.last | datestamp) }}){% endif %}
 {%- endfor %}
-{%- endif %}
-{%- if ctx.decision_records %}
-
-## {{ labels.decisions_heading }}
-{% for dr in ctx.decision_records[:3] %}
-- **{{ dr.title | oneline(80) }}** — {{ dr.decision | oneline }}{% if dr.rationale %} *({{ dr.rationale | oneline(120) }})*{% endif %}
-{%- endfor %}
-{%- endif %}
-{#- The declared surface, and the names that are public to the parser without
-    being anything a caller reaches for.
-
-    ``log``, ``__all__`` and ``__init__`` made the table read as a symbol dump
-    rather than as an API. They are declared under it instead of dropped, with
-    their signatures and not just their names: ``content`` is also the index
-    entry, and ``log`` alone would take ``structlog``, ``get_logger`` and
-    ``__name__`` out of it. A constructor keeps its parameter list this way
-    too, which the class's own row does not carry.
--#}
-{%- if api_syms or other_syms %}
-
-## {{ labels.public_api }}
-{%- if api_syms %}
-
-| {{ labels.symbol }} | {{ labels.kind }} | {{ labels.signature }} |
-| --- | --- | --- |
-{%- for s in api_syms %}
-| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
-{%- endfor %}
-{%- endif %}
-{%- if other_syms %}
-
-{{ labels.also_defined.format(names=other_syms | declarations | map("code_span") | join(", ")) }}
-{%- endif %}
-{%- endif %}
-{#- Dependency lists, grouped by the directory each path sits in.
-
-    Flat, these were twenty-five strings in graph order — the same twenty-five
-    a reader could have got from grep, and nothing about their shape. Grouped,
-    the shape shows: of the files importing ``fs_walk``, nine are import
-    resolvers. Each path is still printed whole, because dropping a directory
-    prefix from a bullet would drop it from the index.
--#}
-{%- if ctx.dependencies %}
-
-## {{ labels.depends_on }}
-{%- for group in ctx.dependencies | group_paths %}
-
-**`{{ group.directory }}`**
-{% for dep in group.paths %}
-- `{{ dep }}`
-{%- endfor %}
-{%- endfor %}
-{%- if ctx.dependencies | length > 25 %}
-
-_{{ labels.and_more.format(count=ctx.dependencies | length - 25) }}_
-{%- endif %}
-{%- endif %}
-{%- if ctx.dependents %}
-
-## {{ labels.used_by }}
-
-{{ labels.imported_by_files.format(count=ctx.dependents | length, file_word=labels.file_plural if ctx.dependents | length != 1 else labels.file_singular) }}
-{%- for group in ctx.dependents | group_paths %}
-
-**`{{ group.directory }}`**
-{% for dep in group.paths %}
-- `{{ dep }}`
-{%- endfor %}
-{%- endfor %}
-{%- if ctx.dependents | length > 25 %}
-
-_{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
-{%- endif %}
-{%- endif %}
-{%- if ctx.community_label or ctx.kg_layer_name %}
-
-## {{ labels.usage_notes }}
-{% if ctx.community_label %}
-{{ labels.part_of_module_cluster.format(community=ctx.community_label) }}
-{%- endif %}
-{%- if ctx.kg_layer_name %}
-**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {% if ctx.kg_layer_role == "entry_point" %}{{ labels.role_entry_point }}{% elif ctx.kg_layer_role == "edge_connector" %}{{ labels.role_boundary }}{% else %}{{ labels.role_internal }}{% endif %}{% endif %}
-{%- endif %}
 {%- endif %}
 {#- Question-shaped text, built from structure rather than prose.
 

@@ -27,8 +27,8 @@ def _build_update_vector_store(
     upserted decisions *without* a vector store, so semantic dedup, decision
     search visibility, and supersession detection were all off on incremental
     runs. We mirror ``init``'s store construction (LanceDB at
-    ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
-    in-memory store is a degraded fallback that only sees this run's vectors).
+    ``.repowise/lancedb`` so previously-embedded decisions are matchable; a
+    missing or broken lancedb fails on first use, not here).
     Returns ``None`` on any failure — the decision upsert still works without
     it. A failure is recorded in *degraded* (when given) so the run's degraded
     panel says why semantic dedup is off instead of silently skipping it

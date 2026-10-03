@@ -263,6 +263,40 @@ Adding a new language has a dedicated recipe, see
 - Place tests in `tests/unit/` or `tests/integration/`
 - Run the full suite with `uv run pytest`
 
+### Retrieval guard
+
+`tests/unit/server/mcp/test_retrieval_guard.py` indexes `tests/fixtures/sample_repo`
+with no API key and asks `search_codebase` (default and `limit=10`) and
+`get_answer` the corpus questions in
+`tests/fixtures/mcp/retrieval_guard_corpus.json`, whose gold files were read off
+the code by hand. `get_answer` is measured twice: with no provider (the degraded
+retrieval-only shape) and with a stub provider whose fixed answer cites the top
+retrieved file (the synthesised shape; it measures projection, not answer
+quality). Each arm reports coverage at 1, 5 and all served files, file
+precision, median response tokens and, for information only, median files
+served, compared against `tests/fixtures/mcp/retrieval_guard_baseline.json`.
+It runs inside `tests/unit/` in seconds, so every pull request runs it, and CI
+writes the metrics table to the job summary. Run it alone with
+`uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s` to see the
+table. The test clears `MAX_MCP_OUTPUT_TOKENS` and every `REPOWISE_*` variable,
+so local settings do not change the result.
+
+It fails when coverage or precision drops by more than 0.03 or median tokens
+grow by more than 10%. An improvement passes with a note (shown with `-s` and in
+the CI step summary), but it is only locked in once you commit the refreshed
+baseline. If your change moves ranking or response shape on purpose, or improves
+it, refresh the baseline in the same pull request:
+
+```bash
+REPOWISE_UPDATE_RETRIEVAL_BASELINE=1 uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s
+```
+
+and paste the before/after table into the description. To see which questions
+moved, run with `REPOWISE_RETRIEVAL_GUARD_DUMP=<file>` on both branches and diff
+the two dumps (do not commit them). Always report coverage
+with precision beside it: serving more files raises coverage for free, so a
+coverage gain that costs precision is a trade-off to justify, not a win.
+
 ## Pull Request Guidelines
 
 - Keep PRs focused on a single change

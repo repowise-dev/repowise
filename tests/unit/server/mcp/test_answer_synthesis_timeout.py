@@ -460,6 +460,7 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "fallback_targets",
         "retrieval",
         "candidates",
+        "candidate_files",
         "best_guesses",
         "next_action_hint",
         "note",
@@ -480,14 +481,14 @@ async def test_degraded_answer_describes_the_payload_instead_of_being_empty():
     """An empty ``answer`` beside working retrieval reads as a failed call.
 
     The field is the first thing a reader looks at, so leaving it blank while
-    ``retrieval``/``candidates`` are populated invites throwing the whole
+    ``retrieval``/``candidate_files`` are populated invites throwing the whole
     result away. It must name what survived and where to find it.
     """
     payload = await _payload()
     answer = payload["answer"]
     assert answer, "degraded answer must not be empty"
     assert "synthesis-failed" in answer, "the reason belongs in the visible field"
-    for field in ("retrieval", "fallback_targets", "candidates"):
+    for field in ("retrieval", "fallback_targets", "candidate_files"):
         assert field in answer, f"{field} is populated but never mentioned"
 
 

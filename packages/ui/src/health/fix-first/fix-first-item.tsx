@@ -3,8 +3,9 @@
 /**
  * One Fix-first item: the change to make, where, why, and what it buys.
  *
- * Collapsed, it is one scan line per fact a person decides on. Expanded, it is
- * the work itself: the steps in order with which ones are mechanical, how to
+ * Collapsed, it is two compact lines: tier and title, then file:line and gain.
+ * Expanded, it adds the why, effort, confidence and risk, then the work
+ * itself: the steps in order with which ones are mechanical, how to
  * verify the change, the history around the file (muted, never ranked on), and
  * the actions. Every word and number is the payload's; this component chooses
  * only where each one sits.
@@ -70,12 +71,13 @@ export function FixFirstItem({
   const reason = tierReason(item);
 
   return (
-    <li className="py-4">
-      {/* Tier sits in its own column from sm; on a phone it rides above the
-          title so the title keeps the width. */}
-      <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:gap-3">
+    <li className="py-1.5">
+      {/* Two scan lines: tier and title, then where and what it buys. The why,
+          effort, confidence and risk open with the row. Tier sits in its own
+          column from sm; on a phone it rides above the title. */}
+      <div className="flex min-w-0 flex-col sm:flex-row sm:items-start sm:gap-3">
         <span
-          className="inline-flex shrink-0 items-center gap-1.5 text-xs text-[var(--color-text-secondary)] sm:mt-[3px] sm:w-14"
+          className="inline-flex shrink-0 items-center gap-1.5 text-xs leading-5 text-[var(--color-text-secondary)] sm:w-14"
           {...(reason ? { title: reason } : {})}
         >
           <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${TIER_DOT[item.tier]}`} />
@@ -90,44 +92,48 @@ export function FixFirstItem({
             aria-controls={panelId}
             className="group flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
-            <span className="min-w-0 text-[15px] font-semibold leading-snug text-[var(--color-text-primary)] [overflow-wrap:anywhere] [text-wrap:pretty] group-hover:text-[var(--color-accent-primary)]">
+            <span className="min-w-0 text-[13px] font-medium leading-5 text-[var(--color-text-primary)] [overflow-wrap:anywhere] group-hover:text-[var(--color-accent-primary)]">
               {item.title}
             </span>
             <ChevronDown
               aria-hidden
-              className={`mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-tertiary)] transition-transform ${
+              className={`mt-[3px] h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform ${
                 expanded ? "rotate-180" : ""
               }`}
             />
           </button>
 
-          <p className="mt-1 font-mono text-xs [overflow-wrap:anywhere]">
+          <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 text-xs leading-4">
             {href ? (
-              <Link href={href} className={LINK}>
+              <Link href={href} className={`font-mono [overflow-wrap:anywhere] ${LINK}`}>
                 {location}
               </Link>
             ) : (
-              <span className="text-[var(--color-text-secondary)]">{location}</span>
+              <span className="font-mono text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+                {location}
+              </span>
             )}
+            <span className="text-[var(--color-text-tertiary)]">
+              Gain <span className="text-[var(--color-text-secondary)]">{item.gain.text}</span>
+            </span>
           </p>
-
-          <p className="mt-1.5 max-w-[72ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-            {item.why}
-          </p>
-
-          <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-            <Fact label="Gain" value={item.gain.text} />
-            <Fact label="Effort" value={EFFORT_LABEL[item.effort.bucket]} title={item.effort.basis} />
-            <Fact
-              label="Confidence"
-              value={CONFIDENCE_LABEL[item.confidence.level]}
-              title={item.confidence.reason}
-            />
-            <Fact label="Risk" value={item.risk.text} />
-          </dl>
 
           {expanded ? (
-            <div id={panelId} className="mt-4 flex flex-col gap-5">
+            <div id={panelId} className="mt-3 mb-2 flex flex-col gap-4">
+              <div>
+                <p className="max-w-[72ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+                  {item.why}
+                </p>
+                <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+                  <Fact label="Effort" value={EFFORT_LABEL[item.effort.bucket]} title={item.effort.basis} />
+                  <Fact
+                    label="Confidence"
+                    value={CONFIDENCE_LABEL[item.confidence.level]}
+                    title={item.confidence.reason}
+                  />
+                  <Fact label="Risk" value={item.risk.text} />
+                </dl>
+              </div>
               <Steps item={item} fileHref={fileHref} LinkComponent={LinkComponent} />
               <FixVerify item={item} />
               {item.context.length > 0 ? (

@@ -134,6 +134,21 @@ def _last_row_per_page(batches: list[Any]) -> Any:
     return table
 
 
+class LanceDBUnavailableError(RuntimeError):
+    """lancedb is missing or broken: an install problem, not a store one."""
+
+
+def store_open_fix_hint(exc: BaseException) -> str:
+    """What to do about a store that would not open, by what actually failed.
+
+    Only an install problem earns "reinstall"; a locked or unreadable table
+    does not, and telling someone to reinstall for it sends them the wrong way.
+    """
+    if isinstance(exc, (LanceDBUnavailableError, ImportError, AttributeError)):
+        return "pip install --force-reinstall lancedb"
+    return "retry; if it persists, run repowise doctor"
+
+
 class LanceDBVectorStore(VectorStore):
     """Vector store backed by LanceDB (embedded, local file storage).
 
@@ -162,9 +177,14 @@ class LanceDBVectorStore(VectorStore):
             return
         try:
             import lancedb  # type: ignore[import]
-        except ImportError as exc:
-            raise RuntimeError(
-                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
+
+            connect_async = lancedb.connect_async
+        except (ImportError, AttributeError) as exc:
+            # A partial install imports fine and lacks the async API, which
+            # used to surface as a bare AttributeError far from its cause.
+            raise LanceDBUnavailableError(
+                f"LanceDB is missing or broken ({type(exc).__name__}: {exc}). "
+                "Reinstall it with: pip install --force-reinstall lancedb"
             ) from exc
 
         # ``Session`` arrived after the oldest supported LanceDB; without it
@@ -175,7 +195,7 @@ class LanceDBVectorStore(VectorStore):
             if session_cls is not None
             else {}
         )
-        self._db = await lancedb.connect_async(self._db_path, **kwargs)
+        self._db = await connect_async(self._db_path, **kwargs)
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)
