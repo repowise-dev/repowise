@@ -73,6 +73,31 @@ def test_a_failed_health_comparison_degrades_to_unavailable(monkeypatch):
     assert delta.findings == []
 
 
+def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
+    """A lazy import asking the loaded module for a name only the checkout has."""
+
+    def _stale(_path):
+        from repowise.core.ingestion.type_names import name_added_after_server_start  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _stale)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.status == "unavailable"
+    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert "name_added_after_server_start" in delta.explanation
+    assert "Restart the MCP server" in delta.explanation
+
+
+def test_a_missing_third_party_module_keeps_the_raw_failure(monkeypatch):
+    """Not a stale server: restarting would not install a dependency."""
+
+    def _missing(_path):
+        import repowise_no_such_dependency  # noqa: F401
+
+    monkeypatch.setattr(tool, "_delta_service", _missing)
+    delta = tool._compare_health("/repo", "HEAD", (), ())
+    assert delta.explanation.startswith("Health comparison failed: No module named")
+
+
 def _finding(path, biomarker, symbol, start, end):
     return SimpleNamespace(
         path=path,
@@ -264,6 +289,39 @@ async def test_inferred_tests_treat_a_failed_graph_walk_as_no_reach(
     )
     assert block["status"] == "no_map"
     assert "run the full suite" in block["summary"]
+
+
+@pytest.mark.asyncio
+async def test_inferred_tests_run_the_tests_under_a_conftest_not_the_conftest(
+    monkeypatch, session, repo_id, tmp_path
+):
+    """The walk reports a conftest it stopped at; pytest collects nothing from one.
+
+    It stands for the tests under its directory, so ``b.py``, reached only
+    through it, still gets tests rather than "run the full suite".
+    """
+    import repowise.core.analysis.test_reachability as reach
+
+    async def _test_files(*_a, **_k):
+        return {
+            "tests/unit/conftest.py",
+            "tests/unit/test_a.py",
+            "tests/unit/sub/test_b.py",
+            "tests/unit/helpers.py",
+            "tests/other/test_c.py",
+        }
+
+    async def _reaching(*_a, **_k):
+        return {"a.py": ["tests/unit/test_a.py"], "b.py": ["tests/unit/conftest.py"]}
+
+    monkeypatch.setattr(reach, "load_test_files", _test_files)
+    monkeypatch.setattr(reach, "tests_reaching", _reaching)
+    block = await tool._inferred_impacted(
+        session, repo_id, ["a.py", "b.py"], OmissionCollector("get_change_risk", repo_root=tmp_path)
+    )
+    # test_a reaches both files, so it leads.
+    assert block["tests_to_run"] == ["tests/unit/test_a.py", "tests/unit/sub/test_b.py"]
+    assert block["total"] == 2
 
 
 @pytest.mark.asyncio

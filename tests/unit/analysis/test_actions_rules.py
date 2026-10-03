@@ -18,7 +18,6 @@ from repowise.core.analysis.actions.facts import (
     DriftFacts,
     FileFacts,
     LeadFinding,
-    PerfFacts,
     RecentFinding,
     SecretFacts,
 )
@@ -249,53 +248,51 @@ def test_engine_drops_fragile_rows_a_folder_absorbed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# hot_path_perf
+# fix_first
 # ---------------------------------------------------------------------------
 
 
-def _perf(**kw) -> PerfFacts:
-    base = dict(
-        opportunity_id="op1",
-        biomarker="n_plus_one",
-        boundary="db",
-        file_path="src/repo.py",
-        symbol="src/repo.py::Repo.load",
-        call_sites=1,
-        files=1,
-        actionability="plan_ready",
-        exposure="entry_reachable",
-        loop_magnitude="grows_with_data",
-        effort="S",
-    )
-    base.update(kw)
-    return PerfFacts(**base)
+def _fix_items():
+    """The shared Fix-first fixture's queue: one now, one next, one later."""
+    from repowise.core.analysis.health.fix_first import build_fix_first
+    from tests.unit.health import fix_first_rows as rows
+
+    return build_fix_first(
+        metrics=rows.METRICS,
+        findings=rows.FINDINGS,
+        refactoring=rows.REFACTORING,
+        performance=rows.PERFORMANCE,
+        plans=rows.PLANS,
+        limit=3,
+    ).items
 
 
-def test_perf_fires_when_reachable_and_growing() -> None:
-    (a,) = _run(code.hot_path_perf, _facts(perf=(_perf(),))).actions
-    assert a.title == "Move the database call in `Repo.load` out of its loop"
-    assert a.target_symbol == "src/repo.py::Repo.load"
-    assert a.confidence == "high"
+def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
+    items = _fix_items()
+    # The growing, reachable database loop leads; it needs judgment.
+    assert [i.tier for i in items] == ["next", "now", "later"]
+    actions = _run(code.fix_first, _facts(fix_first=items)).actions
+    assert [(a.tier, a.title) for a in actions] == [
+        ("plan", items[0].title),
+        ("act_now", items[1].title),
+    ]
+    assert actions[1].horizons == ("week", "quarter") and actions[0].horizons == ("quarter",)
+    assert actions[0].surface == "performance"
+    assert actions[1].commands[0].mcp == f'get_health(fix_id="{items[1].id}")'
+    assert len({a.action_id for a in actions}) == 2
 
 
-def test_perf_fires_on_three_call_sites_without_growth() -> None:
-    (a,) = _run(
-        code.hot_path_perf,
-        _facts(perf=(_perf(loop_magnitude=None, call_sites=3, actionability="advisory"),)),
-    ).actions
-    assert a.title == "Batch the database calls loops make through `Repo.load`"
-    assert a.confidence == "medium"
+def test_fix_first_unavailable_is_named() -> None:
+    outcome = _run(code.fix_first, _facts(unavailable={"fix_first": "Not here."}))
+    assert (outcome.status, outcome.reason) == ("unavailable", "Not here.")
 
 
-def test_perf_gates() -> None:
-    quiet = (
-        _perf(loop_magnitude=None, call_sites=2),
-        _perf(exposure="internal"),
-        _perf(exposure=None),
-        _perf(actionability="investigate"),
-    )
-    for p in quiet:
-        assert _run(code.hot_path_perf, _facts(perf=(p,))).actions == (), p
+def test_fragile_file_does_not_repeat_a_file_fix_first_names() -> None:
+    fragile = _file("src/core.py", fix_commits_90d=9, commits_90d=20)
+    ctx = dict(busy_threshold=5, fix_threshold=3)
+    assert _run(code.fragile_file, _facts([fragile]), **ctx).actions
+    named = _facts([fragile], fix_first=_fix_items())
+    assert _run(code.fragile_file, named, **ctx).actions == ()
 
 
 # ---------------------------------------------------------------------------
@@ -563,13 +560,6 @@ def test_week_rollup_does_not_hide_a_fragile_file_from_the_quarter() -> None:
     view = compose_actions(_facts([fragile], recent_findings=found), now=ANCHOR)
     quarter = [a["target"]["path"] for a in view["horizons"]["quarter"]["actions"]]
     assert "src/f0.py" in quarter
-
-
-def test_two_perf_opportunities_on_one_symbol_keep_distinct_ids() -> None:
-    one = _perf(opportunity_id="op1", boundary="db")
-    two = _perf(opportunity_id="op2", boundary="network")
-    ids = {a.action_id for a in _run(code.hot_path_perf, _facts(perf=(one, two))).actions}
-    assert len(ids) == 2
 
 
 def test_fragile_id_survives_a_change_of_lead_function() -> None:

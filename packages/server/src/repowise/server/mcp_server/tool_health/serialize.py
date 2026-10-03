@@ -99,7 +99,9 @@ def _legacy_health_finding_id(f: Any, repository: str) -> str:
     )
 
 
-def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[str, Any]:
+def _serialize_finding(
+    f: HealthFinding, repository: str = "default", lower_priority: str | None = None
+) -> dict[str, Any]:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
@@ -128,6 +130,8 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
         **rank,
         # Provisional types only, and only when the caller opted into them.
         **({"verification": label} if label else {}),
+        # Why it can wait, on a finding listed after those worth doing first.
+        **({"lower_priority": lower_priority} if lower_priority else {}),
     }
 
 

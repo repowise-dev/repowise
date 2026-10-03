@@ -241,6 +241,168 @@ public static class CatalogExtensions {
 # ---------------------------------------------------------------------------
 
 
+class TestAssemblyScanDiscovery:
+    """A framework-discovered base plus that framework's registration call."""
+
+    def _edges(self, repo: Path, files: dict[str, str]) -> nx.DiGraph:
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return graph
+
+    _CONFIG = (
+        "using Microsoft.EntityFrameworkCore;\n"
+        "public class OrderConfiguration : IEntityTypeConfiguration<Order> {\n"
+        "    public void Configure(EntityTypeBuilder<Order> b) {}\n}\n"
+    )
+
+    def test_ef_configuration_is_wired_from_the_assembly_scan(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": (
+                    "public class AppDbContext : DbContext {\n"
+                    "    protected override void OnModelCreating(ModelBuilder m) =>\n"
+                    "        m.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);\n}\n"
+                ),
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        edge = graph.get_edge_data("Data/AppDbContext.cs", "Data/Config/OrderConfiguration.cs")
+        assert edge is not None and edge["edge_type"] == "framework"
+
+    def test_no_registration_call_means_no_edge(self, tmp_path: Path) -> None:
+        """The base alone is not evidence: nothing here scans the assembly."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Data/AppDbContext.cs": "public class AppDbContext : DbContext {}\n",
+                "Data/Config/OrderConfiguration.cs": self._CONFIG,
+            },
+        )
+        assert graph.in_degree("Data/Config/OrderConfiguration.cs") == 0
+
+    def test_fastendpoints_endpoint_and_validator(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddFastEndpoints().SwaggerDocument();\n",
+                "Cart/AddToCart.cs": (
+                    "public class AddToCartEndpoint : Endpoint<AddToCartRequest, CartDto> {}\n"
+                    "public class AddToCartValidator : Validator<AddToCartRequest> {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Cart/AddToCart.cs")
+        assert edge is not None
+        assert sorted(edge["imported_names"]) == ["AddToCartEndpoint", "AddToCartValidator"]
+
+    def test_the_edge_names_only_the_discovered_type(self, tmp_path: Path) -> None:
+        """A dead sibling type in a handler's file is not vouched for."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrder.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                    "public class DeadSibling {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Orders/CreateOrder.cs")
+        assert edge is not None and edge["imported_names"] == ["CreateOrderHandler"]
+
+    def test_a_registration_call_in_a_comment_or_string_does_not_count(
+        self, tmp_path: Path
+    ) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": (
+                    "// builder.Services.AddMediator();\n"
+                    'var hint = "call AddMediator() to enable handlers";\n'
+                    'var doc = """\n    services.AddMediator();\n    """;\n'
+                ),
+                "Orders/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+    def test_a_project_the_registering_one_cannot_see_is_not_scanned(
+        self, tmp_path: Path
+    ) -> None:
+        sdk = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>{}</ItemGroup></Project>'
+        ref = '<ProjectReference Include="../Core/Core.csproj" />'
+        graph = self._edges(
+            tmp_path,
+            {
+                "App/App.csproj": sdk.format(ref),
+                "Core/Core.csproj": sdk.format(""),
+                "Other/Other.csproj": sdk.format(""),
+                "App/Program.cs": "builder.Services.AddMediator();\n",
+                "Core/CreateOrderHandler.cs": (
+                    "public class CreateOrderHandler : IRequestHandler<CreateOrder, int> {}\n"
+                ),
+                "Other/StrayHandler.cs": (
+                    "public class StrayHandler : IRequestHandler<Stray, int> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("App/Program.cs", "Core/CreateOrderHandler.cs")
+        assert graph.in_degree("Other/StrayHandler.cs") == 0
+
+    def test_a_class_named_like_a_handler_is_not_a_handler(self, tmp_path: Path) -> None:
+        """Name patterns do not count; only the declared base does."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.Services.AddMediator();\n",
+                "Orders/CreateOrderHandler.cs": "public class CreateOrderHandler {}\n",
+            },
+        )
+        assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
+
+
+class TestToolDiscoveredRoots:
+    """A type a tool finds with no call in code: its file is a root, not an edge target."""
+
+    _FACTORY = (
+        "using Microsoft.EntityFrameworkCore.Design;\n"
+        "namespace App.Data;\n"
+        "public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext> {\n"
+        "    public AppDbContext CreateDbContext(string[] args) => null;\n}\n"
+    )
+
+    def _roots(self, repo: Path, files: dict[str, str]) -> set[str]:
+        for rel, text in files.items():
+            (repo / rel).write_text(text)
+        parsed = _build_parsed_files(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return {p for p, d in graph.nodes(data=True) if d.get("is_reachability_root")}
+
+    def test_design_time_factory_is_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Factory.cs": self._FACTORY}) == {"Factory.cs"}
+
+    def test_design_time_services_is_a_root(self, tmp_path: Path) -> None:
+        text = "public class DesignServices : IDesignTimeServices {}\n"
+        assert self._roots(tmp_path, {"Design.cs": text}) == {"Design.cs"}
+
+    def test_an_ordinary_class_is_not_a_root(self, tmp_path: Path) -> None:
+        assert self._roots(tmp_path, {"Plain.cs": "public class Plain : Base {}\n"}) == set()
+
+    def test_a_dead_sibling_keeps_the_file_judged(self, tmp_path: Path) -> None:
+        text = self._FACTORY + "public class Dead {}\n"
+        assert self._roots(tmp_path, {"Factory.cs": text}) == set()
+
+
 class TestDotNetDynamicHints:
     def test_di_registration_emits_interface_to_impl(self, tmp_path: Path) -> None:
         (tmp_path / "IUserService.cs").write_text(

@@ -313,7 +313,7 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
         getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
       );
-      if (!detail.resolved) {
+      if (!detail.found) {
         throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
       }
       const repoName = ctx.repo?.name;

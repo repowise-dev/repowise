@@ -1,22 +1,20 @@
-"""Performance and refactoring pillar blocks for get_health: the queue, rollup and lead."""
+"""Performance and refactoring pillar blocks for get_health: the queue and its rollup."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from repowise.core.analysis.health.perf.opportunity_rank import NON_LEADING_MARKERS
-from repowise.core.analysis.health.refactoring.recommendations import Recommendation
+from repowise.core.analysis.health.perf.serving import parse_query
+from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
+from repowise.core.analysis.next_call import ActionCommand
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
-from repowise.server.mcp_server.tool_health.serialize import _serialize_refactoring
 from repowise.server.services.performance_health import (
     PerformanceHealthService,
     PerformancePage,
-    parse_query,
 )
 from repowise.server.services.refactoring_health import RefactoringHealthService
-from repowise.server.services.refactoring_health import parse_query as parse_refactoring_query
 
 # The opportunity id space is shared with the performance pillar's, and told
 # apart by prefix alone, so ``opportunity_id`` stays one selector.
@@ -54,7 +52,6 @@ class _PerformanceBlocks:
 
     page: PerformancePage | None = None
     summary: dict[str, Any] | None = None
-    directive: dict[str, Any] | None = None
     ignored: dict[str, str] = field(default_factory=dict)
 
 
@@ -64,7 +61,6 @@ async def _performance_blocks(
     wants: Any,
     included: bool,
     file_paths: tuple[str, ...] | None,
-    scoped: bool,
     limit: int,
     cursor: int,
     view: str | None,
@@ -74,16 +70,15 @@ async def _performance_blocks(
     actionability: str | None,
     sort: str | None,
 ) -> _PerformanceBlocks:
-    """Read the materialized queue, its rollup, and the dashboard lead.
+    """Read the materialized queue and its rollup.
 
     Each block is gated on surviving the projection, so a caller that asked for
-    one of the three does not pay for the other two.
+    one does not pay for the other.
     """
     page = None
     query = None
     ignored: dict[str, str] = {}
     if included:
-        # The lede quotes only the first row, so projected down to it, read one.
         emits_queue = wants("performance_opportunities")
         query, ignored = parse_query(
             context=context,
@@ -110,10 +105,6 @@ async def _performance_blocks(
             if included and wants("performance_summary")
             else None
         ),
-        # Dashboard lead: one primary-key read, independent of repo size.
-        directive=(
-            await service.directive() if not scoped and wants("performance_directive") else None
-        ),
         ignored=ignored,
     )
 
@@ -124,7 +115,6 @@ class _RefactoringBlocks:
 
     page: Any = None
     summary: dict[str, Any] | None = None
-    directive: dict[str, Any] | None = None
     ignored: dict[str, str] = field(default_factory=dict)
 
 
@@ -141,11 +131,12 @@ async def _refactoring_blocks(
     lead_type: str | None = None,
     confidence: str | None = None,
     effort: str | None = None,
+    scope: str | None = None,
 ) -> _RefactoringBlocks:
-    """Read the materialized queue, its rollup, and the dashboard lead.
+    """Read the materialized queue and its rollup.
 
     Each block is gated on surviving the projection, so a caller that asked for
-    one of the three does not pay for the other two.
+    one does not pay for the other.
     """
     page = None
     ignored: dict[str, str] = {}
@@ -160,6 +151,7 @@ async def _refactoring_blocks(
             lead_type=lead_type,
             confidence=confidence,
             effort=effort,
+            scope=scope,
             file_paths=list(file_paths) if file_paths is not None else None,
             limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
             offset=cursor if emits_queue else 0,
@@ -172,12 +164,6 @@ async def _refactoring_blocks(
     return _RefactoringBlocks(
         page=page,
         summary=await service.summary() if rollup_wanted else None,
-        # Dashboard only: a targeted call is about the files the caller named.
-        directive=(
-            await service.directive()
-            if not scoped and wants("refactoring_directive")
-            else None
-        ),
         ignored=ignored,
     )
 
@@ -196,6 +182,10 @@ def _render_refactoring(
         result["refactoring_opportunities"] = page.items
         result["refactoring_opportunities_total"] = page.total
         result["refactoring_opportunities_emitted"] = len(page.items)
+        result["refactoring_opportunities_scope"] = page.scope
+        if page.hidden is not None:
+            # What the default scope leaves out, by reason; ``all`` lists it.
+            result["refactoring_opportunities_hidden"] = page.hidden
         if len(page.items) < page.total:
             result["refactoring_opportunities_reduced_reason"] = (
                 "collection_cap" if req.limit > _REFACTORING_COLLECTION_CAP else "limit"
@@ -213,10 +203,11 @@ def _render_refactoring(
             **refactoring.summary,
             "facets": page.facets if page else {},
             "view": req.refactoring_view,
-            "next_call": (
-                "get_health(include=['refactoring'], "
-                "only=['refactoring_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked refactoring opportunities, lead first",
+                "get_health",
+                {"include": ["refactoring"], "only": ["refactoring_opportunities"], "limit": 6},
+            ).as_dict(),
         }
 
 
@@ -241,81 +232,9 @@ def _render_performance(
         result["performance_summary"] = {
             **performance.summary,
             "facets": page.facets if page else {},
-            "next_call": (
-                "get_health(include=['performance'], "
-                "only=['performance_opportunities'], limit=6)"
-            ),
+            "next_call": ActionCommand.call(
+                "The ranked performance opportunities, lead first",
+                "get_health",
+                {"include": ["performance"], "only": ["performance_opportunities"], "limit": 6},
+            ).as_dict(),
         }
-
-
-_PERFORMANCE_LEAD_KEYS = (
-    "opportunity_id",
-    "intervention_symbol",
-    "boundary_kind",
-    "execution_context",
-    "affected_call_sites_total",
-    "rank_score",
-)
-
-_RECOMMENDATION_LEAD_KEYS = (
-    "id",
-    "refactoring_type",
-    "file_path",
-    "target_symbol",
-    "benefit",
-    "leverage",
-    "cost",
-    "risk",
-    "rank_score",
-)
-
-
-def _recommendation_lede(
-    performance: _PerformanceBlocks,
-    recommendations: list[Recommendation],
-    reference_repository: str,
-    req: HealthRequest,
-) -> dict[str, Any]:
-    """One performance opportunity beside one plan, when both pillars were asked for."""
-    performance_lead = next(
-        (
-            item
-            for item in (performance.page.items if performance.page else [])
-            if item.get("biomarker_type") not in NON_LEADING_MARKERS
-        ),
-        None,
-    )
-    lead_payload = (
-        _serialize_refactoring(recommendations[0], reference_repository)
-        if recommendations
-        else None
-    )
-    return {
-        "performance_opportunities_total": (
-            performance.page.total if performance.page else 0
-        ),
-        "refactoring_plans_total": len(recommendations),
-        "performance_lead": (
-            {key: performance_lead[key] for key in _PERFORMANCE_LEAD_KEYS}
-            if performance_lead
-            else None
-        ),
-        "recommendation_lead": (
-            {key: lead_payload[key] for key in _RECOMMENDATION_LEAD_KEYS}
-            if lead_payload
-            else None
-        ),
-        # The lead's plan, from the one place that decides plan linkage.
-        "performance_plan_id": (
-            performance_lead["plan_reference"] if performance_lead else None
-        ),
-        "performance_plan_reason": (
-            performance_lead["plan_reason"] if performance_lead else None
-        ),
-        "next_call": (
-            f"get_health(targets={req.raw_targets!r}, repo={req.repo!r}, "
-            "include=['performance','refactoring'], limit=3, "
-            "only=['performance_opportunities','refactoring_plans'], "
-            f"refactoring_view='{req.refactoring_view}')"
-        ),
-    }

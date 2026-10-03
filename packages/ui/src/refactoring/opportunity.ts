@@ -24,12 +24,7 @@ export const TRIAGE_STATUSES: { value: OpportunityStatus; label: string }[] = [
   { value: "false_positive", label: "False positive" },
 ];
 
-export const STATUS_LABEL: Record<OpportunityStatus, string> = {
-  open: "Open",
-  acknowledged: "Acknowledged",
-  resolved: "Resolved",
-  false_positive: "False positive",
-};
+export { STATUS_LABEL } from "../health/labels";
 
 /**
  * Whether the file's dominant finding is what these steps address.

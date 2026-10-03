@@ -174,14 +174,40 @@ class TestScanFile:
         findings = asyncio.run(scanner.scan_file("spawn.ts", source, symbols=[]))
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
 
-    def test_combined_prefilter_uses_the_same_safe_call_boundaries(self) -> None:
+    def test_combined_prefilter_leaves_calls_to_the_call_scan(self) -> None:
         from repowise.core.analysis.security_scan import _ANY_PATTERN
 
-        assert _ANY_PATTERN.search("eval (")
-        assert _ANY_PATTERN.search("exec(")
-        assert _ANY_PATTERN.search("window.eval(")
-        assert not _ANY_PATTERN.search("retrieval (")
-        assert not _ANY_PATTERN.search("my_eval(")
+        assert not _ANY_PATTERN.search("eval (")
+        assert not _ANY_PATTERN.search("window.exec(")
+        assert _ANY_PATTERN.search("os.system(cmd)")
+
+    @pytest.mark.parametrize(
+        ("source", "code", "uncommented"),
+        [
+            ('x = "a\\"b"  # c\ny', "x =            \ny", 'x = "a\\"b"     \ny'),
+            ("a /* b\nc */ d", "a     \n     d", "a     \n     d"),
+            ("s = '''q\n\"\"\" ''' + k", "s =     \n        + k", "s = '''q\n\"\"\" ''' + k"),
+            ('t = `a${f({b: "c"})}d` // e', "t =     f({b:     )        ", 't = `a${f({b: "c"})}d`     '),
+            ('open "abc\\', "open      ", 'open "abc\\'),
+            ("u = '#' # z", "u =        ", "u = '#'    "),
+        ],
+    )
+    def test_masking_blanks_comments_and_strings_in_place(
+        self, source: str, code: str, uncommented: str
+    ) -> None:
+        from repowise.core.analysis.security_scan import _mask_comments_and_strings
+
+        assert _mask_comments_and_strings(source) == code
+        assert _mask_comments_and_strings(source, strings=False) == uncommented
+
+    def test_file_without_a_call_word_skips_the_call_scan(self) -> None:
+        from repowise.core.analysis.security_scan import _call_findings
+
+        def unreachable() -> str:
+            raise AssertionError("masked source built for a file with no call")
+
+        assert _call_findings("a.ts", "run(executor);\n", unreachable) == []
+        assert _call_findings("a.py", "x = 1\n", unreachable) == []
 
     @pytest.mark.parametrize(
         "source",

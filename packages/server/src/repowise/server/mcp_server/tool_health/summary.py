@@ -1,9 +1,10 @@
-"""Repository summaries for get_health: KPIs, gap analysis, per-file leads, the directive."""
+"""Repository summaries for get_health: KPIs, gap analysis and per-file leads."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
@@ -13,10 +14,6 @@ from repowise.core.analysis.health.scoring import (
     nloc_weighted_attr,
 )
 from repowise.core.persistence.models import HealthFileMetric
-
-# ``fix_first`` plus the two in ``then``. The plan lookup, the lead set and the
-# directive must agree on it.
-_DIRECTIVE_CANDIDATES = 3
 
 
 def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
@@ -49,102 +46,6 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
             "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
         }
     return leads
-
-
-def _directive(
-    by_leverage: list[HealthFileMetric],
-    leads: dict[str, dict[str, Any]],
-    gap_points: int,
-    plan_biomarkers_by_path: dict[str, set[str]] | None = None,
-    plan_count_by_path: dict[str, int] | None = None,
-) -> dict[str, Any] | None:
-    """The one file to fix first, and what fixing it buys.
-
-    Every other block ranks and describes; this one recommends, like
-    ``get_risk``'s ``directive``. Ranked by ``weighted_deficit`` (``score``
-    floors at 1.0), so it names the file that moves the repo average.
-    """
-    if not by_leverage:
-        return None
-    # The highest-leverage file with something an edit can remove, else the
-    # top file, flagged below rather than given an invented task.
-    top = next(
-        (m for m in by_leverage if (leads.get(m.file_path) or {}).get("actionable_biomarker")),
-        by_leverage[0],
-    )
-    recovers = round(max(TARGET_SCORE - top.score, 0.0) * max(top.nloc, 1))
-    lead = leads.get(top.file_path) or {}
-    # Does a plan behind ``plan_via`` address the cause in ``reason``? Some
-    # biomarkers (e.g. ``coverage_gradient``) have no plan kind at all.
-    lead_biomarker = lead.get("actionable_biomarker")
-    available = (plan_biomarkers_by_path or {}).get(top.file_path, set())
-    addresses = bool(lead_biomarker) and lead_biomarker in available
-    out = {
-        "fix_first": top.file_path,
-        "reason": lead.get("actionable_reason") or f"scores {round(top.score, 2)}",
-        # What this file recovers at target, and its share of the gross gap
-        # (see ``_gap_analysis`` for the denominator).
-        "recovers_weighted_deficit_points": recovers,
-        "recovers_points": recovers,
-        "recovers_points_compatibility": {
-            "deprecated": True,
-            "replacement": "recovers_weighted_deficit_points",
-            "equivalent_value": True,
-        },
-        "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
-        "then": [m.file_path for m in by_leverage if m.file_path != top.file_path][:2],
-        # Projected with ``only``: the bare ``include`` call restates the whole
-        # dashboard and can exceed the MCP token cap.
-        "plan_via": "get_health(include=['refactoring'], only=['refactoring_plans'])",
-        "plan_addresses_reason": addresses,
-    }
-    # Context, not a task: no edit to this file settles history.
-    if lead.get("watch_biomarker"):
-        out["watch"] = {
-            "biomarker": lead["watch_biomarker"],
-            "reason": lead.get("watch_reason"),
-            "note": "History-derived. Read it as context; there is nothing here to fix.",
-        }
-    if not lead_biomarker:
-        # No file has a code-shape lead: the deficit is history.
-        out["next_action"] = (
-            "No file's leading cause is code shape; the deficit on this one is "
-            "history. Read watch for what is moving and leave it alone."
-        )
-        return out
-    if addresses:
-        out["next_action"] = "inspect matching plan via plan_via"
-        return out
-    out["plan_note"] = _plan_note(
-        lead_biomarker, available, (plan_count_by_path or {}).get(top.file_path, 0)
-    )
-    out["next_action"] = f"investigate {lead_biomarker}"
-    return out
-
-
-def _plan_note(lead_biomarker: str, available: set[str], n_plans: int) -> str:
-    """Name the gap rather than leaving the caller to diff two biomarker vocabularies.
-
-    The three branches call for different next moves: plans for other causes,
-    plans with no recorded cause, or no plans.
-    """
-    if available:
-        # Not "only X, Y": plans with an empty ``source_biomarker`` cannot be named.
-        return (
-            f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
-            f"target {', '.join(sorted(available))}. Treat plan_via as related "
-            f"cleanup, not the fix for reason."
-        )
-    if n_plans:
-        return (
-            f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
-            f"plan(s) record no source biomarker. Treat plan_via as related "
-            f"cleanup, not the fix for reason."
-        )
-    return (
-        f"No plan addresses {lead_biomarker!r}; this file has no plans. "
-        "Use the finding itself."
-    )
 
 
 def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
@@ -240,13 +141,17 @@ def _compute_kpis(
     hotspot_paths: set[str] | None = None,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
+    unanalysed: int = 0,
 ) -> dict[str, Any]:
+    """*metrics* are scored rows; *unanalysed* counts the files left out of
+    them because health has no dialect for their language."""
     if not metrics:
         return {
             "file_count": 0,
             "average_health": None,
             "band": None,
-            "analysis_status": "unavailable",
+            # A repository of only unsupported languages is not missing data.
+            "analysis_status": NO_DIALECT_STATUS if unanalysed else "unavailable",
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,

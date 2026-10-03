@@ -7,6 +7,7 @@ import {
   boundaryLabel,
   facetValueLabel,
   humanizeToken,
+  moduleScopeLabel,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
@@ -178,3 +179,18 @@ describe("queue sections", () => {
     expect(contiguousSections([])).toEqual([]);
   });
 });
+
+describe("module scope", () => {
+  it("reads `<file>::__module__` as the module scope of that file", () => {
+    expect(moduleScopeLabel("src/jobs.py::__module__")).toBe("module scope of src/jobs.py");
+    expect(moduleScopeLabel("src/jobs.py::__module__", true)).toBe("module scope of jobs.py");
+    expect(moduleScopeLabel("src/jobs.py::run")).toBeNull();
+  });
+
+  it("never prints __module__ in a title or an evidence line", () => {
+    const top = opportunity({ intervention_symbol: "src/jobs.py::__module__", terminal_sink: null });
+    expect(opportunityTitle(top)).toBe("Database call inside a loop in module scope of jobs.py");
+    expect(opportunityEvidenceLine(top)).toBe("module scope of src/jobs.py");
+  });
+});
+

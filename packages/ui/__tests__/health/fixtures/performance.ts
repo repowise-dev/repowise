@@ -46,6 +46,8 @@ export function opportunity(
     affected_call_sites_total: 2,
     affected_files_total: 2,
     observations_total: 6,
+    // Carried on the wire; the queue does not render it yet.
+    lower_priority: null,
     evidence: [
       {
         finding_id: "finding_1111",
@@ -200,11 +202,11 @@ export function legacyPage(): PerformanceOpportunityPage {
 }
 
 export function resolvedDetail(
-  overrides: Partial<Extract<PerformanceOpportunityDetail, { resolved: true }>> = {},
+  overrides: Partial<Extract<PerformanceOpportunityDetail, { found: true }>> = {},
 ): PerformanceOpportunityDetail {
   return {
     ...opportunity({ opportunity_id: "perf2_planready" }),
-    resolved: true,
+    found: true,
     lifecycle_status: "open",
     analyzed_commit: "848a8f180abc",
     model_state: {

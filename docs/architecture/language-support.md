@@ -533,6 +533,9 @@ Two directions, deliberately separate:
   below the two same-class origins because the walk compares no signature and
   reads no visibility, so it can reach a method the language would not actually
   dispatch to. Gated on `_INHERITED_LANGUAGES`.
+  Python's `super().m()` walks the caller's C3 MRO instead and also emits
+  `self_inherited`; a base the repository does not declare ends the walk
+  unresolved, since it may declare `m` itself.
 - **Forward**: `dispatches_to`, a base method → an implementation that can
   answer for it. Named for what it asserts rather than for a heritage relation:
   the pass matches by method name and compares no signature, so it is a

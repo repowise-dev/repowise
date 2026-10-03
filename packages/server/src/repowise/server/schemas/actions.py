@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from repowise.core.analysis.next_call import ActionCommand
+
 
 class ActionWhy(BaseModel):
     label: str
@@ -28,12 +30,6 @@ class ActionDetail(BaseModel):
     severity: str | None = None
     reason: str = ""
     ref: str | None = None
-
-
-class ActionCommand(BaseModel):
-    purpose: str
-    mcp: str | None = None
-    cli: str | None = None
 
 
 class NextAction(BaseModel):

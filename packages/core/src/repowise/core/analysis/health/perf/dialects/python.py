@@ -195,6 +195,8 @@ _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
 
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
+    lock_acquire_functions = frozenset({"acquire", "__enter__"})
+    spin_loop_header = re.compile(r"while\s+True\s*:")
     markers = frozenset(
         {
             "io_in_loop",

@@ -43,7 +43,7 @@ get_dead_code(kind="unused_export", group_by="owner")
 | Kind | What it means | How it is computed | Base confidence |
 |------|---------------|--------------------|-----------------|
 | `unreachable_file` | No file in the repo imports this one. | File-node in-degree of 0 on the dependency graph, after entry points and the never-flag allowlist are removed. | Scored from git age (below) |
-| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `extends` / `implements` / `method_implements` / `dispatches_to` / `framework_binds` / `reads` / `references` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
+| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `extends` / `implements` / `method_implements` / `dispatches_to` / `framework_binds` / `reads` / `references` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when an importer of the containing file names one of its symbols (so the file is alive and its importers list what they take, but not this symbol); `0.60`, never safe to delete, when no importer names a symbol of the file (no importer at all, a C `#include`, a C# `using`), for every C, C++ and Objective-C symbol (the preprocessor reaches symbols through macros and typedef aliases no edge records), and for a C# class holding extension methods (called as `x.Method()` without naming the class); `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
 | `unused_internal` | A private or underscore-prefixed symbol nothing calls. | No `calls` edge, and no cross-file importer pulls the name (which would mean a dispatch-table lookup). Off by default. | `0.65` |
 | `zombie_package` | A whole top-level package no other package imports. | No inter-package import edges into it. Never marked safe to delete. | `0.50` |
 
@@ -84,6 +84,25 @@ Rust helper is never flagged here. And the `lines` count on file and package fin
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
+A .NET reference assembly (`ref/*.cs`) is the compile-time API of a library.
+Its files are never reported, and neither is a C# file or type it lists: that
+is public API, used outside the repository.
+
+### A C or C++ name written anywhere else is a use
+
+C, C++ and Objective-C symbols are used in ways that carry no edge: a callback
+passed to `SetTimer`, a function reached through a `#define` alias, a P/Invoke
+export named in a C# `[LibraryImport]`, an icall registered in a table header,
+a `.def` EXPORTS line, an assembly label. So an `unused_export` or
+`unused_internal` in these languages is dropped when any of the names its
+declaration introduces is written outside a declaration of it, in any code
+file or in a `.def`, `.asm` or `.s` file. A typedef contributes its tag and
+every alias (`typedef struct _X {...} X, *PX;`), and an enum its enumerators.
+Declarations do not count (the header prototype of a `.cpp` function), and
+neither do comments, prose strings and documentation. A COM method declared
+with `IFACEMETHODIMP` or `STDMETHODIMP` fills an interface slot and is never
+reported.
+
 ### How unreachable-file confidence is scored
 
 An orphaned file that nobody has touched in a year is a much stronger signal than
@@ -98,10 +117,17 @@ one added last week. Confidence starts from git activity:
 | No commits in 90 days, but the file is under 30 days old | `0.55` (may be work in progress) |
 | Still being committed to | `0.40` |
 
-Then it only ever goes down. Two caps apply:
+Then it only ever goes down. These caps apply:
 
 - **Dynamic imports nearby.** If any file in the same directory uses a runtime
   loader, confidence is capped at `0.40`.
+- **Imported by namespace.** A C# `using` names a namespace, never a file, and
+  a same-namespace `new T()` needs no `using` at all, so a C# file is capped at
+  `0.40` whatever its age.
+- **Its type is named elsewhere.** When another file writes the name of a type
+  the file declares, confidence is capped at `0.40` and the evidence names
+  that file: Java, C# and Swift use a type from its own package or module
+  without an import.
 - **Runtime-load risk factors.** If the path looks like config, environment,
   bootstrap, database, script, or runtime-asset code, confidence is capped at
   `0.40` and the finding carries an evidence line explaining why. These are
@@ -163,8 +189,12 @@ these, so they are never flagged rather than flagged and down-weighted.
 
 | Group | Examples |
 |-------|---------|
-| Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go`, `build.rs` |
+| Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go` |
+| Build files | Any file a build tool runs by name, classified by type in `code_origin`: Gradle `*.gradle(.kts)`, `pom.xml`, `CMakeLists.txt`, `*.cmake`, Makefiles, `meson.build`, Bazel `BUILD` / `*.bzl`, MSBuild `.props` / `.targets`, crate-root `build.rs`, `magefile.go`, `noxfile.py`, bundler configs. A directory holding only build files is not a package |
 | Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
+| Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
+| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build file (above), task file (`Dockerfile`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
+| Build-named JVM classes | A class whose fully-qualified name a `build.gradle(.kts)` quotes: `esplugin { classname '...' }`, `implementationClass`, `mainClass` |
 | Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
 | Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
 | Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
@@ -177,7 +207,12 @@ Symbols decorated by a framework are treated as live too: pytest fixtures, Flask
 and FastAPI routes, Django `admin.register` and signal receivers, Celery tasks,
 Click and Typer commands, and the JVM stereotype and routing annotations
 (`@Component`, `@Service`, `@RestController`, `@Entity`, `@KafkaListener`,
-`@GetMapping`, `@Test`, JAX-RS `@Path` / `@GET`). Decorator *suffixes* are matched
+`@GetMapping`, `@Test`, JAX-RS `@Path` / `@GET`), and JMH `@State`,
+`@BenchmarkMode` and `@Benchmark`. Every annotation of a Java or Kotlin
+declaration counts, not only the first. A Java, Kotlin or Scala export whose
+name is written in another code file, or further down its own file, is
+dropped: those languages use a type from its own package by its bare name,
+with no import. Decorator *suffixes* are matched
 too, so `@my_local_group.command` and `@api.get` register even when the receiver
 has a project-local name.
 
@@ -198,7 +233,9 @@ the pass.
 
 Zombie-package detection additionally ignores directories that are not packages
 at all: `.github`, `.vscode`, `.devcontainer`, `docs`, `scripts`, `assets`,
-`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings.
+`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings, and any
+directory whose code is only Dockerfiles, Makefiles and shell scripts, which
+are run rather than imported.
 
 ## Dynamic-import awareness
 
@@ -259,10 +296,17 @@ These are the cases where a finding is most likely wrong:
   unused-export pass: a symbol defined in a barrel that nobody imports should
   still be reported. A symbol re-exported through a barrel to external callers
   can therefore surface as an unused export.
-- **Python `__all__` is not read.** The dead-code layer never consults `__all__`,
-  so declaring a public API there does not by itself rescue a symbol. The
-  rescues that do apply are the `__init__.py` exemption, the dunder-name skip,
-  and intra-module reference tracking.
+- **Python `__all__` is read for visibility, never as a rescue.** A literal
+  module-level `__all__` (list, tuple or set of string constants) raises the
+  names it lists to `public`, even underscore-prefixed ones; a name it omits
+  keeps its name-based visibility, because the list is often stale and
+  demoting on absence would hide a genuinely dead export. Membership is capped
+  at the visibility label: it sets no export marker, mints no edge, and
+  suppresses no finding, so declaring a public API there does not by itself
+  rescue a symbol. Lists built at runtime (comprehensions, `+=`,
+  concatenation) are treated as absent. The rescues that do apply are the
+  `__init__.py` exemption, the dunder-name skip, and intra-module reference
+  tracking.
 - **Test-only usage reads as usage.** A test file's import produces a real graph
   edge, so a symbol only its tests touch is not flagged. That is deliberate, but
   it also means repowise will not tell you a symbol is *exclusively* exercised by

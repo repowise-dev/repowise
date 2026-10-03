@@ -34,6 +34,8 @@ from repowise.core.persistence.models import (
 from tests.unit.persistence.helpers import insert_repo
 
 ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+#: A size finding's deepest nested block: Fix first's first concrete step.
+DEEP = json.dumps({"deepest_block": {"start": 20, "end": 30}, "ccn": 44, "max_nesting": 4})
 NOW = ANCHOR + timedelta(days=1)
 
 
@@ -61,12 +63,13 @@ async def _seed(session) -> str:
         [
             GitMetadata(repository_id=rid, file_path="src/core.py", commit_count_90d=12,
                         last_commit_at=ANCHOR - timedelta(days=1), bug_magnet=True),
-            HealthFileMetric(repository_id=rid, file_path="src/core.py", max_ccn=12, nloc=300,
-                             is_test=False),
+            HealthFileMetric(repository_id=rid, file_path="src/core.py", score=10.0, max_ccn=12,
+                             nloc=300, is_test=False),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="change_entropy",
                           severity="high", health_impact=3.0),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="complex_method",
-                          severity="high", function_name="run", health_impact=1.0),
+                          severity="high", function_name="run", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
         ]
     )
     add(
@@ -97,7 +100,8 @@ async def _seed(session) -> str:
                                    file_path="src/hist.py", symbol=None,
                                    attribution_basis="added_lines"),
             HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
-                          severity="high", function_name="build", health_impact=1.0),
+                          severity="high", function_name="build", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
             HealthFinding(repository_id=rid, file_path="src/touched.py", biomarker_type="long_method",
                           severity="high", function_name="x", health_impact=1.0),
         ]
@@ -108,11 +112,13 @@ async def _seed(session) -> str:
             PerformanceOpportunity(
                 repository_id=rid, opportunity_id="perf1", status="open",
                 execution_context="production", actionability_state="plan_ready",
+                plan_state="available", fix_strategy="batch_or_prefetch_io",
                 boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
                 intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
                 affected_files_total=2,
                 details_json=json.dumps(
-                    {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data"},
+                    {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),
             ),
@@ -177,15 +183,14 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     assert view["context"]["fix_commits_90d"] == 4
     rules = _by_rule(view)
 
-    (fragile,) = rules["fragile_file"]
-    assert fragile["target"]["path"] == "src/core.py"
-    assert fragile["title"].startswith("Add tests around `src/core.py`")
-    # The code-shape finding leads, not the higher-impact history marker.
-    assert fragile["marker"] == "complex_method"
-
-    (perf,) = rules["hot_path_perf"]
-    assert perf["title"] == "Batch the database calls loops make through `Repo.load`"
-    assert perf["effort"] == "S"
+    # Fix first names the busy bug magnet by its code-shape finding, not the
+    # higher-impact history marker, and the plan-ready loop; the fragile-file
+    # rule does not repeat the file it already names.
+    fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
+    assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
+    assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
+    assert fixes["src/repo.py"]["effort"] == "S"
+    assert "fragile_file" not in rules
 
     (secret,) = rules["live_secret"]
     assert secret["target"]["path"] == "src/settings.py"
@@ -206,12 +211,12 @@ async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session
     await async_session.commit()
 
     view = await load_actions_view(async_session, rid, now=NOW)
-    assert set(view["unavailable"]) == {"performance"}
+    assert set(view["unavailable"]) == {"fix_first"}
     status = {r["rule"]: r["status"] for r in view["rules"]}
-    assert status["hot_path_perf"] == "unavailable"
+    assert status["fix_first"] == "unavailable"
     assert status["live_secret"] == "evaluated"
     rules = _by_rule(view)
-    assert "hot_path_perf" not in rules
+    assert "fix_first" not in rules
     assert {"fragile_file", "live_secret", "broken_doc_refs"} <= set(rules)
 
 

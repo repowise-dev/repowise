@@ -28,11 +28,13 @@ from repowise.core.analysis.doc_drift.serialize import (
     documents_with_drift,
 )
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import id_segment_name
 from repowise.core.persistence.crud import (
     coverage_row_dict,
     doc_drift_references_stored,
@@ -196,7 +198,7 @@ async def _resolve_call_graph(
     node = await get_graph_node(session, repo_id, target)
     if node is None and "::" in target:
         # Fuzzy: try bare name
-        bare_name = target.split("::")[-1]
+        bare_name = id_segment_name(target.split("::")[-1])
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -722,7 +724,9 @@ async def _resolve_health(
     )
 
     health: dict[str, Any] = {
-        "score": round(metric.score, 2),
+        "score": round(metric.score, 2) if metric.score is not None else None,
+        # Said in words, so a missing score is not read as a missing index.
+        **({"analysis_status": NO_DIALECT_STATUS} if metric.score is None else {}),
         "max_ccn": metric.max_ccn,
         "max_nesting": metric.max_nesting,
         "nloc": metric.nloc,

@@ -41,7 +41,7 @@ The findings themselves are read where the stored rows surface, below.
 From an agent, through the risk surface:
 
 ```python
-get_risk(target="src/api/")     # includes a security_signals block for the target
+get_risk(targets=["src/api/"])  # includes a security_signals block for the target
 ```
 
 Findings also appear on the Security tab of the code-health page, and at

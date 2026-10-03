@@ -99,3 +99,36 @@ def test_the_trend_stays_quiet_when_no_control_was_passed() -> None:
             )
             result = runner.invoke(cli, ["health", "--trend"])
     assert "do not apply to it" not in result.output
+
+
+def test_the_report_leads_with_fix_first() -> None:
+    """Title, where, why, effort and the verify command, from the shared queue."""
+    from repowise.cli.commands.health_cmd.summary import _render_fix_first
+    from repowise.core.analysis.health.fix_first import build_fix_first
+    from tests.unit.health.fix_first_rows import (
+        FINDINGS,
+        METRICS,
+        PERFORMANCE,
+        PLANS,
+        REFACTORING,
+    )
+
+    queue = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        limit=3,
+    )
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    with patch("repowise.cli.commands.health_cmd.summary.console", console):
+        _render_fix_first(queue)
+        _render_fix_first(None)
+    out = console.file.getvalue()
+    assert out.startswith("\nFix first (3 of 3 eligible")
+    # The growing, reachable database loop leads; the refactor follows.
+    assert " 1. Batch the database calls loops make through load_all " in out
+    assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows " in out
+    assert "src/core.py:20" in out
+    assert "verify: pytest tests/test_core_0.py" in out

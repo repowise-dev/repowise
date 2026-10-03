@@ -112,10 +112,10 @@ def test_unreachable_file_is_never_deletion_ready():
 
 
 def test_mcp_dead_code_tiers_are_the_engine_thresholds():
-    from repowise.server.mcp_server.tool_dead_code import _TIER_FLOORS
+    from repowise.core.analysis.dead_code.serving import TIER_FLOORS
 
-    assert _TIER_FLOORS["high"] == SAFE_CONFIDENCE_THRESHOLD
-    assert _TIER_FLOORS["medium"] == RISK_CAP_CONFIDENCE
+    assert TIER_FLOORS["high"] == SAFE_CONFIDENCE_THRESHOLD
+    assert TIER_FLOORS["medium"] == RISK_CAP_CONFIDENCE
 
 
 def _metric(path: str, score: float, *, is_test: bool) -> SimpleNamespace:

@@ -64,6 +64,7 @@ class LargeMethodDetector:
                     details={
                         "nloc": fn.nloc,
                         "ccn": fn.ccn,
+                        "dispatch_share": fn.dispatch_share,
                     },
                     reason=f"{fn.name} is {fn.nloc} lines long",
                 )

@@ -41,7 +41,7 @@ import { OverviewSection } from "../overview/section";
 import { toFriendlyMessage } from "../lib/errors";
 
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { AiPromptModal } from "../health/ai-prompt-modal";
+import { AiPromptModal, fileChatContext } from "../health/ai-prompt-modal";
 import { buildDocDriftAiPrompt } from "../health/ai-prompt-builder";
 
 import { DocDriftLede } from "./doc-drift-lede";
@@ -285,6 +285,9 @@ export function DocDriftView({
           promptFindings?.length === 1
             ? `${promptFindings[0]!.file_path}:${promptFindings[0]!.line_number}`
             : null
+        }
+        chatContext={
+          promptFindings?.length === 1 ? fileChatContext(promptFindings[0]!.file_path) : undefined
         }
         getPrompt={
           promptFindings

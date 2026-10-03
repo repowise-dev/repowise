@@ -14,11 +14,17 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
+from ..cohesion import (
+    MODULE_DECLARATION_HINT,
+    SAME_PACKAGE_HINT,
+    UNIT_FANOUT_LANGUAGES,
+    withdraw_declaration_hint,
+)
 from ..languages.python_modules import dotted_module_for
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
@@ -63,6 +69,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # {(file, partial type's bare name): every file declaring a fragment
+        # of that type}, filled by ``_resolve_dotnet_partials`` so the call
+        # resolver can treat the fragments as the one class scope they are.
+        self._partial_fragments: dict[tuple[str, str], tuple[str, ...]] = {}
         # ``TraversalStats`` for the walk that produced this graph, stashed by
         # the caller. Carried here rather than widened into the return tuples
         # of ``build_repo_graph``/``rebuild_graph_and_git`` (ten unpack sites
@@ -252,11 +262,21 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
+            existing = self._graph.nodes.get(sym.id)
             if sym.is_declaration:
-                existing = self._graph.nodes.get(sym.id)
                 if existing is not None and existing.get("is_declaration") is False:
                     self._graph.add_edge(path, sym.id, edge_type="defines")
                     continue
+            # Where overloads get their own ids, two definitions still sharing
+            # one are overloads of one arity: the first declared keeps the node,
+            # so its span does not depend on how many follow it.
+            elif (
+                existing is not None
+                and existing.get("is_declaration") is False
+                and has_overload_identity(sym.language)
+            ):
+                self._graph.add_edge(path, sym.id, edge_type="defines")
+                continue
 
             self._graph.add_node(
                 sym.id,
@@ -273,6 +293,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 parent_name=sym.parent_name,
                 signature=sym.signature,
                 decorators=sym.decorators,
+                modifiers=sym.modifiers,
                 is_exported_symbol=sym.is_exported_symbol,
                 is_declaration=sym.is_declaration,
                 docstring=sym.docstring,
@@ -454,6 +475,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         existing = self._graph[path][target].get("imported_names", [])
                         merged = list(set(existing + imp.imported_names))
                         self._graph[path][target]["imported_names"] = merged
+                        if not imp.is_module_declaration:
+                            withdraw_declaration_hint(self._graph[path][target])
                     else:
                         edge_attrs: dict[str, Any] = {
                             "edge_type": "imports",
@@ -472,6 +495,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                             and PurePosixPath(target).parent.as_posix() == _own_dir
                         ):
                             edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+                        elif imp.is_module_declaration:
+                            edge_attrs["hint_source"] = MODULE_DECLARATION_HINT
                         self._graph.add_edge(path, target, **edge_attrs)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)

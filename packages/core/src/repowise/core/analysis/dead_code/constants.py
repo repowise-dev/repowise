@@ -16,6 +16,7 @@ import os
 import re
 from functools import lru_cache
 
+from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").
@@ -29,6 +30,12 @@ _DEAD_CODE_EXEMPT_LANGUAGES: frozenset[str] = (
 
 # Extensions a JS tool's config file may take.
 _JS_TOOL_EXTS: tuple[str, ...] = (".js", ".cjs", ".mjs", ".ts", ".cts", ".mts")
+# A JS tool's config file: ``<tool>.config.<ext>`` and variants like
+# ``jest.config.base.js``. Never flagged itself, and a reader of what it loads.
+_JS_TOOL_CONFIG_PATTERNS: tuple[str, ...] = (
+    *(f"*.config{ext}" for ext in _JS_TOOL_EXTS),
+    *(f"*.config.*{ext}" for ext in _JS_TOOL_EXTS),
+)
 
 # Patterns that should never be flagged as dead. ``fnmatch`` ``*`` spans ``/``,
 # so a leading ``*`` matches nested and repo-root paths alike.
@@ -59,8 +66,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # variants like ``jest.config.base.js``), ``.<tool>rc.<ext>`` and pnpm's
     # install hook. fnmatch ``*`` spans ``/``, so an ``*rc.<ext>`` file under a
     # dot-directory is exempt too; an accepted recall loss.
-    *(f"*.config{ext}" for ext in _JS_TOOL_EXTS),
-    *(f"*.config.*{ext}" for ext in _JS_TOOL_EXTS),
+    *_JS_TOOL_CONFIG_PATTERNS,
     *(f".*rc{ext}" for ext in _JS_TOOL_EXTS),
     *(f"*/.*rc{ext}" for ext in _JS_TOOL_EXTS),
     ".pnpmfile.cjs",
@@ -70,7 +76,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files — loaded by the
+    # Next.js / Remix / SvelteKit framework route files â€” loaded by the
     # framework at runtime, never imported via module imports.
     "*/page.tsx",
     "*/page.ts",
@@ -101,7 +107,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
+    "*GlobalUsings.cs",  # global usings â€” file-implicit, never imported by symbol
     "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
@@ -121,7 +127,11 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*AssemblyInfo.vb",
     "*/My Project/*.vb",
     "*ApplicationEvents.vb",  # My.MyApplication hooks, raised by the VB runtime
-    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
+    # .NET reference assemblies: compile-time API stubs (``throw null`` bodies)
+    # the build packs as the public surface. Nothing imports them, and every
+    # type they list is public API.
+    "*/ref/*.cs",
+    "*MauiProgram.cs",  # MAUI app entry â€” invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -160,18 +170,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Styles/*.xaml",
     "*/Resources/*.xaml",
     # ---- Test infrastructure conventions -----------------------------
-    # Test classes are loaded by the runner via attribute reflection. Both
-    # locations and suffixes are matched, to catch tests at arbitrary paths.
-    "*Tests/*.cs",
-    "*.Tests/*.cs",
-    "*UnitTests/*.cs",
-    "*.UnitTests/*.cs",
-    "*IntegrationTests/*.cs",
-    "*.IntegrationTests/*.cs",
-    "*FuzzTests/*.cs",
-    "*.FuzzTests/*.cs",
-    "*UITests/*.cs",
-    "*.UITests/*.cs",
+    # Test classes are loaded by the runner via attribute reflection. The
+    # plural suite folders (``Foo.Tests/``, ``UnitTests/``, ``UITests/``) are
+    # test paths (``test_paths``), which every dead-code pass already skips;
+    # these are the shapes it does not read as tests.
     "*UITest/*.cs",
     "*UITestAutomation/*.cs",
     # Singular forms.
@@ -470,9 +472,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "submodules/**",
     "*/.deps/**",
     # ---- Rust / Cargo conventions ----------------------------------------
-    # Build scripts (executed by Cargo at compile time, never imported)
-    "**/build.rs",
-    "build.rs",
+    # Build scripts are build files (``code_origin.is_build_file``).
     # Examples (run via `cargo run --example <name>`)
     "**/examples/*.rs",
     "**/examples/**/*.rs",
@@ -519,10 +519,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "doc.go",
     "*/docs.go",
     "docs.go",
-    # Mage build files (``//go:build mage``, ``package main``) — run by the
-    # ``mage`` tool, excluded from normal builds, never imported.
-    "*/magefile.go",
-    "magefile.go",
     # Generated code (stringer, protobuf, go-bindata, ``zz_generated*``).
     "*.gen.go",
     "*_gen.go",
@@ -530,6 +526,16 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_string.go",
     "*zz_generated*.go",
     "*bindata.go",
+    # ---- PHP conventions -------------------------------------------------
+    # Lint and refactoring tools load their config by file name.
+    "rector.php",
+    "*/rector.php",
+    "ecs.php",
+    "*/ecs.php",
+    ".php-cs-fixer.php",
+    "*/.php-cs-fixer.php",
+    ".php-cs-fixer.dist.php",
+    "*/.php-cs-fixer.dist.php",
     # ---- JavaScript conventions ------------------------------------------
     # Bundles and minified artifacts are served to the browser, not imported.
     "*.bundle.js",
@@ -577,13 +583,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.spec.cts",
     "*/__tests__/*",
     "*/__mocks__/*",
-    # Storybook stories — loaded by Storybook indexer via glob.
+    # Storybook stories â€” loaded by Storybook indexer via glob.
     "*.stories.ts",
     "*.stories.tsx",
     "*.stories.js",
     "*.stories.jsx",
     "*.stories.mdx",
-    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
+    # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
     "*.bench.js",
@@ -635,7 +641,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "proxy.ts",
     "sitemap.ts",
     "robots.ts",
-    # Remix root/entry files — invoked by the framework runtime.
+    # Remix root/entry files â€” invoked by the framework runtime.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
@@ -743,7 +749,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
-    # Unqualified ``from pytest import fixture`` form — the decorator text is
+    # Unqualified ``from pytest import fixture`` form â€” the decorator text is
     # bare ``fixture``, which the dotted prefixes above never match.
     "fixture",
     # Flask
@@ -769,7 +775,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.websocket",
     "app.middleware",
     "app.exception_handler",
-    # asynccontextmanager / contextmanager — used as values
+    # asynccontextmanager / contextmanager â€” used as values
     # (e.g. FastAPI(lifespan=...)) rather than imported by name.
     "asynccontextmanager",
     "contextmanager",
@@ -782,10 +788,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.task",
     "celery.task",
     "shared_task",
-    # Click CLI commands — registered with the parent group/command.
+    # Click CLI commands â€” registered with the parent group/command.
     "click.command",
     "click.group",
-    # Typer — same shape.
+    # Typer â€” same shape.
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
@@ -831,6 +837,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Dependent",
     "Factory",
     "Bean",
+    # JMH: the harness instantiates @State classes and runs @Benchmark
+    # methods (and every @BenchmarkMode class) by reflection.
+    "Benchmark",
+    "State",
     # ---- JVM: lifecycle / event / scheduling / messaging callbacks --
     "PostConstruct",
     "PreDestroy",
@@ -873,7 +883,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ArchTest",
     "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",  # Jackson factory method — reflectively invoked
+    "JsonCreator",  # Jackson factory method â€” reflectively invoked
     "JsonProperty",
     "Mojo",  # Maven plugin entry
     "Goal",
@@ -971,11 +981,94 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 # is a deliberate act.
 _CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 
+# Languages whose files are run, never imported: a directory holding only these
+# (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package
+# anything could import.
+_RUN_NOT_IMPORTED_LANGUAGES: frozenset[str] = frozenset({"dockerfile", "makefile", "shell"})
+
+# Files that run, build or ship what they name by path: CI workflows, build
+# files (``code_origin.is_build_file``), task files, package manifests and
+# shell scripts. A file named there is executed or packaged, which is a use,
+# not a mention.
+_RUNNER_FILE_NAMES: frozenset[str] = frozenset(
+    {
+        "Dockerfile",
+        "Jenkinsfile",
+        "Procfile",
+        "tox.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "package.json",
+        ".gitlab-ci.yml",
+        ".pre-commit-config.yaml",
+    }
+)
+_RUNNER_DIRS: tuple[str, ...] = (".github/workflows/", ".circleci/", ".buildkite/")
+_RUNNER_SUFFIXES: tuple[str, ...] = (".sh", ".bash", ".ps1", ".bat", ".cmd", ".dockerfile")
+# Tool configs that load files they name under a load key (below): the JS
+# tool configs above and the changesets config.
+_TOOL_CONFIG_PATHS: tuple[str, ...] = ("/.changeset/config.json",)
+# The keys under which a tool config names a file it loads: a test runner's
+# setup files, a bundler's entries, a docs site's sidebars, the changesets
+# changelog module. A path under any other key (``coverage.exclude``,
+# ``ignores``) or in a comment is not loaded.
+_TOOL_CONFIG_LOAD_KEYS: tuple[str, ...] = (
+    "setupFiles",
+    "setupFilesAfterEnv",
+    "globalSetup",
+    "globalTeardown",
+    "entry",
+    "entryPoints",
+    "input",
+    "sidebarPath",
+    "changelog",
+)
+
+
+def is_tool_config(path: str) -> bool:
+    """Whether *path* is a tool config that loads the files its load keys name."""
+    name = path.rpartition("/")[2]
+    return any(fnmatch.fnmatchcase(name, p) for p in _JS_TOOL_CONFIG_PATTERNS) or (
+        f"/{path}".endswith(_TOOL_CONFIG_PATHS)
+    )
+
+
+def is_runner_file(path: str) -> bool:
+    """Whether *path* is a file that runs or ships the files it names."""
+    name = path.rpartition("/")[2]
+    return (
+        name in _RUNNER_FILE_NAMES
+        or is_build_file(path)
+        or name.startswith("Dockerfile")
+        or name.endswith(_RUNNER_SUFFIXES)
+        or any(f"/{d}" in f"/{path}" for d in _RUNNER_DIRS)
+    )
+# Languages whose imports name a namespace, never a file, so a file no edge
+# reaches is not evidence that nothing uses it: a same-namespace ``new T()``
+# needs no ``using``, and one ``using`` stands for every file of the namespace.
+_NAMESPACE_IMPORT_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+
+# Languages whose symbols the preprocessor reaches without naming them: a
+# ``typedef struct _X {...} X`` tag used only through ``X``, a function called
+# through a ``#define`` alias or a ``##``-pasted name, an icall table entry.
+_PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
+# Languages that use a type from its own package by its bare name, with no
+# import, so a symbol's name written in another code file is taken as a use.
+_BARE_NAME_USE_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "scala"})
+
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
 # matched against the raw decorator text rather than its base name.
 _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
     ("SuppressWarnings", "unused"),
 )
+
+# Inner class names a framework reads off the class that declares them, so no
+# code ever names them. Python: the ``class Meta`` options block that Django
+# models and forms, DRF serializers, marshmallow and factory_boy read through
+# their metaclass. Keyed by language; matched only on a nested class.
+_FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
+    "python": frozenset({"Meta"}),
+}
 
 
 # Default dynamic patterns (plugins, handlers, etc.)
@@ -1032,6 +1125,11 @@ _NEVER_PACKAGE_DIRS: frozenset[str] = frozenset(
         "fuzz",
     }
 )
+
+
+# Project files that declare a .NET package. Globs, so they cannot sit in the
+# registry's exact-name manifest list (see ``ingestion/package_roots.py``).
+_PROJECT_FILE_SUFFIXES: tuple[str, ...] = (".csproj", ".fsproj", ".vbproj")
 
 
 # Path segments that indicate test fixture / sample data directories.
@@ -1136,6 +1234,16 @@ def never_flag_match(path: str) -> bool:
         if bucket is not None and bucket.match(norm):
             return True
     return False
+
+
+def never_flag_path(path: str) -> bool:
+    """The never-flag globs, plus vendored, generated and build files by path.
+
+    A copied library or a generator's output is not this repository's to
+    delete, whatever its importers look like, and a build tool runs a build
+    file by its name, so it has no importer by design.
+    """
+    return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
 
 
 def _is_fixture_path(path: str) -> bool:

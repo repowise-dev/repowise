@@ -6,7 +6,6 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.persistence.models import HealthFileMetric
 
 
@@ -71,7 +70,6 @@ def _write_health_analysis_meta(
     distinct_commits: int,
 ) -> None:
     """The one place the analysis-freshness block is shaped."""
-    meta["health_semantics"] = health_semantics_contract()
     metrics = has_metrics
     analyzed = latest_at is not None
     commits_count = distinct_commits

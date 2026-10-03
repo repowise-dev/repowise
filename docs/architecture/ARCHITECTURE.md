@@ -996,6 +996,10 @@ repowise dead-code resolve [FINDING_ID]
   --note "reason"
 ```
 
+With an index at HEAD, the command reads the findings `init`/`update` stored,
+the same rows `get_dead_code` serves. A floor below the stored one (0.4), an
+index behind HEAD, or no index at all runs the analyzer over the working tree.
+
 ### 8.4 Integration with Other Components
 
 Dead code findings are stored in the `dead_code_findings` SQL table with a status

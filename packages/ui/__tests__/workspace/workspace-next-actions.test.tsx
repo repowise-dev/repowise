@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { NextAction, WorkspaceActionsResponse } from "@repowise-dev/types/actions";
 
 import { WorkspaceNextActions } from "../../src/workspace/workspace-next-actions.js";
@@ -93,5 +93,22 @@ describe("WorkspaceNextActions", () => {
     );
     expect(screen.getByText(/Not included: docs \(not indexed yet\)/)).toBeInTheDocument();
     expect(screen.getByText(/5 things worth doing this week/)).toBeInTheDocument();
+  });
+
+  it("loads an opened action's prompt from its own repository", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+        loadPrompt={loadPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("listitem", { name: /Open Clean up/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
   });
 });

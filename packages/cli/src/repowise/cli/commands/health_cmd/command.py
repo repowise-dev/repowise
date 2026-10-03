@@ -32,20 +32,33 @@ from repowise.core.analysis.health.counts import (
     project as project_counts,
 )
 from repowise.core.analysis.health.models import split_by_origin
+from repowise.core.analysis.health.rows import split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
 
 from .codegen import _generate_refactoring_code
-from .persist import _load_persisted_coverage_map, _load_recommendations, _persist_health
-from .refactoring_targets import _render_refactoring_targets
+from .persist import (
+    _load_fix_first,
+    _load_persisted_coverage_map,
+    _load_recommendations,
+    _persist_health,
+)
+from .refactoring_targets import (
+    _render_refactoring_targets,
+    _render_stored_refactoring_targets,
+)
 from .summary import (
     _render_badge,
     _render_defect_accuracy_line,
     _render_distribution_line,
+    _render_fix_first,
     _render_performance_section,
     _render_split_line,
 )
 from .trends import _render_trend
+
+#: Items the report leads with; the full queue is one REST or MCP call away.
+FIX_FIRST_ROWS = 3
 
 
 @click.command("health")
@@ -80,7 +93,19 @@ from .trends import _render_trend
     "refactoring_targets",
     is_flag=True,
     default=False,
-    help="Print top refactoring candidates (impact/effort ratio).",
+    help=(
+        "Print the refactoring queue the index stored, in the order MCP and the "
+        "web UI serve it."
+    ),
+)
+@click.option(
+    "--recompute",
+    is_flag=True,
+    default=False,
+    help=(
+        "With --refactoring-targets: analyze the working tree in-process instead "
+        "of reading the index. Slow on a large repo; needed outside an indexed one."
+    ),
 )
 @click.option(
     "--generate-code",
@@ -145,6 +170,7 @@ def health_command(
     repo_alias: str | None,
     no_workspace: bool,
     refactoring_targets: bool,
+    recompute: bool,
     generate_code: str | None,
     module_filter: str | None,
     scope: str,
@@ -162,6 +188,7 @@ def health_command(
 
     from pathlib import Path as PathlibPath
 
+    from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
@@ -208,6 +235,22 @@ def health_command(
                 "do not apply to it.[/dim]"
             )
         _render_trend(repo_path, fmt=fmt)
+        return
+
+    if refactoring_targets and not recompute and generate_code is None:
+        # The stored queue is the calibrated reading, as on MCP and the web UI.
+        if parse_scope(scope) != DEFAULT_SCOPE or parse_counts(counts) != DEFAULT_COUNTS:
+            status.print(
+                "[dim]The stored queue does not take --scope or --counts; pass "
+                "--recompute to apply them.[/dim]"
+            )
+        if not _render_stored_refactoring_targets(
+            repo_path, fmt=fmt, file_filter=file_filter, module_filter=module_filter
+        ):
+            raise click.ClickException(
+                "No stored refactoring analysis for this repository. Run `repowise init` "
+                "or `repowise update`, or pass --recompute to analyze in-process."
+            )
         return
 
     # Analyze the same file set that was indexed: a repo initialized with
@@ -276,6 +319,7 @@ def health_command(
         graph_builder.graph(),
         git_meta_map=git_meta_map,
         parsed_files=parsed_files,
+        community_label_map=file_community_labels(graph_builder),
         coverage_map=coverage_map,
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,
@@ -312,6 +356,9 @@ def health_command(
     # Taken before the projection, so a row the projection cannot read still
     # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
+    # Files in a language health has no dialect for carry no score: they are
+    # counted, never ranked or averaged.
+    metrics, unanalysed = split_unscored(metrics)
     code_shape = parse_counts(counts) == "code_shape"
     if code_shape:
         # No `unscored` counterpart to the API's: this command scores live, so
@@ -425,6 +472,10 @@ def health_command(
         distribution as health_distribution,
     )
 
+    # Lead with what to fix; a narrowed run is an inspection, not the worklist.
+    if not file_filter and not module_filter:
+        _render_fix_first(_load_fix_first(repo_path, limit=FIX_FIRST_ROWS))
+
     kpis = report.kpis
     avg = kpis.get("average_health")
     band_str = ""
@@ -434,12 +485,17 @@ def health_command(
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
-        f"Hotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
-        f"Worst: [bold]{kpis.get('worst_performer_score', '?')}[/bold]/10 "
-        f"({kpis.get('worst_performer_path', 'n/a')})"
+        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
+        f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
     if code_shape:
         console.print("[dim]Counting code shape only — change history is left out.[/dim]")
+    if unanalysed:
+        console.print(
+            f"[dim]{unanalysed} file(s) not analysed: health does not support "
+            "their language yet.[/dim]"
+        )
     _render_split_line(kpis)
     _render_distribution_line(health_distribution(metrics))
 

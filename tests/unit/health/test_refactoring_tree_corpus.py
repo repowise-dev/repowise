@@ -23,6 +23,10 @@ from .refactoring_tree_fixture import (
 
 GOLDEN = "golden_opportunities.json"
 
+# The golden pins composition mechanics, clone demotion included; the registry's
+# visibility rule is tested on its own in test_refactoring_opportunity.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
+
 
 def test_corpus_composition_matches_the_golden() -> None:
     payload = {name: compose_tree(root) for name, root in archetype_roots()}

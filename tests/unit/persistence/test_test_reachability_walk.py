@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import networkx as nx
 
-from repowise.core.analysis.test_reachability import call_graph_from_db, call_graph_from_graph
+from repowise.core.analysis.test_reachability import (
+    ReachDistance,
+    call_graph_from_db,
+    call_graph_from_graph,
+    imported_names_by_test,
+    reach_into_symbols,
+)
 from repowise.core.analysis.test_reachability import tests_reaching as reaching
 from repowise.core.analysis.test_reachability import tests_reaching_by_tier as by_tier
 from repowise.core.persistence.crud.graph import (
@@ -275,3 +281,145 @@ async def test_call_site_lines_round_trip_through_edge_persistence(async_session
     rows = await get_all_graph_edges(async_session, repo.id)
 
     assert rows[0]["call_lines"] == [4, 9]
+
+
+async def test_symbol_reach_keeps_the_fewest_hops_and_counts_direct_callers(async_session):
+    """Two test functions call the symbol directly; another test only reaches it
+    through a facade. The direct test is one hop away with two callers."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_walk.py": True, "tests/test_api.py": True, "src/walk.py": False},
+        edges=[
+            ("tests/test_walk.py", "tests/test_walk.py::test_one", "defines"),
+            ("tests/test_walk.py", "tests/test_walk.py::test_two", "defines"),
+            ("tests/test_api.py", "tests/test_api.py::test_it", "defines"),
+            ("src/walk.py", "src/walk.py::walk", "defines"),
+            ("src/walk.py", "src/walk.py::facade", "defines"),
+            ("tests/test_walk.py::test_one", "src/walk.py::walk", "calls"),
+            ("tests/test_walk.py::test_two", "src/walk.py::walk", "calls"),
+            ("tests/test_api.py::test_it", "src/walk.py::facade", "calls"),
+            ("src/walk.py::facade", "src/walk.py::walk", "calls"),
+        ],
+    )
+    found = await reach_into_symbols(
+        async_session, repo.id, ["src/walk.py::walk"], {"tests/test_walk.py", "tests/test_api.py"}
+    )
+    assert found == {
+        "src/walk.py::walk": {
+            "tests/test_walk.py": ReachDistance(hops=1, callers=2),
+            "tests/test_api.py": ReachDistance(hops=2, callers=1),
+        }
+    }
+
+
+async def test_imported_names_are_read_per_test_and_file(async_session):
+    repo = await insert_repo(async_session)
+    for source, names in (("tests/test_walk.py", '["walk"]'), ("src/other.py", '["walk"]')):
+        async_session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id="src/walk.py",
+                edge_type="imports",
+                imported_names_json=names,
+            )
+        )
+    await async_session.flush()
+    found = await imported_names_by_test(
+        async_session, repo.id, ["src/walk.py"], {"tests/test_walk.py"}
+    )
+    # A production importer is not a test, so it never appears.
+    assert found == {"src/walk.py": {"tests/test_walk.py": frozenset({"walk"})}}
+
+
+async def test_a_detailed_page_matches_a_full_hydration(async_session):
+    """Paged surfaces rank every plan without symbol evidence and detail only
+    the rows they return; those rows must serialize exactly as before."""
+    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        detail_recommendations,
+        hydrate_recommendations,
+    )
+
+    repo = await insert_repo(async_session)
+    nodes = {"tests/test_bystander.py": True, "tests/test_walk.py": True, "src/walk.py": False}
+    for path, is_test in nodes.items():
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    for name, start, end in (("walk", 1, 20), ("other", 30, 40)):
+        async_session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=f"src/walk.py::{name}",
+                node_type="symbol",
+                file_path="src/walk.py",
+                start_line=start,
+                end_line=end,
+            )
+        )
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={},
+        edges=[
+            ("src/walk.py", "src/walk.py::walk", "defines"),
+            ("src/walk.py", "src/walk.py::other", "defines"),
+            ("tests/test_walk.py", "tests/test_walk.py::test_it", "defines"),
+            ("tests/test_bystander.py", "tests/test_bystander.py::test_it", "defines"),
+            ("tests/test_walk.py::test_it", "src/walk.py::walk", "calls"),
+            ("tests/test_bystander.py::test_it", "src/walk.py::other", "calls"),
+        ],
+    )
+
+    def plans():
+        return [
+            RefactoringSuggestion(
+                refactoring_type="extract_method",
+                file_path="src/walk.py",
+                target_symbol="walk",
+                line_start=1,
+                line_end=20,
+                plan={},
+                evidence={},
+                impact_delta=1.0,
+                effort_bucket="M",
+                blast_radius={},
+                confidence="high",
+                source_biomarker="long_function",
+            )
+        ]
+
+    full = await hydrate_recommendations(async_session, repo.id, plans())
+    ranked = await hydrate_recommendations(async_session, repo.id, plans(), rank_only=True)
+    detailed = await detail_recommendations(async_session, repo.id, ranked)
+
+    assert [item.as_dict() for item in detailed] == [item.as_dict() for item in full]
+    assert full[0].validation.tests == ["tests/test_walk.py", "tests/test_bystander.py"]
+    assert full[0].validation.reasons["tests/test_walk.py"] == "calls walk"
+    # The rank pass orders nothing it will not serve.
+    assert ranked[0].validation.reasons == {}
+    assert ranked[0].rank_score == full[0].rank_score
+
+
+async def test_a_seed_that_calls_another_seed_does_not_shorten_its_distance(async_session):
+    """Walked together, ``load`` (a seed) calls ``parse`` (another seed). A test
+    calling ``load`` is two hops from ``parse``, however the batch is ordered."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_load.py": True, "src/io.py": False},
+        edges=[
+            ("tests/test_load.py", "tests/test_load.py::test_it", "defines"),
+            ("tests/test_load.py::test_it", "src/io.py::load", "calls"),
+            ("src/io.py::load", "src/io.py::parse", "calls"),
+        ],
+    )
+    found = await reach_into_symbols(
+        async_session, repo.id, ["src/io.py::load", "src/io.py::parse"], {"tests/test_load.py"}
+    )
+    assert found["src/io.py::load"] == {"tests/test_load.py": ReachDistance(1, 1)}
+    assert found["src/io.py::parse"] == {"tests/test_load.py": ReachDistance(2, 1)}

@@ -15,6 +15,7 @@
 
 import { use, useCallback, useDeferredValue, useMemo, useState } from "react";
 import useSWR from "swr";
+import { useRouter } from "next/navigation";
 import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Wrench, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -42,8 +43,10 @@ import type {
   RefactoringOpportunityPage,
   RefactoringOrder,
   RefactoringPlan,
+  RefactoringScope,
 } from "@repowise-dev/types/refactoring";
 import {
+  useRelatedWork,
   AiPromptModal,
   buildRefactoringOpportunityPrompt,
   buildRefactoringPlanPrompt,
@@ -57,6 +60,8 @@ import {
   updateRefactoringOpportunityStatus,
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
+import { getFileContent } from "@/lib/api/files";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 
 const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
@@ -73,6 +78,7 @@ function leadTypeFor(type: TypeFilter): string | undefined {
 
 export default function RefactoringPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: repoId } = use(params);
+  const router = useRouter();
   const [type, setType] = useQueryState(
     "type",
     parseAsStringLiteral(TYPE_VALUES).withDefault("all"),
@@ -87,6 +93,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const [effort, setEffort] = useState<EffortBucket | null>(null);
   const [confidence, setConfidence] = useState<Confidence | null>(null);
   const [mechanicalOnly, setMechanicalOnly] = useState(false);
+  // What Fix first would take, by default; the full inventory on request.
+  const [scope, setScope] = useState<RefactoringScope>("fix_first");
   const [offset, setOffset] = useState(0);
 
   const { data, error, isLoading, mutate } = useSWR<RefactoringOpportunityPage>(
@@ -100,12 +108,14 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
       effort,
       confidence,
       mechanicalOnly,
+      scope,
       offset,
     ],
     () =>
       getRefactoringOpportunities(repoId, {
         refactoringType: leadTypeFor(type),
         status,
+        scope,
         search: deferredQuery || undefined,
         effort: effort ?? undefined,
         confidence: confidence ?? undefined,
@@ -122,12 +132,13 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
 
   // The structural head for "Start here". A separate bounded call rather than a
   // slice of the list above: the list is under whatever filter the reader chose,
-  // and Start here describes the whole repository.
+  // and Start here describes the whole repository, in the scope the list is in.
   const { data: structural } = useSWR<RefactoringOpportunityPage>(
-    type === "all" ? ["refactoring-structural", repoId] : null,
+    type === "all" ? ["refactoring-structural", repoId, scope] : null,
     () =>
       getRefactoringOpportunities(repoId, {
         refactoringType: STRUCTURAL_CSV,
+        scope,
         order: "rank",
         stepPreview: 0,
         limit: 100,
@@ -138,6 +149,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const opportunities = useMemo(() => data?.items ?? [], [data?.items]);
   const prefix = `/repos/${repoId}`;
   const fileHref = useCallback((path: string) => fileEntityPath(prefix, path), [prefix]);
+  // The read the file view makes, for a step's inline excerpt.
+  const readSource = useCallback((path: string) => getFileContent(repoId, path), [repoId]);
 
   // The open opportunity comes from the URL, so a reload or a shared link lands
   // on the same drawer rather than the top of the list.
@@ -146,6 +159,15 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     () => getRefactoringOpportunity(repoId, openId!, { stepLimit: 50, evidenceLimit: 20 }),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
+
+  // What the other lenses hold for the open opportunity's file.
+  const openFile = openDetail?.found ? openDetail.file_path : null;
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
+  );
+  const related = useRelatedWork(fetchRelated, [openFile]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
 
   const { data: openPlan } = useSWR<RefactoringPlan>(
     openPlanId ? ["refactoring-plan", repoId, openPlanId] : null,
@@ -168,7 +190,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         stepLimit: 50,
         evidenceLimit: 20,
       });
-      if (detail.resolved) setPromptFor({ kind: "opportunity", value: detail });
+      if (detail.found) setPromptFor({ kind: "opportunity", value: detail });
     },
     [repoId],
   );
@@ -227,6 +249,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     effort,
     confidence,
     mechanicalOnly,
+    scope,
+    appliedScope: data?.scope ?? "all",
+    hidden: data?.hidden ?? null,
     total: data?.total ?? 0,
     offset,
     nextOffset: data?.next_offset ?? null,
@@ -294,6 +319,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
               if (change.effort !== undefined) setEffort(change.effort);
               if (change.confidence !== undefined) setConfidence(change.confidence);
               if (change.mechanicalOnly !== undefined) setMechanicalOnly(change.mechanicalOnly);
+              if (change.scope !== undefined) setScope(change.scope);
               if (change.offset !== undefined) setOffset(change.offset);
             }}
             onOpen={(o) => void setOpenId(o.opportunity_id)}
@@ -310,7 +336,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
             showLede={type === "all"}
             sectionTitle={
               type === "all"
-                ? "All opportunities"
+                ? serverState.appliedScope === "fix_first"
+                  ? "Opportunities worth doing"
+                  : "All opportunities"
                 : type === "structural"
                   ? "Structural opportunities"
                   : `${typeMeta(type).label} opportunities`
@@ -331,6 +359,11 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onStatusChange={onStatusChange}
         onOpenStep={(planId) => void setOpenPlanId(planId)}
         fileHref={fileHref}
+        readSource={readSource}
+        onGenerateCode={onGenerateCode}
+        related={related?.files?.[0]}
+        relatedWorkHref={toRelated}
+        onNavigate={(href) => router.push(href)}
       />
 
       <RefactoringDrawer

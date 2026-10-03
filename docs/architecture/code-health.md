@@ -298,14 +298,14 @@ returning a list of `BiomarkerResult`s.
 
 ### The full roster
 
-`biomarkers/registry.py` registers **51 detectors**; counting the three
+`biomarkers/registry.py` registers **53 detectors**; counting the three
 governance findings written by the additive pass (`governance.py`) there
-are **54 marker ids**. They divide by what each is permitted to affect:
+are **56 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 25 | `defect` (8 of them also `maintainability`) |
-| Performance | 20 | `performance` only |
+| Defect-scoring | 25 | `defect` (11 of them also `maintainability`) |
+| Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing — the finding surfaces, the score is untouched |
 | Advisory | 3 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
@@ -656,8 +656,9 @@ Four tables, all in the repo's `.repowise/wiki.db`. Foreign-keyed to
 ### `health_findings`
 
 One row per marker hit. Lifecycle: `open → acknowledged | resolved |
-false_positive` (matches Dead Code). Bulk-deleted-and-rewritten on full
-init; selectively upserted on `repowise update`.
+false_positive` (matches Dead Code). Open rows are deleted and rewritten on
+full init and per changed file on `repowise update`; a triaged row is kept and
+refreshed when its `public_id` is detected again, and `resolved` reopens.
 
 | Column | Notes |
 |---|---|

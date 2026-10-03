@@ -13,6 +13,8 @@ export interface ActionCommand {
   purpose: string;
   mcp?: string | null;
   cli?: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
 }
 
 export interface ActionContext {
@@ -89,6 +91,11 @@ export interface ActionsResponse {
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+}
+
+export interface AgentPromptResponse {
+  flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
+  text: string;
 }
 
 /** One month of agent-vs-human commit volume. */
@@ -1513,6 +1520,50 @@ export interface FindingStatusUpdate {
   status: string;
 }
 
+export interface FixAction {
+  summary: string;
+  steps: FixStep[];
+  steps_total: number;
+  mechanical: boolean;
+}
+
+export interface FixConfidence {
+  level: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface FixContext {
+  label: string;
+  value: string;
+}
+
+export interface FixEffortEstimate {
+  bucket: "S" | "M" | "L" | "XL";
+  basis: string;
+}
+
+export interface FixFact {
+  label: string;
+  value: string;
+  basis?: "measured" | "inferred" | "unknown";
+}
+
+/** ``FixFirstQueue.as_dict()``: the stored fields plus the ``lead`` it derives. */
+export interface FixFirstQueueResponse {
+  items: FixItem[];
+  lead: FixItem | null;
+  totals: FixTotals;
+  by_improves: Record<string, number>;
+  model_version: number;
+  basis: Record<string, string | null>;
+}
+
+export interface FixGain {
+  kind: "health_points" | "performance";
+  value: number | null;
+  text: string;
+}
+
 /** One changed file's recency-weighted bug-fix record. */
 export interface FixHistoryFileResponse {
   path: string;
@@ -1534,6 +1585,80 @@ export interface FixHistoryResponse {
   density: number;
   percentile: number | null;
   files: FixHistoryFileResponse[];
+}
+
+export interface FixItem {
+  id: string;
+  rank: number;
+  tier: "now" | "next" | "later";
+  kind: "refactor" | "perf_fix" | "finding";
+  improves: "defect" | "maintainability" | "performance";
+  title: string;
+  target: FixTarget;
+  why: string;
+  facts: FixFact[];
+  action: FixAction;
+  gain: FixGain;
+  effort: FixEffortEstimate;
+  risk: FixRisk;
+  confidence: FixConfidence;
+  verify: FixVerify;
+  context: FixContext[];
+  source: FixSource;
+  next_call: ActionCommand;
+  why_ranked?: FixRankFact[];
+}
+
+export interface FixRankFact {
+  factor: string;
+  value: string;
+}
+
+export interface FixRisk {
+  level: "high" | "medium" | "low";
+  dependents: number | null;
+  files_touched: number;
+  text: string;
+}
+
+export interface FixSource {
+  opportunity_id?: string | null;
+  plan_ids?: string[];
+  finding_ids?: string[];
+}
+
+export interface FixStep {
+  order: number;
+  text: string;
+  file_path: string;
+  line?: number | null;
+  mechanical?: boolean;
+}
+
+export interface FixTarget {
+  file_path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+}
+
+export interface FixTest {
+  path: string;
+  reason: string;
+}
+
+export interface FixTotals {
+  candidates?: number;
+  eligible?: number;
+  shown?: number;
+  excluded?: Record<string, number>;
+}
+
+export interface FixVerify {
+  tests: FixTest[];
+  tests_total: number;
+  command: string | null;
+  basis: "measured" | "inferred" | "unknown";
 }
 
 /** Optional per-call overrides for the enrichment provider/model. */
@@ -1750,6 +1875,7 @@ export interface HealthFindingResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 /**
@@ -1772,6 +1898,7 @@ export interface HealthFindingWithSymbolResponse {
   status: string;
   dimension?: string;
   verification?: string | null;
+  lower_priority?: string | null;
   symbol_id?: string | null;
 }
 
@@ -1833,6 +1960,7 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: string;
   primary_reason?: string | null;
@@ -1853,6 +1981,7 @@ export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
   finding_total?: number;
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }
@@ -1911,6 +2040,27 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+}
+
+/** One file on the impact / effort plane. */
+export interface ImpactEffortPoint {
+  file_path: string;
+  effort_lines: number;
+  effort_basis: string;
+  recoverable_health: number;
+  tier?: string | null;
+  fix_rank?: number | null;
+}
+
+/** Every file the work queue's filters keep, up to ``cap``. */
+export interface ImpactEffortResponse {
+  points?: ImpactEffortPoint[];
+  plotted?: number;
+  total?: number;
+  cap?: number;
+  effort_midline_lines?: number;
+  gain_midline_points?: number;
+  history_only_excluded?: number;
 }
 
 /**
@@ -2488,6 +2638,12 @@ export interface ProviderValidationResponse {
   error?: string | null;
 }
 
+/** What the ``fix_first`` scope leaves out of a page's filtered set. */
+export interface RefactoringHiddenCounts {
+  total?: number;
+  by_reason?: Record<string, number>;
+}
+
 /** One page of composed opportunities, with facets and the rollup. */
 export interface RefactoringOpportunitiesResponse {
   items?: Record<string, unknown>[];
@@ -2498,6 +2654,8 @@ export interface RefactoringOpportunitiesResponse {
   facets?: Record<string, Record<string, number>>;
   summary?: Record<string, unknown> | null;
   ignored_arguments?: Record<string, string> | null;
+  scope?: "fix_first" | "all";
+  hidden?: RefactoringHiddenCounts | null;
 }
 
 /**
@@ -2508,7 +2666,7 @@ export interface RefactoringOpportunitiesResponse {
  * part and anything else passes through rather than being dropped.
  */
 export interface RefactoringOpportunityDetailResponse {
-  resolved: boolean;
+  found: boolean;
   steps?: Record<string, unknown>[];
   steps_total?: number;
   steps_emitted?: number;
@@ -2623,6 +2781,42 @@ export interface RefactoringTargetsResponse {
 export interface RefactoringTypeCount {
   type: string;
   count: number;
+}
+
+export interface RelatedWorkFile {
+  file_path: string;
+  lenses?: Record<string, RelatedWorkLens>;
+}
+
+/** One row another lens holds for the file, compact enough to list. */
+export interface RelatedWorkItem {
+  lens: "findings" | "fix_first" | "refactoring" | "performance" | "dead_code";
+  id: string;
+  kind?: string | null;
+  title?: string | null;
+  symbol?: string | null;
+  severity?: string | null;
+  tier?: string | null;
+  rank?: number | null;
+  line?: number | null;
+  code_origin?: string | null;
+  deprecated?: boolean | null;
+}
+
+export interface RelatedWorkLens {
+  items?: RelatedWorkItem[];
+  total?: number;
+}
+
+/** The files to look up, repo-relative. Validated by the route. */
+export interface RelatedWorkRequest {
+  file_paths: string[];
+}
+
+/** ``RelatedWork.as_dict()``: files in request order. */
+export interface RelatedWorkResponse {
+  files?: RelatedWorkFile[];
+  per_lens_limit?: number;
 }
 
 export interface RepoCreate {

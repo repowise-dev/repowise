@@ -80,6 +80,64 @@ def test_foreign_first_segment_is_uncheckable(target: str):
 
 
 # ---------------------------------------------------------------------------
+# Rule: a path the prose places in the reader's own project is uncheckable,
+# before anchoring even runs (#2743)
+# ---------------------------------------------------------------------------
+
+
+def _sentence_ref(context: str, raw: str, target: str | None = None) -> DocReference:
+    """A reference whose ``context`` is a full sentence, not a bare marker.
+
+    ``_ref`` above sets ``context="ctx"``, which carries no prose for the
+    reader-project check to read, so these tests build the real shape.
+    """
+    return DocReference(
+        DriftKind.PATH, raw, target or raw, "docs/architecture/ARCHITECTURE.md", 1, context
+    )
+
+
+@pytest.mark.parametrize(
+    "context,raw",
+    [
+        (
+            "Add this to your project's `src/setupTests.ts`:",
+            "src/setupTests.ts",
+        ),
+        (
+            "Then add the plugin to your project's `config/app.config.ts`.",
+            "config/app.config.ts",
+        ),
+    ],
+)
+def test_a_path_in_the_readers_own_project_is_uncheckable(context: str, raw: str):
+    """Even though ``src``/``config`` are real top-level dirs here, these are not."""
+    res = resolve(_index(), _sentence_ref(context, raw))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "reader-project"
+
+
+def test_a_missing_path_on_a_neutral_line_still_reports():
+    context = "See `src/index.ts` for the entry point, and `src/gone.py` which was removed."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
+    """The check is scoped to the current sentence, not the whole line."""
+    context = "This mirrors your project's layout. See `src/gone.py` for details."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_bare_your_with_no_recognised_phrase_is_still_checked():
+    """'you can find it in ...' must not be swallowed by a bare 'your'."""
+    context = "You can find it in `src/gone.py`."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+# ---------------------------------------------------------------------------
 # Rule 6: ambiguous is never reported as missing
 # ---------------------------------------------------------------------------
 

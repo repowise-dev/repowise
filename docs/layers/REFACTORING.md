@@ -37,7 +37,7 @@ one**, and produces stable-sorted, deterministic output.
 | **Move Method** | A feature-envy method and the class it actually belongs to. | The method's entity set (fields/methods it touches, class-qualified) is built from the call graph; Jaccard distance to each class. Fires only when a foreign class is clearly nearer than its own and draws more of the method's calls than its home file does. A class the method instantiates (a result it builds) and an ancestor of its own class are never targets. |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
 | **Split File** | The cohesive files an oversized module should decompose into: which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
-| **Extract Method** | The exact line span to lift out of an oversized/complex method, with the helper's inferred signature: the parameters it needs (IN) and the value it must return (OUT). | Intra-procedural dataflow (CFG + def/use + reaching definitions) over methods a `large_method` / `brain_method` / `complex_method` finding already flagged. Only single-exit, statement-boundary spans that remove real complexity qualify, and IN/OUT comes from liveness over the def/use facts. A span is offered only when the gate can prove it behavior-preserving: every returned value must be written on every path through the span, and a span nested in a loop must carry no state between iterations and must not mutate what the loop iterates. What the gate cannot prove is suppressed, not demoted, so the layer under-reports rather than suggest a rewrite that changes behavior. |
+| **Extract Method** | The exact line span to lift out of an oversized/complex method, with the helper's inferred signature: the parameters it needs (IN) and the value it must return (OUT). | Intra-procedural dataflow (CFG + def/use + reaching definitions) over methods a `large_method` / `brain_method` / `complex_method` finding already flagged. Only single-exit, statement-boundary spans that remove real complexity qualify, and IN/OUT comes from liveness over the def/use facts. A span is offered only when the gate can prove it behavior-preserving: every returned value must be written on every path through the span, and a span nested in a loop must carry no state between iterations and must not mutate what the loop iterates. What the gate cannot prove is suppressed, not demoted, so the layer under-reports rather than suggest a rewrite that changes behavior. A span must also be worth doing: at least 5 code lines that remove at least 2 decision points (or, for `large_method`, at least 12 code lines), and a helper that would not carry the finding at the function's own severity, since lifting nearly the whole body moves the smell instead of splitting it. When the best span misses that floor the next-best one that clears it is offered. A JSX component whose decision points sit mostly in its markup (conditional spreads, `&&` or ternaries in attributes and children, template ternaries) gets no extraction: that branching is prop plumbing. |
 | **Performance Fix** | A safe shared intervention, affected call sites, and caller-to-sink paths for one causal performance opportunity. | The call-graph opportunity service groups raw findings by stable cause, boundary and context, then emits only supported strategies. Findings with no coherent safe intervention remain visible in Code Health without a plan. |
 
 The algorithms are derived from public academic literature (Fokaefs-Tsantalis
@@ -63,10 +63,10 @@ web).
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
 | `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns` + `suggested_name`. Names are omitted rather than invented: `suggested_name` and a group's `name` / `suggested_file` are `null` whenever no fact anchors a name, and `suggested_site.directory` is `null` unless an occurrence actually lives in that directory. |
 | `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
-| `impact_delta` | The defect-health score the refactoring would recover; `0` for graph-native and performance plans. Their canonical `benefit` comes from detector-native evidence instead. Extract Method credits only what its one span removes: the residual method and the new helper are re-graded with the source biomarker's own thresholds, so a span that leaves the method in the same severity band recovers `0`, and one that drops a band recovers the difference. |
+| `impact_delta` | The defect-health score the refactoring would recover; `0` for graph-native and performance plans. Their canonical `benefit` comes from detector-native evidence instead. Credit is proportional to what the plan removes, never the whole finding for crossing a threshold. Extract Method credits the share of what the finding measures that moves into the helper: `ccn_removed / ccn` for `complex_method`, `slice_nloc / nloc` for `large_method`, the larger of the two for `brain_method`, capped at 1. Both line counts are code lines (blank, comment and docstring lines excluded, the walker's NLOC rule), and `evidence.slice_nloc` reports the same count. Extract Class credits a `low_cohesion` finding whole (the plan is the full LCOM4 partition) and a `god_class` finding by the NLOC or CCN share that leaves the largest group. Extract Helper credits the block's share of the file's duplicated lines. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
 | `blast_radius` | What else must move: the callers, co-change partners, and importing files. Extract Method carries `{"scope": "local"}` instead — extraction adds a private helper and changes no signature, so nothing outside the file moves and there is no count to make. |
-| `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). |
+| `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). For Extract Method, `high` means the step is mechanical and worth handing off: it removes at least 2 decision points, takes at most 4 parameters, and moves at least a tenth of what its finding measures. Only `high` Extract Method steps classify as mechanical. |
 | `source_biomarker` | The finding this answers (e.g. `low_cohesion`, `god_class`, `dry_violation`). |
 
 The per-type `plan` / `evidence` / `blast_radius` shapes are documented in full in
@@ -82,7 +82,9 @@ named components and one canonical score:
 score = (1 + benefit) * (1 + leverage) / (1 + cost + risk)
 ```
 
-`benefit` is recoverable health or detector-native structural/performance gain;
+`benefit` is recoverable health (an opportunity's `recoverable_health` is the sum
+of its credited steps' proportional `impact_delta`, each finding counted once) or
+detector-native structural/performance gain;
 `leverage` is weighted health deficit, dependents, and reliable entry reach;
 `cost` includes effort and change surface; `risk` includes blast radius,
 confidence, provenance, and validation quality. Larger blast radius therefore
@@ -125,6 +127,21 @@ page cost the whole repository.
 `performance_fix` plans are excluded by construction: the performance layer
 composes, ranks and owns the lifecycle of its own opportunities.
 
+Plans whose `source_biomarker` the finding registry
+(`analysis/finding_registry.py`) withholds are left out too, as steps and as
+evidence, and so are they from the plan lists, the attention list and the
+`get_health` directive. A withheld finding never becomes a file's
+`lead_biomarker`. The plan rows stay stored and addressable by id.
+
+**Split File ids across `init` and `update`.** A full index, an incremental
+update and a re-score from stored git metadata now build the same symbol graph
+for a file at one commit, so its `split_file` plan id is the same on every path:
+the co-change edge reads each function's commit set (its 50 most recent
+distinct commits) from `git_function_blame` when no blame index is at hand.
+A re-score blames, once, the candidate files whose rows predate that column.
+This moved Split File groups, so refactoring model 4 re-mints every plan id
+once on upgrade; a held `refac3_` id reports `stale_model`.
+
 ### Ordering, and `refactoring_view`
 
 The ranked head is honestly flat. On the dogfood index eight of the top ten
@@ -140,9 +157,41 @@ tie.
 | `canonical` | The published rank order verbatim, ties and all. What the old default produced. |
 | `file_spread` | Asked for one row per file. An opportunity *is* one file's work, so the spread is satisfied by construction; the value resolves onto the diversified order, which is what it was reaching for. |
 
+Test files (tests and test support, by `test_paths.is_test_related_path`) rank
+after every production file, in both views and in the plan list, and never lead
+the `refactoring_directive`. When only test files have open work the directive
+is `clear` with reason `only_test_file_opportunities`.
+
 Both older values keep working. The same parameter also selects the legacy
 `refactoring_plans` list's view, where `diversified` resolves to that list's
 historical `canonical` default.
+
+## Fix first, and the default scope
+
+Fix first ([CODE_HEALTH.md](CODE_HEALTH.md#fix-first)) ranks refactorings beside
+performance fixes and code-shape findings. A refactoring opportunity is a Fix-first
+candidate when its file ships, it recovers at least 0.5 health, its lead step is a
+kind raters found worth doing, and that step names a concrete edit (lines to lift,
+a destination, the import to cut, named groups); a complexity step also needs a
+function of at least 30 code lines or CCN 15 that is not mostly one dispatch on one
+value.
+
+**The refactoring view lists those by default.** On this repository's index that is
+94 of 702 open opportunities: 507 fall below the worth floor, 42 are in tests, 41
+are small functions, and 18 are tooling, low-value kinds, docs, generated or
+without a concrete step. The eligibility is read from the Fix-first builder itself,
+so the view and the queue cannot disagree.
+
+| `scope` | Lists |
+|---|---|
+| `fix_first` *(default for the open, repository-wide queue)* | Only what Fix first would take. `hidden` counts the rest of the filtered set, `{"total": n, "by_reason": {...}}`, by the same exclusion reasons. |
+| `all` | The full inventory. The default when the call names a file, or lists a triaged status, which Fix first never reads. |
+
+The REST route takes `scope`, MCP `get_health` takes `refactoring_scope` and reports
+`refactoring_opportunities_scope` and `refactoring_opportunities_hidden`, and facet
+counts follow the scope. The web board's Scope control switches between **Worth
+doing** and **Full inventory**, and its count line reads "Showing N worth doing; M
+more in the full inventory", with the reasons beneath it.
 
 ## Surfaces
 
@@ -151,8 +200,8 @@ repowise health --refactoring-targets            # ranked table
 ```
 
 ```python
-# MCP. A bare call already carries one bounded refactoring_directive.
-get_health()
+# MCP. A bare call leads with fix_first, which ranks refactorings beside the rest.
+get_health(only=["fix_first"])
 get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
 get_health(include=["refactoring"], only=["refactoring_summary"])
 get_health(opportunity_id="refop2_...")                      # steps, plans, validation
@@ -166,6 +215,7 @@ get_health(targets=["src/api/server.py"])                    # one file
 # REST. Both surfaces read services/refactoring_health.py, so they cannot
 # answer differently; a parity suite asserts order, filters, totals and detail.
 GET /api/repos/{repo_id}/refactoring/opportunities?view=diversified&limit=20
+GET /api/repos/{repo_id}/refactoring/opportunities?scope=all       # the full inventory
 GET /api/repos/{repo_id}/refactoring/opportunities?file_path=src/api/server.py
 GET /api/repos/{repo_id}/refactoring/opportunities/{opportunity_id}
 GET /api/repos/{repo_id}/refactoring/summary

@@ -53,7 +53,9 @@ async def list_health_findings(
     counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
-    """Findings, ranked by health impact. Open work unless ``status`` says otherwise.
+    """Findings worth doing first, then lower-priority ones labelled with why
+    they can wait, each part ranked by health impact. Open work unless
+    ``status`` says otherwise.
 
     The zero-impact dimensions, performance and advisory, are out of the
     unfiltered list by default. Their findings carry a health impact of zero by
@@ -102,8 +104,11 @@ async def list_health_findings(
     # it under one would show work that sums past the figure above it.
     if parse_counts(counts) == "code_shape":
         findings = split_by_origin(findings)[0]
+    shown = findings[:limit]
+    # Measured over every open finding on each file, whatever this list kept.
+    reasons = await crud.health_finding_priorities(session, repo_id, shown)
     return await _attach_symbol_ids(
-        session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
+        session, repo_id, [_finding_to_dict(f, reasons[f.id]) for f in shown]
     )
 
 

@@ -56,6 +56,74 @@ def test_read_failures_mark_each_side_degraded() -> None:
     assert impact["analysis"]["status"] == "degraded"
 
 
+_INFERRED = {
+    "src/b.py": {"tests": ["tests/unit/conftest.py", "tests/test_b.py"], "via": "imports"},
+    "src/c.py": {"tests": ["tests/unit/conftest.py"], "via": "call-graph"},
+}
+_TEST_FILES = {
+    "tests/unit/conftest.py",
+    "tests/unit/test_x.py",
+    "tests/unit/helpers.py",
+    "tests/test_b.py",
+}
+
+
+def test_a_conftest_the_walk_reached_stands_for_the_tests_under_it() -> None:
+    """pytest collects nothing from a conftest; it runs for the tests below it."""
+    impact = assemble_test_impact(
+        ["src/b.py", "src/c.py"], {}, _INFERRED, {}, repository_id="r1", repository_test_files=_TEST_FILES
+    )
+    assert [r["test_id"] for r in impact["recommendations"]] == [
+        "tests/unit/test_x.py",
+        "tests/test_b.py",
+    ]
+    c = next(r for r in impact["files"] if r["source_file"] == "src/c.py")
+    assert (c["status"], c["inferred_tests"]) == ("inferred", ["tests/unit/test_x.py"])
+    assert impact["unknown_files"] == []
+
+
+def test_without_the_test_files_a_conftest_drops_out() -> None:
+    impact = assemble_test_impact(["src/b.py", "src/c.py"], {}, _INFERRED, {}, repository_id="r1")
+    assert [r["test_id"] for r in impact["recommendations"]] == ["tests/test_b.py"]
+    assert impact["unknown_files"] == ["src/c.py"]
+
+
+def test_a_root_conftest_expansion_is_ranked_and_capped_per_file() -> None:
+    """A root conftest stands for every test; it must not flood the result."""
+    from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+
+    many = {f"tests/aaa/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 20)}
+    impact = assemble_test_impact(
+        ["src/core.py"],
+        {},
+        {"src/core.py": {"tests": ["conftest.py"], "via": "call-graph"}},
+        {},
+        repository_id="r1",
+        repository_test_files={"conftest.py", "tests/unit/test_core.py", *many},
+    )
+    row = impact["files"][0]
+    assert len(row["inferred_tests"]) == MAX_TESTS_PER_TARGET
+    assert row["inferred_tests_total"] == MAX_TESTS_PER_TARGET + 21
+    assert "tests/unit/test_core.py" in row["inferred_tests"]  # nearest kept, not first
+    assert impact["recommendations_total"] == MAX_TESTS_PER_TARGET
+    assert impact["inference"]["candidates_before_dedup"] == MAX_TESTS_PER_TARGET + 21
+
+
+def test_expand_test_scopes_replaces_only_scope_files() -> None:
+    from repowise.core.analysis.test_selection import expand_test_scopes
+
+    files = {"tests/a/test_one.py", "tests/a/helpers.py", "tests/b/test_two.py", "tests/b/__init__.py"}
+    assert expand_test_scopes(
+        ["tests/test_conftest.py", "tests/a/conftest.py", "tests/a/helpers.py", "tests/a/test_one.py"],
+        files,
+    ) == ["tests/test_conftest.py", "tests/a/test_one.py", "tests/a/helpers.py"]
+    assert expand_test_scopes(["tests/b/__init__.py"], files) == ["tests/b/test_two.py"]
+    assert expand_test_scopes(["conftest.py"], files) == [
+        "tests/a/test_one.py",
+        "tests/b/test_two.py",
+    ]
+
+
 def test_nothing_changed() -> None:
     impact = assemble_test_impact([], {}, {}, {}, repository_id="r1")
     assert impact["files"] == []

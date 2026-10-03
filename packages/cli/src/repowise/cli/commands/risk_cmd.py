@@ -184,6 +184,8 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
                 key,
                 truncated=directive.get(f"{key}_truncated") or 0,
             )
+        calls = directive.get("next_calls") or []
+        _print_list("Then run", [c["cli"] for c in calls if c.get("cli")])
 
     targets = projected.get("targets") or {}
     for name in requested:

@@ -711,6 +711,7 @@ def run_partial_analysis(
         # execution closure so a changed caller can still see an unchanged sink
         # and an unchanged caller can react to a changed sink. The index is
         # built once; this is a multi-source walk, not one walk per finding.
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
@@ -731,6 +732,7 @@ def run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            community_label_map=file_community_labels(graph_builder),
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
             coverage_map=coverage_map,
@@ -825,6 +827,7 @@ def run_partial_analysis(
                     *getattr(_traversal_stats, "unknown_language_files", []),
                 )
             ],
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
         # Repo-wide, and persisted repo-wide. The detectors were always
         # repo-wide — the update path just discarded everything outside the
@@ -1194,12 +1197,17 @@ def _numbers_moved(refreshed: Any, stored: Any) -> bool:
     the split ships backfills it without touching any finding.
     """
     return (
-        round(refreshed.score, 2) != round(float(stored.score), 2)
-        or stored.structure_deduction is None
-        or stored.history_deduction is None
-        or round(refreshed.structure_deduction, 3) != round(float(stored.structure_deduction), 3)
-        or round(refreshed.history_deduction, 3) != round(float(stored.history_deduction), 3)
+        _differs(refreshed.score, stored.score, 2)
+        or _differs(refreshed.structure_deduction, stored.structure_deduction, 3)
+        or _differs(refreshed.history_deduction, stored.history_deduction, 3)
     )
+
+
+def _differs(new: float | None, old: float | None, places: int) -> bool:
+    """``None`` is a value here: a file that is no longer scored has moved."""
+    if new is None or old is None:
+        return (new is None) != (old is None)
+    return round(new, places) != round(float(old), places)
 
 
 def _history_findings_moved(refreshed: Any, stored_findings: list[Any]) -> bool:
@@ -1231,11 +1239,14 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
     complexity and coverage columns, which need a parse — keep their stored
     values instead of being reset to a default.
     """
+    # A file health never walked carries no complexity figures either, which
+    # also clears the ones a store written before that rule kept.
+    walked = refreshed.score is not None
     return {
         "file_path": refreshed.file_path,
         "score": refreshed.score,
-        "max_ccn": stored.max_ccn,
-        "max_nesting": stored.max_nesting,
+        "max_ccn": stored.max_ccn if walked else None,
+        "max_nesting": stored.max_nesting if walked else None,
         "nloc": stored.nloc,
         "duplication_pct": stored.duplication_pct,
         "has_test_file": stored.has_test_file,
@@ -1248,6 +1259,7 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
         "structure_deduction": refreshed.structure_deduction,
         "history_deduction": refreshed.history_deduction,
         "is_test": stored.is_test,
+        "code_origin": getattr(stored, "code_origin", None),
     }
 
 
@@ -1346,9 +1358,14 @@ async def persist_partial_health(
     # average, and rows written before ``is_test`` existed get it from their
     # path. Both before the refresh, which should not re-score a row that is
     # about to be deleted.
-    from repowise.core.persistence.crud import backfill_is_test, prune_unscored_health_rows
+    from repowise.core.persistence.crud import (
+        backfill_is_test,
+        clear_unanalysed_scores,
+        prune_unscored_health_rows,
+    )
 
     await prune_unscored_health_rows(session, repo_id)
+    await clear_unanalysed_scores(session, repo_id)
     await backfill_is_test(session, repo_id)
     # Then the files this run did not walk, whose git-derived markers the fresh
     # metadata may have moved. Before the snapshot, or the trend would describe

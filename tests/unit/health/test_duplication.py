@@ -19,7 +19,7 @@ from repowise.core.analysis.health.duplication import (
 from repowise.core.analysis.health.duplication.detector import (
     ClonePair,
     _aggregate,
-    _union_line_count,
+    union_line_count,
 )
 from repowise.core.analysis.health.duplication.rabin_karp import (
     index_by_hash,
@@ -331,8 +331,8 @@ def _pair(
         ([(1, 10), (1, 10), (1, 10)], 10),  # identical repeats
     ],
 )
-def test_union_line_count(ranges: list[tuple[int, int]], expected: int):
-    assert _union_line_count(ranges) == expected
+def testunion_line_count(ranges: list[tuple[int, int]], expected: int):
+    assert union_line_count(ranges) == expected
 
 
 def test_aggregate_overlapping_pairs_do_not_double_count():
@@ -403,6 +403,13 @@ def test_tokenize_file_drops_python_imports():
     assert [t.kind for t in toks] == ["ID", "=", "LIT"]
 
 
+def test_tokenize_file_drops_the_java_package_declaration():
+    toks = tokenize_file("java", b"package a.b;\nimport x.Y;\nclass C {}\n", "C.java")
+    assert "package" not in [t.kind for t in toks]
+    assert toks[0].kind == "class"
+    assert toks[0].start_line == 3
+
+
 def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():
     source = (
         b'import { a, b } from "./x";\n'
@@ -426,12 +433,54 @@ def test_tokenize_file_keeps_raw_identifier_names():
     assert [t.name for t in toks] == ["total", "", "count", "", ""]
 
 
+def test_tokenize_file_lines_match_tree_sitter_points():
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    source = b'x = 1\r\n\r\ns = """a\r\nb\n"""\nif x:\n    y = (s,\n         x)\n'
+    tree = Parser(_get_language("python")).parse(source)
+    leaves = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.child_count == 0 and source[node.start_byte : node.end_byte].strip():
+            leaves.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        stack.extend(reversed(node.children))
+
+    toks = tokenize_file("python", source)
+    assert [(t.start_line, t.end_line) for t in toks] == leaves
+    assert (3, 5) in [(t.start_line, t.end_line) for t in toks]  # the multi-line string
+
+
 def test_detect_clones_ignores_identical_import_blocks(tmp_path: Path):
     imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(12))
     a = _write(tmp_path, "a.py", imports + "def f():\n    return 1\n")
     b = _write(tmp_path, "b.py", imports + "def g(x):\n    return x * 2\n")
     report = detect_clones([_pf("a.py", str(a)), _pf("b.py", str(b))], window_tokens=20, min_lines=4)
     assert report.pairs == []
+
+
+def test_a_java_clone_starts_at_the_shared_code_not_the_package_line(tmp_path: Path):
+    header = "/* License header */\npackage com.acme.core.util;\n\n" + "".join(
+        f"import com.acme.core.mod{i}.Thing{i};\n" for i in range(12)
+    ) + "\n"
+    method = (
+        "    int total(int a, int b) {\n        int sum = a + b;\n        if (sum > 10) {\n"
+        "            return sum * 2;\n        }\n        for (int i = 0; i < b; i++) {\n"
+        "            sum += i;\n        }\n        return sum;\n    }\n"
+    )
+    a = _write(tmp_path, "A.java", header + "public class Alpha {\n" + method + "}\n")
+    b = _write(tmp_path, "B.java", header + "public class Beta {\n" + method + "}\n")
+    report = detect_clones(
+        [_pf("A.java", str(a), language="java"), _pf("B.java", str(b), language="java")]
+    )
+    # The pair is still found, from the class line (17) on: the package line
+    # is line 2 and the shared method is lines 18-27.
+    assert len(report.pairs) == 1
+    pair = report.pairs[0]
+    assert pair.a_start_line >= 17 and pair.b_start_line >= 17
+    assert pair.a_end_line >= 27 and pair.b_end_line >= 27
 
 
 def test_detect_clones_ignores_matching_data_literals(tmp_path: Path):

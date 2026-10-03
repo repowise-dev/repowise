@@ -284,3 +284,199 @@ def test_a_method_whose_work_is_in_its_home_file_does_not_envy():
     assert _detect(g, "c.py") == []
     g.remove_node("c.py::render")
     assert len(_detect(g, "c.py")) == 1
+
+
+# ---- contracts, factories and non-targets ---------------------------------
+
+
+def _java_envy_graph(method: str = "envious", target: str = "T") -> nx.DiGraph:
+    g = nx.DiGraph()
+    _add_class(g, "C.java", "C", [method, "helper"])
+    _add_class(g, f"{target}.java", target, ["alpha", "beta", "gamma"])
+    for m in ("alpha", "beta", "gamma"):
+        _call(g, f"C.java::C.{method}", f"{target}.java::{target}.{m}")
+    return g
+
+
+def _detect_java(g: nx.DiGraph, classes: list | None = None) -> list:
+    ctx = RefactoringContext(
+        file_path="C.java", language="java", nloc=40, graph=g, classes=classes or []
+    )
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "move_method"]
+
+
+def test_java_envy_control_still_fires():
+    assert len(_detect_java(_java_envy_graph())) == 1
+
+
+def test_override_annotated_method_never_moves():
+    g = _java_envy_graph()
+    g.nodes["C.java::C.envious"]["decorators"] = ["@Override\n    public"]
+    assert _detect_java(g) == []
+
+
+def test_runtime_contract_method_never_moves():
+    assert _detect_java(_java_envy_graph(method="toString")) == []
+
+
+def test_method_its_base_type_declares_never_moves():
+    g = _java_envy_graph()
+    _add_class(g, "Base.java", "Base", ["envious"])
+    g.add_edge("C.java::C", "Base.java::Base", edge_type="implements")
+    assert _detect_java(g) == []
+
+
+def test_static_factory_on_target_counts_as_instantiation():
+    g = _java_envy_graph()
+    g.nodes["T.java::T.alpha"].update(name="of", signature="of(String key) -> T")
+    assert _detect_java(g) == []
+
+
+def test_getter_returning_the_target_type_is_not_instantiation():
+    g = _java_envy_graph()
+    g.nodes["T.java::T.alpha"]["signature"] = "alpha() -> T"
+    assert len(_detect_java(g)) == 1
+
+
+def test_python_override_decorator_and_classmethod_factory():
+    g = _envy_graph()
+    g.nodes["c.py::C.envious"]["decorators"] = ["@typing.override"]
+    assert _detect(g, "c.py") == []
+    g = _envy_graph()
+    g.nodes["t.py::T.alpha"].update(signature="def alpha(cls) -> T", decorators=["@classmethod"])
+    assert _detect(g, "c.py") == []
+    # Control: plain Python envy still fires.
+    assert len(_detect(_envy_graph(), "c.py")) == 1
+
+
+def test_exception_interface_and_utility_targets_are_rejected():
+    assert _detect_java(_java_envy_graph(target="ParseException")) == []
+    assert _detect_java(_java_envy_graph(target="StringUtils")) == []
+    g = _java_envy_graph()
+    g.nodes["T.java::T"]["kind"] = "interface"
+    assert _detect_java(g) == []
+    # An enum carries real behaviour; it stays a valid target.
+    g = _java_envy_graph()
+    g.nodes["T.java::T"]["kind"] = "enum"
+    assert len(_detect_java(g)) == 1
+
+
+def test_method_sharing_its_class_state_does_not_move():
+    from repowise.core.analysis.health.complexity import ClassComplexity, CohesionGroup
+
+    cls = ClassComplexity(
+        name="C",
+        start_line=1,
+        end_line=40,
+        method_count=2,
+        total_nloc=30,
+        methods=[],
+        lcom4=1,
+        components=[CohesionGroup(methods=["envious", "helper"], fields=["settings"])],
+    )
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []
+    stateless = CohesionGroup(methods=["envious"], fields=[])
+    cls.components = [stateless]
+    assert len(_detect_java(_java_envy_graph(), classes=[cls])) == 1
+
+
+def test_method_calling_an_inherited_member_or_in_a_trait_impl_does_not_move():
+    from repowise.core.analysis.health.complexity import ClassComplexity, CohesionGroup
+
+    cls = ClassComplexity(
+        name="C",
+        start_line=1,
+        end_line=40,
+        method_count=2,
+        total_nloc=30,
+        methods=[],
+        lcom4=1,
+        components=[CohesionGroup(methods=["envious"], fields=[], calls=("base",))],
+    )
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []
+    cls.components = []
+    cls.contract_impl = True
+    assert _detect_java(_java_envy_graph(), classes=[cls]) == []
+
+
+# ---- keyword modifiers and partial classes (C#, Kotlin, VB.NET) ------------
+
+
+def _envy_graph_in(ext: str, language: str) -> nx.DiGraph:
+    g = nx.DiGraph()
+    _add_class(g, f"C.{ext}", "C", ["Envious", "Helper"])
+    _add_class(g, f"T.{ext}", "T", ["Alpha", "Beta", "Gamma"])
+    for node in g.nodes.values():
+        node["language"] = language
+    for m in ("Alpha", "Beta", "Gamma"):
+        _call(g, f"C.{ext}::C.Envious", f"T.{ext}::T.{m}")
+    return g
+
+
+def _detect_in(g: nx.DiGraph, file_path: str, language: str) -> list:
+    ctx = RefactoringContext(file_path=file_path, language=language, nloc=40, graph=g)
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "move_method"]
+
+
+def test_csharp_envy_control_still_fires():
+    g = _envy_graph_in("cs", "csharp")
+    g.nodes["C.cs::C.Envious"]["modifiers"] = ("public", "static", "async")
+    assert len(_detect_in(g, "C.cs", "csharp")) == 1
+
+
+def test_override_virtual_and_abstract_modifiers_never_move():
+    for ext, language, modifiers in (
+        ("cs", "csharp", ("protected", "override", "async")),
+        ("cs", "csharp", ("public", "virtual")),
+        ("cs", "csharp", ("public", "abstract")),
+        ("kt", "kotlin", ("override",)),
+        ("kt", "kotlin", ("open",)),
+        ("vb", "vbnet", ("public", "overrides")),
+    ):
+        g = _envy_graph_in(ext, language)
+        g.nodes[f"C.{ext}::C.Envious"]["modifiers"] = modifiers
+        assert _detect_in(g, f"C.{ext}", language) == [], modifiers
+
+
+def test_csharp_static_class_is_never_a_move_target():
+    g = _envy_graph_in("cs", "csharp")
+    g.nodes["T.cs::T"]["modifiers"] = ("internal", "static")
+    assert _detect_in(g, "C.cs", "csharp") == []
+    # A Java ``static`` nested class has instances; it stays a target.
+    g = _java_envy_graph()
+    g.nodes["T.java::T"].update(language="java", modifiers=("static",))
+    assert len(_detect_java(g)) == 1
+
+
+def test_static_written_on_another_partial_fragment_of_the_target():
+    g = _envy_graph_in("cs", "csharp")
+    g.add_node("T.Part.cs", node_type="file")
+    g.add_node(
+        "T.Part.cs::T",
+        node_type="symbol",
+        kind="class",
+        name="T",
+        file_path="T.Part.cs",
+        language="csharp",
+        modifiers=("public", "static", "partial"),
+    )
+    assert len(_detect_in(g, "C.cs", "csharp")) == 1  # unlinked fragment: no say
+    g.add_edge(
+        "T.cs", "T.Part.cs", edge_type="imports", imported_names=["T"], hint_source="partial_class"
+    )
+    assert _detect_in(g, "C.cs", "csharp") == []
+
+
+def test_other_partial_fragments_of_the_own_class_are_home():
+    g = _envy_graph_in("cs", "csharp")
+    # ``T`` here is a second fragment of ``C`` declared in another file.
+    g = nx.relabel_nodes(g, {f"T.cs::T.{m}": f"T.cs::C.{m}" for m in ("Alpha", "Beta", "Gamma")})
+    g = nx.relabel_nodes(g, {"T.cs::T": "T.cs::C"})
+    g.nodes["T.cs::C"]["name"] = "C"
+    for m in ("Alpha", "Beta", "Gamma"):
+        g.nodes[f"T.cs::C.{m}"]["parent_name"] = "C"
+    assert len(_detect_in(g, "C.cs", "csharp")) == 1  # unlinked: reads as foreign
+    g.add_edge(
+        "C.cs", "T.cs", edge_type="imports", imported_names=["C"], hint_source="partial_class"
+    )
+    assert _detect_in(g, "C.cs", "csharp") == []

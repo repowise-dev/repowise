@@ -90,10 +90,28 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     discrete = [
         item for item in candidates if row_field(item, "biomarker_type") not in continuous
     ]
-    return max(
+    # A total order: equal impacts are common (two biomarkers on one file can
+    # quantise to the same deduction), and a bare ``max`` let input order pick
+    # the lead, so two indexes of one tree disagreed. Severity breaks the tie
+    # first; the rest only makes it stable.
+    return min(
         discrete or candidates,
-        key=lambda item: float(row_field(item, "health_impact") or 0.0),
+        key=lambda item: (
+            -float(row_field(item, "health_impact") or 0.0),
+            _severity_rank(row_field(item, "severity")),
+            str(row_field(item, "biomarker_type") or ""),
+            row_field(item, "line_start") or 0,
+            str(row_field(item, "function_name") or ""),
+        ),
     )
+
+
+def _severity_rank(severity: Any) -> int:
+    """Position in ``SEVERITY_ORDER`` (critical first); unknown sorts last."""
+    from .aggregation import SEVERITY_ORDER
+
+    value = str(severity or "")
+    return SEVERITY_ORDER.index(value) if value in SEVERITY_ORDER else len(SEVERITY_ORDER)
 
 
 def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
@@ -105,6 +123,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     report the second as context.
     """
     # Deferred: ``scoring`` imports this module for its data classes.
+    from .rows import field as row_field
     from .scoring import HISTORY_CATEGORY, biomarker_category
 
     code_shape: list[Any] = []
@@ -112,7 +131,7 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     for f in findings:
         target = (
             history
-            if biomarker_category(getattr(f, "biomarker_type", "")) == HISTORY_CATEGORY
+            if biomarker_category(row_field(f, "biomarker_type", "")) == HISTORY_CATEGORY
             else code_shape
         )
         target.append(f)
@@ -120,9 +139,18 @@ def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
 
 
 def primary_biomarker_by_file(findings: Iterable[Any]) -> dict[str, str]:
-    """Each file's dominant cause, keyed by path. See :func:`primary_finding`."""
+    """Each file's dominant cause, keyed by path. See :func:`primary_finding`.
+
+    A type the finding registry withholds never leads: the refactoring surfaces
+    that read this would otherwise name a finding no other surface shows.
+    """
+    from ..finding_registry import excluded_types
+
+    withheld = excluded_types()
     by_file: dict[str, list[Any]] = {}
     for finding in findings:
+        if finding.biomarker_type in withheld:
+            continue
         by_file.setdefault(finding.file_path, []).append(finding)
     leads = {path: primary_finding(items) for path, items in by_file.items()}
     return {path: lead.biomarker_type for path, lead in leads.items() if lead is not None}
@@ -133,9 +161,12 @@ class HealthFileMetricData:
     """Per-file aggregate. Persisted as a ``HealthFileMetric`` row."""
 
     file_path: str
-    score: float
-    max_ccn: int
-    max_nesting: int
+    # ``score``, ``max_ccn`` and ``max_nesting`` are ``None`` for a file whose
+    # language health has no dialect for: nothing walked it, so there is no
+    # measurement to store (``has_health_dialect``).
+    score: float | None
+    max_ccn: int | None
+    max_nesting: int | None
     nloc: int
     has_test_file: bool
     module: str | None = None
@@ -160,6 +191,10 @@ class HealthFileMetricData:
     # path classifier and carried here so every surface that narrows to
     # production reads a column instead of re-deriving the answer.
     is_test: bool = False
+    # Where the file's code comes from: ``production``, ``test``, ``vendored``,
+    # ``docs_example``, ``generated``, ``tooling`` or ``build``
+    # (:func:`repowise.core.code_origin.code_origin`). ``None`` when unknown.
+    code_origin: str | None = None
 
 
 @dataclass

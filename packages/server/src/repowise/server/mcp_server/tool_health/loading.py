@@ -11,18 +11,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.core.analysis.doc_drift.constants import UNAVAILABLE_NO_TABLE
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
+from repowise.core.analysis.health.fix_first import FixFirstQueue
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
+    detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import plan_view
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import project_scope
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
@@ -40,7 +42,8 @@ from repowise.core.persistence.crud import (
     load_coverage_for_repo,
     load_coverage_history,
 )
-from repowise.core.persistence.models import HealthFileMetric, RefactoringSuggestion
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.findings import (
     FindingSets,
@@ -56,9 +59,13 @@ from repowise.server.mcp_server.tool_health.pillars import (
 )
 from repowise.server.mcp_server.tool_health.population import Population, load_population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
-from repowise.server.mcp_server.tool_health.summary import _DIRECTIVE_CANDIDATES, _leads_by_file
+from repowise.server.mcp_server.tool_health.summary import _leads_by_file
 from repowise.server.services.performance_health import PerformanceHealthService
-from repowise.server.services.refactoring_health import RefactoringHealthService, plan_view
+from repowise.server.services.refactoring_health import RefactoringHealthService
+
+FIX_FIRST_CAP = 5
+"""Items in the dashboard's ``fix_first`` block, however large ``limit`` is.
+The rest are one ``get_health(fix_id=...)`` or REST page away."""
 
 
 @dataclass
@@ -90,8 +97,7 @@ class HealthData:
     drift_unavailable: str | None = None
     churn_points: list[dict[str, Any]] = field(default_factory=list)
     snapshots: list[Any] = field(default_factory=list)
-    plan_biomarkers_by_path: dict[str, set[str]] = field(default_factory=dict)
-    plan_count_by_path: dict[str, int] = field(default_factory=dict)
+    fix_first: FixFirstQueue | None = None
     # Dashboard only: the worst-first test files, ranked apart from
     # ``metric_rows`` so a test never heads the production worklist.
     test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
@@ -162,9 +168,7 @@ async def load_health_data(
     data.by_leverage, data.leads = _rank_leverage_and_leads(
         pop, metric_rows, findings, req, data.test_metric_rows
     )
-    data.plan_biomarkers_by_path, data.plan_count_by_path = await _read_directive_plans(
-        session, repository, pop, req, data.by_leverage
-    )
+    data.fix_first = await _read_fix_first(session, repository, pop, req)
     return data
 
 
@@ -235,7 +239,17 @@ async def _read_refactoring_plans(
         rows,
         metric_rows=pop.all_metrics,
         view=plan_view(req.refactoring_view),
+        rank_only=True,
     )
+    # Every row is ranked; only the page the response emits, and the lede's
+    # lead plan, need the evidence that orders their tests.
+    shown = {0, *range(req.cursor, req.cursor + req.plans_cap)}
+    indexes = [index for index in sorted(shown) if index < len(recommendations)]
+    detailed = await detail_recommendations(
+        session, repository.id, [recommendations[index] for index in indexes]
+    )
+    for index, item in zip(indexes, detailed, strict=True):
+        recommendations[index] = item
     return rows, recommendations
 
 
@@ -263,13 +277,13 @@ async def _read_pillars(
         lead_type=req.refactoring_type,
         confidence=req.refactoring_confidence,
         effort=req.refactoring_effort,
+        scope=req.refactoring_scope,
     )
     performance = await _performance_blocks(
         performance_service,
         wants=req.wants,
         included="performance" in req.include_set and req.wants_performance_opportunities,
         file_paths=pop.target_paths,
-        scoped=pop.scoped,
         limit=req.limit,
         cursor=req.cursor,
         view=req.performance_view,
@@ -401,9 +415,6 @@ def _rank_leverage_and_leads(
 
     Targeted mode reduces the whole (small) scoped set. Dashboard mode reduces
     only the rows of files it prints: identical output at a fraction of the cost.
-
-    Computed inside the session because the directive's plan lookup needs
-    ``by_leverage``.
     """
     if pop.scoped:
         return [], _leads_by_file(findings.lead_rows)
@@ -417,48 +428,17 @@ def _rank_leverage_and_leads(
     printed = {m.file_path for m in metric_rows[: req.limit]}
     printed |= {m.file_path for m in test_metric_rows[: req.limit]}
     printed |= {m.file_path for m in by_leverage[: req.limit]}
-    # The directive's candidates, unconditionally: its leads must not depend
-    # on ``limit``, or ``limit=0`` would make it assert wrong claims.
-    printed |= {m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]}
     return by_leverage, _leads_by_file([r for r in findings.lead_rows if r.file_path in printed])
 
 
-async def _read_directive_plans(
-    session: Any,
-    repository: Any,
-    pop: Population,
-    req: HealthRequest,
-    by_leverage: list[HealthFileMetric],
-) -> tuple[dict[str, set[str]], dict[str, int]]:
-    """Which biomarkers the stored plans for the directive's candidates actually address.
+async def _read_fix_first(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> FixFirstQueue | None:
+    """The dashboard's one lead: the Fix-first queue core builds from stored rows.
 
-    The directive points at ``include=['refactoring']`` for the fix, but some
-    biomarkers have no plan kind, so it must know whether a plan addresses the
-    cause it names. Read for the directive's candidates only, two columns, and
-    only when the directive survives the projection. ``status == "open"``
-    mirrors ``get_refactoring_suggestions``; candidates are already
-    exclude-filtered.
+    Always the production population, whatever ``scope`` says: a test file is
+    never the first thing to fix.
     """
-    plan_biomarkers_by_path: dict[str, set[str]] = {}
-    plan_count_by_path: dict[str, int] = {}
-    if pop.scoped or not req.wants("directive") or not by_leverage:
-        return plan_biomarkers_by_path, plan_count_by_path
-    directive_paths = [m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]]
-    for path, source in (
-        await session.execute(
-            select(
-                RefactoringSuggestion.file_path,
-                RefactoringSuggestion.source_biomarker,
-            ).where(
-                RefactoringSuggestion.repository_id == repository.id,
-                RefactoringSuggestion.status == "open",
-                RefactoringSuggestion.file_path.in_(directive_paths),
-            )
-        )
-    ).all():
-        # Counted apart from attribution: ``split_file`` and ``break_cycle``
-        # plans store an empty ``source_biomarker``.
-        plan_count_by_path[path] = plan_count_by_path.get(path, 0) + 1
-        if source:
-            plan_biomarkers_by_path.setdefault(path, set()).add(source)
-    return plan_biomarkers_by_path, plan_count_by_path
+    if pop.scoped or not req.wants("fix_first"):
+        return None
+    return await load_fix_first(session, repository.id, limit=min(req.limit, FIX_FIRST_CAP))

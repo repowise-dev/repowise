@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
@@ -658,6 +659,25 @@ def _build_pr_directive(
             f"this repo."
         )
 
+    # What to call next, from this response alone. ``tests_to_run`` is already
+    # the answer to "which tests", so it gets no call of its own.
+    next_calls = [
+        ActionCommand.call(
+            "The diff itself: review priority, health delta and impacted tests",
+            "get_change_risk",
+            cli="repowise risk",
+        )
+    ]
+    if may_break:
+        next_calls.append(
+            ActionCommand.call(
+                "How the files that may break use the changed code",
+                "get_context",
+                {"targets": may_break[:5], "include": ["callers"]},
+                cli=f"repowise context {' '.join(may_break[:5])} --include callers",
+            )
+        )
+
     directive = {
         "may_break": may_break,
         "may_break_tests": may_break_tests,
@@ -706,6 +726,7 @@ def _build_pr_directive(
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
+        "next_calls": [c.as_dict() for c in next_calls],
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
             f"~{len(may_break)} downstream file(s) may be affected, "

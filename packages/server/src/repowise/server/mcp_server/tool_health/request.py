@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_VIEWS as _REFACTORING_VIEWS,
+)
+from repowise.core.analysis.health.refactoring.serving import (
+    DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT,
+)
 from repowise.core.analysis.health.scoring import ALL_DIMENSIONS
-from repowise.server.services.refactoring_health import CANONICAL_VIEWS as _REFACTORING_VIEWS
-from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
 
 # ``include`` names that land under a different response key, so ``only`` can
 # use the same name. ``signals`` has no top-level key (it merges into
@@ -37,6 +41,8 @@ _KNOWN_INCLUDES = frozenset(
         "advisory",
         # Opts into provisional finding types, each labelled "unverified".
         "unverified",
+        # The shared legend for deficit points and percentiles, in ``_meta``.
+        "semantics",
     }
 )
 
@@ -59,6 +65,7 @@ class HealthRequest:
     refactoring_type: str | None
     refactoring_confidence: str | None
     refactoring_effort: str | None
+    refactoring_scope: str | None
     performance_view: str | None
     performance_context: str | None
     performance_boundary: str | None
@@ -107,6 +114,11 @@ class HealthRequest:
             t.replace("\\", "/") for t in self.raw_targets if not t.startswith("module:")
         ]
 
+    @property
+    def plans_cap(self) -> int:
+        """How many refactoring plans one response emits, whatever ``limit`` says."""
+        return min(self.limit, 6)
+
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.
 
@@ -125,19 +137,11 @@ class HealthRequest:
 
     @property
     def wants_performance_opportunities(self) -> bool:
-        return (
-            self.wants("performance_opportunities")
-            or self.wants("recommendation_lede")
-            or self.wants("performance_summary")
-        )
+        return self.wants("performance_opportunities") or self.wants("performance_summary")
 
     @property
     def wants_refactoring_opportunities(self) -> bool:
-        return (
-            self.wants("refactoring_opportunities")
-            or self.wants("recommendation_lede")
-            or self.wants("refactoring_summary")
-        )
+        return self.wants("refactoring_opportunities") or self.wants("refactoring_summary")
 
     @property
     def needs_test_paths(self) -> bool:
@@ -164,14 +168,4 @@ class HealthRequest:
         ``include=["refactoring"]`` leads with composed opportunities, and
         emitting plans too would ship the same work twice.
         """
-        return "refactoring" in self.include_set and (
-            "refactoring_plans" in self.only_set
-            # The cross-pillar lede quotes one plan.
-            or self.wants_lede
-        )
-
-    @property
-    def wants_lede(self) -> bool:
-        return {"performance", "refactoring"} <= self.include_set and self.wants(
-            "recommendation_lede"
-        )
+        return "refactoring" in self.include_set and "refactoring_plans" in self.only_set

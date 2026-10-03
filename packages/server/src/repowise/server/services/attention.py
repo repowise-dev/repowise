@@ -26,6 +26,7 @@ from repowise.core.analysis.attention import (
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
+from repowise.core.persistence.crud.analysis.refactoring import shown_plan_predicate
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
@@ -277,15 +278,17 @@ async def _refactoring_items(session: AsyncSession, repo_id: str) -> tuple[list[
     ``medium``: a thing you could improve never outranks a thing that is
     wrong.
     """
+    shown = (
+        RefactoringSuggestion.repository_id == repo_id,
+        RefactoringSuggestion.status == "open",
+        RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
+        shown_plan_predicate(),
+    )
     rows = (
         (
             await session.execute(
                 select(RefactoringSuggestion)
-                .where(
-                    RefactoringSuggestion.repository_id == repo_id,
-                    RefactoringSuggestion.status == "open",
-                    RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
-                )
+                .where(*shown)
                 .order_by(RefactoringSuggestion.impact_delta.desc())
                 .limit(PER_SOURCE_CAP)
             )
@@ -294,14 +297,7 @@ async def _refactoring_items(session: AsyncSession, repo_id: str) -> tuple[list[
         .all()
     )
     total = (
-        await session.scalar(
-            select(func.count(RefactoringSuggestion.id)).where(
-                RefactoringSuggestion.repository_id == repo_id,
-                RefactoringSuggestion.status == "open",
-                RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
-            )
-        )
-        or 0
+        await session.scalar(select(func.count(RefactoringSuggestion.id)).where(*shown)) or 0
     )
     items = [
         {

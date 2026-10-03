@@ -37,7 +37,10 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "enable_onboarding",
         }
     ),
-    "state_only": frozenset({"distill", "mcp"}),
+    # Agent-surface preferences. init records `hooks` and `editor_files` after
+    # it fingerprints the config, so leaving them in "other" turned the first
+    # update after every init into a full rebuild.
+    "state_only": frozenset({"distill", "editor_files", "hooks", "mcp"}),
 }
 
 

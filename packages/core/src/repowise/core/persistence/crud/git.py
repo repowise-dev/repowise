@@ -251,15 +251,7 @@ async def upsert_git_metadata_bulk(
         item_key_fn=lambda meta: meta.get("file_path", ""),
         row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
-        insert_fn=lambda meta: GitMetadata(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in meta.items()
-                if k not in ("id", "repository_id") and hasattr(GitMetadata, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitMetadata, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
@@ -908,6 +900,37 @@ async def get_git_function_mod_counts(session: AsyncSession, repository_id: str)
         )
     )
     return [int(mod_count) for (mod_count,) in result.all()]
+
+
+async def get_function_commit_shas(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, int, int, list[str]]]]:
+    """Each file's stored ``(name, start_line, end_line, shas)`` commit sets.
+
+    One query for the repository. Rows written before the column existed carry
+    no set and are left out.
+    """
+    result = await session.execute(
+        select(
+            GitFunctionBlame.file_path,
+            GitFunctionBlame.function_name,
+            GitFunctionBlame.start_line,
+            GitFunctionBlame.end_line,
+            GitFunctionBlame.commit_shas_json,
+        ).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.commit_shas_json.isnot(None),
+        )
+    )
+    out: dict[str, list[tuple[str, int, int, list[str]]]] = {}
+    for path, name, start, end, raw in result.all():
+        try:
+            shas = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(shas, list) and shas:
+            out.setdefault(path, []).append((name, start, end, [str(s) for s in shas]))
+    return out
 
 
 async def get_git_function_blame(

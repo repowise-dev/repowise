@@ -132,3 +132,18 @@ describe("CodeHealthLede: the worst test file", () => {
     expect(container.textContent).not.toContain("Test files are ranked apart");
   });
 });
+
+describe("CodeHealthLede secondary, when Fix first leads the page", () => {
+  it("keeps one line with the score and its band, and the ribbon behind More", () => {
+    const { container } = render(<CodeHealthLede summary={summary()} variant="secondary" />);
+    const summaryLine = container.querySelector("summary")!;
+    expect(summaryLine.textContent).toContain("7.0");
+    expect(summaryLine.textContent).toContain("out of 10 across 3,787 files");
+    expect(summaryLine.textContent).toContain("More");
+    // The other figures still exist, inside the closed disclosure.
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("Maintainability");
+    expect(details.textContent).toContain("Hotspot health");
+  });
+});

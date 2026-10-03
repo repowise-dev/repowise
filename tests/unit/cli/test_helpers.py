@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,43 @@ class TestRunAsync:
 
         with pytest.raises(ValueError, match="boom"):
             run_async(_fail())
+
+    def test_closes_provider_clients_on_the_loop_that_ran_the_coroutine(self, monkeypatch):
+        # #2946: an SDK client's pooled connections belong to this loop, so
+        # they are closed before it goes away, after the coroutine is done.
+        events: list[object] = []
+
+        async def _close():
+            events.append(("closed", asyncio.get_running_loop()))
+
+        async def _work():
+            events.append(("ran", asyncio.get_running_loop()))
+            return "done"
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        assert run_async(_work()) == "done"
+        assert [name for name, _ in events] == ["ran", "closed"]
+        assert events[0][1] is events[1][1]
+
+    def test_closes_provider_clients_when_the_coroutine_raises(self, monkeypatch):
+        closed: list[bool] = []
+
+        async def _close():
+            closed.append(True)
+
+        async def _fail():
+            raise ValueError("boom")
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        with pytest.raises(ValueError, match="boom"):
+            run_async(_fail())
+        assert closed == [True]
 
 
 # ---------------------------------------------------------------------------

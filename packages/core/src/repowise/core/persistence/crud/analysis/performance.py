@@ -27,6 +27,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
+from ...sql import order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 
 if TYPE_CHECKING:
@@ -74,6 +75,8 @@ def opportunity_details(
     return {
         **({"plan": plan} if plan else {}),
         "biomarker_types": list(opportunity.biomarker_types),
+        "intervention_kind": opportunity.intervention_kind,
+        "terminal_sinks": list(opportunity.terminal_sinks),
         "shared_path_suffix": list(opportunity.shared_path_suffix),
         "resource_fingerprints": list(opportunity.resource_fingerprints),
         "reliable_entry_reachability": opportunity.reliable_entry_reachability,
@@ -84,6 +87,7 @@ def opportunity_details(
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        "may_lead": opportunity.may_lead,
         **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
     }
@@ -97,6 +101,8 @@ def _row_kwargs(
     analyzed_commit: str | None,
     plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from ....analysis.health.perf.serving import intervention_file
+
     fix = opportunity.fix
     return {
         "opportunity_id": opportunity.opportunity_id,
@@ -112,7 +118,7 @@ def _row_kwargs(
         "plan_state": plan_state,
         "fix_strategy": fix.strategy if fix else None,
         "fix_safety": fix.safety if fix else None,
-        "file_path": _intervention_file(opportunity),
+        "file_path": intervention_file(opportunity),
         "intervention_symbol": opportunity.intervention_symbol,
         "terminal_sink": opportunity.terminal_sink,
         "observations_total": opportunity.observations_total,
@@ -123,21 +129,17 @@ def _row_kwargs(
     }
 
 
-def _intervention_file(opportunity: OpportunityModel) -> str:
-    """The file a reader would open first: the intervention, else the evidence."""
-    symbol = opportunity.intervention_symbol
-    if symbol:
-        return symbol.split("::", 1)[0]
-    return opportunity.evidence[0]["file_path"] if opportunity.evidence else ""
-
-
 def _summary_payload(
     opportunities: list[OpportunityModel],
     plan_states: dict[str, str],
     plans: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """The compact current headline, written once and read by primary key."""
-    from ....analysis.health.perf.opportunity_rank import NON_LEADING_MARKERS
+    from ....analysis.health.perf.opportunity_rank import (
+        default_queue_counts,
+        default_queue_exclusion,
+    )
+    from ....analysis.health.perf.serving import intervention_file
 
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
@@ -147,17 +149,18 @@ def _summary_payload(
         contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
         key = item.boundary_kind or "none"
         boundaries[key] = boundaries.get(key, 0) + 1
-    # ``expected`` rows rank last and offer nothing to do, so they never lead; nor does a
-    # marker whose measured precision is below the bar for leading.
+    # The lead is the head of the default queue, so it is production work with a
+    # strategy; never a marker whose measured precision is below the bar for leading.
     lead = next(
         (
             o
             for o in opportunities
-            if o.actionability_state != "expected" and o.biomarker_type not in NON_LEADING_MARKERS
+            if default_queue_exclusion(o) is None and o.may_lead
         ),
         None,
     )
     return {
+        "default_queue": default_queue_counts(opportunities),
         "actionability": counts,
         "context": contexts,
         "boundary": boundaries,
@@ -172,7 +175,7 @@ def _summary_payload(
             "execution_context": lead.execution_context,
             "intervention_symbol": lead.intervention_symbol,
             "terminal_sink": lead.terminal_sink,
-            "file_path": _intervention_file(lead),
+            "file_path": intervention_file(lead),
             "observations_total": lead.observations_total,
             "affected_call_sites_total": lead.affected_call_sites_total,
             "affected_files_total": lead.affected_files_total,
@@ -428,52 +431,18 @@ async def get_performance_opportunity(
     return result.scalars().first()
 
 
-def _predicates(
-    repository_id: str,
-    *,
-    contexts: frozenset[str] | None,
-    boundary: str | None,
-    confidence: str | None,
-    actionabilities: frozenset[str] | None,
-    file_paths: tuple[str, ...] | None,
-) -> list[Any]:
-    where: list[Any] = [
+def _predicates(repository_id: str, **params: Any) -> list[Any]:
+    """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table."""
+    from ....analysis.health.perf.serving import FILTERS
+    from ....analysis.health.queue_rules import active_filters
+
+    return [
         PerformanceOpportunity.repository_id == repository_id,
-        PerformanceOpportunity.status == "open",
+        *(
+            rule_predicate(PerformanceOpportunity, rule, value)
+            for rule, value in active_filters(FILTERS, {"status": "open", **params})
+        ),
     ]
-    if contexts is not None:
-        where.append(PerformanceOpportunity.execution_context.in_(sorted(contexts)))
-    if boundary is not None:
-        where.append(
-            PerformanceOpportunity.boundary_kind.is_(None)
-            if boundary == "none"
-            else PerformanceOpportunity.boundary_kind == boundary
-        )
-    if confidence is not None:
-        where.append(PerformanceOpportunity.evidence_confidence == confidence)
-    if actionabilities is not None:
-        where.append(PerformanceOpportunity.actionability_state.in_(sorted(actionabilities)))
-    if file_paths is not None:
-        where.append(PerformanceOpportunity.file_path.in_(list(file_paths)))
-    return where
-
-
-_ORDERS = {
-    "rank": (PerformanceOpportunity.rank_position.asc(),),
-    "leverage": (
-        PerformanceOpportunity.affected_call_sites_total.desc(),
-        PerformanceOpportunity.rank_position.asc(),
-    ),
-    "observations": (
-        PerformanceOpportunity.observations_total.desc(),
-        PerformanceOpportunity.rank_position.asc(),
-    ),
-}
-"""Orderings the queue offers, each ending in rank so every one is total.
-
-Applied in SQL rather than to the fetched page: sorting a page selected by a
-different key would order twenty rows correctly and the repository wrongly.
-"""
 
 
 async def list_performance_opportunities(
@@ -494,6 +463,8 @@ async def list_performance_opportunities(
     Both statements are index-driven and the fetched rows are the page, so cost
     tracks the page rather than the repository.
     """
+    from ....analysis.health.perf.serving import sort_keys
+
     where = _predicates(
         repository_id,
         contexts=contexts,
@@ -514,7 +485,7 @@ async def list_performance_opportunities(
             await session.execute(
                 select(PerformanceOpportunity)
                 .where(*where)
-                .order_by(*_ORDERS.get(sort, _ORDERS["rank"]))
+                .order_by(*order_by(PerformanceOpportunity, sort_keys(sort)))
                 .offset(offset)
                 .limit(limit)
             )
@@ -533,35 +504,18 @@ async def performance_facet_counts(
 ) -> list[tuple[str, str | None, str, str, str, int]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
-    Returned pre-aggregation rather than as finished facets so the caller can
-    cross-filter: a facet must be counted with every filter applied *except*
-    its own, or choosing one value would erase the alternatives.
+    Returned pre-aggregation, one ``(*FACET_FIELDS, count)`` tuple per group,
+    so ``perf.serving.fold_facets`` can cross-filter: a facet must be counted
+    with every filter applied *except* its own, or choosing one value would
+    erase the alternatives.
     """
-    where = _predicates(
-        repository_id,
-        contexts=None,
-        boundary=None,
-        confidence=None,
-        actionabilities=None,
-        file_paths=file_paths,
-    )
+    from ....analysis.health.perf.serving import FACET_FIELDS
+
+    columns = tuple(getattr(PerformanceOpportunity, name) for name in FACET_FIELDS)
     result = await session.execute(
-        select(
-            PerformanceOpportunity.execution_context,
-            PerformanceOpportunity.boundary_kind,
-            PerformanceOpportunity.evidence_confidence,
-            PerformanceOpportunity.actionability_state,
-            PerformanceOpportunity.plan_state,
-            func.count(),
-        )
-        .where(*where)
-        .group_by(
-            PerformanceOpportunity.execution_context,
-            PerformanceOpportunity.boundary_kind,
-            PerformanceOpportunity.evidence_confidence,
-            PerformanceOpportunity.actionability_state,
-            PerformanceOpportunity.plan_state,
-        )
+        select(*columns, func.count())
+        .where(*_predicates(repository_id, file_paths=file_paths))
+        .group_by(*columns)
     )
     return [tuple(row) for row in result.all()]
 
@@ -598,14 +552,7 @@ async def performance_file_rollups(
     per-file query. Ordered best-rank first, which is the order a bounded map
     feed admits files in.
     """
-    where = _predicates(
-        repository_id,
-        contexts=None,
-        boundary=None,
-        confidence=None,
-        actionabilities=None,
-        file_paths=file_paths,
-    )
+    where = _predicates(repository_id, file_paths=file_paths)
     result = await session.execute(
         select(
             PerformanceOpportunity.file_path,

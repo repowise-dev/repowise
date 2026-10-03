@@ -256,24 +256,6 @@ def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
     return name, frozenset({f"{root}/{entry}" if root else entry})
 
 
-def _nuget(project: Any, repo_path: Path, root: str) -> str | None:
-    """The id a packable project publishes under, or None when it is not packable.
-
-    Packability is opt-in, never assumed: an SDK-style project is packable by
-    default, so treating silence as yes would make every internal project in a
-    solution a published library.
-    """
-    if project.is_packable is False:
-        return None
-    if not (
-        project.is_packable
-        or project.generate_package_on_build
-        or project.package_id is not None
-    ):
-        return None
-    return project.package_id or project.assembly_name or project.path.stem
-
-
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
@@ -342,7 +324,7 @@ def find_published_packages(
         if project is None or rel_manifest is None:
             continue
         root = rel_manifest.rsplit("/", 1)[0] if "/" in rel_manifest else ""
-        package_id = _nuget(project, repo_path, root)
+        package_id = project.published_id
         if package_id is None:
             counts["code_unpublished_manifest"] = counts.get("code_unpublished_manifest", 0) + 1
             continue

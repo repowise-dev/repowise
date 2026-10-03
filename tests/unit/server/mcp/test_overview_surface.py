@@ -9,10 +9,8 @@ import json
 import pytest
 
 from repowise.core.registry import ToolEntry, ToolRecipe
-from repowise.server.mcp_server._tool_selection import (
-    registry_tool_rows,
-    resolve_enabled_tools,
-)
+from repowise.core.registry.tool_selection import resolve_enabled_tools
+from repowise.server.mcp_server._tool_selection import registry_tool_rows
 from repowise.server.mcp_server.tool_overview import _tool_surface_guide
 
 
@@ -195,7 +193,8 @@ async def test_live_registry_recipe_calls_bind_to_current_tool_signatures(setup_
         if recipe["name"].startswith("health_")
     }
     assert health_recipes == {
-        "health_directive": 'get_health(only=["directive"])',
+        "health_fix_first": 'get_health(only=["fix_first"])',
+        "health_fix_item": 'get_health(fix_id="fix1_...")',
         "health_file_self_check": (
             'get_health(targets=["path"], include=["refactoring"])'
         ),

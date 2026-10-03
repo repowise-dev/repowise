@@ -10,12 +10,14 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.next_call import ActionCommand
+
 ActionRule = Literal[
     "live_secret",
     "fresh_regressions",
     "fragile_file",
     "fix_concentration",
-    "hot_path_perf",
+    "fix_first",
     "stale_decision",
     "knowledge_loss",
     "broken_doc_refs",
@@ -106,18 +108,6 @@ class ActionDetail:
             "reason": self.reason,
             "ref": self.ref,
         }
-
-
-@dataclass(frozen=True, slots=True)
-class ActionCommand:
-    """A way to see more: the MCP call an agent makes, the CLI line a person runs."""
-
-    purpose: str
-    mcp: str | None = None
-    cli: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"purpose": self.purpose, "mcp": self.mcp, "cli": self.cli}
 
 
 #: Evidence rows carried per action. The total says how many there were.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -15,7 +16,11 @@ if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
 from ....analysis.finding_registry import excluded_types
-from ....analysis.health.finding_identity import finding_public_id
+from ....analysis.health.complexity.languages import has_health_dialect
+from ....analysis.health.finding_identity import (
+    finding_public_id,
+    legacy_finding_public_id,
+)
 from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
 
 # The comparator is pure and lives with the health read models; only the SQL
@@ -26,9 +31,10 @@ from ....analysis.health.ranking import (
     sort_metrics_worst_first,
     worst_metric,
 )
-from ....analysis.health.rows import detail_map, split_tests
+from ....analysis.health.rows import detail_map, split_tests, split_unscored
 from ....analysis.health.scope import scores_language
-from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
+from ....analysis.health.scoring import ADVISORY_DIMENSION, SCORE_FIELDS, nloc_weighted_attr
+from ....analysis.health.worth import LowPriority, finding_priorities
 from ....test_paths import is_test_related_path
 from ...models import (
     DocDriftFinding,
@@ -84,6 +90,59 @@ def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
     }
 
 
+_NOT_REFRESHED = frozenset({"id", "repository_id", "status", "created_at"})
+
+
+async def _insert_keeping_triage(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+    scope: list[Any],
+) -> None:
+    """Insert *findings*, keeping the triage a person recorded on any of them.
+
+    Callers delete the open rows in *scope* first. A finding whose public id
+    matches a triaged row in *scope* is folded into that row: its detection
+    fields are refreshed and ``acknowledged`` / ``false_positive`` stand, while
+    ``resolved`` reopens because the finding said to be fixed is still there.
+    Extra triaged rows sharing that id are deleted. Every other finding, a
+    second one on an already claimed id included, is inserted open.
+    """
+    triaged: dict[str, list[HealthFinding]] = {}
+    rows = await session.execute(
+        select(HealthFinding)
+        .where(*scope, HealthFinding.status != "open", HealthFinding.public_id.is_not(None))
+        .order_by(HealthFinding.updated_at.desc())
+    )
+    for row in rows.scalars().all():
+        triaged.setdefault(row.public_id, []).append(row)
+
+    now = _now_utc()
+    claimed: set[str] = set()
+    for i in range(0, len(findings), _BATCH_SIZE):
+        for f in findings[i : i + _BATCH_SIZE]:
+            values = _health_finding_row_kwargs(f, repository_id)
+            matches = triaged and (
+                triaged.get(values["public_id"]) or triaged.get(legacy_finding_public_id(f))
+            )
+            kept, *extra = matches or [None]
+            if kept is None or kept.id in claimed:
+                # A second finding on a claimed id is inserted open: two
+                # findings colliding on one id must not lose either.
+                session.add(HealthFinding(**values))
+                continue
+            claimed.add(kept.id)
+            for row in extra:
+                await session.delete(row)
+            for name, value in values.items():
+                if name not in _NOT_REFRESHED:
+                    setattr(kept, name, value)
+            if kept.status == "resolved":
+                kept.status = "open"
+            kept.updated_at = now
+        await session.flush()
+
+
 async def save_health_findings(
     session: AsyncSession,
     repository_id: str,
@@ -91,23 +150,19 @@ async def save_health_findings(
 ) -> None:
     """Replace open health findings for *repository_id* with *findings*.
 
-    Mirrors ``save_dead_code_findings`` — delete-then-insert. Accepts
-    either ``HealthFindingData`` dataclasses or plain dicts.
+    Delete-then-insert over the open rows; triaged rows carry over by public id
+    (``_insert_keeping_triage``). Accepts either ``HealthFindingData``
+    dataclasses or plain dicts.
     """
+    scope = [HealthFinding.repository_id == repository_id]
     existing = await session.execute(
-        select(HealthFinding).where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.status == "open",
-        )
+        select(HealthFinding).where(*scope, HealthFinding.status == "open")
     )
     for row in existing.scalars().all():
         await session.delete(row)
+    await session.flush()
 
-    for i in range(0, len(findings), _BATCH_SIZE):
-        batch = findings[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+    await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
 async def replace_governance_findings(
@@ -117,10 +172,10 @@ async def replace_governance_findings(
 ) -> None:
     """Idempotent additive write of governance-layer health findings.
 
-    Deletes any existing ``health_findings`` rows whose ``biomarker_type``
+    Deletes the open ``health_findings`` rows whose ``biomarker_type``
     is one of ``ungoverned_hotspot``, ``stale_governance``, or
     ``contradictory_decision`` for *repository_id*, then inserts the new
-    *findings* in batches.
+    *findings* in batches, keeping triage by public id like the other writers.
 
     This function deliberately does **not** recompute ``HealthFileMetric.score``
     — that pass has already completed in the upstream health-analysis phase.
@@ -137,34 +192,33 @@ async def replace_governance_findings(
     Accepts ``HealthFindingData`` dataclasses or plain dicts (same protocol
     as ``save_health_findings``).
     """
-    # Delete existing governance findings for this repo only.
+    # Delete existing open governance findings for this repo only.
+    scope = [
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
+    ]
     existing = await session.execute(
-        select(HealthFinding).where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
-        )
+        select(HealthFinding).where(*scope, HealthFinding.status == "open")
     )
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
 
-    if not findings:
-        return
+    await _insert_keeping_triage(session, repository_id, findings, scope)
 
-    for i in range(0, len(findings), _BATCH_SIZE):
-        batch = findings[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+
+def _opt(cast: Any, value: Any) -> Any:
+    """*value* through *cast*, keeping ``None`` (a file health never walked)."""
+    return None if value is None else cast(value)
 
 
 def _health_metric_row_data(metric: Any) -> dict:
     """One metric dataclass as column values. Both writers go through here."""
     return {
         "file_path": metric.file_path,
-        "score": float(metric.score),
-        "max_ccn": int(metric.max_ccn),
-        "max_nesting": int(metric.max_nesting),
+        "score": _opt(float, metric.score),
+        "max_ccn": _opt(int, metric.max_ccn),
+        "max_nesting": _opt(int, metric.max_nesting),
         "nloc": int(metric.nloc),
         "duplication_pct": metric.duplication_pct,
         "has_test_file": bool(metric.has_test_file),
@@ -177,6 +231,7 @@ def _health_metric_row_data(metric: Any) -> dict:
         "structure_deduction": getattr(metric, "structure_deduction", None),
         "history_deduction": getattr(metric, "history_deduction", None),
         "is_test": bool(getattr(metric, "is_test", False)),
+        "code_origin": getattr(metric, "code_origin", None),
     }
 
 
@@ -294,6 +349,34 @@ async def prune_unscored_health_rows(session: AsyncSession, repository_id: str) 
     return removed
 
 
+async def clear_unanalysed_scores(session: AsyncSession, repository_id: str) -> int:
+    """Drop the numbers stored for files in a language health has no dialect for.
+
+    A store written before such files were left unscored holds a 10.0 and a
+    max_ccn of 1 for each, which every average would keep counting until a full
+    rescore. The answer comes from the language alone, so an update fixes it in
+    place, git history or not. Files with no graph node are left alone, as in
+    ``prune_unscored_health_rows``. Returns the number of rows cleared.
+    """
+    languages = await get_file_language_map(session, repository_id)
+    paths = [p for p, lang in languages.items() if lang and not has_health_dialect(lang)]
+    cleared = 0
+    for i in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(paths[i : i + _BATCH_SIZE]),
+                HealthFileMetric.score.is_not(None),
+            )
+        )
+        for row in rows.scalars().all():
+            for name in (*SCORE_FIELDS, "max_ccn", "max_nesting"):
+                setattr(row, name, None)
+            cleared += 1
+    await session.flush()
+    return cleared
+
+
 async def backfill_module_attribution(
     session: AsyncSession,
     repository_id: str,
@@ -385,12 +468,15 @@ async def get_health_findings(
     min_severity: str | None = None,
     severity: str | None = None,
     file_path: str | None = None,
+    file_paths: Sequence[str] | None = None,
     dimension: str | None = None,
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
     include_withheld: bool = False,
+    limit: int | None = None,
 ) -> list[HealthFinding]:
-    """Findings for one repository, ordered by health impact.
+    """Findings for one repository: worth doing first ahead of lower-priority
+    ones (``worth.finding_priorities``), each part ordered by health impact.
 
     Finding types the registry withholds (``finding_registry``) are left out,
     so every surface built on this read shows only what has earned a place; a
@@ -408,6 +494,9 @@ async def get_health_findings(
     ``open`` / ``acknowledged`` / ``resolved`` / ``false_positive``, or ``all``
     to drop the filter, so a triage surface can show what it has already
     reviewed without a second read.
+
+    ``file_paths`` scopes to a set of files in one read; an empty sequence
+    matches nothing. ``limit`` caps the rows returned, in that order.
     """
     q = select(HealthFinding).where(HealthFinding.repository_id == repository_id)
     statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -430,6 +519,8 @@ async def get_health_findings(
         q = q.where(HealthFinding.biomarker_type.not_in(excluded_types(requested=types)))
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
+    if file_paths is not None:
+        q = q.where(HealthFinding.file_path.in_(list(file_paths)))
     if dimension is not None:
         # Older rows predate the split and carry a NULL dimension that homes
         # under "defect"; fold those in so a defect filter never drops them.
@@ -450,10 +541,44 @@ async def get_health_findings(
         q = q.where(HealthFinding.severity.in_(allowed))
     q = q.order_by(HealthFinding.health_impact.desc())
     result = await session.execute(q)
-    return _filter_excluded_paths(
+    kept = _filter_excluded_paths(
         list(result.scalars().all()),
         await _health_exclude_spec(session, repository_id),
     )
+    # A filter that drops some of a function's findings would misread its
+    # shape, so the tier then reads every open finding on the kept files.
+    narrowed = bool(types or exact or min_severity or dimension) or statuses != ["open"]
+    reasons = (
+        await health_finding_priorities(session, repository_id, kept)
+        if narrowed
+        else dict(zip((f.id for f in kept), finding_priorities(kept), strict=True))
+    )
+    # Stable: each tier keeps the impact order. The cap applies after the tier.
+    ordered = sorted(kept, key=lambda f: reasons[f.id] is not None)
+    return ordered if limit is None else ordered[:limit]
+
+
+async def health_finding_priorities(
+    session: AsyncSession, repository_id: str, findings: Sequence[HealthFinding]
+) -> dict[str, LowPriority | None]:
+    """Each finding's ``worth`` reason by id, measured over every open,
+    shown finding on its file: a list filtered by marker, severity or status
+    still tiers a function by its whole shape."""
+    paths = sorted({f.file_path for f in findings})
+    peers: list[HealthFinding] = []
+    for i in range(0, len(paths), _BATCH_SIZE):
+        q = select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.file_path.in_(paths[i : i + _BATCH_SIZE]),
+            HealthFinding.biomarker_type.not_in(excluded_types()),
+        )
+        peers.extend((await session.execute(q)).scalars().all())
+    known = {f.id for f in peers}
+    # A finding outside the open set (resolved, acknowledged) is measured with it.
+    peers.extend(f for f in findings if f.id not in known)
+    reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
+    return {f.id: reasons[f.id] for f in findings}
 
 
 async def get_deduction_by_path(
@@ -560,14 +685,9 @@ async def get_average_health(session: AsyncSession, repository_id: str) -> float
         ),
         await _health_exclude_spec(session, repository_id),
     )
-    if not rows:
-        return None
-    total_nloc = sum(max(r.nloc, 1) for r in rows)
-    if total_nloc:
-        avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
-    else:
-        avg = sum(r.score for r in rows) / len(rows)
-    return round(avg, 2)
+    # Files with no score (no health dialect for their language) are skipped,
+    # so a repository of nothing else reads unmeasured, never 10.0.
+    return _rounded(nloc_weighted_attr(rows, "score"))
 
 
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
@@ -618,10 +738,14 @@ async def get_health_summary(
     """
     if metrics is None:
         metrics = await get_health_metrics(session, repository_id)
+    # A file in a language health has no dialect for is stored unscored. It is
+    # counted apart and left out of every figure below.
+    metrics, unanalysed = split_unscored(metrics)
     if not metrics:
         return {
             "file_count": 0,
-            "average_health": 10.0,
+            "unanalysed_file_count": unanalysed,
+            "average_health": None if unanalysed else 10.0,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "worst_test_path": None,
@@ -642,42 +766,14 @@ async def get_health_summary(
             "worst_performance_path": None,
             "worst_performance_score": None,
         }
-    total_nloc = sum(max(m.nloc, 1) for m in metrics)
-    if total_nloc:
-        avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    else:
-        avg = sum(m.score for m in metrics) / len(metrics)
+    avg = nloc_weighted_attr(metrics, "score")
 
-    # Maintainability headline: NLOC-weighted average over the per-file
-    # maintainability scores (skipping rows that predate the split / lack one).
-    # ``None`` when no row carries a maintainability score so the surface reads
-    # "not measured" rather than a misleading 10.0.
-    maint_scored = [m for m in metrics if getattr(m, "maintainability_score", None) is not None]
-    maintainability_average: float | None = None
-    if maint_scored:
-        maint_nloc = sum(max(m.nloc, 1) for m in maint_scored)
-        if maint_nloc:
-            maintainability_average = (
-                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_scored) / maint_nloc
-            )
-        else:
-            maintainability_average = sum(m.maintainability_score for m in maint_scored) / len(
-                maint_scored
-            )
-
-    # Performance headline: same NLOC-weighted average over the per-file
-    # performance scores (static performance RISK). ``None`` when no row carries
-    # a performance score so the surface reads "not measured" rather than 10.0.
+    # The two co-surfaced pillars: the same NLOC weighting over their own
+    # columns, ``None`` when no row carries one so a surface reads "not
+    # measured" rather than a misleading 10.0.
+    maintainability_average = nloc_weighted_attr(metrics, "maintainability_score")
+    performance_average = nloc_weighted_attr(metrics, "performance_score")
     perf_scored = [m for m in metrics if getattr(m, "performance_score", None) is not None]
-    performance_average: float | None = None
-    if perf_scored:
-        perf_nloc = sum(max(m.nloc, 1) for m in perf_scored)
-        if perf_nloc:
-            performance_average = (
-                sum(m.performance_score * max(m.nloc, 1) for m in perf_scored) / perf_nloc
-            )
-        else:
-            performance_average = sum(m.performance_score for m in perf_scored) / len(perf_scored)
 
     # Worst-performance file: the lowest per-file performance score, surfaced only
     # when there is genuine risk (score < 10) so a clean repo shows no actionable
@@ -725,7 +821,8 @@ async def get_health_summary(
         )
     return {
         "file_count": len(metrics),
-        "average_health": round(avg, 2),
+        "unanalysed_file_count": unanalysed,
+        "average_health": _rounded(avg),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "worst_test_path": worst_test.file_path if worst_test is not None else None,
@@ -1040,12 +1137,13 @@ async def upsert_health_findings(
         return
     predicates = [
         HealthFinding.repository_id == repository_id,
-        HealthFinding.status == "open",
         HealthFinding.file_path.in_(file_paths),
     ]
     if dimension is not None:
         predicates.append(HealthFinding.dimension == dimension)
-    existing = await session.execute(select(HealthFinding).where(*predicates))
+    existing = await session.execute(
+        select(HealthFinding).where(*predicates, HealthFinding.status == "open")
+    )
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
@@ -1066,11 +1164,7 @@ async def upsert_health_findings(
             == dimension
         )
     ]
-    for i in range(0, len(scoped), _BATCH_SIZE):
-        batch = scoped[i : i + _BATCH_SIZE]
-        for f in batch:
-            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
-        await session.flush()
+    await _insert_keeping_triage(session, repository_id, scoped, predicates)
 
 
 async def upsert_health_metrics(

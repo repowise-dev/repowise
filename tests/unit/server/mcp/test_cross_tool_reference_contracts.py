@@ -854,8 +854,8 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     health_data,
     session,
 ) -> None:
+    from repowise.core.analysis.dead_code.serving import dead_code_finding_id
     from repowise.server.mcp_server import get_dead_code, get_health
-    from repowise.server.mcp_server.tool_dead_code import _dead_code_finding_id
     from repowise.server.mcp_server.tool_health import (
         _health_finding_id,
         _refactoring_plan_id,
@@ -896,7 +896,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     plan_row = (await session.execute(select(RefactoringSuggestion))).scalars().first()
     for row, public_id, factory in (
         (health_row, health_finding["id"], _health_finding_id),
-        (dead_row, dead_finding["id"], _dead_code_finding_id),
+        (dead_row, dead_finding["id"], dead_code_finding_id),
         (plan_row, plan["id"], _refactoring_plan_id),
     ):
         replacement = copy(row)

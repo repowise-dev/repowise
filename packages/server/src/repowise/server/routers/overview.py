@@ -551,6 +551,8 @@ async def overview_summary(
         },
         "health": {
             "average_health": health_summary.get("average_health"),
+            # Files in a language health has no dialect for: in no figure here.
+            "unanalysed_file_count": health_summary.get("unanalysed_file_count", 0),
             "hotspot_health": hotspot_health_value,
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),

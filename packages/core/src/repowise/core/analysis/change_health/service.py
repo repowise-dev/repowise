@@ -65,6 +65,8 @@ class DeltaRequest:
     revspec: str | None
     extensions: tuple[str, ...] = ()
     exclude_patterns: tuple[str, ...] = ()
+    #: Gitignore-style paths to keep; empty keeps every path.
+    include_paths: tuple[str, ...] = ()
 
 
 class ChangeHealthDeltaService:
@@ -373,11 +375,12 @@ class ChangeHealthDeltaService:
 
 
 def _filter(changes: list[FileChange], request: DeltaRequest) -> list[FileChange]:
-    """Apply the caller's extension and exclusion filters to the change set."""
+    """Apply the caller's extension, inclusion and exclusion filters to the change set."""
     return filter_changes(
         changes,
         extensions=request.extensions,
         exclude_patterns=request.exclude_patterns,
+        include_paths=request.include_paths,
     )
 
 
@@ -422,7 +425,7 @@ def _limits() -> list[str]:
 def _is_test_perf(finding: HealthFindingData) -> bool:
     """A performance finding on test code.
 
-    The perf model reasons about request-reachable hot paths, which a test file
+    Performance findings are about code that serves requests, which a test file
     is not, so these are dropped from both sides rather than ranked. Other
     dimensions still report on tests; only their ordering is demoted.
     """

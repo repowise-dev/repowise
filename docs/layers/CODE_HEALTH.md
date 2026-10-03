@@ -42,9 +42,14 @@ this is not a linter.
 **`nested_complexity` — pure AST.** tree-sitter parses the file into a syntax
 tree. A walker descends it tracking control-flow depth, incrementing on each
 `if` / `for` / `while` / `try` / `switch` node. If any function reaches depth 4
-or more, the marker fires, and severity scales with the depth it reached. No
-heuristics about intent, no model, no sampling. The same commit produces the
-same finding forever.
+or more, the marker fires, and severity scales with the depth it reached. A
+function that is mostly one dispatch on one value (a `switch`, `match` or
+same-subject `if` chain holding at least 60% of its decision points) is judged
+by the code around that dispatch and its heaviest arm: `nested_complexity`
+does not count the two levels the `switch` and its `case` open, and
+`complex_method`, `brain_method` and `bumpy_road` read the CCN outside the
+dispatch plus the CCN of its most complex arm. No heuristics about intent, no model, no
+sampling. The same commit produces the same finding forever.
 
 **`io_in_loop` — AST plus call graph.** The walker finds a call inside a loop
 body and resolves the callee through the same resolver the dependency graph
@@ -74,7 +79,7 @@ per-line blame index built for every file.
 
 ## The markers, and what each is allowed to do
 
-Repowise ships **51 registered detectors (54 marker ids)**, but only **25 are
+Repowise ships **53 registered detectors (56 marker ids)**, but only **25 are
 permitted to move the headline number**. That restriction is deliberate: the
 defect score carries published accuracy claims, so only markers that earned
 their weight against a bug corpus may affect it.
@@ -82,7 +87,7 @@ their weight against a bug corpus may affect it.
 | Tier | Markers | What it may do |
 |---|---:|---|
 | **Defect-scoring** | **25** | Calibrated weights; moves the 1-10 score |
-| **Performance** | **20** | Own pillar, own cap; never touches the defect score |
+| **Performance** | **22** | Own pillar, own cap; never touches the defect score |
 | **Maintainability-only (SQL)** | **3** | Maintainability only |
 | **Governance** | **3** | Surfaces as a finding; never deducts |
 | **Advisory** | **3** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
@@ -95,7 +100,7 @@ Nothing is inert, but "doesn't move the number" means three different things:
   matter for readability, but proved weak defect predictors under leakage-free
   calibration, so they were demoted rather than deleted — and most of them earn
   **full weight in maintainability**, where they belong.
-- **Advisory (19 of the 20 performance markers).** Sub-1.0 weights inside a
+- **Advisory (21 of the 22 performance markers).** Sub-1.0 weights inside a
   category capped at 2.0. Only `io_in_loop` carries full weight.
 - **Non-scoring (3 governance markers).** `ungoverned_hotspot`,
   `stale_governance` and `contradictory_decision` are written by an additive
@@ -509,8 +514,11 @@ churn, lock contention, serial awaits that could fan out, membership tests
 against lists, and language-specific shapes.
 
 Two markers use call-graph centrality as a *precision gate* rather than a sort
-key, firing only in hot functions (top-quintile in-degree, or in a churny
-hotspot file), which keeps a noisy shape reviewable.
+key, firing only in a repo's most-called functions (at least the 80th-percentile
+number of distinct direct callers, and never fewer than two), which keeps a
+noisy shape reviewable. That shows how widely a function is called, not that a
+request reaches it. The blocking-call marker is also skipped in tests, tooling,
+examples, and generated or vendored code.
 
 **Standard linters do not find this class of problem.** On a 12,600-file
 benchmark, clippy, ruff, ESLint and golangci-lint together found **0** of the
@@ -533,8 +541,9 @@ score.
 
 **Soundness limits, by design.** Performance is a static signal, so it
 under-reports rather than over-reports. Dynamic dispatch, monkeypatching and
-callbacks-as-values produce no call edge and are invisible; ORM lazy-load N+1
-fires on attribute access with no visible call and is explicitly out of scope;
+callbacks-as-values produce no call edge and are invisible; an ORM lazy load
+fires on attribute access with no visible call, so it is seen only where
+`lazy_load_in_loop` can type the loop's rows (below) and missed everywhere else;
 chains beyond three hops are not followed; an unmodelled library has no
 classified sinks. We call this performance **risk**, never measured performance,
 and it never folds into the defect score.
@@ -544,6 +553,13 @@ round-trip, it does not claim the work is avoidable. Database and network
 findings are usually batchable; filesystem ones often are not, since deleting N
 files genuinely needs N unlinks. The finding still tells you where the time
 goes.
+
+Each opportunity carries one actionability state: `plan_ready` (a proven
+strategy on a reliable call path), `advisory` (a strategy whose prerequisites
+are not all proven), `investigate` (no supported strategy yet) or `expected`
+(the repetition is real and there is nothing to change: a filesystem or
+subprocess boundary, or a loop already walking chunks). The default queue
+leaves `expected` out and still counts it.
 
 A few more things keep the plans honest:
 
@@ -566,6 +582,20 @@ code, in the same function or one same-file helper. It is the one shape here
 that is not a loop around I/O: the query runs once and returns too much, and
 the fix is to select one row per key in the database.
 
+**ORM lazy loads.** `lazy_load_in_loop` (Python: sync SQLAlchemy and Django)
+flags a lazy relationship read on each iteration of a loop over model rows, the
+N+1 an attribute access hides. The loop's rows must resolve to one SQLAlchemy or
+Django model through the cross-file model index, and the attribute must be a
+lazy relation the producing query does not already eager-load. Async functions
+are skipped, so SQLAlchemy coverage is sync only. Its plan is
+`eager_load_relationship`, advisory, and names the eager load that replaces it
+(`selectinload(...)`, `select_related(...)`). Each finding records its ORM in
+`details.orm`, and the weight and the right to lead are read per finding:
+Django measured 29/32 = 90.6% on a fresh held-out sample and carries weight 0.7
+and may lead; SQLAlchemy has fewer than 30 held-out labels and stays at the
+advisory 0.4 and never leads. One marker, one opportunity id: the ORM is a fact
+on the finding, not a second marker.
+
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
 
@@ -574,16 +604,107 @@ Methodology and raw data:
 The web Code Health page has a dedicated **Performance** tab. It leads with a
 bounded list of causal opportunities rather than a flat wall of observations:
 the boundary and execution context, shared intervention, affected call-site and
-file totals, confidence, and resolution provenance. Production/tooling and test
-contexts are separate views. Expanding an opportunity shows caller-to-sink
-paths; raw findings remain canonical and load as a separately paged evidence
-drill-down.
+file totals, confidence, and resolution provenance. Expanding an opportunity
+shows caller-to-sink paths; raw findings remain canonical and load as a
+separately paged evidence drill-down.
+
+**One opportunity per intervention.** An opportunity is the place you edit,
+within one cost family and boundary: the function holding the loop, or a helper
+every caller reaches the sink through. The sinks it reaches, its call sites and
+co-signals of one family (`io_in_loop` with `nested_loop_with_io`) are members,
+so one loop reaching three sinks is one opportunity with three
+`terminal_sinks`, not three opportunities. Every opportunity names its
+`intervention_symbol` and `intervention_kind` (`function`, `shared_helper`, or
+`module` for top-level script code, named `<file>::__module__`). Two loops in one
+function are one edit site today, because findings carry the sink's line and not
+the loop's.
+
+**The default queue** (MCP `get_health` and the REST list) holds production
+opportunities with a strategy: `plan_ready` and `advisory`. Test, tooling and
+unclassified code, `expected` repetition and `investigate` causes (no
+supported strategy, so no safe plan) are one filter away, and the summary's
+`default_queue` block counts each reason it leaves out, so nothing is dropped
+silently. Fix first (the dashboard lead, `repowise health` and the Overview's
+Do next) takes its performance items through the same predicate and counts the
+same reasons in `totals.excluded`.
+
+**Order.** The queue is ranked by value (`rank_score`) first; actionability only
+breaks a tie, so at equal value a plan-ready cause comes before an advisory one,
+and a cheap plan never outranks a costlier cause.
 
 When the deterministic service can describe a safe intervention, the
 opportunity links by its exact stable `opportunity_id` to the matching
 `performance_fix` plan on the existing **Refactoring** page. It never guesses a
 nearby plan. When no safe plan exists, Code Health says so and keeps the raw
 evidence available.
+
+## Fix first
+
+**Fix first** is one ranked list of what to fix in a repository, built once in
+core (`analysis/health/fix_first/`) from stored rows and rendered the same way by
+`get_health()`, `repowise health`, the Code Health page, the Overview's Do next and
+the generated CLAUDE.md. An item is one unit of work: a file's composed
+refactoring, one performance intervention (the loop you change), or the strongest
+code-shape finding of a file that has no plan. Each item says what to change and
+where (file and line), why it matters there, the first concrete edit, the gain, the
+effort and the tests to run after.
+
+**What may be an item.** A unit must be shipped code with a concrete first edit
+that is worth doing. Everything else is left out and counted in
+`totals.excluded`, one reason per unit:
+
+| Reason | What it leaves out |
+|---|---|
+| `test` | Test files. `scope=all` keeps them, labelled. |
+| `tooling` | Scripts, tools, benchmarks, CI files, migrations, code under a directory whose role is unknown (docs, demos), and build files by type wherever they sit (Gradle scripts, `CMakeLists.txt`, `*.cmake`, Makefiles, Bazel files, MSBuild `.props` / `.targets`, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs). |
+| `generated` | Generated files. |
+| `vendored` | Third-party code: `vendor/`, `third_party/`, `node_modules/` and similar directories, minified files, and a library with its own license header among served assets. |
+| `docs_example` | Documentation code and examples: `docs/`, `docs_src/`, `examples/`, tutorials, samples. |
+| `unknown` | A performance cause whose code context could not be classified. |
+| `expected` | A performance cause whose repetition is expected. |
+| `no_strategy` | A performance cause with no supported fix strategy. |
+| `no_plan` | A performance cause with no stored safe plan to quote. |
+| `below_min_worth` | A refactoring that recovers under 0.5 health on its file, or has no steps; a string built in a loop that is bounded or not in production code. |
+| `history_only` | A file whose only findings come from git history (churn, ownership, co-change). History is context on an item, never the item. |
+| `deprecated` | A function marked deprecated. |
+| `inherent_dispatch` | A function where one dispatch on one value holds 60% or more of its decision points, unless a duplicate also sits in it (then it is listed as `later`). On the dev labels that share held 9 complexity rows, 8 of them rejected. |
+| `small_function` | A complexity unit under 30 code lines and under CCN 15. On the 67 labelled dev rows that cut drops 13 rejected and 4 accepted. |
+| `no_concrete_step` | No first edit with a file and a line or a named group: a cycle with no import line to cut, a move with no destination, a split with no named groups, a class finding with no member groups. |
+| `low_value_kind` | A kind raters found not worth doing: Extract Class (0 of 14), Move Method (0 of 34), low cohesion (0 of 46), long method (0 of 10), and long parameter lists (0 of 2, thinly measured). |
+
+**Order.** Items rank by value first: the larger of the health they recover and
+the size of the problem (CCN 20, 40, 80 and 150; 100, 200, 400 and 800 lines;
+nesting 5, 6 and 8; a critical or brain-method finding; one more on a hot file),
+so a function far past every bar leads ahead of tidy work. A performance fix's
+value is its cost: a production, entry-reachable database or network call in a
+loop that grows with the data shares the top band. Then tier: `now` (worth doing,
+and the plan is safe to start), `next` (worth doing, the fix needs judgment),
+`later`. No kind takes more than 3 of the first 5 places while another has an item
+worth doing.
+
+**Lower priority.** A `later` item is real and stays listed, after every `now` and
+`next` item, with the reason it can wait as its tier reason. Code shape decides
+(`analysis/health/worth.py`, one rule for every default list); the hot-file bonus
+orders items but never lifts one out of `later`, and a later item's rank facts
+read "value within later" and its shape-only size. A function-size problem is
+`later` when the function is under CCN 40, 200 lines and nesting 6 (nesting under
+8 counts only in a function of 100 lines or more) and not both CCN 25 and nesting
+5; when one dispatch on one value holds 60% of its decisions; when its nesting is
+one else-if or ternary chain; or when it is long with CCN under 20 and nesting
+under 5, however long. Otherwise, from CCN 80, 400 lines or nesting 8 a
+function is worth doing whatever its branching. A complex condition and a single error site (a swallowed or broad
+catch, an unwrap or panic) are `later` too: each is a local fix. The same rule orders the
+default findings list (`get_health`, the REST findings list): findings worth doing
+first lead, and each other one carries `lower_priority`, the reason it can wait.
+Class-design findings (god class, low cohesion, long parameter lists) and findings
+that rest on git history alone are lower priority there. A performance
+opportunity carries `lower_priority` unless production code runs it over data
+that grows.
+
+**Verify.** Each item carries up to 5 tests from its stored validation profile,
+each with how it reaches the changed code (call graph, import graph, a matching
+name or a coverage report), and the command that runs them. A finding with no
+plan says so and names none.
 
 ## Refactoring targets
 
@@ -667,6 +788,22 @@ cannot support; an explicit `severity_overrides` key always wins over it.
 the category caps are the calibrated constants the published accuracy numbers
 rest on, and they are deliberately not overridable — so a team's local policy can
 never silently change what those numbers mean.
+
+## Finding identity and triage
+
+Every finding carries a stable public id (`finding_<digest>`). Inside a known
+function or class it is anchored on that symbol's name plus the finding's line
+offset into it, so an edit above the symbol does not change the id; a
+file-level finding keeps its absolute lines. Metric values (a CCN, a churn
+figure, a coverage percentage) are not part of the id, so a finding keeps its
+id while its numbers move; only the few detail keys a marker needs to tell two
+of its findings apart (a coupling partner, an error kind) are.
+
+Triage survives re-indexing. Each index replaces the open findings, and a
+re-detected finding whose id matches a triaged row updates that row's evidence
+(lines, severity, reason, details, impact) in place: `acknowledged` and
+`false_positive` stay as they are, and `resolved` reopens, because the finding
+marked fixed was detected again.
 
 ## Incremental updates
 

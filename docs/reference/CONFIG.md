@@ -385,10 +385,9 @@ mcp:
   `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace
   mode), small enough that Claude Code can keep every schema always loaded.
 - Opt-in tools are `get_dependency_path`, `get_execution_flows`,
-  `generate_refactoring_code`, and `get_conformance` (the last only usable in
-  workspace mode).
-- Workspace-only tools (`get_blast_radius`, `get_architecture`) are added
-  automatically in workspace mode and ignored if named in single-repo mode. See
+  `generate_refactoring_code`, and `set_finding_status`, plus the workspace-only
+  `get_blast_radius`, `get_conformance` and `get_architecture`. None is on by
+  default. The workspace-only three are ignored if named in single-repo mode. See
   [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
 
 ### The `decisions:` block

@@ -23,8 +23,10 @@ from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
+    load_test_files,
     tests_reaching_by_tier,
 )
+from repowise.core.analysis.test_selection import expand_test_scopes, scope_kind
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 from repowise.core.workspace.config import WorkspaceConfig
 from repowise.core.workspace.contracts import ContractLink, load_contract_store, same_service
@@ -260,6 +262,7 @@ async def _analyze_consumer(
     files = sorted(bound)
     measured: dict[str, list[dict[str, Any]]] = {}
     reached: dict[str, Any] = {}
+    test_files: set[str] = set()
     # A pass that fails takes down only its own signal; whatever the other pass
     # found, and the links already classified, still reach the caller.
     failures: list[str] = []
@@ -306,6 +309,12 @@ async def _analyze_consumer(
                     import_depth=import_depth,
                 )
                 reached = {**by_file_reached, **by_symbol}
+                # Read only when the walk stopped at a conftest or test package,
+                # which stands for the tests under its directory.
+                if any(
+                    scope_kind(t) for hit in reached.values() for t in hit.all_tests or hit.tests
+                ):
+                    test_files = await load_test_files(session, repo_index.repo_id)
             except Exception as exc:
                 failures.append(f"inferred: {type(exc).__name__}")
 
@@ -357,7 +366,9 @@ async def _analyze_consumer(
                 continue
             # The walk trims its own list per target; the join caps per consumer
             # and provider pair below and reports the cut, so start from all of them.
-            reached_tests = list(hit.all_tests or hit.tests)
+            reached_tests = expand_test_scopes(hit.all_tests or hit.tests, test_files)
+            if not reached_tests:
+                continue
             file_tests.update(reached_tests)
             if file_via is None or _TIER_PRIORITY.get(hit.via, 99) < _TIER_PRIORITY.get(file_via, 99):
                 file_via = hit.via

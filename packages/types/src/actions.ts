@@ -11,7 +11,7 @@ export type ActionRule =
   | "fresh_regressions"
   | "fragile_file"
   | "fix_concentration"
-  | "hot_path_perf"
+  | "fix_first"
   | "stale_decision"
   | "knowledge_loss"
   | "broken_doc_refs"
@@ -65,11 +65,16 @@ export interface ActionDetail {
   ref: string | null;
 }
 
-/** A way to see more: the MCP call for an agent, the CLI line for a person. */
+/**
+ * A way to see more: the MCP call for an agent, the CLI line for a person.
+ * `tool` and `arguments` are the structured call `mcp` renders, when one exists.
+ */
 export interface ActionCommand {
   purpose: string;
   mcp: string | null;
   cli: string | null;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
 }
 
 export interface NextAction {

@@ -18,6 +18,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.languages.registry import REGISTRY
+
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
 
@@ -30,6 +32,14 @@ if TYPE_CHECKING:
 # feature). Test *files* under those dirs are still caught by the filename
 # patterns below.
 _TEST_DIR_SEGMENTS = frozenset({"tests", "__tests__", "__mocks__"})
+
+# .NET test projects are sibling directories named after the project under test
+# (``Foo.Tests/``, case-sensitive), not a ``tests/`` tree. Read from the language
+# registry so a suffix added there is excluded here too. ``.Specs`` is left out
+# for the reason ``spec/`` is above: it can hold real OpenAPI or proto contracts.
+_TEST_PROJECT_DIR_SUFFIXES = tuple(
+    suffix for suffix in REGISTRY.test_dir_suffixes() if suffix != ".Specs"
+)
 
 # Filename patterns that mark a test file regardless of directory.
 _TEST_FILE_PATTERNS = (
@@ -64,7 +74,9 @@ def line_at(content: str, offset: int) -> int:
 def is_test_path(rel_path: str) -> bool:
     """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
     parts = rel_path.split("/")
-    if any(seg in _TEST_DIR_SEGMENTS for seg in parts[:-1]):
+    if any(
+        seg in _TEST_DIR_SEGMENTS or seg.endswith(_TEST_PROJECT_DIR_SUFFIXES) for seg in parts[:-1]
+    ):
         return True
     name = parts[-1]
     return any(fnmatch(name, pat) for pat in _TEST_FILE_PATTERNS)

@@ -171,3 +171,11 @@ def sample_repo_path(repo_root: Path) -> Path:
 def fixtures_dir(repo_root: Path) -> Path:
     """Path to the tests/fixtures/ directory."""
     return repo_root / "tests" / "fixtures"
+
+
+@pytest.fixture
+def dry_violation_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Show ``dry_violation`` for tests of the clone mechanics the registry hides."""
+    from repowise.core.analysis import finding_registry
+
+    monkeypatch.delitem(finding_registry.REGISTRY, "dry_violation")

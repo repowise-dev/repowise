@@ -41,6 +41,8 @@ class LoopFacts:
     magnitude: LoopMagnitude = "unknown"
     batch: BatchForm | None = None
     concurrency_bound: str | None = None
+    # No element or index the loop binds reaches the sink call: nothing per-key to batch.
+    key_unused: bool = False
 
     def as_details(self) -> dict[str, Any]:
         """Finding ``details`` keys; defaults are omitted so old findings are unchanged."""
@@ -54,6 +56,8 @@ class LoopFacts:
             details["batch_equivalent"] = self.batch.equivalent
         if self.concurrency_bound:
             details["concurrency_bound"] = self.concurrency_bound
+        if self.key_unused:
+            details["loop_key_unused"] = True
         return details
 
 

@@ -1091,7 +1091,8 @@ Compute per-file code-health scores from 51 deterministic detectors (McCabe comp
 | `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
 | `--scope` | `all` (default) or `production`. Which files every figure describes. Tests score higher than production code, so narrowing lowers the number without a defect being found. |
 | `--counts` | `everything` (default) or `code_shape`. `code_shape` drops the git-derived half of the deduction, which rises as a file is worked on — the reading that answers whether the code itself is improving. |
-| `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](../layers/REFACTORING.md) |
+| `--refactoring-targets` | Print the refactoring queue the index stored: one opportunity per file with its structured, graph-aware plans (Extract Class / Helper / Method, Move Method, Break Cycle, Split File) as ordered steps, in the same order MCP and the web UI serve. Reads the index, so it needs `repowise init` first. See [REFACTORING.md](../layers/REFACTORING.md) |
+| `--recompute` | With `--refactoring-targets`: analyze the working tree in-process instead of reading the index. Slow on a large repo; the only option outside an indexed one. `--scope` and `--counts` apply only here. |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--badge` | Print a shields.io-compatible badge URL/JSON for the repo's health score |
@@ -1104,7 +1105,7 @@ Compute per-file code-health scores from 51 deterministic detectors (McCabe comp
 repowise health                                       # KPIs + lowest-scoring files
 repowise health --file packages/server/.../app.py     # one file in detail
 repowise health --module packages/server              # restrict to a directory
-repowise health --refactoring-targets                 # ranked by impact / effort
+repowise health --refactoring-targets                 # the stored queue, as MCP serves it
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
 repowise health --counts code_shape                   # ignore the git-derived half

@@ -232,9 +232,14 @@ export interface DefectAccuracy {
 
 export interface HealthFileMetric {
   file_path: string;
-  score: number;
-  max_ccn: number;
-  max_nesting: number;
+  /**
+   * `null` when health has no dialect for the file's language: nothing
+   * measured it, so it has no score and no complexity figures. Render it as
+   * "not analysed", never as a number. Older servers always send a number.
+   */
+  score: number | null;
+  max_ccn: number | null;
+  max_nesting: number | null;
   nloc: number;
   has_test_file: boolean;
   line_coverage_pct: number | null;
@@ -337,6 +342,9 @@ export interface HealthFinding {
   /** `"unverified"` for a provisional finding type, shown because it was asked
    *  for by name. Null or absent for a validated type. */
   verification?: string | null;
+  /** Why the finding can wait ("lower priority: ..."); null when it is worth
+   *  doing first. Lower-priority findings are listed after the rest. */
+  lower_priority?: string | null;
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
@@ -414,6 +422,8 @@ export interface PerformanceOpportunityValidation {
   via: ValidationVia | null;
   total: number;
   tests: string[];
+  /** Why each test is listed, keyed by test id. Null on a store written before it. */
+  reasons?: Record<string, string> | null;
   commands: string[];
 }
 
@@ -443,9 +453,16 @@ export interface PerformanceOpportunity {
   biomarker_types: string[];
   boundary_kind: C4IoKind | null;
   execution_context: PerformanceExecutionContext;
+  /** The one sink every observation reaches, else null; see `terminal_sinks`. */
   terminal_sink: string | null;
+  /** Every sink the intervention's observations reach. Absent on an older store. */
+  terminal_sinks?: string[];
   shared_path_suffix: string[];
+  /** Where to edit. Named on every row from model 3 (`path::__module__` for
+   *  top-level code); null only on an older store. */
   intervention_symbol: string | null;
+  /** The loop's function, a helper every caller shares, or top-level code. */
+  intervention_kind?: "function" | "shared_helper" | "module";
   /** The file holding the symbol worth editing. */
   file_path: string;
   resource_fingerprints: string[];
@@ -463,6 +480,8 @@ export interface PerformanceOpportunity {
   /** Evidence confidence: how reliably the call path resolved. */
   confidence: PerformanceOpportunityConfidence;
   facets: PerformanceOpportunityFacets;
+  /** What fixing this cause buys, in the words Fix first uses. Absent on an older server. */
+  gain_text?: string;
   actionability_state: PerformanceActionabilityState;
   actionability_reason: string;
   prerequisites: string[];
@@ -471,6 +490,12 @@ export interface PerformanceOpportunity {
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];
   fix: PerformanceOpportunityFix | null;
+  /** Whether this cause may lead the dashboard. False for a marker below the
+   *  leading bar (lazy loads outside Django). Absent on an older store. */
+  may_lead?: boolean;
+  /** Why the opportunity can wait ("lower priority: ..."); null when its
+   *  production loop is known to grow with the data. */
+  lower_priority?: string | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
@@ -501,7 +526,7 @@ export interface PerformanceModelState {
  */
 export type PerformanceOpportunityDetail =
   | ({
-      resolved: true;
+      found: true;
       lifecycle_status: "open" | "resolved";
       analyzed_commit: string | null;
       model_state: PerformanceModelState;
@@ -510,7 +535,7 @@ export type PerformanceOpportunityDetail =
       evidence_next_cursor?: number;
     } & PerformanceOpportunity)
   | {
-      resolved: false;
+      found: false;
       opportunity_id: string;
       model_state: PerformanceModelState;
       detail: string;
@@ -572,6 +597,11 @@ export type PerformanceOpportunityQuery = {
   offset?: number;
 };
 
+export interface PerformanceDefaultQueue {
+  total: number;
+  excluded: Record<"test" | "tooling" | "unknown" | "expected" | "no_strategy", number>;
+}
+
 export interface PerformanceOpportunitySummary {
   /** `current` once materialized, `stale_model` after a model bump, or
    * `unavailable` when this index has not been analyzed yet. */
@@ -590,6 +620,9 @@ export interface PerformanceOpportunitySummary {
   context?: Partial<Record<PerformanceExecutionContext, number>>;
   boundary?: Record<string, number>;
   with_plan_total: number;
+  /** The queue a caller gets with no filter (production work with a strategy),
+   *  and how many causes it leaves out per reason. Absent on an older store. */
+  default_queue?: PerformanceDefaultQueue;
   /** Why the queue is not current, when it is not. */
   reason?: string;
   detail?: string;
@@ -626,7 +659,12 @@ export interface BiomarkerBreakdownRow {
 
 export interface HealthOverviewSummary {
   file_count: number;
-  average_health: number;
+  /** `null` when no file is scored: every file is in a language health has no
+   *  dialect for. */
+  average_health: number | null;
+  /** Files left out of every figure here because health has no dialect for
+   *  their language. Absent on an older server. */
+  unanalysed_file_count?: number;
   hotspot_health?: number | null;
   worst_performer_path: string | null;
   worst_performer_score: number | null;
@@ -850,11 +888,12 @@ export interface FileBreakdownCategory {
 export interface HealthFileBreakdownResponse {
   file_path: string;
   metric: HealthFileMetric | null;
+  /** `null` for a file with no score (no health dialect for its language). */
   breakdown: {
     score: number;
     total_deduction: number;
     categories: FileBreakdownCategory[];
-  };
+  } | null;
   findings: HealthFinding[];
   suggestions: Record<string, string>;
   /** Per-file score trajectory (silent when history is thin). */
@@ -1032,7 +1071,7 @@ export interface CoverageFileRow {
   ingested_at: string | null;
   ingested_commit_sha: string | null;
   covered_lines?: number[];
-  health_score?: number;
+  health_score?: number | null;
   nloc?: number;
 }
 
@@ -1055,6 +1094,18 @@ export type {
   CoverageReportPaths,
   CoverageSummary,
   CoverageSummaryFreshness,
+} from "./generated/http.js";
+
+/**
+ * What the other lenses hold for the same files: per file, findings, Fix
+ * first, refactoring, performance and dead code, each capped with its total.
+ * A lens with nothing for a file is absent from `lenses`.
+ */
+export type {
+  RelatedWorkFile,
+  RelatedWorkItem,
+  RelatedWorkLens,
+  RelatedWorkResponse,
 } from "./generated/http.js";
 
 /**
@@ -1087,7 +1138,7 @@ export type ReachedVia = "call-graph" | "import-graph";
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
-  health_score?: number;
+  health_score?: number | null;
   nloc?: number;
 }
 
@@ -1179,6 +1230,8 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  /** A test file. Optional: an older backend does not send it. */
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: HealthSeverity;
   primary_reason: string;
@@ -1226,6 +1279,11 @@ export interface HealthWorkQueueResponse {
    * inventing one.
    */
   finding_total?: number;
+  /**
+   * Files left out because every finding on them is a history marker
+   * (`history: "exclude"`, the default). Not counted in `total`.
+   */
+  history_only_excluded?: number;
   offset?: number;
   limit?: number;
 }
@@ -1251,9 +1309,49 @@ export interface HealthWorkQueueQuery {
   only_failing?: boolean;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
+  /** `"exclude"` (default) leaves out files whose only findings are history markers. */
+  history?: "exclude" | "include";
   /** Which half of the repository to describe. Defaults to `"all"`. */
   scope?: HealthScope;
 }
+
+/**
+ * One file on the impact / effort plane. With a refactoring plan that recovers
+ * something, both coordinates describe the plan (`effort_basis: "plan"`: lines
+ * its steps span, health it credits); otherwise the file (`"file"`: its code
+ * lines, the deduction its open findings carry).
+ */
+export interface ImpactEffortPoint {
+  file_path: string;
+  /** Always at least 1, so a log axis can hold it. */
+  effort_lines: number;
+  effort_basis: "plan" | "file";
+  /** Health points. */
+  recoverable_health: number;
+  /** The tier of the file's first Fix-first item, when it holds one. */
+  tier?: "now" | "next" | "later" | null;
+  /** That item's place in the Fix-first list, from 1. */
+  fix_rank?: number | null;
+}
+
+/** Every file the work queue's filters keep, history-only files excluded. */
+export interface ImpactEffortResponse {
+  /** Largest recoverable health first; at most `cap`. */
+  points: ImpactEffortPoint[];
+  plotted: number;
+  total: number;
+  cap: number;
+  /** Fixed quadrant midlines from core, never derived from the data. */
+  effort_midline_lines: number;
+  gain_midline_points: number;
+  history_only_excluded?: number;
+}
+
+/** The work queue's filters, without its paging, order or history switch. */
+export type ImpactEffortQuery = Omit<
+  HealthWorkQueueQuery,
+  "limit" | "offset" | "sort" | "history"
+>;
 
 /** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */
 export type RefactoringTarget = HealthWorkItem;

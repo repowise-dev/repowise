@@ -12,6 +12,7 @@ import type {
 import { Button } from "../../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../../shared/responsive-table";
+import { LowerPriorityTag } from "../lower-priority-tag";
 import type { PerformanceViewAdapter } from "./adapter";
 import {
   ACTIONABILITY_HINT,
@@ -184,6 +185,11 @@ const OpportunityRow = memo(function OpportunityRow({
           <span className="tabular-nums">{affectedSummary(opportunity)}</span> ·{" "}
           {CONFIDENCE_LABEL[opportunity.confidence]} evidence confidence
         </p>
+        {opportunity.lower_priority ? (
+          <p className="mt-1">
+            <LowerPriorityTag reason={opportunity.lower_priority} />
+          </p>
+        ) : null}
         {why.length > 0 ? (
           <p
             className="mt-1 text-xs text-[var(--color-text-tertiary)]"

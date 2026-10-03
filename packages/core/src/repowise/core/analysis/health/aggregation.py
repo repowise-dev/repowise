@@ -15,7 +15,7 @@ from typing import Any
 
 from .models import Severity, primary_finding
 from .ranking import worst_metric
-from .rows import detail_map, field
+from .rows import detail_map, field, scored_rows
 from .scoring import (
     CATEGORY_CAPS,
     HISTORY_CATEGORY,
@@ -128,7 +128,9 @@ def module_rollups(
     files are all held at the floor resolves on the path instead of on depth.
     """
     buckets: dict[str, list[Any]] = {}
-    for row in metrics:
+    # A file health has no dialect for carries no score and so no weight in
+    # its module's average; a module of nothing else is not a row.
+    for row in scored_rows(metrics):
         module = field(row, "module", None)
         if module:
             buckets.setdefault(str(module), []).append(row)

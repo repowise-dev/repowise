@@ -166,7 +166,7 @@ def test_failed_fts_cleanup_debt_retries_on_next_persist(tmp_path: Path, monkeyp
         async def ensure_index(self):
             return None
 
-        async def index(self, *args, **kwargs):
+        async def index_pages(self, pages):
             return None
 
         async def delete_many(self, page_ids):

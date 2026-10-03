@@ -184,7 +184,7 @@ def test_an_already_capped_sibling_still_counts_but_is_not_touched_again():
 # --- through the analyzer --------------------------------------------------------
 
 
-def test_the_analyzer_applies_the_cap_and_keeps_the_finding():
+def test_the_analyzer_drops_a_program_and_keeps_a_library_module():
     g = _build_graph(
         nodes={
             "pkg/main.py": {"is_entry_point": True, "symbols": []},
@@ -209,4 +209,100 @@ def test_the_analyzer_applies_the_cap_and_keeps_the_finding():
     )
     by_path = {f.file_path: f for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
     assert by_path["pkg/old.py"].confidence == 1.0
-    assert by_path["pkg/run_once.py"].confidence == RISK_CAP_CONFIDENCE
+    # A main guard makes it a program: nothing imports an entry point.
+    assert "pkg/run_once.py" not in by_path
+
+
+# --- members of a loaded set that export more --------------------------------------
+
+_TOOL = 'import { defineTool } from "kit"\n\nexport default defineTool({\n  name: "x",\n})\n'
+_TYPED_TOOL = (
+    'import { defineTool } from "kit"\n\n'
+    "export type SearchInput = { q: string }\n\n"
+    "export default defineTool<SearchInput>({\n"
+    '  name: "search",\n'
+    "})\n"
+)
+
+
+_TOOLS = {f"agent/tools/{n}.ts": _TOOL for n in ("fetch", "list", "read")}
+
+
+def test_a_default_export_with_more_beside_a_default_only_set_is_capped():
+    files = _TOOLS | {"agent/tools/search.ts": _TYPED_TOOL}
+    out = _clamp(files, {"agent/tools/search.ts": {"SearchInput"}})
+    assert all(_capped(f) for f in out.values())
+    assert "set in its directory exports (default)" in out["agent/tools/search.ts"].evidence[-1]
+
+
+def test_one_default_only_sibling_is_not_a_set():
+    files = {"components/Router.tsx": _TOOL, "components/Button.tsx": _TYPED_TOOL}
+    out = _clamp(files, {"components/Button.tsx": {"SearchInput"}})
+    assert _capped(out["components/Router.tsx"])
+    assert out["components/Button.tsx"].confidence == 1.0
+
+
+def test_the_same_file_without_a_loaded_set_stays_a_positive():
+    out = _clamp({"agent/tools/search.ts": _TYPED_TOOL}, {"agent/tools/search.ts": {"SearchInput"}})
+    assert out["agent/tools/search.ts"].confidence == 1.0
+
+
+def test_a_loaded_set_in_another_directory_does_not_count():
+    files = _TOOLS | {"lib/search.ts": _TYPED_TOOL}
+    out = _clamp(files, {"lib/search.ts": {"SearchInput"}})
+    assert out["lib/search.ts"].confidence == 1.0
+
+
+def test_a_file_missing_the_sets_export_is_not_a_member():
+    files = _TOOLS | {"agent/tools/util.ts": "export const q = 1\n"}
+    out = _clamp(files, {"agent/tools/util.ts": {"q"}})
+    assert out["agent/tools/util.ts"].confidence == 1.0
+
+
+def test_a_superset_of_a_cohort_shape_is_capped():
+    paths = ["handlers/a.py", "handlers/b.py", "handlers/c.py"]
+    files = {p: _handler(p) for p in paths}
+    files["handlers/d.py"] = _handler("d") + "\ndef helper():\n    return 1\n"
+    names = {p: {"handle"} for p in paths} | {"handlers/d.py": {"handle", "helper"}}
+    out = _clamp(files, names)
+    assert _capped(out["handlers/d.py"])
+    assert "(handle)" in out["handlers/d.py"].evidence[-1]
+
+
+def test_a_script_sibling_does_not_make_a_loaded_set():
+    body = "def main():\n    pass\n\nif __name__ == '__main__':\n    main()\n"
+    files = {"tools/bump.py": body, "tools/lib.py": "def main():\n    pass\n\ndef extra():\n    pass\n"}
+    out = _clamp(files, {"tools/bump.py": {"main"}, "tools/lib.py": {"main", "extra"}})
+    assert _capped(out["tools/bump.py"])
+    assert out["tools/lib.py"].confidence == 1.0
+
+
+def test_the_analyzer_does_not_let_age_lift_a_loaded_set_member():
+    g = _build_graph(
+        nodes={
+            "src/main.ts": {"is_entry_point": True, "symbols": []},
+            **{p: {"symbols": []} for p in _TOOLS},
+            "agent/tools/search.ts": {"symbols": [{"name": "SearchInput", "visibility": "public"}]},
+            "lib/legacy.ts": {"symbols": [{"name": "helper", "visibility": "public"}]},
+        },
+    )
+    # 120 days untouched is the 0.8 rung of the age ladder.
+    stale = {"commit_count_90d": 0, "last_commit_at": _old_date(120), "age_days": 400}
+    source = {
+        "src/main.ts": b"export function main() {}\n",
+        **{p: s.encode() for p, s in _TOOLS.items()},
+        "agent/tools/search.ts": _TYPED_TOOL.encode(),
+        "lib/legacy.ts": b"export const helper = 1\n",
+    }
+    meta = {p: dict(stale) for p in source if p != "src/main.ts"}
+    report = DeadCodeAnalyzer(g, git_meta_map=meta, source_map=source).analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    by_path = {f.file_path: f for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    assert by_path["lib/legacy.ts"].confidence == 0.8
+    assert by_path["agent/tools/search.ts"].confidence == RISK_CAP_CONFIDENCE
+    assert by_path["agent/tools/search.ts"].safe_to_delete is False

@@ -24,6 +24,8 @@ import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -84,6 +86,11 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         entry_fqns.update(impls)
     for fqns in index.autoconfig_imports.values():
         entry_fqns.update(fqns)
+    # Classes a Gradle build script names (plugin ``classname``,
+    # ``implementationClass``, ``mainClass``) and loads by reflection.
+    from .resolvers.jvm_gradle import build_script_class_names
+
+    entry_fqns.update(build_script_class_names(ctx))
 
     for fqn in entry_fqns:
         for path in index.files_for_fqn(fqn):
@@ -306,6 +313,73 @@ def _warmup_dotnet(ctx: ResolverContext) -> None:
     get_or_build_index(ctx)
 
 
+def _warmup_rust(ctx: ResolverContext) -> None:
+    """Stamp Cargo ``[[bin]]``/``[[test]]``/``[[bench]]``/``[[example]]``
+    targets that name an explicit ``path`` as live, so a file Cargo discovers
+    only through the manifest (not convention) is not reported as dead (#2936).
+
+    ``[[bin]]`` targets are entry points: cargo runs them directly. The other
+    three are runner-loaded the same way a test file is, so they become
+    reachability roots instead — the same "roots, not entry points" split the
+    TypeScript warmup above makes for its own non-manifest entry paths.
+
+    First, ``mod`` items a ``macro_rules!`` body declares join the imports of
+    the files that call the macro, before any import is resolved.
+    """
+    from .resolvers.rust import add_macro_rules_mod_imports
+    from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
+
+    try:
+        add_macro_rules_mod_imports(ctx)
+    except Exception as exc:  # the pass must not abort the build
+        structlog.get_logger(__name__).debug("rust_macro_mods_failed", error=str(exc))
+    index = get_or_build_cargo_workspace_index(ctx)
+    if index is None:
+        return
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for crate in index.crates:
+        for path in crate.bin_paths:
+            _stamp_entry(graph, parsed, path)
+        for path in crate.reachability_root_paths:
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_reachability_root"] = True
+
+
+def _warmup_php(ctx: ResolverContext) -> None:
+    """Stamp the PHP files a tool loads with no importer as reachability roots.
+
+    Composer's autoloader loads every file a ``composer.json`` lists in
+    ``autoload.files`` on every run (a ``helpers.php`` of global functions),
+    and PHPStan alone runs a type-test corpus (:mod:`.phpstan`).
+    """
+    from .composer import repo_composer_manifests
+    from .phpstan import type_test_files
+
+    graph = getattr(ctx, "graph", None)
+    repo_path = getattr(ctx, "repo_path", None)
+    if graph is None:
+        return
+    manifests = repo_composer_manifests(ctx)
+    roots = {path for manifest in manifests for path in manifest.files}
+    if repo_path is not None:
+        parsed = getattr(ctx, "parsed_files", None) or {}
+        source_map = getattr(ctx, "source_map", None)
+        roots |= type_test_files(
+            repo_path,
+            manifests,
+            (path for path, pf in parsed.items() if pf.file_info.language == "php"),
+            lambda path: _read_warmup_source(path, parsed[path], source_map),
+        )
+    for path in roots:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
+
+
 def _warmup_go(ctx: ResolverContext) -> None:
     """Build the Go package index and stamp ``is_entry_point`` on every
     ``package main`` file declaring ``func main()``. Go's entry convention
@@ -517,11 +591,13 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "kotlin": ("graph.jvm_index", _warmup_jvm),
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
+    "rust": ("graph.rust_targets", _warmup_rust),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
+    "php": ("graph.composer_files", _warmup_php),
     "dart": ("graph.dart_shells", _warmup_dart),
     # Registered under both tags: a repo of loose .gd scripts has no scenes,
     # and an addon distributed as scenes plus a project.godot may carry no

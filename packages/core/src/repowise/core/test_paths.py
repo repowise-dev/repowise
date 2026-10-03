@@ -68,6 +68,30 @@ _TEST_DIR_TOKENS: frozenset[str] = frozenset(
 # far more often than it names a suite.
 _TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
 
+# Two-word heads that name a suite of tests: a Gradle module of shared test
+# classes (``ktor-server-test-suites/jvm/src/``) or serde's ``test_suite/no_std/src/``.
+# Only as a build module, so a ``src`` root must sit below it: a product feature
+# folder (``src/features/test-suite/``) or a docs page set (``docs/test-suites/``)
+# stays as it is. ``suite`` alone is not one (``office-suite/``).
+_TEST_DIR_HEAD_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("test", "suite"), ("test", "suites")}
+)
+
+# The same head written in PascalCase or camelCase, one word with no separator:
+# ``UnitTests/``, ``UITests/``, ``FuzzTests/``, ``AdvancedPaste.UnitTests/``.
+# Plural only, for the reason above (``HitTest/`` is a UI feature), and matched
+# on the original case so ``contests/`` stays one lowercase word. Ceiling: a
+# product folder that names a kind of test it runs for users (``LoadTests/``,
+# ``ABTests/``, ``PenTests/``) reads as a test tree too; none seen so far.
+_CAMEL_TESTS_HEAD_RE = re.compile(r"[A-Za-z0-9]Tests$")
+
+# Gradle QA builds keep integration suites and the plugins they load in their
+# own projects: ``qa/<project>/src/<source set>/<java|resources|...>``. The full
+# JVM source-set shape is required, so a ``qa/`` package of tooling
+# (``packages/qa/cli/src/main.ts``) stays production.
+_TEST_PROJECT_CONTAINER = "qa"
+_JVM_SOURCE_ROOTS: frozenset[str] = frozenset({"java", "kotlin", "groovy", "scala", "resources"})
+
 # GitHub's repository-metadata directory; see ``_classify``.
 _REPO_METADATA_DIR = ".github"
 
@@ -248,8 +272,16 @@ def _is_test_dir(
     segments: list[str], original: list[str], filename: str, language: str | None
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
-    rules = _conventions()
-    lang_tokens = rules.lang_dir_tokens.get((language or "").lower(), frozenset())
+    return _has_test_segment(segments, original, filename, language) or _has_test_layout(
+        segments, original
+    )
+
+
+def _has_test_segment(
+    segments: list[str], original: list[str], filename: str, language: str | None
+) -> bool:
+    """Whether one directory's own name says it holds tests."""
+    lang_tokens = _conventions().lang_dir_tokens.get((language or "").lower(), frozenset())
     # ``spec/`` needs corroboration from somewhere: the language declaring the
     # token, a test- or support-shaped filename, or a scaffolding dir beneath it
     # (``spec/support/helper.rb`` is RSpec whatever the filename says, and
@@ -259,34 +291,68 @@ def _is_test_dir(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
-    for seg in segments:
-        if seg in _TEST_DIR_TOKENS:
-            return True
-        words = _words(seg)
-        head = words[-1] if words else ""
-        if head in _TEST_DIR_HEAD_WORDS:
-            return True
-        if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
-            return True
+    return any(
+        _is_test_segment(seg, orig, lang_tokens, corroborated)
+        for seg, orig in zip(segments, original, strict=True)
+    )
 
-    for needle in rules.dir_paths:
-        span = len(needle)
-        if span <= len(segments) and any(
-            tuple(segments[i : i + span]) == needle for i in range(len(segments) - span + 1)
-        ):
-            return True
 
-    for prefix_seg, camel_suffix in rules.dir_wildcards:
-        for i in range(len(segments) - 1):
-            nxt = original[i + 1]
-            if (
-                segments[i] == prefix_seg
-                and nxt.endswith(camel_suffix)
-                and len(nxt) > len(camel_suffix)
-            ):
-                return True
+def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+    words = _words(seg)
+    head = words[-1] if words else ""
+    if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
+        return True
+    if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
+        return True
+    return _CAMEL_TESTS_HEAD_RE.search(orig) is not None
 
-    return any(seg.endswith(rules.dir_suffixes) for seg in original)
+
+def _has_test_layout(segments: list[str], original: list[str]) -> bool:
+    """Whether the directories form a known test layout (``src/test/java``)."""
+    rules = _conventions()
+    return (
+        _in_test_project(segments)
+        or _in_test_suite_module(segments)
+        or any(_contains_run(segments, needle) for needle in rules.dir_paths)
+        or any(
+            _has_wildcard_pair(segments, original, prefix_seg, camel_suffix)
+            for prefix_seg, camel_suffix in rules.dir_wildcards
+        )
+        or any(seg.endswith(rules.dir_suffixes) for seg in original)
+    )
+
+
+def _in_test_project(segments: list[str]) -> bool:
+    return any(
+        seg == _TEST_PROJECT_CONTAINER
+        and segments[i + 2] == "src"
+        and segments[i + 4] in _JVM_SOURCE_ROOTS
+        for i, seg in enumerate(segments[:-4])
+    )
+
+
+def _in_test_suite_module(segments: list[str]) -> bool:
+    return any(
+        tuple(_words(seg)[-2:]) in _TEST_DIR_HEAD_PAIRS and "src" in segments[i + 1 :]
+        for i, seg in enumerate(segments)
+    )
+
+
+def _contains_run(segments: list[str], needle: tuple[str, ...]) -> bool:
+    span = len(needle)
+    return any(tuple(segments[i : i + span]) == needle for i in range(len(segments) - span + 1))
+
+
+def _has_wildcard_pair(
+    segments: list[str], original: list[str], prefix_seg: str, camel_suffix: str
+) -> bool:
+    """``src/*Test``: a *prefix_seg* directly above a name ending in *camel_suffix*."""
+    return any(
+        segments[i] == prefix_seg
+        and original[i + 1].endswith(camel_suffix)
+        and len(original[i + 1]) > len(camel_suffix)
+        for i in range(len(segments) - 1)
+    )
 
 
 def _classify(path: str, language: str | None) -> str:
@@ -361,6 +427,24 @@ def is_test_related_path(path: str, language: str | None = None) -> bool:
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
     return _classify(path, language) != ""
+
+
+def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:
+    """Whether *path* is test material beyond a naming coincidence.
+
+    For callers that *hide* something when the answer is yes, such as a
+    contract break whose only callers are tests. A test-shaped filename alone
+    does not qualify inside a ``src`` tree, where ``src/pkg/test_paths.py`` is a
+    production module named for what it does. It needs a test directory
+    (``tests/``, ``__tests__/``, ``src/test/java``) or to sit outside ``src``.
+    Ambiguous paths read as production, so the doubt surfaces the finding.
+    """
+    if not is_test_related_path(path, language):
+        return False
+    original, lowered = _parts(path)
+    if _is_test_dir(lowered[:-1], original[:-1], original[-1], language):
+        return True
+    return "src" not in lowered[:-1]
 
 
 def is_test_to_production_pair(

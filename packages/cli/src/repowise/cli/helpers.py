@@ -125,8 +125,24 @@ def silence_logs_for_machine_output() -> None:
 
 
 def run_async(coro: Any) -> Any:
-    """Run an async coroutine from synchronous Click code."""
-    return asyncio.run(coro)
+    """Run an async coroutine from synchronous Click code.
+
+    Each call is its own event loop, and a command runs one LLM provider
+    through several of them. The provider's SDK client pools connections on
+    the loop that opened them, so they are closed here, before that loop goes
+    away: left pooled, they print ``Task exception was never retrieved ...
+    Event loop is closed`` from a later step (issue #2946). With no such
+    provider alive there is nothing to close.
+    """
+    from repowise.core.providers.llm.base import close_provider_clients
+
+    async def _run() -> Any:
+        try:
+            return await coro
+        finally:
+            await close_provider_clients()
+
+    return asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------

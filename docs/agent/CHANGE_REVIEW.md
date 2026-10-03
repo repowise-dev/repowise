@@ -115,7 +115,7 @@ never render the way "these files have never broken" renders.
 | `manifest` | `bundle.manifest` | Every counted path, its status, diff reliability and added line spans. The one counted universe — the request's extension and exclude filters are applied here, once. |
 | `risk` | `bundle.risk` | Diff shape ranked against the repository's recent commits. Needs a checkout or a pre-scored result. |
 | `health` | `bundle.health` | What the change newly made worse, each finding naming its attribution basis. |
-| `contracts` | `bundle.contracts` | Changed symbols whose callers sit outside the change. |
+| `contracts` | `bundle.contracts` | Changed symbols whose callers sit outside the change, split into test and production callers. A signature change carries `signature_effect` (`compatible`, `breaking`, `unknown`) and a `signature_reason` naming the parameter, judged from the indexed parameter list and return type only; a text-only change is not reported as one. |
 | `tests` | `bundle.tests` | Impacted tests, measured coverage kept distinct from graph-inferred candidates. |
 | `prior_fixes` | via `bundle.risk` | The bug-fix history the risk walk already read. |
 | `independent_changes` | `bundle.independent_changes` | When the diff is several changes the index does not connect. |

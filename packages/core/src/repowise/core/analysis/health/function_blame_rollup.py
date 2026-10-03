@@ -15,6 +15,8 @@ churned functions (the "no signal" convention used by the biomarkers).
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable
 from typing import Any
 
 from ...ingestion.git_indexer.function_blame import (
@@ -24,12 +26,24 @@ from ...ingestion.git_indexer.function_blame import (
     median_author_time_in_range,
     owner_in_range,
     recent_commits_in_range,
+    recent_distinct_commits_in_range,
 )
 
 # Recent-modification window for the rollup. Broader than the 30-day window
 # ``code_age_volatility`` uses for its finding gate — the persisted row is a
 # general-purpose signal, so a 90-day window matches the rest of the git data.
 _RECENT_WINDOW_DAYS = 90
+
+# Commits kept per function for Split File's co-change edge. Blame credits each
+# line to one commit, so a function's set is already bounded by its length; on
+# this repository 99.96% of modified functions have 50 or fewer, and the cap
+# keeps the persisted column small for the rest.
+COMMIT_SET_LIMIT = 50
+
+# One function's bounded commit set: ``(name, start_line, end_line, shas)``.
+CommitEntry = tuple[str, int, int, list[str]]
+# What Split File reads: ``(start_line, end_line, shas)`` per function.
+CommitSpan = tuple[int, int, frozenset[str]]
 
 
 def build_function_blame_rows(
@@ -51,7 +65,8 @@ def build_function_blame_rows(
     for pf, fcx in walked:
         path = pf.file_info.path
         meta = git_meta_map.get(path) or {}
-        idx = meta.get("blame_index")
+        # ``commit_set_blame``: a re-score's blame for a file stored without sets.
+        idx = meta.get("blame_index") or meta.get("commit_set_blame")
         if not isinstance(idx, BlameIndex) or not idx.lines:
             continue
         since = (now_ts if now_ts is not None else blame_as_of(idx)) - recent_window_days * 86400
@@ -64,6 +79,7 @@ def build_function_blame_rows(
             recent_mod = len(recent_commits_in_range(idx, start, end, since_unix_ts=since))
             median_ts = median_author_time_in_range(idx, start, end)
             owner_name, owner_email, owner_pct = owner_in_range(idx, start, end)
+            shas = recent_distinct_commits_in_range(idx, start, end, limit=COMMIT_SET_LIMIT)
             rows.append(
                 {
                     "symbol_id": f"{path}::{fc.name}",
@@ -78,6 +94,44 @@ def build_function_blame_rows(
                     "owner_name": owner_name,
                     "owner_email": owner_email,
                     "owner_line_pct": owner_pct,
+                    "commit_shas_json": json.dumps(shas),
                 }
             )
     return rows
+
+
+def blame_commit_entries(functions: Iterable[Any], idx: Any) -> list[CommitEntry]:
+    """Each modified function's bounded commit set, read off a live blame index.
+
+    The same projection ``build_function_blame_rows`` persists, so a re-score
+    reading the stored rows sees what a full index saw.
+    """
+    if not isinstance(idx, BlameIndex) or not idx.lines:
+        return []
+    entries: list[CommitEntry] = []
+    for fc in functions:
+        shas = recent_distinct_commits_in_range(
+            idx, fc.start_line, fc.end_line, limit=COMMIT_SET_LIMIT
+        )
+        if shas:
+            entries.append((fc.name, fc.start_line, fc.end_line, shas))
+    return entries
+
+
+def commit_spans(functions: Iterable[Any], entries: Iterable[CommitEntry]) -> list[CommitSpan]:
+    """The commit sets of *functions*, from live or stored *entries*.
+
+    Rows are keyed by ``path::name``, so of two same-named functions only the
+    last one is stored; the live path keeps the last one too. An entry whose
+    span no longer matches a walked function is a stale row and is dropped.
+    """
+    by_name: dict[str, CommitEntry] = {}
+    for entry in entries:
+        by_name[entry[0]] = entry
+    walked = {(fc.name, fc.start_line, fc.end_line) for fc in functions}
+    spans = [
+        (start, end, frozenset(shas))
+        for name, start, end, shas in by_name.values()
+        if shas and (name, start, end) in walked
+    ]
+    return sorted(spans, key=lambda span: (span[0], span[1]))

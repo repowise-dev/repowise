@@ -50,7 +50,7 @@ workspace overlays, MCP responses, and CLI output.
 | Signature | Compact declaration text. | `build_signature()` via parser extractors | `def create_app(config: Config) -> FastAPI` |
 | Symbol docstring | Human text attached to a symbol, when extractable. | `extract_symbol_docstring()` | `"Create and configure the API app."` |
 | Module docstring | File-level docstring. | `extract_module_docstring()` | `"Command-line entry points."` |
-| Visibility | Public/private/protected/internal classification. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
+| Visibility | Public/private/protected/internal classification. A Python name listed in a literal module-level `__all__` reads public even when underscore-prefixed; a name the list omits keeps its name-based visibility. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
 | Async flag | Whether a symbol is async. | `_is_async_node()` | `async def fetch() -> is_async=true` |
 | Complexity estimate | Symbol complexity field, persisted to symbols. | Parser/model pipeline; defaults to `1` unless language extraction enriches it | `complexity_estimate: 3` |
 | Decorators | Decorator/modifier strings captured with a symbol. | `ASTParser._extract_symbols()` | `["@router.get('/users')"]` |

@@ -22,7 +22,7 @@ RULES: tuple[Rule, ...] = (
     code.fresh_regressions,
     code.fragile_file,
     code.fix_concentration,
-    code.hot_path_perf,
+    code.fix_first,
     hygiene.stale_decision,
     hygiene.knowledge_loss,
     hygiene.broken_doc_refs,
@@ -81,6 +81,15 @@ def _order(actions: list[Action]) -> list[Action]:
                 rest.append(a)
         out.extend(head + rest)
     return out
+
+
+def find_action(facts: RepoFacts, action_id: str) -> Action | None:
+    """One action by id, whatever its rank or the person's answer to it."""
+    ctx = build_context(facts)
+    return next(
+        (a for rule in RULES for a in rule(facts, ctx).actions if a.action_id == action_id),
+        None,
+    )
 
 
 def compose_actions(

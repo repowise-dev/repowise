@@ -37,6 +37,7 @@ from .lang_helpers.objc import (
 )
 from .lang_helpers.pascal import _dedupe_pascal_interface_symbols, _qualified_pascal_parent
 from .lang_helpers.source_prep import prepare_objectivec_source, prepare_pascal_source
+from .lang_helpers.ts_js import _ts_nested_object_method_owner
 from .lang_helpers.type_heads import (
     TYPE_HEAD_EXTRACTORS,
     _classify_param_origin,
@@ -79,6 +80,7 @@ __all__ = [
     "_run_query",
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
+    "_ts_nested_object_method_owner",
     "prepare_objectivec_source",
     "prepare_pascal_source",
 ]
@@ -153,8 +155,8 @@ def _has_callable_ancestor(
     from the top-level symbol list. Class bodies don't count — methods
     inside classes have only a ``class`` ancestor before the module root.
 
-    ``ignored_node_ids`` covers grammar-recovery nodes that a language query
-    has positively identified as type containers rather than callables.
+    ``ignored_node_ids`` covers grammar-recovery nodes that a language has
+    positively identified as type or namespace containers rather than callables.
     """
     ancestor = node.parent
     while ancestor is not None:
@@ -199,6 +201,27 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+_CSHARP_TYPE_NODES = frozenset(
+    {
+        "class_declaration",
+        "interface_declaration",
+        "struct_declaration",
+        "record_declaration",
+        "delegate_declaration",
+    }
+)
+
+
+def _csharp_type_parameter_count(def_node: Node) -> int | None:
+    """How many type parameters a C# type declares (0 if none); None for a non-type."""
+    if def_node.type not in _CSHARP_TYPE_NODES:
+        return None
+    for child in def_node.children:
+        if child.type == "type_parameter_list":
+            return sum(1 for param in child.children if param.type == "type_parameter")
+    return 0
 
 
 def _count_arguments(arg_node: Node) -> int:

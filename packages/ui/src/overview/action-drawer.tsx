@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ElementType, type ReactNode } from "react";
+import { useCallback, useState, type ElementType, type ReactNode } from "react";
 import { ArrowUpRight, BellOff, Check, X } from "lucide-react";
 import type {
   ActionDetail,
@@ -10,8 +10,9 @@ import type {
 } from "@repowise-dev/types/actions";
 
 import { AiPromptBlock } from "../health/ai-prompt-modal";
-import { buildActionPrompt } from "../health/ai-prompts/action-prompt";
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { biomarkerLabel } from "../health/biomarker-glossary";
+import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
@@ -20,12 +21,6 @@ const TIER_LABEL: Record<NextAction["tier"], string> = {
   act_now: "Do now",
   plan: "Worth planning",
   improve_signal: "Improve what Repowise can see",
-};
-
-const EFFORT_LABEL: Record<NextAction["effort"], string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
 };
 
 /** What the evidence link opens, named for the place it lands. */
@@ -56,7 +51,8 @@ export interface ActionDrawerProps {
   fileHref?: ((path: string) => string | null) | undefined;
   /** Omit to hide the done, snooze and dismiss verbs. */
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
-  repoName?: string | undefined;
+  /** The agent prompt for an action, as core renders it. Omit to hide the prompt. */
+  loadPrompt?: ((action: NextAction, flavor: AiPromptFlavor) => Promise<string>) | undefined;
   LinkComponent?: ElementType | undefined;
   renderTitle: (title: string) => ReactNode;
 }
@@ -84,10 +80,15 @@ export function ActionDrawer({
   evidenceHref,
   fileHref,
   onAnswer,
-  repoName,
+  loadPrompt,
   LinkComponent,
   renderTitle,
 }: ActionDrawerProps) {
+  // Only rendered with both set; stable per action so the block fetches once per flavor.
+  const promptSource = useCallback(
+    (flavor: AiPromptFlavor) => loadPrompt!(action!, flavor),
+    [loadPrompt, action],
+  );
   const Link = LinkComponent ?? "a";
   const linkCls =
     "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
@@ -231,16 +232,13 @@ export function ActionDrawer({
               </Section>
             ) : null}
 
-            <Section title="Hand it to an agent">
-              <div className="-mx-5">
-                <AiPromptBlock
-                  bleed="px-5"
-                  getPrompt={(flavor) =>
-                    buildActionPrompt({ action, flavor, ...(repoName ? { repoName } : {}) })
-                  }
-                />
-              </div>
-            </Section>
+            {loadPrompt ? (
+              <Section title="Hand it to an agent">
+                <div className="-mx-5">
+                  <AiPromptBlock bleed="px-5" getPrompt={null} promptSource={promptSource} />
+                </div>
+              </Section>
+            ) : null}
           </div>
 
           {onAnswer ? (

@@ -100,6 +100,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
             "directive.may_break[]",
+            "directive.next_calls[]",
             "targets[]",
         ),
         protected=("directive", "targets"),
@@ -116,6 +117,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
                     "directive.test_recommendations[]",
                     "directive.tests_to_run[]",
                     "directive.may_break[]",
+                    "directive.next_calls[]",
                     "pr_blast_radius",
                     "pr_blast_radius.guarding_tests",
                 ),
@@ -318,12 +320,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         protected=(
             "mode",
-            "directive",
-            # Both pillar leads are bounded by construction and are the only
-            # actionable content a bare dashboard carries for them, so shedding
-            # one would leave that pillar with counts and nothing to do.
-            "performance_directive",
-            "refactoring_directive",
+            # The one lead, bounded by construction (at most five compact
+            # items): shedding it would leave the dashboard with nothing to do.
+            "fix_first",
+            "fix_id",
             "opportunity_id",
             "model_state",
             "targets",

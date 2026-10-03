@@ -18,13 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-from repowise.core.analysis.health.rows import split_tests
+from repowise.core.analysis.health.rows import scored_rows, split_tests
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
 from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
@@ -50,6 +51,7 @@ _MAX_MODULES = 10
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 8
+_MAX_FIX_FIRST = 3
 
 
 def _signed_by(signature) -> str:
@@ -355,10 +357,12 @@ class EditorFileDataFetcher:
     async def _get_code_health(self) -> CodeHealthBlock | None:
         """Build the compact code-health block for CLAUDE.md.
 
-        Filters per plan §9: critical biomarkers in hotspot files, plus
-        any Brain Method finding. Empty list when no health data yet.
+        KPIs, then the lead of the Fix-first queue every other surface renders.
+        ``None`` when no health data yet.
         """
-        metric_rows = list(
+        # Scored rows only: a file in a language health has no dialect for
+        # carries no score, and a repository of nothing else has no block.
+        metric_rows = scored_rows(
             (
                 await self._session.execute(
                     select(HealthFileMetric).where(
@@ -377,10 +381,9 @@ class EditorFileDataFetcher:
         # zero-total-weight fallback to a plain mean. The empty case cannot
         # reach it — ``metric_rows`` is checked above.
         avg = nloc_weighted_score(metric_rows)
-        # The worst file and the critical list name production files: a test
-        # is not the file an agent should be told to handle with care.
+        # The worst file names a production file: a test is not the file an
+        # agent should be told to handle with care.
         production, tests = split_tests(metric_rows)
-        test_paths = {m.file_path for m in tests}
         worst = min(production or tests, key=lambda m: m.score)
 
         # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
@@ -434,49 +437,24 @@ class EditorFileDataFetcher:
         lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
         perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
 
-        # Critical biomarkers: brain methods, or critical-severity findings
-        # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
-        f_res = await self._session.execute(
-            select(HealthFinding)
-            .where(
-                HealthFinding.repository_id == self._repo_id,
-                HealthFinding.status == "open",
-                HealthFinding.biomarker_type.not_in(excluded_types()),
-            )
-            .order_by(HealthFinding.health_impact.desc())
-        )
-        all_findings = list(f_res.scalars().all())
-
         # Open performance-finding count + density over covered LOC (the honest
         # headline the diluted /10 hides).
-        performance_findings = sum(
-            1 for f in all_findings if (f.dimension or "defect") == "performance"
-        )
+        performance_findings = (
+            await self._session.execute(
+                select(func.count()).where(
+                    HealthFinding.repository_id == self._repo_id,
+                    HealthFinding.status == "open",
+                    HealthFinding.dimension == "performance",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
+                )
+            )
+        ).scalar_one()
         performance_findings_density: float | None = None
         if perf_coverage.covered_nloc > 0:
             performance_findings_density = round(
                 10000.0 * performance_findings / perf_coverage.covered_nloc, 2
             )
 
-        critical = []
-        for f in all_findings:
-            if len(critical) >= 5:
-                break
-            if f.file_path in test_paths:
-                continue
-            if f.biomarker_type == "brain_method" or (
-                f.severity == "critical" and f.file_path in hotspot_paths
-            ):
-                critical.append(
-                    {
-                        "path": f.file_path,
-                        "summary": (
-                            f"{f.biomarker_type.replace('_', ' ')}"
-                            + (f" ({f.function_name})" if f.function_name else "")
-                            + f" — impact −{f.health_impact:.1f}"
-                        ),
-                    }
-                )
 
         # The trend the snapshots record, or nothing: a repository indexed once
         # has no trend, and the section used to print "stable" for it anyway.
@@ -504,8 +482,25 @@ class EditorFileDataFetcher:
             ),
             performance_skipped_files=perf_coverage.skipped_files,
             performance_unsupported_languages=perf_coverage.unsupported_languages,
-            critical_biomarkers=critical,
+            fix_first=await self._get_fix_first(),
         )
+
+    async def _get_fix_first(self) -> list[dict]:
+        """The queue's top items, or nothing on a store that cannot build it."""
+        try:
+            async with self._session.begin_nested():
+                queue = await load_fix_first(self._session, self._repo_id, limit=_MAX_FIX_FIRST)
+        except Exception:  # an index from before the refactoring or perf tables
+            return []
+        return [
+            {
+                "title": item.title,
+                "where": item.target.file_path
+                + (f":{item.target.line_start}" if item.target.line_start else ""),
+                "why": item.why,
+            }
+            for item in queue.items
+        ]
 
     async def _get_kg_data(
         self,

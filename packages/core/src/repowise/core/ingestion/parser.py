@@ -25,7 +25,9 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Iterable
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 
@@ -62,8 +64,11 @@ from .extractors.bindings.ts_js import (
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
+    py_module_all_names,
     refine_cpp_visibility,
     refine_csharp_visibility,
+    refine_java_visibility,
+    refine_py_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -87,6 +92,7 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
     _elixir_call_is_definitional,
@@ -112,10 +118,13 @@ from .parser_helpers import (
     _qualified_pascal_parent,
     _run_query,
     _rust_shadowed_by_type_param,
+    _ts_nested_object_method_owner,
 )
 from .python_local_refs import extract_python_local_refs
+from .python_overload import is_python_overload as _is_python_overload
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
+from .symbol_identity import disambiguate_colliding_ids, symbol_discriminator
 
 log = structlog.get_logger(__name__)
 
@@ -180,6 +189,7 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
                 function.child_by_field_name("expression")
                 or function.child_by_field_name("object")
                 or function.child_by_field_name("argument")
+                or function.child_by_field_name("operand")
             )
 
     if target is None:
@@ -514,23 +524,6 @@ def _match_identity(
     return def_node, name_nodes, name, export_type, start_line
 
 
-# ``@overload`` stubs are signatures for the type checker; the undecorated def
-# that follows under the same id is the one that runs.
-def _is_python_overload(def_node: Node, src: str) -> bool:
-    parent = def_node.parent
-    if parent is None or parent.type != "decorated_definition":
-        return False
-    for decorator in parent.children:
-        if decorator.type != "decorator":
-            continue
-        # The expression, not the node text: a trailing comment sits inside it.
-        expr = next((c for c in decorator.named_children if c.type != "comment"), None)
-        # ``overload``, ``typing.overload``, or through an alias (``t.overload``).
-        if expr is not None and _node_text(expr, src).rsplit(".", 1)[-1] == "overload":
-            return True
-    return False
-
-
 _TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})
 
 
@@ -599,6 +592,34 @@ def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
         ):
             return None
     return frozenset(props_set)
+
+
+def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+    """Fold the receiver-less copy of a member call into the copy with a receiver.
+
+    A grammar's bare-call pattern that leaves the object unconstrained (Java's
+    ``method_invocation``, Ruby's ``call``) matches ``obj.m()`` too. Resolved on
+    its own, that copy binds ``m`` by bare name beside whatever ``obj``'s type
+    answers, so it survives only as the member call's ``bare_name_fallback``.
+    Keyed on the call node, not the line, so a bare ``m(obj.m())`` keeps its own
+    site.
+    """
+    member_sites = {site for site, call in calls if not _is_bare(call)}
+    bare_sites = {site for site, call in calls if site in member_sites and _is_bare(call)}
+    folded: list[CallSite] = []
+    for site, call in calls:
+        if _is_bare(call):
+            if site not in member_sites:
+                folded.append(call)
+        elif call.receiver_name and site in bare_sites:
+            folded.append(replace(call, bare_name_fallback=True))
+        else:
+            folded.append(call)
+    return folded
+
+
+def _is_bare(call: CallSite) -> bool:
+    return not (call.receiver_name or call.receiver_call)
 
 
 def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
@@ -775,6 +796,35 @@ def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
     return []
 
 
+def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
+    """Lowercased keyword modifiers written in *def_node*'s modifier children.
+
+    Keywords are the anonymous leaves of those children (C# ``modifier`` >
+    ``override``, Kotlin ``modifiers`` > ``member_modifier`` > ``override``) or
+    a named leaf that is itself a modifier (VB.NET ``modifier`` ``Overrides``).
+    Named leaves such as Scala's ``protected[this]`` qualifier are not
+    keywords. Annotations and attributes nested among them are skipped: they
+    are decorators, not modifiers. The words are interned: a handful of
+    distinct values repeat on every symbol.
+    """
+    if not node_types:
+        return ()
+    words: list[str] = []
+    stack = [c for c in reversed(def_node.children) if c.type in node_types]
+    while stack:
+        node = stack.pop()
+        if "annotation" in node.type or "attribute" in node.type:
+            continue
+        if node.child_count == 0:
+            text = _node_text(node, src).strip()
+            keyword = not node.is_named or "modifier" in node.type
+            if keyword and text.isalpha():
+                words.append(sys.intern(text.lower()))
+            continue
+        stack.extend(reversed(node.children))
+    return tuple(words)
+
+
 def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
     """Rust: outer attributes (#[...]) are preceding siblings of the item."""
     attrs: list[str] = []
@@ -815,22 +865,34 @@ def _refine_visibility(
     visibility: str,
     name: str,
     ts_deferred_exports: frozenset[str] | None,
+    py_all_names: frozenset[str] | None,
     src: str,
 ) -> tuple[str, bool]:
     """``(visibility, is_exported_symbol)`` after the language's AST-context rules."""
     # C/C++ visibility is dictated by AST context (access
     # specifiers / storage class / export attributes), not by
-    # modifier text. Refine after the generic fn ran.
-    if language in ("cpp", "c"):
+    # modifier text. Refine after the generic fn ran. Objective-C's
+    # grammar is a superset of C's, so the same shapes apply to
+    # plain C code inside a ``.m`` file.
+    if language in ("cpp", "c", "objectivec"):
         return refine_cpp_visibility(def_node, visibility, src)
     # C#: an unmodified declaration's default depends on what encloses
     # it, which the modifier-text fn cannot see.
     if language == "csharp":
         return refine_csharp_visibility(def_node, visibility), False
+    # Java: no access keyword means package-private, except inside an
+    # interface or annotation body, which the modifier-text fn cannot see.
+    if language == "java":
+        return refine_java_visibility(def_node), False
     # TS/JS: a top-level declaration is only public when exported —
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:
         return refine_ts_visibility(def_node, visibility, name, ts_deferred_exports), False
+    # Python: a literal ``__all__`` raises the names it lists to public; it
+    # never demotes the ones it omits. GDScript shares ``py_visibility`` but
+    # has no ``__all__``, so the gate is on the language, not the fn.
+    if language == "python":
+        return refine_py_visibility(def_node, visibility, name, py_all_names), False
     # Rust: a trait's items may not write ``pub`` of their own, so the
     # trait's modifier is the only place their visibility is stated.
     if language == "rust":
@@ -958,6 +1020,13 @@ def _statement_imports(
         return _php_imports(stmt_node, raw, src)
     if language == "dart":
         return [_dart_import(stmt_node, module_node, module_text, raw, src)]
+    if language == "rust" and stmt_node.type == "use_declaration":
+        return _rust_use_imports(stmt_node, module_text, raw, src)
+    if language == "rust" and stmt_node.type == "macro_invocation":
+        from .extractors.bindings.rust import macro_mod_imports
+
+        # Most top-level calls (``s! { struct ... }``) declare no module.
+        return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
         # wildcard, which keeps the target's exports live.
@@ -1016,14 +1085,14 @@ def _scala_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
 
 def _php_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
     """PHP: one ``use`` declaration can name several classes, each its own file."""
-    from .extractors.bindings.php import php_use_clauses
+    from .extractors.bindings.php import php_class_name, php_use_clauses
     from .models import NamedBinding
 
     return [
         Import(
             raw_statement=raw,
             module_path=fqn,
-            imported_names=[local],
+            imported_names=[php_class_name(fqn)],
             is_relative=False,
             resolved_file=None,
             bindings=[NamedBinding(local_name=local, exported_name=fqn, source_file=None)],
@@ -1091,7 +1160,8 @@ def _generic_import(
     stmt_node: Node, module_text: str, raw: str, language: str, src: str
 ) -> Import:
     """The single Import of a statement no language-specific shape claims."""
-    if language == "rust" and stmt_node.type == "mod_item":
+    is_module_declaration = language == "rust" and stmt_node.type == "mod_item"
+    if is_module_declaration:
         module_text = _rust_mod_path_attribute(stmt_node, src) or module_text
 
     # JVM wildcard imports: the query captures the scoped identifier only,
@@ -1116,7 +1186,72 @@ def _generic_import(
         resolved_file=None,
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
+        is_module_declaration=is_module_declaration,
     )
+
+
+def _rust_use_imports(stmt_node: Node, module_text: str, raw: str, src: str) -> list[Import]:
+    """Rust: one Import per leaf of the use tree, each with its own path.
+
+    ``use crate::{a::B, c::D}`` names two modules, and the joined string
+    resolves to neither. ``super`` hops that only climb out of inline
+    ``mod`` blocks stay inside this file, so they are dropped here and the
+    resolver sees the path the file itself would write.
+    """
+    from .extractors.bindings.rust import expand_rust_use_tree, rust_use_argument
+    from .models import NamedBinding
+
+    arg_node = rust_use_argument(stmt_node)
+    leaves = expand_rust_use_tree(arg_node, src) if arg_node is not None else []
+    inline_depth = _rust_inline_mod_depth(stmt_node)
+    is_reexport = _is_reexport_import(stmt_node, raw, "rust")
+    if len(leaves) <= 1 and "{" not in module_text and not inline_depth:
+        return [_generic_import(stmt_node, module_text, raw, "rust", src)]
+    imports = []
+    for path, local, exported in leaves:
+        path = _strip_inline_super(path, inline_depth)
+        imports.append(
+            Import(
+                raw_statement=raw,
+                module_path=path,
+                imported_names=[local],
+                is_relative=path.startswith(("self::", "super::", "crate::")),
+                resolved_file=None,
+                bindings=[NamedBinding(local_name=local, exported_name=exported, source_file=None)],
+                is_reexport=is_reexport,
+            )
+        )
+    return imports
+
+
+def _rust_inline_mod_depth(node: Node) -> int:
+    """How many inline ``mod name { ... }`` blocks enclose *node* in its file."""
+    depth = 0
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "mod_item":
+            depth += 1
+        parent = parent.parent
+    return depth
+
+
+def _strip_inline_super(path: str, inline_depth: int) -> str:
+    """Drop the ``super`` hops of *path* that stay inside the file.
+
+    In ``mod tests { use super::*; }`` the ``super`` is this file's own
+    module, so the path is ``self::*``, not the parent module's glob.
+    """
+    if not inline_depth:
+        return path
+    segments = path.split("::")
+    hops = 0
+    while hops < len(segments) and segments[hops] == "super":
+        hops += 1
+    if not hops:
+        return path
+    if hops <= inline_depth:
+        return "::".join(["self", *segments[hops:]])
+    return "::".join(segments[inline_depth:])
 
 
 def _rust_mod_path_attribute(stmt_node: Node, src: str) -> str | None:
@@ -1294,8 +1429,14 @@ class ASTParser:
         # without a registered extractor.
         synthetic = extract_synthetic_symbols(root, src, file_info)
         if synthetic:
-            existing_ids = {s.id for s in symbols}
-            symbols.extend(s for s in synthetic if s.id not in existing_ids)
+            # Keyed with the discriminator too, so a record's synthetic
+            # canonical constructor survives beside an explicit overload of
+            # another arity. A language without one dedupes on the id alone.
+            existing = {(s.id, symbol_discriminator(s)) for s in symbols}
+            symbols.extend(s for s in synthetic if (s.id, symbol_discriminator(s)) not in existing)
+        # Before calls and references are extracted, so both attribute to the
+        # final ids.
+        disambiguate_colliding_ids(symbols, lang)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
         # An SFC instantiates a component by writing its tag in the markup
@@ -1323,7 +1464,10 @@ class ASTParser:
         local_refs: frozenset[str] = frozenset()
         if lang == "python":
             top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
-            local_refs = extract_python_local_refs(src, top_level_names)
+            nested_classes = {
+                (s.parent_name, s.name) for s in symbols if s.kind == "class" and s.parent_name
+            }
+            local_refs = extract_python_local_refs(src, top_level_names, nested_classes)
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
@@ -1389,13 +1533,25 @@ class ASTParser:
         ts_deferred_exports: frozenset[str] | None = None
         if language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
+        # Literal module ``__all__`` names, once per file for the Python
+        # refinement. None means no signal (built at runtime or absent).
+        py_all_names: frozenset[str] | None = None
+        if language == "python":
+            py_all_names = py_module_all_names(src)
         cpp_exports = (
             collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
         )
 
         for capture_dict in matches:
             built = self._symbol_from_match(
-                capture_dict, config, file_info, src, cpp_exports, ts_deferred_exports, seen
+                capture_dict,
+                config,
+                file_info,
+                src,
+                cpp_exports,
+                ts_deferred_exports,
+                py_all_names,
+                seen,
             )
             if built is None:
                 continue
@@ -1428,6 +1584,7 @@ class ASTParser:
         src: str,
         cpp_exports: CppExportTypes,
         ts_deferred_exports: frozenset[str] | None,
+        py_all_names: frozenset[str] | None,
         seen: set[tuple[int, str]],
     ) -> tuple[Symbol, Node] | None:
         """One query match as a symbol and its definition node, or None to drop it.
@@ -1442,7 +1599,21 @@ class ASTParser:
         def_node, name_nodes, name, export_type, start_line = identity
 
         node_type = def_node.type
-        kind = self._symbol_kind(def_node, config, language, src, cpp_exports.parent_ids)
+        # A TS/JS object-literal method inside an anonymous callback is kept,
+        # qualified by the binding that owns its object.
+        object_owner = (
+            _ts_nested_object_method_owner(def_node, src, config.symbol_node_types)
+            if language in _TS_JS_LANGUAGES
+            else None
+        )
+        kind = self._symbol_kind(
+            def_node,
+            config,
+            language,
+            src,
+            cpp_exports.container_ids,
+            keep_nested=object_owner is not None,
+        )
         if kind is None:
             return None
 
@@ -1462,10 +1633,11 @@ class ASTParser:
             config.visibility_fn(name, modifier_texts),
             name,
             ts_deferred_exports,
+            py_all_names,
             src,
         )
 
-        parent_name = self._resolve_parent_name(
+        parent_name = object_owner or self._resolve_parent_name(
             def_node,
             config,
             capture_dict.get("symbol.receiver", []),
@@ -1516,6 +1688,10 @@ class ASTParser:
             parent_name=parent_name,
             is_exported_symbol=is_exported_symbol,
             is_declaration=_is_declaration(def_node, config, language, export_type, src),
+            type_parameter_count=(
+                _csharp_type_parameter_count(def_node) if language == "csharp" else None
+            ),
+            modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
         )
         return symbol, def_node
 
@@ -1525,7 +1701,9 @@ class ASTParser:
         config: LanguageConfig,
         language: str,
         src: str,
-        export_type_parent_ids: frozenset[int],
+        container_ids: frozenset[int],
+        *,
+        keep_nested: bool = False,
     ) -> str | None:
         """The symbol kind for *def_node*, or None when it is not a symbol here."""
         node_type = def_node.type
@@ -1535,9 +1713,12 @@ class ASTParser:
 
         # Only module-level and class-body members are symbols; the query is
         # recursive, so defs nested in a callable are dropped. Module-anchored
-        # node types only match at module level and skip the check.
-        if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-            def_node, config.symbol_node_types, export_type_parent_ids
+        # node types only match at module level and skip the check, as does a
+        # def the caller has placed already (``keep_nested``).
+        if (
+            not keep_nested
+            and node_type not in _MODULE_ANCHORED_NODE_TYPES
+            and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
         ):
             return None
 
@@ -1677,9 +1858,19 @@ class ASTParser:
                 continue
 
             raw = _node_text(stmt_node, src).strip()
-            if raw in seen_raws:
+            # A Rust ``mod`` item's text excludes its outer attributes, so two
+            # ``#[cfg]``-gated ``mod imp;`` declarations targeting different
+            # ``#[path]`` files collide on the same raw text and the second
+            # file silently loses its import edge (and is then reported as
+            # dead code). Qualify the dedup key with the path override.
+            dedup_key = raw
+            if language == "rust" and stmt_node.type == "mod_item":
+                mod_path_attr = _rust_mod_path_attribute(stmt_node, src)
+                if mod_path_attr is not None:
+                    dedup_key = f"{raw}|path={mod_path_attr}"
+            if dedup_key in seen_raws:
                 continue
-            seen_raws.add(raw)
+            seen_raws.add(dedup_key)
 
             module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
             if not module_text:
@@ -1716,7 +1907,8 @@ class ASTParser:
             key=lambda t: (t[0], -t[1]),
         )
 
-        calls: list[CallSite] = []
+        # Each call as ``(site, call)``; see ``_fold_receiverless_twins``.
+        calls: list[tuple[tuple[int, int, str], CallSite]] = []
 
         for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
@@ -1783,23 +1975,26 @@ class ASTParser:
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
             calls.append(
-                CallSite(
-                    target_name=target_name,
-                    receiver_name=receiver_name,
-                    caller_symbol_id=caller_id,
-                    line=line,
-                    argument_count=arg_count,
-                    receiver_call=receiver_call,
-                    scope_name=scope_name,
-                    edge_type=(
-                        "references"
-                        if site_node.type in config.reference_call_node_types
-                        else "calls"
+                (
+                    (site_node.start_byte, site_node.end_byte, target_name),
+                    CallSite(
+                        target_name=target_name,
+                        receiver_name=receiver_name,
+                        caller_symbol_id=caller_id,
+                        line=line,
+                        argument_count=arg_count,
+                        receiver_call=receiver_call,
+                        scope_name=scope_name,
+                        edge_type=(
+                            "references"
+                            if site_node.type in config.reference_call_node_types
+                            else "calls"
+                        ),
+                        supplied_props=_jsx_supplied_props(site_node, src),
                     ),
-                    supplied_props=_jsx_supplied_props(site_node, src),
                 )
             )
-        return _dedupe_calls(calls)
+        return _dedupe_calls(_fold_receiverless_twins(calls))
 
     def _extract_references(
         self,

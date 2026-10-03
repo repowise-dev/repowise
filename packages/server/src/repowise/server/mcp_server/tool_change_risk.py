@@ -51,6 +51,10 @@ from repowise.server.mcp_server._change_health import (
 from repowise.server.mcp_server._change_health import (
     patch_coverage_action as _patch_coverage_action,
 )
+from repowise.server.mcp_server._failure_shield import (
+    is_stale_server_import,
+    stale_server_notice,
+)
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -137,6 +141,7 @@ async def get_change_risk(
     repo: str | None = None,
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
+    include_paths: list[str] | str | None = None,
     baseline: int = 200,
     include: list[str] | None = None,
     finding_id: str | None = None,
@@ -144,20 +149,20 @@ async def get_change_risk(
     """Review a commit, ``base..head`` range, or uncommitted work.
 
     Leads with ``directive`` (what to do) and ``health_delta`` (what this
-    change newly made worse). A finding is reported only when the diff explains
-    it, and each names its ``attribution`` basis; findings the change wrote
-    sort above pre-existing ones it only touched.
+    change newly made worse). Findings are reported only when the diff explains
+    them, name their ``attribution`` basis, and sort change-written above
+    pre-existing.
 
     Trust ``health_delta.status``: ``partial`` means files were skipped and the
     change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
     ``patch_coverage`` is the share of changed executable lines stored coverage
-    ran (no revspec: from the merge-base); ``hints`` name tests to extend.
-    ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
-    fixes on these exact lines. ``branch_overlap`` names other branches editing
-    them. ``diff_shape`` is one line on size, not a danger verdict. An empty
-    diff returns ``status: "nothing_to_score"`` and names the tree it read.
+    ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
+    bug-fix record, ``overlap`` the past fixes on these exact lines,
+    ``branch_overlap`` other branches editing them. ``diff_shape`` is one line
+    on size, not a danger verdict. An empty diff returns
+    ``status: "nothing_to_score"``.
 
     Args:
         revspec: Commit or ``base..head`` range. Omit to review uncommitted
@@ -165,10 +170,11 @@ async def get_change_risk(
         repo: Repository alias in workspace mode; omit for the default.
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
+        include_paths: Gitignore-style paths to keep, as a list or one
+            comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"`` for every change finding, ``"diagnostics"`` for
-            raw score mechanics, ``"scales"`` for units. All identical on
-            repeat, so ask once.
+        include: ``"findings"``, ``"diagnostics"`` (raw score mechanics) or
+            ``"scales"`` (units).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
@@ -228,6 +234,7 @@ async def get_change_risk(
             revspec,
             tuple(extensions or ()),
             tuple(result.riskignore_excludes + result.request_excludes),
+            tuple(include_paths or ()),
         )
     )
     try:
@@ -332,19 +339,25 @@ def _compare_health(
     revspec: str | None,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...] = (),
 ) -> Any:
     """Run the comparison, degrading to an explicit unavailable state."""
     from repowise.core.analysis.change_health.models import ChangeHealthDelta
 
     try:
         return _delta_service(repo_path).compare(
-            DeltaRequest(repo_path, revspec, extensions, exclude_patterns)
+            DeltaRequest(repo_path, revspec, extensions, exclude_patterns, include_paths)
         )
     except Exception as exc:
         log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
+        explanation = (
+            stale_server_notice(exc)
+            if is_stale_server_import(exc)
+            else f"Health comparison failed: {exc}"
+        )
         return ChangeHealthDelta(
             status="unavailable",
-            explanation=f"Health comparison failed: {exc}",
+            explanation=explanation,
             base=None,
             head=None,
             comparison_basis="not_compared",
@@ -1097,7 +1110,8 @@ async def _inferred_impacted(
     a signal that cannot speak to lines - the distinction this whole block
     exists to keep.
     """
-    from repowise.core.analysis.test_reachability import tests_reaching
+    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching
+    from repowise.core.analysis.test_selection import expand_test_scopes
 
     hint = (
         "Inferred from the dependency graph, not measured. For the line-precise "
@@ -1105,10 +1119,14 @@ async def _inferred_impacted(
         "`repowise coverage add`."
     )
     try:
-        reaching = await tests_reaching(session, repo_id, changed_files)
+        test_files = await load_test_files(session, repo_id)
+        reaching = await tests_reaching(session, repo_id, changed_files, test_files=test_files)
     except Exception:
-        reaching = {}
-    tests = rank_tests_by_reach(reaching)
+        test_files, reaching = set(), {}
+    # A conftest the walk stopped at stands for the tests under its directory.
+    tests = rank_tests_by_reach(
+        {path: expand_test_scopes(found, test_files) for path, found in reaching.items()}
+    )
     if not tests:
         return _empty_impacted(
             "no_map",
