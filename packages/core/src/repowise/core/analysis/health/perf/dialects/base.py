@@ -318,6 +318,15 @@ class BasePerfDialect:
         """True when this loop walks its data a chunk at a time (already batched)."""
         return False
 
+    def iterable_node(self, node: Node) -> Node | None:
+        """The expression a for-each loop evaluates once before its first pass, or
+        ``None`` (the default, and any loop whose header runs every pass).
+
+        A call inside it runs once per *enclosing* loop pass, not once per pass of
+        this loop, so loop facts attribute it to the loop around this one.
+        """
+        return None
+
     @staticmethod
     def _steps_by_chunk(update: Node | None) -> bool:
         """``i += 100`` / ``i += BATCH``: a counter that advances more than one at a time."""
