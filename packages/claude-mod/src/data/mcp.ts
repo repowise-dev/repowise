@@ -14,7 +14,7 @@ import { withTimeout } from "./transport";
 export const PLUGIN_NAME = "repowise";
 
 /** Only the tools a shipped Lens feature calls. All read-only. */
-export const LENS_TOOLS = ["get_context"] as const;
+export const LENS_TOOLS = ["get_context", "get_change_risk"] as const;
 export type LensTool = (typeof LENS_TOOLS)[number];
 
 /** Both spellings of this plugin's server seen at runtime; Lens calls and approves no other. */

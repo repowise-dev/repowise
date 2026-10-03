@@ -74,7 +74,6 @@ export function savingsLine(d: SavingsDelta, columns: number): string {
 export const REVIEWING = "Reviewing the change...";
 export const REVIEW_TIMEOUT_S = 20;
 export const REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
-export const NOTHING_TO_SCORE = "Change review: nothing to score (no counted file changes)";
 export const RUN_TESTS = "Run tests";
 export const DETAILS = "Details";
 /** Branch overlap is a fact, not a health band: a neutral mark plus words. */
@@ -121,11 +120,11 @@ export function resolvedToo(resolved: number): string {
 
 export function findingLine(f: { severity: string; biomarker: string; reason: string; path: string; lines?: [number, number] }): string {
   const at = f.lines === undefined ? f.path : `${f.path}:${f.lines[0]}`;
-  return `  ${f.severity} ${f.biomarker}: ${f.reason} (${at})`;
+  return `${f.severity} ${f.biomarker}: ${f.reason} (${at})`;
 }
 
 export function moreFindings(more: number): string {
-  return `  and ${more.toLocaleString("en-US")} more (Details)`;
+  return `and ${more.toLocaleString("en-US")} more (Details)`;
 }
 
 export function partialScope(analyzed: number, changed: number, reasons: Record<string, number>): string {

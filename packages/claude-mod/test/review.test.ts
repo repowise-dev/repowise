@@ -7,7 +7,8 @@ import { initialReview, isFileEdit, reduceReview, testsToRun, type ChangeRisk, t
 import { initialSession, reduce } from "../src/model/session";
 import { bandView } from "../src/views/band";
 import { box, button, materialize, text, type Node } from "../src/views/elements";
-import { PRESS, directiveText, reviewBandRow, reviewText, runTestsText, withCard } from "../src/views/review";
+import { DARK } from "@repowise-dev/ui/brand";
+import { PRESS, directiveRows, reviewBandRow, reviewText, runTestsText, withCard } from "../src/views/review";
 import { fixture } from "./fake-host";
 
 const risk = (name: string): ChangeRisk => JSON.parse(fixture(`change-risk/${name}.json`)) as ChangeRisk;
@@ -26,6 +27,9 @@ function colors(node: Node | null): string[] {
   if (node.type === "Text") return node.props.color === undefined ? [] : [node.props.color];
   return node.children.flatMap(colors);
 }
+
+/** The card is one row of segments; split it back to compare them. */
+const segments = (outcome: ReviewOutcome) => reviewText(outcome)?.split(" · ");
 
 const TESTS = "Tests to run: 2 test files, inferred from the dependency graph, not measured: tests/test_requests.py, tests/test_utils.py";
 
@@ -90,27 +94,33 @@ describe("review card beneath the answer", () => {
   });
 
   it("clear with no other branch in these files collapses to one line", () => {
-    expect(reviewText(done("clear"))).toBe("Change review · working tree · health: no new findings in the 1 changed file");
+    expect(reviewText(done("clear"))).toBe("Change review (working tree) · health: no new findings in the 1 changed file");
   });
 
   it("a change that resolves findings and adds none says so in words", () => {
-    expect(reviewText(done("resolved"))).toBe("Change review · working tree · health: improved, 2 findings resolved, none new");
+    expect(reviewText(done("resolved"))).toBe("Change review (working tree) · health: improved, 2 findings resolved, none new");
+  });
+
+  it("is one row: the engine stores a line break in this text as U+FFFD", () => {
+    for (const name of ["clear", "findings", "overlap", "partial", "unavailable", "resolved"]) {
+      expect(reviewText(done(name))).not.toMatch(/[\n\r]/);
+    }
   });
 
   it("new findings lead, each with severity, reason and place", () => {
-    expect(reviewText(done("findings"))?.split("\n")).toEqual([
-      "Change review · working tree, 1 changed file",
+    expect(segments(done("findings"))).toEqual([
+      "Change review (working tree, 1 changed file)",
       "Health: 2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py",
-      "  critical nested_complexity: classify_headers nests 7 levels deep (src/requests/_internal_utils.py:55)",
-      "  high complex_method: classify_headers has cyclomatic complexity 15 (src/requests/_internal_utils.py:55)",
+      "critical nested_complexity: classify_headers nests 7 levels deep (src/requests/_internal_utils.py:55)",
+      "high complex_method: classify_headers has cyclomatic complexity 15 (src/requests/_internal_utils.py:55)",
       "Diff shape: bigger than 92% of this repo's recent commits; size, not danger",
       TESTS,
     ]);
   });
 
   it("another branch editing the same file keeps the full card, with a neutral mark", () => {
-    expect(reviewText(done("overlap"))?.split("\n")).toEqual([
-      "Change review · working tree, 1 changed file",
+    expect(segments(done("overlap"))).toEqual([
+      "Change review (working tree, 1 changed file)",
       "Health: no new findings in the 1 changed file",
       "Diff shape: bigger than 34% of this repo's recent commits; size, not danger",
       TESTS,
@@ -119,8 +129,8 @@ describe("review card beneath the answer", () => {
   });
 
   it("a partial comparison carries a scope line and is never read as clear", () => {
-    expect(reviewText(done("partial"))?.split("\n")).toEqual([
-      "Change review · working tree, 2 changed files",
+    expect(segments(done("partial"))).toEqual([
+      "Change review (working tree, 2 changed files)",
       "Health: Nothing new in what was compared, but part of the change was not analysed",
       "Scope: compared 1 of 2 changed files; 1 not analysed (1 unsupported language), so this is not a clean bill",
       "Diff shape: bigger than 40% of this repo's recent commits; size, not danger",
@@ -130,16 +140,16 @@ describe("review card beneath the answer", () => {
   });
 
   it("a change with nothing health can read says it was not compared", () => {
-    expect(reviewText(done("unavailable"))?.split("\n")).toEqual([
-      "Change review · working tree, 1 changed file",
+    expect(segments(done("unavailable"))).toEqual([
+      "Change review (working tree, 1 changed file)",
       "Health: not compared: No changed file is health-analyzable, so nothing was compared",
       "Diff shape: bigger than 34% of this repo's recent commits; size, not danger",
       "Branches: ◦ 2 other branches also edit tox.ini (origin/3.0, origin/proposed/3.0.0)",
     ]);
   });
 
-  it("an empty diff is one line", () => {
-    expect(reviewText(done("nothing-to-score"))).toBe("Change review: nothing to score (no counted file changes)");
+  it("an empty diff shows no card", () => {
+    expect(reviewText(done("nothing-to-score"))).toBeNull();
   });
 
   it("an error and a timeout each say so in one line", () => {
@@ -156,19 +166,19 @@ describe("review card beneath the answer", () => {
 
   it("a clean tree reviews HEAD and says the working tree had nothing", () => {
     const head = { ...risk("findings"), ref: "HEAD", working_tree: false };
-    expect(reviewText({ phase: "done", risk: head })?.split("\n")[0]).toBe(
-      "Change review · HEAD (no uncommitted changes), 1 changed file",
+    expect(segments({ phase: "done", risk: head })?.[0]).toBe(
+      "Change review (HEAD (no uncommitted changes), 1 changed file)",
     );
   });
 
   it("counts findings past the ones the server listed, and resolved ones beside new ones", () => {
     const base = risk("findings");
     const more = { ...base, health_delta: { ...base.health_delta!, findings_total: 5, resolved: 1 } };
-    const lines = reviewText({ phase: "done", risk: more })!.split("\n");
+    const lines = segments({ phase: "done", risk: more })!;
     expect(lines[1]).toBe(
       "Health: 2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py; 1 finding resolved",
     );
-    expect(lines).toContain("  and 3 more (Details)");
+    expect(lines).toContain("and 3 more (Details)");
   });
 
   it("an unranked diff and a capped test list say so", () => {
@@ -179,7 +189,7 @@ describe("review card beneath the answer", () => {
       branch_overlap: risk("overlap").branch_overlap!,
       impacted_tests: { ...base.impacted_tests!, total: 23, truncated: true },
     };
-    const lines = reviewText({ phase: "done", risk: capped })!.split("\n");
+    const lines = segments({ phase: "done", risk: capped })!;
     expect(lines).toContain("Diff shape: not ranked (no recent commits to compare); size, not danger");
     expect(lines).toContain(
       "Tests to run: 23 test files, inferred from the dependency graph, not measured (first 2 shown): tests/test_requests.py, tests/test_utils.py",
@@ -191,7 +201,7 @@ describe("review card beneath the answer", () => {
 
   it("a result without a directive says health was not reported", () => {
     expect(reviewText({ phase: "done", risk: { ref: "working tree", working_tree: true, risk_percentile: 10 } })).toBe(
-      ["Change review · working tree", "Health: not reported", "Diff shape: bigger than 10% of this repo's recent commits; size, not danger"].join("\n"),
+      ["Change review (working tree)", "Health: not reported", "Diff shape: bigger than 10% of this repo's recent commits; size, not danger"].join(" · "),
     );
   });
 });
@@ -210,8 +220,8 @@ describe("review band row", () => {
 
   it.each([
     ["clear", ["review · health: no new findings", "1: Run tests", "3: Details"], []],
-    ["resolved", ["review · health: improved, 2 resolved", "1: Run tests", "3: Details"], ["success"]],
-    ["findings", ["review · health: 2 new findings, review required", "1: Run tests", "3: Details"], ["error"]],
+    ["resolved", ["review · health: improved, 2 resolved", "1: Run tests", "3: Details"], [DARK.success]],
+    ["findings", ["review · health: 2 new findings, review required", "1: Run tests", "3: Details"], [DARK.error]],
     [
       "overlap",
       ["review · health: no new findings", " · ◦ 1 other branch edits these files", "1: Run tests", "3: Details"],
@@ -229,12 +239,19 @@ describe("review band row", () => {
     expect(colors(row)).toEqual(expectedColors);
   });
 
+  it("a clear review with no tests to run and no other branch leaves the band quiet", () => {
+    const base = risk("clear");
+    const quiet = { ...base, impacted_tests: { ...base.impacted_tests!, tests_to_run: [], total: 0 } };
+    expect(reviewBandRow({ phase: "done", risk: quiet }, 120)).toBeNull();
+    expect(reviewText({ phase: "done", risk: quiet })).toBe("Change review (working tree) · health: no new findings in the 1 changed file");
+  });
+
   it("low-severity findings are amber", () => {
     const base = risk("findings");
     const low = { ...base, directive: { ...base.directive!, status: "review_recommended" as const } };
     const row = reviewBandRow({ phase: "done", risk: low }, 120);
     expect(drawn(row)[0]).toBe("review · health: 2 new findings, low severity");
-    expect(colors(row)).toEqual(["warning"]);
+    expect(colors(row)).toEqual([DARK.warning]);
   });
 
   it.each([60, 100, 180])("fits %i columns, dropping the overlap words before the buttons", (columns) => {
@@ -267,7 +284,7 @@ describe("review band row", () => {
 
 describe("review buttons", () => {
   it("Details prints the whole directive", () => {
-    expect(directiveText(done("findings"))?.split("\n")).toEqual([
+    expect(directiveRows(done("findings"))).toEqual([
       "Change review: review required",
       "2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py.",
       "Reasons:",
@@ -278,8 +295,8 @@ describe("review buttons", () => {
       "  Inspect src/requests/_internal_utils.py:55 (chf_1d478916e70baee8)",
       "  Run: tests/test_requests.py tests/test_utils.py",
     ]);
-    expect(directiveText(done("nothing-to-score"))).toBeNull();
-    expect(directiveText({ phase: "reviewing" })).toBeNull();
+    expect(directiveRows(done("nothing-to-score"))).toBeNull();
+    expect(directiveRows({ phase: "reviewing" })).toBeNull();
   });
 
   it("Run tests submits the tests with their basis in words", () => {
@@ -319,7 +336,7 @@ describe("card beneath the answer", () => {
   });
 
   it("keeps a line another hook already put beneath the answer", () => {
-    expect(withCard({ text: "TL;DR" }, "done", "card")).toEqual({ text: "TL;DR\ncard" });
+    expect(withCard({ text: "TL;DR" }, "done", "card")).toEqual({ text: "TL;DR · card" });
   });
 
   it("passes on a result it cannot read", () => {

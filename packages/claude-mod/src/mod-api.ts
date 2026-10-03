@@ -46,15 +46,24 @@ export interface ModApi {
     connect(server: string): Promise<{ isConnected: boolean; server?: string }>;
     call(server: string, tool: string, args?: Record<string, unknown>): Promise<McpToolResult>;
   };
+  prompt: {
+    /** A visible prompt, run once the session is idle. */
+    submit(input: { text: string }): Promise<unknown>;
+  };
   ui: {
     invalidate(event: "ui.render"): void;
-    log(text: string, options: { to: "debug" }): void;
+    /** `transcript`: a dim row of its own; `debug`: the debug log alone. */
+    log(text: string, options: { to: "debug" | "transcript" }): void;
     resolve(e: { props: object }): Record<string, (props: Record<string, unknown>) => unknown>;
   };
 }
 
 export interface TurnCompleteEvent {
   agentId?: string;
+  /** Claude's final text this turn. */
+  answer?: string;
+  reason?: "answer" | "aborted" | "refusal" | "error";
+  isAborted?: boolean;
 }
 
 /** A tool call as `tool.call` sees it: the tool's own arguments ride beside these keys. */
@@ -101,6 +110,7 @@ export type PluginOptions = Readonly<Record<string, string | number | boolean | 
 export interface On {
   (event: "session.start", hook: Hook<unknown>): unknown;
   (event: "turn.complete", hook: Hook<TurnCompleteEvent>): unknown;
+  (event: "turn.start", hook: Hook<unknown>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;
   (event: "tool.call", hook: Hook<ToolCallEvent>): unknown;
   (event: "tool.check", hook: ($: ModApi, e: ToolCheckEvent, next: CheckNext) => Promise<unknown>): unknown;

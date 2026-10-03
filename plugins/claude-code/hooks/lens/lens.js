@@ -334,7 +334,7 @@ __name(readFreshness, "readFreshness");
 
 // src/data/mcp.ts
 var PLUGIN_NAME = "repowise";
-var LENS_TOOLS = ["get_context"];
+var LENS_TOOLS = ["get_context", "get_change_risk"];
 var PLUGIN_SERVER_FORMS = ["plugin:repowise:repowise", "plugin_repowise_repowise"];
 var DEFAULT_TIMEOUT_MS = 1e4;
 var resolvedServer = null;
@@ -399,6 +399,18 @@ async function fetchFileContext(host, path) {
   };
 }
 __name(fetchFileContext, "fetchFileContext");
+
+// src/format.ts
+function countOf(n, singular, plural) {
+  return `${n.toLocaleString("en-US")} ${n === 1 ? singular : plural}`;
+}
+__name(countOf, "countOf");
+function fit(text2, columns) {
+  if (columns <= 0) return "";
+  if (text2.length <= columns) return text2;
+  return `${text2.slice(0, columns - 1).trimEnd()}…`;
+}
+__name(fit, "fit");
 
 // src/model/events.ts
 function fromTurnComplete(e) {
@@ -477,6 +489,15 @@ function reduceReview(state2, action) {
   }
 }
 __name(reduceReview, "reduceReview");
+var EDIT_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+function isFileEdit(e, result) {
+  if (typeof e.tool !== "string" || !EDIT_TOOLS2.has(e.tool)) return false;
+  if (typeof e.tool_use_id === "string" && e.tool_use_id.startsWith("toolu_plugin_")) return false;
+  if (typeof result !== "object" || result === null) return false;
+  const r = result;
+  return r.deny === void 0 && r.isError !== true;
+}
+__name(isFileEdit, "isFileEdit");
 function testsToRun(risk) {
   const block = risk.impacted_tests;
   const tests = block?.tests_to_run ?? [];
@@ -545,18 +566,6 @@ function reduce(state2, action) {
 }
 __name(reduce, "reduce");
 
-// src/format.ts
-function countOf(n, singular, plural) {
-  return `${n.toLocaleString("en-US")} ${n === 1 ? singular : plural}`;
-}
-__name(countOf, "countOf");
-function fit(text2, columns) {
-  if (columns <= 0) return "";
-  if (text2.length <= columns) return text2;
-  return `${text2.slice(0, columns - 1).trimEnd()}…`;
-}
-__name(fit, "fit");
-
 // src/views/copy.ts
 var HINTS = {
   "no-server": "Lens map needs the local server: repowise serve --no-ui",
@@ -609,6 +618,15 @@ var REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
 var RUN_TESTS = "Run tests";
 var DETAILS = "Details";
 var OVERLAP_MARK = "◦";
+function reviewFailed(message) {
+  return `Change review could not run: ${message}`;
+}
+__name(reviewFailed, "reviewFailed");
+function reviewScope(ref, workingTree, changed) {
+  const where = workingTree ? ref : `${ref} (no uncommitted changes)`;
+  return changed === null ? where : `${where}, ${countOf(changed, "changed file", "changed files")}`;
+}
+__name(reviewScope, "reviewScope");
 function noNewFindings(analyzed) {
   return `no new findings in ${analyzed === 1 ? "the 1 changed file" : `all ${analyzed.toLocaleString("en-US")} changed files`}`;
 }
@@ -636,10 +654,59 @@ function resolvedToo(resolved) {
   return `${countOf(resolved, "finding", "findings")} resolved`;
 }
 __name(resolvedToo, "resolvedToo");
+function findingLine(f) {
+  const at = f.lines === void 0 ? f.path : `${f.path}:${f.lines[0]}`;
+  return `${f.severity} ${f.biomarker}: ${f.reason} (${at})`;
+}
+__name(findingLine, "findingLine");
+function moreFindings(more) {
+  return `and ${more.toLocaleString("en-US")} more (Details)`;
+}
+__name(moreFindings, "moreFindings");
+function partialScope(analyzed, changed, reasons) {
+  const why = Object.entries(reasons).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
+  const skipped = changed - analyzed;
+  return `Scope: compared ${analyzed.toLocaleString("en-US")} of ${countOf(changed, "changed file", "changed files")}; ${skipped.toLocaleString("en-US")} not analysed${why ? ` (${why})` : ""}, so this is not a clean bill`;
+}
+__name(partialScope, "partialScope");
+function diffShape(percentile) {
+  const where = percentile === null || percentile === void 0 ? "not ranked (no recent commits to compare)" : `bigger than ${Math.round(percentile)}% of this repo's recent commits`;
+  return `Diff shape: ${where}; size, not danger`;
+}
+__name(diffShape, "diffShape");
+function testsBasis(measured) {
+  return measured ? "measured by stored coverage" : "inferred from the dependency graph, not measured";
+}
+__name(testsBasis, "testsBasis");
+function testsLine(t) {
+  const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
+  return `Tests to run: ${count}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
+}
+__name(testsLine, "testsLine");
+function overlapLine(branches, files, more) {
+  const who = countOf(branches.length, "other branch", "other branches") + (more ? " or more" : "");
+  const what = files.length === 1 ? files[0] : countOf(files.length, "changed file", "changed files");
+  const verb = branches.length === 1 && !more ? "edits" : "edit";
+  return `${OVERLAP_MARK} ${who} also ${verb} ${what} (${branches.join(", ")})`;
+}
+__name(overlapLine, "overlapLine");
 function overlapShort(branches) {
   return `${OVERLAP_MARK} ${countOf(branches, "other branch edits", "other branches edit")} these files`;
 }
 __name(overlapShort, "overlapShort");
+function directiveLines(d) {
+  const out = [`Change review: ${d.status.replace(/_/g, " ")}`, d.headline];
+  if (d.reasons?.length) out.push("Reasons:", ...d.reasons.map((r) => `  ${r}`));
+  if (d.next_actions?.length) out.push("Next actions:", ...d.next_actions.map((a) => `  ${a}`));
+  return out;
+}
+__name(directiveLines, "directiveLines");
+function runTestsPrompt(t) {
+  const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
+  return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
+}
+__name(runTestsPrompt, "runTestsPrompt");
 
 // src/views/elements.ts
 function text(value, props = {}) {
@@ -667,6 +734,39 @@ function materialize(node, table, presses = {}) {
 }
 __name(materialize, "materialize");
 
+// ../ui/src/brand.ts
+var DARK = {
+  bgRoot: "#0e0e0f",
+  bgSurface: "#141416",
+  bgElevated: "#191a1c",
+  bgInset: "#0a0a0b",
+  textPrimary: "#f2f2f3",
+  textSecondary: "#b4b4b9",
+  textTertiary: "#7c7c82",
+  accentPrimary: "#f59520",
+  accentFill: "#f59520",
+  accentSecondary: "#a98fc4",
+  success: "#34d399",
+  warning: "#f2a03d",
+  error: "#e06a5a"
+};
+var DARK_CANVAS = {
+  nodeAtRisk: "#b0544b",
+  nodeNeedsWork: "#bd7c42",
+  nodeFair: "#a89453",
+  nodeGood: "#42906f",
+  nodeExcellent: "#5cb389",
+  nodeNeutral: "#333336",
+  caution: "#d9b04a"
+};
+var DARK_CANVAS_BAND = {
+  excellent: DARK_CANVAS.nodeExcellent,
+  good: DARK_CANVAS.nodeGood,
+  fair: DARK_CANVAS.nodeFair,
+  needs_work: DARK_CANVAS.nodeNeedsWork,
+  at_risk: DARK_CANVAS.nodeAtRisk
+};
+
 // src/views/review.ts
 var PRESS = { tests: "lens-review-tests", details: "lens-review-details" };
 function scored(risk) {
@@ -683,13 +783,13 @@ function health(risk) {
     return { words: words2, short: notCompared("") };
   }
   if (d.status === "clear_in_analyzed_scope") {
-    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: "success" };
+    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
     return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
   }
   const headline = d.headline.replace(/\.$/, "");
   const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
-  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: "error" };
-  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: "warning" };
+  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: DARK.error };
+  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: DARK.warning };
   return { words, short: PARTLY_COMPARED };
 }
 __name(health, "health");
@@ -701,6 +801,49 @@ function overlap(risk) {
   return { branches: branches.map((b) => b.branch), files, more: block?.truncated === true };
 }
 __name(overlap, "overlap");
+function isClear(risk) {
+  return risk.directive?.status === "clear_in_analyzed_scope";
+}
+__name(isClear, "isClear");
+function cardSegments(risk) {
+  const hd = risk.health_delta;
+  const ref = risk.ref ?? "working tree";
+  const workingTree = risk.working_tree !== false;
+  const h = health(risk);
+  const shared = overlap(risk);
+  if (isClear(risk) && shared === null) {
+    return [`Change review (${reviewScope(ref, workingTree, null)})`, `health: ${h.words}`];
+  }
+  const segments = [`Change review (${reviewScope(ref, workingTree, hd?.scope?.changed ?? null)})`, `Health: ${h.words}`];
+  for (const f of hd?.top_findings ?? []) segments.push(findingLine(f));
+  const more = (hd?.findings_total ?? 0) - (hd?.top_findings.length ?? 0);
+  if (more > 0) segments.push(moreFindings(more));
+  if (hd?.status === "partial" && hd.scope !== void 0) {
+    segments.push(partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {}));
+  }
+  segments.push(diffShape(risk.risk_percentile));
+  const tests = testsToRun(risk);
+  if (tests !== null) segments.push(testsLine(tests));
+  if (shared !== null) segments.push(`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`);
+  return segments;
+}
+__name(cardSegments, "cardSegments");
+function reviewText(outcome) {
+  switch (outcome.phase) {
+    case "none":
+    case "reviewing":
+      return null;
+    case "failed":
+      return outcome.reason === "timeout" ? REVIEW_TIMED_OUT : reviewFailed(outcome.message);
+    case "done": {
+      const risk = outcome.risk;
+      if (risk.error !== void 0) return reviewFailed(risk.error);
+      if (risk.status === "nothing_to_score") return null;
+      return cardSegments(risk).join(" · ");
+    }
+  }
+}
+__name(reviewText, "reviewText");
 function buttons(risk) {
   const out = [];
   if (testsToRun(risk) !== null) out.push(button(PRESS.tests, "1", RUN_TESTS));
@@ -713,6 +856,8 @@ function reviewBandRow(outcome, columns) {
   if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
   if (outcome.phase !== "done" || !scored(outcome.risk)) return null;
   const risk = outcome.risk;
+  const shared = overlap(risk);
+  if (isClear(risk) && testsToRun(risk) === null && shared === null) return null;
   const pressable = buttons(risk);
   const buttonCells = pressable.reduce(
     (n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP,
@@ -720,7 +865,6 @@ function reviewBandRow(outcome, columns) {
   );
   const room = Math.max(0, columns - buttonCells);
   const h = health(risk);
-  const shared = overlap(risk);
   const words = fit(`review · health: ${h.short}`, room);
   const parts = [text(words, h.color === void 0 ? { dimColor: true } : { color: h.color })];
   const left = room - words.length;
@@ -732,6 +876,24 @@ function reviewBandRow(outcome, columns) {
   ]);
 }
 __name(reviewBandRow, "reviewBandRow");
+function directiveRows(outcome) {
+  if (outcome.phase !== "done" || outcome.risk.directive === void 0) return null;
+  return directiveLines(outcome.risk.directive);
+}
+__name(directiveRows, "directiveRows");
+function runTestsText(outcome) {
+  if (outcome.phase !== "done") return null;
+  const tests = testsToRun(outcome.risk);
+  return tests === null ? null : runTestsPrompt(tests);
+}
+__name(runTestsText, "runTestsText");
+function withCard(result, answer, card) {
+  if (typeof result !== "object" || result === null) return result;
+  const r = result;
+  if (typeof r.text !== "string") return result;
+  return { ...r, text: r.text === answer ? card : `${r.text} · ${card}` };
+}
+__name(withCard, "withCard");
 
 // src/views/band.ts
 var MAX_BAND_ROWS = 2;
@@ -875,6 +1037,12 @@ var savingsBusy = false;
 var savingsAskedAt = Number.NEGATIVE_INFINITY;
 var squeezes = /* @__PURE__ */ new Map();
 var contextAsked = /* @__PURE__ */ new Set();
+var reviewOn = true;
+var reviewGeneration = 0;
+var editsThisTurn = 0;
+var started = null;
+var START_WAIT_MS = 1e3;
+var ERROR_CELLS = 160;
 function bind($) {
   const host = {
     session: { cwd: /* @__PURE__ */ __name(() => $.session.cwd(), "cwd") },
@@ -965,6 +1133,9 @@ async function onSessionStart($, e, next) {
   try {
     generation++;
     state = initialSession;
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started = null;
     contextAsked.clear();
     squeezes.clear();
     savingsBase = null;
@@ -989,16 +1160,121 @@ async function onTurnComplete($, e, next) {
   } catch (err) {
     b.debug(`turn.complete failed: ${String(err)}`);
   }
-  return next(e);
+  const result = await next(e);
+  if (!reviewOn || e.agentId !== void 0 || editsThisTurn === 0) return result;
+  if (e.isAborted === true || e.reason === "aborted" || e.reason === "error") return result;
+  try {
+    const card = await finishReview(b);
+    return card === null ? result : withCard(result, e.answer ?? "", card);
+  } catch (err) {
+    b.debug(`change review failed: ${String(err)}`);
+    return result;
+  }
 }
 __name(onTurnComplete, "onTurnComplete");
+async function fetchReview(b, host) {
+  try {
+    const risk = await callTool(host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1e3 });
+    return { type: "reviewed", risk };
+  } catch (err) {
+    b.debug(`change review failed: ${String(err)}`);
+    const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
+    return { type: "reviewFailed", reason: err instanceof Error && err.name === "TimeoutError" ? "timeout" : "error", message };
+  }
+}
+__name(fetchReview, "fetchReview");
+function startReview(b) {
+  let markStarted = /* @__PURE__ */ __name(() => void 0, "markStarted");
+  const callStarted = new Promise((resolve) => markStarted = resolve);
+  const host = {
+    ...b.host,
+    mcp: {
+      ...b.host.mcp,
+      call: /* @__PURE__ */ __name((server, tool, args) => {
+        markStarted();
+        return b.host.mcp.call(server, tool, args);
+      }, "call")
+    }
+  };
+  const review = {
+    gen: reviewGeneration,
+    covers: editsThisTurn,
+    settled: false,
+    callStarted,
+    outcome: fetchReview(b, host)
+  };
+  void review.outcome.then(() => {
+    review.settled = true;
+  });
+  started = review;
+  return review;
+}
+__name(startReview, "startReview");
+async function reviewAfterEdit(b) {
+  editsThisTurn++;
+  dispatch(b, { type: "fileEdited" });
+  if (started !== null && started.gen === reviewGeneration && !started.settled) return;
+  const review = startReview(b);
+  let timer;
+  const cap = new Promise((resolve) => timer = setTimeout(resolve, START_WAIT_MS));
+  await Promise.race([review.callStarted, review.outcome, cap]);
+  clearTimeout(timer);
+}
+__name(reviewAfterEdit, "reviewAfterEdit");
+async function finishReview(b) {
+  const gen = reviewGeneration;
+  const covering = started !== null && started.gen === gen && started.covers === editsThisTurn;
+  const review = covering && started !== null ? started : startReview(b);
+  if (!review.settled) dispatch(b, { type: "reviewStarted" });
+  let action = await review.outcome;
+  if (covering && action.type === "reviewFailed" && action.reason === "error" && gen === reviewGeneration) {
+    action = await startReview(b).outcome;
+  }
+  if (gen !== reviewGeneration) return null;
+  dispatch(b, action);
+  return reviewText(state.review.outcome);
+}
+__name(finishReview, "finishReview");
+async function onTurnStart($, e, next) {
+  try {
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started = null;
+    dispatch(bind($), { type: "turnStarted" });
+  } catch (err) {
+    bind($).debug(`turn.start failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onTurnStart, "onTurnStart");
+function pressRunTests($) {
+  try {
+    const prompt = runTestsText(state.review.outcome);
+    if (prompt === null) return;
+    $.prompt.submit({ text: prompt }).catch((err) => bind($).debug(`run tests failed: ${String(err)}`));
+  } catch (err) {
+    bind($).debug(`run tests failed: ${String(err)}`);
+  }
+}
+__name(pressRunTests, "pressRunTests");
+function pressDetails($) {
+  try {
+    for (const row of directiveRows(state.review.outcome) ?? []) $.ui.log(row, { to: "transcript" });
+  } catch (err) {
+    bind($).debug(`details failed: ${String(err)}`);
+  }
+}
+__name(pressDetails, "pressDetails");
 async function onBand($, e, next) {
   const theirs = await next(e);
   try {
     const tree = bandView(state, { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true });
     if (tree === null) return theirs;
     const elements = $.ui.resolve(e);
-    const ours = materialize(tree, elements);
+    const ours = materialize(tree, elements, {
+      [PRESS.tests]: () => pressRunTests($),
+      [PRESS.details]: () => pressDetails($)
+    });
     const box2 = elements["Box"];
     if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
     return box2({ flexDirection: "column", children: [ours, theirs] });
@@ -1033,11 +1309,18 @@ async function onToolCall($, e, next) {
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
+  let result;
   try {
-    return await next(e);
+    result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
+  try {
+    if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
+  } catch (err) {
+    b.debug(`tool.call failed: ${String(err)}`);
+  }
+  return result;
 }
 __name(onToolCall, "onToolCall");
 async function onToolCheck($, e, next) {
@@ -1116,7 +1399,9 @@ async function onToolUse($, e, next) {
 }
 __name(onToolUse, "onToolUse");
 function register(on, options = {}) {
+  reviewOn = options["lens_review"] !== false;
   on("session.start", onSessionStart);
+  if (reviewOn) on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
   on("tool.call", onToolCall);

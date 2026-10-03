@@ -6,8 +6,9 @@
 
 import { getSavings } from "@repowise-dev/api-client/costs";
 import { discover, readFreshness } from "./data/discovery";
-import { fetchFileContext, isOwnLensCall, resetMcp, warmMcp } from "./data/mcp";
+import { callTool, fetchFileContext, isOwnLensCall, resetMcp, warmMcp } from "./data/mcp";
 import { withTimeout } from "./data/transport";
+import { fit } from "./format";
 import type { Host } from "./host";
 import type {
   CheckNext,
@@ -28,6 +29,9 @@ import { initialSession, reduce, type SavingsDelta, type SessionAction, type Ses
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
+import { isFileEdit, type ChangeRisk } from "./model/review";
+import { REVIEW_TIMEOUT_S } from "./views/copy";
+import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
 import { spinnerSuffix } from "./views/spinner";
 import { bashText, parseSqueeze, type Squeeze } from "./model/squeeze";
 import { squeezeView } from "./views/squeeze";
@@ -59,6 +63,32 @@ let savingsAskedAt = Number.NEGATIVE_INFINITY;
 const squeezes = new Map<string, Squeeze>();
 /** Files whose context is being fetched, or that the index does not know. */
 const contextAsked = new Set<string>();
+/** The `lens_review` toggle, fixed for one activation. */
+let reviewOn = true;
+/** Bumped when a main turn starts, so a review still in flight for the last one is dropped. */
+let reviewGeneration = 0;
+/** Edits that landed since the main turn started. */
+let editsThisTurn = 0;
+
+/** A review started during this turn: how many of its edits it covers, and its outcome. */
+interface StartedReview {
+  gen: number;
+  covers: number;
+  settled: boolean;
+  /** Resolves once `$.mcp.call` has been invoked. */
+  callStarted: Promise<void>;
+  /** Never rejects: a failure is a `reviewFailed` action. */
+  outcome: Promise<SessionAction>;
+}
+let started: StartedReview | null = null;
+/**
+ * How long an edit's tool.call stays live waiting for its review call to
+ * start (the server name is usually resolved already, so this is microtasks).
+ * A call that starts later may be refused; the turn's end then retries.
+ */
+const START_WAIT_MS = 1_000;
+/** Cut so an error stays one line under the answer. */
+const ERROR_CELLS = 160;
 
 /** What a background refresh needs from a hook's `$`, as closures (the engine forbids keeping `$` itself). */
 interface Bound {
@@ -177,6 +207,9 @@ async function onSessionStart($: ModApi, e: unknown, next: (e: unknown) => Promi
   try {
     generation++;
     state = initialSession;
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started = null;
     contextAsked.clear();
     squeezes.clear();
     savingsBase = null;
@@ -207,7 +240,130 @@ async function onTurnComplete(
   } catch (err) {
     b.debug(`turn.complete failed: ${String(err)}`);
   }
+  const result = await next(e);
+  if (!reviewOn || e.agentId !== undefined || editsThisTurn === 0) return result;
+  // An interrupted or failed turn may have stopped mid-change: no review.
+  if (e.isAborted === true || e.reason === "aborted" || e.reason === "error") return result;
+  try {
+    const card = await finishReview(b);
+    return card === null ? result : withCard(result, e.answer ?? "", card);
+  } catch (err) {
+    b.debug(`change review failed: ${String(err)}`);
+    return result;
+  }
+}
+
+async function fetchReview(b: Bound, host: Host): Promise<SessionAction> {
+  try {
+    const risk = await callTool<ChangeRisk>(host, "get_change_risk", {}, { timeoutMs: REVIEW_TIMEOUT_S * 1000 });
+    return { type: "reviewed", risk };
+  } catch (err) {
+    b.debug(`change review failed: ${String(err)}`);
+    const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
+    return { type: "reviewFailed", reason: err instanceof Error && err.name === "TimeoutError" ? "timeout" : "error", message };
+  }
+}
+
+/**
+ * Starts a review of the working tree, not awaited. Only ever called while a
+ * Lens hook is live (an edit's tool.call, or turn.complete), which is when the
+ * engine approves the call.
+ */
+function startReview(b: Bound): StartedReview {
+  let markStarted: () => void = () => undefined;
+  const callStarted = new Promise<void>((resolve) => (markStarted = resolve));
+  const host: Host = {
+    ...b.host,
+    mcp: {
+      ...b.host.mcp,
+      call: (server, tool, args) => {
+        markStarted();
+        return b.host.mcp.call(server, tool, args);
+      },
+    },
+  };
+  const review: StartedReview = {
+    gen: reviewGeneration,
+    covers: editsThisTurn,
+    settled: false,
+    callStarted,
+    outcome: fetchReview(b, host),
+  };
+  void review.outcome.then(() => {
+    review.settled = true;
+  });
+  started = review;
+  return review;
+}
+
+/**
+ * After an edit lands: start a review now unless one is already in flight,
+ * and keep the calling hook live until its call has started (or a short cap).
+ */
+async function reviewAfterEdit(b: Bound): Promise<void> {
+  editsThisTurn++;
+  dispatch(b, { type: "fileEdited" });
+  if (started !== null && started.gen === reviewGeneration && !started.settled) return;
+  const review = startReview(b);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<void>((resolve) => (timer = setTimeout(resolve, START_WAIT_MS)));
+  await Promise.race([review.callStarted, review.outcome, cap]);
+  clearTimeout(timer);
+}
+
+/**
+ * At the end of the turn: the started review when it covers every edit of the
+ * turn (usually already landed), else one more. Null when a new turn started
+ * meanwhile.
+ */
+async function finishReview(b: Bound): Promise<string | null> {
+  const gen = reviewGeneration;
+  const covering = started !== null && started.gen === gen && started.covers === editsThisTurn;
+  const review = covering && started !== null ? started : startReview(b);
+  if (!review.settled) dispatch(b, { type: "reviewStarted" });
+  let action = await review.outcome;
+  // A review started during an edit can fail where one awaited here would not
+  // (its call started after that hook returned): try once more, awaited.
+  if (covering && action.type === "reviewFailed" && action.reason === "error" && gen === reviewGeneration) {
+    action = await startReview(b).outcome;
+  }
+  if (gen !== reviewGeneration) return null;
+  dispatch(b, action);
+  return reviewText(state.review.outcome);
+}
+
+async function onTurnStart($: ModApi, e: unknown, next: (e: unknown) => Promise<unknown>): Promise<unknown> {
+  try {
+    reviewGeneration++;
+    editsThisTurn = 0;
+    started = null;
+    dispatch(bind($), { type: "turnStarted" });
+  } catch (err) {
+    bind($).debug(`turn.start failed: ${String(err)}`);
+  }
   return next(e);
+}
+
+/** `Run tests`: a visible prompt naming the tests; nothing reaches Claude without this press. */
+// A press runs after the render hook that drew the button returned, with
+// that hook's `$`; the docs' own Button examples call `$` from onPress.
+function pressRunTests($: ModApi): void {
+  try {
+    const prompt = runTestsText(state.review.outcome);
+    if (prompt === null) return;
+    $.prompt.submit({ text: prompt }).catch((err: unknown) => bind($).debug(`run tests failed: ${String(err)}`));
+  } catch (err) {
+    bind($).debug(`run tests failed: ${String(err)}`);
+  }
+}
+
+/** `Details`: the review's full directive in the transcript, one row per line, for the user only. */
+function pressDetails($: ModApi): void {
+  try {
+    for (const row of directiveRows(state.review.outcome) ?? []) $.ui.log(row, { to: "transcript" });
+  } catch (err) {
+    bind($).debug(`details failed: ${String(err)}`);
+  }
 }
 
 // The band is shared: a mod's tree replaces what the mods after it draw
@@ -219,7 +375,10 @@ async function onBand($: ModApi, e: RenderEvent, next: (e: RenderEvent) => Promi
     const tree = bandView(state, { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true });
     if (tree === null) return theirs;
     const elements = $.ui.resolve(e);
-    const ours = materialize(tree, elements);
+    const ours = materialize(tree, elements, {
+      [PRESS.tests]: () => pressRunTests($),
+      [PRESS.details]: () => pressDetails($),
+    });
     const box = elements["Box"];
     if (theirs === null || theirs === undefined || box === undefined) return ours;
     return box({ flexDirection: "column", children: [ours, theirs] });
@@ -263,11 +422,18 @@ async function onToolCall($: ModApi, e: ToolCallEvent, next: (e: ToolCallEvent) 
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
+  let result: unknown;
   try {
-    return await next(e);
+    result = await next(e);
   } finally {
     if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
   }
+  try {
+    if (reviewOn && isFileEdit(e, result)) await reviewAfterEdit(b);
+  } catch (err) {
+    b.debug(`tool.call failed: ${String(err)}`);
+  }
+  return result;
 }
 
 // The one approval Lens gives: its own read-only lookups. Every other
@@ -362,7 +528,9 @@ async function onToolUse($: ModApi, e: ToolUseEvent, next: (e: ToolUseEvent) => 
 
 // `options` are the plugin's userConfig toggles; a change reloads the module.
 export function register(on: On, options: PluginOptions = {}): void {
+  reviewOn = options["lens_review"] !== false;
   on("session.start", onSessionStart);
+  if (reviewOn) on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
   on("tool.call", onToolCall);

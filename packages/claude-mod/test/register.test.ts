@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckNext, Hook, McpToolResult, ModApi, On, ToolCheckEvent } from "../src/mod-api";
-import { fixture } from "./fake-host";
+import { DARK } from "@repowise-dev/ui/brand";
+import { TimeoutError } from "../src/data/transport";
+import { fixture, mcpResult } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
 
@@ -19,14 +21,22 @@ async function load(options: Record<string, boolean> = {}): Promise<Hooks> {
 
 interface DollarOptions {
   indexed?: boolean;
-  mcp?: () => Promise<McpToolResult>;
+  mcp?: (server: string, tool: string) => Promise<McpToolResult>;
   /** A live local server listing this repo, answering the savings route with each payload in turn. */
   savings?: unknown[];
   /** The repo id that server lists; default `r1`. */
   repoId?: string;
 }
 
-type Calls = { cwd: number; invalidate: number; logs: string[]; mcp: unknown[][]; savings: number };
+type Calls = {
+  cwd: number;
+  invalidate: number;
+  logs: string[];
+  mcp: unknown[][];
+  savings: number;
+  submitted: string[];
+  transcript: string[];
+};
 
 const LOCK = "/work/app/.repowise/serve.lock.json";
 const STATE = "/work/app/.repowise/state.json";
@@ -70,7 +80,7 @@ function mcpFor(o: DollarOptions, calls: Calls): ModApi["mcp"] {
     connect: async () => ({ isConnected: true, server: "plugin:repowise:repowise" }),
     call: async (...args) => {
       calls.mcp.push(args);
-      return o.mcp ? o.mcp() : Promise.reject(new Error("no MCP in this test"));
+      return o.mcp ? o.mcp(args[0], args[1]) : Promise.reject(new Error("no MCP in this test"));
     },
   };
 }
@@ -80,19 +90,29 @@ function uiFor(calls: Calls): ModApi["ui"] {
     invalidate: () => {
       calls.invalidate++;
     },
-    log: (text) => {
-      calls.logs.push(text);
+    log: (text, options) => {
+      (options.to === "transcript" ? calls.transcript : calls.logs).push(text);
     },
     resolve: () => ({
       Box: (props) => ({ el: "Box", props }),
       Text: (props) => ({ el: "Text", props }),
+      Button: (props) => ({ el: "Button", props }),
     }),
+  };
+}
+
+function promptFor(calls: Calls): ModApi["prompt"] {
+  return {
+    submit: async ({ text }) => {
+      calls.submitted.push(text);
+      return { text };
+    },
   };
 }
 
 /** A `$` for a git work tree: no index by default, an index with `indexed`, a live server with `savings`. */
 function fakeDollar(o: DollarOptions = {}) {
-  const calls: Calls = { cwd: 0, invalidate: 0, logs: [], mcp: [], savings: 0 };
+  const calls: Calls = { cwd: 0, invalidate: 0, logs: [], mcp: [], savings: 0, submitted: [], transcript: [] };
   let release: () => void = () => {};
   const gate = { hold: false, wait: Promise.resolve() };
   const session: ModApi["session"] = {
@@ -102,7 +122,7 @@ function fakeDollar(o: DollarOptions = {}) {
       return "/work/app";
     },
   };
-  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), ui: uiFor(calls) };
+  const $: ModApi = { session, fs: fsFor(o), process: processFake, http: httpFor(o, calls), mcp: mcpFor(o, calls), prompt: promptFor(calls), ui: uiFor(calls) };
   const hold = () => {
     gate.hold = true;
     gate.wait = new Promise<void>((resolve) => (release = resolve));
@@ -127,6 +147,7 @@ describe("register", () => {
       "tool.call",
       "tool.check",
       "turn.complete",
+      "turn.start",
       "ui.render:AbovePrompt",
       "ui.render:Spinner",
       "ui.render:ToolResult",
@@ -246,6 +267,8 @@ describe("tool.check", () => {
   it("approves Lens's own lookup", async () => {
     const { $ } = fakeDollar();
     expect(await hooks["tool.check"]!($, own, checkNext("repowise", core))).toMatchObject({ decision: "allow" });
+    const review = { ...own, tool: "mcp__plugin_repowise_repowise__get_change_risk" };
+    expect(await hooks["tool.check"]!($, review, checkNext("repowise", core))).toMatchObject({ decision: "allow" });
   });
 
   it("returns the engine's verdict for Claude's call, another plugin's call, and any other tool", async () => {
@@ -544,5 +567,206 @@ describe("follow-ups", () => {
       }
       return {};
     });
+  });
+});
+
+describe("change review", () => {
+  const EDIT = { tool: "Edit", tool_use_id: "toolu_e1", file_path: "/elsewhere/x.py" };
+  const EDITED = { result: { type: "update" }, text: "The file has been updated." };
+  const DONE = { turnId: "t1", answer: "Done.", reason: "answer" as const };
+  const answered = async () => ({ text: "Done." });
+  const FINDINGS = JSON.parse(fixture("change-risk/findings.json")) as unknown;
+
+  /** MCP that answers get_change_risk from `risk`, counting the calls. */
+  function reviewing(risk: () => Promise<McpToolResult>) {
+    const d = fakeDollar({ mcp: (_server, tool) => (tool === "get_change_risk" ? risk() : Promise.reject(new Error(tool))) });
+    const reviews = () => d.calls.mcp.filter((c) => c[1] === "get_change_risk").length;
+    return { ...d, reviews };
+  }
+
+  /** A session whose turn edited a file once. */
+  async function editedTurn(risk: () => Promise<McpToolResult>) {
+    const d = reviewing(risk);
+    await hooks["session.start"]!(d.$, {}, async () => undefined);
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
+    await hooks["tool.call"]!(d.$, EDIT, async () => EDITED);
+    return d;
+  }
+
+  /** The band's drawn tree as one string. */
+  const bandText = async ($: ModApi) => JSON.stringify(await hooks["ui.render:AbovePrompt"]!($, band, async () => null));
+
+  it("starts the review when the edit lands and puts the card beneath the answer as one row", async () => {
+    const d = await editedTurn(async () => mcpResult(FINDINGS));
+    // Started from the edit's own tool.call, before the turn ends.
+    expect(d.calls.mcp).toEqual([["plugin:repowise:repowise", "get_change_risk", {}]]);
+    await settle();
+    const result = (await hooks["turn.complete"]!(d.$, DONE, answered)) as { text: string };
+    // The landed review is reused: no second call.
+    expect(d.reviews()).toBe(1);
+    expect(result.text).not.toContain("\n");
+    expect(result.text.split(" · ").slice(0, 2)).toEqual([
+      "Change review (working tree, 1 changed file)",
+      "Health: 2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py",
+    ]);
+    const drawn = await bandText(d.$);
+    expect(drawn).toContain("review · health: 2 new findings, review required");
+    expect(drawn).toContain(`"color":"${DARK.error}"`);
+  });
+
+  it("an edit while a review is in flight starts none; the turn's end starts one covering it", async () => {
+    let land: (r: McpToolResult) => void = () => undefined;
+    let n = 0;
+    const d = await editedTurn(() => (n++ === 0 ? new Promise((resolve) => (land = resolve)) : Promise.resolve(mcpResult(FINDINGS))));
+    await hooks["tool.call"]!(d.$, { ...EDIT, tool_use_id: "toolu_e2" }, async () => EDITED);
+    expect(d.reviews()).toBe(1);
+    const result = (await hooks["turn.complete"]!(d.$, DONE, answered)) as { text: string };
+    expect(d.reviews()).toBe(2);
+    expect(result.text).toContain("Change review (working tree, 1 changed file)");
+    land(mcpResult(FINDINGS));
+  });
+
+  it("an edit after a review landed starts a fresh one, which the turn's end then reuses", async () => {
+    const d = await editedTurn(async () => mcpResult(FINDINGS));
+    await settle();
+    await hooks["tool.call"]!(d.$, { ...EDIT, tool_use_id: "toolu_e2" }, async () => EDITED);
+    expect(d.reviews()).toBe(2);
+    await settle();
+    await hooks["turn.complete"]!(d.$, DONE, answered);
+    expect(d.reviews()).toBe(2);
+  });
+
+  it("a review started at an edit that failed is tried once more, awaited, at the turn's end", async () => {
+    let n = 0;
+    const d = await editedTurn(async () => {
+      if (n++ === 0) throw new Error("refused: no verdict");
+      return mcpResult(FINDINGS);
+    });
+    await settle();
+    const result = (await hooks["turn.complete"]!(d.$, DONE, answered)) as { text: string };
+    expect(d.reviews()).toBe(2);
+    expect(result.text).toContain("Health: 2 new findings need review");
+  });
+
+  it("shows the placeholder in the band while the turn waits for the review", async () => {
+    let land: (r: McpToolResult) => void = () => undefined;
+    const d = await editedTurn(() => new Promise((resolve) => (land = resolve)));
+    const pending = hooks["turn.complete"]!(d.$, DONE, answered);
+    await settle();
+    expect(await bandText(d.$)).toContain("Reviewing the change...");
+    land(mcpResult(FINDINGS));
+    await pending;
+    expect(await bandText(d.$)).not.toContain("Reviewing the change...");
+  });
+
+  it("Run tests submits a visible prompt naming the tests; Details prints the directive row by row", async () => {
+    const d = await editedTurn(async () => mcpResult(FINDINGS));
+    await hooks["turn.complete"]!(d.$, DONE, answered);
+    expect(d.calls.submitted).toEqual([]);
+    const tree = (await hooks["ui.render:AbovePrompt"]!(d.$, band, async () => null)) as unknown;
+    const buttons: Array<{ key: string; onPress: () => void }> = [];
+    const walk = (n: unknown): void => {
+      const node = n as { el?: string; props?: { key?: string; onPress?: () => void; children?: unknown } };
+      if (node?.el === "Button") buttons.push(node.props as { key: string; onPress: () => void });
+      const kids = node?.props?.children;
+      if (Array.isArray(kids)) kids.forEach(walk);
+    };
+    walk(tree);
+    expect(buttons.map((b) => b.key)).toEqual(["lens-review-tests", "lens-review-details"]);
+    buttons[0]!.onPress();
+    buttons[1]!.onPress();
+    await settle();
+    expect(d.calls.submitted).toEqual([
+      "Run the tests Repowise names for this change, inferred from the dependency graph, not measured: tests/test_requests.py tests/test_utils.py",
+    ]);
+    expect(d.calls.transcript.slice(0, 2)).toEqual([
+      "Change review: review required",
+      "2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py.",
+    ]);
+    expect(d.calls.transcript.every((row) => !row.includes("\n"))).toBe(true);
+
+    // A press that fails says so in the debug log and never throws.
+    d.$.ui.log = (text, options) => {
+      if (options.to === "transcript") throw new Error("gone");
+      d.calls.logs.push(text);
+    };
+    d.$.prompt.submit = () => {
+      throw new Error("no prompt");
+    };
+    expect(() => buttons[1]!.onPress()).not.toThrow();
+    expect(() => buttons[0]!.onPress()).not.toThrow();
+    expect(d.calls.logs).toEqual(expect.arrayContaining(["lens: details failed: Error: gone", "lens: run tests failed: Error: no prompt"]));
+  });
+
+  it("a turn with no edit, a refused edit and a Read are quiet", async () => {
+    const d = reviewing(async () => mcpResult(FINDINGS));
+    await hooks["session.start"]!(d.$, {}, async () => undefined);
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
+    await hooks["tool.call"]!(d.$, EDIT, async () => ({ deny: "no" }));
+    await hooks["tool.call"]!(d.$, { ...EDIT, tool: "Read" }, async () => EDITED);
+    const result = { text: "Done." };
+    expect(await hooks["turn.complete"]!(d.$, DONE, async () => result)).toBe(result);
+    expect(d.reviews()).toBe(0);
+  });
+
+  it.each([
+    ["a subagent's turn", { agentId: "sub" }],
+    ["an interrupted turn", { reason: "aborted", isAborted: true }],
+    ["a turn an API error ended", { reason: "error" }],
+  ])("%s shows no card", async (_name, extra) => {
+    const d = await editedTurn(async () => mcpResult(FINDINGS));
+    const result = { text: "Done." };
+    expect(await hooks["turn.complete"]!(d.$, { ...DONE, ...extra }, async () => result)).toBe(result);
+    expect(await bandText(d.$)).not.toContain("review · health");
+  });
+
+  it("an empty diff shows no card and no band row", async () => {
+    const empty = JSON.parse(fixture("change-risk/nothing-to-score.json")) as unknown;
+    const d = await editedTurn(async () => mcpResult(empty));
+    const result = { text: "Done." };
+    expect(await hooks["turn.complete"]!(d.$, DONE, async () => result)).toBe(result);
+    expect(await bandText(d.$)).not.toContain("review");
+  });
+
+  it("a new turn retires the last review's row", async () => {
+    const d = await editedTurn(async () => mcpResult(FINDINGS));
+    await hooks["turn.complete"]!(d.$, DONE, answered);
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
+    expect(await bandText(d.$)).not.toContain("review · health");
+  });
+
+  it("a review still in flight when the next turn starts is dropped", async () => {
+    let land: (r: McpToolResult) => void = () => undefined;
+    const d = await editedTurn(() => new Promise((resolve) => (land = resolve)));
+    const result = { text: "Done." };
+    const pending = hooks["turn.complete"]!(d.$, DONE, async () => result);
+    await settle();
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
+    land(mcpResult(FINDINGS));
+    expect(await pending).toBe(result);
+    expect(await bandText(d.$)).not.toContain("review");
+  });
+
+  it("an error and a timeout each say so in one line, and the band stays quiet", async () => {
+    const failing = await editedTurn(async () => Promise.reject(new Error("server gone\nstack")));
+    const failed = (await hooks["turn.complete"]!(failing.$, DONE, answered)) as { text: string };
+    expect(failed.text).toBe("Change review could not run: server gone");
+    expect(failing.calls.logs.some((l) => l.startsWith("lens: change review failed"))).toBe(true);
+    expect(await bandText(failing.$)).not.toContain("review");
+
+    const slow = await editedTurn(async () => Promise.reject(new TimeoutError("get_change_risk", 20_000)));
+    const timedOut = (await hooks["turn.complete"]!(slow.$, DONE, answered)) as { text: string };
+    expect(timedOut.text).toBe("Change review timed out after 20 s");
+  });
+
+  it("with lens_review off, nothing is reviewed and no turn.start hook is registered", async () => {
+    hooks = await load({ lens_review: false });
+    expect(Object.keys(hooks)).not.toContain("turn.start");
+    const d = reviewing(async () => mcpResult(FINDINGS));
+    await hooks["session.start"]!(d.$, {}, async () => undefined);
+    await hooks["tool.call"]!(d.$, EDIT, async () => EDITED);
+    const result = { text: "Done." };
+    expect(await hooks["turn.complete"]!(d.$, DONE, async () => result)).toBe(result);
+    expect(d.reviews()).toBe(0);
   });
 });

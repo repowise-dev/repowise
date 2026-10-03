@@ -1,15 +1,19 @@
 /**
- * The change review: a card shown beneath Claude's answer (plain text, so its
- * words carry the meaning) and one band row with the health word in color and
- * the buttons. Built only from what `get_change_risk` returned.
+ * The change review: a card shown beneath Claude's answer and one band row with
+ * the health word in color and the buttons. Built only from what
+ * `get_change_risk` returned.
+ *
+ * The engine draws the text a `turn.complete` hook returns as one row (a line
+ * break is stored as U+FFFD), so the card is one row of segments, plain text
+ * whose words carry the meaning.
  */
 
+import { DARK } from "@repowise-dev/ui/brand";
 import { fit } from "../format";
 import { testsToRun, type ChangeRisk, type ReviewOutcome } from "../model/review";
 import {
   DETAILS,
   HEALTH_NOT_REPORTED,
-  NOTHING_TO_SCORE,
   REVIEW_TIMED_OUT,
   REVIEWING,
   RUN_TESTS,
@@ -38,8 +42,8 @@ import { box, button, text, type Node } from "./elements";
 /** Button keys; register.ts maps each to what its press runs. */
 export const PRESS = { tests: "lens-review-tests", details: "lens-review-details" } as const;
 
-/** Theme keys: green, amber and red mean health and nothing else. */
-type HealthColor = "success" | "warning" | "error";
+/** Green, amber and red mean health and nothing else (dark tokens: terminals are dark). */
+type HealthColor = typeof DARK.success | typeof DARK.warning | typeof DARK.error;
 
 interface HealthWords {
   /** The card's sentence. */
@@ -66,13 +70,13 @@ function health(risk: ChangeRisk): HealthWords {
     return { words, short: notCompared("") };
   }
   if (d.status === "clear_in_analyzed_scope") {
-    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: "success" };
+    if (hd.resolved > 0) return { words: healthImproved(hd.resolved), short: improvedShort(hd.resolved), color: DARK.success };
     return { words: noNewFindings(hd.scope?.analyzed ?? 0), short: NO_NEW_FINDINGS };
   }
   const headline = d.headline.replace(/\.$/, "");
   const words = hd.resolved > 0 ? `${headline}; ${resolvedToo(hd.resolved)}` : headline;
-  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: "error" };
-  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: "warning" };
+  if (d.status === "review_required") return { words, short: newFindings(hd.findings_total, true), color: DARK.error };
+  if (d.status === "review_recommended") return { words, short: newFindings(hd.findings_total, false), color: DARK.warning };
   return { words, short: PARTLY_COMPARED };
 }
 
@@ -88,31 +92,31 @@ function isClear(risk: ChangeRisk): boolean {
   return risk.directive?.status === "clear_in_analyzed_scope";
 }
 
-function cardLines(risk: ChangeRisk): string[] {
+function cardSegments(risk: ChangeRisk): string[] {
   const hd = risk.health_delta;
   const ref = risk.ref ?? "working tree";
   const workingTree = risk.working_tree !== false;
   const h = health(risk);
   const shared = overlap(risk);
-  // Nothing to act on and nobody else in these files: one line.
+  // Nothing to act on and nobody else in these files: the short form.
   if (isClear(risk) && shared === null) {
-    return [`Change review · ${reviewScope(ref, workingTree, null)} · health: ${h.words}`];
+    return [`Change review (${reviewScope(ref, workingTree, null)})`, `health: ${h.words}`];
   }
-  const lines = [`Change review · ${reviewScope(ref, workingTree, hd?.scope?.changed ?? null)}`, `Health: ${h.words}`];
-  for (const f of hd?.top_findings ?? []) lines.push(findingLine(f));
+  const segments = [`Change review (${reviewScope(ref, workingTree, hd?.scope?.changed ?? null)})`, `Health: ${h.words}`];
+  for (const f of hd?.top_findings ?? []) segments.push(findingLine(f));
   const more = (hd?.findings_total ?? 0) - (hd?.top_findings.length ?? 0);
-  if (more > 0) lines.push(moreFindings(more));
+  if (more > 0) segments.push(moreFindings(more));
   if (hd?.status === "partial" && hd.scope !== undefined) {
-    lines.push(partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {}));
+    segments.push(partialScope(hd.scope.analyzed, hd.scope.changed, hd.skipped?.by_reason ?? {}));
   }
-  lines.push(diffShape(risk.risk_percentile));
+  segments.push(diffShape(risk.risk_percentile));
   const tests = testsToRun(risk);
-  if (tests !== null) lines.push(testsLine(tests));
-  if (shared !== null) lines.push(`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`);
-  return lines;
+  if (tests !== null) segments.push(testsLine(tests));
+  if (shared !== null) segments.push(`Branches: ${overlapLine(shared.branches, shared.files, shared.more)}`);
+  return segments;
 }
 
-/** What shows beneath Claude's answer; null while there is nothing to say. */
+/** What shows beneath Claude's answer, as one row; null while there is nothing to say. */
 export function reviewText(outcome: ReviewOutcome): string | null {
   switch (outcome.phase) {
     case "none":
@@ -123,8 +127,9 @@ export function reviewText(outcome: ReviewOutcome): string | null {
     case "done": {
       const risk = outcome.risk;
       if (risk.error !== undefined) return reviewFailed(risk.error);
-      if (risk.status === "nothing_to_score") return NOTHING_TO_SCORE;
-      return cardLines(risk).join("\n");
+      // An empty diff has nothing to say.
+      if (risk.status === "nothing_to_score") return null;
+      return cardSegments(risk).join(" · ");
     }
   }
 }
@@ -144,6 +149,9 @@ export function reviewBandRow(outcome: ReviewOutcome, columns: number): Node | n
   if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
   if (outcome.phase !== "done" || !scored(outcome.risk)) return null;
   const risk = outcome.risk;
+  const shared = overlap(risk);
+  // A clear review with no tests to run and nobody else in these files leaves the band quiet.
+  if (isClear(risk) && testsToRun(risk) === null && shared === null) return null;
   const pressable = buttons(risk);
   // A plain Button draws as `1: label`.
   const buttonCells = pressable.reduce(
@@ -152,7 +160,6 @@ export function reviewBandRow(outcome: ReviewOutcome, columns: number): Node | n
   );
   const room = Math.max(0, columns - buttonCells);
   const h = health(risk);
-  const shared = overlap(risk);
   const words = fit(`review · health: ${h.short}`, room);
   const parts: Node[] = [text(words, h.color === undefined ? { dimColor: true } : { color: h.color })];
   const left = room - words.length;
@@ -164,10 +171,10 @@ export function reviewBandRow(outcome: ReviewOutcome, columns: number): Node | n
   ]);
 }
 
-/** The full directive, as `Details` prints it; null when the result carries none. */
-export function directiveText(outcome: ReviewOutcome): string | null {
+/** The full directive, as `Details` prints it, one transcript row per line; null when the result carries none. */
+export function directiveRows(outcome: ReviewOutcome): string[] | null {
   if (outcome.phase !== "done" || outcome.risk.directive === undefined) return null;
-  return directiveLines(outcome.risk.directive).join("\n");
+  return directiveLines(outcome.risk.directive);
 }
 
 /** The prompt `Run tests` submits; null when the review names no tests. */
@@ -185,5 +192,5 @@ export function withCard(result: unknown, answer: string, card: string): unknown
   if (typeof result !== "object" || result === null) return result;
   const r = result as { text?: unknown };
   if (typeof r.text !== "string") return result;
-  return { ...r, text: r.text === answer ? card : `${r.text}\n${card}` };
+  return { ...r, text: r.text === answer ? card : `${r.text} · ${card}` };
 }

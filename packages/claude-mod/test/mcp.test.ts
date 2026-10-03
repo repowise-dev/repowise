@@ -171,7 +171,7 @@ describe("isOwnLensCall", () => {
   });
 
   it("allowlists only the tools a shipped feature calls", () => {
-    expect(LENS_TOOLS).toEqual(["get_context"]);
+    expect(LENS_TOOLS).toEqual(["get_context", "get_change_risk"]);
   });
 
   it("spells a server's tools the way tool.check names them", () => {

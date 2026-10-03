@@ -32,7 +32,8 @@ function noIndexStubs(on: any, inWorkTree = true): void {
   }))
   on('mcp.connect', () => ({ value: { isConnected: true, server: 'plugin:repowise:repowise' } }))
   on('ui.render', () => ENGINE_DRAWING)
-  on('turn.complete', () => ({ text: '' }))
+  // Core resolves turn.complete to the answer's own text.
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
 }
 
 async function waitFor(check: () => Promise<boolean>): Promise<boolean> {
@@ -265,4 +266,85 @@ test('no squeeze row for output distill left alone', async ($, on) => {
   const ui = await $.ui.mount(bashResult('On branch main\nnothing to commit, working tree clean\n'))
   expect(await ui.find({ type: 'Text', text: /lines →/ })).toBeUndefined()
   await ui.unmount()
+})
+
+// A get_change_risk result recorded on an indexed copy of `requests` after a
+// complex helper was added (test/fixtures/change-risk/findings.json, the
+// blocks the card reads; this runtime has no fs to load the file).
+const FINDINGS =
+  {"directive": {"status": "review_required", "headline": "2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py.", "reasons": ["critical defect: nested_complexity in classify_headers (added_lines)", "high defect: complex_method in classify_headers (added_lines)"], "next_actions": ["Inspect src/requests/_internal_utils.py:55 (chf_7c35d63fcc13e52b)", "Inspect src/requests/_internal_utils.py:55 (chf_1d478916e70baee8)", "Run: tests/test_requests.py tests/test_utils.py"]}, "ref": "working tree", "working_tree": true, "risk_percentile": 92.0, "impacted_tests": {"status": "inferred", "basis": "inferred", "map_present": false, "tests_to_run": ["tests/test_requests.py", "tests/test_utils.py"], "tests_to_run_kind": "test_file", "total": 2, "truncated": false, "line_coverage": {"untested_changes": [], "stale_test_candidates": [], "covered": [], "no_coverage_data": []}, "summary": "2 test file(s) reach the changed files in the graph. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."}, "health_delta": {"status": "available", "explanation": "Compared 1 changed files on both sides.", "basis": "both_sides_analyzed", "introduced": 2, "worsened": 0, "resolved": 0, "scope": {"changed": 1, "eligible": 1, "analyzed": 1, "skipped": 0, "failed": 0}, "top_findings": [{"id": "chf_7c35d63fcc13e52b", "change": "introduced", "dimension": "defect", "biomarker": "nested_complexity", "severity": "critical", "path": "src/requests/_internal_utils.py", "reason": "classify_headers nests 7 levels deep", "attribution": {"basis": "added_lines", "confidence": "high", "why": "Lines 55-85 are added or rewritten by this change."}, "inspect": "get_change_risk(finding_id='chf_7c35d63fcc13e52b')", "symbol": "classify_headers", "lines": [55, 85]}, {"id": "chf_1d478916e70baee8", "change": "introduced", "dimension": "defect", "biomarker": "complex_method", "severity": "high", "path": "src/requests/_internal_utils.py", "reason": "classify_headers has cyclomatic complexity 15", "attribution": {"basis": "added_lines", "confidence": "high", "why": "Lines 55-85 are added or rewritten by this change."}, "inspect": "get_change_risk(finding_id='chf_1d478916e70baee8')", "symbol": "classify_headers", "lines": [55, 85]}], "findings_total": 2, "findings_emitted": 2}}
+
+/** A git work tree; get_change_risk answers with FINDINGS; records prompts and transcript lines. */
+function reviewStubs(on: any, seen: { mcp: string[]; prompts: string[]; logs: string[] }): void {
+  noIndexStubs(on)
+  on('turn.start', () => ({ turnId: 't1' }))
+  on('tool.call', () => ({ result: { type: 'create' }, text: 'File created' }))
+  on('mcp.call', (_$: any, e: any) => {
+    seen.mcp.push(e.tool)
+    return { value: { content: [{ type: 'text', text: JSON.stringify({ result: FINDINGS }) }], isError: false } }
+  })
+  on('prompt.submit', (_$: any, e: any) => {
+    seen.prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.log', (_$: any, e: any) => {
+    if (e.to === 'transcript') seen.logs.push(e.text)
+  })
+}
+
+const TURN = { turnId: 't1', answer: 'Added the helper.', durationMs: 1, isAborted: false, reason: 'answer', usage: null }
+
+test('after a turn that edited a file, the review goes beneath the answer and the band offers its buttons', async ($, on) => {
+  const seen = { mcp: [] as string[], prompts: [] as string[], logs: [] as string[] }
+  reviewStubs(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await ($ as any).turn.start({ turnId: 't1', prompt: 'add a helper' })
+  await $.tool.call({ tool: 'Write', file_path: '/elsewhere/x.py', content: 'x = 1\n' } as any)
+  const done: any = await $.turn.complete(TURN as any)
+
+  // Started when the edit landed and reused at the turn's end: one call.
+  expect(seen.mcp).toEqual(['get_change_risk'])
+  // One row: the engine stores a line break in this text as U+FFFD.
+  expect(done.text).not.toContain('\n')
+  expect(done.text.split(' · ').slice(0, 2)).toEqual([
+    'Change review (working tree, 1 changed file)',
+    'Health: 2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py',
+  ])
+
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /review · health/ }))?.children?.join('')).toBe(
+    'review · health: 2 new findings, review required',
+  )
+  // Nothing reaches Claude until a button is pressed.
+  expect(seen.prompts).toEqual([])
+  await ui.press({ key: 'lens-review-tests' })
+  await ui.press({ key: 'lens-review-details' })
+  await ui.unmount()
+  expect(seen.prompts).toEqual([
+    'Run the tests Repowise names for this change, inferred from the dependency graph, not measured: tests/test_requests.py tests/test_utils.py',
+  ])
+  expect(seen.logs.slice(0, 2)).toEqual([
+    'Change review: review required',
+    '2 new findings need review, starting with nested_complexity in src/requests/_internal_utils.py.',
+  ])
+})
+
+test('a turn that edited nothing gets no review and no card', async ($, on) => {
+  const seen = { mcp: [] as string[], prompts: [] as string[], logs: [] as string[] }
+  reviewStubs(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await ($ as any).turn.start({ turnId: 't1', prompt: 'explain' })
+  await $.tool.call({ tool: 'Read', file_path: '/elsewhere/x.py' } as any)
+  expect(await $.turn.complete(TURN as any)).toMatchObject({ text: 'Added the helper.' })
+  expect(seen.mcp).toEqual([])
+})
+
+test('with lens_review off, an editing turn is not reviewed', { options: { lens_review: false } }, async ($, on) => {
+  const seen = { mcp: [] as string[], prompts: [] as string[], logs: [] as string[] }
+  reviewStubs(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await ($ as any).turn.start({ turnId: 't1', prompt: 'add a helper' })
+  await $.tool.call({ tool: 'Write', file_path: '/elsewhere/x.py', content: 'x = 1\n' } as any)
+  expect(await $.turn.complete(TURN as any)).toMatchObject({ text: 'Added the helper.' })
+  expect(seen.mcp).toEqual([])
 })

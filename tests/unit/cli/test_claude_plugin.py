@@ -46,7 +46,7 @@ def test_claude_plugin_lens_module() -> None:
     assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("field", ["lens_margin", "lens_squeeze"])
+@pytest.mark.parametrize("field", ["lens_margin", "lens_squeeze", "lens_review"])
 def test_claude_plugin_lens_toggles(field: str) -> None:
     config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
 
