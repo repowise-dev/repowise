@@ -335,6 +335,7 @@ async def test_index_pages_scans_the_index_once_per_id_chunk(async_engine, fts):
             content=f"Module {i} documents widget number {i}.",
             summary=f"summary {i}",
             target_path=f"m{i}.py",
+            digest="",
         )
         for i in range(1100)
     ]
