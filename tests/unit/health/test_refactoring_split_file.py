@@ -27,6 +27,7 @@ from repowise.core.analysis.health.refactoring.split_file import (
     SplitFileDetector,
     _CallSignals,
     _dominant_token,
+    _module_label,
     _shim_required,
     _weighted_graph,
 )
@@ -588,3 +589,9 @@ def test_direct_call_edges_are_added_in_sorted_order():
         signals.add_local_call(*pair)
     wg, _ = _weighted_graph(["a", "c", "m", "q", "x", "z"], set(), signals, {})
     assert list(wg.adj["a"]) == ["c", "m", "q", "x", "z"]
+
+
+def test_a_two_area_community_label_never_names_a_group():
+    foreign_of = {"a": {"tpl, resources"}, "b": {"tpl, resources", "path/to/layout.go"}}
+    assert _module_label(foreign_of, ["a"], set()) == ""
+    assert _module_label(foreign_of, ["a", "b"], set()) == "layout"

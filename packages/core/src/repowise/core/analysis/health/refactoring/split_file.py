@@ -257,7 +257,8 @@ def _module_label(
         lab
         for m in members
         for lab in foreign_of.get(m, set())
-        if _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
+        # "tpl, resources" is a two-area community label, not a module name.
+        if "," not in lab and _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
     )
     if not labels:
         return ""
