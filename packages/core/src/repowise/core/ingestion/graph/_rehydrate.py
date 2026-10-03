@@ -122,6 +122,8 @@ class RehydrateMixin:
             supplied_props = edge.get("supplied_props")
             if supplied_props is not None:
                 edge_attrs["supplied_props"] = frozenset(supplied_props)
+            if edge.get("type_only"):
+                edge_attrs["type_only"] = True
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 

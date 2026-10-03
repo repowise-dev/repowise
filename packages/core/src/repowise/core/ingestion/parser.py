@@ -1178,6 +1178,12 @@ def _generic_import(
         or module_text.startswith("./")
         or module_text.startswith(("self::", "super::", "crate::"))
     )
+    type_only = False
+    if language in _TS_JS_LANGUAGES:
+        from .extractors.bindings.ts_js import is_type_only_ts_js_import
+
+        type_only = is_type_only_ts_js_import(stmt_node, src)
+
     return Import(
         raw_statement=raw,
         module_path=module_text,
@@ -1187,6 +1193,7 @@ def _generic_import(
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
         is_module_declaration=is_module_declaration,
+        type_only=type_only,
     )
 
 
