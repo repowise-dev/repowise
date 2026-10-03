@@ -688,10 +688,10 @@ def _with_pool(confidence: str, **extra) -> dict:
 @pytest.mark.parametrize(
     ("confidence", "extra", "cap"),
     [
-        ("high", {}, 5),
-        ("medium", {}, 9),
-        ("low", {}, 9),
-        ("medium", {"degraded": "no-llm-provider"}, 9),
+        ("high", {}, 3),
+        ("medium", {}, 5),
+        ("low", {}, 5),
+        ("medium", {"degraded": "no-llm-provider"}, 5),
     ],
 )
 def test_candidate_files_serve_ranked_uncited_paths_at_every_confidence(
@@ -699,20 +699,20 @@ def test_candidate_files_serve_ranked_uncited_paths_at_every_confidence(
 ):
     out = project_answer_payload(_with_pool(confidence, **extra), question="how does auth work")
 
-    # Ranked, minus the cited file, capped by grade: 5 at high, 10 otherwise.
+    # Ranked, minus the cited file, capped by grade: 3 at high, 5 otherwise.
     assert out["candidate_files"] == _POOL[:cap]
     assert "candidates" not in out
     assert not any(key.startswith("candidates_") for key in out)
 
 
-def test_candidate_files_cap_at_ten_and_dedupe_only_against_citations():
+def test_candidate_files_cap_at_five_and_dedupe_only_against_citations():
     raw = _with_pool("low")
     raw["candidate_files"] = ["src/auth/service.py", "src/auth/middleware.py", *_POOL]
 
     out = project_answer_payload(raw, question="how does auth work")
 
     # middleware.py is a fallback target and a retrieval row, not a citation.
-    assert out["candidate_files"] == ["src/auth/middleware.py", *_POOL[:9]]
+    assert out["candidate_files"] == ["src/auth/middleware.py", *_POOL[:4]]
 
 
 def test_candidate_files_absent_when_retrieval_resolved_no_file():
@@ -731,5 +731,5 @@ def test_evidence_projection_only_gains_candidate_files():
 
     after = project_answer_payload(raw, question="q", include=["evidence"])
 
-    assert after.pop("candidate_files") == _POOL[:10]
+    assert after.pop("candidate_files") == _POOL[:5]
     assert after == before

@@ -274,11 +274,14 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # 18: rows carry ``candidate_files``, the ranked paths-only list.
 _ANSWER_SCHEMA_VERSION = 18
 
-# How many paths ``candidate_files`` serves. A path is a few tokens and the
-# cheapest pointer an agent can act on, so even high confidence keeps five;
-# medium and low keep ten because there the answer is least likely to settle it.
-_CANDIDATE_FILES_HIGH = 5
-_CANDIDATE_FILES_MAX = 10
+# How many paths ``candidate_files`` serves: the knee of measured coverage
+# gained per extra file, past which each path mostly costs precision. A high
+# answer already names its files, so it keeps fewer.
+_CANDIDATE_FILES_HIGH = 3
+_CANDIDATE_FILES_MAX = 5
+# The raw list is longer than either cap, so paths the citations already name
+# can be removed without leaving the served list short.
+_CANDIDATE_FILES_POOL = 10
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).

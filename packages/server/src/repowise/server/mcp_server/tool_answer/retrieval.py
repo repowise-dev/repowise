@@ -23,7 +23,7 @@ from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverag
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
-    _CANDIDATE_FILES_MAX,
+    _CANDIDATE_FILES_POOL,
     _COVERAGE_FLOOR,
     _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
@@ -95,7 +95,7 @@ def serialize_candidate_files(hits: list[dict]) -> list[str]:
         path = hit_file_path(h)
         if path and path not in paths:
             paths.append(path)
-            if len(paths) >= _CANDIDATE_FILES_MAX:
+            if len(paths) >= _CANDIDATE_FILES_POOL:
                 break
     return paths
 
