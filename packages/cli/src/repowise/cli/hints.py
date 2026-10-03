@@ -177,7 +177,9 @@ def maybe_hint(hint_id: str, *, fmt: str = "text") -> bool:
         # still shows something to copy.
         err_console.print(
             f"\n  [dim]{escape(hint.text)} {escape(hint.action)}\n"
-            f"  See how: [link={url}]{escape(url)}[/link][/dim]"
+            f"  See how: [link={url}]{escape(url)}[/link][/dim]",
+            # No syntax colouring inside a dim line, and one link, not one per token.
+            highlight=False,
         )
         _shown_this_run = True
         _mark_shown(hint_id, datetime.now(UTC))
