@@ -540,7 +540,9 @@ def _is_docs_site(folder: str) -> bool:
     return False
 
 
-def _is_docs_example(normalized: str, dirs: list[str], repo_root: str | None) -> bool:
+def _is_docs_example(
+    normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
+) -> bool:
     # Anything under a docs root already counts, examples beneath it included.
     if (
         any(d in _DOCS_ROOT_TOKENS for d in dirs)
@@ -552,7 +554,8 @@ def _is_docs_example(normalized: str, dirs: list[str], repo_root: str | None) ->
         return False
     parts = normalized.split("/")
     return any(
-        _DOCS_SITE_NAME_RE.match(d) and _is_docs_site(os.path.join(repo_root, *parts[: i + 1]))
+        _DOCS_SITE_NAME_RE.match(d)
+        and _is_docs_site(os.path.join(os.fspath(repo_root), *parts[: i + 1]))
         for i, d in enumerate(dirs)
     )
 
@@ -728,7 +731,7 @@ def _maintained_origin(
         return "build"
     if is_test if is_test is not None else is_test_related_path(normalized):
         return "test"
-    if _is_docs_example(normalized, dirs, None if repo_root is None else str(repo_root)):
+    if _is_docs_example(normalized, dirs, repo_root):
         return "docs_example"
     if _is_tooling(name, dirs):
         return "tooling"
