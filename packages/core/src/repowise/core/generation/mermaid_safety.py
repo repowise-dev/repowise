@@ -559,7 +559,12 @@ def strip_invalid_mermaid(markdown: str) -> str:
     def _keep(match: re.Match[str]) -> str:
         return "" if mermaid_problems(match.group("body")) else match.group(0)
 
-    return re.sub(r"\n{3,}", "\n\n", _MERMAID_FENCE_RE.sub(_keep, markdown))
+    stripped = _MERMAID_FENCE_RE.sub(_keep, markdown)
+    if stripped == markdown:
+        # Nothing removed: leave the page byte-identical, or a template page
+        # with spare blank lines reads as changed and is stored twice.
+        return markdown
+    return re.sub(r"\n{3,}", "\n\n", stripped)
 
 
 _HEADING_LINE_RE = re.compile(r"(?m)^#{1,6}\s")
