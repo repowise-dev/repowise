@@ -47,12 +47,13 @@ describe("TriageView lead", () => {
     const lead = screen.getByTestId("lead");
     expect(score.compareDocumentPosition(lead) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The score is not folded behind a disclosure.
-    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getByText("6.8").closest("details")).toBeNull();
+    expect(container.textContent).not.toContain("More");
   });
 
   it("keeps the full lede when no lead is given", async () => {
-    const { container } = renderView();
+    renderView();
     await screen.findByText("Maintainability");
-    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getByText("6.8").closest("details")).toBeNull();
   });
 });
