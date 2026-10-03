@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Collection, Iterable
 from functools import partial
 from typing import Any
 
@@ -1082,6 +1083,31 @@ async def _branch_overlap_block(
     return block
 
 
+
+
+def _test_file(test_id: str) -> str:
+    """File path of a test id. Measured ids are ``path::name``; inferred ids are paths."""
+    return test_id.split("::", 1)[0]
+
+
+def _promote_edited_tests(ranked: Iterable[str], changed_paths: Collection[str]) -> list[str]:
+    """Lead with tests the change itself edits, preserving reach order in each group.
+
+    A test the change edits runs the change by definition — the same rule the
+    plan ranker uses. Measured ids compare on the file part before ``::``.
+    Reach order is kept within the edited group and within everything else.
+    """
+    changed = set(changed_paths)
+    edited: list[str] = []
+    rest: list[str] = []
+    seen: set[str] = set()
+    for test_id in ranked:
+        if test_id in seen:
+            continue
+        seen.add(test_id)
+        (edited if _test_file(test_id) in changed else rest).append(test_id)
+    return edited + rest
+
 def _cap_tests(tests: list[str], collector: OmissionCollector, label: str) -> list[str]:
     """First _IMPACTED_TESTS_LIMIT ids; the tail goes to the omission store."""
     if len(tests) > _IMPACTED_TESTS_LIMIT:
@@ -1127,6 +1153,11 @@ async def _inferred_impacted(
     tests = rank_tests_by_reach(
         {path: expand_test_scopes(found, test_files) for path, found in reaching.items()}
     )
+    # An edited test file the graph never reached still runs the change.
+    missing_edited = sorted(
+        path for path in changed_files if path in test_files and path not in tests
+    )
+    tests = _promote_edited_tests([*missing_edited, *tests], changed_files)
     if not tests:
         return _empty_impacted(
             "no_map",
@@ -1380,7 +1411,7 @@ async def _impacted_tests_block(
     except SQLAlchemyError:
         return _empty_impacted("unknown", "Could not read the coverage map.")
 
-    tests = rank_tests_by_reach(by_file)
+    tests = _promote_edited_tests(rank_tests_by_reach(by_file), changed)
     total = len(tests)
     return {
         "status": "map_present",
