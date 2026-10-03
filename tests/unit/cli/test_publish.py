@@ -179,7 +179,8 @@ class TestPublish:
         _sign_in()
         _answer(monkeypatch, 200, {"short_id": "s1", "status": "ready", "cached": True})
         result = pub.publish(repo)
-        assert result.outcome == "already_published"
+        assert result.outcome == "published"
+        assert "already indexed" in result.message
         assert result.url.startswith("https://repowise.dev/repo/acme/widget?")
         assert result.open_url is None
 
@@ -318,7 +319,7 @@ class TestRefusals:
     def test_curated_repo_is_already_there(self, repo, monkeypatch):
         _sign_in()
         _answer(monkeypatch, 403, _refusal("repo_curated"))
-        assert pub.publish(repo).outcome == "already_published"
+        assert pub.publish(repo).outcome == "curated"
 
     def test_anything_else_shows_the_platform_message(self, repo, monkeypatch):
         _sign_in()

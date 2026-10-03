@@ -46,9 +46,10 @@ _GITHUB_REMOTE = re.compile(
 class PublishResult:
     """What happened, in words a person reads, plus the links to act on.
 
-    ``outcome`` is one of ``published | already_published | needs_app |
-    needs_plan | cap | too_big | rate_limited | not_github | signed_out |
-    offline | error``.
+    ``outcome`` is one of ``published | curated | needs_app | needs_plan |
+    cap | too_big | rate_limited | not_github | signed_out | offline |
+    error``. A repo already indexed at this commit is ``published`` too: it
+    is in the account now, and only the message differs.
     """
 
     outcome: str
@@ -208,8 +209,8 @@ def _interpret(
             )
         if body.get("status") == "ready":
             return PublishResult(
-                outcome="already_published",
-                message=f"{repo} is already on repowise.dev at this commit:",
+                outcome="published",
+                message=f"{repo} is already indexed on repowise.dev at this commit:",
                 url=repo_page,
                 details=[connect],
             )
@@ -274,7 +275,7 @@ def _interpret(
 
     if code == "repo_curated":
         return PublishResult(
-            outcome="already_published",
+            outcome="curated",
             message=f"{repo} is kept up to date on repowise.dev by the Repowise team:",
             url=repo_page,
         )

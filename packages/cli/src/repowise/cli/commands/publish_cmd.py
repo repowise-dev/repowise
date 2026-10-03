@@ -61,7 +61,7 @@ def publish_command(
     result = pub.publish(repo_path, ref=ref, src=src or pub.SRC)
     telemetry.add_command_outcome(outcome=result.outcome)
 
-    ok = result.outcome in {"published", "already_published"}
+    ok = result.outcome in {"published", "curated"}
     if not interactive:
         emit_json(result.to_dict())
         if not ok:
