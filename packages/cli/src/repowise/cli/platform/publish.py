@@ -152,10 +152,11 @@ def _trial_days(account: dict[str, Any]) -> int:
     return days if isinstance(days, int) and days > 0 else 0
 
 
-def publish(repo_path: Path, *, ref: str | None = None) -> PublishResult:
+def publish(repo_path: Path, *, ref: str | None = None, src: str = SRC) -> PublishResult:
     """Ask repowise.dev to index this repo's GitHub remote.
 
     The caller signs the user in first; signed out, this only says so.
+    ``src`` tags every link in the result with the surface that published.
     Never raises.
     """
     remote = read_remote(repo_path)
@@ -181,14 +182,16 @@ def publish(repo_path: Path, *, ref: str | None = None) -> PublishResult:
     from repowise.cli.platform.client import default_client
 
     status, body = default_client.post_json("repos/index", payload, timeout=60.0)
-    result = _interpret(status, body, owner=owner, name=name)
+    result = _interpret(status, body, owner=owner, name=name, src=src)
     result.repo = repo
     return result
 
 
-def _interpret(status: int, body: dict[str, Any], *, owner: str, name: str) -> PublishResult:
+def _interpret(
+    status: int, body: dict[str, Any], *, owner: str, name: str, src: str
+) -> PublishResult:
     repo = f"{owner}/{name}"
-    repo_page = site_link(f"repo/{owner}/{name}", SRC)
+    repo_page = site_link(f"repo/{owner}/{name}", src)
     code = _detail_code(body)
     text = _detail_text(body)
 
@@ -196,7 +199,7 @@ def _interpret(status: int, body: dict[str, Any], *, owner: str, name: str) -> P
         mcp = MCP_URL.format(owner=owner, name=name)
         connect = (
             f"Use it from Claude.ai or ChatGPT: add {mcp} as a connector. "
-            f"How: {site_link('hosted', SRC, fragment='mcp')}"
+            f"How: {site_link('hosted', src, fragment='mcp')}"
         )
         if body.get("status") == "failed":
             return PublishResult(
@@ -210,7 +213,7 @@ def _interpret(status: int, body: dict[str, Any], *, owner: str, name: str) -> P
                 url=repo_page,
                 details=[connect],
             )
-        indexing = site_link(f"s/{body['short_id']}/indexing", SRC)
+        indexing = site_link(f"s/{body['short_id']}/indexing", src)
         return PublishResult(
             outcome="published",
             message="Your repo is being indexed:",
@@ -290,19 +293,19 @@ def _interpret(status: int, body: dict[str, Any], *, owner: str, name: str) -> P
                     ),
                     url=site_link(
                         "pricing",
-                        SRC,
+                        src,
                         params={"checkout": "pro", "interval": "monthly", "trial": "1"},
                     ),
                 )
             return PublishResult(
                 outcome="cap",
                 message="Free accounts index 2 repos. Pro indexes 5, private ones too:",
-                url=site_link("pricing", SRC),
+                url=site_link("pricing", src),
             )
         return PublishResult(
             outcome="cap",
             message=text or "Your plan's repo limit is reached.",
-            url=site_link("pricing", SRC),
+            url=site_link("pricing", src),
         )
 
     if status == 413:
@@ -310,7 +313,7 @@ def _interpret(status: int, body: dict[str, Any], *, owner: str, name: str) -> P
             outcome="too_big",
             message=text or "This repo is too big for your plan.",
             details=["Free indexes repos up to 250 MB; Pro up to 5 GB."],
-            url=site_link("pricing", SRC),
+            url=site_link("pricing", src),
         )
 
     if status == 429:

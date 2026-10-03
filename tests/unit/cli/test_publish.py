@@ -428,3 +428,39 @@ class TestCommand:
         result = self._run(repo)
         assert result.exit_code == 1
         assert "Push this repo to GitHub first" in result.output
+
+
+class TestJsonMode:
+    def _run(self, repo: Path, *args: str):
+        from repowise.cli.main import cli
+
+        return CliRunner().invoke(cli, ["publish", str(repo), "--format", "json", *args])
+
+    def test_signed_out_never_starts_a_browser_sign_in(self, repo, monkeypatch):
+        import json
+
+        from repowise.cli.commands import login_cmd
+
+        monkeypatch.setattr(login_cmd, "browser_sign_in", lambda *a, **k: pytest.fail("signed in"))
+        result = self._run(repo)
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["outcome"] == "signed_out"
+
+    def test_prints_the_result_and_opens_nothing(self, repo, monkeypatch):
+        import json
+
+        _sign_in()
+        opened: list[str] = []
+        monkeypatch.setattr("webbrowser.open", opened.append)
+        _answer(monkeypatch, 200, {"short_id": "s1", "status": "queued"})
+        result = self._run(repo, "--src", "local_web_publish")
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["outcome"] == "published"
+        assert payload["repo"] == "acme/widget"
+        assert _query(payload["url"])["src"] == ["local_web_publish"]
+        assert opened == []
+
+    def test_src_is_checked(self, repo):
+        result = self._run(repo, "--src", "Bad Src!")
+        assert result.exit_code == 2

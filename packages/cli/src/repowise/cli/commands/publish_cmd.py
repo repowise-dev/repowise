@@ -9,6 +9,7 @@ UI's publish button shares.
 
 from __future__ import annotations
 
+import re
 import webbrowser
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import click
 from rich.markup import escape
 
 from repowise.cli.helpers import console
+from repowise.cli.output import emit_json, format_option
 
 
 @click.command(name="publish")
@@ -27,24 +29,45 @@ from repowise.cli.helpers import console
     "if it is pushed, else the repo's default branch).",
 )
 @click.option("--no-open", is_flag=True, help="Don't open the indexing page in the browser.")
-def publish_command(path: str | None, ref: str | None, no_open: bool) -> None:
+@click.option(
+    "--src",
+    default=None,
+    hidden=True,
+    help="Surface that asked for the publish, for the links' attribution.",
+)
+@format_option(
+    help="table prints for a person; json prints the result as one object and never "
+    "starts a browser sign-in (signed out reads as outcome signed_out)."
+)
+def publish_command(
+    path: str | None, ref: str | None, no_open: bool, src: str | None, fmt: str
+) -> None:
     """Publish this repo on repowise.dev (indexed from GitHub, free for public repos)."""
     from repowise.cli.platform import publish as pub
     from repowise.cli.platform import telemetry
 
     repo_path = Path(path or ".").resolve()
+    if src is not None and not re.fullmatch(r"[a-z0-9_]{1,64}", src):
+        raise click.BadParameter("must be 1-64 of a-z, 0-9 and _", param_hint="--src")
 
-    if pub.read_remote(repo_path) is not None and not pub.is_signed_in():
+    interactive = fmt != "json"
+    if interactive and pub.read_remote(repo_path) is not None and not pub.is_signed_in():
         from repowise.cli.commands.login_cmd import _default_device_name, browser_sign_in
 
         console.print("Publishing needs a free repowise.dev account. Signing you in first.\n")
         browser_sign_in(_default_device_name(), src=pub.SRC)
         console.print()
 
-    result = pub.publish(repo_path, ref=ref)
+    result = pub.publish(repo_path, ref=ref, src=src or pub.SRC)
     telemetry.add_command_outcome(outcome=result.outcome)
 
     ok = result.outcome in {"published", "already_published"}
+    if not interactive:
+        emit_json(result.to_dict())
+        if not ok:
+            raise SystemExit(1)
+        return
+
     mark = "[green]✓[/green] " if ok else ""
     console.print(f"{mark}{escape(result.message)}")
     if result.url:
