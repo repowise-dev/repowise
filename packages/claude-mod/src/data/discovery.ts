@@ -145,25 +145,29 @@ export async function mcpReachable(host: Host): Promise<boolean> {
   }
 }
 
+/** Mode for a directory with no index: quiet outside a git work tree, else depends on the CLI. */
+async function unindexedMode(host: Host, cwd: string): Promise<Mode> {
+  const inWorkTree = (await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() === "true";
+  if (!inWorkTree) return "no-repo";
+  return (await mcpReachable(host)) ? "no-index" : "no-cli";
+}
+
+/** The local server's state: only a loopback lock with a pid not known dead is probed. */
+async function serverState(host: Host, repoRoot: string): Promise<ServerProbe["kind"]> {
+  const lock = await readServeLock(host, repoRoot);
+  if (!lock || !isLoopbackUrl(lock.url)) return "down";
+  if ((await isPidAlive(host, lock.pid, repoRoot)) === false) return "down";
+  return (await probeServer(host, lock, repoRoot)).kind;
+}
+
 export async function discover(host: Host): Promise<Discovery> {
   const cwd = await host.session.cwd();
   const repoRoot = await findIndexedRoot(host, cwd);
-  if (repoRoot === null) {
-    // Only a git work tree is worth indexing; anywhere else Lens stays quiet.
-    if ((await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
-      return { mode: "no-repo", repoRoot };
-    }
-    return { mode: (await mcpReachable(host)) ? "no-index" : "no-cli", repoRoot };
-  }
-
-  let liteReason: LiteReason = "no-server";
-  const lock = await readServeLock(host, repoRoot);
-  if (lock && isLoopbackUrl(lock.url) && (await isPidAlive(host, lock.pid, repoRoot)) !== false) {
-    const probe = await probeServer(host, lock, repoRoot);
-    if (probe.kind === "ok") return { mode: "full", repoRoot };
-    if (probe.kind !== "down") liteReason = probe.kind;
-  }
+  if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
+  const server = await serverState(host, repoRoot);
+  if (server === "ok") return { mode: "full", repoRoot };
   if (!(await mcpReachable(host))) return { mode: "no-cli", repoRoot };
+  const liteReason: LiteReason = server === "down" ? "no-server" : server;
   return { mode: "lite", liteReason, repoRoot };
 }
 

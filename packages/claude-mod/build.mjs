@@ -40,8 +40,9 @@ if (check) {
   let current = "";
   try {
     current = (await readFile(outFile, "utf8")).replace(/\r\n/g, "\n");
-  } catch {
-    // Missing counts as drift.
+  } catch (err) {
+    // A missing bundle is drift, reported below; any other read error fails loudly.
+    if (err?.code !== "ENOENT") throw new Error(`cannot read ${outFile}`, { cause: err });
   }
   if (current !== output) {
     console.error(`${outFile} is out of date. Run: npm run build:mod -w @repowise-dev/claude-mod`);

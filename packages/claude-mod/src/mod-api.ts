@@ -40,6 +40,7 @@ export interface ModApi {
   mcp: { connect(server: string): Promise<{ isConnected: boolean }> };
   ui: {
     invalidate(event: "ui.render"): void;
+    log(text: string, options: { to: "debug" }): void;
     resolve(e: RenderEvent): Record<string, (props: Record<string, unknown>) => unknown>;
   };
 }

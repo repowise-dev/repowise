@@ -16,7 +16,7 @@ async function load(): Promise<Hooks> {
 
 /** A `$` for a git work tree with no index and a connecting MCP server. */
 function fakeDollar() {
-  const calls = { cwd: 0, invalidate: 0 };
+  const calls = { cwd: 0, invalidate: 0, logs: [] as string[] };
   let release: () => void = () => {};
   const gate = { hold: false, wait: Promise.resolve() };
   const $: ModApi = {
@@ -36,6 +36,9 @@ function fakeDollar() {
     ui: {
       invalidate: () => {
         calls.invalidate++;
+      },
+      log: (text) => {
+        calls.logs.push(text);
       },
       resolve: () => ({
         Box: (props) => ({ el: "Box", props }),
@@ -87,6 +90,28 @@ describe("register", () => {
     expect(JSON.stringify(composed.props.children[0])).toContain("index this repo for Lens");
     const alone = await hooks["ui.render"]!($, band, async () => null);
     expect(JSON.stringify(alone)).toContain("index this repo for Lens");
+  });
+
+  it("a failing draw keeps the band as it was and says why in the debug log only", async () => {
+    const { $, calls } = fakeDollar();
+    await hooks["session.start"]!($, {}, async () => undefined);
+    await settle();
+    $.ui.resolve = () => {
+      throw new Error("no table");
+    };
+    expect(await hooks["ui.render"]!($, band, async () => THEIRS)).toBe(THEIRS);
+    expect(calls.logs).toEqual(["lens: band render failed: Error: no table"]);
+  });
+
+  it("a failing refresh is logged, not thrown", async () => {
+    const { $, calls } = fakeDollar();
+    $.session.cwd = async () => {
+      throw new Error("no cwd");
+    };
+    await hooks["session.start"]!($, {}, async () => undefined);
+    await settle();
+    expect(calls.logs).toEqual(["lens: refresh failed: Error: no cwd"]);
+    expect(calls.invalidate).toBe(0);
   });
 
   it("yields to a survey", async () => {

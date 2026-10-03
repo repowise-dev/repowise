@@ -272,23 +272,27 @@ async function mcpReachable(host) {
   }
 }
 __name(mcpReachable, "mcpReachable");
+async function unindexedMode(host, cwd) {
+  const inWorkTree = (await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() === "true";
+  if (!inWorkTree) return "no-repo";
+  return await mcpReachable(host) ? "no-index" : "no-cli";
+}
+__name(unindexedMode, "unindexedMode");
+async function serverState(host, repoRoot) {
+  const lock = await readServeLock(host, repoRoot);
+  if (!lock || !isLoopbackUrl(lock.url)) return "down";
+  if (await isPidAlive(host, lock.pid, repoRoot) === false) return "down";
+  return (await probeServer(host, lock, repoRoot)).kind;
+}
+__name(serverState, "serverState");
 async function discover(host) {
   const cwd = await host.session.cwd();
   const repoRoot = await findIndexedRoot(host, cwd);
-  if (repoRoot === null) {
-    if ((await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
-      return { mode: "no-repo", repoRoot };
-    }
-    return { mode: await mcpReachable(host) ? "no-index" : "no-cli", repoRoot };
-  }
-  let liteReason = "no-server";
-  const lock = await readServeLock(host, repoRoot);
-  if (lock && isLoopbackUrl(lock.url) && await isPidAlive(host, lock.pid, repoRoot) !== false) {
-    const probe = await probeServer(host, lock, repoRoot);
-    if (probe.kind === "ok") return { mode: "full", repoRoot };
-    if (probe.kind !== "down") liteReason = probe.kind;
-  }
+  if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
+  const server = await serverState(host, repoRoot);
+  if (server === "ok") return { mode: "full", repoRoot };
   if (!await mcpReachable(host)) return { mode: "no-cli", repoRoot };
+  const liteReason = server === "down" ? "no-server" : server;
   return { mode: "lite", liteReason, repoRoot };
 }
 __name(discover, "discover");
@@ -445,7 +449,11 @@ function bind($) {
       connect: /* @__PURE__ */ __name(async () => mcpConnected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected, "connect")
     }
   };
-  return { host, redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw") };
+  return {
+    host,
+    redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
+    debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug")
+  };
 }
 __name(bind, "bind");
 function dispatch(b, action) {
@@ -474,52 +482,58 @@ function refresh(b) {
   }
   running = true;
   dirty = false;
-  refreshOnce(b, generation).catch(() => {
-  }).finally(() => {
+  refreshOnce(b, generation).catch((err) => b.debug(`refresh failed: ${String(err)}`)).finally(() => {
     running = false;
     if (dirty && latest !== null) refresh(latest);
   });
 }
 __name(refresh, "refresh");
+async function onSessionStart($, e, next) {
+  const b = bind($);
+  try {
+    generation++;
+    state = initialSession;
+    refresh(b);
+  } catch (err) {
+    b.debug(`session.start failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onSessionStart, "onSessionStart");
+async function onTurnComplete($, e, next) {
+  const b = bind($);
+  try {
+    const action = fromTurnComplete(e);
+    if (action !== null) {
+      dispatch(b, action);
+      refresh(b);
+    }
+  } catch (err) {
+    b.debug(`turn.complete failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onTurnComplete, "onTurnComplete");
+async function onBand($, e, next) {
+  const theirs = await next(e);
+  try {
+    const tree = bandView(state, { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true });
+    if (tree === null) return theirs;
+    const elements = $.ui.resolve(e);
+    const ours = materialize(tree, elements);
+    const box2 = elements["Box"];
+    if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
+    return box2({ flexDirection: "column", children: [ours, theirs] });
+  } catch (err) {
+    bind($).debug(`band render failed: ${String(err)}`);
+    return theirs;
+  }
+}
+__name(onBand, "onBand");
 function register(on) {
-  on("session.start", async ($, e, next) => {
-    try {
-      generation++;
-      state = initialSession;
-      refresh(bind($));
-    } catch {
-    }
-    return next(e);
-  });
-  on("turn.complete", async ($, e, next) => {
-    try {
-      const action = fromTurnComplete(e);
-      if (action !== null) {
-        const b = bind($);
-        dispatch(b, action);
-        refresh(b);
-      }
-    } catch {
-    }
-    return next(e);
-  });
-  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    const theirs = await next(e);
-    try {
-      const tree = bandView(state, {
-        columns: e.props.bodyColumns ?? 80,
-        hasSurvey: e.props.hasSurvey === true
-      });
-      if (tree === null) return theirs;
-      const elements = $.ui.resolve(e);
-      const ours = materialize(tree, elements);
-      const box2 = elements["Box"];
-      if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
-      return box2({ flexDirection: "column", children: [ours, theirs] });
-    } catch {
-      return theirs;
-    }
-  });
+  on("session.start", onSessionStart);
+  on("turn.complete", onTurnComplete);
+  on("ui.render", { component: "AbovePrompt" }, onBand);
 }
 __name(register, "register");
 export {
