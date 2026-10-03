@@ -121,3 +121,8 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+# Gradle build output swept from JVM fixture (see #964)
+tests/fixtures/**/.gradle/
+tests/fixtures/**/bin/
+tests/fixtures/**/build/
