@@ -1,7 +1,7 @@
 import { configureApiClient, createAdapterFetch } from "@repowise-dev/api-client";
 import type { Host } from "../host";
 
-/** Points the shared api-client at a loopback server, over the host's HTTP. No token: C6 forbids reading one. */
+/** Points the shared api-client at a loopback server, over the host's HTTP. No token: Lens never reads an API key. */
 export function connectApiClient(host: Host, baseUrl: string): void {
   configureApiClient({ baseUrl, fetch: createAdapterFetch(host.http) });
 }

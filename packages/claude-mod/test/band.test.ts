@@ -28,7 +28,7 @@ describe("band", () => {
   });
 
   it("shows the freshness exception", () => {
-    expect(lines(bandView(behind, at(100)))).toEqual(["index 14 files behind HEAD · repowise update"]);
+    expect(lines(bandView(behind, at(100)))).toEqual(["index behind HEAD (14 files changed) · repowise update"]);
   });
 
   it.each(Object.entries(HINTS))("shows the %s hint as copyable text", (kind, copy) => {
@@ -37,7 +37,7 @@ describe("band", () => {
   });
 
   it("puts the hint above freshness, never more than two rows", () => {
-    expect(lines(bandView(both, at(180)))).toEqual([HINTS["no-server"], "index 1 file behind HEAD · repowise update"]);
+    expect(lines(bandView(both, at(180)))).toEqual([HINTS["no-server"], "index behind HEAD (1 file changed) · repowise update"]);
     expect(bandRows(both).length).toBeLessThanOrEqual(MAX_BAND_ROWS);
   });
 
@@ -58,14 +58,14 @@ describe("band", () => {
   });
 
   it("truncates a long row at 60 columns with an ellipsis and keeps it whole at 100 and 180", () => {
-    const long: SessionState = { ...initialSession, hint: "auth", hintsShown: ["auth"] };
+    const long: SessionState = { ...initialSession, hint: "unlisted", hintsShown: ["unlisted"] };
     const [narrow] = lines(bandView(long, at(60)));
-    expect(HINTS.auth.length).toBeGreaterThan(60);
+    expect(HINTS.unlisted.length).toBeGreaterThan(60);
     expect(narrow?.length).toBeGreaterThan(55);
     expect(narrow?.length).toBeLessThanOrEqual(60);
     expect(narrow?.endsWith("…")).toBe(true);
-    expect(lines(bandView(long, at(100)))).toEqual([HINTS.auth]);
-    expect(lines(bandView(long, at(180)))).toEqual([HINTS.auth]);
+    expect(lines(bandView(long, at(100)))).toEqual([HINTS.unlisted]);
+    expect(lines(bandView(long, at(180)))).toEqual([HINTS.unlisted]);
   });
 
   it("uses no em dashes in any copy", () => {
@@ -75,8 +75,8 @@ describe("band", () => {
 
 describe("freshness copy", () => {
   it("counts files with a unit, singular and plural, with separators", () => {
-    expect(freshnessLine({ changedFiles: 1 })).toBe("index 1 file behind HEAD · repowise update");
-    expect(freshnessLine({ changedFiles: 1204 })).toBe("index 1,204 files behind HEAD · repowise update");
+    expect(freshnessLine({ changedFiles: 1 })).toBe("index behind HEAD (1 file changed) · repowise update");
+    expect(freshnessLine({ changedFiles: 1204 })).toBe("index behind HEAD (1,204 files changed) · repowise update");
   });
 
   it("states no number it did not measure", () => {

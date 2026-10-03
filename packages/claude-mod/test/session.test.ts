@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fromTurnComplete, isPluginCall } from "../src/model/events";
+import { fromTurnComplete } from "../src/model/events";
 import { hintFor, initialSession, reduce, type SessionAction, type SessionState } from "../src/model/session";
 
 function run(actions: SessionAction[], from: SessionState = initialSession): SessionState {
@@ -15,6 +15,7 @@ const turn: SessionAction = { type: "turnCompleted" };
 describe("hintFor", () => {
   it("names one hint per degraded mode and none in full mode", () => {
     expect(hintFor("full", undefined)).toBeNull();
+    expect(hintFor("no-repo", undefined)).toBeNull();
     expect(hintFor("lite", undefined)).toBe("no-server");
     expect(hintFor("lite", "auth")).toBe("auth");
     expect(hintFor("lite", "unlisted")).toBe("unlisted");
@@ -26,6 +27,14 @@ describe("hintFor", () => {
 describe("session reducer", () => {
   it("starts with no mode and nothing to show", () => {
     expect(initialSession).toEqual({ mode: null, freshness: null, hint: null, hintsShown: [] });
+  });
+
+  it("outside a repo shows nothing at all", () => {
+    expect(run([{ type: "discovered", mode: "no-repo", freshness: { changedFiles: 3 } }])).toMatchObject({
+      mode: "no-repo",
+      hint: null,
+      freshness: null,
+    });
   });
 
   it("full mode shows no hint", () => {
@@ -96,12 +105,6 @@ describe("session reducer", () => {
 });
 
 describe("events", () => {
-  it("recognizes only mod-made call ids", () => {
-    expect(isPluginCall("toolu_plugin_01ab")).toBe(true);
-    expect(isPluginCall("toolu_01ab")).toBe(false);
-    expect(isPluginCall(undefined)).toBe(false);
-  });
-
   it("counts only main-loop turns", () => {
     expect(fromTurnComplete({})).toEqual({ type: "turnCompleted" });
     expect(fromTurnComplete({ agentId: "a1" })).toBeNull();

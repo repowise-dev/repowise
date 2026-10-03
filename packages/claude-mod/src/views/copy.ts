@@ -7,14 +7,14 @@ import { countOf } from "../format";
 import type { HintKind, IndexFreshness } from "../model/session";
 
 export const HINTS: Record<HintKind, string> = {
-  "no-server": "Map needs the local server: repowise serve --no-ui",
-  auth: "Map is off: the local server requires an API key, and Lens never reads keys",
-  unlisted: "Map needs a local server for this repo: repowise serve --no-ui",
-  "no-index": "Index this repo for Lens: repowise init --no-prose -y",
+  "no-server": "Lens map needs the local server: repowise serve --no-ui",
+  auth: "local server needs an API key; Lens does not read keys",
+  unlisted: "Lens map needs a local server for this repo: repowise serve --no-ui",
+  "no-index": "index this repo for Lens: repowise init --no-prose --yes",
   "no-cli": "Lens needs the Repowise CLI: pip install repowise",
 };
 
 export function freshnessLine(f: IndexFreshness): string {
-  const behind = f.changedFiles === null ? "index behind HEAD" : `index ${countOf(f.changedFiles, "file", "files")} behind HEAD`;
-  return `${behind} · repowise update`;
+  const changed = f.changedFiles === null ? "" : ` (${countOf(f.changedFiles, "file", "files")} changed)`;
+  return `index behind HEAD${changed} · repowise update`;
 }

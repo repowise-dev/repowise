@@ -4,12 +4,14 @@ import {
   discover,
   findIndexedRoot,
   isPidAlive,
+  isLoopbackUrl,
   isWindowsPath,
   mcpReachable,
   probeServer,
   readFreshness,
   readServeLock,
 } from "../src/data/discovery";
+import { TimeoutError, withTimeout } from "../src/data/transport";
 import { failed, fakeHost, fixture, json, ok, type FakeHostOptions } from "./fake-host";
 
 afterEach(() => configureApiClient({ baseUrl: "" }));
@@ -35,6 +37,26 @@ function server(status = 200) {
     return json(404, { detail: "not found" });
   };
 }
+
+const inWorkTree = (argv: readonly string[]) =>
+  argv.join(" ") === "git rev-parse --is-inside-work-tree" ? ok("true\n") : failed;
+
+describe("isLoopbackUrl", () => {
+  it.each(["http://127.0.0.1:7411", "http://localhost:7411/", "http://[::1]:7411"])("accepts %s", (url) => {
+    expect(isLoopbackUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "https://127.0.0.1:7411",
+    "http://evil.example:7411",
+    "http://127.0.0.1.evil.example",
+    "http://10.0.0.5:7411",
+    "file:///etc/passwd",
+    "not a url",
+  ])("refuses %s", (url) => {
+    expect(isLoopbackUrl(url)).toBe(false);
+  });
+});
 
 function host(o: FakeHostOptions = {}) {
   return fakeHost({ cwd: ROOT, files: { [STATE]: JSON.stringify({ last_sync_commit: indexedAt }) }, run: tasklist, ...o });
@@ -135,12 +157,7 @@ describe("probeServer", () => {
 describe("discover", () => {
   it("full: live lock, healthy server, repo listed", async () => {
     const h = host({ files: { [STATE]: "{}", [LOCK]: fixture("locks/valid.json") }, http: server() });
-    expect(await discover(h)).toEqual({
-      mode: "full",
-      repoRoot: ROOT,
-      server: { url: "http://127.0.0.1:7411", repoId: "repo-requests" },
-    });
-    expect(h.calls.mcp).toEqual([]);
+    expect(await discover(h)).toEqual({ mode: "full", repoRoot: ROOT });
     expect(h.calls.connect).toBe(0);
   });
 
@@ -167,14 +184,30 @@ describe("discover", () => {
     expect((await discover(h)).mode).toBe("full");
   });
 
-  it("no-index: no state file anywhere up the tree", async () => {
-    const h = fakeHost({ cwd: ROOT });
+  it("no-index: a git work tree with no state file anywhere up the tree", async () => {
+    const h = fakeHost({ cwd: ROOT, run: inWorkTree });
     expect(await discover(h)).toEqual({ mode: "no-index", repoRoot: null });
+    expect(h.calls.run).toContainEqual(["git", "rev-parse", "--is-inside-work-tree"]);
+  });
+
+  it("no-repo: outside a git work tree Lens stays quiet and asks nothing of MCP", async () => {
+    for (const run of [() => failed, undefined]) {
+      const h = fakeHost({ cwd: "C:\Users\me", run });
+      expect(await discover(h)).toEqual({ mode: "no-repo", repoRoot: null });
+      expect(h.calls.connect).toBe(0);
+    }
   });
 
   it("no-cli: the MCP server cannot connect", async () => {
     expect((await discover(host({ files: { [STATE]: "{}" }, connected: false }))).mode).toBe("no-cli");
-    expect((await discover(fakeHost({ cwd: ROOT, connected: false }))).mode).toBe("no-cli");
+    expect((await discover(fakeHost({ cwd: ROOT, run: inWorkTree, connected: false }))).mode).toBe("no-cli");
+  });
+
+  it("never probes a lock that names a host other than this machine", async () => {
+    const remote = { ...JSON.parse(fixture("locks/valid.json")), url: "http://evil.example:7411", pid: 4242 };
+    const h = host({ files: { [STATE]: "{}", [LOCK]: JSON.stringify(remote) }, http: server() });
+    expect(await discover(h)).toEqual({ mode: "lite", liteReason: "no-server", repoRoot: ROOT });
+    expect(h.calls.http).toEqual([]);
   });
 
   it("no-cli when the connect itself rejects", async () => {
@@ -199,8 +232,20 @@ describe("readFreshness", () => {
   it("counts files behind HEAD with read-only git", async () => {
     const h = host({ run: git("a.py\nb.py\n\nc.py\n") });
     expect(await readFreshness(h, ROOT)).toEqual({ changedFiles: 3 });
-    expect(h.calls.run).toContainEqual(["git", "diff", "--name-only", indexedAt, head]);
+    expect(h.calls.run).toContainEqual(["git", "diff", "--name-only", indexedAt, head, "--"]);
     for (const argv of h.calls.run.filter((a) => a[0] === "git")) expect(["rev-parse", "diff"]).toContain(argv[1]);
+  });
+
+  it("never hands git a state value that is not a bare sha", async () => {
+    for (const hostile of ["--output=C:/pwned.txt", "-p", "HEAD~1", "a".repeat(65), "abc"]) {
+      const h = host({ files: { [STATE]: JSON.stringify({ last_sync_commit: hostile }) }, run: git("a.py\n") });
+      expect(await readFreshness(h, ROOT)).toBeNull();
+      expect(h.calls.run.filter((a) => a[0] === "git")).toEqual([]);
+    }
+  });
+
+  it("ignores a HEAD that is not a sha", async () => {
+    expect(await readFreshness(host({ run: git("a.py\n", "--output=x") }), ROOT)).toBeNull();
   });
 
   it("says nothing when current", async () => {
@@ -230,5 +275,12 @@ describe("readFreshness", () => {
       [`${ROOT}/.repowise/.update.lock`]: JSON.stringify({ pid: 9999, started_at: 1 }),
     };
     expect(await readFreshness(host({ files, run: git("a.py\n") }), ROOT)).toEqual({ changedFiles: 1 });
+  });
+});
+
+describe("withTimeout", () => {
+  it("rejects with a TimeoutError when the work does not settle", async () => {
+    await expect(withTimeout(new Promise(() => {}), 5, "probe")).rejects.toBeInstanceOf(TimeoutError);
+    await expect(withTimeout(Promise.resolve(1), 50, "probe")).resolves.toBe(1);
   });
 });

@@ -6,12 +6,12 @@
 
 export interface TextProps {
   dimColor?: boolean;
-  wrap?: "wrap" | "truncate" | "truncate-start" | "truncate-middle" | "truncate-end";
+  wrap?: "truncate-end";
 }
 
 export interface BoxProps {
   key?: string;
-  flexDirection?: "row" | "column";
+  flexDirection?: "column";
 }
 
 export type Node =

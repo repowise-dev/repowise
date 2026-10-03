@@ -2,7 +2,8 @@
  * Session state and its reducer. Pure: no I/O, no clock, no `$`.
  */
 
-export type Mode = "full" | "lite" | "no-index" | "no-cli";
+/** `no-repo`: not inside a git work tree, so there is nothing to index and Lens stays quiet. */
+export type Mode = "full" | "lite" | "no-index" | "no-cli" | "no-repo";
 
 /** Why a lite session has no map, when it is not simply "no server". */
 export type LiteReason = "no-server" | "auth" | "unlisted";
@@ -33,7 +34,7 @@ export type SessionAction =
 export const initialSession: SessionState = { mode: null, freshness: null, hint: null, hintsShown: [] };
 
 export function hintFor(mode: Mode, liteReason: LiteReason | undefined): HintKind | null {
-  if (mode === "full") return null;
+  if (mode === "full" || mode === "no-repo") return null;
   if (mode === "lite") return liteReason ?? "no-server";
   return mode;
 }

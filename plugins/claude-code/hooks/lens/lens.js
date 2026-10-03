@@ -155,8 +155,8 @@ function isServeLock(value) {
 __name(isServeLock, "isServeLock");
 
 // src/data/transport.ts
-function connectApiClient(host2, baseUrl) {
-  configureApiClient({ baseUrl, fetch: createAdapterFetch(host2.http) });
+function connectApiClient(host, baseUrl) {
+  configureApiClient({ baseUrl, fetch: createAdapterFetch(host.http) });
 }
 __name(connectApiClient, "connectApiClient");
 var TimeoutError = class extends Error {
@@ -183,6 +183,7 @@ var LIST_TIMEOUT_MS = 3e3;
 var CONNECT_TIMEOUT_MS = 35e3;
 var GIT_TIMEOUT_MS = 5e3;
 var MAX_WALK = 20;
+var SHA = /^[0-9a-f]{7,64}$/i;
 function isWindowsPath(p) {
   return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 }
@@ -199,43 +200,53 @@ function parentDir(p) {
   return trimmed.slice(0, cut);
 }
 __name(parentDir, "parentDir");
-async function findIndexedRoot(host2, cwd) {
+async function findIndexedRoot(host, cwd) {
   let dir = cwd;
   for (let i = 0; dir !== null && i < MAX_WALK; i++) {
-    if (await host2.fs.exists(join(dir, ".repowise/state.json"))) return dir;
+    if (await host.fs.exists(join(dir, ".repowise/state.json"))) return dir;
     dir = parentDir(dir);
   }
   return null;
 }
 __name(findIndexedRoot, "findIndexedRoot");
-async function readJson(host2, path) {
+async function readJson(host, path) {
   try {
-    return JSON.parse(await host2.fs.read(path));
+    return JSON.parse(await host.fs.read(path));
   } catch {
     return null;
   }
 }
 __name(readJson, "readJson");
-async function readServeLock(host2, repoRoot) {
-  const parsed = await readJson(host2, join(repoRoot, ".repowise/serve.lock.json"));
+async function readServeLock(host, repoRoot) {
+  const parsed = await readJson(host, join(repoRoot, ".repowise/serve.lock.json"));
   return isServeLock(parsed) ? parsed : null;
 }
 __name(readServeLock, "readServeLock");
-async function isPidAlive(host2, pid, cwd) {
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+function isLoopbackUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+__name(isLoopbackUrl, "isLoopbackUrl");
+async function isPidAlive(host, pid, cwd) {
   try {
     if (isWindowsPath(cwd)) {
-      const out2 = await host2.process.run(["tasklist", "/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], cwd);
+      const out2 = await host.process.run(["tasklist", "/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], cwd);
       return out2.exitCode === 0 && out2.stdout.includes(`"${pid}"`);
     }
-    const out = await host2.process.run(["ps", "-p", String(pid), "-o", "pid="], cwd);
+    const out = await host.process.run(["ps", "-p", String(pid), "-o", "pid="], cwd);
     return out.exitCode === 0 && out.stdout.trim() === String(pid);
   } catch {
     return null;
   }
 }
 __name(isPidAlive, "isPidAlive");
-async function probeServer(host2, lock, repoRoot) {
-  connectApiClient(host2, lock.url);
+async function probeServer(host, lock, repoRoot) {
+  connectApiClient(host, lock.url);
   try {
     await withTimeout(getHealth(), HEALTH_TIMEOUT_MS, "health");
   } catch {
@@ -253,90 +264,72 @@ async function probeServer(host2, lock, repoRoot) {
   }
 }
 __name(probeServer, "probeServer");
-async function mcpReachable(host2) {
+async function mcpReachable(host) {
   try {
-    return await withTimeout(host2.mcp.connect(), CONNECT_TIMEOUT_MS, "mcp connect");
+    return await withTimeout(host.mcp.connect(), CONNECT_TIMEOUT_MS, "mcp connect");
   } catch {
     return false;
   }
 }
 __name(mcpReachable, "mcpReachable");
-async function discover(host2) {
-  const cwd = await host2.session.cwd();
-  const repoRoot = await findIndexedRoot(host2, cwd);
+async function discover(host) {
+  const cwd = await host.session.cwd();
+  const repoRoot = await findIndexedRoot(host, cwd);
   if (repoRoot === null) {
-    return { mode: await mcpReachable(host2) ? "no-index" : "no-cli", repoRoot };
+    if ((await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
+      return { mode: "no-repo", repoRoot };
+    }
+    return { mode: await mcpReachable(host) ? "no-index" : "no-cli", repoRoot };
   }
   let liteReason = "no-server";
-  const lock = await readServeLock(host2, repoRoot);
-  if (lock && await isPidAlive(host2, lock.pid, repoRoot) !== false) {
-    const probe = await probeServer(host2, lock, repoRoot);
-    if (probe.kind === "ok") return { mode: "full", repoRoot, server: { url: lock.url, repoId: probe.repoId } };
+  const lock = await readServeLock(host, repoRoot);
+  if (lock && isLoopbackUrl(lock.url) && await isPidAlive(host, lock.pid, repoRoot) !== false) {
+    const probe = await probeServer(host, lock, repoRoot);
+    if (probe.kind === "ok") return { mode: "full", repoRoot };
     if (probe.kind !== "down") liteReason = probe.kind;
   }
-  if (!await mcpReachable(host2)) return { mode: "no-cli", repoRoot };
+  if (!await mcpReachable(host)) return { mode: "no-cli", repoRoot };
   return { mode: "lite", liteReason, repoRoot };
 }
 __name(discover, "discover");
-async function git(host2, repoRoot, args) {
+async function git(host, cwd, args) {
   try {
-    const out = await withTimeout(host2.process.run(["git", ...args], repoRoot), GIT_TIMEOUT_MS, "git");
+    const out = await withTimeout(host.process.run(["git", ...args], cwd), GIT_TIMEOUT_MS, "git");
     return out.exitCode === 0 ? out.stdout : null;
   } catch {
     return null;
   }
 }
 __name(git, "git");
-async function updateRunning(host2, repoRoot) {
-  const lock = await readJson(host2, join(repoRoot, ".repowise/.update.lock"));
+async function updateRunning(host, repoRoot) {
+  const lock = await readJson(host, join(repoRoot, ".repowise/.update.lock"));
   const pid = lock?.pid;
-  return typeof pid === "number" && await isPidAlive(host2, pid, repoRoot) === true;
+  return typeof pid === "number" && await isPidAlive(host, pid, repoRoot) === true;
 }
 __name(updateRunning, "updateRunning");
-async function readFreshness(host2, repoRoot) {
-  const state2 = await readJson(host2, join(repoRoot, ".repowise/state.json"));
+async function readFreshness(host, repoRoot) {
+  const state2 = await readJson(host, join(repoRoot, ".repowise/state.json"));
   const indexed = state2?.last_sync_commit;
-  if (typeof indexed !== "string" || indexed === "") return null;
-  const head = (await git(host2, repoRoot, ["rev-parse", "HEAD"]))?.trim();
-  if (!head || head === indexed) return null;
-  if (await updateRunning(host2, repoRoot)) return null;
-  const diff = await git(host2, repoRoot, ["diff", "--name-only", indexed, head]);
+  if (typeof indexed !== "string" || !SHA.test(indexed)) return null;
+  const head = (await git(host, repoRoot, ["rev-parse", "HEAD"]))?.trim();
+  if (!head || !SHA.test(head) || head === indexed) return null;
+  if (await updateRunning(host, repoRoot)) return null;
+  const diff = await git(host, repoRoot, ["diff", "--name-only", indexed, head, "--"]);
   const changedFiles = diff === null ? null : diff.split("\n").filter((l) => l.trim() !== "").length;
   return { changedFiles };
 }
 __name(readFreshness, "readFreshness");
 
 // src/model/events.ts
-var PLUGIN_CALL_PREFIX = "toolu_plugin_";
-function isPluginCall(toolUseId) {
-  return typeof toolUseId === "string" && toolUseId.startsWith(PLUGIN_CALL_PREFIX);
-}
-__name(isPluginCall, "isPluginCall");
 function fromTurnComplete(e) {
   return e.agentId === void 0 ? { type: "turnCompleted" } : null;
 }
 __name(fromTurnComplete, "fromTurnComplete");
 
-// src/data/mcp.ts
-var MCP_SERVER_KEY = "repowise";
-var READ_ONLY_TOOLS = ["get_context", "get_change_risk", "get_why", "get_answer", "list_repos"];
-function mcpServerName(pluginName) {
-  return `plugin:${pluginName}:${MCP_SERVER_KEY}`;
-}
-__name(mcpServerName, "mcpServerName");
-function mcpToolName(pluginName, tool) {
-  return `mcp__plugin_${pluginName}_${MCP_SERVER_KEY}__${tool}`;
-}
-__name(mcpToolName, "mcpToolName");
-function isOwnReadOnlyCall(e, originPlugin, pluginName) {
-  return isPluginCall(e.tool_use_id) && originPlugin === pluginName && READ_ONLY_TOOLS.some((tool) => mcpToolName(pluginName, tool) === e.tool);
-}
-__name(isOwnReadOnlyCall, "isOwnReadOnlyCall");
-
 // src/model/session.ts
 var initialSession = { mode: null, freshness: null, hint: null, hintsShown: [] };
 function hintFor(mode, liteReason) {
-  if (mode === "full") return null;
+  if (mode === "full" || mode === "no-repo") return null;
   if (mode === "lite") return liteReason ?? "no-server";
   return mode;
 }
@@ -373,15 +366,15 @@ __name(fit, "fit");
 
 // src/views/copy.ts
 var HINTS = {
-  "no-server": "Map needs the local server: repowise serve --no-ui",
-  auth: "Map is off: the local server requires an API key, and Lens never reads keys",
-  unlisted: "Map needs a local server for this repo: repowise serve --no-ui",
-  "no-index": "Index this repo for Lens: repowise init --no-prose -y",
+  "no-server": "Lens map needs the local server: repowise serve --no-ui",
+  auth: "local server needs an API key; Lens does not read keys",
+  unlisted: "Lens map needs a local server for this repo: repowise serve --no-ui",
+  "no-index": "index this repo for Lens: repowise init --no-prose --yes",
   "no-cli": "Lens needs the Repowise CLI: pip install repowise"
 };
 function freshnessLine(f) {
-  const behind = f.changedFiles === null ? "index behind HEAD" : `index ${countOf(f.changedFiles, "file", "files")} behind HEAD`;
-  return `${behind} · repowise update`;
+  const changed = f.changedFiles === null ? "" : ` (${countOf(f.changedFiles, "file", "files")} changed)`;
+  return `index behind HEAD${changed} · repowise update`;
 }
 __name(freshnessLine, "freshnessLine");
 
@@ -424,13 +417,15 @@ __name(bandView, "bandView");
 
 // src/register.ts
 var PROCESS_TIMEOUT_MS = 5e3;
+var MCP_SERVER_KEY = "repowise";
 var state = initialSession;
-var host = null;
-var refreshing = null;
-function makeHost($) {
-  let connected = false;
-  return {
-    pluginName: $.plugin.name,
+var generation = 0;
+var running = false;
+var dirty = false;
+var latest = null;
+var mcpConnected = false;
+function bind($) {
+  const host = {
     session: { cwd: /* @__PURE__ */ __name(() => $.session.cwd(), "cwd") },
     fs: {
       read: /* @__PURE__ */ __name((path) => $.fs.read(path), "read"),
@@ -447,42 +442,51 @@ function makeHost($) {
       return $.http.fetch(url, request);
     }, "http"),
     mcp: {
-      call: /* @__PURE__ */ __name((tool, args) => $.mcp.call(mcpServerName($.plugin.name), tool, args), "call"),
-      connect: /* @__PURE__ */ __name(async () => connected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected, "connect")
+      connect: /* @__PURE__ */ __name(async () => mcpConnected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected, "connect")
     }
   };
+  return { host, redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw") };
 }
-__name(makeHost, "makeHost");
-function dispatch($, action) {
+__name(bind, "bind");
+function dispatch(b, action) {
   const next = reduce(state, action);
   if (next === state) return;
   state = next;
-  $.ui.invalidate("ui.render");
+  b.redraw();
 }
 __name(dispatch, "dispatch");
-function refresh($, h) {
-  if (refreshing) return;
-  refreshing = (async () => {
-    try {
-      const found = await discover(h);
-      const indexed = found.repoRoot !== null && (found.mode === "full" || found.mode === "lite");
-      const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
-      const action = { type: "discovered", mode: found.mode, freshness };
-      if (found.liteReason !== void 0) action.liteReason = found.liteReason;
-      dispatch($, action);
-    } catch {
-    } finally {
-      refreshing = null;
-    }
-  })();
+async function refreshOnce(b, gen) {
+  const h = b.host;
+  const found = await discover(h);
+  const indexed = found.mode === "full" || found.mode === "lite";
+  const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
+  if (gen !== generation) return;
+  const action = { type: "discovered", mode: found.mode, freshness };
+  if (found.liteReason !== void 0) action.liteReason = found.liteReason;
+  dispatch(b, action);
+}
+__name(refreshOnce, "refreshOnce");
+function refresh(b) {
+  latest = b;
+  if (running) {
+    dirty = true;
+    return;
+  }
+  running = true;
+  dirty = false;
+  refreshOnce(b, generation).catch(() => {
+  }).finally(() => {
+    running = false;
+    if (dirty && latest !== null) refresh(latest);
+  });
 }
 __name(refresh, "refresh");
 function register(on) {
   on("session.start", async ($, e, next) => {
     try {
+      generation++;
       state = initialSession;
-      host = makeHost($);
-      refresh($, host);
+      refresh(bind($));
     } catch {
     }
     return next(e);
@@ -491,32 +495,30 @@ function register(on) {
     try {
       const action = fromTurnComplete(e);
       if (action !== null) {
-        dispatch($, action);
-        if (host !== null) refresh($, host);
-      }
-    } catch {
-    }
-    return next(e);
-  });
-  on("tool.check", async ($, e, next) => {
-    try {
-      if (isOwnReadOnlyCall(e, next.origin.plugin, $.plugin.name)) {
-        return { decision: "allow", reason: "Repowise Lens: its own read-only lookup" };
+        const b = bind($);
+        dispatch(b, action);
+        refresh(b);
       }
     } catch {
     }
     return next(e);
   });
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    const theirs = await next(e);
     try {
       const tree = bandView(state, {
         columns: e.props.bodyColumns ?? 80,
         hasSurvey: e.props.hasSurvey === true
       });
-      if (tree !== null) return materialize(tree, $.ui.resolve(e));
+      if (tree === null) return theirs;
+      const elements = $.ui.resolve(e);
+      const ours = materialize(tree, elements);
+      const box2 = elements["Box"];
+      if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
+      return box2({ flexDirection: "column", children: [ours, theirs] });
     } catch {
+      return theirs;
     }
-    return next(e);
   });
 }
 __name(register, "register");

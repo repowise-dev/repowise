@@ -1,13 +1,10 @@
 /**
- * The mod's entry, and the only file that touches `$`. It binds `$` once into
- * a Host, registers every hook, feeds events to the model, and redraws.
- *
- * Lens never decides for Claude: the one `tool.check` hook approves only Lens's
- * own read-only lookups and hands every other call to the engine untouched.
+ * The mod's entry, and the only file that touches `$`. Each hook builds a Host
+ * from its own `$`, feeds events to the model, and redraws. Lens only
+ * observes: every hook passes its event on unchanged.
  */
 
 import { discover, readFreshness } from "./data/discovery";
-import { isOwnReadOnlyCall, MCP_SERVER_KEY, mcpServerName } from "./data/mcp";
 import type { Host } from "./host";
 import type { ModApi, On } from "./mod-api";
 import { fromTurnComplete } from "./model/events";
@@ -16,17 +13,33 @@ import { bandView } from "./views/band";
 import { materialize } from "./views/elements";
 
 const PROCESS_TIMEOUT_MS = 5_000;
+/** The server's key in the plugin's .mcp.json. */
+const MCP_SERVER_KEY = "repowise";
 
 let state: SessionState = initialSession;
-let host: Host | null = null;
-let refreshing: Promise<void> | null = null;
+/** Bumped per session, so a refresh started in an earlier one never lands in this one. */
+let generation = 0;
+let running = false;
+/** A refresh was asked for while one ran: run once more after it. */
+let dirty = false;
+let latest: Bound | null = null;
+/**
+ * Once the server has connected the CLI is known to exist; a later connect
+ * can fail while the session shuts its servers down, which is not "no CLI".
+ */
+let mcpConnected = false;
 
-function makeHost($: ModApi): Host {
-  // Once the server has connected the CLI is known to exist; a later connect
-  // can fail while the session shuts its servers down, which is not "no CLI".
-  let connected = false;
-  return {
-    pluginName: $.plugin.name,
+/** What a background refresh needs from a hook's `$`, as closures (the engine forbids keeping `$` itself). */
+interface Bound {
+  host: Host;
+  redraw(): void;
+}
+
+// Built from the calling hook's own `$`. When MCP tool calls arrive, await
+// them inside a hook: a call from a detached promise skips this plugin's own
+// `tool.check`, so the engine refuses it.
+function bind($: ModApi): Bound {
+  const host: Host = {
     session: { cwd: () => $.session.cwd() },
     fs: {
       read: (path) => $.fs.read(path),
@@ -43,56 +56,69 @@ function makeHost($: ModApi): Host {
       return $.http.fetch(url, request);
     },
     mcp: {
-      call: (tool, args) => $.mcp.call(mcpServerName($.plugin.name), tool, args),
-      connect: async () => (connected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected),
+      connect: async () => (mcpConnected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected),
     },
   };
+  return { host, redraw: () => $.ui.invalidate("ui.render") };
 }
 
-function dispatch($: ModApi, action: SessionAction): void {
+function dispatch(b: Bound, action: SessionAction): void {
   const next = reduce(state, action);
   if (next === state) return;
   state = next;
-  $.ui.invalidate("ui.render");
+  b.redraw();
 }
 
-/** Re-reads mode and freshness in the background; overlapping requests fold into the one running. */
-function refresh($: ModApi, h: Host): void {
-  if (refreshing) return;
-  refreshing = (async () => {
-    try {
-      const found = await discover(h);
-      const indexed = found.repoRoot !== null && (found.mode === "full" || found.mode === "lite");
-      const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
-      const action: SessionAction = { type: "discovered", mode: found.mode, freshness };
-      if (found.liteReason !== undefined) action.liteReason = found.liteReason;
-      dispatch($, action);
-    } catch {
+async function refreshOnce(b: Bound, gen: number): Promise<void> {
+  const h = b.host;
+  const found = await discover(h);
+  const indexed = found.mode === "full" || found.mode === "lite";
+  const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
+  if (gen !== generation) return;
+  const action: SessionAction = { type: "discovered", mode: found.mode, freshness };
+  if (found.liteReason !== undefined) action.liteReason = found.liteReason;
+  dispatch(b, action);
+}
+
+/** Re-reads mode and freshness in the background, one run at a time. */
+function refresh(b: Bound): void {
+  latest = b;
+  if (running) {
+    dirty = true;
+    return;
+  }
+  running = true;
+  dirty = false;
+  refreshOnce(b, generation)
+    .catch(() => {
       // Keep the last good state; the next turn tries again.
-    } finally {
-      refreshing = null;
-    }
-  })();
+    })
+    .finally(() => {
+      running = false;
+      if (dirty && latest !== null) refresh(latest);
+    });
 }
 
 export function register(on: On): void {
   on("session.start", async ($, e, next) => {
     try {
+      generation++;
       state = initialSession;
-      host = makeHost($);
-      refresh($, host);
+      refresh(bind($));
     } catch {
       // Lens stays quiet; the session is unaffected.
     }
     return next(e);
   });
 
+  // Also the first refresh when the module loaded after the session started.
   on("turn.complete", async ($, e, next) => {
     try {
       const action = fromTurnComplete(e);
       if (action !== null) {
-        dispatch($, action);
-        if (host !== null) refresh($, host);
+        const b = bind($);
+        dispatch(b, action);
+        refresh(b);
       }
     } catch {
       // Observing only.
@@ -100,27 +126,24 @@ export function register(on: On): void {
     return next(e);
   });
 
-  on("tool.check", async ($, e, next) => {
-    try {
-      if (isOwnReadOnlyCall(e, next.origin.plugin, $.plugin.name)) {
-        return { decision: "allow", reason: "Repowise Lens: its own read-only lookup" };
-      }
-    } catch {
-      // Fall through to the engine's own verdict.
-    }
-    return next(e);
-  });
-
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    // The band is shared: a mod's tree replaces what the mods after it draw
+    // (docs: plugins/mods/interface, "Band above the prompt"), so Lens puts
+    // its rows above the tree `next(e)` returns instead of dropping it.
+    const theirs = await next(e);
     try {
       const tree = bandView(state, {
         columns: e.props.bodyColumns ?? 80,
         hasSurvey: e.props.hasSurvey === true,
       });
-      if (tree !== null) return materialize(tree, $.ui.resolve(e));
+      if (tree === null) return theirs;
+      const elements = $.ui.resolve(e);
+      const ours = materialize(tree, elements);
+      const box = elements["Box"];
+      if (theirs === null || theirs === undefined || box === undefined) return ours;
+      return box({ flexDirection: "column", children: [ours, theirs] });
     } catch {
-      // Draw nothing rather than a broken band.
+      return theirs;
     }
-    return next(e);
   });
 }

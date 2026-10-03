@@ -17,8 +17,6 @@ export interface Discovery {
   mode: Mode;
   liteReason?: LiteReason;
   repoRoot: string | null;
-  /** Set in full mode. */
-  server?: { url: string; repoId: string };
 }
 
 const HEALTH_TIMEOUT_MS = 800;
@@ -27,6 +25,7 @@ const LIST_TIMEOUT_MS = 3_000;
 const CONNECT_TIMEOUT_MS = 35_000;
 const GIT_TIMEOUT_MS = 5_000;
 const MAX_WALK = 20;
+const SHA = /^[0-9a-f]{7,64}$/i;
 
 export function isWindowsPath(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
@@ -70,6 +69,22 @@ async function readJson(host: Host, path: string): Promise<unknown> {
 export async function readServeLock(host: Host, repoRoot: string): Promise<ServeLock | null> {
   const parsed = await readJson(host, join(repoRoot, ".repowise/serve.lock.json"));
   return isServeLock(parsed) ? parsed : null;
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/**
+ * Whether the lock points at plain http on this machine. The lock sits in the
+ * repo, so a cloned repo can carry one naming any host, and a pid gate is no
+ * defence (some pids are always alive). Lens probes nothing else.
+ */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -134,23 +149,27 @@ export async function discover(host: Host): Promise<Discovery> {
   const cwd = await host.session.cwd();
   const repoRoot = await findIndexedRoot(host, cwd);
   if (repoRoot === null) {
+    // Only a git work tree is worth indexing; anywhere else Lens stays quiet.
+    if ((await git(host, cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") {
+      return { mode: "no-repo", repoRoot };
+    }
     return { mode: (await mcpReachable(host)) ? "no-index" : "no-cli", repoRoot };
   }
 
   let liteReason: LiteReason = "no-server";
   const lock = await readServeLock(host, repoRoot);
-  if (lock && (await isPidAlive(host, lock.pid, repoRoot)) !== false) {
+  if (lock && isLoopbackUrl(lock.url) && (await isPidAlive(host, lock.pid, repoRoot)) !== false) {
     const probe = await probeServer(host, lock, repoRoot);
-    if (probe.kind === "ok") return { mode: "full", repoRoot, server: { url: lock.url, repoId: probe.repoId } };
+    if (probe.kind === "ok") return { mode: "full", repoRoot };
     if (probe.kind !== "down") liteReason = probe.kind;
   }
   if (!(await mcpReachable(host))) return { mode: "no-cli", repoRoot };
   return { mode: "lite", liteReason, repoRoot };
 }
 
-async function git(host: Host, repoRoot: string, args: string[]): Promise<string | null> {
+async function git(host: Host, cwd: string, args: string[]): Promise<string | null> {
   try {
-    const out = await withTimeout(host.process.run(["git", ...args], repoRoot), GIT_TIMEOUT_MS, "git");
+    const out = await withTimeout(host.process.run(["git", ...args], cwd), GIT_TIMEOUT_MS, "git");
     return out.exitCode === 0 ? out.stdout : null;
   } catch {
     return null;
@@ -178,11 +197,12 @@ async function updateRunning(host: Host, repoRoot: string): Promise<boolean> {
 export async function readFreshness(host: Host, repoRoot: string): Promise<IndexFreshness | null> {
   const state = await readJson(host, join(repoRoot, ".repowise/state.json"));
   const indexed = (state as { last_sync_commit?: unknown } | null)?.last_sync_commit;
-  if (typeof indexed !== "string" || indexed === "") return null;
+  // The state file is repo content: only a bare hex sha may reach git's argv.
+  if (typeof indexed !== "string" || !SHA.test(indexed)) return null;
   const head = (await git(host, repoRoot, ["rev-parse", "HEAD"]))?.trim();
-  if (!head || head === indexed) return null;
+  if (!head || !SHA.test(head) || head === indexed) return null;
   if (await updateRunning(host, repoRoot)) return null;
-  const diff = await git(host, repoRoot, ["diff", "--name-only", indexed, head]);
+  const diff = await git(host, repoRoot, ["diff", "--name-only", indexed, head, "--"]);
   const changedFiles = diff === null ? null : diff.split("\n").filter((l) => l.trim() !== "").length;
   return { changedFiles };
 }

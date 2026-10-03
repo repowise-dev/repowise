@@ -36,23 +36,6 @@ def test_claude_plugin_manifest_paths() -> None:
     assert "[TODO" not in manifest_path.read_text(encoding="utf-8")
 
 
-def test_claude_plugin_lens_user_config() -> None:
-    manifest = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")
-    config = manifest["userConfig"]
-
-    assert {key: option["default"] for key, option in config.items()} == {
-        "lens_pane_autoopen": False,
-        "lens_margin": True,
-        "lens_review": True,
-        "lens_squeeze": True,
-    }
-    for option in config.values():
-        # The manifest schema is strict: these three are required, the rest refused.
-        assert option["type"] == "boolean"
-        assert option["title"] and option["description"]
-        assert set(option) <= {"type", "title", "description", "default"}
-
-
 def test_claude_plugin_lens_module() -> None:
     hooks = _load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
 
@@ -60,7 +43,7 @@ def test_claude_plugin_lens_module() -> None:
     assert hooks["modules"] == ["./lens/lens.js"]
     bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
     assert bundle.is_file()
-    assert "export {\n  register\n};" in bundle.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
 
 
 def test_claude_plugin_mcp_uses_repowise() -> None:

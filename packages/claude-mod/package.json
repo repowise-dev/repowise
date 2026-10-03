@@ -10,11 +10,9 @@
     "build:mod": "node build.mjs",
     "test:mod": "node scripts/mod-test.mjs"
   },
-  "dependencies": {
-    "@repowise-dev/api-client": "*",
-    "@repowise-dev/types": "*"
-  },
   "devDependencies": {
+    "@repowise-dev/api-client": "*",
+    "@repowise-dev/types": "*",
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "4.1.10",
     "esbuild": "^0.28.1",
