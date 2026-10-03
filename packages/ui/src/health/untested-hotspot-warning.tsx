@@ -78,7 +78,7 @@ export function UntestedHotspotWarning({
                 <button
                   type="button"
                   onClick={() => onSelect(e.file_path)}
-                  className="group flex w-full items-baseline gap-x-4 py-2.5 text-left hover:bg-[var(--color-bg-elevated)]"
+                  className="group/row flex w-full items-baseline gap-x-4 py-2.5 text-left hover:bg-[var(--color-bg-elevated)]"
                 >
                   {body}
                   <ArrowUpRight className="h-3 w-3 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover/row:text-[var(--color-accent-primary)]" />
