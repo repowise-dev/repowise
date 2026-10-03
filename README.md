@@ -103,7 +103,10 @@ repowise serve                    # local dashboard + MCP server
 One index, three ways to use it. Find the question you came with; each one links to
 the page that answers it.
 
-<img src=".github/assets/product-map-dark.png" alt="Repowise connects code and dependency data, git history, tests and contracts, documentation, and architectural decisions in one continuously updated local index that gives developers and AI agents cited understanding, change impact, and concrete code-health improvements across editors, pull requests, dashboards, and multi-repository workspaces" width="100%" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/product-map-dark.svg" />
+  <img src=".github/assets/product-map.svg" alt="Repowise reads your code, git history, tests and coverage, docs and decisions, and the contracts between repositories into one local index. From it you and your coding agent get answers to understand the code, change it safely and improve it, in coding agents, the editor, CI and pull requests, a local dashboard and multi-repo workspaces." width="100%" />
+</picture>
 
 ### Understand the code
 
@@ -167,9 +170,9 @@ the page that answers it.
 </details>
 
 <div align="center">
-<img src=".github/assets/demo.gif" alt="The Repowise dashboard running locally: health scores, the code-health map, a graph-aware refactoring plan, change coupling, and the generated documentation" width="100%" />
-<p><sub>A dashboard tour recorded on this repository. The same local index powers the UI,
-MCP tools, editor views and CI gates. No API key and nothing uploaded.</sub></p>
+<img src=".github/assets/demo.gif" alt="A real Claude Code session asks Repowise what breaks before editing a file, then the dashboard shows the ranked Fix first queue, a refactoring plan ready to hand to an agent, dead code with confidence tiers, a commit ranked against the repo's own history, and the HTTP contract between a frontend and backend on the workspace system map" width="100%" />
+<p><sub>Recorded on this repository and its workspace: an agent asking the index, then the
+dashboard and CLI on the same local index. No API key and nothing uploaded.</sub></p>
 </div>
 
 ### Pick your front door
